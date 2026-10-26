@@ -1,7 +1,8 @@
 /** The verification gate: one Stop block when files changed and the fast check did not run. */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { LEAD_MONITOR } from "../crew/brief";
 import { CREW_ENV } from "../crew/session";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
@@ -225,6 +226,62 @@ describe("verify-gate", () => {
     const path = transcript([EDIT]);
     const input = { ...stop(repo, path), background_tasks: [{ id: "shell1" }] };
     expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({});
+  });
+
+  /**
+   * The lead's own monitor as Claude Code lists it in `background_tasks` (read from the 2.1.310
+   * binary): a shell task, with the command and description `plugin/monitors/monitors.json`
+   * gives `crew-events`, and nothing that says "monitor". It runs for the whole of a lead's
+   * session.
+   */
+  function leadWatchTask(): Record<string, unknown> {
+    const monitors = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "..", "..", "plugin", "monitors", "monitors.json"),
+        "utf8",
+      ),
+    ) as { command: string; description: string; name: string }[];
+    const events = monitors.find((one) => one.name === LEAD_MONITOR);
+    return {
+      command: events?.command,
+      description: events?.description,
+      id: "bm4k2x9a1",
+      status: "running",
+      type: "shell",
+    };
+  }
+
+  test("a lead's own watch monitor always runs, and is no reason to skip the reminder", async () => {
+    // Before: every lead had the monitor in the list, so the gate never spoke in a lead.
+    const repo = project();
+    const path = transcript([EDIT]);
+    const input = { ...stop(repo, path), background_tasks: [leadWatchTask()] };
+    expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({ stdout: BLOCK });
+  });
+
+  test("the lead's monitor beside a task of the session's own: that turn waits, so silent", async () => {
+    const repo = project();
+    const path = transcript([EDIT]);
+    const own = { command: "bun test", id: "b1", status: "running", type: "shell" };
+    const input = { ...stop(repo, path), background_tasks: [leadWatchTask(), own] };
+    expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({});
+  });
+
+  test("a task that only has the monitor's words in its command is the session's own work: silent", async () => {
+    const repo = project();
+    const path = transcript([EDIT]);
+    for (const command of [
+      "tail -f /tmp/crew-watch.log",
+      "grep -r 'cc-smart-dev-kit crew watch' src",
+      "cc-smart-dev-kit crew watch-x",
+      "bun test # cc-smart-dev-kit crew watch",
+    ]) {
+      const input = {
+        ...stop(repo, path),
+        background_tasks: [{ command, id: "b2", status: "running", type: "shell" }],
+      };
+      expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({});
+    }
   });
 
   test("a subagent's own (sidechain) edit is not this session's change", async () => {

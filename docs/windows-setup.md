@@ -20,11 +20,11 @@ Windows yet.
 | `sessions` | Lists sessions and saves Warp tabs. `--open` brings sessions back in Warp tabs where Warp is there, else in **Windows Terminal** window each (`wt.exe`), else it says what to do by hand. |
 | `worktrees` | The scan and the removal are already Windows-aware (a PowerShell process scan, `hostPath`, move-before-delete). |
 | The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
-| The heavy-job queue | Runs each job as a plain child (no memory ceiling); the free memory comes from Windows itself (`os.freemem`, `windows-jobs.md`). |
+| The heavy-job queue | Runs each job as a plain child (no memory ceiling); the slots (three heavy jobs at once by default, `job set max-jobs <n>`) are what keeps heavy jobs apart (`windows-jobs.md`). |
 | Notifications | A desktop toast through PowerShell, and Windows plays the sound of its own notification; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral (`windows-notify.md`). |
 | **The crew** (`crew lead`, `start`, `watch`, `report`, `rm`) | **Works.** `claude` is found on PATH or as `claude.exe`, then npm's `claude.cmd`, in `%USERPROFILE%\.local\bin`; a `.cmd` is no executable, so it runs through `cmd.exe` with one quoted line (`src/crew/claude.ts` § `findClaude`, `claudeArgv`). The session above a `crew` command comes from PowerShell's process list (its parent pids), because Windows has no `/proc` (`src/crew/session.ts` § `realProcessFacts`). A process's command line is not read there, so a hand-off is identified by the session record, not by its arguments. **Linux-only figure:** a crew session's memory comes from `/proc/<pid>/status`; on Windows the board and `crew status` show `-` (`src/crew/memory.ts`, `src/crew/display.ts` § `memoryText`) — it is never faked. |
 | **The crew's hooks** (`crew-role`, `lead-notes`) | **Works.** They are plugin hooks, so shell form through the bun shim and Git Bash, like every hook (below). Their work is JSON, files and text: no platform code. |
-| **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run (`src/hooks/job-route.ts` § `jobRoute`). The session-escape guard asks on a `C:\…` settings path, on Git Bash's own `/c/…` form of it, and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`, `shellTargetPath`). |
+| **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run, so with the route on a heavy PowerShell line is refused with the Bash line to run instead (`src/hooks/job-route.ts` § `jobRoute`; the live check is owed, `docs/windows-jobs.md`). The session-escape guard asks on a `C:\…` settings path, on Git Bash's own `/c/…` form of it, and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`, `shellTargetPath`). |
 | **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
 | **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
 | **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
@@ -33,7 +33,7 @@ Windows yet.
 | **The usage-limit alert** (BR2) | **Works** as every alert: a PowerShell toast (`docs/windows-notify.md`). The alert has no button on any platform (it says which limit was hit and when it resets, and offers nothing), so the hook shows the plain toast itself and starts no detached worker. |
 | **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
 | **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every guard uses; its tests run in the Windows CI job. |
-| **The plugin's monitors** (the lead's watch, the crew session's self-watch) | **Owed a live run.** Each command is the shell line `"$HOME/.local/bin/cc-smart-dev-kit" …` (`plugin/monitors/monitors.json`), so it needs Git Bash and its `$HOME`. The Windows CI job proves that line runs there against a stand-in launcher, but **which shell Claude Code starts a monitor with on Windows is not proved**: the live check below is that a lead actually hears a crew session's report. If Claude Code uses PowerShell there, the monitor needs a Windows-shaped line. |
+| **The plugin's monitors** (the lead's watch, the crew session's self-watch) | **Proved live** (2026-10-27, Windows 11, Claude Code 2.1.310). Each command is the shell line `"$HOME/.local/bin/cc-smart-dev-kit" …` (`plugin/monitors/monitors.json`), so it needs Git Bash and its `$HOME`, and Claude Code starts it through Git Bash there: the lead's `crew-events` delivered a crew session's start, its question, its permission wait and its hand-back, each by itself, and the crew session's own self-watch delivered the lead's answer (`crew answer` said `delivered: its monitor gave it to the session`). The Windows CI job also runs every line against a stand-in launcher. |
 
 ## Where things live: one folder, three shells
 
@@ -111,6 +111,12 @@ Every test whether one path is inside another goes through one function, `isInsi
 on Windows only. A `${folder}/` prefix test never matches a Windows path, which is what kept the
 instructions' copy "not installed" there (doctor failed, and a restore left the copy's empty
 folders). The tests give it `path.win32` paths, so a Linux run checks the Windows case too.
+
+**A path Claude Code reads is written with `/`.** The `@` import in `~/.claude/CLAUDE.md` is
+`@~/.claude/cc-smart-dev-kit/instructions/core.md` on Windows too (`claudeImportPath`): Claude
+Code's import parser stops at a backslash, so the `@~\.claude\…` that setup wrote up to 1.4.1
+loaded nothing, and Claude Code gave no error (`docs/design/instructions.md` § Instructions,
+skills and agents).
 
 ## A settings file with a byte order mark
 
@@ -289,6 +295,12 @@ its report arrives in the lead as a `crew watch`/notes line; `crew rm` refuses u
 merges `crew/K-first` into its own branch, then removes the session, the worktree and the branch.
 The lead's monitor (`crew-events`) must deliver that line by itself — that is also the live
 proof that Claude Code runs a plugin monitor through Git Bash on Windows.
+
+Run on 2026-10-27 (Windows 11, 2.1.310): it passes, with two findings. Up to 1.4.1, `crew lead`
+and `crew start` say "no Claude Code session runs this command" here: the session is now found
+from the Bash tool's environment (`docs/design/crew.md` § The lead and the launch). And `crew rm
+--discard`, which drops a crew session whose work is not merged, refuses on Windows ("its mount
+points could not be read", `docs/roadmap.md`); after a merge `crew rm` works.
 
 **6. The portal.**
 

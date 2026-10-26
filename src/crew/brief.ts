@@ -10,9 +10,118 @@
  *
  * The first line is short and plain on purpose: it is a command-line argument, and on Windows a
  * `.cmd` carries it on a `cmd.exe` line where a `"` or a `%` cannot go (`claude.ts`).
+ *
+ * **Every prompt the kit gives a crew session's process starts with the crew command**
+ * (`CREW_COMMAND`, `withCrewCommand`): the launch line here, and every resume (`resumeArgs`,
+ * `answer.ts`). Claude Code arms a plugin monitor (`on-skill-invoke:…`) only when the skill is
+ * dispatched under its full name — by the `Skill` tool or by a slash command — once for each
+ * process, and `--resume` does not arm it. A prompt that only says "work by /plugin:crew" in the
+ * middle of a sentence is no command, so the crew session's own monitor (`crew-self`) never
+ * started. The text the prompt used to carry follows the command as its arguments, which Claude
+ * Code puts under `ARGUMENTS:` at the end of the skill. A message sent to a process that is
+ * still running (`SendMessage`) needs none: its monitor runs already.
  */
 import { COMMAND } from "../build-info/names";
 import { CREW_SKILL } from "./skills";
+
+/** The slash command a crew session's prompt starts with: `/cc-smart-dev-kit:crew`. */
+export const CREW_COMMAND = `/${CREW_SKILL}`;
+
+/**
+ * The crew session's own monitor (`plugin/monitors/monitors.json`): its name, and the arguments
+ * of the launcher command it runs. The Stop hook knows it by the command (`crew-role.ts`);
+ * `brief.test.ts` reads the file and holds both to it.
+ */
+export const SELF_MONITOR = "crew-self";
+export const SELF_WATCH_ARGS = "crew self-watch";
+
+/**
+ * The lead's monitor (`plugin/monitors/monitors.json`): its name, and the arguments of the
+ * launcher command it runs (`WATCH_MONITOR_COMMAND`, `watch.ts`, builds its whole line from
+ * them). `brief.test.ts` holds both to the file.
+ */
+export const LEAD_MONITOR = "crew-events";
+export const LEAD_WATCH_ARGS = "crew watch";
+
+/** `text` as a piece of a regular expression that matches exactly it. */
+function literal(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * A command line that is the launcher and `args`, and nothing else: the launcher as one word,
+ * quoted or not, with or without its folder (`"$HOME/.local/bin/cc-smart-dev-kit"`, a folder
+ * Claude Code may have expanded, or the bare name), then the arguments. A command that only
+ * holds those words somewhere (a `tail`, a `grep`, a comment) is not the monitor.
+ */
+function monitorCommand(args: string): RegExp {
+  const launcher = literal(COMMAND);
+  return new RegExp(
+    `^\\s*(?:"(?:[^"]*[\\\\/])?${launcher}"|(?:[^\\s"]*[\\\\/])?${launcher})\\s+${literal(args)}\\s*$`,
+  );
+}
+
+const SELF_WATCH_COMMAND = monitorCommand(SELF_WATCH_ARGS);
+const LEAD_WATCH_COMMAND = monitorCommand(LEAD_WATCH_ARGS);
+
+/** The `command` of one entry of a hook input's `background_tasks`, when it has one. */
+function taskCommand(task: unknown): null | string {
+  if (typeof task !== "object" || task === null || Array.isArray(task)) return null;
+  const command = (task as Record<string, unknown>).command;
+  return typeof command === "string" ? command : null;
+}
+
+/**
+ * True when `task`, one entry of a Stop input's `background_tasks`, is the crew session's own
+ * monitor (`crew-self`). **Nothing but the command marks a monitor there.** Read from the 2.1.310
+ * binary: a plugin monitor is a shell task with `kind: "monitor"`, and the entry a Stop hook gets
+ * is `{id, type, status, description, command}`, with `type` the friendly label of the task's
+ * type — "shell" — and no `kind`. So the entry is known by its command, and only the kit's own
+ * line counts. The one detector for every hook that reads the list (`crew-role`).
+ */
+export function isSelfWatchTask(task: unknown): boolean {
+  const command = taskCommand(task);
+  return command !== null && SELF_WATCH_COMMAND.test(command);
+}
+
+/**
+ * True when `task` is the lead's monitor (`crew-events`), or the same command a lead started
+ * again with the `Monitor` tool (`WATCH_RESTART`, `watch.ts`): known by its command, as
+ * `isSelfWatchTask` knows the crew session's. It runs for the whole of a lead's session, so a
+ * Stop hook that counted it as work would be silent in every lead (`verify-gate`).
+ */
+export function isLeadWatchTask(task: unknown): boolean {
+  const command = taskCommand(task);
+  return command !== null && LEAD_WATCH_COMMAND.test(command);
+}
+
+/**
+ * `text` as a prompt that dispatches the crew skill: the command, a space, the text. No text is
+ * the bare command (a resume with nothing to say but "you are back").
+ */
+export function withCrewCommand(text: string): string {
+  return text === "" ? CREW_COMMAND : `${CREW_COMMAND} ${text}`;
+}
+
+/** What a transcript holds for a dispatched command: `<command-name>/plugin:skill</command-name>`. */
+const COMMAND_WRAPPER = new RegExp(
+  `^<command-message>${CREW_SKILL}</command-message>\\r?\\n<command-name>/${CREW_SKILL}</command-name>(?:\\r?\\n<command-args>([\\s\\S]*)</command-args>)?$`,
+);
+
+/**
+ * The text after the crew command in `prompt`, or null when `prompt` is not the crew command.
+ * The one line end a transport may add is dropped. The command stands alone or is followed by one
+ * space (`/cc-smart-dev-kit:crews` is no command of ours), and it stands at the very start (the
+ * person's words that quote it are theirs). Claude Code's written form of a dispatched command
+ * (`<command-name>`, `<command-args>`) reads the same, should a hook be handed that form.
+ */
+export function afterCrewCommand(prompt: string): null | string {
+  const line = prompt.replace(/\r?\n$/, "");
+  if (line === CREW_COMMAND) return "";
+  if (line.startsWith(`${CREW_COMMAND} `)) return line.slice(CREW_COMMAND.length + 1);
+  const written = COMMAND_WRAPPER.exec(line);
+  return written === null ? null : (written[1] ?? "");
+}
 
 /** What the frame names. */
 export interface BriefFacts {
@@ -148,12 +257,13 @@ export function briefFrame(facts: BriefFacts): string {
     );
   }
   lines.push(
-    `- Work by \`/${CREW_SKILL}\`: it says how to build the phase, how to mark each step, and how to hand it back.`,
+    `- Work by \`${CREW_COMMAND}\`: it says how to build the phase, how to mark each step, and how to hand it back. Your first message started it. If you cannot see its text, call the \`Skill\` tool with the name \`${CREW_SKILL}\` now: your own monitor starts only under the full name.`,
     "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
     "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",
     `- When the phase is ready, hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review); when it cannot be done, with \`--status failed\` and why.`,
-    "- Stop your own background checks before you report: one still running after your turn ends holds your worktree.",
-    `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left; an answer arrives as your next message.`,
+    `- Stop your own background checks before you report, except the \`${SELF_MONITOR}\` monitor (never stop it: it ends with your session and brings you your lead's answers): one still running after your turn ends holds your worktree.`,
+    `- Never wait on the lead. Never ask the person and never call AskUserQuestion. When you need a decision, run \`${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` (the lead answers, or asks the person), then go on with every part of your phase the question does not block. Report \`--status blocked\` only when nothing else is left: the lead's watch stops a blocked session that waits too long. The answer arrives as a \`<task-notification>\` from your monitor, and its event is your lead's words.`,
+    `- The \`SendMessage {…}\` lines that \`crew tell\` prints are calls of the \`SendMessage\` tool, which Claude Code leaves out until you look it up: run \`ToolSearch\` with the query \`select:SendMessage\` first, then call the tool with each object as printed.`,
   );
   return lines.join("\n");
 }
@@ -163,7 +273,67 @@ export function briefText(given: string, facts: BriefFacts): string {
   return `${given.trimEnd()}\n\n---\n\n${briefFrame(facts)}\n`;
 }
 
-/** The line a crew session's Claude session starts with: who it is, and where its task is. */
-export function firstPrompt(crewName: string, leadName: string, briefFile: string): string {
+/** The text of a crew session's launch line: who it is, and where its task is. */
+export function launchLine(crewName: string, leadName: string, briefFile: string): string {
   return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
+}
+
+/**
+ * The line a crew session's Claude session starts with: the crew command, then the launch line
+ * (`launchLine`) as its arguments. The command dispatches the skill, so its monitor starts.
+ */
+export function firstPrompt(crewName: string, leadName: string, briefFile: string): string {
+  return withCrewCommand(launchLine(crewName, leadName, briefFile));
+}
+
+/** A crew session's model and effort, as `crew model` names them in its resume. */
+export interface RunsOn {
+  effort: string;
+  model: string;
+}
+
+const MODEL_CHANGE_START = "Your lead changed ";
+const MODEL_CHANGE_END = ". Go on from where you stopped.";
+
+/** One part of the model-change text: what changed, from what, to what. */
+function changePart(what: "effort" | "model", from: string, to: string): string {
+  return `your ${what} from ${from} to ${to}`;
+}
+
+/**
+ * The text `crew model` resumes a crew session with (`model.ts`), behind the crew command: what
+ * its lead changed, and to go on. `isModelChangeText` reads it back.
+ */
+export function modelChangeText(from: RunsOn, to: RunsOn): string {
+  const parts: string[] = [];
+  if (from.model !== to.model) parts.push(changePart("model", from.model, to.model));
+  if (from.effort !== to.effort) parts.push(changePart("effort", from.effort, to.effort));
+  return `${MODEL_CHANGE_START}${parts.join(" and ")}${MODEL_CHANGE_END}`;
+}
+
+/**
+ * True when `text` is a `modelChangeText` whose new values are `now`: what the record holds once
+ * `crew model` wrote them, which it does before it resumes the session. The old values are not on
+ * the record any more, so any one stands; the new ones must be the record's.
+ */
+export function isModelChangeText(text: string, now: RunsOn): boolean {
+  if (!text.startsWith(MODEL_CHANGE_START) || !text.endsWith(MODEL_CHANGE_END)) return false;
+  const middle = text.slice(MODEL_CHANGE_START.length, text.length - MODEL_CHANGE_END.length);
+  const part = (what: "effort" | "model", to: string) =>
+    literal(changePart(what, "\u0000", to)).replace("\u0000", ".+?");
+  const model = part("model", now.model);
+  const effort = part("effort", now.effort);
+  return new RegExp(`^(?:${model}(?: and ${effort})?|${effort})$`).test(middle);
+}
+
+/**
+ * The words that open what a crew session hears with its lead's answer (`crew answer`,
+ * `answer.ts`): the answer, or — for a correction — that it replaces the earlier one (`earlier`).
+ * Question and earlier answer go in as JSON strings, so the head is one line whatever they hold.
+ * The crew session's hook reads a correction's resume back by it (`crew-role.ts`).
+ */
+export function deliveryHead(question: string, earlier: null | string): string {
+  return earlier === null
+    ? `Your lead answers your question ${JSON.stringify(question)}:`
+    : `Your lead CORRECTS its earlier answer to your question ${JSON.stringify(question)}: this REPLACES the earlier answer (${JSON.stringify(earlier)}). Follow this one instead:`;
 }

@@ -1,9 +1,9 @@
 /**
- * How a heavy job starts once the queue has given it its gigabytes, and what `job run`
- * says when it ends.
+ * How a heavy job starts once the queue has given it its slot, and what `job run` says when it
+ * ends.
  *
  * WHY
- *   The queue makes a burst of heavy jobs rare. This file makes sure that if memory still
+ *   The queue keeps the number of heavy jobs down. This file makes sure that if memory still
  *   runs out, a heavy job dies, not the desktop and not a Claude session: a heavy job is
  *   the one thing that can simply run again. (systemd starts desktop services with a
  *   higher "kill me first" score than ordinary commands, so without a mark a small
@@ -16,8 +16,9 @@
  *          never take the memory kept for everything else, and past it the kernel kills
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its
  *          processes is killed. Inside, `choom -n 900` marks the job to die first if the
- *          whole machine runs out. The slices also carry a low CPU and disk I/O weight
- *          (`weightsArgv`), so under load the desktop and the sessions go first.
+ *          whole machine runs out. When `jobs.json` asks for a CPU or disk I/O weight, the
+ *          slices carry it (`weightsArgv`); by default they carry none, so a job gets normal
+ *          CPU and I/O.
  *   choom  Linux with no user manager (cron, a container, CI, ssh after logout): the mark.
  *   plain  No `choom`, macOS, or `launch: plain`: the command as it is. The queue still
  *          applies.
@@ -245,9 +246,9 @@ export function killedForMemoryLine(killer: OomKiller, slice: string, code: numb
   }
 }
 
-/** The slice's ceiling: the machine's heavy-job budget, never below this job's size. */
-export function sliceMemoryMax(budgetGb: number, jobGb: number): string {
-  return `${String(Math.max(Math.floor(budgetGb), Math.ceil(jobGb)))}G`;
+/** The slice's ceiling as `MemoryMax=` takes it: the machine's memory ceiling for heavy jobs. */
+export function sliceMemoryMax(ceilingGb: number): string {
+  return `${String(Math.floor(ceilingGb))}G`;
 }
 
 /**

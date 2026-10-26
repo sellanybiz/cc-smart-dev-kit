@@ -184,7 +184,7 @@ describe("the adapters", () => {
       error: null,
       fallbacks: [],
       fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
-      jobs: { budgetGb: 8, heldGb: 2, waiting: 1 },
+      jobs: { slots: 3, used: 1, waiting: 1 },
       limits: [],
       limitsRead: true,
       requests: { perMinute: 21.6, sinceRouterStart: 892 },
@@ -343,6 +343,14 @@ describe("the adapters", () => {
       kind: "slot",
       since,
       slot: "cc-smart-dev-kit-worker",
+    });
+    // A safety-checks wait keeps its own kind and the judge scope it waits on.
+    expect(
+      answer({ kind: "safety-checks", scope: "my-app/cc-smart-dev-kit-judge", since }),
+    ).toEqual({
+      kind: "safety-checks",
+      scope: "my-app/cc-smart-dev-kit-judge",
+      since,
     });
     expect(answer({ kind: "claude-limit", model: "claude-opus-5-5", resetsAt: null })).toEqual({
       kind: "claude-limit",
@@ -1014,10 +1022,9 @@ describe("the B6d facts", () => {
 
   test("the heavy jobs: the CPU and I/O weights travel, or why one is not set", () => {
     const answer: JobsAnswer = {
-      budgetGb: 8,
-      freeGb: 12,
-      keptGb: 4,
+      ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
       memoryGb: 32,
+      route: { on: false, project: null, source: "default" },
       stores: [],
       weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is off" } },
     };
@@ -1025,6 +1032,44 @@ describe("the B6d facts", () => {
       cpu: { value: 20 },
       io: { value: null, why: "the io controller is off" },
     });
+  });
+
+  test("the heavy jobs: slots in use, who holds one, and the memory ceiling travel", () => {
+    const held = {
+      command: "tsc --noEmit",
+      folder: "/home/user/my-app",
+      kind: "tsc",
+      pid: 41,
+      since: "2026-10-26T10:00:00.000Z",
+      slot: true,
+      user: "host-a",
+    };
+    const answer: JobsAnswer = {
+      ceiling: { gb: null, why: "Windows has no memory group" },
+      memoryGb: 32,
+      route: { on: true, project: null, source: "personal" },
+      stores: [
+        {
+          held: [held, { ...held, exclusive: "image", pid: 42, slot: false }],
+          slots: 3,
+          used: 1,
+          waiting: [{ ...held, pid: 43, since: null }],
+          where: "machine",
+        },
+      ],
+      weights: { cpu: { value: null }, io: { value: null } },
+    };
+    const data = jobsOf(answer);
+    expect(data.ceiling).toEqual({ gb: null, why: "Windows has no memory group" });
+    expect(data.route).toEqual({ on: true, project: null, source: "personal" });
+    const [store] = data.stores;
+    expect([store?.slots, store?.used]).toEqual([3, 1]);
+    expect(store?.held.map((job) => [job.pid, job.slot, job.exclusive])).toEqual([
+      [41, true, undefined],
+      [42, false, true],
+    ]);
+    expect(store?.held[0]?.since).toBe(Date.parse("2026-10-26T10:00:00.000Z"));
+    expect(store?.waiting[0]?.since).toBe(null);
   });
 
   test("Flow: 24 hours drawn per hour, 7 days per 6 hours, from the server's hours", () => {

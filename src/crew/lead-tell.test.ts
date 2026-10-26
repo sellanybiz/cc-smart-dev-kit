@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { sendMessageHint } from "./answer";
 import { runCrew } from "./command";
 import { recordLeadNotes } from "./lead-tell";
 import { type LeadRecord, leadRecordSchema, listLeads, readCrewEvents, writeLead } from "./store";
@@ -79,6 +80,7 @@ describe("recordLeadNotes", () => {
     expect(code).toBe(0);
     expect(err).toEqual([]);
     expect(out).toEqual([
+      sendMessageHint(),
       `SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`,
       'SendMessage {"to":"LEAD my-app third-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone"}',
     ]);
@@ -99,7 +101,10 @@ describe("recordLeadNotes", () => {
     );
     expect(code).toBe(1);
     // The first lead's note is in the store: its line is printed, so the note still reaches it.
-    expect(out).toEqual([`SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`]);
+    expect(out).toEqual([
+      sendMessageHint(),
+      `SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`,
+    ]);
     expect(err).toEqual([
       "crew lead tell: the store could not record the note for LEAD my-app third-plan: the disk is full",
       "The note is recorded for LEAD my-app other-plan: send the line below, and tell LEAD my-app third-plan again.",
@@ -123,6 +128,7 @@ describe("recordLeadNotes", () => {
     expect(code).toBe(1);
     // Both sides of the failure still get their note, and both of them are printed.
     expect(out).toEqual([
+      sendMessageHint(),
       `SendMessage {"to":"${PEER_NAME}","message":"${MESSAGE}"}`,
       'SendMessage {"to":"LEAD my-app third-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone"}',
     ]);
@@ -147,7 +153,10 @@ describe("recordLeadNotes", () => {
       { error: (line) => err.push(line), print: (line) => out.push(line) },
     );
     expect(code).toBe(1);
-    expect(out).toEqual([`SendMessage {"to":"LEAD my-app second-plan","message":"${MESSAGE}"}`]);
+    expect(out).toEqual([
+      sendMessageHint(),
+      `SendMessage {"to":"LEAD my-app second-plan","message":"${MESSAGE}"}`,
+    ]);
     expect(err).toEqual([
       `crew lead tell: the store could not record the note for ${PEER_NAME}: no space left`,
       "crew lead tell: the store could not record the note for LEAD my-app third-plan: no space left",
@@ -207,6 +216,7 @@ describe("crew lead tell", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual([
+      sendMessageHint(),
       'SendMessage {"to":"LEAD my-app other-plan","message":"[LEAD my-app master-plan] CONTRACT: src/x.ts:lookup is gone; use lookup(q)\\nNo reply needed."}',
     ]);
     expect(notes(world)).toMatchObject([
@@ -247,6 +257,7 @@ describe("crew lead tell", () => {
       world.ctx(),
     );
     expect(world.out).toEqual([
+      sendMessageHint(),
       'SendMessage {"to":"LEAD my-app other-plan","message":"[LEAD my-app master-plan] QUESTION: does your branch take the merge?"}',
     ]);
   });
@@ -263,6 +274,7 @@ describe("crew lead tell", () => {
     );
     expect(code).toBe(0);
     expect(world.out).toEqual([
+      sendMessageHint(),
       'SendMessage {"to":"LEAD my-app other-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone\\nNo reply needed."}',
       'SendMessage {"to":"LEAD my-app third-plan","message":"[LEAD my-app master-plan] CONTRACT: x.ts:y is gone\\nNo reply needed."}',
     ]);

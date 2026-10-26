@@ -6317,6 +6317,11 @@ function familySlotFor(model) {
 function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
+function dateHeldReset(resetsAt) {
+  if (resetsAt === null)
+    return null;
+  return Number.isNaN(new Date(resetsAt * 1000).getTime()) ? null : resetsAt;
+}
 function planUsageLimit(status, header) {
   if (status !== 429)
     return null;
@@ -6330,7 +6335,7 @@ function planUsageLimit(status, header) {
   const reset = Number(header("anthropic-ratelimit-unified-reset")?.trim() ?? "");
   return {
     claim: /^[a-z0-9_]{1,40}$/.test(claim) ? claim : null,
-    resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null
+    resetsAt: Number.isInteger(reset) && reset > 0 ? dateHeldReset(reset) : null
   };
 }
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
@@ -6583,7 +6588,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return false;
+  return slot === JUDGE_SLOT;
 }
 function breakerOn(config, slot) {
   if (slot === JUDGE_SLOT)
@@ -6694,6 +6699,19 @@ function workerJudgeTargets(config) {
       targets.push(parsed.target);
   }
   return targets;
+}
+function judgeStandInState(config) {
+  if (Object.hasOwn(config.slots, JUDGE_SLOT))
+    return "chain-untested";
+  if (workerJudgeTargets(config).length === 0) {
+    const worker = Object.hasOwn(config.slots, WORKER_SLOT) ? config.slots[WORKER_SLOT] ?? [] : [];
+    const affordable = worker.some((text) => {
+      const parsed = parseTarget(text);
+      return "target" in parsed && parsed.target.kind === "backend";
+    });
+    return affordable ? "untested" : "no-worker";
+  }
+  return fallbackOn(config, JUDGE_SLOT) ? "ready" : "off";
 }
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
@@ -7174,8 +7192,25 @@ var breakerSchema = object({
   since: number2(),
   targets: array(breakerTargetSchema)
 });
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
 var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
   seenClaude: record(string2(), number2()).optional(),
@@ -7212,8 +7247,11 @@ function parseLimitState(text) {
   const parsed = stateSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
+var UNKNOWN_CLOCK = "an unknown time";
 function formatClock(epochSec, nowMs, timeZone) {
   const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime()))
+    return UNKNOWN_CLOCK;
   const day = (date) => new Intl.DateTimeFormat("en-CA", {
     day: "2-digit",
     month: "2-digit",
@@ -7245,6 +7283,9 @@ function currentLimits(state, nowMs) {
 }
 function currentBreakers(state, nowMs) {
   return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentChecksDown(state, nowMs) {
+  return Object.entries(state.checksDown ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
 }
 
 // src/gateway/breaker.ts
@@ -7315,6 +7356,19 @@ function formatDuration(ms) {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
   return rest === 0 ? `${hours}h` : `${hours}h${rest}m`;
+}
+
+// src/gateway/checks-down.ts
+var CAUSES = {
+  "chain-failed": (record) => `your judge chain failed (HTTP ${String(record.status)})`,
+  "chain-untested": () => "no target of your judge chain has passed the judge test",
+  failed: (record) => `the stand-in failed too (HTTP ${String(record.status)})`,
+  "no-worker": () => "the worker slot has no affordable target to stand in",
+  off: () => "the judge's stand-in is switched off",
+  untested: () => "no worker target has passed the judge test"
+};
+function checksDownCause(record) {
+  return CAUSES[record.why](record);
 }
 
 // src/gateway/fallback-answer.ts
@@ -8136,6 +8190,25 @@ data: ${JSON.stringify(data)}
   ].join("");
 }
 
+// src/gateway/threads.ts
+var THREAD_UNSUPPORTED_CODE = "thread_unsupported_request";
+var THREAD_REFUSAL_MESSAGE = "cc-smart-dev-kit-router: this gateway target keeps no thread: resend the whole conversation";
+function threadContinueRefusal(body) {
+  const thread = body.thread;
+  if (typeof thread !== "object" || thread === null || Array.isArray(thread))
+    return null;
+  if (thread.type !== "continue")
+    return null;
+  return Response.json({
+    error: {
+      details: { error_code: THREAD_UNSUPPORTED_CODE },
+      message: THREAD_REFUSAL_MESSAGE,
+      type: "invalid_request_error"
+    },
+    type: "error"
+  }, { status: 400 });
+}
+
 // src/gateway/router.ts
 var FALLBACK_SAVE_EVERY_MS = 60000;
 var TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
@@ -8578,6 +8651,11 @@ function withoutEmptyBreakers(state) {
     delete state.breakers;
   }
 }
+function withoutEmptyChecksDown(state) {
+  if (state.checksDown !== undefined && Object.keys(state.checksDown).length === 0) {
+    delete state.checksDown;
+  }
+}
 function stateWriter(deps, what, save) {
   if (save === undefined)
     return () => {};
@@ -8628,6 +8706,12 @@ function createRouter(deps) {
     }
   }
   withoutEmptyBreakers(limitState);
+  for (const key of Object.keys(limitState.checksDown ?? {})) {
+    if (!currentChecksDown(limitState, deps.now()).some(([current]) => current === key)) {
+      delete limitState.checksDown?.[key];
+    }
+  }
+  withoutEmptyChecksDown(limitState);
   const safetyChecks = loadedState(deps.loadSafetyChecks, parseSafetyCheckState, emptySafetyChecks, {
     file: "the safety-check file",
     name: "the safety-check counts",
@@ -8639,6 +8723,7 @@ function createRouter(deps) {
   const cleanedLogged = new Set;
   const markedLogged = new Set;
   const restoredLogged = new Set;
+  const threadRefusedLogged = new Set;
   let checkedConfig = null;
   const openBreakers = new Map;
   const probing = new Set;
@@ -8721,7 +8806,7 @@ function createRouter(deps) {
     const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
     if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
       return null;
-    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime()))
+    if (dateHeldReset(limit.resetsAt) === null)
       return null;
     return { claim: limit.claim, resetsAt: limit.resetsAt };
   }
@@ -8729,7 +8814,7 @@ function createRouter(deps) {
     const now = deps.now();
     const key = stateKeyFor(slot, profile);
     const before = limitState.fallbacks[key];
-    const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    const resetsAt = dateHeldReset(limit?.resetsAt ?? before?.resetsAt ?? null);
     const reset = resetsAt === null ? "no reset time given" : `resets ${new Date(resetsAt * 1000).toISOString()}`;
     const claim = printable(limit?.claim ?? "plan limit", 40);
     if (!outcome.response.ok) {
@@ -8787,6 +8872,15 @@ function createRouter(deps) {
       deps.log(`${key}: removed from the config; its fallback record is dropped`);
       changed = true;
     }
+    for (const [key, record] of Object.entries(limitState.checksDown ?? {})) {
+      const view = scopes.get(scopeOfStateKey(key).profile);
+      const stale = view === undefined || record.why !== "failed" && record.why !== "chain-failed" && judgeStandInState(view) !== record.why;
+      if (!stale)
+        continue;
+      delete limitState.checksDown?.[key];
+      changed = true;
+    }
+    withoutEmptyChecksDown(limitState);
     if (changed)
       persist();
     for (const key of new Set([
@@ -9273,6 +9367,14 @@ function createRouter(deps) {
       const waitMs = probeWaitMs ?? lastWaitMs ?? firstByteWait;
       const deadlineAt = waitMs === null ? null : deps.now() + waitMs;
       const holdCutShort = hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
+      const threadRefusal = target.kind === "backend" ? threadContinueRefusal(body) : null;
+      if (threadRefusal !== null) {
+        if (!threadRefusedLogged.has(label)) {
+          threadRefusedLogged.add(label);
+          deps.log(`WARN ${printable(name)}: ${printable(label)} keeps no message thread; a thread continue is answered 400 ${THREAD_UNSUPPORTED_CODE} and Claude Code resends the turn whole (logged once per target)`);
+        }
+        return { fallbacks, response: threadRefusal, skipped, target: label };
+      }
       const pin = effortPin(config, name, label);
       const built = targetUpstream(req, url, config, body, target, guard, asked, pin);
       if (!("error" in built) && target.kind === "backend" && pin !== undefined)
@@ -9652,9 +9754,10 @@ function createRouter(deps) {
       deps.log(`WARN ${slot}: ${outcome.target}: ${cleaned.note}`);
     return cleaned.response;
   }
-  function countedCheck(judged) {
+  function countedCheck(judged, noted) {
     const day = localDay(deps.now());
     return judged.then((outcome) => {
+      noted(outcome);
       const side = answeredSide(outcome.target);
       recordSafetyCheck(safetyChecks, day, side);
       persistChecks();
@@ -9668,6 +9771,40 @@ function createRouter(deps) {
         })
       };
     });
+  }
+  function noteChecksDown(profile, why, claudeModel, outcome) {
+    const key = stateKeyFor(JUDGE_SLOT, profile);
+    const now = deps.now();
+    const status = outcome.response.status;
+    if (outcome.response.ok) {
+      if (limitState.checksDown === undefined || !Object.hasOwn(limitState.checksDown, key))
+        return;
+      delete limitState.checksDown[key];
+      withoutEmptyChecksDown(limitState);
+      deps.log(`${key}: auto mode's safety checks get a verdict again; the failing record is over`);
+      persist();
+      return;
+    }
+    if (why === null || !capacityFailureStatus(status))
+      return;
+    const before = currentChecksDown(limitState, now).find(([stored]) => stored === key)?.[1];
+    const limit = claudeModel === null || why === "chain-failed" || why !== "failed" && status !== 429 ? undefined : currentLimits(limitState, now).find(([id]) => id === claudeModel)?.[1];
+    const record = {
+      claim: limit?.claim ?? null,
+      lastAt: now,
+      resetsAt: dateHeldReset(limit?.resetsAt ?? null),
+      since: before?.since ?? now,
+      status,
+      why
+    };
+    limitState.checksDown = { ...limitState.checksDown, [key]: record };
+    if (before === undefined) {
+      const claude = record.resetsAt === null ? "" : `; Claude's plan limit${record.claim === null ? "" : ` ${record.claim}`} resets ${new Date(record.resetsAt * 1000).toISOString()}`;
+      deps.log(`WARN ${key}: auto mode's safety checks are failing (HTTP ${status}${claude}): ${checksDownCause(record)}; ${COMMAND} doctor says the fix`);
+    }
+    if (before === undefined || before.why !== why || before.status !== status || before.claim !== record.claim || before.resetsAt !== record.resetsAt || now - before.lastAt >= FALLBACK_SAVE_EVERY_MS) {
+      persist();
+    }
   }
   function observedAnswer(response, note) {
     const body = response.body;
@@ -9811,8 +9948,16 @@ function createRouter(deps) {
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
     if (judgeTargets.length > 0)
       model.slot = JUDGE_SLOT;
-    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile) : (guard ? claudeFirstJudge() : null) ?? claudeRoute();
-    return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+    const standIn = judgeTargets.length === 0 && guard ? claudeFirstJudge() : null;
+    const answered = judgeTargets.length > 0 ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile) : standIn ?? claudeRoute();
+    if (!guard || url.pathname !== MESSAGES_PATH)
+      return answered;
+    const claudeModel = typeof body.model === "string" && body.model.startsWith("claude-") ? withoutContextSuffix(body.model) : null;
+    const state = judgeStandInState(config);
+    const why = judgeTargets.length > 0 ? "chain-failed" : standIn !== null ? "failed" : state === "ready" ? null : state;
+    return countedCheck(answered, (outcome) => {
+      noteChecksDown(profile, why, claudeModel, outcome);
+    });
     async function serverToolRoute(tool) {
       const why = `server tool ${tool}`;
       const named = typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
@@ -9850,12 +9995,9 @@ function createRouter(deps) {
       };
     }
     function claudeFirstJudge() {
-      if (url.pathname !== MESSAGES_PATH || Object.hasOwn(config.slots, JUDGE_SLOT) || !fallbackOn(config, JUDGE_SLOT)) {
+      if (url.pathname !== MESSAGES_PATH || judgeStandInState(config) !== "ready")
         return null;
-      }
       const standIns = workerJudgeTargets(config);
-      if (standIns.length === 0)
-        return null;
       const decided = resolveRequestRoute(body, config, true);
       if (decided.kind === "anthropic" && typeof body.model === "string") {
         const claude = { kind: "anthropic", model: withoutContextSuffix(body.model) };

@@ -21,6 +21,13 @@ stays right on each), else by its absolute path. `--no-instructions` takes the b
 first, then the copy, so nothing ever imports a missing file; a `CLAUDE.md` that setup
 created and that holds nothing else is removed.
 
+**The import path is written the way Claude Code's parser reads it, on every platform**
+(`claudeImportPath`): every separator is `/`, and a space is `\ `. Claude Code's import is a
+run of characters with no space and no backslash, so a Windows path with `\` stops at its
+first backslash and imports nothing, and Claude Code reports no error. Up to 1.4.1 setup wrote
+`@~\.claude\…\core.md` on Windows, and no session there received the instructions. The
+next `setup` rewrites the block, and `doctor` fails until it does.
+
 **Two state files sit beside the copy** (`src/setup/instructions.ts`), in the state folder:
 
 - `no-instructions`: the person's `--no-instructions`. While it is there, a plain `setup`
@@ -75,7 +82,26 @@ every turn and points to the skill that holds each procedure: the research steps
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
-owner's D12).
+owner's D12). They tie no effort to the backend that answers a tier: every tier but `opus` and `fable`
+takes the effort its task needs, whatever model answers, and a backend's effort is the person's
+pin at the router (`docs/gateway.md` § A backend target's effort pin).
+
+**Checks: what you changed while building, the full check once (owner, 2026-10-26).** In a big
+project a whole type check takes tens of seconds and a whole test run many minutes, and sessions
+and agents that queue them slow every other. So `verify-change` is the one home: § 2 lists what a
+session runs while it builds (the tests of the changed code, the linter on the changed files, the
+type errors Claude Code reports for them, or the project's `checks.fast`), and § 4 defines the
+full check (the whole type check, the whole lint with any stricter push-hook rules, all the tests,
+the build) and when it runs: once, by a crew session before its report, or by the lead or an
+ordinary session before the push. A subagent never runs it; the session that launched it does,
+after its agents hand back. `core.md`, `builder`, `crew`, `lead`, `commit` and `impact-analysis`
+point to those two sections. Type errors per file: Claude Code's `LSP` tool reports a language
+server's type errors and warnings after each edit (code.claude.com/docs/en/tools-reference §
+LSP tool behavior, and `/plugins/code-intelligence`, read 2026-10-26), but only where a code
+intelligence plugin runs a server for the language, never in a cloud session, and for the edited
+file, not its callers. `tsc` on named files ignores `tsconfig.json`, so no rule uses it. The
+`verify-gate` Stop hook asks for `checks.fast` once after the last change of a turn that edited
+files; it is silent in a crew session, whose report is gated by `crew-role`.
 
 **The skill pair for the person's availability.** `user-unavailable` and `user-available` are the
 two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
@@ -102,9 +128,8 @@ D46's tier for the change set the caller names with `risky` — `opus` at `xhigh
 review's judgment; the audit's verifier is `opus` because the auditors are only the breadth.
 Because a literal cannot depend on the change set, the script writes both fixed launch sets and
 the caller picks one: a second script would repeat every prompt, which `check:duplicates` fails.
-`sonnet` at `max` is the one ordinary-tier literal an affordable worker slot also allows (its
-effort must be `max`), so on Claude it runs above the `high` the core instructions give a
-review. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
+`sonnet` at `max` runs above the `high` the core instructions give a review: a split review
+and an audit are the deep reads, and the script's literal is fixed. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
 lists by default, so the run's return records the review for the merge guard
 (`src/workflows/review-split.test.ts` fails when that link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
@@ -135,8 +160,7 @@ reading sentences, does not flag).
 The third, `plugin/workflows/research-sweep.js`, is the run the `research-first` skill starts for a question
 with several sources (D28's third): one read-only `auditor` per angle on `sonnet` at `max`, then
 one refuter per claim on `opus` at `high` that opens the cited source and confirms or refutes the
-claim with the quote. The researchers are on `max` for the same reason as the audit's: an
-affordable worker slot allows no lower effort, and a literal cannot depend on the gateway. The
+claim with the quote. The researchers stay on `max`, like the audit's auditors. The
 refuters are the judgment, so they take the premium tier, which runs at `high` with no question.
 The decisive claims are checked first, taken in turn from each angle so one angle cannot use the
 whole `budget` (1 to 40), which cuts the rest, and the cut claims come back
@@ -150,7 +174,8 @@ never runs on a model nobody chose. Plugin agents and skills are named `cc-smart
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
 in its context from the start (proved live: `claude-code-contract.md` § Instructions). All
 five load `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
-file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`. The `reviewer` does not
+file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
+loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when. The `reviewer` does not
 load the review skill: half of it is the author's (commit, fix, start the reviewer), which
 contradicts a read-only agent. It reads the review dimensions, edge-case axes and severity
 scale from `skills/review/references/axes.md` instead, found from the base directory Claude
@@ -158,15 +183,24 @@ Code prints above each loaded skill (the plugin's folder has the version in its 
 fixed path reaches it). `auditor` reads the same axes file the same way. No agent has `memory:`
 (only the main session saves memories) or `Agent` (an agent starts no agents).
 
-**The tools each agent lists**, and why (research for the 1.1.0 plan, § R7):
+**The tools each agent has: every tool of the session, less a short deny list** (the owner,
+2026-10-27). An agent file names no `tools:`, so the agent inherits the session's whole set, its
+MCP servers too: a project's database server for a reviewer that checks the dev data, the browser
+for a builder. Each file's `disallowedTools` takes out only what its role forbids. A fixed list
+(1.1.0 to 1.4.x) cut every project's own servers out of every agent.
 
-| Agent | Tools | Why |
+| Agent | Denied | Why |
 |---|---|---|
-| `reviewer` | Read, Grep, Glob, Bash, LSP, WebSearch, WebFetch, claude-mem's `smart_*` | Bash for `git diff` and the unit tests; no edit tools |
-| `rules-maintainer` | Read, Edit, Write, Grep, Glob, Bash, LSP, `smart_*` | Bash for `wc -l` and `git status` |
-| `ui-verifier` | Read, Grep, Glob, LSP, `smart_*`, the `mcp__playwright__*` tools | no Bash: it runs no command, only the browser |
-| `auditor` | Read, Grep, Glob, Bash, LSP, WebSearch, WebFetch, `smart_*` | a read-only sweep: Bash for `git log` and the tests, no edit tools |
-| `builder` | Read, Edit, Write, Grep, Glob, Bash, LSP, `smart_*` | builds code: edit tools, and Bash for its done-check |
+| `reviewer` | Edit, Write, NotebookEdit, AskUserQuestion | read-only: it reports, the caller fixes; only the main session asks the person |
+| `auditor` | Edit, Write, NotebookEdit, AskUserQuestion | a read-only sweep |
+| `ui-verifier` | Edit, Write, NotebookEdit, AskUserQuestion | facts only, no fix |
+| `builder` | AskUserQuestion | builds code; an open question goes back in its hand-back |
+| `rules-maintainer` | AskUserQuestion | the same |
+
+The list names only tools every session has. In a Workflow run, an entry that matches no tool
+in the session only logs a warning, and a deny list that took out the structured-output tool
+would refuse every `agent()` with a schema; so no list names an MCP tool or that one. A tool an
+agent must not use and a deny list cannot name is said in its text.
 
 `smart_search`, `smart_outline` and `smart_unfold` are the companion plugin's own tool names,
 for a file's shape without reading all of it; when they are not there or do not answer (on
@@ -177,17 +211,14 @@ their usual names (`mcp__playwright__*`): the server is registered for the user 
 at user scope).
 
 **The Grep and Glob trade-off (for the owner).** On macOS, Linux and WSL, Claude Code leaves
-the Grep and Glob tools out of a session, and out of an agent that also lists `Bash`; it gives
-them back to an agent that lists them without `Bash` (code.claude.com/docs/en/tools-reference
-§ Glob tool behavior, read 2026-10-22). So `reviewer` and `rules-maintainer` search with
-`grep` and `find` through Bash there — Claude Code's shell runs fast built-in versions of both
-— and only `ui-verifier` gets the real tools. The cost: each search is a Bash call, so it
-reaches the Bash hooks (claude-mem's file-context hook, the plugin's guards) and the Bash
-permission rules, and its output is plain text rather than the tools' structured results.
-Dropping `Bash` would bring the tools back, but the reviewer could no longer read `git diff`
-or run a test, and the rules maintainer could no longer count lines or check `git status`.
-Both keep `Bash`; Grep and Glob stay listed, because on Windows they are in the default set
-and the agents use them. The `cc-smart-dev-kit:impact-analysis` skill says what to use when they
-are missing.
+the Grep and Glob tools out of a session, and out of an agent that also has `Bash`; it gives
+them back only to an agent that lists them without `Bash` (code.claude.com/docs/en/tools-reference
+§ Glob tool behavior, read 2026-10-22). Every agent inherits the session's set, `Bash` in it, so
+there every agent searches with `grep` and `find` through Bash — Claude Code's shell runs fast
+built-in versions of both. The cost: each search is a Bash call, so it reaches the Bash hooks
+(claude-mem's file-context hook, the plugin's guards) and the Bash permission rules, and its
+output is plain text rather than the tools' structured results. On Windows Grep and Glob are in
+the default set and the agents use them. The `cc-smart-dev-kit:impact-analysis` skill says what
+to use when they are missing.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.

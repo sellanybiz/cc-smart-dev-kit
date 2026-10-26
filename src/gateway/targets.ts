@@ -471,6 +471,16 @@ export interface PlanLimit {
 }
 
 /**
+ * A reset time (Unix seconds) that a date can hold, or null. A reset header, or a hand edit of
+ * the state file, may say any number, and `toISOString` throws past Date's range: a reset no
+ * date can hold is no reset time at all.
+ */
+export function dateHeldReset(resetsAt: null | number): null | number {
+  if (resetsAt === null) return null;
+  return Number.isNaN(new Date(resetsAt * 1000).getTime()) ? null : resetsAt;
+}
+
+/**
  * Is this answer the plan's usage limit? Status 429, `anthropic-ratelimit-unified-status:
  * rejected`, and no paid extra usage taking over (`…-overage-status` absent or `rejected`).
  * Claude Code 2.1.300 reads the same three headers the same way: its own test limiter builds
@@ -491,7 +501,7 @@ export function planUsageLimit(
   const reset = Number(header("anthropic-ratelimit-unified-reset")?.trim() ?? "");
   return {
     claim: /^[a-z0-9_]{1,40}$/.test(claim) ? claim : null,
-    resetsAt: Number.isInteger(reset) && reset > 0 ? reset : null,
+    resetsAt: Number.isInteger(reset) && reset > 0 ? dateHeldReset(reset) : null,
   };
 }
 

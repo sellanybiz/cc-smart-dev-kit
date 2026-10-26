@@ -102,10 +102,9 @@ The core instructions' model table says which model fits which job; this is the 
   may send a family to another model (`/cc-smart-dev-kit:gateway`).
 - **Effort by the job:** `medium` for searches and reads; `high` for building, UI/UX design
   included, for reviews and for a UI check; `xhigh` for the hardest judgment — a tangled bug, an
-  architecture choice, a high-stakes review, a hard design — which you may pick yourself. `max`
-  by the tier the session-start note names: a Claude `haiku` or `sonnet` may take it when the task
-  wants it, with no restriction; `opus` at `max` asks the person; an affordable backend always
-  runs at `max`, its reasoning costs cents. The session's own effort is the person's choice.
+  architecture choice, a high-stakes review, a hard design — which you may pick yourself. `max`:
+  a `haiku` or `sonnet` task may take it when it wants it, with no restriction; `opus` at `max`
+  asks the person. The session's own effort is the person's choice.
 - **Opus builds** architecture and UI/UX, at `high` or `xhigh`; every other build runs on
   `sonnet`.
 - **A fork** runs on the session's own model, at the effort you pass, or else the session's.
@@ -144,6 +143,8 @@ crew session to build, never a build of its own.
   guard's refusal) and its work is lost. Wait for every agent you started from a folder before
   you leave it or remove it.
 - **Check each hand-back yourself** before you build on it: its diff, its tests, its claims.
+  The full check (`/cc-smart-dev-kit:verify-change` § 4) is yours, once, after every agent you
+  started has handed back; a brief asks an agent for the checks on its own files only.
 
 ## Do not
 

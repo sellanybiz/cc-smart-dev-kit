@@ -19,7 +19,8 @@
  *
  * **Silent** when the project sets no `checks.fast`, in a project with no
  * cc-smart-dev-kit.json, in a crew session (its own report gate answers, `crew-role`), on a
- * turn that still waits on background work, with no transcript path, and when the transcript
+ * turn that still waits on background work (a lead's own watch monitor is not that: it always
+ * runs, `isLeadWatchTask`), with no transcript path, and when the transcript
  * cannot be read — fail open, because a reminder must never stop a person's work. Only the
  * file's last `VERIFY_GATE_TAIL_BYTES` are read, like every other reader of a session's end
  * (`transcript.ts`): a check that ran before that window is not seen, so the hook may remind
@@ -28,6 +29,7 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
+import { isLeadWatchTask } from "../crew/brief";
 import { crewIdOf } from "../crew/session";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -235,7 +237,11 @@ export function verifyGateWouldBlock(
   // A crew session has its own gate: the report (`crew-role`).
   if (crewIdOf(env) !== null) return false;
   // A turn that waits on background work is not over: Claude Code wakes the session when it lands.
-  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return false;
+  // A lead's own watch (`crew-events`) is no such work: it runs for the whole session, so it is
+  // always in the list, and counting it would keep the gate silent in every lead.
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
+    return false;
+  }
   const check = config.checks?.fast;
   if (check === undefined) return false;
   const transcript = stringField(input.transcript_path);

@@ -565,12 +565,12 @@ function settingsRows(): SettingsRow[] {
     }),
     row({
       card: "switches",
-      help: "The type check, the build, the tests and the coverage run go through the queue, one at a time, by memory.",
+      help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
       id: "set-jobs",
       key: "switches.jobRoute",
       kind: "boolean",
       label: "Heavy jobs through the queue",
-      where: "project",
+      where: "personal",
       value: true,
       ...projectSets,
     }),
@@ -875,11 +875,8 @@ export function mockData(empty: boolean): MockData {
       switches: slots.switches,
       crewRunning: empty ? 0 : 3,
       jobs: {
-        heldGb: jobs.stores.reduce(
-          (sum, store) => sum + store.held.reduce((n, job) => n + job.gb, 0),
-          0,
-        ),
-        budgetGb: jobs.budgetGb,
+        slots: jobs.stores[0]?.slots ?? 0,
+        used: jobs.stores[0]?.used ?? 0,
         waiting: jobs.stores.reduce((sum, store) => sum + store.waiting.length, 0),
       },
     },

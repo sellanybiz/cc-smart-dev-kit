@@ -27,9 +27,13 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
+  programName,
+  redirectionTargets,
+  type ShellStep,
   shellSteps,
   withoutRedirections,
   wordsOf,
+  wordsWithFill,
 } from "../shell/command";
 import type { KindSpec, Kinds, MatchRule } from "./kinds";
 
@@ -360,13 +364,12 @@ export function ruleMatches(rule: MatchRule, call: ToolCall, scriptOnly = false)
   return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
 }
 
-/** The kind `call` runs, the largest when several match (`vitest --coverage`), or null. */
-function kindOfCall(
-  call: ToolCall,
-  kinds: Kinds,
-  scriptOnly = false,
-): { name: string; gb: number } | null {
-  let best: { name: string; gb: number } | null = null;
+/**
+ * The kind `call` runs, or null. When several match (`vitest --coverage` is a test run and a
+ * coverage run), the first one listed wins: the kinds are listed with the specific one first
+ * (`DEFAULT_KINDS`), and a project's own kinds come after the defaults.
+ */
+function kindOfCall(call: ToolCall, kinds: Kinds, scriptOnly = false): string | null {
   for (const [name, kind] of Object.entries(kinds)) {
     const heavy = (kind.match ?? []).some(
       (rule) =>
@@ -374,9 +377,9 @@ function kindOfCall(
         // A program that only prints (`tsc --version`) is not heavy; a script is a script.
         ("script" in rule || !printsOnly(kind, call.args)),
     );
-    if (heavy && (best === null || kind.gb > best.gb)) best = { name, gb: kind.gb };
+    if (heavy) return name;
   }
-  return best;
+  return null;
 }
 
 function inspect(
@@ -385,8 +388,8 @@ function inspect(
   dialect: Dialect,
   depth: number,
   run: Run,
-): { name: string; gb: number }[] {
-  const found: { name: string; gb: number }[] = [];
+): string[] {
+  const found: string[] = [];
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
@@ -414,21 +417,20 @@ function inspect(
 }
 
 /**
- * The heavy-job kind a Bash command runs, or null. When it runs several (`tsc && next
- * build`), the one that reserves the most, so a hook that wraps the whole line reserves
- * enough for its largest step. `source` says where the line runs and how to read a folder's
- * `package.json`; without it, a package manager's word is the tool, as before.
+ * The heavy-job kind a shell command runs, or null. When it runs several (`tsc && next
+ * build`), the first one the line runs: the queue counts jobs and a kind has no size, so the
+ * kind only names the job. `source` says where the line runs and how to read a folder's
+ * `package.json`; without it, a package manager's word is the tool, as before. `dialect` is the
+ * shell that reads the line: Bash, or the PowerShell tool's (`job-route` refuses a heavy
+ * PowerShell line and names the Bash tool instead).
  */
 export function classifyHeavyCommand(
-  bashCommand: string,
+  command: string,
   kinds: Kinds,
   source?: ScriptSource,
+  dialect: Dialect = "bash",
 ): string | null {
-  let best: { name: string; gb: number } | null = null;
-  for (const kind of inspect(bashCommand, kinds, "bash", 0, runOf(source))) {
-    if (best === null || kind.gb > best.gb) best = kind;
-  }
-  return best?.name ?? null;
+  return inspect(command, kinds, dialect, 0, runOf(source))[0] ?? null;
 }
 
 /**
@@ -447,6 +449,363 @@ export function toolCallOfArgv(argv: readonly [string, ...string[]]): ToolCall {
   );
 }
 
+/** Reads a filter's own arguments: true when that run of it only reads and prints. */
+type FilterCheck = (args: readonly string[]) => boolean;
+
+/** A filter with no form that writes a file or runs a program. */
+const READS_ONLY: FilterCheck = () => true;
+
+/** A word that is an option, not `-` alone (which names standard input or output). */
+const isOption = (arg: string) => arg.startsWith("-") && arg !== "-";
+
+/** A cluster of short options (`-uo`), not a long one (`--output`). */
+const isShortCluster = (arg: string) => /^-[^-]/.test(arg);
+
+/** `cat` with no file: it only passes the pipe on. */
+function catReadsStdin(args: readonly string[]): boolean {
+  return args.every((arg) => arg === "-" || isOption(arg));
+}
+
+/** `tee` with no file, or only `/dev/null`: it writes nothing a person keeps. */
+function teeWritesNoFile(args: readonly string[]): boolean {
+  return args.every((arg) => isOption(arg) || arg === "/dev/null");
+}
+
+/** `sort` without `-o`/`--output` (it writes a file) or `--compress-program` (it runs one). */
+function sortReadsOnly(args: readonly string[]): boolean {
+  // GNU takes a long option by any unique start, so the shortest unique starts are what is
+  // refused: `--o` is `--output` (`--ou`, `--out=x`), and `--co` is `--compress-program` (no
+  // other option of sort starts with it).
+  return !args.some(
+    (arg) =>
+      arg.startsWith("--o") || arg.startsWith("--co") || (isShortCluster(arg) && arg.includes("o")),
+  );
+}
+
+/** `uniq` with one input file at most: a second file is where it writes. */
+function uniqReadsOnly(args: readonly string[]): boolean {
+  let files = 0;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-f" || arg === "-s" || arg === "-w")
+      index++; // the value is a number
+    else if (!isOption(arg)) files++;
+  }
+  return files <= 1;
+}
+
+/**
+ * `rg` without `--pre` (it runs a program on each file), `-z` (it runs decompressors) or
+ * `--hostname-bin` (it runs a program for its links' host name).
+ */
+function rgReadsOnly(args: readonly string[]): boolean {
+  return !args.some(
+    (arg) =>
+      arg.startsWith("--pre") ||
+      arg.startsWith("--hostname-bin") ||
+      arg === "--search-zip" ||
+      (isShortCluster(arg) && arg.includes("z")),
+  );
+}
+
+/** `sed`'s options that only change how it reads and prints: `-n`, `-E`, `-r`, `-s`, `-u`, `-z`. */
+const SED_SHORT = /^-[nErsuz]+$/;
+const SED_LONG = new Set([
+  "--debug",
+  "--null-data",
+  "--posix",
+  "--quiet",
+  "--regexp-extended",
+  "--sandbox",
+  "--separate",
+  "--silent",
+  "--unbuffered",
+]);
+/** The commands of a sed script that only read, print, move between lines or stop. */
+const SED_PLAIN_COMMANDS = "=DdGgHhNnPpQqxz}";
+
+/**
+ * The end of a regular expression or a replacement that starts at `from` and ends at the
+ * delimiter `delimiter` (a backslash escapes it), or -1 when it never ends.
+ */
+function sedPartEnd(script: string, from: number, delimiter: string): number {
+  let at = from;
+  while (at < script.length) {
+    const char = script.charAt(at);
+    if (char === "\\") at += 2;
+    else if (char === delimiter) return at;
+    else if (char === "\n") return -1;
+    else at++;
+  }
+  return -1;
+}
+
+/**
+ * True when every bracket expression in a regular expression `part` is plain: `[`, an optional
+ * `^`, then one or more characters up to the first `]`, none of them `[`, `\`, a line end or
+ * the delimiter. GNU sed ends a regular expression at the first delimiter, and BSD (macOS) sed
+ * reads a delimiter inside `[...]` as a plain character, so `s/[/]/;/w x/p` has a `w` flag on
+ * BSD only. With plain brackets both read the same script. An escaped `\[` is no bracket.
+ */
+function sedBracketsPlain(part: string, delimiter: string): boolean {
+  let at = 0;
+  while (at < part.length) {
+    const char = part.charAt(at);
+    if (char === "\\") {
+      at += 2;
+      continue;
+    }
+    if (char !== "[") {
+      at++;
+      continue;
+    }
+    let inside = at + 1;
+    if (part.charAt(inside) === "^") inside++;
+    const first = inside;
+    while (inside < part.length && part.charAt(inside) !== "]") {
+      const one = part.charAt(inside);
+      if (one === "[" || one === "\\" || one === "\n" || one === delimiter) return false;
+      inside++;
+    }
+    if (inside === first || inside >= part.length) return false; // `[]…]`, `[^]…]`, or never closed
+    at = inside + 1;
+  }
+  return true;
+}
+
+/** One sed address (`12`, `$`, `/re/`, `1~2`, `+3`), read from `at`: where it ends, or -1. */
+function sedAddressEnd(script: string, at: number): number {
+  const number = /^(?:\d+(?:~\d+)?|\$|[+~]\d+)/.exec(script.slice(at));
+  if (number !== null) return at + number[0].length;
+  if (script.charAt(at) !== "/") return at;
+  const end = sedPartEnd(script, at + 1, "/");
+  if (end === -1 || !sedBracketsPlain(script.slice(at + 1, end), "/")) return -1;
+  return end + 1;
+}
+
+/**
+ * True when a sed script only reads and prints: each command is an address or two and one of
+ * `SED_PLAIN_COMMANDS`, `s/…/…/` with no `w` or `e` flag, or `y/…/…/`. Anything it cannot read
+ * this way — `w` (writes a file), `e` (runs a program), `r`, `a`, a label, a branch, a bracket
+ * expression two seds read differently (`sedBracketsPlain`) — is not a filter: a script that
+ * cannot be read safely is never called read-only.
+ */
+export function sedScriptReadsOnly(script: string): boolean {
+  let at = 0;
+  const skip = (chars: RegExp) => {
+    while (at < script.length && chars.test(script.charAt(at))) at++;
+  };
+  while (true) {
+    skip(/[\s;]/);
+    if (at >= script.length) return true;
+    at = sedAddressEnd(script, at);
+    if (at === -1) return false;
+    if (script.charAt(at) === ",") {
+      const end = sedAddressEnd(script, at + 1);
+      if (end === -1 || end === at + 1) return false; // `1,p`: the second address is missing
+      at = end;
+    }
+    skip(/[ \t]/);
+    if (script.charAt(at) === "!") at++;
+    skip(/[ \t]/);
+    const command = script.charAt(at);
+    at++;
+    if (command === "s" || command === "y") {
+      const delimiter = script.charAt(at);
+      if (delimiter === "" || /[\s\\]/.test(delimiter)) return false;
+      const middle = sedPartEnd(script, at + 1, delimiter);
+      if (middle === -1) return false;
+      if (!sedBracketsPlain(script.slice(at + 1, middle), delimiter)) return false;
+      const end = sedPartEnd(script, middle + 1, delimiter);
+      if (end === -1) return false;
+      at = end + 1;
+      if (command === "s") {
+        const flags = /^[gpiImM0-9]*/.exec(script.slice(at))?.[0] ?? "";
+        at += flags.length;
+      }
+    } else if (command === "{") {
+      continue; // a group: its first command may follow at once (`/x/{p;q}`)
+    } else if (command !== "" && SED_PLAIN_COMMANDS.includes(command)) {
+      // `q5` / `Q5`: an exit code.
+      if (command === "q" || command === "Q") skip(/\d/);
+    } else {
+      return false;
+    }
+    skip(/[ \t]/);
+    const next = script.charAt(at);
+    if (next !== "" && next !== ";" && next !== "\n" && next !== "}") return false;
+  }
+}
+
+/**
+ * `sed` with no `-i` (it edits the file in place) and no `-f` (a script in a file), whose
+ * scripts `sedScriptReadsOnly` can read. The words after the script are files it reads.
+ */
+function sedReadsOnly(args: readonly string[]): boolean {
+  const scripts: string[] = [];
+  const operands: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
+    if (expression !== null) {
+      const value = expression[1] === "" ? args[++index] : expression[1];
+      if (value === undefined) return false;
+      scripts.push(value);
+    } else if (arg === "--expression") {
+      const value = args[++index];
+      if (value === undefined) return false;
+      scripts.push(value);
+    } else if (arg.startsWith("--expression=")) {
+      scripts.push(arg.slice("--expression=".length));
+    } else if (/^--line-length=\d+$/.test(arg)) {
+      // How long an `l` line may be: it changes no file.
+    } else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
+      index++;
+    } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {
+      // An option that only changes how it reads and prints.
+    } else if (isOption(arg)) {
+      return false; // `-i`, `--in-place`, `-f`, and every option this reader does not know
+    } else {
+      operands.push(arg);
+    }
+  }
+  if (scripts.length === 0) {
+    const script = operands.shift();
+    if (script === undefined) return false;
+    scripts.push(script);
+  }
+  return scripts.every(sedScriptReadsOnly);
+}
+
+/**
+ * `awk` whose program has no `>` (a file it writes, or a comparison: both refused), no `|` (a
+ * program it runs), no `system` and no `@` (gawk's includes and indirect calls); with no `-f`
+ * (a program in a file) and no option but `-F` and `-v`.
+ */
+function awkReadsOnly(args: readonly string[]): boolean {
+  let program: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      program = args[index + 1];
+      break;
+    }
+    if (arg === "-F" || arg === "-v") index++;
+    else if (/^-[Fv]./s.test(arg)) continue;
+    else if (isOption(arg)) return false;
+    else {
+      program = arg;
+      break;
+    }
+  }
+  return program !== undefined && !/[>|@]|system/.test(program);
+}
+
+/**
+ * The read-only filters a routed line may pipe its heavy command into, by program name, each
+ * with the reader of its own arguments. **The one list**: a line `tsc --noEmit 2>&1 | tail -20`
+ * is queued with the filter kept outside the queue's command, so the person's own Bash rules
+ * still see it. Short on purpose — each one prints what it reads and changes nothing:
+ *
+ * - `less` and `more` are not here: they wait for a person at the keyboard.
+ * - `tee` is here only with no file (or `/dev/null`): with one, it writes it, and a person's
+ *   `Bash(tee:*)` rule must see that line as written.
+ * - `sed` and `awk` are here only when their script can be read and does not write or run
+ *   anything (`sedScriptReadsOnly`, `awkReadsOnly`); `sort` without `-o` or
+ *   `--compress-program`; `uniq` with no output file; `rg` without `--pre`, `-z` or
+ *   `--hostname-bin`; `cat` with no file.
+ */
+export const READ_ONLY_FILTERS: Readonly<Record<string, FilterCheck>> = {
+  awk: awkReadsOnly,
+  cat: catReadsStdin,
+  cut: READS_ONLY,
+  egrep: READS_ONLY,
+  fgrep: READS_ONLY,
+  gawk: awkReadsOnly,
+  grep: READS_ONLY,
+  head: READS_ONLY,
+  mawk: awkReadsOnly,
+  nawk: awkReadsOnly,
+  rg: rgReadsOnly,
+  sed: sedReadsOnly,
+  sort: sortReadsOnly,
+  tail: READS_ONLY,
+  tee: teeWritesNoFile,
+  tr: READS_ONLY,
+  uniq: uniqReadsOnly,
+  wc: READS_ONLY,
+};
+
+/**
+ * True when one step of a line is a read-only filter fed by the pipe: piped from the step
+ * before it (`a | b`, never `a || b`), the program first (no wrapper, no assignment, no `!`),
+ * nothing the shell fills in, no file its output is sent to, and arguments its reader in
+ * `READ_ONLY_FILTERS` accepts.
+ */
+function isReadOnlyFilter(step: ShellStep): boolean {
+  if (step.pipedFrom === null || step.pipedFrom.trim() === "" || step.expanded) return false;
+  const filled = wordsWithFill(step.text, "bash");
+  if (filled.length === 0 || filled.some((word) => word.filled)) return false;
+  const words = filled.map((word) => word.text);
+  const program = programName(words[0] ?? "");
+  const check = READ_ONLY_FILTERS[program];
+  if (check === undefined) return false;
+  const invocation = invocationOf(words);
+  if (
+    invocation === undefined ||
+    invocation.computed ||
+    invocation.prefix.length > 0 ||
+    invocation.program !== program
+  ) {
+    return false;
+  }
+  if (redirectionTargets(words).some((target) => target !== "/dev/null")) return false;
+  return check(withoutRedirections(invocation.args));
+}
+
+/**
+ * The line cut where its trailing read-only filters start: `tsc 2>&1 | tail -20` gives
+ * `tsc 2>&1` and `| tail -20`. Null when the line ends in no filter, or when the cut cannot be
+ * found in the text exactly as the reader split it (a comment, a joined line, a substitution):
+ * then nothing is cut.
+ */
+function splitAtFilters(line: string): { heavy: string; filters: string } | null {
+  const steps = shellSteps(line, { blindWhenOpen: true, dialect: "bash", joinLines: true });
+  let end = line.length;
+  let found = 0;
+  for (let index = steps.length - 1; index > 0; index--) {
+    const step = steps[index];
+    if (step === undefined || !isReadOnlyFilter(step)) break;
+    const start = end - step.text.length;
+    if (start < 1 || line.slice(start, end) !== step.text) return null;
+    const before = line.charAt(start - 2);
+    if (line.charAt(start - 1) !== "|" || before === "|" || before === ">") return null;
+    end = start - 1;
+    found++;
+  }
+  return found === 0 ? null : { heavy: line.slice(0, end).trimEnd(), filters: line.slice(end) };
+}
+
+/**
+ * True when the part before the filters runs one command whose output they read, after
+ * nothing but `cd`s and assignments: so `cd app && tsc | tail` cuts to `cd app && tsc` and
+ * `| tail`, and the filter still reads exactly what it read before. `tsc && vitest | tail` is
+ * not one (the filter read only the test run's output), nor is `! tsc | tail` (the `!` turned
+ * the whole pipeline's exit code around).
+ */
+function feedsFiltersAlone(heavy: string): boolean {
+  const commands = shellSteps(heavy, { blindWhenOpen: true, dialect: "bash", joinLines: true })
+    .map((step) => wordsOf(step.text))
+    .filter((words) => words.length > 0 && !isAssignmentOnly(words));
+  const last = commands.at(-1);
+  if (last === undefined || last[0] === "!") return false;
+  const changesDir = (words: readonly string[]) => {
+    const invocation = invocationOf(words);
+    return invocation !== undefined && CHANGE_DIR.has(invocation.program);
+  };
+  return !changesDir(last) && commands.slice(0, -1).every(changesDir);
+}
+
 /**
  * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
  * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
@@ -458,8 +817,8 @@ function routableKinds(
   dialect: Dialect,
   depth: number,
   run: Run,
-): { name: string; gb: number }[] | null {
-  const found: { name: string; gb: number }[] = [];
+): string[] | null {
+  const found: string[] = [];
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
   for (const step of steps) {
     const words = wordsOf(step.text, dialect);
@@ -499,26 +858,50 @@ function routableKinds(
   return found;
 }
 
+/** A Bash line the queue can take: its kind, the part that is queued, and the filters after it. */
+export interface RoutableLine {
+  kind: string;
+  /** What goes into the queue: the whole line, or the part before its filters. */
+  heavy: string;
+  /** The read-only filters the heavy part's output is piped into, from the first `|`; "" when none. */
+  filters: string;
+}
+
 /**
- * The heavy-job kind to queue a Bash line under, or null when the line must run raw. A line
+ * The Bash line to queue, cut where it must be, or null when the line must run raw. A line
  * is queued only when every command in it is heavy, a `cd`, or an assignment: Claude Code
  * matches a person's own Bash rules (`deny`, `ask`) against the words of the command it runs
  * and does not look inside `bash -c '…'`, so wrapping a line that also runs `rm` would hide
  * that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308, `docs/claude-code-contract.md`).
- * Several heavy commands give the one that reserves the most, like `classifyHeavyCommand`.
+ *
+ * The one exception is a pipe into read-only filters at the end (`READ_ONLY_FILTERS`):
+ * `tsc --noEmit 2>&1 | tail -20` is queued as `tsc --noEmit 2>&1`, and `| tail -20` stays
+ * outside the queue's command, where the person's rules still see it. A filter before the heavy
+ * command (`cat x | tsc`) is no exception, and neither is a filter inside a shell string.
+ *
+ * Several heavy commands give the first one the line runs, like `classifyHeavyCommand`.
  * `source` says where the line runs, so a package manager's script name is read as a script
  * (§ `classifyHeavyCommand`).
  */
+export function routableLine(
+  bashCommand: string,
+  kinds: Kinds,
+  source?: ScriptSource,
+): RoutableLine | null {
+  const split = splitAtFilters(bashCommand.trim());
+  if (split !== null && feedsFiltersAlone(split.heavy)) {
+    const kind = routableKinds(split.heavy, kinds, "bash", 0, runOf(source))?.[0];
+    return kind === undefined ? null : { filters: split.filters, heavy: split.heavy, kind };
+  }
+  const kind = routableKinds(bashCommand, kinds, "bash", 0, runOf(source))?.[0];
+  return kind === undefined ? null : { filters: "", heavy: bashCommand, kind };
+}
+
+/** `routableLine`'s kind alone: the heavy-job kind to queue a Bash line under, or null. */
 export function classifyRoutableLine(
   bashCommand: string,
   kinds: Kinds,
   source?: ScriptSource,
 ): string | null {
-  const found = routableKinds(bashCommand, kinds, "bash", 0, runOf(source));
-  if (found === null) return null;
-  let best: { name: string; gb: number } | null = null;
-  for (const kind of found) {
-    if (best === null || kind.gb > best.gb) best = kind;
-  }
-  return best?.name ?? null;
+  return routableLine(bashCommand, kinds, source)?.kind ?? null;
 }

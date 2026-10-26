@@ -386,6 +386,123 @@ describe("workflow set and unset", () => {
     ]);
   });
 
+  // `switches.jobRoute` has two homes: the person's machine-wide default (no --project), and
+  // the project's `jobs.route` (--project), which wins.
+  test("switches.jobRoute without --project is the person's default for every project", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const outside = tempDir("not-git");
+    const set = context(outside, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "true"], set.context)).toBe(0);
+    expect(set.lines).toEqual([
+      `+ ${tildify(personalWorkflowFile(paths), paths.home)}: switches.jobRoute = true`,
+    ]);
+    expect(JSON.parse(readFileSync(personalWorkflowFile(paths), "utf8"))).toEqual({
+      switches: { jobRoute: true },
+    });
+    // Anywhere, with no project at all: its value, and that it is the person's.
+    const show = context(outside, env);
+    expect(await runWorkflow(["show"], show.context)).toBe(0);
+    expect(show.lines).toContain("switches.jobRoute = true (personal)");
+    // A project that says nothing about the route follows it.
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const inProject = context(repo, env);
+    expect(await runWorkflow(["show"], inProject.context)).toBe(0);
+    expect(inProject.lines).toContain("switches.jobRoute = true (personal)");
+    // The same value again writes nothing.
+    const again = context(outside, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "true"], again.context)).toBe(0);
+    expect(again.lines).toEqual([
+      `= ${tildify(personalWorkflowFile(paths), paths.home)}: switches.jobRoute = true (already set)`,
+    ]);
+  });
+
+  test("the project's jobs.route wins over the person's default, in both directions", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const mine = context(repo, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "true"], mine.context)).toBe(0);
+    // The project turns it off: its value, and it says so.
+    const off = context(repo, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "false", "--project"], off.context)).toBe(
+      0,
+    );
+    const showOff = context(repo, env);
+    await runWorkflow(["show"], showOff.context);
+    expect(showOff.lines).toContain("switches.jobRoute = false (project)");
+    // Both homes hold their own value: the person's file keeps true.
+    expect(JSON.parse(readFileSync(personalWorkflowFile(paths), "utf8"))).toEqual({
+      switches: { jobRoute: true },
+    });
+    expect((JSON.parse(readFileSync(file, "utf8")) as { jobs: unknown }).jobs).toEqual({
+      route: false,
+    });
+    // The other way: the person says false, the project says true.
+    const quiet = context(repo, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "false"], quiet.context)).toBe(0);
+    const on = context(repo, env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "true", "--project"], on.context)).toBe(
+      0,
+    );
+    const showOn = context(repo, env);
+    await runWorkflow(["show"], showOn.context);
+    expect(showOn.lines).toContain("switches.jobRoute = true (project)");
+    // The project lets go: the person's default shows through again.
+    const unset = context(repo, env);
+    expect(await runWorkflow(["unset", "switches.jobRoute", "--project"], unset.context)).toBe(0);
+    const showMine = context(repo, env);
+    await runWorkflow(["show"], showMine.context);
+    expect(showMine.lines).toContain("switches.jobRoute = false (personal)");
+  });
+
+  test("unset switches.jobRoute takes the person's default out, and the file stays valid", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const outside = tempDir("not-git");
+    await runWorkflow(["set", "switches.jobRoute", "true"], context(outside, env).context);
+    await runWorkflow(["set", "autoCommit", "true"], context(outside, env).context);
+    const run = context(outside, env);
+    expect(await runWorkflow(["unset", "switches.jobRoute"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      `- ${tildify(personalWorkflowFile(paths), paths.home)}: switches.jobRoute unset`,
+    ]);
+    // The empty group goes with it; the other setting stays.
+    expect(JSON.parse(readFileSync(personalWorkflowFile(paths), "utf8"))).toEqual({
+      autoCommit: true,
+    });
+    const show = context(outside, env);
+    await runWorkflow(["show"], show.context);
+    expect(show.lines).toContain("switches.jobRoute = false (default)");
+  });
+
+  test("switches.jobRoute takes true or false only, and writes nothing otherwise", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "switches.jobRoute", "maybe"], run.context)).toBe(2);
+    expect(run.errors).toHaveLength(1);
+    expect(run.errors[0]).toStartWith("switches.jobRoute is true or false\n");
+    expect(existsSync(personalWorkflowFile(paths))).toBe(false);
+  });
+
+  test("a hand-written switches group the person's file may not hold is named, not used", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    mkdirSync(dirname(personalWorkflowFile(paths)), { recursive: true });
+    writeFileSync(
+      personalWorkflowFile(paths),
+      `${JSON.stringify({ switches: { sessionNames: true } })}\n`,
+    );
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["show"], run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `Invalid ${personalWorkflowFile(paths)}: sessionNames: unknown field`,
+    ]);
+  });
+
   test("a personal switch asked for with --project says where it lives", async () => {
     const env = hookEnv();
     const repo = makeRepo();

@@ -17,7 +17,12 @@ import { readLead } from "./store";
  */
 export function actorOfCaller(ctx: CrewContext, repo: string): RunActor | null {
   try {
-    const session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
+    const session = callingSession(
+      ctx.paths.claudeConfigDir,
+      ctx.pid,
+      ctx.processes.parentOf,
+      ctx.env,
+    );
     if (session === null) return null;
     const lead = readLead(ctx.paths.stateDir, repo, session.sessionId);
     return lead === null ? null : { name: lead.name, sessionId: lead.sessionId };

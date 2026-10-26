@@ -193,7 +193,7 @@ describe("a project's gateway answer (GP4b)", () => {
           name: "worker",
           own: null,
         },
-        { fallback: false, key: "cc-smart-dev-kit-judge", machine: null, name: "judge", own: null },
+        { fallback: true, key: "cc-smart-dev-kit-judge", machine: null, name: "judge", own: null },
         { fallback: false, key: "cc-smart-dev-kit-fable", machine: null, name: "fable", own: null },
         {
           fallback: false,

@@ -46,14 +46,25 @@ lock are unchanged. No library is added: the repo has one runtime dependency, an
 The user-level `settings.json` writers (`managed-json.ts` and the hook and list writers) still
 lay their file out with `JSON.stringify`: they are not part of this.
 
-**The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`,
-`switches.jobRoute` and `switches.updateHold` are not stored in either workflow file: each
-names a setting that already exists (Claude Code's `statusLine`, the project's
-`sessionNames`, its `jobs.route`, the `update-hold` file), and the resolver reports that
-setting's value *now*, with the place it lives as its source. A `workflow set` writes that
-setting — Claude Code's own key through `applyManagedJson`, so a status line someone else
-set is never overwritten — which is why a switch cannot be stored and why the schema refuses
-a `switches` object written into a file by hand. One truth per switch.
+**The switches are the exception, on purpose.** `switches.statusLine`, `switches.sessionNames`
+and `switches.updateHold` are not stored in either workflow file: each names a setting that
+already exists (Claude Code's `statusLine`, the project's `sessionNames`, the `update-hold`
+file), and the resolver reports that setting's value *now*, with the place it lives as its
+source. A `workflow set` writes that setting — Claude Code's own key through `applyManagedJson`,
+so a status line someone else set is never overwritten — which is why a switch cannot be stored
+and why the schema refuses a `switches` object written into a file by hand. One truth per
+switch.
+
+**`switches.jobRoute` has two homes, and the project's wins.** The project's `jobs.route` is its
+own choice; the person's machine-wide default sits under it as `switches.jobRoute` in their own
+`workflow.json`, and nowhere else: only the person's schema (`personalWorkflowSchema`) has a
+`switches` group, with that one field, and a project's `workflow` object refuses it. They are
+two settings of one switch, not two copies. The resolver (`jobRouteFrom`, `src/workflow/resolve.ts`)
+reads the project's value first (`project`), then the person's (`personal`), then off
+(`default`), and `workflow show` prints which one answered. `workflow set switches.jobRoute`
+writes the person's default; with `--project` it writes the project's `jobs.route`. The
+`job-route` hook reads it through the same function (`resolveJobRoute`), with or without a
+project file, so the hook and `show` can never disagree.
 
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
 tests, because it decides whether a command may run without a person:

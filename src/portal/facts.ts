@@ -537,8 +537,12 @@ export function slotRows(config: GatewayConfig, router: RouterFacts): SlotRow[] 
         kept === null
           ? null
           : {
-              // The switch saved with the chain, else the slot's own default.
-              fallback: kept.fallback ?? fallbackOn({}, key),
+              // The switch saved with the chain, else the slot's own default. The judge's switch
+              // is not saved with its chain: it is the one in the config, in both modes.
+              fallback:
+                key === JUDGE_SLOT
+                  ? fallbackOn(config, key)
+                  : (kept.fallback ?? fallbackOn({}, key)),
               targets: kept.targets.map((target) => targetRow(target, true)),
             },
       key,
@@ -562,7 +566,9 @@ function slotNote(config: GatewayConfig, key: string): string {
     saved === null
       ? ""
       : `; saved, not in use: ${saved.targets.join(" → ")} (fallback ${
-          (saved.fallback ?? fallbackOn({}, key)) ? "on" : "off"
+          (key === JUDGE_SLOT ? fallbackOn(config, key) : (saved.fallback ?? fallbackOn({}, key)))
+            ? "on"
+            : "off"
         })`;
   const targets = config.slots[key];
   if (targets === undefined) {

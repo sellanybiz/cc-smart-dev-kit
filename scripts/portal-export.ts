@@ -15,6 +15,11 @@
  * (`generateBuildId`), and with it a second build is byte for byte the same (tested: build
  * twice, `diff -r` is empty). So a stale export, a hand edit and a file the build no longer
  * writes are all caught, with no recorded hash to fall out of step.
+ *
+ * **Build it on Linux.** Next's compiler for Windows minifies the same source to other bytes
+ * (seen with Next 16.4.2: other names in the runtime chunk, `main-*.js`), so an export built on
+ * Windows fails CI's compare, and `--check` on Windows reports a difference CI would not. On
+ * Windows the script says so after it builds.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -27,6 +32,12 @@ const portalDir = join(repoRoot, "portal");
 const outDir = join(portalDir, "out");
 /** What reaches a machine: Claude Code copies `plugin/`, and the portal runs from a copy. */
 const pluginUiDir = join(repoRoot, "plugin", "portal-ui");
+
+/** Said on Windows after a build: its bytes are not CI's (header). */
+const WINDOWS_NOTE =
+  "! Built on Windows: Next's compiler there gives other bytes than CI's Linux build, so CI's " +
+  "check:portal fails on this export. Build it on Linux, or in a Linux container with the Bun of " +
+  "the bun-version in .github/workflows/ci.yml: copy the repo in, never mount portal/node_modules.";
 
 /** The Next build's own limit: a slow CI machine still finishes. */
 const BUILD_TIMEOUT_MS = 15 * 60 * 1000;
@@ -122,4 +133,5 @@ if (missing !== null) {
       `Built plugin/portal-ui (${listFiles(pluginUiDir).length} files from the portal's build).`,
     );
   }
+  if (failed === null && process.platform === "win32") console.error(WINDOWS_NOTE);
 }

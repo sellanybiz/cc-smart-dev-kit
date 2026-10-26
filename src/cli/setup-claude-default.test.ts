@@ -130,7 +130,6 @@ describe("D66: setup moves a machine set up before it to Claude defaults, once",
       "  ~ judge: omniroute:j1 → Claude",
       "  ~ profile team worker: omniroute:p1,omniroute:p2 → Claude",
       "  ~ fallback worker: on → off",
-      "  ~ fallback judge: on → off",
       "  ~ fallback fable (saved chain): on → off",
       "  ~ profile team fallback worker: on → off",
     ]);

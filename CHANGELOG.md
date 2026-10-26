@@ -3,6 +3,112 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.5.0
+
+Faster work under Claude, native Windows fixed end to end, and crew sessions that keep their
+monitors. A project that sets a job kind's `noSlotForFiles` asks for `>=1.5`.
+
+**What to run** after the update:
+
+- On a machine with the gateway: `cc-smart-dev-kit gateway setup`. The router changed (the
+  message-thread fix and the judge's stand-in below); setup asks before it restarts the router.
+- On native Windows: `cc-smart-dev-kit setup`, which rewrites the instructions' import line
+  (below). Where `gateway setup` failed with "The task XML is malformed", run it again.
+- If you turned the judge's stand-in off on 1.2.0 to 1.4.1, run
+  `cc-smart-dev-kit gateway fallback judge off` again: off was the default then, so it was never
+  saved, and 1.5.0 turns the stand-in on (below).
+- Restart the Claude Code sessions that were running before the update, leads first: a session
+  started before it keeps 1.4.1's hooks, and a lead's watch keeps 1.4.1's code. Such a session
+  reads your `workflow.json` as broken once you set `switches.jobRoute` (below), and its watch
+  does not see a crew session paused for the safety checks.
+
+The heavy-job queue:
+
+- **It counts jobs, not gigabytes.** Up to `maxJobs` heavy jobs run at once (default 3,
+  machine-wide; `cc-smart-dev-kit job set max-jobs <n>`), and each one may use the whole
+  machine: no per-kind size, no worker cap added to a test runner, normal CPU and disk priority
+  (`job set cpu-weight`/`io-weight` make them give way). A kind's old size fields (`gb`,
+  `filesGb`, `maxFiles`, `workers`) still parse and are ignored; `doctor` says they can go. On
+  Linux the slice's memory ceiling stays, now keeping 8 GB free by default (it was 22).
+- **The route has a personal switch.** `switches.jobRoute` in your own `workflow.json` turns the
+  route on for every project; a project's `jobs.route` wins over it. `job status` and the
+  portal's Machine page say whether the route is on and who set it.
+- **A heavy command piped into a read-only filter is queued** (`tsc --noEmit 2>&1 | tail -20`):
+  only the heavy step goes into `job run`, the filters stay outside it as written, so your own
+  Bash rules still see them. A `tee` to a file, a `sed -i`, an option that writes a file or runs
+  a program (`sort -o`, `rg --pre`) or a filter before the heavy step is not a filter. The shell
+  reader every guard shares now keeps the `&` of `2>&1`, `>&2` and `&>` inside the redirection.
+- **A heavy PowerShell line is refused while the route is on**, with the exact Bash line to run
+  instead (it would not wait for a slot); only where the Bash tool can exist.
+- **A test run on named files runs at once.** A kind with `noSlotForFiles` (the default
+  `test:run` has it) takes no slot for a run whose operands are only existing files; a folder,
+  a filter word, a coverage run or an option the kit does not know still waits. `skipWords` and
+  `valuedFlags` are read again for it.
+
+Checks and instructions:
+
+- **Check what you changed; the full check runs once.** The instructions, the builder agent and
+  the verify, lead and crew skills now say: run the type check, lint and tests on the changed
+  files while you work, and the project's full check once — before a crew session hands back,
+  and before the lead pushes.
+- **No forced `max` effort on a backend.** A subagent or crew session on an affordable backend
+  takes the effort its task needs, like any other; pin one with `gateway effort`.
+- **The plugin's agents get every tool of the session**, MCP servers included (a reviewer can
+  read a dev database), less a short deny list: the read-only agents cannot edit or ask you, the
+  builders cannot ask you.
+- **The agent panel's status line shows each subagent's context use** beside its model and
+  effort.
+
+The gateway:
+
+- **A backend never gets a message-thread continue.** Claude Code may send only the new part of
+  a conversation and point at the earlier one; a backend keeps no thread, so after a switch
+  onto a gateway model it lost the conversation, the tools and the system prompt until the
+  session restarted. The router now answers such a request with Claude Code's own
+  `thread_unsupported_request`, and Claude Code resends the whole turn.
+- **The judge's stand-in is on by default** (it was off since 1.2.0). Claude judges auto mode's
+  safety checks first; while it is limited or down, a worker target that passed the judge test
+  stands in. `gateway fallback judge off` turns it off. A judge chain of your own with two or
+  more targets now also tries the next one by default.
+- **When the safety checks fail and nothing stood in, the kit says so**: in the status line,
+  `gateway status`, `doctor` and one line to the session, with the cause and the one command
+  that fixes it. The session is told it cannot fix this itself: say it once and wait.
+
+Crew sessions:
+
+- **Every prompt the kit gives a crew session starts with `/cc-smart-dev-kit:crew`.** Claude
+  Code starts a plugin's monitor only when its skill runs, once per process, and not on
+  `--resume`, so a resumed session lost its monitor. The answer and tell commands print the
+  `ToolSearch select:SendMessage` step first, because SendMessage is a deferred tool.
+- **The lead's watch holds up**: it survives a busy store, one `--once` watch acts per lead (a
+  lease), a backend's refusal no longer reads as `failed`, the last API error stays on the
+  record, and a lead whose watch ended is told how to start it again (Claude Code's Monitor
+  tool). Claude Code 2.1.310's changelog says monitors now run with telemetry off, so the kit's
+  telemetry fallback is gone (not yet proved live).
+- **A crew session pauses while auto mode's safety checks are down** instead of being blocked
+  for a missing report, and the watch resumes it when they answer again.
+- **Remote Control is off in a crew session** (`remoteControlAtStartup: false` in its settings).
+- **The person's prompt is told apart better**: a resume after `crew model` or a corrected
+  answer is the lead's, not yours; the verify gate no longer counts the lead's own monitor as
+  background work.
+
+Guards:
+
+- **A message to a session of another repo asks you** (it was refused), naming that session's
+  folder; a crew session's is refused with the step to its lead. The guard judges it even when
+  the project's file needs a newer kit, instead of a blanket question.
+
+Native Windows:
+
+- **`gateway setup` registers the router's task again.** The task XML it wrote was refused
+  ("unable to switch the encoding").
+- **The instructions load.** The `@import` line setup writes into `CLAUDE.md` now uses `/`;
+  with `\` Claude Code never read the file.
+- **A lead finds its own session**, so `crew lead` and `crew start` work: the kit reads the
+  session from Claude Code's environment first. Crew sessions and their monitors run on native
+  Windows through Git Bash (proved live on 2.1.310). `crew rm --discard` is still refused there
+  (the worktree's mount points cannot be read).
+
 ## 1.4.1
 
 - **`gateway setup` no longer reads the old portal's `portal.json`.** Up to 1.0.1 the portal

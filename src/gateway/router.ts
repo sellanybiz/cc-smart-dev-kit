@@ -123,6 +123,7 @@ import {
   formatDuration,
   isCapacityFailure,
 } from "./breaker";
+import { checksDownCause } from "./checks-down";
 import {
   BREAKER_HOLD_NON_STREAMING_MS,
   breakerHoldMs,
@@ -131,6 +132,7 @@ import {
   fallbackOn,
   type GatewayConfig,
   historyRetentionDays,
+  judgeStandInState,
   judgeTargetUsable,
   messageOf,
   plainClaudeView,
@@ -150,7 +152,9 @@ import {
 import { createHistoryWriter, type HistoryRecorder, type HistoryRow } from "./history";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import {
+  type ChecksDownWhy,
   currentBreakers,
+  currentChecksDown,
   currentLimits,
   emptyLimitState,
   formatClock,
@@ -192,6 +196,7 @@ import {
   claudeFamily,
   claudeVersion,
   cooldownSeconds,
+  dateHeldReset,
   FAMILY_SLOTS,
   fallbackKind,
   familySlotFor,
@@ -211,6 +216,7 @@ import {
   versionAtLeast,
   withoutContextSuffix,
 } from "./targets";
+import { THREAD_UNSUPPORTED_CODE, threadContinueRefusal } from "./threads";
 
 /** What the router hands to `fetch` for one upstream call. */
 export interface UpstreamInit {
@@ -1104,6 +1110,13 @@ function withoutEmptyBreakers(state: LimitState): void {
   }
 }
 
+/** An empty `checksDown` is dropped too, so a file with none failing reads as none. */
+function withoutEmptyChecksDown(state: LimitState): void {
+  if (state.checksDown !== undefined && Object.keys(state.checksDown).length === 0) {
+    delete state.checksDown;
+  }
+}
+
 /**
  * A state file the router writes in the background: one write for any number of changes in
  * a row, after the answer went out (a timer, never a microtask). `what` names the file in a
@@ -1180,6 +1193,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     }
   }
   withoutEmptyBreakers(limitState);
+  // The same for safety checks that were failing: the next check that gets a verdict ends the
+  // record, and one that nobody has touched for 15 minutes is stale.
+  for (const key of Object.keys(limitState.checksDown ?? {})) {
+    if (!currentChecksDown(limitState, deps.now()).some(([current]) => current === key)) {
+      delete limitState.checksDown?.[key];
+    }
+  }
+  withoutEmptyChecksDown(limitState);
   /** Auto mode's safety checks counted so far, by local day (`safety-checks.ts`). */
   const safetyChecks: SafetyCheckState = loadedState(
     deps.loadSafetyChecks,
@@ -1207,6 +1228,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   const markedLogged = new Set<string>();
   /** Backend targets whose request got the router's thinking blocks' own signatures back. */
   const restoredLogged = new Set<string>();
+  /** Backend targets that refused a thread continue (`threadContinueRefusal`): once each. */
+  const threadRefusedLogged = new Set<string>();
   /** The config the fallback records were last checked against (`dropRemovedFallbacks`). */
   let checkedConfig: GatewayConfig | null = null;
   /** Slots whose breaker is open now. In memory: a restart starts closed, the record stays. */
@@ -1355,7 +1378,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const limit = Object.hasOwn(limitState.limits, id) ? limitState.limits[id] : undefined;
     if (limit === undefined || limit.resetsAt === null || limit.resetsAt * 1000 <= nowMs)
       return null;
-    if (Number.isNaN(new Date(limit.resetsAt * 1000).getTime())) return null;
+    if (dateHeldReset(limit.resetsAt) === null) return null;
     return { claim: limit.claim, resetsAt: limit.resetsAt };
   }
 
@@ -1376,7 +1399,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     // A profile's chain is its own, so its fallback record is its own record (`stateKeyFor`).
     const key = stateKeyFor(slot, profile);
     const before = limitState.fallbacks[key];
-    const resetsAt = limit?.resetsAt ?? before?.resetsAt ?? null;
+    const resetsAt = dateHeldReset(limit?.resetsAt ?? before?.resetsAt ?? null);
     const reset =
       resetsAt === null
         ? "no reset time given"
@@ -1458,6 +1481,21 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       deps.log(`${key}: removed from the config; its fallback record is dropped`);
       changed = true;
     }
+    // A "safety checks are failing" whose cause the config no longer has (the stand-in switched
+    // on, a worker target tested, a worker given a target, a profile removed) is over; the next
+    // failure records it again. A stand-in that was asked and failed is no config state.
+    for (const [key, record] of Object.entries(limitState.checksDown ?? {})) {
+      const view = scopes.get(scopeOfStateKey(key).profile);
+      const stale =
+        view === undefined ||
+        (record.why !== "failed" &&
+          record.why !== "chain-failed" &&
+          judgeStandInState(view) !== record.why);
+      if (!stale) continue;
+      delete limitState.checksDown?.[key];
+      changed = true;
+    }
+    withoutEmptyChecksDown(limitState);
     if (changed) persist();
     // A breaker for a slot taken out of the config, or switched off, is over.
     for (const key of new Set([
@@ -2275,6 +2313,20 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       /** The hold's end, not the target, set this wait: a timeout then says nothing of it. */
       const holdCutShort =
         hold?.holding === true && target.kind === "backend" && hold.leftMs < budgetMs;
+      // A backend keeps no message thread: a continue is answered here, whether this is the
+      // chain's first target or the one a Claude target's failure moved on to, and no later
+      // target is tried in its place. The router's own answer rests nothing and is never held
+      // (a 400 is no capacity failure); Claude Code resends the turn whole.
+      const threadRefusal = target.kind === "backend" ? threadContinueRefusal(body) : null;
+      if (threadRefusal !== null) {
+        if (!threadRefusedLogged.has(label)) {
+          threadRefusedLogged.add(label);
+          deps.log(
+            `WARN ${printable(name)}: ${printable(label)} keeps no message thread; a thread continue is answered 400 ${THREAD_UNSUPPORTED_CODE} and Claude Code resends the turn whole (logged once per target)`,
+          );
+        }
+        return { fallbacks, response: threadRefusal, skipped, target: label };
+      }
       const pin = effortPin(config, name, label);
       const built = targetUpstream(req, url, config, body, target, guard, asked, pin);
       if (!("error" in built) && target.kind === "backend" && pin !== undefined)
@@ -2923,9 +2975,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * of the bytes on their way to Claude Code (`observedAnswer`) and written in the
    * background, so the count never slows an answer and never changes a byte of it.
    */
-  function countedCheck(judged: Promise<Outcome>): Promise<Outcome> {
+  function countedCheck(
+    judged: Promise<Outcome>,
+    /** Told the check's outcome before it goes on (`noteChecksDown`). */
+    noted: (outcome: Outcome) => void,
+  ): Promise<Outcome> {
     const day = localDay(deps.now());
     return judged.then((outcome) => {
+      noted(outcome);
       const side = answeredSide(outcome.target);
       recordSafetyCheck(safetyChecks, day, side);
       persistChecks();
@@ -2938,6 +2995,74 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         }),
       };
     });
+  }
+
+  /**
+   * Auto mode's safety checks that fail for want of capacity with nothing standing in
+   * (`checksDown`, owner 2026-10-27): the check's outcome is a capacity failure
+   * (`capacityFailureStatus`, or no answer at all, a 502) and `why` says no tested stand-in
+   * judged it (none tested, the switch off, or every stand-in failed too). The record keeps
+   * since when, Claude's plan limit and its reset when the answer carried one, and why nothing
+   * stood in; it reaches the state file in the background (once a minute while it goes on),
+   * so the status line, `gateway status`, `doctor` and the session note can say it with the
+   * fix. A check that gets a verdict (any 2xx, a stand-in's too) ends it. Any other answer, a
+   * 400 or a 401, is neither: it says nothing of capacity. `why` null: nothing applies (the
+   * check named no Claude model), so nothing is recorded. Never a word of the request.
+   */
+  function noteChecksDown(
+    profile: null | string,
+    why: ChecksDownWhy | null,
+    claudeModel: null | string,
+    outcome: Outcome,
+  ): void {
+    const key = stateKeyFor(JUDGE_SLOT, profile);
+    const now = deps.now();
+    const status = outcome.response.status;
+    if (outcome.response.ok) {
+      if (limitState.checksDown === undefined || !Object.hasOwn(limitState.checksDown, key)) return;
+      delete limitState.checksDown[key];
+      withoutEmptyChecksDown(limitState);
+      deps.log(`${key}: auto mode's safety checks get a verdict again; the failing record is over`);
+      persist();
+      return;
+    }
+    if (why === null || !capacityFailureStatus(status)) return;
+    const before = currentChecksDown(limitState, now).find(([stored]) => stored === key)?.[1];
+    // Claude's plan limit, when the answer that failed the check was its own: a 429, or a
+    // stand-in that failed after Claude did (then the limit already seen is the cause). A
+    // judge chain of the person's own failed on its own account.
+    const limit =
+      claudeModel === null || why === "chain-failed" || (why !== "failed" && status !== 429)
+        ? undefined
+        : currentLimits(limitState, now).find(([id]) => id === claudeModel)?.[1];
+    const record = {
+      claim: limit?.claim ?? null,
+      lastAt: now,
+      resetsAt: dateHeldReset(limit?.resetsAt ?? null),
+      since: before?.since ?? now,
+      status,
+      why,
+    };
+    limitState.checksDown = { ...limitState.checksDown, [key]: record };
+    if (before === undefined) {
+      const claude =
+        record.resetsAt === null
+          ? ""
+          : `; Claude's plan limit${record.claim === null ? "" : ` ${record.claim}`} resets ${new Date(record.resetsAt * 1000).toISOString()}`;
+      deps.log(
+        `WARN ${key}: auto mode's safety checks are failing (HTTP ${status}${claude}): ${checksDownCause(record)}; ${COMMAND} doctor says the fix`,
+      );
+    }
+    if (
+      before === undefined ||
+      before.why !== why ||
+      before.status !== status ||
+      before.claim !== record.claim ||
+      before.resetsAt !== record.resetsAt ||
+      now - before.lastAt >= FALLBACK_SAVE_EVERY_MS
+    ) {
+      persist();
+    }
   }
 
   /**
@@ -3172,13 +3297,32 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     // chain's tested targets while Claude cannot (`claudeFirstJudge`), else Claude alone.
     const judgeTargets = guard ? judgeTargetsOf(config) : [];
     if (judgeTargets.length > 0) model.slot = JUDGE_SLOT;
+    const standIn = judgeTargets.length === 0 && guard ? claudeFirstJudge() : null;
     const answered =
       judgeTargets.length > 0
         ? slotRequest(req, url, config, body, JUDGE_SLOT, judgeTargets, true, null, profile)
-        : ((guard ? claudeFirstJudge() : null) ?? claudeRoute());
+        : (standIn ?? claudeRoute());
     // Auto mode's safety check, counted (`countedCheck`). A check is a `/v1/messages`
-    // request: a `count_tokens` for one counts tokens, it judges nothing.
-    return guard && url.pathname === MESSAGES_PATH ? countedCheck(answered) : answered;
+    // request: a `count_tokens` for one counts tokens, it judges nothing. Its outcome also
+    // says whether the checks fail for want of capacity with nothing to stand in
+    // (`noteChecksDown`): `why` is what applied to this one.
+    if (!guard || url.pathname !== MESSAGES_PATH) return answered;
+    const claudeModel =
+      typeof body.model === "string" && body.model.startsWith("claude-")
+        ? withoutContextSuffix(body.model)
+        : null;
+    const state = judgeStandInState(config);
+    const why: ChecksDownWhy | null =
+      judgeTargets.length > 0
+        ? "chain-failed"
+        : standIn !== null
+          ? "failed"
+          : state === "ready"
+            ? null
+            : state;
+    return countedCheck(answered, (outcome) => {
+      noteChecksDown(profile, why, claudeModel, outcome);
+    });
 
     /**
      * A request that carries an Anthropic server tool (D41; `server-tools.ts`). Anthropic
@@ -3255,15 +3399,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
      * retries on a real Claude model).
      */
     function claudeFirstJudge(): null | Promise<Outcome> {
-      if (
-        url.pathname !== MESSAGES_PATH ||
-        Object.hasOwn(config.slots, JUDGE_SLOT) ||
-        !fallbackOn(config, JUDGE_SLOT)
-      ) {
-        return null;
-      }
+      if (url.pathname !== MESSAGES_PATH || judgeStandInState(config) !== "ready") return null;
       const standIns = workerJudgeTargets(config);
-      if (standIns.length === 0) return null;
       const decided = resolveRequestRoute(body, config, true);
       if (decided.kind === "anthropic" && typeof body.model === "string") {
         const claude: Target = { kind: "anthropic", model: withoutContextSuffix(body.model) };

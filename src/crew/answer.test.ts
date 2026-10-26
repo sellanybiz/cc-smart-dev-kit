@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
-import { resumeArgs, runCrewAnswer } from "./answer";
+import { resumeArgs, runCrewAnswer, sendMessageHint, sendMessageLine } from "./answer";
 import { runCrew } from "./command";
 import {
   addCrewQuestion,
@@ -31,6 +31,10 @@ import {
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
 const NAME = "C my-app B6b portal-live";
+
+/** The line before a `SendMessage` line: the tool is deferred, so a model loads it first. */
+const SEND_MESSAGE_LOAD =
+  "The SendMessage tool is deferred: load it first with ToolSearch, query select:SendMessage. Then call SendMessage with the JSON object on each line below.";
 
 /** The crew session's worktree and its own two files, as the world records them. */
 function worktreeOf(world: ReturnType<typeof crewWorld>): string {
@@ -123,6 +127,7 @@ describe("crew answer", () => {
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
       "recorded, not delivered: no heartbeat from its monitor, so send it yourself:",
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -161,6 +166,7 @@ describe("crew answer", () => {
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
       "recorded, not delivered yet: its monitor is running but did not pass it on within 10 s; if the session stays silent, send it yourself (it then arrives twice):",
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     ]);
   });
@@ -172,6 +178,7 @@ describe("crew answer", () => {
     expect(world.out).toEqual([
       "answered C my-app B6b portal-live: which port?",
       "recorded, not delivered: its monitor's last heartbeat was 125 s ago, so send it yourself:",
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
     ]);
   });
@@ -187,6 +194,7 @@ describe("crew answer", () => {
     expect(world.out).toEqual([
       "corrected the answer to C my-app B6b portal-live: which port?",
       "recorded, not delivered: no heartbeat from its monitor, so send it yourself:",
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"Your lead CORRECTS its earlier answer to your question \\"which port?\\": this REPLACES the earlier answer (\\"the port is 3210\\"). Follow this one instead:\\nsorry, 3211"}',
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -208,9 +216,10 @@ describe("crew answer", () => {
     expect(await runCrew(["answer", NAME, "the port is 3210"], world.ctx())).toBe(0);
     world.out.length = 0;
     expect(await runCrew(["answer", NAME, "sorry, 3211"], world.ctx())).toBe(0);
-    expect(world.out[2]).toBe(
+    expect(world.out.slice(2)).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"sorry, 3211"}',
-    );
+    ]);
   });
 
   test("AN1: the person's click with no monitor running is told no SendMessage line: they cannot send it", async () => {
@@ -264,8 +273,9 @@ describe("crew answer", () => {
     expect(world.err).toEqual([]);
     const resume = world.claudeCalls().find((call) => call[0] === "--bg");
     // The fake logs one argument per line, so a prompt with a line break is read back joined.
+    // The prompt starts with the crew command, so the skill is dispatched and its monitor starts.
     expect(resume?.slice(resume.indexOf("--", 3) + 1).join("\n")).toBe(
-      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead:\nsorry, 3211',
+      '/cc-smart-dev-kit:crew Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead:\nsorry, 3211',
     );
     expect(world.out).toEqual([`answered ${NAME}: resumed with your correction · which port?`]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -286,9 +296,10 @@ describe("crew answer", () => {
   test("D36: a quote or a line break in the answer is escaped, never changed", async () => {
     const world = await askedWorld();
     await runCrew(["answer", NAME, 'use "3210"\nnot 3211'], world.ctx());
-    expect(world.out[2]).toBe(
+    expect(world.out.slice(2)).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"use \\"3210\\"\\nnot 3211"}',
-    );
+    ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe('use "3210"\nnot 3211');
   });
@@ -392,7 +403,7 @@ describe("crew answer", () => {
         "--settings",
         settings,
         "--",
-        "the port is 3210",
+        "/cc-smart-dev-kit:crew the port is 3210",
       ],
     ]);
     expect(world.cwdCalls()).toEqual([world.repo, worktreeOf(world)]);
@@ -579,16 +590,17 @@ describe("crew answer", () => {
       world.ctx({}, { FAKE_AGENTS_JSON: live }),
     );
     expect(code).toBe(0);
-    expect(world.out[2]).toBe(
+    expect(world.out.slice(2)).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B6b portal-live","message":"the port is 3210"}',
-    );
+    ]);
     // `claude --bg --resume` on a running session would start a copy beside it.
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("working");
   });
 
-  test("FU2: a resume text that starts with `-` goes after `--`, so claude reads it as the prompt", () => {
+  test("FU2: a resume text that starts with `-` goes after `--`, behind the crew command", () => {
     // `claude -p "-1 is wrong: use 2"` answers `error: unknown option '-1 is wrong: use 2'`;
     // with `--` before it the fake Anthropic's log held the text as the prompt (2.1.309).
     const args = resumeArgs(
@@ -601,10 +613,16 @@ describe("crew answer", () => {
       { mcpFile: "/home/user/mcp.json", settingsFile: "/home/user/settings.json" },
       "-1 is wrong: use 2",
     );
-    expect(args.slice(-3)).toEqual(["/home/user/settings.json", "--", "-1 is wrong: use 2"]);
+    // The prompt is the command and the text as its arguments, so the skill is dispatched and the
+    // monitor starts (`--resume` does not arm it by itself). The text no longer opens the prompt.
+    expect(args.slice(-3)).toEqual([
+      "/home/user/settings.json",
+      "--",
+      "/cc-smart-dev-kit:crew -1 is wrong: use 2",
+    ]);
   });
 
-  test("FU2: a resume with no text carries no `--`", () => {
+  test("a resume with no text is the bare crew command: it still dispatches the skill", () => {
     const args = resumeArgs(
       {
         effort: "high",
@@ -615,7 +633,42 @@ describe("crew answer", () => {
       { mcpFile: null, settingsFile: "/home/user/settings.json" },
       null,
     );
-    expect(args.at(-1)).toBe("/home/user/settings.json");
+    expect(args.slice(-3)).toEqual(["/home/user/settings.json", "--", "/cc-smart-dev-kit:crew"]);
+  });
+
+  test("a text that is a lead's answer or a wait-over line keeps its words after the command", () => {
+    const launch = {
+      effort: "high",
+      model: "sonnet",
+      permissionMode: "auto",
+      sessionId: "aaaa1111-2222-3333-4444-555555555555",
+    };
+    const files = { mcpFile: null, settingsFile: "/home/user/settings.json" };
+    expect(resumeArgs(launch, files, "the port is 3210").at(-1)).toBe(
+      "/cc-smart-dev-kit:crew the port is 3210",
+    );
+    expect(
+      resumeArgs(
+        launch,
+        files,
+        "The wait is over: a model answers again. Go on with phase B6b, then hand it back as usual.",
+      ).at(-1),
+    ).toBe(
+      "/cc-smart-dev-kit:crew The wait is over: a model answers again. Go on with phase B6b, then hand it back as usual.",
+    );
+  });
+
+  test("the SendMessage line is the tool's arguments as valid JSON, and a hint says to load the tool first", () => {
+    const line = sendMessageLine("C my-app B6b portal-live", 'use "3210"\nnot 3211');
+    expect(line).toBe(
+      'SendMessage {"to":"C my-app B6b portal-live","message":"use \\"3210\\"\\nnot 3211"}',
+    );
+    // What follows the tool's name parses, and holds the two arguments and no more.
+    expect(JSON.parse(line.slice("SendMessage ".length))).toEqual({
+      message: 'use "3210"\nnot 3211',
+      to: "C my-app B6b portal-live",
+    });
+    expect(sendMessageHint()).toBe(SEND_MESSAGE_LOAD);
   });
 
   test("D36: a question and its answer, through the two commands", async () => {

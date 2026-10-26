@@ -58,6 +58,12 @@ function waitingWords(record: CrewRecord, now: number): string | null {
   const waiting = record.waitingFor;
   if (record.state !== "paused" || waiting === undefined) return null;
   if (waiting.kind === "slot") return `Waits for the ${slotName(waiting.slot)} slot`;
+  if (waiting.kind === "safety-checks") {
+    const slash = waiting.scope.indexOf("/");
+    return slash === -1
+      ? "Waits for auto mode's safety checks to answer again"
+      : `Waits for auto mode's safety checks to answer again (profile ${waiting.scope.slice(0, slash)})`;
+  }
   if (waiting.kind === "unknown") {
     return waiting.slot === undefined
       ? "Waits for an answer it could not name"

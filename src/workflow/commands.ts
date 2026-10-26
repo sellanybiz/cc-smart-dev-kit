@@ -91,8 +91,10 @@ show (the default) prints each value and where it came from: the project's
 built-in default, and whether the commit this checkout is on has a recorded review. set
 and unset write one value: your own file, or the project's with --project. A switch
 (switches.*) is not stored: it reads and writes the setting it maps onto, so
-switches.sessionNames and switches.jobRoute need --project, and switches.statusLine and
-switches.updateHold refuse it.
+switches.sessionNames needs --project, and switches.statusLine and switches.updateHold refuse
+it. switches.jobRoute (heavy commands go through the job queue) is the exception: without
+--project it is your own default for every project, in your file; with --project it is the
+project's jobs.route, which wins over yours. Off until one of them says on.
 propose changes one of the project's own settings through a pull request: a branch and a
 worktree cut from origin/<worktrees.base>, the setting written by the same writer set
 --project uses, committed, pushed, and the pull request opened with gh. It counts once it

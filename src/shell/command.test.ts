@@ -272,6 +272,26 @@ describe("shellSteps — the command piped into each one", () => {
       { text: " ls", pipedFrom: null, expanded: false },
     ]);
   });
+
+  // The job route's follow-up: `tsc 2>&1 | tail` was read as `tsc 2>`, a command `1`, and a
+  // `tail` piped from that `1`, so a heavy command with its stderr sent on was never routable.
+  test("the & of 2>&1, >&2 and &>log is part of the redirection, not a separator", () => {
+    expect(shellSteps("tsc --noEmit 2>&1 | tail -20")).toEqual([
+      { text: "tsc --noEmit 2>&1 ", pipedFrom: null, expanded: false },
+      { text: " tail -20", pipedFrom: "tsc --noEmit 2>&1 ", expanded: false },
+    ]);
+    expect(shellSegments("echo x >&2; ls")).toEqual(["echo x >&2", " ls"]);
+    expect(shellSegments("make &>build.log && ls")).toEqual(["make &>build.log ", "", " ls"]);
+    expect(shellSegments("Get-Item x 2>&1; ls", { dialect: "powershell" })).toEqual([
+      "Get-Item x 2>&1",
+      " ls",
+    ]);
+    // A lone `&` still sends a command to the background, and `&&` still separates.
+    expect(shellSegments("sleep 5 & ls")).toEqual(["sleep 5 ", " ls"]);
+    expect(shellSegments("a && b")).toEqual(["a ", "", " b"]);
+    // An escaped `>` is a character, so the `&` after it is a separator again.
+    expect(shellSegments("echo a\\>& ls")).toEqual(["echo a\\>", " ls"]);
+  });
 });
 
 describe("wordsOf", () => {

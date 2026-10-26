@@ -22,6 +22,10 @@
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
+ * - **Size fields in `jobs.kinds`.** The heavy-job queue counts jobs, not gigabytes
+ *   (`src/jobs/kinds.ts`). A project file written for an older plugin may still set `gb`,
+ *   `filesGb`, `maxFiles` or `workers` on a kind (`IGNORED_KIND_FIELDS`): it parses, the queue
+ *   ignores every one, and one information line says so once, with the fix.
  * - **A git too old for the review gate's measure.** In a project with a `cc-smart-dev-kit.json`,
  *   git older than 2.40 is a warning: a review then counts for its exact commit only (D17).
  *
@@ -42,6 +46,7 @@ import {
 } from "../hooks/settings-hooks";
 import { MACHINE_WIDE_HOOKS } from "../hooks/specs";
 import { issuesChecks } from "../issues/doctor";
+import { ignoredFieldsOf } from "../jobs/kinds";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
@@ -419,6 +424,33 @@ function requiresLines(configFile: string, projectDir: string, home: string): Pr
   ];
 }
 
+/**
+ * One information line, once for the whole file, when a kind in `jobs.kinds` still sets a field
+ * that sized a job. The queue counts jobs now and ignores them all, so they can go; nothing is
+ * wrong, so it is never a warning.
+ */
+function jobKindLines(
+  config: CcSmartDevKitConfig | null,
+  configFile: string | null,
+  projectDir: string,
+  home: string,
+): ProjectLine[] {
+  if (config === null || configFile === null) return [];
+  const sized = Object.entries(config.jobs?.kinds ?? {})
+    .map(([name, kind]) => ({ fields: ignoredFieldsOf(kind), name }))
+    .filter((one) => one.fields.length > 0);
+  if (sized.length === 0) return [];
+  const where = sized.map((one) => `${one.name}: ${one.fields.join(", ")}`).join("; ");
+  return [
+    {
+      ok: true,
+      info: true,
+      text: `project: ${shown(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
+      fix: `remove them from jobs.kinds; how many heavy jobs run at once is your own setting: ${COMMAND} job set max-jobs <n>`,
+    },
+  ];
+}
+
 /** The project checks for the folder `cwd`; none outside git. */
 export async function projectChecks(
   cwd: string,
@@ -466,6 +498,7 @@ export async function projectChecks(
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
+    ...jobKindLines(config, configFile, projectDir, paths.home),
     ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.

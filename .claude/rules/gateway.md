@@ -48,6 +48,13 @@ Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.
   the Claude Code shape it relies on. The tests in `gateway.test.ts` › "prompts stay as
   Claude Code wrote them" and "a slot's Claude target: only the fields it refuses change"
   must keep passing.
+- **A backend never gets a message-thread continue** (`threadContinueRefusal`,
+  `src/gateway/threads.ts`): a body with `thread.type: "continue"` carries only the newest
+  messages, so the router answers it the 400 `thread_unsupported_request` Claude Code recovers
+  from (it resends the turn whole), first target or fallback alike, and never skips on to
+  another target. An Anthropic target gets it untouched. Any new top-level body field Claude
+  Code sends that leaves part of the conversation on Anthropic's side needs the same check
+  before a backend sees it (`gateway.test.ts` › "message threads").
 - **A stream that goes silent is ended, Anthropic's too (the owner, 2026-10-25).** Every 2xx
   `/v1/messages` event stream the router relays (`relayAnswer` → `endIfSilent`) fails its body
   once `timeouts.streamIdleMs` pass with no byte, counted from its headers; any byte resets it
@@ -145,13 +152,18 @@ safety checks), their ids in § Names. One rule set for all of them:
   Its tests: `gateway.test.ts` › "the breaker" › "D65: …".
 - **The fallback switch** (`fallback` in the config, `fallbackOn`): on, the next target
   answers on the statuses `fallbackKind` names; off, only the first target ever answers.
-  **Off by default for every slot, the judge's included (owner D66)**: `fallbackOn` returns the
-  person's own setting, else false — one home, no per-slot list. A 0.4.x opus or fable chain
-  stays off: "on" moves on at far more than the plan limit it was set up for. **Every slot is
+  **Off by default for every slot but the judge, which stands in only with tested targets
+  (owner D66, changed by the owner 2026-10-27)**: `fallbackOn` returns the person's own setting,
+  else true for the judge slot and false for every other — one home, no other per-slot list. A
+  0.4.x opus or fable chain stays off: "on" moves on at far more than the plan limit it was set
+  up for. The judge's is on because Claude's full limit otherwise fails every safety check and
+  auto mode approves nothing; it is safe because a stand-in must have passed the judge test
+  (below), so with none tested Claude judges alone, as before. **Every slot is
   Claude by default and the gateway is off** (D66): a new config keeps no chain, and `gateway
   setup` asks no slot and never turns the gateway on. A machine set up before it moves once, in
   `cc-smart-dev-kit setup` only (`src/gateway/claude-defaults.ts`; a backup first, one line per
-  change, a state-folder marker, never a session start or the background update). The kit
+  change, a state-folder marker, never a session start or the background update; it keeps the
+  judge's explicit off, the person's own, and drops an explicit on, now the default's). The kit
   suggests no model anywhere unasked; help that says *how* to set a chain or a fallback stays.
   `gateway setup` drops 0.4.x's hidden
   `claude-sonnet-5-5` from a scout or worker chain only while that chain is still 0.4.x's
@@ -215,8 +227,10 @@ Claude judges auto mode's safety checks first.
 - **No judge chain (the default):** Claude judges. While Claude is limited or down (the
   statuses a chain moves on for), the worker chain's backend targets that passed the judge test
   judge in its place, in that chain's order (`claudeFirstJudge`, `workerJudgeTargets`). The
-  judge's fallback switch is off by default (D66) and needs no judge chain: the stand-in is the
-  person's opt-in (`gateway fallback judge on`), and off keeps Claude alone.
+  judge's fallback switch is **on by default** (the owner, 2026-10-27; off from D66 to 1.4.1) and
+  needs no judge chain: `gateway fallback judge off` is the person's opt-out and keeps Claude
+  alone, and with no tested worker target Claude judges alone whatever the switch says. One home
+  for who may stand in: `judgeStandInState`.
   `defaultConfig()` still has no judge slot. A Claude 400 or 401 is
   Claude's answer, never a reason to use a stand-in. An untested worker target, and a
   `claude-…` target in the worker chain, never judge.
@@ -243,6 +257,15 @@ Claude judges auto mode's safety checks first.
 - **Say the trade-off** wherever a judge is set or shown (`JUDGE_WARNING`), the worker's stand-ins
   included: a weaker judge can block good work or let a risky command through, and it reads the
   conversation. `gateway status` and `doctor` show one judge line and the warning.
+- **A check that fails for want of capacity with no stand-in is said once, with the fix (the owner,
+  2026-10-27).** The router records it in the limit state (`checksDown`, `noteChecksDown`, from
+  `countedCheck`: a capacity failure the check ended on, `capacityFailureStatus`; any 2xx ends
+  it; a 400 or 401 does neither) with since when, Claude's plan limit and reset when its answer
+  carried them, and why nothing stood in (`ChecksDownWhy`). One module writes every word and
+  every fix (`src/gateway/checks-down.ts`; each command built from `COMMAND`): the status line,
+  `gateway status`, `doctor` (a `!` with its `Fix:`, never a failure) and the one line the
+  `tier-view` hook gives a session on that scope. Never a prompt, a key or a header value in
+  the record; the line to the model is a hook's context, never an edit of any request.
 
 ## Anthropic's server tools (D41, D44)
 

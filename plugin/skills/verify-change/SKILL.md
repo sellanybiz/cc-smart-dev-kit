@@ -1,6 +1,6 @@
 ---
 name: verify-change
-description: Use after a batch of code edits, while you are still building - the cheap loop. Read your own diff, run the tests it touches, check the blast radius of anything shared, run the checks the push will run before you hand back, and at the plan's end test with the person what only they can judge. Not for a turn that edited no code; the deeper pass before a commit is the review skill. Trigger phrases - "run the tests", "check my changes", "does it still work", "implementation complete".
+description: Use after a batch of code edits, while you are still building - the cheap loop. Read your own diff, check only what you changed (its tests, its lint, its type errors), check the blast radius of anything shared, run the full check once at the end (the session's own, never a subagent's), and at the plan's end test with the person what only they can judge. Not for a turn that edited no code; the deeper pass before a commit is the review skill. Trigger phrases - "run the tests", "check my changes", "does it still work", "implementation complete".
 ---
 
 # Verify A Change — The Cheap Loop
@@ -23,10 +23,24 @@ Read it as a reviewer would. Look for:
 - an async path with no error handling;
 - **a file you did not expect** — find out why before you go on.
 
-## 2. Run the tests that cover what you touched
+## 2. While building, check only what you changed
 
-The tests for the files you changed, not the whole suite after every edit. A green suite
-proves only what it covers: know where the project has no tests, and say so.
+A whole-project type check, lint or test run takes minutes in a big project, and many sessions
+queue them. While you build, run only these:
+
+- **Tests:** the test files you touched and the tests that cover the code you changed — the
+  runner's own related-files mode where it has one. Not the whole suite.
+- **Lint:** the linter on the changed files only.
+- **Type errors:** where a language server runs for the file, Claude Code reports its type errors
+  and warnings after each edit (a "Found N new diagnostic issues" line; `Ctrl+O` shows them): read
+  and fix them. It needs a code intelligence plugin for the language, is off in cloud sessions, and
+  covers the file you edited, not its callers. So it may be missing: then the type check waits for
+  § 4. A one-file `tsc a.ts` is no substitute: it ignores the project's `tsconfig.json`.
+- **The project's fast check:** when `.claude/cc-smart-dev-kit.json` sets `checks.fast`, run that
+  command in place of picking the lint and type steps yourself. The `verify-gate` hook asks for it
+  once, when you stop after changing files.
+
+A green run proves only what it covers: know where the project has no tests, and say so.
 
 A bug: write the test that reproduces it first and watch it fail, then fix the code. A test
 that fails: fix the cause (the core instructions' root-cause list). A new test must be able to
@@ -42,21 +56,24 @@ with several callers:
 
 - find every caller (`Grep` for the name as a whole word, `\bname\b`) and the text forms
   too — route strings, keys, event names;
-- run the type check once, to see every broken caller now.
+- read each caller you find, and change it: the whole type check is for § 4, not for this step.
 
 The full protocol — scope limits, renames, data — is `/cc-smart-dev-kit:impact-analysis`.
 
-## 4. Run the checks the push will run — before you hand back
+## 4. The full check — once, at the end
 
-Before you hand work back (as a builder) or push it (as the integrator), run the same checks
-the project's push hook and CI will run on it: the tests, the linter **including any slower,
-stricter rule set the push hook adds** (for example type-aware lint rules), the type check,
-the build. A commit hook that passed does not prove the push hook will. Find them in the
-project's hook configuration, its CI workflow and its package scripts. A check that fails:
-fix it at the source; never silence it.
+The full check is everything the project's push hook and CI run: the whole type check, the
+whole lint **including any slower, stricter rule set the push hook adds** (for example
+type-aware lint rules), all the tests, the build. A commit hook that passed does not prove the
+push hook will. Find them in the project's hook configuration, its CI workflow and its package
+scripts. It runs once, when the work is complete:
 
-While still mid-build, you need not run the heavy ones after every edit — the project's hooks
-and CI run them too. Run them once your piece is complete.
+- **A crew session:** before its hand-back report to the lead.
+- **The lead, or an ordinary session with no crew:** before the push, after the last merge.
+- **A subagent never runs it** — a builder or any other. The session that launched it runs the
+  full check once, after its agents hand back. A subagent runs § 2 and reports what it ran.
+
+A check that fails: fix it at the source; never silence it.
 
 ## 5. Driving the app? Restart the server first
 

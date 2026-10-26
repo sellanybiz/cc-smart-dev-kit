@@ -2358,7 +2358,7 @@ describe("the router as a Windows Scheduled Task", () => {
         home: "C:\\Users\\me",
         port: 20100,
       }),
-    ).toBe(`<?xml version="1.0" encoding="UTF-8"?>
+    ).toBe(`<?xml version="1.0"?>
 <!-- cc-smart-dev-kit-router: the local CC gateway for Claude Code (127.0.0.1 only).
      Written by \`cc-smart-dev-kit gateway setup\`; it is registered as a Scheduled Task with
      \`Register-ScheduledTask -Xml\`. The next setup overwrites it; edits here are lost. -->

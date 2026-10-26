@@ -99,9 +99,7 @@ describe("crew through the CLI", () => {
     const kinds = cli(["crew", "kinds"], home, env);
     expect(kinds.code).toBe(0);
     expect(kinds.err).toBe("");
-    expect(kinds.out.split("\n")[0]).toBe(
-      "kind          model   effort on Claude  effort on a slot  for",
-    );
+    expect(kinds.out.split("\n")[0]).toBe("kind          model   effort  for");
     const all = cli(["crew", "list", "--all"], home, env);
     expect([all.code, all.err, all.out]).toEqual([0, "", "No crew sessions on this machine.\n"]);
     const outside = cli(["crew", "list"], home, env);
@@ -119,7 +117,7 @@ describe("crew through the CLI", () => {
     );
   });
 
-  test("crew --help: every command is named, and the fallback where the monitors do not run", () => {
+  test("crew --help: every command is named, and how a watch that ended is started again", () => {
     const home = tempDir("home");
     const env = { HOME: home, PATH: dirname(process.execPath) };
     const run = cli(["crew", "--help"], home, env);
@@ -136,8 +134,9 @@ describe("crew through the CLI", () => {
     ]) {
       expect(run.out).toContain(command);
     }
-    // The fallback is named where the lead reads it: the watch's own help.
-    expect(run.out).toContain("crew watch --once");
-    expect(run.out).toContain("telemetry off");
+    // The way back for a watch that ended is named where the lead reads it: the watch's own
+    // help. Telemetry off is no case of its own any more (Claude Code 2.1.310 runs monitors there).
+    expect(run.out).toContain("Monitor\n                 tool (persistent)");
+    expect(run.out).not.toContain("telemetry off");
   });
 });

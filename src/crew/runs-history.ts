@@ -287,7 +287,8 @@ export async function runCrewHistory(args: HistoryArgs, ctx: CrewContext): Promi
   let callingId: null | string = null;
   try {
     callingId =
-      callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf)?.sessionId ?? null;
+      callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env)
+        ?.sessionId ?? null;
   } catch {
     // The calling session is unknown: the plan is then named by --plan or by the repository.
     callingId = null;

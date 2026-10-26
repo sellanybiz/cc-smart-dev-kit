@@ -100,7 +100,8 @@ Commands:
   lead tell ${LEAD_TELL_ARGS}
                  ${wrapText(LEAD_TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for each other lead, whose watch shows it as
-                 one line, and prints one SendMessage line per lead.
+                 one line, and prints one SendMessage line per lead, after the
+                 step that loads that deferred tool.
   start <phase> --slug <slug> --kind <kind> [--brief <file|->] [--base <ref>]
         [--files <glob,...>] [--model <model>] [--effort <effort>]
         [--waits-for <phase,...>] [--continue <crew session>] [--issue <n>]
@@ -140,21 +141,24 @@ Commands:
   answer <crew session> "<the answer>"
                  The lead's answer to a crew session's question. A running crew session
                  gets it from its own monitor, even when idle (the command says
-                 delivered, or recorded and prints the line the lead sends by hand);
+                 delivered, or recorded and prints the line the lead sends by hand,
+                 after the step that loads that deferred tool);
                  a stopped one is resumed with it. A second answer to the same
                  question is a correction that says it replaces the first.
   tell ${TELL_ARGS}
                  ${wrapText(TELL_SUMMARY, 80 - DESCRIPTION_INDENT.length, DESCRIPTION_INDENT)}
                  It records the note for your lead, and prints one SendMessage
-                 line per receiver. Status goes to the lead, never a peer.
+                 line per receiver, after the step that loads that deferred tool.
+                 Status goes to the lead, never a peer.
   watch [--lead <session>] [--once] [--timeout <seconds>]
                  One line per change in this lead's crew sessions: their steps, their
                  reports, their questions, what they need from you. It also
                  starts the queued crew sessions when a place frees, and ends the
-                 ones whose work is done. --once ends on the next change: where
-                 the plugin's monitors do not run (telemetry off), the lead
-                 runs "crew watch --once" in the background, and again after
-                 each event. --timeout bounds the wait.
+                 ones whose work is done. The lead skill's monitor runs it; a
+                 monitor that ended is started again with Claude Code's Monitor
+                 tool (persistent), on the same command. --once ends on the next
+                 change, and ends at once while a watch already runs for the
+                 lead. --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
                  at the token cap or the context share, whichever comes first, and

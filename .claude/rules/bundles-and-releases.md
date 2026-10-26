@@ -71,7 +71,9 @@ the others, `router.js` included.
   of `bun run build`**: that step must not need React's `node_modules`, and it must not
   pay the Next build's time. The export is reproducible — `generateBuildId` in
   `portal/next.config.ts` fixes the id Next makes at random, so a second build is byte for
-  byte the same (`diff -r` is empty) — which is why a plain compare is the check.
+  byte the same (`diff -r` is empty) — which is why a plain compare is the check. **Build it
+  on Linux:** Next's compiler for Windows gives the same source other bytes, so an export built
+  on Windows fails CI's compare (the script says so there; its header has the detail).
 - `plugin/bin/cc-smart-dev-kit` is written by hand. It finds `dist/cli.js` from its own
   location (`dirname "$0"`), because `CLAUDE_PLUGIN_ROOT` is not set in the Bash tool.
 - `plugin/bin/cc-smart-dev-kit-bun.sh` is written by hand too (the `.sh` is what makes Claude

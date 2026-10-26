@@ -583,17 +583,10 @@ export function runCrewStatus(ref: string, ctx: CrewContext): number {
 
 /** `crew kinds`'s lines: the table, each column as wide as its longest cell. */
 export function kindLines(): string[] {
-  const head = ["kind", "model", "effort on Claude", "effort on a slot", "for"];
+  const head = ["kind", "model", "effort", "for"];
   const rows = CREW_KIND_NAMES.map((kind) => {
     const policy = CREW_KINDS[kind];
-    return [
-      kind,
-      policy.model,
-      policy.effort,
-      // A kind that never runs on an affordable model says so (`ui`, D50).
-      policy.affordableEffort ?? "never",
-      policy.about,
-    ];
+    return [kind, policy.model, policy.effort, policy.about];
   });
   const widths = head.map((_, column) =>
     Math.max(...[head, ...rows].map((row) => (row[column] ?? "").length)),

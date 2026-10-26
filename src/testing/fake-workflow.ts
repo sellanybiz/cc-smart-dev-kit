@@ -239,8 +239,9 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
     writePersonalSetting(_paths, key, value): string {
       calls.writePersonalSetting.push({ key, value });
       if (options.unwired === true) unwired();
-      // The real writer's own rule: the two project switches live in the project's file.
-      if (key === "switches.sessionNames" || key === "switches.jobRoute") {
+      // The real writer's own rule: `sessionNames` lives in the project's file (`jobRoute` has a
+      // machine-wide default in the person's own).
+      if (key === "switches.sessionNames") {
         throw new Error(
           `${key} is the project's setting: run it with --project inside the project`,
         );

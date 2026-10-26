@@ -453,49 +453,69 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
   };
 }
 
-/** The heavy-job queue: one held type check, one waiting test run; nothing at all when empty. */
+/** The heavy-job queue: three held jobs of three slots, one waiting test run; nothing at all when empty. */
 export function jobsData(now: number, empty: boolean): JobsData {
   const folder = "/home/user/code/my-app/.claude/worktrees/b6b-live-stream";
   return {
+    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
     memoryGb: 32,
-    freeGb: empty ? 21.4 : 13.1,
-    budgetGb: 24,
-    keptGb: 8,
+    route: { on: !empty, project: null, source: empty ? "default" : "personal" },
     weights: empty
       ? {
           cpu: { value: null, why: "the CPU controller is off for this user's services" },
           io: { value: null, why: "the io controller is off for this user's services" },
         }
-      : { cpu: { value: 20 }, io: { value: 20 } },
+      : {
+          cpu: { value: 50 },
+          io: { value: null, why: "a job runs at systemd's own weight (100)." },
+        },
     stores: [
       {
         where: "machine",
-        freeGb: empty ? 21.4 : 13.1,
-        budgetGb: 24,
+        slots: 3,
+        used: empty ? 0 : 3,
         held: empty
           ? []
           : [
               {
-                gb: 8,
                 kind: "typecheck",
                 command: "tsc --noEmit",
                 folder,
                 user: mockCrewName("B6b", "live-stream"),
                 since: now - 2 * MINUTE - 10_000,
                 pid: 48211,
+                slot: true,
+              },
+              {
+                kind: "build",
+                command: "next build",
+                folder,
+                user: mockCrewName("B6b", "live-stream"),
+                since: now - MINUTE,
+                pid: 48302,
+                slot: true,
+              },
+              {
+                kind: "test",
+                command: "bun test src/jobs",
+                folder: "/home/user/code/my-app/.claude/worktrees/d1-docs",
+                user: mockCrewName("D1", "docs"),
+                since: now - 30_000,
+                pid: 48350,
+                slot: true,
               },
             ],
         waiting: empty
           ? []
           : [
               {
-                gb: 18,
                 kind: "test",
                 command: "bun test",
                 folder: "/home/user/code/my-app/.claude/worktrees/c2-skills-agents",
                 user: mockCrewName("C2", "skills-agents"),
-                since: now - 40_000,
+                since: now - 20_000,
                 pid: 48390,
+                slot: true,
               },
             ],
       },

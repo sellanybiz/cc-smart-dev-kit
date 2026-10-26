@@ -2,7 +2,7 @@
  * What the job queue decides from a shell line, pinned case by case: the kind the classifier
  * finds (`classifyHeavyCommand`), the command job-route turns the line into, whether the line
  * already runs `job run`, and, for `job run`'s own argv, the tool it reads and the argv it
- * starts (`runJob` adds the workers flag only where the command takes options).
+ * starts (`runJob` starts the command as it was given: the queue adds no option to it).
  *
  * These cases are where the job code's reading of a line and the guards' reading differed
  * before the two lexers became one (`src/shell/command.ts`, 0.6.0). Every value is written
@@ -132,15 +132,13 @@ describe("job-route and the classifier read a line the same way, case by case", 
   }
 });
 
-/** The argv `runJob` starts for a `test:run` job of 4 GB (3 workers), with nothing in the way. */
+/** The argv `runJob` starts for a `test:run` job, with nothing in the way. */
 async function startedArgv(command: [string, ...string[]]): Promise<readonly string[]> {
   let started: readonly string[] = [];
   const deps: JobDeps = {
     isNested: async () => false,
     ancestorHoldsName: async () => false,
-    acquire: async () => ({ gb: 4, release: () => {}, waitedSince: null }),
-    workersFor: () => 3,
-    memoryMaxFor: () => "1G",
+    acquire: async () => ({ release: () => {}, waitedSince: null }),
     launchFacts: () => null,
     now: Date.now,
     slice: {
@@ -159,14 +157,14 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
   await runJob(
     {
       kind: "test:run",
-      spec: DEFAULT_KINDS["test:run"] ?? null,
       command,
       cpuWeight: 20,
-      gb: 4,
       ioWeight: 20,
+      memoryMax: "1G",
       pid: 1,
       checkout: "/repo",
       slice: "jobs.slice",
+      slot: true,
       startedAt: 0,
     },
     deps,
@@ -174,56 +172,36 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
   return started;
 }
 
-describe("job run's own argv: the tool it reads, and where the workers flag goes", () => {
-  const ARGV_ROWS: [
-    argv: [string, ...string[]],
-    tool: { name: string; args: string[] },
-    started: string[],
-  ][] = [
-    [
-      ["bunx", "vitest", "run"],
-      { name: "vitest", args: ["run"] },
-      ["bunx", "vitest", "run", "--maxWorkers=3"],
-    ],
-    [
-      ["timeout", "600", "bunx", "vitest", "run"],
-      { name: "vitest", args: ["run"] },
-      ["timeout", "600", "bunx", "vitest", "run", "--maxWorkers=3"],
-    ],
-    [
-      ["sh", "-c", "bunx vitest run"],
-      { name: "sh", args: ["-c", "bunx vitest run"] },
-      ["sh", "-c", "bunx vitest run"],
-    ],
+describe("job run's own argv: the tool it reads, and the argv it starts as given", () => {
+  const ARGV_ROWS: [argv: [string, ...string[]], tool: { name: string; args: string[] }][] = [
+    [["bunx", "vitest", "run"], { name: "vitest", args: ["run"] }],
+    [["timeout", "600", "bunx", "vitest", "run"], { name: "vitest", args: ["run"] }],
+    [["sh", "-c", "bunx vitest run"], { name: "sh", args: ["-c", "bunx vitest run"] }],
     [
       ["timeout", "600", "sh", "-c", "bunx vitest run"],
       { name: "sh", args: ["-c", "bunx vitest run"] },
-      // was: `--maxWorkers=3` added at the end, where the shell takes it as its `$0`.
-      ["timeout", "600", "sh", "-c", "bunx vitest run"],
     ],
     [
       ["env", "-i", "bunx", "vitest", "run"],
       // was: { name: "-i", … } (CM-9).
       { name: "vitest", args: ["run"] },
-      ["env", "-i", "bunx", "vitest", "run", "--maxWorkers=3"],
     ],
     [
       ["time", "-p", "bunx", "vitest", "run"],
       // was: { name: "-p", … } (CM-9).
       { name: "vitest", args: ["run"] },
-      ["time", "-p", "bunx", "vitest", "run", "--maxWorkers=3"],
     ],
     [
       ["sudo", "-u", "x", "bunx", "vitest", "run"],
       // was: { name: "-u", … } (CM-9).
       { name: "vitest", args: ["run"] },
-      ["sudo", "-u", "x", "bunx", "vitest", "run", "--maxWorkers=3"],
     ],
   ];
-  for (const [argv, tool, started] of ARGV_ROWS) {
+  for (const [argv, tool] of ARGV_ROWS) {
     test(argv.join(" "), async () => {
       expect(toolCallOfArgv(argv)).toEqual(tool);
-      expect(await startedArgv(argv)).toEqual(started);
+      // No worker count and no other option is added, whatever the command is.
+      expect(await startedArgv(argv)).toEqual(argv);
     });
   }
 });

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { type CliPaths, tildify } from "../cli/paths";
+import type { CliPaths } from "../cli/paths";
 import { IGNORE_CASE, isStrictlyInside } from "../path-compare";
 import { isOlder } from "../update/check";
 import { findUserInstall } from "./installed-plugins";
@@ -93,7 +93,7 @@ export function instructionsPaths(paths: CliPaths, source: string): Instructions
     claudeMd: join(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
     // `~/...` keeps a CLAUDE.md shared between machines (a dotfiles repo) right on each one.
-    importPath: tildify(join(target, ALWAYS_ON_FILE), paths.home),
+    importPath: claudeImportPath(join(target, ALWAYS_ON_FILE), paths.home),
     installedPluginsFile: paths.installedPluginsFile,
   };
 }
@@ -113,6 +113,21 @@ export interface InstructionsLine {
   mark: "+" | "~" | "-" | "!";
   file: string;
   what: string;
+}
+
+/**
+ * A file's path as Claude Code's `@` import reads it. Its parser takes a run of characters
+ * with no space and no backslash (`\ ` is an escaped space) that starts with `~/`, `./`, `/`
+ * or a name: `(?:^|\s)@((?:[^\s\\]|\\ )+)`, read in Claude Code 2.1.310's own code. So a
+ * Windows path written with `\` stops at its first backslash and imports nothing, with no
+ * error: the block `@~\.claude\…\core.md` that setup wrote on Windows up to 1.4.1 loaded no
+ * instructions at all. Here the path under the home folder starts `~/`, every separator is
+ * `/` on every platform (Claude Code resolves `/` on Windows too), and a space is `\ `.
+ */
+export function claudeImportPath(path: string, home: string): string {
+  const rest = path.slice(home.length);
+  const underHome = path.startsWith(home) && /^[\\/]/.test(rest);
+  return (underHome ? `~${rest}` : path).replaceAll("\\", "/").replaceAll(" ", "\\ ");
 }
 
 /** The text between the block's markers. */

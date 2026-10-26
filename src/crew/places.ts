@@ -24,9 +24,9 @@
  *   `workflow.crew.usagePercent` a new opus-tier crew session waits, unless the gateway's opus
  *   slot has a chain with its fallback on (`usage-guard.ts`); a window that cannot be read never
  *   holds.
- * - **The memory** (`workflow.crew.memoryGb`): the memory free now, less what heavy jobs
- *   reserved and have not used yet (the job queue's own reading, `notYetUsedGb`), must be at least
- *   that much. Where free memory cannot be read (macOS), only the caps count.
+ * - **The memory** (`workflow.crew.memoryGb`): the memory free now (the job queue's own reading
+ *   of the machine, `machineMemory`) must be at least that much. Where free memory cannot be
+ *   read (macOS), only the caps count.
  * - **The CPU** (`workflow.crew.loadPerCore`): while the 1-minute load average is above that
  *   many for each core (`src/machine/load.ts`), a start waits — 24 crew sessions once drove a
  *   16-core machine to a load of 85 with plenty of memory free. Where the platform gives no load
@@ -45,10 +45,8 @@
  */
 import { mkdirSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
-import { DEFAULT_SLICE, jobsPaths, loadJobsConfig } from "../jobs/config";
-import { GIB, type MemoryFacts, machineMemory, sliceBytes } from "../jobs/memory";
-import { notYetUsedGb, oneDecimal } from "../jobs/queue";
-import { leaseStore } from "../jobs/store";
+import { GIB, type MemoryFacts, machineMemory } from "../jobs/memory";
+import { oneDecimal } from "../jobs/queue";
 import { type LoadFacts, type LoadReading, loadLimit, machineLoad } from "../machine/load";
 import { type Checkout, loadProjectConfig } from "../project/resolve";
 import { withLock } from "../setup/lock";
@@ -317,34 +315,13 @@ export async function withPlacesLock<T>(
 
 /**
  * The memory a new crew session may use now, in GB: the memory free now (`machineMemory`, the job
- * queue's reading, cgroup ceilings included) less what heavy jobs on this machine reserved and
- * have not used yet (`notYetUsedGb`). Null where free memory cannot be read. A `jobs.json` that
- * cannot be used counts no reservation: the plain free memory decides.
+ * queue's reading of the machine, cgroup ceilings included). Heavy jobs reserve nothing any more
+ * (the queue counts jobs, not gigabytes), so what they use already shows in the free number.
+ * Null where free memory cannot be read.
  */
-export async function freeForCrewGb(home: string, memory: MemoryFacts): Promise<null | number> {
+export function freeForCrewGb(memory: MemoryFacts): null | number {
   const reading = machineMemory(memory);
-  if (reading.availableBytes === null) return null;
-  const freeGb = reading.availableBytes / GIB;
-  let config: ReturnType<typeof loadJobsConfig>;
-  try {
-    config = loadJobsConfig(jobsPaths(home).configFile);
-  } catch {
-    // `job status` names a broken jobs.json; here the reservations are only unknown.
-    return freeGb;
-  }
-  const store = leaseStore({
-    capacityGb: () => 0,
-    dir: config.stateDir ?? jobsPaths(home).stateDir,
-    label: "this machine",
-    shared: false,
-  });
-  const heldGb = (await store.held()).reduce((sum, one) => sum + one.gb, 0);
-  const uid = process.getuid?.();
-  const slice =
-    uid === undefined || config.launch === "plain"
-      ? null
-      : sliceBytes(memory.read, uid, config.slice ?? DEFAULT_SLICE);
-  return freeGb - notYetUsedGb(heldGb, slice);
+  return reading.availableBytes === null ? null : reading.availableBytes / GIB;
 }
 
 /** What one lead's `crew start` would do now, as its guard asks it (D59). */
@@ -400,7 +377,7 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
   if (!first.start) return first;
   let freeGb: null | number;
   try {
-    freeGb = await freeForCrewGb(input.paths.home, input.memory);
+    freeGb = freeForCrewGb(input.memory);
   } catch {
     return null;
   }

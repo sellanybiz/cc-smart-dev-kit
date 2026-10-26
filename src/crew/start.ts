@@ -48,12 +48,10 @@ import { type PickedIssue, pickIssue } from "../issues/pickup";
 import type { McpContext } from "../mcp/servers";
 import { readTavilyKey } from "../mcp/tavily";
 import {
-  AFFORDABLE_EFFORT,
   answeringSlot,
   CREW_KINDS,
   type CrewKind,
   crewLaunch,
-  isAffordable,
   isCrewKind,
   type LaunchModel,
   resolveLaunchModel,
@@ -63,6 +61,7 @@ import {
 } from "../models/launch-policy";
 import { CONFIG_PATH } from "../project/resolve";
 import { launcherArgv } from "../setup/launcher-cmd";
+import { REMOTE_CONTROL_SETTING } from "../setup/remote-control";
 import {
   RETRY_WATCHDOG_ENV,
   RETRY_WATCHDOG_RECHECK_ENV,
@@ -229,8 +228,8 @@ function uiRefusal(): string {
 
 /**
  * The model and effort: the kind's own, or the override (`--model`, `--effort`) — a model
- * without an effort runs at the kind's effort, or at `AFFORDABLE_EFFORT` when an affordable
- * model answers it. A `ui` session is never put on an affordable model or below `high` (D50).
+ * without an effort runs at the kind's effort, whatever model answers it (the owner,
+ * 2026-10-26). A `ui` session is never put on an affordable model or below `high` (D50).
  * Either way the Agent guard's policy judges it: anything it would refuse or ask the person
  * about is refused here, with its words.
  */
@@ -245,10 +244,7 @@ export function chooseLaunch(
   const own = crewLaunch(kind, gateway, ctx.env);
   const model = override.model ?? own.model;
   const real = override.model === null ? own.real : resolveLaunchModel(model, gateway, ctx.env);
-  const kindEffort = isAffordable(real) ? AFFORDABLE_EFFORT : CREW_KINDS[kind].effort;
-  const effort = (
-    override.effort ?? (override.model === null ? own.effort : kindEffort)
-  ).toLowerCase();
+  const effort = (override.effort ?? CREW_KINDS[kind].effort).toLowerCase();
   if (kind === "ui" && (!uiTierAllowed(real) || !uiEffortAllowed(effort))) {
     return { refusal: uiRefusal() };
   }
@@ -921,8 +917,16 @@ async function failed(
  * after the reset. `disableClaudeAiConnectors` is a documented settings key any file
  * may set, so this session fetches no connector; `--strict-mcp-config` already leaves their
  * servers out (`docs/claude-code-contract.md`).
+ *
+ * **Remote Control stays off in a crew session** (the owner's rule): nobody attaches to one from
+ * a phone, and setup turns auto-connect on for the person's own sessions
+ * (`remoteControlAtStartup: true` in the user's settings). The key is security-sensitive: Claude
+ * Code takes a `true` only from the user's, a `--settings` or managed settings, but a `false`
+ * from any of them, so this file's `false` turns it off for the crew session alone (read from
+ * the 2.1.310 binary; a managed `true` still outranks it). The key's name is setup's own
+ * (`REMOTE_CONTROL_SETTING`, `src/setup/remote-control.ts`).
  */
-function crewSettings(id: string, off: readonly string[]): Record<string, unknown> {
+export function crewSettings(id: string, off: readonly string[]): Record<string, unknown> {
   const settings: Record<string, unknown> = {
     env: {
       [CREW_ENV]: id,
@@ -934,6 +938,7 @@ function crewSettings(id: string, off: readonly string[]): Record<string, unknow
     settings.enabledPlugins = Object.fromEntries(off.map((one) => [one, false]));
   }
   settings.disableClaudeAiConnectors = true;
+  settings[REMOTE_CONTROL_SETTING] = false;
   return settings;
 }
 

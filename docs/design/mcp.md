@@ -3,8 +3,8 @@
 
 `setup` registers MCP servers at user scope, through Claude Code's own
 `claude mcp add-json --scope user` (`src/mcp/`). The plugin does not serve them: a server
-served from a plugin gets a new tool-name prefix, which would break every permission rule,
-hook matcher and agent tool list that names `mcp__<server>__*`; and a server from a project
+served from a plugin gets a new tool-name prefix, which would break every permission rule and
+hook matcher that names `mcp__<server>__*`; and a server from a project
 file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
 which every session that works in a worktree does. Registered for the user, the names stay.
 

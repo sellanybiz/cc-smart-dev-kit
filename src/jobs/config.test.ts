@@ -1,19 +1,21 @@
 /**
- * The machine's `jobs.json`: the CPU and I/O weights it may set, their defaults, and the
- * values that leave systemd's own default in force. The weights are machine-wide: a
- * project's file cannot own them.
+ * The machine's `jobs.json`: how many heavy jobs run at once, the CPU and I/O weights it may
+ * set, their defaults (off: systemd's own), and the values that leave systemd's default in
+ * force. All of it is machine-wide: a project's file cannot own any of it.
  */
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { ccSmartDevKitConfigSchema } from "../project/config";
 import { tempDir } from "../testing/temp";
 import {
   cpuWeightOf,
-  DEFAULT_CPU_WEIGHT,
-  DEFAULT_IO_WEIGHT,
+  DEFAULT_MAX_JOBS,
   ioWeightOf,
   JobsConfigError,
   loadJobsConfig,
+  MAX_WEIGHT,
+  maxJobsOf,
 } from "./config";
 
 function configFile(value: unknown): string {
@@ -22,20 +24,48 @@ function configFile(value: unknown): string {
   return file;
 }
 
-describe("the weights in jobs.json", () => {
-  test("the defaults: a fifth of systemd's 100, one constant each", () => {
-    expect(DEFAULT_CPU_WEIGHT).toBe(20);
-    expect(DEFAULT_IO_WEIGHT).toBe(20);
-    expect(cpuWeightOf({})).toBe(20);
-    expect(ioWeightOf({})).toBe(20);
+describe("maxJobs in jobs.json", () => {
+  test("three jobs at once, until the person says otherwise", () => {
+    expect(DEFAULT_MAX_JOBS).toBe(3);
+    expect(maxJobsOf({})).toBe(3);
+    expect(maxJobsOf(loadJobsConfig(configFile({})))).toBe(3);
   });
 
-  test("a value overrides the default, and 0 or off leaves systemd's own", () => {
+  test("a value of 1 or more overrides the default, 1 meaning one at a time", () => {
+    expect(maxJobsOf(loadJobsConfig(configFile({ maxJobs: 1 })))).toBe(1);
+    expect(maxJobsOf(loadJobsConfig(configFile({ maxJobs: 8 })))).toBe(8);
+  });
+
+  test("only a whole number from 1: 0, a fraction, text and a negative are refused, naming the field", () => {
+    for (const value of [0, 1.5, "3", -1, true, null]) {
+      expect(() => loadJobsConfig(configFile({ maxJobs: value }))).toThrow(JobsConfigError);
+    }
+    const file = configFile({ maxJobs: 0 });
+    expect(() => loadJobsConfig(file)).toThrow(`Invalid ${file}: maxJobs: Too small`);
+  });
+
+  // The slots are the machine's: a project's file cannot set them.
+  test("a project's cc-smart-dev-kit.json cannot set it", () => {
+    expect(ccSmartDevKitConfigSchema.safeParse({ jobs: { maxJobs: 2 } }).success).toBe(false);
+    expect(ccSmartDevKitConfigSchema.safeParse({ jobs: { route: true } }).success).toBe(true);
+  });
+});
+
+describe("the weights in jobs.json", () => {
+  test("off by default: a heavy job runs at systemd's own weight", () => {
+    expect(cpuWeightOf({})).toBe(0);
+    expect(ioWeightOf({})).toBe(0);
+    expect(cpuWeightOf(loadJobsConfig(configFile({})))).toBe(0);
+    expect(ioWeightOf(loadJobsConfig(configFile({})))).toBe(0);
+  });
+
+  test("a value is the weight, and 0 or off leaves systemd's own", () => {
     expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 50 })))).toBe(50);
     expect(ioWeightOf(loadJobsConfig(configFile({ ioWeight: 1 })))).toBe(1);
-    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 10_000 })))).toBe(10_000);
+    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: MAX_WEIGHT })))).toBe(10_000);
     expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 0 })))).toBe(0);
     expect(ioWeightOf(loadJobsConfig(configFile({ ioWeight: "off" })))).toBe(0);
+    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: "off" })))).toBe(0);
   });
 
   test("systemd's range only: 1 to 10000, or 0 / off", () => {

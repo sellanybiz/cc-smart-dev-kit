@@ -10,11 +10,15 @@
  * - the project's committed `.claude/cc-smart-dev-kit.json` `workflow` object, so a team
  *   shares one policy and it travels with the code.
  *
- * **A switch is never stored here.** `switches.statusLine` and `switches.updateHold` are the
- * person's own settings, and `switches.sessionNames` and `switches.jobRoute` are the
- * project's `sessionNames` and `jobs.route`: the resolver reads the real setting, and a
- * `workflow set` writes it there. A second copy in this file would be a second truth, so
- * the schema does not accept one (`workflowSchema` has no `switches` field).
+ * **A switch is not stored here, with one exception.** `switches.statusLine` and
+ * `switches.updateHold` are the person's own settings, and `switches.sessionNames` is the
+ * project's `sessionNames`: the resolver reads the real setting, and a `workflow set` writes it
+ * there. A second copy in this file would be a second truth, so `workflowSchema` (also the
+ * project's `workflow` object) has no `switches` field. The exception is `switches.jobRoute`:
+ * the project's `jobs.route` is its own choice, and the person's file holds the machine-wide
+ * default under it (`personalWorkflowSchema`, the only schema with a `switches` field). They are
+ * two settings of one switch, not two copies: the project's wins field by field, as every other
+ * workflow setting does (`resolve.ts`).
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
  * without the person, every alert is on, and no crew session starts.
@@ -352,6 +356,25 @@ export const workflowSchema = z.strictObject({
 
 export type Workflow = z.infer<typeof workflowSchema>;
 
+/**
+ * The switches the person's own file holds a default for: the project's file may set the same
+ * switch in its own place and then wins (`jobs.route`). One home for the names, so the writer
+ * and the schema below read the same list.
+ */
+export const PERSONAL_FILE_SWITCH_NAMES = ["jobRoute"] as const satisfies readonly SwitchName[];
+
+/**
+ * The person's own file: the workflow fields of a project's `workflow` object, and the
+ * `switches` group a project's object does not have. `jobRoute`: heavy commands go through the
+ * job queue in every project that does not say otherwise in its `jobs.route` (default: off).
+ */
+export const personalWorkflowSchema = workflowSchema.extend({
+  switches: z.strictObject({ jobRoute: z.boolean().optional() }).optional(),
+});
+
+/** The person's own workflow file, read: a `Workflow` and the `switches` group. */
+export type PersonalWorkflow = z.infer<typeof personalWorkflowSchema>;
+
 /** Every value a setting falls back to when neither the project nor the person sets it. */
 export const workflowDefaults = {
   autoCommit: false,
@@ -558,7 +581,8 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
 /**
  * The switches the project's own file holds (`sessionNames`, `jobs.route`). The other two — the
  * status line and the update hold — are the person's, per machine: `workflow set --project`
- * refuses them (`write.ts`), and so has nothing for a pull request to change.
+ * refuses them (`write.ts`), and so has nothing for a pull request to change. `jobRoute` is both:
+ * the person's file holds its machine-wide default too (`PERSONAL_FILE_SWITCH_NAMES`).
  */
 export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
 
@@ -569,6 +593,14 @@ export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "job
  */
 export function isProjectKey(key: WorkflowKey): boolean {
   return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+}
+
+/** True when the person's own file holds the key (a switch with a machine-wide default). */
+export function isPersonalFileSwitch(key: string): key is `switches.${SwitchName}` {
+  return (
+    isSwitchKey(key) &&
+    (PERSONAL_FILE_SWITCH_NAMES as readonly SwitchName[]).includes(switchOf(key))
+  );
 }
 
 /** The switch's own name: `"switches.statusLine"` → `"statusLine"`. */

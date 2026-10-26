@@ -2,8 +2,9 @@
  * The router's limit state file: `~/.local/state/cc-smart-dev-kit/gateway-state.json`.
  *
  * The router writes it, and reads it once when it starts (a restart keeps what it saw);
- * `cc-smart-dev-kit statusline` and the StopFailure hook read it. It says two
- * things, and never a key, a header value or a word of a request:
+ * `cc-smart-dev-kit statusline`, `gateway status`, `doctor`, the StopFailure hook and the
+ * session note read it. It says these things, and never a key, a header value or a word of a
+ * request:
  *   - `limits`: the Claude models Anthropic last answered with the plan's usage limit
  *     (`planUsageLimit`), with the window that ran out and when it resets. A model is removed
  *     once Anthropic answers it again.
@@ -13,6 +14,9 @@
  *     their requests (`breaker` in the config decides whether it may), with each target's
  *     rest and how many requests are held. Optional: a reader that does not know it ignores
  *     it, and a file without it reads as no breaker open.
+ *   - `checksDown`: auto mode's safety checks that fail for want of capacity with no stand-in
+ *     judging, by scope: since when, Claude's plan limit when its answer carried one, and why
+ *     nothing stood in. The next check that gets a verdict removes it. Optional like `breakers`.
  *   - `seenClaude`: the Claude model ids Claude Code sent (the portal's "Claude login" list).
  *     The router writes it only when an id is new, and then reads the file first and changes
  *     only this field, so a change another program made to the rest stays.
@@ -78,6 +82,50 @@ const breakerSchema = z.object({
   targets: z.array(breakerTargetSchema),
 });
 
+/**
+ * Why no stand-in judged a safety check that failed for want of capacity (`checksDownSchema`):
+ *   - `untested`: no worker target has passed the judge test, so Claude judged alone;
+ *   - `no-worker`: the worker slot has no affordable target to stand in;
+ *   - `off`: the judge's fallback switch is off (the person's own choice), though a worker
+ *     target passed the judge test;
+ *   - `failed`: the tested stand-ins were asked and failed too;
+ *   - `chain-untested`: the judge chain the person set has no target that passed the judge
+ *     test, so Claude judged alone;
+ *   - `chain-failed`: the judge chain the person set was asked and failed.
+ */
+export const CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed",
+] as const;
+
+export type ChecksDownWhy = (typeof CHECKS_DOWN_WHY)[number];
+
+/**
+ * Auto mode's safety checks are failing: the router could not get a verdict for a check, because
+ * Claude (and any stand-in) was limited or down. Written when a check fails for want of capacity
+ * (`capacityFailureStatus`) and nothing stood in; cleared by the next check that gets a verdict.
+ * One record per scope, keyed like `breakers` (`stateKeyFor(JUDGE_SLOT, profile)`): a profile's
+ * judge switch and chains are its own. Facts only, never a word of a request.
+ */
+const checksDownSchema = z.object({
+  /** Claude's plan limit window (`five_hour`) when its answer said so; else null. */
+  claim: z.string().nullable(),
+  /** Milliseconds: the last check that failed. The record counts for 15 minutes after it. */
+  lastAt: z.number(),
+  /** Unix seconds: when Claude's plan limit resets, when its answer said; else null. */
+  resetsAt: z.number().nullable(),
+  /** Milliseconds: the first check of this run of failures. */
+  since: z.number(),
+  /** The HTTP status Claude Code was answered with (502 or 504 when nobody answered). */
+  status: z.int(),
+  /** Why no stand-in judged. */
+  why: z.enum(CHECKS_DOWN_WHY),
+});
+
 const stateSchema = z.object({
   /**
    * The slots whose every target is limited or down, so the router holds their requests.
@@ -85,6 +133,12 @@ const stateSchema = z.object({
    * not know the field ignores it.
    */
   breakers: z.record(z.string(), breakerSchema).optional(),
+  /**
+   * Auto mode's safety checks that fail for want of capacity with no stand-in (`ChecksDown`),
+   * by scope. Absent in a file an older router wrote: it reads as none failing. A reader that
+   * does not know the field ignores it.
+   */
+  checksDown: z.record(z.string(), checksDownSchema).optional(),
   fallbacks: z.record(z.string(), fallbackSchema),
   limits: z.record(z.string(), limitSchema),
   /**
@@ -140,6 +194,7 @@ export type LimitRecord = z.output<typeof limitSchema>;
 export type FallbackRecord = z.output<typeof fallbackSchema>;
 export type BreakerTarget = z.output<typeof breakerTargetSchema>;
 export type BreakerRecord = z.output<typeof breakerSchema>;
+export type ChecksDownRecord = z.output<typeof checksDownSchema>;
 export type LimitState = z.output<typeof stateSchema>;
 
 export function emptyLimitState(): LimitState {
@@ -164,12 +219,18 @@ export function parseLimitState(text: string): LimitState | null {
   return parsed.success ? parsed.data : null;
 }
 
+/** What `formatClock` shows for a time no date can hold. */
+export const UNKNOWN_CLOCK = "an unknown time";
+
 /**
  * A reset time as the status line and the alert show it: `13:00` today, `Oct 18 22:46` on
- * another day, in `timeZone` (undefined: the machine's).
+ * another day, in `timeZone` (undefined: the machine's). A time no date can hold (the file
+ * accepts any number) is `UNKNOWN_CLOCK`: `Intl` throws on such a date, and every reader of
+ * this file prints its times here.
  */
 export function formatClock(epochSec: number, nowMs: number, timeZone?: string): string {
   const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime())) return UNKNOWN_CLOCK;
   const day = (date: Date) =>
     new Intl.DateTimeFormat("en-CA", {
       day: "2-digit",
@@ -222,6 +283,18 @@ export function currentFallbacks(state: LimitState, nowMs: number): [string, Fal
  */
 export function currentBreakers(state: LimitState, nowMs: number): [string, BreakerRecord][] {
   return Object.entries(state.breakers ?? {})
+    .filter(([, record]) => current(null, record.lastAt, nowMs))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/**
+ * The scopes whose safety checks are failing at `nowMs`, by state key. The record ends with the
+ * next check that gets a verdict (the router deletes it), and has no end time of its own, so it
+ * counts for 15 minutes after the router last touched it (`lastAt`), like a breaker's: a router
+ * that stopped, or a person who stopped using auto mode, leaves a record that goes stale.
+ */
+export function currentChecksDown(state: LimitState, nowMs: number): [string, ChecksDownRecord][] {
+  return Object.entries(state.checksDown ?? {})
     .filter(([, record]) => current(null, record.lastAt, nowMs))
     .sort(([a], [b]) => (a < b ? -1 : 1));
 }

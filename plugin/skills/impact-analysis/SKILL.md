@@ -78,7 +78,7 @@ A change is done only when every reference is updated:
 ## After the change
 
 1. Search again for every changed name: zero stale references.
-2. Run `/cc-smart-dev-kit:verify-change` (the type check once, your diff, the tests).
+2. Run `/cc-smart-dev-kit:verify-change` (your diff, then the checks for what you changed; the whole type check waits for its § 4).
 3. Re-read each call site from the first trace: still correct?
 4. A database change: check its indexes and the project's access rules.
 5. New files: right folder and name (`/cc-smart-dev-kit:extract-or-duplicate`).

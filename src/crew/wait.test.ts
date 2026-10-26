@@ -14,9 +14,13 @@ import { formatLimitState, type LimitState } from "../gateway/limit-state";
 import { tempDir } from "../testing/temp";
 import type { CrewRecord } from "./store";
 import {
+  checksDownFor,
+  checksPauseText,
+  checksWait,
   FIRST_BACKOFF_MS,
   gatewayNow,
   healthNow,
+  isBackendRefusal,
   LIMIT_RESET_JITTER_MS,
   lastPauseOf,
   limitForStop,
@@ -96,7 +100,7 @@ function breaker(sinceMs = Date.parse("2026-10-21T21:05:00.000Z")) {
 
 /** The facts one wait is judged by. */
 function facts(change: Partial<WaitFacts> = {}): WaitFacts {
-  return { breakers: {}, inUse: null, limits: {}, ...change };
+  return { breakers: {}, checksDown: {}, inUse: null, limits: {}, ...change };
 }
 
 describe("the errors that pause a crew session", () => {
@@ -106,6 +110,25 @@ describe("the errors that pause a crew session", () => {
     }
     for (const error of [null, "", "authentication_failed", "billing_error", "unknown"]) {
       expect(pausesCrew(error)).toBe(false);
+    }
+  });
+});
+
+describe("the errors that are a backend's refusal, not a crash", () => {
+  test("unknown (a router's 424) and model_not_found; every other class stays a failure", () => {
+    expect(isBackendRefusal("unknown")).toBe(true);
+    expect(isBackendRefusal("model_not_found")).toBe(true);
+    for (const error of [
+      "",
+      "rate_limit",
+      "server_error",
+      "overloaded",
+      "authentication_failed",
+      "invalid_request",
+      "billing_error",
+      "Unknown",
+    ]) {
+      expect(isBackendRefusal(error)).toBe(false);
     }
   });
 });
@@ -430,6 +453,67 @@ describe("the lines the person reads", () => {
     );
   });
 
+  test("the pause line ends with the error Claude Code showed, so the lead can tell a stall from a limit", () => {
+    const text = "API Error: 500 upstream connect error";
+    expect(
+      pauseText(
+        { kind: "slot", since: "2026-10-21T21:05:00.000Z", slot: "cc-smart-dev-kit-worker" },
+        "server_error",
+        NOW,
+        "UTC",
+        text,
+      ),
+    ).toBe(
+      "worker slot limited since 21:05; goes on by itself when it answers · server_error: API Error: 500 upstream connect error",
+    );
+    expect(
+      pauseText(
+        { kind: "claude-limit", model: "claude-opus-5-5", resetsAt: null },
+        "rate_limit",
+        NOW,
+        "UTC",
+        "You've hit your limit",
+      ),
+    ).toBe(
+      "claude-opus-5-5 is at its limit, no reset time named; goes on by itself when it answers once the limit lifts · rate_limit: You've hit your limit",
+    );
+    // An unexplained wait carries it inside the sentence, so the class is said once.
+    expect(
+      pauseText(
+        { kind: "unknown", since: "2026-10-21T22:00:00.000Z" },
+        "server_error",
+        NOW,
+        "UTC",
+        text,
+      ),
+    ).toBe(
+      "it stopped on server_error: API Error: 500 upstream connect error; the watch goes on with it once a model answers",
+    );
+    // No text: the lines are the ones above, as before.
+    expect(
+      pauseText(
+        { kind: "unknown", since: "2026-10-21T22:00:00.000Z" },
+        "server_error",
+        NOW,
+        "UTC",
+        "",
+      ),
+    ).toBe("it stopped on server_error; the watch goes on with it once a model answers");
+    // A long text with a line break is cut to one line of 100 characters, ending in an ellipsis.
+    const long = `first line
+second ${"x".repeat(200)}`;
+    const line = pauseText(
+      { kind: "unknown", since: "2026-10-21T22:00:00.000Z" },
+      "server_error",
+      NOW,
+      "UTC",
+      long,
+    );
+    expect(line).toBe(
+      `it stopped on server_error: first line second ${"x".repeat(100 - "first line second ".length - 1)}…; the watch goes on with it once a model answers`,
+    );
+  });
+
   test("the resume text names what changed and the phase", () => {
     expect(
       resumeText(
@@ -566,7 +650,7 @@ describe("when the watch may resume a paused crew session", () => {
 
 describe("the router's own answer", () => {
   test("a request count that grew is an answer; no health page leaves the state file as the evidence", () => {
-    const now = { breakers: {}, inUse: null, limits: {}, requests: 12 };
+    const now = { breakers: {}, checksDown: {}, inUse: null, limits: {}, requests: 12 };
     expect(routerAnsweredSince(now, 11)).toBe(true);
     expect(routerAnsweredSince(now, 12)).toBe(false);
     expect(routerAnsweredSince({ ...now, requests: null }, 12)).toBe(true);
@@ -787,5 +871,113 @@ describe("the limit that explains a stop", () => {
 
   test("the spacing the watch keeps between two resumes", () => {
     expect(RESUME_SPACING_MS).toBe(30_000);
+  });
+});
+
+describe("the safety-checks wait (owner, 2026-10-27)", () => {
+  const JUDGE = "cc-smart-dev-kit-judge";
+  const PROFILE_JUDGE = `my-project/${JUDGE}`;
+
+  /** A failing-checks record: since 21:40, last touched a minute ago, Claude at its five-hour limit. */
+  function down(lastAt = NOW - MINUTE) {
+    return {
+      claim: "five_hour",
+      lastAt,
+      resetsAt: Date.parse("2026-10-21T23:00:00.000Z") / 1000,
+      since: Date.parse("2026-10-21T21:40:00.000Z"),
+      status: 429,
+      why: "untested" as const,
+    };
+  }
+
+  /** A crew session paused on the machine's failing checks. */
+  function onChecks(change: Partial<CrewRecord> = {}): CrewRecord {
+    return paused({
+      lastPause: { backoffMs: 0, since: "2026-10-21T21:50:00.000Z" },
+      waitingFor: { kind: "safety-checks", scope: JUDGE, since: "2026-10-21T21:40:00.000Z" },
+      ...change,
+    });
+  }
+
+  test("the session's own scope only: the machine's judge key, or its profile's", () => {
+    const record = down();
+    expect(checksDownFor({ [JUDGE]: record }, null)).toEqual([JUDGE, record]);
+    expect(checksDownFor({ [PROFILE_JUDGE]: record }, "my-project")).toEqual([
+      PROFILE_JUDGE,
+      record,
+    ]);
+    // A profile's checks are not the machine's, nor the other way, nor another profile's.
+    expect(checksDownFor({ [PROFILE_JUDGE]: record }, null)).toBeNull();
+    expect(checksDownFor({ [JUDGE]: record }, "my-project")).toBeNull();
+    expect(checksDownFor({ [PROFILE_JUDGE]: record }, "other")).toBeNull();
+    expect(checksDownFor({}, null)).toBeNull();
+  });
+
+  test("the wait and its line: the checks' own words, then that it goes on by itself", () => {
+    expect(checksWait(JUDGE, down())).toEqual({
+      kind: "safety-checks",
+      scope: JUDGE,
+      since: "2026-10-21T21:40:00.000Z",
+    });
+    expect(checksPauseText(down(), JUDGE, NOW, "UTC")).toBe(
+      "auto mode's safety checks are failing since 21:40: Claude is at its plan limit (five_hour) until 23:00, and no worker target has passed the judge test; goes on by itself when they answer again",
+    );
+    expect(checksPauseText(down(), PROFILE_JUDGE, NOW, "UTC")).toStartWith(
+      "auto mode's safety checks are failing in profile my-project since 21:40: ",
+    );
+  });
+
+  test("never while its scope's record is current; once it is gone", () => {
+    expect(waitOver(onChecks(), facts({ checksDown: { [JUDGE]: down() } }), NOW)).toBe(false);
+    expect(waitOver(onChecks(), facts(), NOW)).toBe(true);
+    // Another scope's failing checks do not hold it.
+    expect(waitOver(onChecks(), facts({ checksDown: { [PROFILE_JUDGE]: down() } }), NOW)).toBe(
+      true,
+    );
+    // A breaker or a limit is another wait's business.
+    expect(
+      waitOver(onChecks(), facts({ breakers: { "cc-smart-dev-kit-worker": breaker() } }), NOW),
+    ).toBe(true);
+  });
+
+  test("the hold-off of a re-pause still applies", () => {
+    const again = onChecks({
+      lastPause: { backoffMs: 5 * MINUTE, since: "2026-10-21T21:58:00.000Z" },
+    });
+    expect(waitOver(again, facts(), NOW)).toBe(false);
+    expect(waitOver(again, facts(), NOW + 3 * MINUTE)).toBe(true);
+  });
+
+  test("with no lastPause, the wait's own since orders it", () => {
+    expect(pauseStartedAt(onChecks({ lastPause: undefined }))).toBe(
+      Date.parse("2026-10-21T21:40:00.000Z"),
+    );
+  });
+
+  test("the resume text says the checks answer again, and names the phase", () => {
+    const record = onChecks();
+    expect(resumeText(record, record.waitingFor, NOW, "UTC")).toBe(
+      "The wait is over: auto mode's safety checks answer again. Go on with phase B6b, then hand it back as usual.",
+    );
+  });
+
+  test("the readers keep the current records only: a stale one is no wait", async () => {
+    const home = tempDir("checks");
+    const stateFile = join(home, "gateway-state.json");
+    writeFileSync(
+      stateFile,
+      formatLimitState({
+        checksDown: { [JUDGE]: down(), [PROFILE_JUDGE]: down(NOW - 16 * MINUTE) },
+        fallbacks: {},
+        limits: {},
+        version: 1,
+      }),
+    );
+    const paths = { gatewayConfigFile: join(home, "missing.json"), gatewayStateFile: stateFile };
+    expect(Object.keys(readWaitFacts(paths, NOW).checksDown)).toEqual([JUDGE]);
+    expect(Object.keys((await gatewayNow(paths, NOW)).checksDown)).toEqual([JUDGE]);
+    // A file that cannot be read says none.
+    writeFileSync(stateFile, "{ not json");
+    expect(readWaitFacts(paths, NOW).checksDown).toEqual({});
   });
 });

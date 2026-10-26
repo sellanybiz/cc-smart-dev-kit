@@ -19,14 +19,15 @@
  * `lead`, so its own watch prints one line and its `lead-notes` hook covers a missed one; the
  * event's text is the note's first line without the tag, and the line the watch prints names
  * the sending lead. Then the command prints one `SendMessage` line per receiver: only a session
- * holds that tool, so it sends them.
+ * holds that tool, so it sends them. The step that loads the deferred tool comes first, once
+ * (`sendMessageHint`).
  *
  * **A store write that fails part-way is never hidden.** The receivers recorded before it keep
  * their note and get their lines printed; the one whose note is missing is named, and the exit
  * code is 1. A bad name is still refused before anything is written ("all or none").
  */
 import { COMMAND } from "../build-info/names";
-import { sendMessageLine } from "./answer";
+import { sendMessageHint, sendMessageLine } from "./answer";
 import { findNamed, type NamedLook } from "./board";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
@@ -101,6 +102,8 @@ export async function recordLeadNotes(
   } else if (recorded.length === 0 && missed.length > 1) {
     sinks.error(`No note was recorded: tell ${missing} again.`);
   }
+  // Once, before the first line: the tool is deferred, and a backend model must load it.
+  if (recorded.length > 0) sinks.print(sendMessageHint());
   for (const one of recorded) sinks.print(sendMessageLine(one.name, message));
   return missed.length === 0 ? 0 : 1;
 }

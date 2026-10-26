@@ -253,11 +253,17 @@ export interface TaskDefinitionInput {
  * description on purpose: the router reads its port from `gateway.json`, so nothing else in
  * the definition would change when the port does, and setup would never restart the router
  * on a moved port (on Linux the socket unit changes there).
+ *
+ * The declaration names no encoding, on purpose. `-Xml` takes the file's text as a string,
+ * which Windows hands to Task Scheduler as UTF-16, and Task Scheduler refuses a string whose
+ * declaration names another encoding: `encoding="UTF-8"` failed every registration with
+ * "(1,40)::ERROR: unable to switch the encoding" (seen on a Windows 11 PC). With no encoding
+ * named, the string parses, and the file on disk is still valid XML: UTF-8 is XML's default.
  */
 export function renderTask(options: TaskDefinitionInput): string {
   for (const path of [options.bunPath, options.copyPath, options.home]) checkTaskPath(path);
   const account = xmlEscape(options.account);
-  return `<?xml version="1.0" encoding="UTF-8"?>
+  return `<?xml version="1.0"?>
 <!-- ${TASK_NAME}: the local CC gateway for Claude Code (127.0.0.1 only).
      Written by \`${COMMAND} gateway setup\`; it is registered as a Scheduled Task with
      \`Register-ScheduledTask -Xml\`. The next setup overwrites it; edits here are lost. -->

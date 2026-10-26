@@ -120,7 +120,7 @@ export function readCaller(
   // runs this", so a session it finds refuses the flag instead of being skipped over.
   let session: SessionRecord | null;
   try {
-    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf);
+    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env);
   } catch (error) {
     return refuse(reasonOf(error));
   }

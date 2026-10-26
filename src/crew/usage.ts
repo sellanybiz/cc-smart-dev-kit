@@ -195,8 +195,8 @@ the clean-up of finished work never delete, and which move with the plan to its 
     args: "",
     help: `Usage: ${COMMAND} crew kinds
 
-The kinds of crew phase (crew start --kind): the model each runs on, its effort on Claude and
-on an affordable gateway slot, and what it is for.`,
+The kinds of crew phase (crew start --kind): the model each runs on, the effort it runs at
+(whatever model answers it), and what it is for.`,
     name: "kinds",
     summary: "The kinds of phase: model and effort of each.",
   },
@@ -225,7 +225,9 @@ The first line carries the tag and the point, because it is the line the receive
   [<phase>] CONTRACT: <what changed: file:symbol, commit>   and the note ends "No reply needed."
   [<phase>] QUESTION: <the ask>
 The note is recorded, so your lead's watch shows it as one line, and the command prints one
-SendMessage line per receiver, to send as it is: only a session can send a message.
+SendMessage line per receiver, to send as it is: only a session can send a message. The
+line above them says to load the deferred SendMessage tool first (ToolSearch,
+select:SendMessage).
 
 The message guard refuses a crew session's message to another crew session without that
 first line, and names this command.`;
@@ -250,4 +252,5 @@ The first line carries the tag and the point, because it is the line the receive
   [<your lead name>] QUESTION: <the ask>
 The note is recorded for each receiving lead, so that lead's watch shows it as one line, and
 the command prints one SendMessage line per lead, to send as it is: only a session sends a
-message.`;
+message. The line above them says to load the deferred SendMessage tool first
+(ToolSearch, select:SendMessage).`;

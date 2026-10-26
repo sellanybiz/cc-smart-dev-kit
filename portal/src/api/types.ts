@@ -19,6 +19,8 @@ import type {
   CrewReview,
   HistoryAnswer,
   HistoryRequest,
+  JobCeilingState,
+  JobRouteState,
   JobWeightsState,
   MachineAnswer,
   McpServerRow,
@@ -48,6 +50,8 @@ export type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
+  JobCeilingState,
+  JobRouteState,
   JobWeightsState,
   McpServerRow,
   ModelRow,
@@ -210,8 +214,8 @@ export interface OverviewData {
   switches: SwitchFacts;
   /** Crew sessions in a running state (`starting`, `working`, `blocked`, `paused`, `quiet`). */
   crewRunning: number;
-  /** The heavy-job queue in one line: GB held of the budget, and jobs waiting. */
-  jobs: { heldGb: number; budgetGb: number; waiting: number };
+  /** The heavy-job queue in one line: this machine's slots in use of its total, and jobs waiting. */
+  jobs: { slots: number; used: number; waiting: number };
   /** The history's model requests: the rate, and the count since the router started (F4, F5). */
   requests: OverviewRequests;
 }
@@ -243,7 +247,8 @@ export type CrewState =
 export type WaitingFor =
   | { kind: "slot"; since: string; slot: string }
   | { kind: "claude-limit"; model: string; resetsAt: null | string }
-  | { kind: "unknown"; since: string; slot?: string };
+  | { kind: "unknown"; since: string; slot?: string }
+  | { kind: "safety-checks"; scope: string; since: string };
 
 /** `src/crew/store.ts` › `CrewRecord` (the fields a page reads). */
 export interface CrewRecord {
@@ -683,7 +688,6 @@ export interface ProjectData {
 
 /** One job in a store: held (it runs) or waiting. `since` is ms since the epoch (`src/jobs/queue.ts`). */
 export interface JobEntry {
-  gb: number;
   kind: string;
   command: string;
   folder: string;
@@ -691,13 +695,17 @@ export interface JobEntry {
   /** Null for a record the queue could not read. */
   since: null | number;
   pid: number;
+  /** True: it holds (or waits for) a slot. False: it holds a name only (`--exclusive`). */
+  slot: boolean;
 }
 
-/** One memory store the queue shares out: the machine, or a container (`where`). */
+/** One store of slots the queue shares out: the machine, or a container (`where`). */
 export interface JobStore {
   where: "machine" | (string & {});
-  freeGb: number;
-  budgetGb: number;
+  /** How many heavy jobs run at once here. */
+  slots: number;
+  /** How many of those slots are in use now. */
+  used: number;
   held: (JobEntry & { exclusive?: boolean })[];
   waiting: JobEntry[];
   note?: string;
@@ -705,13 +713,17 @@ export interface JobStore {
 
 /** `GET /api/jobs`, and the `jobs` event's data: the same shape. */
 export interface JobsData {
+  /** The memory ceiling of all heavy jobs together: its size, or why none is in force. */
+  ceiling: JobCeilingState;
   memoryGb: number;
-  /** Null where the machine does not say (macOS). */
-  freeGb: null | number;
-  budgetGb: number;
-  keptGb: number;
+  /**
+   * Whether heavy Bash commands go through the queue, and where that comes from: the project's
+   * `jobs.route`, the person's `switches.jobRoute`, or the default (off). The portal runs in no
+   * project, so this is what a project that sets none gets.
+   */
+  route: JobRouteState;
   stores: JobStore[];
-  /** Under load, a heavy job's CPU and disk I/O give way: the weights, or why one is not set. */
+  /** The weights a heavy job runs with (off by default), or why one is not set. */
   weights: JobWeightsState;
 }
 

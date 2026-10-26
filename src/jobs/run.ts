@@ -1,11 +1,9 @@
 /**
- * One heavy job, start to end: reserve, start, wait, report, give back. The command is
+ * One heavy job, start to end: take a slot, start, wait, report, give back. The command is
  * started exactly once on every path. The pieces it calls are passed in (`JobDeps`), so
  * the tests run it with a fake queue and a fake launcher.
  */
 
-import { invocationOf, nestedCommand } from "../shell/command";
-import { type KindSpec, withWorkers } from "./kinds";
 import {
   chooseLaunch,
   type JobEnd,
@@ -24,16 +22,19 @@ import { durationText, ENDED_LINE_LEAD, type QueuedJob, type Reservation } from 
 export interface JobRequest {
   /** The kind, or "" for a job with a name only (`--exclusive` without `--kind`). */
   kind: string;
-  /** The kind's spec, or null without a kind. */
-  spec: KindSpec | null;
   command: [string, ...string[]];
   /** `--exclusive <name>`: at most one job with this name at a time. */
   exclusive?: string | undefined;
-  /** The GB to reserve: `--gb`, or the kind's size for this command. */
-  gb: number;
+  /**
+   * Does the job take a slot? False for a job with a name only, and for a print-only run
+   * (`tsc --version`): neither waits for a slot, and neither runs in the heavy slice.
+   */
+  slot: boolean;
   /** This process's pid: the lease records it, and the unit name carries it. */
   pid: number;
   checkout: string;
+  /** The ceiling for all heavy jobs together, as `MemoryMax=` takes it (`sliceMemoryMax`). */
+  memoryMax: string;
   /** The systemd slice for a scope launch. */
   slice: string;
   /** The CPU weight for the slice chain; 0 leaves systemd's default in force. */
@@ -50,10 +51,6 @@ export interface JobDeps {
   /** Does an ancestor process hold a lease with this `--exclusive` name? */
   ancestorHoldsName: (name: string) => Promise<boolean>;
   acquire: (job: QueuedJob, onWaiting: (line: string) => void) => Promise<Reservation>;
-  /** Test workers for this many GB (`workerCount` with this machine's cores). */
-  workersFor: (gb: number, gbEach: number) => number;
-  /** The slice's `MemoryMax` for a job of this size (`sliceMemoryMax`). */
-  memoryMaxFor: (gb: number) => string;
   /** How this machine can start a job; null when the config says `launch: plain`. */
   launchFacts: () => LaunchFacts | null;
   slice: SliceControl;
@@ -73,9 +70,8 @@ export function describeCommand(command: readonly string[]): string {
 }
 
 /** The line `job run` says when a job that waited gets its place. */
-function startedLine(what: string, gb: number, waitedMs: number): string {
-  const size = gb > 0 ? ` (${String(gb)} GB)` : "";
-  return `Heavy job starts after ${durationText(waitedMs)}: ${what}${size}`;
+function startedLine(what: string, waitedMs: number): string {
+  return `Heavy job starts after ${durationText(waitedMs)}: ${what}`;
 }
 
 /** The line `job run` says after a job that waited ended, however it ended. */
@@ -90,20 +86,10 @@ function endedLine(what: string, end: JobEnd, ranMs: number): string {
   return `${ENDED_LINE_LEAD}: ${what}, ${how}${sent} after ${durationText(ranMs)}${leftovers}`;
 }
 
-/** A shell line (`sh -c "…"`) takes no extra option at its end: it would land in `$0`. */
-function takesOptions(command: readonly [string, ...string[]]): boolean {
-  const invocation = invocationOf([...command]);
-  return (
-    invocation === undefined || nestedCommand(invocation.program, invocation.args) === undefined
-  );
-}
-
-/** What the two lines about a job's run need: which job, and what it reserved. */
+/** What the two lines about a job's run need: which job, and how it runs. */
 interface Running {
   /** The argv `job run` starts. */
   argv: readonly [string, ...string[]];
-  /** What the job reserved: named in the start line when it is above 0. */
-  gb: number;
   /** The systemd scope the job runs in, or null. */
   scopeUnit: string | null;
   /** When the job's first waiting line was printed, or null when it never waited. */
@@ -127,7 +113,7 @@ interface Ran {
 async function runTimed(running: Running, deps: JobDeps): Promise<Ran> {
   const { waitedSince } = running;
   if (waitedSince !== null) {
-    deps.say(startedLine(running.what, running.gb, deps.now() - waitedSince));
+    deps.say(startedLine(running.what, deps.now() - waitedSince));
   }
   const beganAt = deps.now();
   const end = await deps.run(running.argv, running.scopeUnit);
@@ -145,8 +131,8 @@ function sayEnded(running: Running, ran: Ran, deps: JobDeps): void {
 }
 
 /**
- * A job inside another heavy job: its memory is the parent's, so it runs directly. Only an
- * `--exclusive` name its ancestors do not hold yet is taken first, with 0 GB and no place
+ * A job inside another heavy job: its slot is the parent's, so it runs directly. Only an
+ * `--exclusive` name its ancestors do not hold yet is taken first, with no slot and no place
  * in the line (QueuedJob.nested).
  */
 async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
@@ -159,10 +145,10 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
     {
       checkout: request.checkout,
       exclusive,
-      gb: 0,
       kind: request.kind,
       nested: true,
       pid: request.pid,
+      slot: false,
       what,
     },
     deps.say,
@@ -171,7 +157,6 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
     if (deps.stopped?.() === true) return 1;
     const running: Running = {
       argv: request.command,
-      gb: reservation.gb,
       scopeUnit: null,
       waitedSince: reservation.waitedSince,
       what,
@@ -223,37 +208,33 @@ function setSliceWeights(request: JobRequest, deps: JobDeps): void {
 
 /** Runs the job and returns its exit code. The reservation is given back however it ends. */
 export async function runJob(request: JobRequest, deps: JobDeps): Promise<number> {
-  const { command, gb, kind, pid, spec } = request;
+  const { command, kind, pid, slot } = request;
   if (await deps.isNested()) return runNested(request, deps);
 
   const reservation = await deps.acquire(
     {
       checkout: request.checkout,
       exclusive: request.exclusive,
-      gb,
       kind,
       pid,
+      slot,
       what: describeCommand(command),
     },
     deps.say,
   );
   try {
     if (deps.stopped?.() === true) return 1;
-    const workers = spec?.workers;
-    const sized =
-      spec !== null && workers !== undefined && gb > 0 && takesOptions(command)
-        ? withWorkers(spec, command, deps.workersFor(gb, workers.gbEach))
-        : command;
-    // A print-only run (`tsc --version`) reserves nothing: no memory group, and the
-    // slice's ceiling must not move under the jobs that run.
-    const facts = gb === 0 ? null : deps.launchFacts();
+    // A run with no slot (a print-only run like `tsc --version`, or a name alone) does not
+    // run in the heavy slice: it is not a heavy job, and the slice's ceiling must not move
+    // under the jobs that run.
+    const facts = slot ? deps.launchFacts() : null;
     const launch: Launch = facts === null ? { mode: "plain" } : chooseLaunch(facts);
     if ("note" in launch && launch.note !== undefined) deps.say(launch.note);
 
     let eventsPath: string | null = null;
     let scopeUnit: string | null = null;
     if (launch.mode === "scope") {
-      const memoryMax = deps.memoryMaxFor(gb);
+      const { memoryMax } = request;
       if (!deps.slice.setMemoryMax(request.slice, memoryMax)) {
         deps.say(
           `could not set ${request.slice} MemoryMax=${memoryMax}: the job runs without the slice's ceiling`,
@@ -267,13 +248,12 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
     const before = eventsPath === null ? null : deps.slice.readFile(eventsPath);
 
     const running: Running = {
-      argv: launchArgv(launch, sized, {
+      argv: launchArgv(launch, command, {
         kind,
         pid,
         slice: request.slice,
         startedAt: request.startedAt,
       }),
-      gb: reservation.gb,
       scopeUnit,
       waitedSince: reservation.waitedSince,
       what: describeCommand(command),

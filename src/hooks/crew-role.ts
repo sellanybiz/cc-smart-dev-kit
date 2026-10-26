@@ -37,14 +37,16 @@
  *   nothing about where a prompt came from (proved live on 2.1.309, only `prompt`),
  *   so the prompt's own shape decides: a `SendMessage` delivery carries
  *   `<cross-session-message …>`, a monitor's line carries `<task-notification>`, a subagent's
- *   hand-back the session itself launched carries `<agent-message from=…>`, and the three
- *   prompts a lead's own transport gives a crew session bare — `crew start`'s launch line
- *   (`firstPrompt`, built for the record's own name, lead and brief file), `crew answer`'s
- *   resume of a stopped session, and the watch's `resumeText` of a paused one — are recognised
- *   from the store. A bare prompt none of those explain is recorded as the person's (nothing else
- *   in the kit gives a crew session a prompt); one the hook cannot read at all — no `prompt`, no
- *   record — records nothing. Never a block, never a question: the person's prompt always goes
- *   on.
+ *   hand-back the session itself launched carries `<agent-message from=…>`, and the prompts a
+ *   lead's own transport gives a crew session — every one starts with the crew command
+ *   (`afterCrewCommand`): `crew start`'s launch line (`launchLine`, built for the record's own
+ *   name, lead and brief file), `crew answer`'s resume of a stopped session (a correction's
+ *   too), `crew model`'s resume, the watch's `resumeText` of a paused one, and the bare command
+ *   of a resume with nothing to add — are
+ *   recognised from the store. A prompt none of those explain is recorded as the person's
+ *   (nothing else in the kit gives a crew session a prompt); one the hook cannot read at all —
+ *   no `prompt`, no record — records nothing. Never a block, never a question: the person's
+ *   prompt always goes on.
  *
  *   Whatever the turn is, the crew record's name is put back on the session's title when the
  *   title says something else (`titleAnswer`): the name is the address its lead, `crew answer`
@@ -57,21 +59,41 @@
  *   with the report step as its reason (`{"decision":"block","reason":…}`; Claude Code runs no
  *   second block while `stop_hook_active` is true). The events log is read from the crew session's
  *   own cursor (`readStopState`: the byte after the last line read, and the newest `step` or
- *   `report` seen), so a Stop costs the same on day 30 as on day 1 — the log only grows. Nothing runs while `background_tasks` is not
- *   empty: that turn is not over, and Claude Code wakes the session when the work lands.
- * - **StopFailure (D42)**: marks the crew session `paused` when a model limit ended its turn
+ *   `report` seen), so a Stop costs the same on day 30 as on day 1 — the log only grows. Nothing runs while `background_tasks` holds
+ *   work other than the session's own monitor: that turn is not over, and Claude Code wakes the
+ *   session when the work lands. The monitor (`crew-self`) runs for the whole session, so it is
+ *   always in that list (`isSelfWatchTask`); counted, it would switch this gate off for good.
+ *   **While auto mode's safety checks fail for the session's own gateway scope** (the router's
+ *   `checksDown` record, `src/gateway/checks-down.ts`), a turn that ended with no report is not
+ *   blocked: Claude Code denies every tool call that needs a check, `crew report` included. It is
+ *   marked `paused`, waiting for the checks (`safety-checks`), and the watch resumes it when they
+ *   answer (`src/crew/wait.ts`). A report counts there only while the record is out of the
+ *   working states it moved it from: a blocked report that was answered is no report of this
+ *   turn. A blocked session is never paused (its question stays open). A turn that ended
+ *   normally also drops the record's `lastApiError`.
+ * - **StopFailure (D42)**: keeps the error that ended the turn on the record (`lastApiError`,
+ *   every class) and marks the crew session `paused` when a model limit ended it
  *   (`rate_limit`, `overloaded`, `server_error`), with what it waits for taken from the router's
  *   state file (`waitingFor`: its slot's breaker, Claude's plan limit, else `unknown`) and one
- *   `state` event the lead's watch shows. It never resumes anything: the watch does, once the
- *   gateway answers again (`src/crew/wait.ts`, `src/crew/watch.ts`). A stop of a crew session
- *   that already ended its phase, or waits in the queue, pauses nothing.
+ *   `state` event the lead's watch shows, with the error's text. It never resumes anything: the
+ *   watch does, once the gateway answers again (`src/crew/wait.ts`, `src/crew/watch.ts`). A stop
+ *   of a crew session that already ended its phase, or waits in the queue, records and pauses
+ *   nothing.
  *
  * A store that cannot be read is one line on stderr and no block: a crew session keeps working,
  * and a Stop hook never stops a session on a bug of the kit's.
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { firstPrompt, REPORT_COMMAND, REPORT_DONE_COMMAND } from "../crew/brief";
+import {
+  afterCrewCommand,
+  deliveryHead,
+  isModelChangeText,
+  isSelfWatchTask,
+  launchLine,
+  REPORT_COMMAND,
+  REPORT_DONE_COMMAND,
+} from "../crew/brief";
 import { RUNNING_STATES } from "../crew/places";
 import { crewIdOf } from "../crew/session";
 import {
@@ -79,6 +101,7 @@ import {
   type CrewRecord,
   crewBriefFile,
   isQuestionOpen,
+  lastHeardAnswer,
   readCrew,
   readCrewEvents,
   readStopState,
@@ -93,7 +116,18 @@ import {
   taskListId,
   writeTaskGate,
 } from "../crew/tasks";
-import { lastPauseOf, pausesCrew, pauseText, readWaitFacts, waitFor } from "../crew/wait";
+import {
+  checksDownFor,
+  checksPauseText,
+  checksWait,
+  lastPauseOf,
+  pausesCrew,
+  pauseText,
+  readWaitFacts,
+  waitFor,
+} from "../crew/wait";
+import { checksDownNow } from "../gateway/checks-down";
+import type { ChecksDownRecord } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
 import { sessionGatewayOf } from "./agent-guard";
 import { isInside, realPath } from "./git";
@@ -157,10 +191,10 @@ export function tellStep(): string {
 }
 
 /**
- * The frame `resumeText` (`src/crew/wait.ts`) builds the prompt the watch resumes a paused crew
- * session with. It arrives bare, as a typed prompt would, so it is recognised by that frame and
- * the phase it names. `crew-role.test.ts` holds it to `resumeText`'s own output, so the two
- * cannot drift apart.
+ * The frame `resumeText` (`src/crew/wait.ts`) builds the text the watch resumes a paused crew
+ * session with. It arrives as a typed prompt would, behind the crew command (`resumeArgs`), so it
+ * is recognised by that frame and the phase it names. `crew-role.test.ts` holds it to
+ * `resumeText`'s own output, so the two cannot drift apart.
  */
 const RESUME_START = "The wait is over: ";
 const RESUME_PHASE = ". Go on with phase ";
@@ -173,12 +207,14 @@ export const ANSWER_RESUME_MS = 60_000;
  * True when `prompt` is the person's own words. Every other turn a crew session gets is its
  * lead's or its own subagent's: a `SendMessage` delivery, a monitor's line, or a subagent's
  * hand-back (the wrappers), the kit's own Stop block (a continuation that carries it), the line
- * `crew start` launched this crew session with (`firstPrompt`, built for this record — a
- * hand-off's next crew session gets its own), `crew answer`'s resume of a stopped crew session
- * (with a question still open, or with the answer the store recorded — the resume runs before
- * the answer is written), and the watch's resume of a paused one (the frame above). A bare
- * prompt none of those explain is the person's: nothing else in the kit gives a crew session a
- * prompt.
+ * `crew start` launched this crew session with (the crew command, then `launchLine`, built for
+ * this record — a hand-off's next crew session gets its own), `crew answer`'s resume of a stopped
+ * crew session (with a question still open, or with the answer the store recorded — the resume
+ * runs before the answer is written), `crew answer`'s resume with a correction (its head,
+ * `deliveryHead`), `crew model`'s resume (`modelChangeText`), the watch's resume of a paused one
+ * (the frame above), and the bare crew command of a resume with nothing to add. Each is read back
+ * from the function that writes it, never a copy of its words. A prompt none of those explain is
+ * the person's: nothing else in the kit gives a crew session a prompt.
  */
 export function isPersonPrompt(
   record: CrewRecord,
@@ -190,6 +226,10 @@ export function isPersonPrompt(
   // The kit's own words are never the person's. A Stop block continues the turn with this line,
   // and a transport that turned that continuation into a prompt would otherwise read as theirs.
   if (prompt.startsWith(reportStep())) return false;
+  // Every prompt the kit gives a crew session's process starts with the crew command
+  // (`CREW_COMMAND`): the launch line, every resume. The command alone is a resume with nothing
+  // to add (`crew resume`); what the kit puts after it is told apart below.
+  if (afterCrewCommand(prompt) === "") return false;
   // `crew start` gives every crew session its launch line as its first prompt. Only this
   // record's own line is the lead's: one that names another crew session, or another brief
   // file, is still the person's.
@@ -198,12 +238,55 @@ export function isPersonPrompt(
   // resume runs before the answer is recorded (`src/crew/answer.ts`): while a question still has
   // no answer, a prompt in a stopped record is that resume. A stopped record with no open
   // question takes no answer at all (`crew answer` refuses it), so a prompt there is a person
-  // who attached to the kept conversation and typed.
-  if (record.state === "stopped" && record.questions.some(isQuestionOpen)) {
+  // who attached to the kept conversation and typed. The resume, like every prompt the kit
+  // sends, starts with the crew command: a prompt without it is the person's, question or not.
+  if (
+    afterCrewCommand(prompt) !== null &&
+    record.state === "stopped" &&
+    record.questions.some(isQuestionOpen)
+  ) {
     return false;
   }
   if (isWaitOverResume(record, prompt)) return false;
+  if (isModelChangeResume(record, prompt)) return false;
+  if (isCorrectionResume(record, prompt)) return false;
   return !isAnswerResume(record, prompt, nowMs);
+}
+
+/**
+ * True when `prompt` is the resume `crew model` gave this crew session: the crew command, then
+ * `modelChangeText` with the model and effort the record now holds (`crew model` writes them
+ * before it resumes). Read back by `isModelChangeText`, beside the function that writes it.
+ */
+function isModelChangeResume(record: CrewRecord, prompt: string): boolean {
+  const text = afterCrewCommand(prompt);
+  return (
+    text !== null && isModelChangeText(text, { effort: record.effort, model: record.model.named })
+  );
+}
+
+/**
+ * True when `prompt` is `crew answer`'s resume with a correction: the crew command, then the
+ * correction's head (`deliveryHead`, the one writer) for one of this record's questions and one
+ * of the answers it had, then the new answer on its own line. The resume runs before the store
+ * records the correction, and the hook may run on either side of that write: before it, the
+ * answer the head replaces is the question's current one; after it, it is among `superseded`.
+ * So every answer the question had stands for the one replaced.
+ *
+ * A correction to an answer the session never heard has no head (`deliveryText`): before the
+ * write it is the bare new answer, which no record value names. While the record is stopped and
+ * a question's answer is still unheard, a prompt there is that resume — the same reading as an
+ * open question's (`isPersonPrompt`).
+ */
+function isCorrectionResume(record: CrewRecord, prompt: string): boolean {
+  const text = afterCrewCommand(prompt);
+  if (text === null) return false;
+  return record.questions.some((asked) => {
+    if (asked.answer === null) return false;
+    if (record.state === "stopped" && lastHeardAnswer(asked, true) === null) return true;
+    const answers = [...(asked.superseded ?? []).map((one) => one.answer), asked.answer];
+    return answers.some((earlier) => text.startsWith(`${deliveryHead(asked.question, earlier)}\n`));
+  });
 }
 
 /**
@@ -216,32 +299,44 @@ function withoutOneLineEnd(text: string): string {
 }
 
 /**
- * True when `prompt` is the line `crew start` launched this crew session with. The line is read
- * from `firstPrompt`, which builds it (`src/crew/brief.ts`), never copied here: a change to the
- * launch line changes this with it. The record's own name, lead and brief file are what tell it
- * apart from every other crew session's.
+ * True when `prompt` is the line `crew start` launched this crew session with: the crew command,
+ * then the launch line. The line is read from `launchLine`, which builds it (`src/crew/brief.ts`),
+ * never copied here: a change to the launch line changes this with it. The record's own name,
+ * lead and brief file are what tell it apart from every other crew session's.
  */
 function isLaunchPrompt(record: CrewRecord, prompt: string, briefFile: string): boolean {
-  const launch = firstPrompt(record.name, record.leadName, briefFile);
-  return withoutOneLineEnd(prompt) === withoutOneLineEnd(launch);
+  const text = afterCrewCommand(prompt);
+  return text !== null && text === launchLine(record.name, record.leadName, briefFile);
 }
 
-/** True when `prompt` is the answer `crew answer` resumed this crew session with, just recorded. */
+/**
+ * True when `prompt` is the answer `crew answer` resumed this crew session with, just recorded:
+ * the crew command, then the answer's own words. The same words with no command in front are the
+ * person's — the kit's resume always has it, and "yes" typed in the minute after an answer "yes"
+ * is theirs.
+ */
 function isAnswerResume(record: CrewRecord, prompt: string, nowMs: number): boolean {
+  const text = afterCrewCommand(prompt);
+  if (text === null) return false;
   return record.questions.some((asked) => {
     if (asked.answer === null || asked.answeredAt === null) return false;
-    if (withoutOneLineEnd(asked.answer) !== withoutOneLineEnd(prompt)) return false;
+    if (withoutOneLineEnd(asked.answer) !== text) return false;
     const at = Date.parse(asked.answeredAt);
     return Number.isFinite(at) && nowMs - at <= ANSWER_RESUME_MS;
   });
 }
 
-/** True when `prompt` is the line the watch resumes a paused crew session with (`resumeText`). */
+/**
+ * True when `prompt` is the line the watch resumes a paused crew session with: the crew command,
+ * then `resumeText`.
+ */
 function isWaitOverResume(record: CrewRecord, prompt: string): boolean {
+  const text = afterCrewCommand(prompt);
+  if (text === null) return false;
   return (
-    prompt.startsWith(RESUME_START) &&
-    prompt.endsWith(RESUME_END) &&
-    prompt.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`)
+    text.startsWith(RESUME_START) &&
+    text.endsWith(RESUME_END) &&
+    text.includes(`${RESUME_PHASE}${record.phase}${RESUME_END}`)
   );
 }
 
@@ -410,27 +505,91 @@ async function startCard(
   return stderr === undefined ? answer : { ...answer, stderr };
 }
 
-/** Stop: record the last line, then block once when the turn ended with a step and no report. */
+/**
+ * The failing safety checks of this crew session's own gateway scope, or null: a session that is
+ * not on the gateway, a state file that is missing or cannot be read, and a record that went stale
+ * all say none (`checksDownNow`), so the Stop answers as it did before.
+ */
+function sessionChecksDown(
+  paths: CliPaths,
+  env: Env,
+  nowMs: number,
+): null | [string, ChecksDownRecord] {
+  const gateway = sessionGatewayOf(paths, env);
+  if (!gateway.gatewayOn) return null;
+  return checksDownFor(
+    Object.fromEntries(checksDownNow(paths.gatewayStateFile, nowMs)),
+    gateway.profile,
+  );
+}
+
+/**
+ * The states a safety-checks pause may start from: a session that runs, and is not paused yet.
+ * Not `blocked`: a blocked session keeps its open question, and a resume would tell it to go on.
+ */
+const CHECKS_PAUSE_FROM = RUNNING_STATES.filter(
+  (state) => state !== "paused" && state !== "blocked",
+);
+
+/**
+ * The states a session works in. A report moves its record out of them (`stateForReport`), and an
+ * answer brings it back: a report the newest event names, on a record in one of these, belongs to
+ * an earlier part of the phase, not to this turn.
+ */
+const WORKING_STATES: readonly string[] = ["starting", "working", "quiet"];
+
+/**
+ * Stop: record the last line, then block once when the turn ended with a step and no report —
+ * **unless auto mode's safety checks fail for the session's own scope** (owner 2026-10-27). Then
+ * Claude Code denies every tool call that needs a check, `crew report` included, so the block
+ * could only start a turn that fails again: a turn that ended with no report is marked `paused`
+ * instead, waiting for the checks (`checksWait`), with one `state` event in the checks' own words.
+ * The lead's watch resumes it when they answer (`src/crew/wait.ts`). This holds on the stop that
+ * answers a block too (`stop_hook_active`): the checks may have failed during that turn, and a
+ * pause is no second block. A pause that cannot be written is one line, and the answer is the one
+ * the Stop gave before.
+ */
 async function stopAnswer(
   input: HookInput,
   id: string,
   repo: string,
   paths: CliPaths,
+  env: Env,
+  options: CrewRoleOptions,
 ): Promise<HookResult> {
-  // A Stop that answers a block from this hook (or another): never a second one.
-  if (input.stop_hook_active === true) return SILENT;
   // A turn that waits on background work is not over: Claude Code wakes the session when it lands.
-  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return SILENT;
+  // The session's own monitor is no such work: it runs for the whole session, so it is always in
+  // the list, and counting it would let every turn end with no report.
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isSelfWatchTask)) {
+    return SILENT;
+  }
+  const nowMs = options.nowMs ?? Date.now();
+  // A Stop that answers a block from this hook (or another): never a second one. Only failing
+  // safety checks still have something to do there: the pause.
+  const followUp = input.stop_hook_active === true;
+  let down: undefined | null | [string, ChecksDownRecord];
+  if (followUp) {
+    down = sessionChecksDown(paths, env, nowMs);
+    if (down === null) return SILENT;
+  }
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const said = stringField(input.last_assistant_message);
-  if (said !== null) {
+  // A turn that ended normally ends what the last API error explained: a later crash is its own,
+  // never a backend's refusal read from an error of an earlier turn (`backendRefusalOf`).
+  const staleError = found.record.lastApiError !== undefined;
+  if (said !== null || staleError) {
     try {
       await updateCrew(
         paths.stateDir,
         repo,
         id,
-        { lastLine: maskedLine(said, [], LAST_LINE_MAX, { mark: "…" }) },
+        {
+          ...(said === null
+            ? {}
+            : { lastLine: maskedLine(said, [], LAST_LINE_MAX, { mark: "…" }) }),
+          ...(staleError ? { lastApiError: undefined } : {}),
+        },
         Date.now(),
       );
     } catch (error) {
@@ -461,9 +620,38 @@ async function stopAnswer(
   } catch (error) {
     return storeProblem(reasonOf(error));
   }
-  return last === "step"
-    ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) }
-    : SILENT;
+  const answer: HookResult =
+    !followUp && last === "step"
+      ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) }
+      : SILENT;
+  // A turn that reported is over as it should be: never a pause. A report counts only while the
+  // record is still in the state it left: a blocked report that was answered, and a session that
+  // works again, has a newest event that is no report of this turn.
+  const record = found.record;
+  if (last === "report" && !WORKING_STATES.includes(record.state)) return answer;
+  down ??= sessionChecksDown(paths, env, nowMs);
+  if (down === null) return answer;
+  const [key, failing] = down;
+  try {
+    const paused = await updateCrewIfState(
+      paths.stateDir,
+      repo,
+      id,
+      CHECKS_PAUSE_FROM,
+      {
+        lastPause: lastPauseOf(record.lastPause, nowMs),
+        state: "paused",
+        waitingFor: checksWait(key, failing),
+      },
+      nowMs,
+      checksPauseText(failing, key, nowMs, options.timeZone),
+    );
+    // Paused now, or already paused: it waits, and a block would only fail again. A phase that
+    // ended keeps the answer it had.
+    return paused.changed || paused.record.state === "paused" ? SILENT : answer;
+  } catch (error) {
+    return withProblem(answer, `the pause could not be recorded: ${reasonOf(error)}`);
+  }
 }
 
 /**
@@ -632,7 +820,7 @@ export async function crewRoleAnswer(
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
   if (event === "UserPromptSubmit")
     return await personPromptAnswer(input, id, repo, paths, env, options);
-  if (event === "Stop") return await stopAnswer(input, id, repo, paths);
+  if (event === "Stop") return await stopAnswer(input, id, repo, paths, env, options);
   if (event === "StopFailure") return await stopFailureAnswer(input, id, repo, paths, env, options);
   return SILENT;
 }
@@ -645,11 +833,36 @@ export interface CrewRoleOptions {
   timeZone?: string;
 }
 
+/** The longest piece of an API error's text a record keeps (`lastApiError.text`), before its ellipsis. */
+export const API_ERROR_TEXT_MAX = 400;
+
 /**
- * StopFailure: the turn ended on a model limit, so the crew session is `paused` with what it
- * waits for (D42). One `state` event, whose line the watch shows; the record's `lastPause`
- * carries the hold-off a re-pause doubles. Never a block and never stdout: Claude Code ignores
- * a StopFailure hook's output, and the pause is the store's.
+ * The text of the error that ended the turn, as one masked line: the input's `error_details`
+ * when Claude Code sent them (the docs name the field; no live run has had it yet), else the
+ * message it showed (`last_assistant_message`). A router's refusal puts its reason there, and
+ * the lead reads it. Empty when the input carries neither.
+ */
+export function apiErrorText(input: HookInput): string {
+  const details = (input as Record<string, unknown>).error_details;
+  const fromDetails =
+    typeof details === "string"
+      ? details
+      : typeof details === "object" && details !== null
+        ? JSON.stringify(details)
+        : "";
+  const said = fromDetails !== "" ? fromDetails : (stringField(input.last_assistant_message) ?? "");
+  return maskedLine(said, [], API_ERROR_TEXT_MAX, { mark: "…" });
+}
+
+/**
+ * StopFailure: the turn ended on an API error. **Every class is kept on the record** (`lastApiError`:
+ * the class, the text, the time): the lead's watch reads it when agent view says the session
+ * `failed` with "API error", which is how a backend's refusal (`unknown`) looks, and a refusal is no
+ * crash (`src/crew/watch.ts`). A model limit (`rate_limit`, `overloaded`, `server_error`) also
+ * marks the crew session `paused`, in the same write, with what it waits for (D42); its `state`
+ * event carries the error's text, so the lead can tell a stall from a limit. The record's
+ * `lastPause` carries the hold-off a re-pause doubles. Never a block and never stdout: Claude Code
+ * ignores a StopFailure hook's output, and the record is the store's.
  */
 async function stopFailureAnswer(
   input: HookInput,
@@ -660,24 +873,42 @@ async function stopFailureAnswer(
   options: CrewRoleOptions,
 ): Promise<HookResult> {
   const error = stringField(input.error);
-  if (!pausesCrew(error)) return SILENT;
+  if (error === null) return SILENT;
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const record = found.record;
-  // Only a session that runs now waits for a model to answer: one that ended its phase, was
-  // stopped, or still waits in the queue has no turn to pause.
+  // Only a session that runs now has a turn to explain or pause: one that ended its phase, was
+  // stopped, or still waits in the queue has neither.
   if (!(RUNNING_STATES as readonly string[]).includes(record.state)) return SILENT;
   const nowMs = options.nowMs ?? Date.now();
+  const lastApiError = {
+    at: new Date(nowMs).toISOString(),
+    class: error,
+    text: apiErrorText(input),
+  };
+  if (!pausesCrew(error)) {
+    try {
+      await updateCrew(paths.stateDir, repo, id, { lastApiError }, nowMs);
+    } catch (why) {
+      return storeProblem(reasonOf(why));
+    }
+    return SILENT;
+  }
   // The profile the session's own URL names: the router keeps its breaker under `<profile>/<slot>`.
   const { profile } = sessionGatewayOf(paths, env);
   const waitingFor = waitFor(record, readWaitFacts(paths, nowMs), nowMs, profile);
-  const text = pauseText(waitingFor, error, nowMs, options.timeZone);
+  const text = pauseText(waitingFor, error, nowMs, options.timeZone, lastApiError.text);
   try {
     await updateCrew(
       paths.stateDir,
       repo,
       id,
-      { lastPause: lastPauseOf(record.lastPause, nowMs), state: "paused", waitingFor },
+      {
+        lastApiError,
+        lastPause: lastPauseOf(record.lastPause, nowMs),
+        state: "paused",
+        waitingFor,
+      },
       nowMs,
       text,
     );

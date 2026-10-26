@@ -169,7 +169,6 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
     try {
       writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
-        noted: false,
         offset: eventsEndOffset(ctx.paths.stateDir, repo),
         said: {},
       });

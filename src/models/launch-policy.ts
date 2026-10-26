@@ -18,7 +18,7 @@
  *      A slot with no chain is off: the Claude model itself answers, on the person's own login.
  *
  * **Tiers, not vendors** (the owner, 2026-10-16): `opus` and `fable` mean the TIER, whatever
- * model answers behind them. A tier is never affordable and never forced to `max`. A name never
+ * model answers behind them. A name never
  * runs below the tier of what answers it: an override or a slot that answers a family name with
  * a stricter premium family makes the launch that family and its tier (`asNamed`).
  */
@@ -58,10 +58,11 @@ export const FABLE_REASONS = [
 
 /**
  * The effort levels a subagent may run at, lowest first — the one home of that list (the
- * owner's decisions D5 and D13): `low` is refused on every model, a Claude model and an
- * affordable gateway slot alike. Two rules name one level each, on top of this one: an
- * affordable slot must be `AFFORDABLE_EFFORT`, and an `opus`-tier launch asks the person at
- * `OPUS_ASK_EFFORT`.
+ * owner's decisions D5 and D13): `low` is refused on every model, a Claude model and a gateway
+ * backend alike. Claude picks the level by the task on every tier, whatever model answers it
+ * (the owner, 2026-10-26: no level is forced on a backend; a person who wants a backend at one
+ * level pins it in the router, D64). One rule names a level on top of this one: an `opus`-tier
+ * launch asks the person at `OPUS_ASK_EFFORT`.
  */
 export const ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"] as const;
 
@@ -76,12 +77,6 @@ export const OPUS_ASK_EFFORT = "max";
 
 /** The levels an `opus`-tier launch runs at with no question: every allowed one below `max`. */
 export const OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
-
-/**
- * The effort an affordable gateway slot runs at, with the gateway on: its reasoning costs cents,
- * and an affordable model works well only there.
- */
-export const AFFORDABLE_EFFORT = "max";
 
 /** True when an effort a launch names is one a subagent may run at (any case). */
 export function effortAllowed(effort: string): boolean {
@@ -354,16 +349,6 @@ export function answeringSlot(name: string, gateway: GatewayFacts, env: Env): nu
 }
 
 /**
- * True when an affordable model answers: one that is not Claude, behind a name of no premium
- * tier — a backend target, an affordable slot, or `haiku` / `sonnet` while their family's slot
- * chain starts with a backend. With the gateway on such a launch runs at `AFFORDABLE_EFFORT`. A
- * premium tier is never affordable, whatever answers it.
- */
-export function isAffordable(real: LaunchModel): boolean {
-  return !real.claude && real.tier === null;
-}
-
-/**
  * Claude Code's switch that puts every subagent, teammate and Workflow agent on one model:
  * `CLAUDE_CODE_SUBAGENT_MODEL` when it is set too, else the session's own model.
  */
@@ -381,8 +366,7 @@ export const EFFORT_LEVEL_ENV = "CLAUDE_CODE_EFFORT_LEVEL";
 /**
  * The `EFFORT_LEVEL_ENV` value that lets the model pick its own default level (Claude Code's
  * docs). The person chose it, like a fork's inherited effort: a launch is never refused for it,
- * and it is never `max` — no model's default is — so the opus tier does not ask. An affordable
- * slot still needs `AFFORDABLE_EFFORT`.
+ * and it is never `max` — no model's default is — so the opus tier does not ask.
  */
 export const EFFORT_AUTO = "auto";
 
@@ -484,12 +468,7 @@ export function effectiveLaunch(
 export interface CrewKindPolicy {
   /** What the kind is for, in a few words: what `crew kinds` prints beside it. */
   about: string;
-  /**
-   * The effort when an affordable slot answers the family; the same as `effort` for a tier, and
-   * null for a kind that never runs on one (`ui`, D50).
-   */
-  affordableEffort: Effort | null;
-  /** The effort when Claude answers the family. */
+  /** The effort the kind runs at, whatever model answers the family (the owner, 2026-10-26). */
   effort: Effort;
   /** The family name the launcher passes as the crew session's `--model`. */
   model: "opus" | "sonnet";
@@ -497,9 +476,10 @@ export interface CrewKindPolicy {
 
 /**
  * The kinds of crew phase, and the model and effort each runs on (the owner's decisions D46 and
- * D50). Routine work — building, docs, tests — goes to `sonnet`, the worker slot: at `max` when
- * an affordable slot answers it, at `high` when Claude Sonnet does. So does code that touches
- * security, money, permissions, a schema or deploy plumbing: it builds like any other code.
+ * D50). Routine work — building, docs, tests — goes to `sonnet`, the worker slot, at `high`
+ * whatever model answers the slot (the owner, 2026-10-26: no level is forced on a backend). So
+ * does code that touches security, money, permissions, a schema or deploy plumbing: it builds
+ * like any other code.
  * Work that needs design judgment — architecture — goes to `opus` at `xhigh`, whatever answers
  * the tier. UI/UX work is the exception (`UI_POLICY`, D50): `opus` at `high` by default, and
  * never an affordable model — the launcher refuses an override that would put it there. A
@@ -508,49 +488,41 @@ export interface CrewKindPolicy {
  * one crew session's model (the launcher's own flag); the table is the default.
  */
 export const CREW_KINDS = {
-  build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
+  build: { about: "routine building", effort: "high", model: "sonnet" },
   docs: {
     about: "docs and their updates",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet",
   },
-  tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
+  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
   security: {
     about: "code that touches security",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet",
   },
   money: {
     about: "code that touches money",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet",
   },
   permissions: {
     about: "code that touches permissions",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet",
   },
   schema: {
     about: "a schema or a contract",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet",
   },
-  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
+  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
   architecture: {
     about: "architecture and design",
-    affordableEffort: "xhigh",
     effort: "xhigh",
     model: "opus",
   },
   ui: {
     about: "UI and UX judgment",
-    // `opus` is a tier, never affordable: this column is never read for `ui` (D50).
-    affordableEffort: null,
     effort: UI_POLICY.minEffort,
     model: UI_POLICY.tiers[0],
   },
@@ -577,18 +549,14 @@ export interface CrewLaunch {
 
 /**
  * The model and effort a crew session of `kind` starts on, by the table and the gateway as the caller
- * reads it: the kind's affordable effort when an affordable model answers its family
- * (`isAffordable`), else its Claude effort. So a launch the table makes is one the Agent guard
- * allows.
+ * reads it: the kind's own effort, whatever model answers its family. So a launch the table makes
+ * is one the Agent guard allows.
  */
 export function crewLaunch(kind: CrewKind, gateway: GatewayFacts, env: Env): CrewLaunch {
   const policy: CrewKindPolicy = CREW_KINDS[kind];
-  const real = resolveLaunchModel(policy.model, gateway, env);
   return {
-    // A kind that never runs on an affordable model (`ui`) has no affordable effort: its own
-    // tier's effort stands, which is what `policy.effort` gives.
-    effort: isAffordable(real) ? (policy.affordableEffort ?? policy.effort) : policy.effort,
+    effort: policy.effort,
     model: policy.model,
-    real,
+    real: resolveLaunchModel(policy.model, gateway, env),
   };
 }

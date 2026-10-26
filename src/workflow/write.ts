@@ -5,12 +5,14 @@
  *   file, `~/.config/cc-smart-dev-kit/workflow.json` (folder 0700, file 0600, written atomically,
  *   the way the other config files are), or into the project's `workflow` object with
  *   `writeProjectSetting`. Every other field and the file's own indentation stay as they are.
- * - **A switch is never stored.** `switches.statusLine` is Claude Code's own `statusLine` key
- *   (the one `setup --statusline` writes, through `applyManagedJson`: a status line someone
- *   else set is never overwritten), `switches.updateHold` is the update-hold file behind
- *   `update --hold`, and `switches.sessionNames` / `switches.jobRoute` are the project's
- *   `sessionNames` and `jobs.route`. So each is written where it really lives, and a request
- *   for the other place is refused with a line saying where to run it instead.
+ * - **A switch is not stored, with one exception.** `switches.statusLine` is Claude Code's own
+ *   `statusLine` key (the one `setup --statusline` writes, through `applyManagedJson`: a status
+ *   line someone else set is never overwritten), `switches.updateHold` is the update-hold file
+ *   behind `update --hold`, and `switches.sessionNames` is the project's `sessionNames`. So each
+ *   is written where it really lives, and a request for the other place is refused with a line
+ *   saying where to run it instead. The exception is `switches.jobRoute`: without `--project` it
+ *   is the person's machine-wide default, a `switches.jobRoute` field in their own file; with
+ *   `--project` it is the project's `jobs.route`, which wins (`resolve.ts`).
  * - **`value` `undefined` removes the setting**, so the value falls back: the project's, the
  *   person's, then the built-in default (`resolve.ts`).
  *
@@ -32,12 +34,13 @@ import { heldSince, hold, resume, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
+  isPersonalFileSwitch,
   isSwitchKey,
+  personalWorkflowSchema,
   type SwitchName,
   switchOf,
   WORKFLOW_KEYS,
   type WorkflowKey,
-  workflowSchema,
 } from "./schema";
 
 type Env = Record<string, string | undefined>;
@@ -107,18 +110,20 @@ function shownNothing(shown: string, key: WorkflowKey, value: unknown): string {
 }
 
 /**
- * One policy key in the person's own defaults: `~/.config/cc-smart-dev-kit/workflow.json`.
+ * One policy key in the person's own defaults: `~/.config/cc-smart-dev-kit/workflow.json`, and
+ * the machine-wide default of `switches.jobRoute` (the project's `jobs.route` wins over it).
  * `value` undefined removes it, so the built-in default (or the project's value) holds again.
  */
 export function writePersonalSetting(paths: CliPaths, key: string, value: unknown): string {
   const wanted = requireKey(key);
-  if (isSwitchKey(wanted)) return writePersonalSwitch(paths, wanted, value);
+  if (isPersonalFileSwitch(wanted)) switchValue(wanted, value);
+  else if (isSwitchKey(wanted)) return writePersonalSwitch(paths, wanted, value);
   const file = personalWorkflowFile(paths);
   const { data, indent, text } = readJsonObject(file);
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, wanted.split("."));
   else setLeaf(data, wanted.split("."), value);
-  const checked = workflowSchema.safeParse(data);
+  const checked = personalWorkflowSchema.safeParse(data);
   if (!checked.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
   }
@@ -229,7 +234,7 @@ function switchValue(key: WorkflowKey, value: unknown): boolean | undefined {
   throw new Error(`${key} is true or false`);
 }
 
-/** A switch of the person's own: the status line, or the update hold. */
+/** A switch of the person's own that lives outside their workflow file: status line, update hold. */
 function writePersonalSwitch(
   paths: CliPaths,
   key: `switches.${SwitchName}`,
@@ -240,7 +245,7 @@ function writePersonalSwitch(
   if (name === "statusLine") return writeStatusLine(paths, wanted);
   if (name === "updateHold") return writeUpdateHold(paths, wanted);
   throw new Error(
-    `${key} is the project's setting (${name === "sessionNames" ? "sessionNames" : "jobs.route"} in .claude/cc-smart-dev-kit.json): run it with --project inside the project`,
+    `${key} is the project's setting (sessionNames in .claude/cc-smart-dev-kit.json): run it with --project inside the project`,
   );
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { CREW_QUESTION_STEP } from "../crew/session";
 import { createCrew, crewFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
 import {
@@ -14,22 +15,31 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
+import { readAway, setUnavailable } from "../user-away/state";
 import { editsMainFolder, mainFolderRefusal } from "./main-folder-guard";
 import { messageLeavesRepo } from "./message-guard";
 import { mainFolderGuardHook, messageGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-function deny(reason: string) {
+function decide(decision: "ask" | "deny", reason: string) {
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
-        permissionDecision: "deny",
+        permissionDecision: decision,
         permissionDecisionReason: reason,
       },
     }),
   };
+}
+
+function deny(reason: string) {
+  return decide("deny", reason);
+}
+
+function ask(reason: string) {
+  return decide("ask", reason);
 }
 
 describe("editsMainFolder", () => {
@@ -193,20 +203,88 @@ describe("the message guard", () => {
     expect(messageLeavesRepo("unknown", sessions, folders)).toBeNull();
   });
 
-  test("a message to a session of another project is denied, naming its folder", async () => {
+  /** The question before a message to another repo, in the guard's own words. */
+  const question = (to: string, folder: string) =>
+    [
+      `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
+      "ListAgents lists every Claude session on the machine, other projects too.",
+    ].join("\n");
+
+  test("a message to a session of another project asks the person, naming its folder", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const elsewhere = tempDir("elsewhere");
     writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
     expect(await runHook(messageGuardHook, send(repo, "other project"), env)).toEqual(
-      deny(
-        [
-          `"other project" works in ${elsewhere}, outside this repo: sessions message only sessions of their own repo.`,
-          "ListAgents lists every Claude session on the machine, other projects too.",
-        ].join("\n"),
-      ),
+      ask(question("other project", elsewhere)),
     );
+  });
+
+  test("two sessions of one name, one of them in this repo: through, no question", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    writeSessionRecord(env, { sessionId: "x", cwd: tempDir("elsewhere"), name: "twice" });
+    writeSessionRecord(env, {
+      sessionId: "y",
+      cwd: join(repo, "src"),
+      name: "twice",
+      pid: process.ppid,
+    });
+    expect(await runHook(messageGuardHook, send(repo, "twice"), env)).toEqual({});
+  });
+
+  test.each([
+    [
+      "needs a newer plugin",
+      { requires: ">=99", fieldFromTheFuture: true },
+      "needs cc-smart-dev-kit >=99",
+    ],
+    ["is broken", { worktree: {} }, "worktree: unknown field"],
+  ])("a file that %s: the same judgement, not a blanket question", async (_why, config, said) => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    const env = hookEnv();
+    const elsewhere = tempDir("elsewhere");
+    writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
+    writeSessionRecord(env, {
+      sessionId: "y",
+      cwd: join(repo, "src"),
+      name: "ours",
+      pid: process.ppid,
+    });
+    // Leaving the repo: the real question, and the file's problem on the last line.
+    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("ask");
+    const lines = String(output.permissionDecisionReason).split("\n");
+    expect(lines.slice(0, 2).join("\n")).toBe(question("other project", elsewhere));
+    expect(lines[2]).toStartWith(
+      "The project's settings file cannot be used, and this rule reads nothing from it: ",
+    );
+    expect(lines[2]).toContain(said);
+    expect(lines).toHaveLength(3);
+    // Staying in the repo, or a name with no record: silent, as with a good file.
+    expect(await runHook(messageGuardHook, send(repo, "ours"), env)).toEqual({});
+    expect(await runHook(messageGuardHook, send(repo, "nobody"), env)).toEqual({});
+  });
+
+  test("while the person is away, the question becomes a deny and the message is parked", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    const elsewhere = tempDir("elsewhere");
+    writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
+    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
+    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
+    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(output.permissionDecision).toBe("deny");
+    expect(output.permissionDecisionReason).toStartWith(question("other project", elsewhere));
+    expect(output.permissionDecisionReason).toContain("parked as #1");
+    expect(readAway(cliPaths(env).stateDir).items.map((item) => [item.kind, item.tool])).toEqual([
+      ["action", "SendMessage"],
+    ]);
   });
 
   test("a session of this repo, an unknown name, or no cc-smart-dev-kit.json: through", async () => {
@@ -242,7 +320,7 @@ describe("the message guard", () => {
     expect(await runHook(messageGuardHook, send(repo, "through-a-link"), env)).toEqual({});
   });
 
-  test("another project reached through a symlink is still refused", async () => {
+  test("another project reached through a symlink is still asked about", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
@@ -251,9 +329,8 @@ describe("the message guard", () => {
     symlinkSync(elsewhere, link);
     writeSessionRecord(env, { sessionId: "x", cwd: join(link, "src"), name: "other project" });
     const result = await runHook(messageGuardHook, send(repo, "other project"), env);
-    expect(result.stdout).toContain('"permissionDecision":"deny"');
-    // The refusal names the folder as the session record has it (what ListAgents shows).
-    expect(result.stdout).toContain(`works in ${join(link, "src")}`);
+    // The question names the folder as the session record has it (what ListAgents shows).
+    expect(result).toEqual(ask(question("other project", join(link, "src"))));
   });
 });
 
@@ -457,21 +534,40 @@ describe("the message guard: crew sessions talk in contract notes (D47)", () => 
     expect(crew.env.CC_SMART_DEV_KIT_CREW).toBe(SELF.id);
   });
 
-  test("the other-repo rule is unchanged for a crew session", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
-    const elsewhere = tempDir("elsewhere");
-    writeSessionRecord(crew.env, { sessionId: "x", cwd: elsewhere, name: "other project" });
-    expect(await crew.send("other project", "hi")).toEqual(
-      deny(
-        [
-          `"other project" works in ${elsewhere}, outside this repo: sessions message only sessions of their own repo.`,
-          "ListAgents lists every Claude session on the machine, other projects too.",
-        ].join("\n"),
-      ),
-    );
-  });
+  test.each([
+    ["a good file", {}],
+    ["no file", undefined],
+    ["a file that needs a newer plugin", { requires: ">=99" }],
+    ["a broken file", { worktree: {} }],
+    ["ownHooks listing message-guard", { ownHooks: ["message-guard"] }],
+  ])(
+    "a crew session's message to another repo is refused with the step to its lead: %s",
+    async (_why, config) => {
+      // A crew session never asks the person (D36): the question the person would get is a
+      // deny naming `crew report --question`, from the crew part, which runs before the file.
+      const repo = makeRepo();
+      if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+      const crew = await crewStore(hookEnv(), repo, [SELF, PEER]);
+      const elsewhere = tempDir("elsewhere");
+      writeSessionRecord(crew.env, { sessionId: "x", cwd: elsewhere, name: "other project" });
+      writeSessionRecord(crew.env, {
+        sessionId: "y",
+        cwd: join(repo, "src"),
+        name: "ours",
+        pid: process.ppid,
+      });
+      expect(await crew.send("other project", "hi")).toEqual(
+        deny(
+          [
+            `"other project" works in ${elsewhere}, outside this repo, and a message there goes only with the person's yes.`,
+            CREW_QUESTION_STEP,
+          ].join("\n"),
+        ),
+      );
+      // A message that stays in the repo is no business of this rule.
+      expect(await crew.send("ours", "hi")).toEqual({});
+    },
+  );
 
   test("a store whose sender record cannot be read lets the message through (fails open)", async () => {
     const repo = makeRepo();

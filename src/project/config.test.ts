@@ -15,6 +15,7 @@ import { z } from "zod";
 import { VERSION } from "../build-info";
 import {
   ccSmartDevKitConfigSchema,
+  JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   PLUGIN_HOOK_NAMES,
   RETIRED_HOOK_NAMES,
@@ -108,6 +109,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues.foundLabel": "1.4.0",
   "workflow.issues.fixedLabel": "1.4.0",
   "workflow.issues.readyLabel": "1.4.0",
+  "jobs.kinds.*.noSlotForFiles": "1.5.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -249,6 +251,7 @@ describe("the since-tables", () => {
     const versions = [
       ...Object.values(WORKFLOW_CREW_KEYS_SINCE),
       ...Object.values(OWN_HOOK_NAMES_SINCE),
+      ...Object.values(JOB_KIND_KEYS_SINCE),
     ];
     for (const since of versions) {
       expect(since).toMatch(/^\d+\.\d+\.\d+$/);

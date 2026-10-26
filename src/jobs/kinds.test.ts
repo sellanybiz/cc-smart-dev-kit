@@ -1,18 +1,19 @@
 /**
- * What each kind reserves (`kinds.ts`), and how test workers follow it. The numbers are
- * written by hand: a wrong one admits too much, or makes every small run wait as a big one.
+ * The kinds of heavy job (`kinds.ts`): which commands the queue counts. A kind has no size
+ * (the queue counts jobs, not gigabytes), but a project file written for an older plugin may
+ * still set the size fields: they must parse, and the queue must ignore them.
  */
 import { describe, expect, test } from "bun:test";
 import { ccSmartDevKitConfigSchema } from "../project/config";
 import {
   DEFAULT_KINDS,
+  IGNORED_KIND_FIELDS,
+  ignoredFieldsOf,
+  isPrintOnly,
   type KindSpec,
   kindsSchema,
-  largestJobGb,
   mergeKinds,
-  reservedGb,
-  withWorkers,
-  workerCount,
+  namesOnlyFiles,
 } from "./kinds";
 
 function kind(name: string): KindSpec {
@@ -21,125 +22,103 @@ function kind(name: string): KindSpec {
   return spec;
 }
 
-describe("reservedGb", () => {
-  const files = new Set(["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"]);
-  const isFile = (path: string) => files.has(path);
-
-  test("reserves each kind's measured or expected peak", () => {
-    expect(reservedGb(kind("tsc"), ["--noEmit"], isFile)).toBe(8);
-    expect(reservedGb(kind("tsc"), [], isFile)).toBe(8);
-    expect(reservedGb(kind("test:coverage"), [], isFile)).toBe(12);
-    expect(reservedGb(kind("build"), ["build"], isFile)).toBe(14);
-    expect(reservedGb(kind("image:build"), ["build", "-t", "app", "."], isFile)).toBe(14);
-  });
-
-  // A print-only type check never checks a type: it must never wait behind a build.
-  test("reserves nothing for a run that only prints and stops", () => {
+describe("isPrintOnly", () => {
+  // A print-only type check never checks a type: it takes no slot, so it never waits.
+  test("is true for a run that only prints and stops", () => {
     for (const flag of ["--version", "-v", "--help", "-h", "--listFilesOnly", "--showConfig"]) {
-      expect(reservedGb(kind("tsc"), [flag], isFile)).toBe(0);
+      expect(isPrintOnly(kind("tsc"), [flag])).toBe(true);
     }
-    expect(reservedGb(kind("tsc"), ["--noEmit", "--listFilesOnly"], isFile)).toBe(0);
-    expect(reservedGb(kind("tsc"), ["--LISTFILESONLY"], isFile)).toBe(0);
+    expect(isPrintOnly(kind("tsc"), ["--noEmit", "--listFilesOnly"])).toBe(true);
+    expect(isPrintOnly(kind("tsc"), ["--LISTFILESONLY"])).toBe(true);
+    for (const name of ["lint:typed", "test:run", "test:coverage"]) {
+      expect(isPrintOnly(kind(name), ["--version"])).toBe(true);
+    }
+  });
+
+  test("is false for a real run, whatever its arguments", () => {
+    expect(isPrintOnly(kind("tsc"), ["--noEmit"])).toBe(false);
+    expect(isPrintOnly(kind("tsc"), [])).toBe(false);
     // A file named like a flag's word is not the flag.
-    expect(reservedGb(kind("tsc"), ["--noEmit", "version"], isFile)).toBe(8);
+    expect(isPrintOnly(kind("tsc"), ["--noEmit", "version"])).toBe(false);
+    expect(isPrintOnly(kind("test:run"), ["src/a.ts"])).toBe(false);
+    expect(isPrintOnly(kind("build"), ["build"])).toBe(false);
   });
 
-  test("counts a typed lint of existing files as small, and anything wider as the whole repo", () => {
-    const lint = kind("lint:typed");
-    expect(reservedGb(lint, ["--no-warn-ignored", "src/a.ts", "src/b.ts"], isFile)).toBe(6);
-    expect(reservedGb(lint, [], isFile)).toBe(12);
-    expect(reservedGb(lint, ["."], isFile)).toBe(12);
-    expect(reservedGb(lint, ["src"], isFile)).toBe(12);
-    expect(reservedGb(lint, ["src/a.ts", "src"], isFile)).toBe(12);
-    expect(reservedGb(lint, ["--no-warn-ignored"], isFile)).toBe(12);
-    // The values of --config and --max-warnings are not file arguments.
-    const typed = ["--config", "eslint.typed.config.mjs", "--max-warnings", "0"];
-    expect(reservedGb(lint, [...typed, "src/a.ts", "src/b.ts"], isFile)).toBe(6);
-    expect(reservedGb(lint, [...typed, "."], isFile)).toBe(12);
-    expect(reservedGb(lint, typed, isFile)).toBe(12);
-  });
-
-  test("counts a test run of one to three existing files as small, and anything wider as full", () => {
-    const run = kind("test:run");
-    expect(reservedGb(run, ["src/a.ts"], isFile)).toBe(2);
-    expect(reservedGb(run, ["--reporter=dot", "src/a.ts", "src/b.ts", "src/c.ts"], isFile)).toBe(2);
-    expect(reservedGb(run, ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"], isFile)).toBe(8);
-    expect(reservedGb(run, [], isFile)).toBe(8);
-    expect(reservedGb(run, ["--reporter=dot"], isFile)).toBe(8);
-    // A name filter, or a folder, runs many files.
-    expect(reservedGb(run, ["heavy-job"], isFile)).toBe(8);
-    expect(reservedGb(run, ["src/__tests__"], isFile)).toBe(8);
-    // The runner's own `run` is its command, not a file.
-    expect(reservedGb(run, ["run", "src/a.ts"], isFile)).toBe(2);
-    expect(reservedGb(run, ["run", "src/a.ts", "--maxWorkers=2"], isFile)).toBe(2);
-    expect(reservedGb(run, ["run"], isFile)).toBe(8);
-  });
-
-  test("a kind with no small size always reserves its full size", () => {
-    expect(reservedGb({ gb: 5 }, ["src/a.ts"], isFile)).toBe(5);
-  });
-});
-
-describe("workers", () => {
-  test("fits one worker per GB-per-worker, at least one, at most cores - 1", () => {
-    expect(workerCount(8, 0.5, 16)).toBe(15);
-    expect(workerCount(2, 0.5, 16)).toBe(4);
-    expect(workerCount(8, 0.5, 4)).toBe(3);
-    expect(workerCount(0.2, 0.5, 16)).toBe(1);
-    expect(workerCount(8, 0.5, 1)).toBe(1);
-  });
-
-  test("adds the worker option at the end, or before a --", () => {
-    const run = kind("test:run");
-    expect(withWorkers(run, ["vitest", "run", "a.ts"], 4)).toEqual([
-      "vitest",
-      "run",
-      "a.ts",
-      "--maxWorkers=4",
-    ]);
-    expect(withWorkers(run, ["vitest", "run", "--", "a"], 4)).toEqual([
-      "vitest",
-      "run",
-      "--maxWorkers=4",
-      "--",
-      "a",
-    ]);
-  });
-
-  test("keeps a worker count the caller chose, in either spelling, and leaves other kinds alone", () => {
-    const run = kind("test:run");
-    for (const flag of ["--maxWorkers=2", "--max-workers=2", "--maxWorkers"]) {
-      expect(withWorkers(run, ["vitest", flag], 4)).toEqual(["vitest", flag]);
-    }
-    expect(withWorkers(kind("tsc"), ["tsc"], 4)).toEqual(["tsc"]);
+  test("a kind with no print-only options is never print-only", () => {
+    expect(isPrintOnly({}, ["--version"])).toBe(false);
   });
 });
 
 describe("the kinds a project sees", () => {
-  test("knows the default kinds, each with a size and a way to be found", () => {
+  test("knows the default kinds, each with a way to be found and no size", () => {
     expect(Object.keys(DEFAULT_KINDS).sort()).toEqual(
       ["build", "image:build", "lint:typed", "test:coverage", "test:run", "tsc"].sort(),
     );
     for (const spec of Object.values(DEFAULT_KINDS)) {
-      expect(spec.gb).toBeGreaterThan(0);
       expect(spec.match?.length ?? 0).toBeGreaterThan(0);
+      expect(ignoredFieldsOf(spec)).toEqual([]);
     }
-    expect(largestJobGb(DEFAULT_KINDS)).toBe(14);
+  });
+
+  // `vitest --coverage` is both: the first kind listed wins, so the specific one comes first.
+  test("lists the coverage run before the plain test run", () => {
+    const names = Object.keys(DEFAULT_KINDS);
+    expect(names.indexOf("test:coverage")).toBeLessThan(names.indexOf("test:run"));
   });
 
   test("a project's kind replaces a default of the same name whole, and adds new ones", () => {
-    const kinds = mergeKinds({ tsc: { gb: 4 }, e2e: { gb: 6, match: [{ script: "e2e" }] } });
-    expect(kinds.tsc).toEqual({ gb: 4 });
-    expect(kinds.e2e?.gb).toBe(6);
-    expect(kinds.build?.gb).toBe(14);
+    const kinds = mergeKinds({
+      tsc: { about: "mine" },
+      e2e: { match: [{ script: "e2e" }] },
+    });
+    expect(kinds.tsc).toEqual({ about: "mine" });
+    expect(kinds.e2e?.match).toEqual([{ script: "e2e" }]);
+    expect(kinds.build).toEqual(DEFAULT_KINDS.build);
     expect(mergeKinds(undefined)).toEqual(DEFAULT_KINDS);
   });
+});
 
-  test("cc-smart-dev-kit.json accepts jobs.kinds, strictly", () => {
-    const ok = ccSmartDevKitConfigSchema.safeParse({
-      jobs: { kinds: { e2e: { gb: 6, match: [{ script: "e2e" }, { tool: "playwright" }] } } },
-    });
-    expect(ok.success).toBe(true);
+describe("the size fields an older project file may still set", () => {
+  const old: KindSpec = {
+    filesGb: 2,
+    gb: 8,
+    match: [{ tool: "vitest" }],
+    maxFiles: 3,
+    skipWords: ["run"],
+    valuedFlags: ["--config"],
+    workers: { flag: "--maxWorkers", aliases: ["--max-workers"], gbEach: 0.5 },
+  };
+
+  test("still parse", () => {
+    expect(kindsSchema.safeParse({ "test:run": old }).success).toBe(true);
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({
+        jobs: {
+          kinds: { e2e: { gb: 6, match: [{ script: "e2e" }, { tool: "playwright" }] } },
+        },
+      }).success,
+    ).toBe(true);
+    // And a kind needs none of them.
+    expect(kindsSchema.safeParse({ e2e: { match: [{ script: "e2e" }] } }).success).toBe(true);
+    expect(kindsSchema.safeParse(DEFAULT_KINDS).success).toBe(true);
+  });
+
+  test("are named, in one order, by ignoredFieldsOf", () => {
+    // `skipWords` and `valuedFlags` are no longer here: they came back in 1.5.0 for
+    // `noSlotForFiles`, with the meaning they had, so `doctor` stops calling them stale.
+    expect(IGNORED_KIND_FIELDS).toEqual(["gb", "filesGb", "maxFiles", "workers"]);
+    expect(ignoredFieldsOf(old)).toEqual([...IGNORED_KIND_FIELDS]);
+    expect(ignoredFieldsOf({ skipWords: ["run"], valuedFlags: ["-c"] })).toEqual([]);
+    expect(ignoredFieldsOf({ gb: 4, match: [{ tool: "x" }] })).toEqual(["gb"]);
+    expect(ignoredFieldsOf({ about: "x", match: [{ tool: "x" }], printOnly: ["-v"] })).toEqual([]);
+  });
+
+  test("do not change what a kind is: only the match, the print-only options and the line count", () => {
+    expect(isPrintOnly({ ...old, printOnly: ["--help"] }, ["--help"])).toBe(true);
+    expect(isPrintOnly(old, ["src/a.ts"])).toBe(false);
+  });
+
+  test("cc-smart-dev-kit.json still refuses what was never a field, and a size out of range", () => {
     for (const bad of [
       { jobs: { kind: {} } },
       { jobs: { kinds: { e2e: { gb: -1 } } } },
@@ -150,6 +129,121 @@ describe("the kinds a project sees", () => {
     ]) {
       expect(ccSmartDevKitConfigSchema.safeParse(bad).success).toBe(false);
     }
-    expect(kindsSchema.safeParse(DEFAULT_KINDS).success).toBe(true);
+  });
+});
+
+// A builder's scoped run (`vitest run src/a.test.ts`) must not wait behind full runs: a kind
+// with `noSlotForFiles` runs at once when every operand is an existing file.
+describe("noSlotForFiles: a run on named files takes no slot", () => {
+  const files = new Set(["src/a.test.ts", "src/b.test.ts", "vitest.config.ts"]);
+  const isFile = (word: string) => files.has(word);
+  const testRun = kind("test:run");
+
+  test("test:run has it, test:coverage does not", () => {
+    expect(testRun.noSlotForFiles).toBe(true);
+    expect(kind("test:coverage").noSlotForFiles).toBeUndefined();
+    expect(namesOnlyFiles(kind("test:coverage"), ["run", "src/a.test.ts"], isFile)).toBe(false);
+  });
+
+  test("vitest run and jest on existing files run at once, past options and their values", () => {
+    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts", "src/b.test.ts"], isFile)).toBe(true);
+    expect(namesOnlyFiles(testRun, ["src/a.test.ts"], isFile)).toBe(true);
+    expect(namesOnlyFiles(testRun, ["run", "--project", "api", "src/a.test.ts"], isFile)).toBe(
+      true,
+    );
+    expect(
+      namesOnlyFiles(testRun, ["run", "--reporter=dot", "-t", "adds", "src/a.test.ts"], isFile),
+    ).toBe(true);
+    // A script's words after its name, with npm's `--` before them.
+    expect(namesOnlyFiles(testRun, ["--", "src/a.test.ts"], isFile)).toBe(true);
+  });
+
+  test("no file, a folder, a filter or a config value is a full run: a slot", () => {
+    expect(namesOnlyFiles(testRun, ["run"], isFile)).toBe(false);
+    expect(namesOnlyFiles(testRun, [], isFile)).toBe(false);
+    expect(namesOnlyFiles(testRun, ["run", "src"], isFile)).toBe(false);
+    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts", "login"], isFile)).toBe(false);
+    // The config file is the value of `--config`, not a test file.
+    expect(namesOnlyFiles(testRun, ["run", "--config", "vitest.config.ts"], isFile)).toBe(false);
+    expect(namesOnlyFiles(testRun, ["run", "-c", "vitest.config.ts"], isFile)).toBe(false);
+    // `vitest related` runs every test that imports the file: no skip word, so a slot.
+    expect(namesOnlyFiles(testRun, ["related", "src/a.test.ts"], isFile)).toBe(false);
+  });
+
+  // Review #2: an option the reader does not know may take the next word as its value, and that
+  // value may be an existing file. A full run must never look like a run on named files.
+  describe("an option it cannot read gives the run a slot (review #2)", () => {
+    const withSetup = new Set([...files, "results.xml", "jest.setup.ts", "tsconfig.json"]);
+    const exists = (word: string) => withSetup.has(word);
+
+    test("the reviewer's two probes: a value that is a file is no test file", () => {
+      expect(namesOnlyFiles(testRun, ["run", "--outputFile.junit", "results.xml"], exists)).toBe(
+        false,
+      );
+      expect(namesOnlyFiles(testRun, ["--setupFilesAfterEnv", "jest.setup.ts"], exists)).toBe(
+        false,
+      );
+    });
+
+    test("a dotted vitest option, with a test file after its value", () => {
+      expect(
+        namesOnlyFiles(
+          testRun,
+          ["run", "--typecheck.tsconfig", "tsconfig.json", "src/a.test.ts"],
+          exists,
+        ),
+      ).toBe(false);
+    });
+
+    test("an unknown option before a file, and after it", () => {
+      expect(namesOnlyFiles(testRun, ["run", "--shuffle", "src/a.test.ts"], exists)).toBe(false);
+      expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts", "--shuffle"], exists)).toBe(false);
+    });
+
+    test("an option with `=`, a known one with no value, and a kind's own valued one stay free", () => {
+      expect(
+        namesOnlyFiles(testRun, ["run", "--outputFile.junit=results.xml", "src/a.test.ts"], exists),
+      ).toBe(true);
+      expect(
+        namesOnlyFiles(
+          testRun,
+          ["--ci", "--runInBand", "-i", "--verbose", "src/a.test.ts"],
+          exists,
+        ),
+      ).toBe(true);
+      expect(namesOnlyFiles(testRun, ["run", "--passWithNoTests", "src/a.test.ts"], exists)).toBe(
+        true,
+      );
+      // A project kind's own `valuedFlags` add to the built-in list; vitest's still count.
+      const own: KindSpec = {
+        match: [{ script: "test:run" }],
+        noSlotForFiles: true,
+        valuedFlags: ["--suite"],
+      };
+      expect(namesOnlyFiles(own, ["--suite", "api", "src/a.test.ts"], exists)).toBe(true);
+      expect(namesOnlyFiles(own, ["--project", "api", "src/a.test.ts"], exists)).toBe(true);
+      expect(namesOnlyFiles(own, ["--shard", "1/2", "--other", "x", "src/a.test.ts"], exists)).toBe(
+        false,
+      );
+    });
+
+    test("an option that may take a value is not in the no-value list", () => {
+      // vitest's `--silent` takes an optional value: the file after it could be that value.
+      expect(namesOnlyFiles(testRun, ["run", "--silent", "src/a.test.ts"], exists)).toBe(false);
+      expect(namesOnlyFiles(testRun, ["run", "-u", "src/a.test.ts"], exists)).toBe(false);
+    });
+  });
+
+  test("a kind without it, and a project kind that sets it, read the same way", () => {
+    expect(namesOnlyFiles(kind("tsc"), ["src/a.test.ts"], isFile)).toBe(false);
+    const own: KindSpec = { match: [{ script: "test:run" }], noSlotForFiles: true };
+    expect(namesOnlyFiles(own, ["src/a.test.ts"], isFile)).toBe(true);
+    expect(namesOnlyFiles({ ...own, noSlotForFiles: false }, ["src/a.test.ts"], isFile)).toBe(
+      false,
+    );
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({ jobs: { kinds: { e2e: { noSlotForFiles: "yes" } } } })
+        .success,
+    ).toBe(false);
   });
 });

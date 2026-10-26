@@ -29,6 +29,7 @@ import { withLock } from "../setup/lock";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
+import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
 import {
   chainProblem,
   chainToCheck,
@@ -103,7 +104,13 @@ import {
   sendBackendTest,
   testJudgeTarget,
 } from "./judge-test";
-import { formatLimitState, parseLimitState } from "./limit-state";
+import {
+  type ChecksDownWhy,
+  formatLimitState,
+  parseLimitState,
+  scopeOfStateKey,
+  stateKeyFor,
+} from "./limit-state";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { decisionWords, type ProjectGatewayState } from "./project-state";
 import { effortPinForBackend, startRouter } from "./router";
@@ -181,8 +188,10 @@ Commands:
   slot <slot> clear      Delete the slot's chain, in use or saved.
   fallback <slot> on|off May the next target answer when the one before it fails or
                          rests? Off: only the first answers, and the rest stay saved.
-                         Off by default, for every slot. "fallback judge on": the worker's
-                         tested targets judge while Claude is limited or down.
+                         Off by default, for every slot but the judge. The judge's is on by
+                         default: the worker's tested targets (and only those) judge auto
+                         mode's checks while Claude is limited or down. "fallback judge off":
+                         Claude judges alone.
   effort <slot> <target> <level>|off
                          Pin a backend target's effort (${BACKEND_EFFORT_LEVELS.join(", ")}).
                          Tests the target before saving; off follows Claude Code again.
@@ -1128,9 +1137,14 @@ function claudeWords(config: GatewayConfig, key: string): string {
     : `Claude: ${family} goes to Anthropic as Claude Code sent it, on your own login`;
 }
 
-/** A chain saved, not in use, in words, with the command that uses it again. */
-function keptWords(key: string, kept: KeptChain): string {
-  const fallback = kept.fallback ?? fallbackOn({}, key);
+/**
+ * A chain saved, not in use, in words, with the command that uses it again. The judge's switch
+ * is not part of its saved chain (it stays in `fallback`, in both modes), so for the judge the
+ * words read the switch in `config`; every other slot's saved switch, else its default.
+ */
+function keptWords(config: GatewayConfig, key: string, kept: KeptChain): string {
+  const fallback =
+    key === JUDGE_SLOT ? fallbackOn(config, key) : (kept.fallback ?? fallbackOn({}, key));
   return `saved, not in use: ${chainWithEffort(kept.targets, kept.effort)}  (fallback ${fallback ? "on" : "off"}; to use it: ${COMMAND} gateway slot ${slotName(key)} custom)`;
 }
 
@@ -1169,7 +1183,7 @@ function printSlots(config: GatewayConfig, out: Out, print: (line: string) => vo
     if (targets === undefined) {
       print(`  ${key.padEnd(16)} ${claudeWords(config, key)}`);
       const saved = keptChain(config, key);
-      if (saved !== null) print(`    ${keptWords(key, saved)}`);
+      if (saved !== null) print(`    ${keptWords(config, key, saved)}`);
       // The worker's tested targets are judges while Claude cannot: the trade-off is shown.
       if (key === JUDGE_SLOT && fallbackOn(config, key) && workerJudgeTargets(config).length > 0) {
         out.line("warn", JUDGE_WARNING, { indent: 4 });
@@ -1320,6 +1334,26 @@ export function dropFallbackRecord(statePath: string, slot: string): void {
   atomicWrite(statePath, formatLimitState(state), 0o600);
 }
 
+/**
+ * The judge's "safety checks are failing" record ends at once when the person fixes its cause
+ * (`gateway fallback judge on` ends a `why` of "off"), so the status line stops saying it before
+ * the router's next request (the router drops it too, when it reads the changed config). A file
+ * that is not there, not readable or with no such record stays as it is.
+ */
+export function dropChecksDownRecord(statePath: string, why: ChecksDownWhy): void {
+  let state: ReturnType<typeof parseLimitState>;
+  try {
+    state = parseLimitState(readFileSync(statePath, "utf8"));
+  } catch {
+    return;
+  }
+  const key = stateKeyFor(JUDGE_SLOT, null);
+  if (state?.checksDown?.[key]?.why !== why) return;
+  delete state.checksDown[key];
+  if (Object.keys(state.checksDown).length === 0) delete state.checksDown;
+  atomicWrite(statePath, formatLimitState(state), 0o600);
+}
+
 /** What a saved slot change did, in the lines `gateway slot` prints first. */
 function slotChangeLines(plan: SlotPlan): string[] {
   const before =
@@ -1334,7 +1368,7 @@ function slotChangeLines(plan: SlotPlan): string[] {
       : claudeWords(plan.config, plan.key);
   const lines = [`${plan.key}: ${before}`, `  now: ${now}`];
   const savedChain = keptChain(plan.config, plan.key);
-  if (savedChain !== null) lines.push(`  ${keptWords(plan.key, savedChain)}`);
+  if (savedChain !== null) lines.push(`  ${keptWords(plan.config, plan.key, savedChain)}`);
   if (plan.kind === "clear") lines.push("  No chain is saved for it now.");
   for (const [target, effort] of Object.entries(plan.removedEffort ?? {}))
     lines.push(`  ${target}: effort ${effort} removed (the target left the chain)`);
@@ -1524,6 +1558,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
       if ("error" in planned) throw new Error(planned.error);
       saveConfig(configPath, planned.config);
       if (!planned.now) dropFallbackRecord(ctx.paths.gatewayStateFile, planned.key);
+      else if (planned.key === JUDGE_SLOT) dropChecksDownRecord(ctx.paths.gatewayStateFile, "off");
       return planned;
     },
     { waitMs: 10_000 },
@@ -1538,7 +1573,7 @@ async function commandFallback(ctx: GatewayContext, args: string[]): Promise<num
     printSlotChange(out, [
       change,
       `  ${claudeWords(plan.config, plan.key)}`,
-      `  ${keptWords(plan.key, kept)}`,
+      `  ${keptWords(plan.config, plan.key, kept)}`,
     ]);
     out.verdict("ok", "Saved with the chain: the switch is used once the slot is Custom again.");
     return 0;
@@ -1746,6 +1781,15 @@ async function commandStatus(ctx: GatewayContext): Promise<number> {
     for (const line of breakerStatusLines(body.breakers, ctx.probe.now())) {
       out.line("warn", line.trimStart(), { indent: 2 });
     }
+  }
+  // Auto mode's safety checks that fail with nothing standing in: from the state file, so the
+  // line is there even when the router does not answer.
+  for (const [key, record] of checksDownNow(ctx.paths.gatewayStateFile, ctx.probe.now())) {
+    const profile = scopeOfStateKey(key).profile;
+    out.line("warn", checksDownText(record, profile, ctx.probe.now()), {
+      fix: checksDownFix(record, profile, ctx.probe.now()),
+      indent: 2,
+    });
   }
   let backendsAnswer = true;
   if (config !== null) {

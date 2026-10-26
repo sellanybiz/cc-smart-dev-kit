@@ -42,7 +42,10 @@ function liveView(world: BoardWorld): string {
   ]);
 }
 
-/** The `claude --bg --resume` a model change runs: the new flags, the record's files, the prompt. */
+/**
+ * The `claude --bg --resume` a model change runs: the new flags, the record's files, the prompt
+ * (`text` behind the crew command).
+ */
 function resumeCall(
   world: BoardWorld,
   id: string,
@@ -67,7 +70,8 @@ function resumeCall(
     "--settings",
     crewSettingsFile(world.paths.stateDir, world.repo, id),
     "--",
-    text,
+    // The crew command first, so the resumed process dispatches the skill and its monitor starts.
+    `/cc-smart-dev-kit:crew ${text}`,
   ];
 }
 

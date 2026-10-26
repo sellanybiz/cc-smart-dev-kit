@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
@@ -93,7 +94,7 @@ describe("the note at a session start", () => {
     expect(said(result)).toBe(ALL_CLAUDE);
   });
 
-  it("a backend-first worker chain: sonnet is the backend, and runs at max", async () => {
+  it("a backend-first worker chain: sonnet is the backend, with the same task-effort rule as Claude", async () => {
     const env = hookEnv();
     writeGateway(env, {
       "cc-smart-dev-kit-scout": ["claude-haiku-5-5"],
@@ -103,7 +104,7 @@ describe("the note at a session start", () => {
     expect(said(result)).toBe(
       note(
         HAIKU_CLAUDE,
-        "- sonnet → omniroute:glm-x (a backend): runs at max.",
+        "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
         OPUS_CLAUDE,
         FABLE_CLAUDE,
       ),
@@ -120,7 +121,7 @@ describe("the note at a session start", () => {
     expect(said(result)).toBe(ALL_CLAUDE);
   });
 
-  it("a backend scout: haiku is the backend at max, and sonnet stays Claude", async () => {
+  it("a backend scout: haiku is the backend with the same task-effort rule, and sonnet stays Claude", async () => {
     const env = hookEnv();
     writeGateway(env, {
       "cc-smart-dev-kit-scout": ["omniroute:glm-s"],
@@ -129,7 +130,7 @@ describe("the note at a session start", () => {
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
       note(
-        "- haiku → omniroute:glm-s (a backend): runs at max.",
+        "- haiku → omniroute:glm-s (a backend): the effort the task needs, medium to max.",
         SONNET_CLAUDE,
         OPUS_CLAUDE,
         FABLE_CLAUDE,
@@ -175,6 +176,20 @@ describe("the note at a session start", () => {
     );
   });
 
+  it("the fable tier keeps its rule when a backend answers it", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-fable": ["omniroute:glm-f"] });
+    const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
+    expect(said(result)).toBe(
+      note(
+        HAIKU_CLAUDE,
+        SONNET_CLAUDE,
+        OPUS_CLAUDE,
+        "- fable → omniroute:glm-f (a backend): asks the person, with a `Fable reason:` line.",
+      ),
+    );
+  });
+
   it("a worker slot that answers with a Claude Opus id is read as the opus tier", async () => {
     const env = hookEnv();
     writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-opus-5-5"] });
@@ -204,7 +219,7 @@ describe("the note at a session start", () => {
     expect(said(profile)).toBe(
       note(
         HAIKU_CLAUDE,
-        "- sonnet → omniroute:glm-x (a backend): runs at max.",
+        "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
         OPUS_CLAUDE,
         FABLE_CLAUDE,
       ),
@@ -281,7 +296,7 @@ describe("the note when the view changes", () => {
           hookEventName: "UserPromptSubmit",
           additionalContext: note(
             HAIKU_CLAUDE,
-            "- sonnet → omniroute:glm-x (a backend): runs at max.",
+            "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
             OPUS_CLAUDE,
             FABLE_CLAUDE,
           ),
@@ -357,5 +372,91 @@ describe("the note when the view changes", () => {
     expect(tierViewMark(env, SESSION)).toBe(
       join(env.TMPDIR ?? "", "cc-smart-dev-kit-session-names", `${SESSION}.tiers`),
     );
+  });
+});
+
+describe("the line while auto mode's safety checks are failing (the owner, 2026-10-27)", () => {
+  /** A record fresh at the real clock (the hook reads it); no clock words in the cause. */
+  const record = (extra: Record<string, unknown> = {}) => ({
+    claim: null,
+    lastAt: Date.now(),
+    resetsAt: null,
+    since: Date.now() - 60_000,
+    status: 529,
+    why: "off",
+    ...extra,
+  });
+
+  function writeState(env: Record<string, string>, checksDown: Record<string, unknown>): void {
+    const file = cliPaths(env).gatewayStateFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ checksDown, fallbacks: {}, limits: {}, version: 1 }), {
+      mode: 0o600,
+    });
+  }
+
+  /** The owner's sentence, with the reason and what the person can do. */
+  const LINE = `Auto mode's safety checks are failing: Claude is down (HTTP 529), and the judge's stand-in is switched off. You cannot fix this; say it to the person once (what they can do: ${COMMAND} gateway fallback judge on), then stop and wait — do not retry or argue.`;
+
+  it("a session on the gateway is told once at its start, under the tiers", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
+    writeState(env, { "cc-smart-dev-kit-judge": record() });
+    const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
+    expect(said(result)).toBe(`${ALL_CLAUDE}\n\n${LINE}`);
+  });
+
+  it("no record, a stale one, or a session off the gateway: the tiers alone", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
+    expect(
+      said(await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env))),
+    ).toBe(ALL_CLAUDE);
+    writeState(env, { "cc-smart-dev-kit-judge": record({ lastAt: Date.now() - 16 * 60_000 }) });
+    expect(
+      said(await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env))),
+    ).toBe(ALL_CLAUDE);
+    writeState(env, { "cc-smart-dev-kit-judge": record() });
+    // The gateway off: no address of ours, so nothing the router recorded is about this session.
+    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), env))).toBe(
+      ALL_CLAUDE,
+    );
+  });
+
+  it("a profile's session reads its own record, never the machine's", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] }, { cheap: {} });
+    writeState(env, { "cc-smart-dev-kit-judge": record() });
+    const cheap = onRouter(env, `${ROUTER}/p/cheap`);
+    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), cheap))).toBe(
+      ALL_CLAUDE,
+    );
+    writeState(env, { "cheap/cc-smart-dev-kit-judge": record() });
+    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), cheap))).toBe(
+      `${ALL_CLAUDE}\n\n${LINE.replace("fallback judge on", "profile cheap fallback judge on")}`,
+    );
+    expect(
+      said(await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env))),
+    ).toBe(ALL_CLAUDE);
+  });
+
+  it("said once at the next prompt when the checks start failing, then silent, then the tiers again when they recover", async () => {
+    const env = hookEnv();
+    const live = onRouter(env);
+    const repo = makeRepo();
+    writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
+    expect(said(await runHook(tierViewHook, event("SessionStart", repo), live))).toBe(ALL_CLAUDE);
+    expect(await runHook(tierViewHook, event("UserPromptSubmit", repo), live)).toEqual({});
+    writeState(env, { "cc-smart-dev-kit-judge": record() });
+    expect(said(await runHook(tierViewHook, event("UserPromptSubmit", repo), live))).toBe(
+      `${ALL_CLAUDE}\n\n${LINE}`,
+    );
+    expect(await runHook(tierViewHook, event("UserPromptSubmit", repo), live)).toEqual({});
+    // The router ends the record at the next verdict: the note changes, and is said again.
+    writeState(env, {});
+    expect(said(await runHook(tierViewHook, event("UserPromptSubmit", repo), live))).toBe(
+      ALL_CLAUDE,
+    );
+    expect(await runHook(tierViewHook, event("UserPromptSubmit", repo), live)).toEqual({});
   });
 });

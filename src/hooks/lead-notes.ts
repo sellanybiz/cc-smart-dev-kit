@@ -23,6 +23,15 @@
  * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
+ * - **A lead whose watch is gone is told** (every turn, while it lasts): when no live watch holds
+ *   the lead's lease and it still has crew sessions that can talk (any not yet merged or
+ *   removed), one line says how to start it. A lead that never ran the lead skill in this
+ *   session — no lease was ever taken — is told to run it. One whose watch ended is told to start
+ *   the same command with Claude Code's `Monitor` tool, or to run the skill in a new session: a
+ *   monitor is armed once for each Claude process and the skill cannot arm it a second time
+ *   there (Claude Code 2.1.310). A lease a `--once` look left is no ended watch: such a look ends
+ *   at its first news by design, so it says nothing. A lead whose plan ended (`crew lead
+ *   --end`) hears nothing.
  * - **A start note for every lead** (D61): at a SessionStart only — a start, a resume or a
  *   compaction, each of which builds the lead's context again — the answer also holds the one
  *   line saying the crew builds the work. Those are the three sources `hooks.json` wires the
@@ -37,16 +46,20 @@
  * watch's line, which resolves the project's list.
  */
 import type { CliPaths } from "../cli/paths";
+import { LEAD_SKILL } from "../crew/skills";
 import {
   eventsEndOffset,
+  type LeadRecord,
   listCrew,
   readCrewEvents,
   readLead,
   readNotesState,
+  readWatchLease,
+  watchIsAlive,
   writeNotesState,
 } from "../crew/store";
 import { readSessionTasks, taskListId } from "../crew/tasks";
-import { eventLine, phasesWaitingFor } from "../crew/watch";
+import { eventLine, phasesWaitingFor, WATCH_RESTART } from "../crew/watch";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -121,6 +134,48 @@ function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string
 }
 
 /**
+ * The states in which a crew session has nothing more to tell its lead: its branch is merged, or
+ * it is gone. A lead with only such records has no news to miss.
+ */
+const SPENT_STATES: readonly string[] = ["discarded", "merged", "removed"];
+
+/** The line for a lead that has not started its watch in this session: run the lead skill. */
+export function watchNeverStartedNote(): string {
+  return `Your crew watch is not running, so crew news will not reach you: run /${LEAD_SKILL} to start it.`;
+}
+
+/**
+ * The line for a lead whose watch ended: the same command started by hand (`WATCH_RESTART`). The
+ * skill cannot arm its monitor a second time in one Claude process, but a lead that was resumed in
+ * a new one can run it again, so the line says both and is true in either.
+ */
+export function watchEndedNote(): string {
+  return `Your crew watch ended: ${WATCH_RESTART} (or run /${LEAD_SKILL} in a new session).`;
+}
+
+/**
+ * The line about the lead's watch, or null: the lead's plan is not ended, it has a crew session
+ * that can still talk, and no live watch holds its lease (`watchIsAlive`). No lease ever taken:
+ * the skill never ran. A lease whose holder is gone: the monitor ended — unless that lease is a
+ * `--once` look's, which ends by design at its first news and was no monitor. A store or a lease
+ * the hook cannot read says nothing — a wrong line is worse than none.
+ */
+function watchNote(paths: CliPaths, repo: string, lead: LeadRecord): null | string {
+  if (lead.endedAt != null) return null;
+  try {
+    const live = listCrew(paths.stateDir, repo).records.some(
+      (one) => one.leadSessionId === lead.sessionId && !SPENT_STATES.includes(one.state),
+    );
+    if (!live || watchIsAlive(paths.stateDir, repo, lead.sessionId)) return null;
+    const lease = readWatchLease(paths.stateDir, repo, lead.sessionId);
+    if (lease === null) return watchNeverStartedNote();
+    return lease.once === true ? null : watchEndedNote();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The answer for this turn: its lines for Claude, the lead's name, both, or silence — and one
  * line on stderr when the name's record could not be written (the lines still go out).
  */
@@ -160,6 +215,7 @@ export function leadNotesAnswer(
   // The rule comes first at a start; a prompt hears the reminder and the news instead.
   const startNote = event === "SessionStart" ? [leadStartNote()] : [];
   const reminder = reminderFor(paths, env, sessionId, event);
+  const watch = watchNote(paths, repo, lead);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {
     // First turn in this lead: the log's history is what the lead already saw. From here on, new.
@@ -168,7 +224,7 @@ export function leadNotesAnswer(
     });
     return answered(
       event,
-      [...startNote, ...(reminder === null ? [] : [reminder])],
+      [...startNote, ...(reminder === null ? [] : [reminder]), ...(watch === null ? [] : [watch])],
       leadTitle(input, event, env, sessionId, lead.name),
     );
   }
@@ -196,13 +252,18 @@ export function leadNotesAnswer(
   // Past every event read, spoken or not: the next turn says only what is newer.
   writeNotesState(paths.stateDir, repo, sessionId, { offset: read.offset });
   // The start note first (a start only), then the reminder — it is about the prompt just typed —
-  // then the news. The title last: its
+  // then the watch's line, then the news. The title last: its
   // record is written as it is set, and a store that throws above leaves that record alone, so
   // the next prompt tries the name again.
   const note = notesLine(lines);
   return answered(
     event,
-    [...startNote, ...(reminder === null ? [] : [reminder]), ...(note === null ? [] : [note])],
+    [
+      ...startNote,
+      ...(reminder === null ? [] : [reminder]),
+      ...(watch === null ? [] : [watch]),
+      ...(note === null ? [] : [note]),
+    ],
     leadTitle(input, event, env, sessionId, lead.name),
   );
 }

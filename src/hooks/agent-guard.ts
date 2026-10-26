@@ -12,16 +12,18 @@
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
  * Fable launch spends the person's own plan usage; a subagent at `low` does work nobody chose
- * to cheapen; and an affordable gateway slot works well only at effort `max`.
+ * to cheapen. (An affordable gateway slot used to be held to `max`; the owner dropped that on
+ * 2026-10-26: Claude picks the effort by the task on every tier, and a person who wants a backend
+ * at one level pins it in the router, `effortPinForBackend`.)
  *
  * **Effort** (the owner's decisions D5 and D13). A subagent never runs at `low`, whatever the
  * model: the guard refuses a launch whose `effort` is not `medium`, `high`, `xhigh` or `max`.
  * That list lives once, in `ALLOWED_EFFORTS`, and the guard, its messages and the tests all
  * read it. `medium` is for searches and reads, `high` for building and reviews, `xhigh` for
- * the hardest judgment, and `max` on a Claude `haiku` or `sonnet` when the task wants it, with no
- * restriction (the owner, 2026-10-25: the session-start note, `tier-view.ts`, tells Claude which
- * tier is Claude). On top of it, an affordable slot must be `max`, and an `opus`-tier launch asks
- * the person at `OPUS_ASK_EFFORT` (`max`).
+ * the hardest judgment, and `max` on `haiku` or `sonnet` when the task wants it, with no
+ * restriction and whatever model answers them (the owner, 2026-10-25 and 2026-10-26: the
+ * session-start note, `tier-view.ts`, tells Claude what answers each tier). On top of it, an
+ * `opus`-tier launch asks the person at `OPUS_ASK_EFFORT` (`max`).
  *
  * **The launch policy** — that list, the model resolution below and the Fable reason words —
  * has its one home in `src/models/launch-policy.ts`; this file is the hook around it.
@@ -41,8 +43,8 @@
  *
  * | The model behind the launch | The verdict |
  * |---|---|
- * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow; with the gateway on, its effort must be `max`, else deny |
- * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can prove affordable is affordable |
+ * | an affordable slot key / a `<backend>:<model>` target / `haiku` or `sonnet` (or their ids) while the gateway is on and the family's slot chain starts with a backend | allow, at any allowed effort (the effort rule above still holds) |
+ * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can read as Sonnet, Haiku or a backend target is judged as one |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`, a crew session): deny |
@@ -62,18 +64,18 @@
  * Claude Code removes `model` or `effort` from the Agent tool, so a call that names neither is
  * judged on what the variable sets, never refused for it. An ask or a denial names the override.
  * A level `CLAUDE_CODE_EFFORT_LEVEL` names that no subagent may run at (`low`, a level no rule
- * knows) is refused, and so is anything but `max` on an affordable slot: only the person can
- * change the variable, and the message says where. `auto` is the person's own choice, like a
+ * knows) is refused: only the person can change the variable, and the message says where. `auto`
+ * is the person's own choice, like a
  * fork's effort (`EFFORT_AUTO`): never refused for itself, never asked on the `opus` tier (no
  * model's default is `max`). A fork keeps its own rule.
  *
  * **Tiers, not vendors** (the owner, 2026-10-16). `opus` and `fable` mean the TIER: whatever
  * model answers behind them — Claude, a backend through an override or the family's slot, a
  * name no rule knows — the tier's gates hold (Fable's reason line, `max` asking on the `opus`
- * tier, `-p` refusing). A tier is never affordable and never forced to `max`. The guard's messages
+ * tier, `-p` refusing). The guard's messages
  * name both: `` `opus` (answered by openai:gpt-…) ``. So a launch is judged by `LaunchModel.tier`
- * and it is decided before the affordable rule; Sonnet, Haiku and the affordable slots keep
- * being allowed freely (at `max` on an affordable slot, where the reasoning costs cents).
+ * and it is decided first; Sonnet, Haiku and the affordable slots keep being allowed freely, at
+ * any allowed effort.
  *
  * **Which model, exactly.** The call's `model` is a name (`haiku|sonnet|opus|fable` — the
  * only four Claude Code's Agent tool accepts, proved live from its own schema; a full id, a
@@ -154,7 +156,6 @@ import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gatewa
 import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
 import { type LoadFacts, realLoadFacts } from "../machine/load";
 import {
-  AFFORDABLE_EFFORT,
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
   EFFORT_LEVEL_ENV,
@@ -164,7 +165,6 @@ import {
   FABLE_BUILD_REASON,
   FABLE_REASONS,
   type GatewayFacts,
-  isAffordable,
   type LaunchModel,
   OPUS_ASK_EFFORT,
   OPUS_FREE_EFFORTS,
@@ -1091,7 +1091,7 @@ const EFFORTS = levelsText(ALLOWED_EFFORTS);
 
 /** What each allowed level is for (the owner's decision D13), as every effort message says it. */
 const EFFORT_USE =
-  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
+  "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 
 const NO_EFFORT = [
   "This Agent launch names no `effort`.",
@@ -1271,25 +1271,6 @@ function judgeRan(
       ? judged(deny(real, effortDenial(ran.effort)))
       : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
-  // The affordable slot's own effort, when the variable sets it to another level: only the
-  // person can change that.
-  if (
-    ran.effortFrom !== null &&
-    isAffordable(real) &&
-    ctx.gatewayOn &&
-    ran.effort !== AFFORDABLE_EFFORT
-  ) {
-    return {
-      namesEffortLevel: true,
-      verdict: deny(
-        real,
-        [
-          `This launch runs on ${real.model}, an affordable gateway slot.`,
-          `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents), and \`${ran.effortFrom}\` runs every subagent at \`${ran.effort}\`: only the person can change the variable — ask them to set it to \`${AFFORDABLE_EFFORT}\`, or to remove it, ${WHERE_SET}.`,
-        ].join("\n"),
-      ),
-    };
-  }
   return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
 }
 
@@ -1314,9 +1295,8 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     if (!uiTierAllowed(real) || tooLow) return deny(real, uiDenial(real, effort, declared));
   }
 
-  // The premium tiers come FIRST, before the affordable rule: `opus` and `fable` are the tier
-  // whatever model answers behind them (owner, 2026-10-16), so an override or a family slot that
-  // points one at a backend never makes it an affordable slot, never forces `max`, and never
+  // The premium tiers come FIRST: `opus` and `fable` are the tier whatever model answers behind
+  // them (owner, 2026-10-16), so an override or a family slot that points one at a backend never
   // drops the tier's own gate (Fable's reason line, the `opus` tier's ask at `max`).
   if (real.tier === "fable") {
     const said = reasonLine(launch.prompt, "Fable reason");
@@ -1418,21 +1398,8 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
     };
   }
 
-  // Both tiers answered above, so what is left is Claude Sonnet or Haiku, or an affordable model.
-  if (isAffordable(real)) {
-    if (ctx.gatewayOn && launch.effort?.toLowerCase() !== AFFORDABLE_EFFORT) {
-      return deny(
-        real,
-        [
-          `This launch runs on ${real.model}, an affordable gateway slot.`,
-          `An affordable slot runs at effort \`${AFFORDABLE_EFFORT}\` (its reasoning costs cents): pass \`effort: "${AFFORDABLE_EFFORT}"\`.`,
-        ].join("\n"),
-      );
-    }
-    return allow(real, "");
-  }
-
-  // Sonnet or Haiku: free of the model rules.
+  // Both tiers answered above, so what is left is Sonnet or Haiku, Claude or a backend that
+  // answers the slot: free of the model rules, at any allowed effort (the owner, 2026-10-26).
   return allow(real, "");
 }
 

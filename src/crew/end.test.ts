@@ -14,6 +14,8 @@ import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { repoKey } from "../workflow/reviews";
 import type { RunningProgram } from "../worktrees/machine-facts";
+import { sendMessageHint } from "./answer";
+import { withCrewCommand } from "./brief";
 import { parseResumeArgs, runCrew } from "./command";
 import { procEnviron, stopLeftoverProcesses, stopSession } from "./end";
 import {
@@ -41,7 +43,7 @@ const LISTED = JSON.stringify([
   { id: "a1b2c3d4", sessionId: "a1b2c3d4-0000-1111-2222-333333333333" },
 ]);
 
-/** The `claude --bg --resume` a record's resume runs: its launch fields, its own files, then any text. */
+/** The `claude --bg --resume` a record's resume runs: its launch fields, its own files, then the crew command and any text. */
 function resumeCall(world: BoardWorld, id: string, shortId: string, text?: string): string[] {
   return [
     "--bg",
@@ -60,7 +62,9 @@ function resumeCall(world: BoardWorld, id: string, shortId: string, text?: strin
     crewMcpFile(world.paths.stateDir, world.repo, id),
     "--settings",
     crewSettingsFile(world.paths.stateDir, world.repo, id),
-    ...(text === undefined ? [] : ["--", text]),
+    // Every resume dispatches the crew skill: the command, then the text, or the command alone.
+    "--",
+    withCrewCommand(text ?? ""),
   ];
 }
 
@@ -1857,6 +1861,7 @@ describe("D42: crew resume --paused", () => {
       0,
     );
     expect(world.out).toEqual([
+      sendMessageHint(),
       'SendMessage {"to":"C my-app B1 help","message":"The wait is over: worker answers again. Go on with phase B1, then hand it back as usual."}',
       "C my-app B1 help is running (a1b2c3d4): send the message above",
     ]);
