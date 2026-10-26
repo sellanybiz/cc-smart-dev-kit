@@ -8,9 +8,12 @@ import { statuslineSetting } from "../setup/statusline";
 import { hookEnv } from "../testing/hooks";
 import { hold, updateFiles } from "../update/state";
 import { autoMergeAllowed } from "./auto-merge";
-import { resolveWorkflow } from "./resolve";
+import { jobRouteFrom, resolveJobRoute, resolveWorkflow } from "./resolve";
 import {
+  isPersonalFileSwitch,
+  PERSONAL_FILE_SWITCH_NAMES,
   parseWorkflowValue,
+  personalWorkflowSchema,
   setWorkflowValue,
   unsetWorkflowValue,
   workflowSchema,
@@ -525,7 +528,7 @@ describe("resolveWorkflow: the order", () => {
 });
 
 describe("the switches: the setting that already exists", () => {
-  test("sessionNames and jobRoute are the project's, with the project's value", () => {
+  test("sessionNames and jobRoute read the project's value when the project sets one", () => {
     const env = hookEnv();
     const off = resolveWorkflow(pathsFor(env), ccSmartDevKitConfigSchema.parse({}));
     expect(off.switches.sessionNames).toEqual({ value: false, source: "default" });
@@ -570,6 +573,108 @@ describe("the switches: the setting that already exists", () => {
       source: "personal",
     });
     expect(readFileSync(updateFiles(paths.stateDir).hold, "utf8")).toBe("2023-11-14T22:13:20Z\n");
+  });
+});
+
+// The person's machine-wide default for the job queue's route, and the project's own value over it.
+describe("switches.jobRoute: the person's default, and the project wins", () => {
+  const project = (route?: boolean) =>
+    ccSmartDevKitConfigSchema.parse(route === undefined ? {} : { jobs: { route } });
+  const resolve = (personal: unknown, config: ReturnType<typeof project> | null) => {
+    const env = hookEnv();
+    if (personal !== undefined) writePersonal(env, personal);
+    return resolveWorkflow(pathsFor(env), config).switches.jobRoute;
+  };
+
+  test("off when nobody says otherwise", () => {
+    expect(resolve(undefined, null)).toEqual({ value: false, source: "default" });
+    expect(resolve({}, project())).toEqual({ value: false, source: "default" });
+  });
+
+  test("the person's default is every project's, and with no project at all", () => {
+    const personal = { switches: { jobRoute: true } };
+    expect(resolve(personal, null)).toEqual({ value: true, source: "personal" });
+    expect(resolve(personal, project())).toEqual({ value: true, source: "personal" });
+    // A project that sets other jobs fields but not the route leaves the person's default.
+    const kindsOnly = ccSmartDevKitConfigSchema.parse({
+      jobs: { kinds: { e2e: { match: [{ script: "e2e" }] } } },
+    });
+    expect(resolve(personal, kindsOnly)).toEqual({ value: true, source: "personal" });
+    expect(resolve({ switches: { jobRoute: false } }, project())).toEqual({
+      value: false,
+      source: "personal",
+    });
+  });
+
+  test("the project's value wins, in both directions", () => {
+    expect(resolve({ switches: { jobRoute: true } }, project(false))).toEqual({
+      value: false,
+      source: "project",
+    });
+    expect(resolve({ switches: { jobRoute: false } }, project(true))).toEqual({
+      value: true,
+      source: "project",
+    });
+    expect(resolve(undefined, project(true))).toEqual({ value: true, source: "project" });
+  });
+
+  test("one function decides it, for the whole resolution and for the hook", () => {
+    const personal = personalWorkflowSchema.parse({ switches: { jobRoute: true } });
+    expect(jobRouteFrom(personal, null)).toEqual({ value: true, source: "personal" });
+    expect(jobRouteFrom(personal, project(false))).toEqual({ value: false, source: "project" });
+    expect(jobRouteFrom({}, null)).toEqual({ value: false, source: "default" });
+    const env = hookEnv();
+    writePersonal(env, { switches: { jobRoute: true } });
+    expect(resolveJobRoute(pathsFor(env), project(false))).toEqual({
+      value: false,
+      source: "project",
+    });
+    expect(resolveJobRoute(pathsFor(env), null)).toEqual({ value: true, source: "personal" });
+  });
+
+  // A hook must not fail on a broken file: the project's value and the default stand.
+  test("a personal file that cannot be used leaves the project's value and the default", () => {
+    const env = hookEnv();
+    const paths = pathsFor(env);
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, "{not json");
+    expect(resolveJobRoute(paths, project(true))).toEqual({ value: true, source: "project" });
+    expect(resolveJobRoute(paths, null)).toEqual({ value: false, source: "default" });
+    // The whole resolution still says the file is wrong, as it always did.
+    expect(() => resolveWorkflow(paths, null)).toThrow(/not valid JSON/);
+  });
+
+  test("only the person's file has the switches group, and only for jobRoute", () => {
+    expect(personalWorkflowSchema.safeParse({ switches: { jobRoute: true } }).success).toBe(true);
+    expect(personalWorkflowSchema.safeParse({ switches: {} }).success).toBe(true);
+    for (const bad of [
+      { switches: { jobRoute: "yes" } },
+      { switches: { sessionNames: true } },
+      { switches: { statusLine: true } },
+      { switches: { updateHold: true } },
+    ]) {
+      expect(personalWorkflowSchema.safeParse(bad).success).toBe(false);
+    }
+    // A project's workflow object has none: its `jobs.route` is its own copy of the choice.
+    expect(workflowSchema.safeParse({ switches: { jobRoute: true } }).success).toBe(false);
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { switches: { jobRoute: true } } }).success,
+    ).toBe(false);
+    // The names the writer lets into the person's file are the fields its schema has.
+    expect([...PERSONAL_FILE_SWITCH_NAMES]).toEqual(["jobRoute"]);
+    expect(isPersonalFileSwitch("switches.jobRoute")).toBe(true);
+    for (const key of ["switches.sessionNames", "switches.statusLine", "autoCommit"]) {
+      expect(isPersonalFileSwitch(key)).toBe(false);
+    }
+  });
+
+  test("a value is typed true or false", () => {
+    expect(parseWorkflowValue("switches.jobRoute", "true")).toEqual({ ok: true, value: true });
+    expect(parseWorkflowValue("switches.jobRoute", "false")).toEqual({ ok: true, value: false });
+    expect(parseWorkflowValue("switches.jobRoute", "maybe")).toEqual({
+      ok: false,
+      why: "switches.jobRoute is true or false",
+    });
   });
 });
 

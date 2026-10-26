@@ -110,7 +110,7 @@ export function realCrewContext(paths: CliPaths): CrewContext {
     cwd: process.cwd(),
     env,
     error: (line) => console.error(line),
-    freeMemoryGb: () => freeForCrewGb(paths.home, realMemoryFacts()),
+    freeMemoryGb: () => Promise.resolve(freeForCrewGb(realMemoryFacts())),
     load: () => machineLoad(realLoadFacts()),
     now: () => Date.now(),
     outputClosed: stdout.closed,

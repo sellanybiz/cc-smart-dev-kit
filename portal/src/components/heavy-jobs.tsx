@@ -23,7 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { duration } from "@/lib/format";
+import { duration, KIT_NAME } from "@/lib/format";
 
 /** The queue: `GET /api/jobs` once, then every `jobs` event the stream sends, with no reload. */
 export function useJobs(): Resource<JobsData> {
@@ -46,24 +46,27 @@ function useNow(everyMs: number): number {
 
 const gb = (value: number) => `${value.toLocaleString("en", { maximumFractionDigits: 1 })} GB`;
 
-/** Held against the budget, as a bar: an SVG whose widths are attributes, never styles. */
-function BudgetMeter({ store }: { store: JobStore }) {
-  const held = store.held.reduce((sum, job) => sum + job.gb, 0);
-  const share = store.budgetGb === 0 ? 0 : Math.min(1, held / store.budgetGb);
+const slotsOf = (count: number) => `${count} ${count === 1 ? "slot" : "slots"}`;
+
+/** Slots in use against the slots there are, as a bar: an SVG whose widths are attributes, never styles. */
+function SlotMeter({ store }: { store: JobStore }) {
+  const share = store.slots === 0 ? 0 : Math.min(1, store.used / store.slots);
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
         <span>
-          <span className="font-medium">{gb(held)}</span> held of a {gb(store.budgetGb)} budget
+          <span className="font-medium">{store.used}</span> of {slotsOf(store.slots)} in use
           {store.where !== "machine" && (
             <span className="text-muted-foreground"> in {store.where}</span>
           )}
         </span>
-        <span className="text-muted-foreground">{gb(store.freeGb)} free now</span>
+        <span className="text-muted-foreground">
+          {slotsOf(Math.max(0, store.slots - store.used))} free now
+        </span>
       </div>
       {/* The native meter speaks; the SVG draws it (a meter's own look cannot be themed). */}
-      <meter className="sr-only" min={0} max={store.budgetGb} value={held}>
-        {gb(held)} of {gb(store.budgetGb)}
+      <meter className="sr-only" min={0} max={store.slots} value={store.used}>
+        {store.used} of {slotsOf(store.slots)}
       </meter>
       <svg className="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">
         <rect width="100%" height="100%" rx="4" className="fill-muted" />
@@ -96,7 +99,7 @@ function JobRows({
               {job.exclusive === true && <TonePill tone="info">alone</TonePill>}
             </span>
           </TableCell>
-          <TableCell className="text-right tabular-nums">{gb(job.gb)}</TableCell>
+          <TableCell>{job.slot ? "a slot" : "a name"}</TableCell>
           <TableCell className="min-w-40 font-mono text-xs whitespace-normal wrap-anywhere">
             {job.command}
           </TableCell>
@@ -121,9 +124,9 @@ function JobRows({
 }
 
 /**
- * What a heavy job gives way with under load besides memory: the CPU and disk I/O weights its
- * scope gets (systemd's `CPUWeight` and `IOWeight`; a unit that sets none has 100), or why one
- * is not set on this machine.
+ * How a heavy job shares the machine under load: the CPU and disk I/O weights its scope gets
+ * when `jobs.json` asks for them (systemd's `CPUWeight` and `IOWeight`; a unit that sets none
+ * has 100, which is the default here), or why one is not set on this machine.
  */
 function Weights({ weights }: { weights: JobsData["weights"] }) {
   const rows: { label: string; weight: JobsData["weights"]["cpu"] }[] = [
@@ -154,7 +157,36 @@ function Weights({ weights }: { weights: JobsData["weights"] }) {
   );
 }
 
-/** The Machine page's "Heavy jobs" card: the budget, what runs, and who waits in turn. */
+/** Where the job route's value comes from, in the words `job status` uses. */
+const ROUTE_SOURCE: Readonly<Record<JobsData["route"]["source"], string>> = {
+  default: "the default",
+  personal: "your own switches.jobRoute",
+  project: "the project's jobs.route",
+};
+
+/**
+ * Whether a heavy Bash command goes through this queue: the resolved job route (a project's
+ * `jobs.route` wins over the person's `switches.jobRoute`, and without either it is off). The
+ * portal runs in no project, so the line is what a project that sets none gets.
+ */
+function RouteLine({ route }: { route: JobsData["route"] }) {
+  return (
+    <p>
+      {route.project === null ? "In a project that sets none" : `In ${route.project}`}, a heavy
+      command {route.on ? "waits for a slot in this queue" : "runs raw, outside the queue"} (
+      {ROUTE_SOURCE[route.source]}).
+      {!route.on && route.source !== "project" && (
+        <>
+          {" "}
+          Turn it on for every project:{" "}
+          <code className="font-mono">{KIT_NAME} workflow set switches.jobRoute true</code>.
+        </>
+      )}
+    </p>
+  );
+}
+
+/** The Machine page's "Heavy jobs" card: the slots, what runs, and who waits in turn. */
 export function HeavyJobsCard() {
   const jobs = useJobs();
   const now = useNow(5_000);
@@ -166,8 +198,7 @@ export function HeavyJobsCard() {
       <CardHeader>
         <CardTitle>Heavy jobs</CardTitle>
         <CardDescription>
-          Type checks, builds and test runs share the memory in turn: a job waits until its memory
-          is free.
+          Type checks, builds and test runs share a few slots: a job waits until a slot is free.
         </CardDescription>
         {data !== null && (
           <CardAction>
@@ -189,10 +220,10 @@ export function HeavyJobsCard() {
         ) : (
           jobs.data.stores.map((store) => (
             <div key={store.where} className="flex flex-col gap-4">
-              <BudgetMeter store={store} />
+              <SlotMeter store={store} />
               {store.held.length === 0 && store.waiting.length === 0 ? (
                 <EmptyState title="Nothing held, nobody waits">
-                  A heavy command a session runs shows up here while it holds memory.
+                  A heavy command a session runs shows up here while it holds a slot.
                 </EmptyState>
               ) : (
                 <div className="overflow-x-auto rounded-lg border">
@@ -202,7 +233,7 @@ export function HeavyJobsCard() {
                     <TableHeader className="bg-muted">
                       <TableRow>
                         <TableHead>Kind</TableHead>
-                        <TableHead className="text-right">Memory</TableHead>
+                        <TableHead>Holds</TableHead>
                         <TableHead>Command</TableHead>
                         <TableHead>Folder</TableHead>
                         <TableHead>Who</TableHead>
@@ -232,9 +263,16 @@ export function HeavyJobsCard() {
         {data !== null && (
           <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
             <p>
-              This machine has {gb(data.memoryGb)}; the queue keeps {gb(data.keptGb)} back for
-              everything else.
+              This machine has {gb(data.memoryGb)}.{" "}
+              {data.ceiling.gb === null
+                ? `No memory ceiling for heavy jobs: ${data.ceiling.why}`
+                : `All heavy jobs together may use ${gb(data.ceiling.gb)} (${data.ceiling.why}); a job over it is stopped, and the rest stays free.`}
             </p>
+            <p>
+              How many heavy jobs run at once is your setting:{" "}
+              <code className="font-mono">{KIT_NAME} job set max-jobs &lt;n&gt;</code>.
+            </p>
+            <RouteLine route={data.route} />
             <Weights weights={data.weights} />
           </div>
         )}

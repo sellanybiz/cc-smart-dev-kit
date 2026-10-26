@@ -16,16 +16,20 @@ import {
   listCrew,
   type NewCrew,
   readNotesState,
+  takeWatchLease,
+  updateCrew,
+  watchLeaseFile,
   writeLead,
   writeNotesState,
   writeStoreFile,
 } from "../crew/store";
-import { ISSUE_DATA_FRAME } from "../crew/watch";
+import { ISSUE_DATA_FRAME, WATCH_MONITOR_COMMAND } from "../crew/watch";
+import { currentHolder } from "../setup/lock";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { addContext } from "./io";
-import { leadNotesAnswer, notesLine } from "./lead-notes";
+import { leadNotesAnswer, notesLine, watchEndedNote, watchNeverStartedNote } from "./lead-notes";
 import { namesDir } from "./session-name";
 import { leadNotesHook } from "./specs";
 
@@ -77,10 +81,18 @@ function newCrew(repo: string): NewCrew {
  * `crew lead`, and the LD1 tests watch it name the session. `list` (the default) says the lead
  * already has a task list: one task file in Claude Code's own folder for its session
  * (`docs/claude-code-contract.md` § The to-do list), so a test about the news is not also about
- * the D23 reminder. Without it the lead has no list, and a prompt gets the reminder.
+ * the D23 reminder. Without it the lead has no list, and a prompt gets the reminder. `watch` (the
+ * default `alive`) says a live watch holds the lead's lease, so a test about the news is not also
+ * about the watch's own line: `ended` leaves a lease whose process is gone (the monitor ended),
+ * `never` leaves none (the lead skill never ran), `once-ended` leaves a gone `--once` look's.
  */
 async function leadWorld(
-  options: { cursor?: boolean; list?: boolean; named?: boolean } = {},
+  options: {
+    cursor?: boolean;
+    list?: boolean;
+    named?: boolean;
+    watch?: "alive" | "ended" | "never" | "once-ended";
+  } = {},
 ): Promise<{
   env: Record<string, string>;
   repo: string;
@@ -108,6 +120,20 @@ async function leadWorld(
     writeFileSync(join(namesDir(env), LEAD_SESSION), "LEAD app plan");
   }
   if (options.list ?? true) taskFile(env, LEAD_SESSION, 1);
+  const watch = options.watch ?? "alive";
+  if (watch !== "never") {
+    // An ended process: a short program that has run and exited, so its pid is gone.
+    const ended = Bun.spawnSync([process.execPath, "-e", ""]);
+    await takeWatchLease(stateDir, repo, LEAD_SESSION, {
+      ...currentHolder(),
+      ...(watch === "alive" ? {} : { pid: ended.pid }),
+      ...(watch === "once-ended" ? { once: true } : {}),
+      // The real clock: where a process's start time cannot be read (Windows), a lease is judged
+      // by its age, and a live watch took its lease just now.
+      at: Date.now(),
+      token: "a-watch",
+    });
+  }
   return { env, repo, stateDir };
 }
 
@@ -679,5 +705,131 @@ describe("silence, and the fail-safe", () => {
     );
     // The store is otherwise untouched: one crew record, read for its line.
     expect(listCrew(world.stateDir, world.repo).records).toHaveLength(1);
+  });
+});
+
+describe("a lead whose watch is gone is told how to start it", () => {
+  /** The two lines, written out: what the hook says in each case (not computed by the hook). */
+  const NEVER =
+    "Your crew watch is not running, so crew news will not reach you: run /cc-smart-dev-kit:lead to start it.";
+  const ENDED =
+    'Your crew watch ended: start the watch again with Claude Code\'s Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch (or run /cc-smart-dev-kit:lead in a new session).';
+
+  test("the two lines are the ones written out above", () => {
+    expect(watchNeverStartedNote()).toBe(NEVER);
+    expect(watchEndedNote()).toBe(ENDED);
+  });
+
+  test("the command in the line is the one the lead's monitor runs", () => {
+    const monitors = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "..", "..", "plugin", "monitors", "monitors.json"),
+        "utf8",
+      ),
+    ) as Array<{ command: string; name: string }>;
+    const events = monitors.find((one) => one.name === "crew-events");
+    expect(events?.command).toBe(WATCH_MONITOR_COMMAND);
+    expect(watchEndedNote()).toContain(WATCH_MONITOR_COMMAND);
+  });
+
+  test("a live watch holds the lease: nothing is said", async () => {
+    const world = await leadWorld({ watch: "alive" });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("no lease was ever taken: the lead is told to run the lead skill", async () => {
+    const world = await leadWorld({ watch: "never" });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", NEVER),
+    );
+  });
+
+  test("a lease whose watch ended: the lead is told to start the monitor itself", async () => {
+    const world = await leadWorld({ watch: "ended" });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", ENDED),
+    );
+  });
+
+  test("a lease a --once look left is no ended watch: nothing is said (watch review #6)", async () => {
+    // A lead that uses only `--once` looks: each ends at its first news by design.
+    const world = await leadWorld({ watch: "once-ended" });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("it is said on every turn while it lasts, and the news comes after it in one answer", async () => {
+    const world = await leadWorld({ watch: "ended" });
+    await step(world.stateDir, world.repo, "tests-green");
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", `${ENDED}\n${stepLine("tests-green")}`),
+    );
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", ENDED),
+    );
+    // The lead starts its watch: the line stops.
+    await takeWatchLease(world.stateDir, world.repo, LEAD_SESSION, {
+      ...currentHolder(),
+      at: Date.now(),
+      token: "the-new-watch",
+    });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a start carries it after the crew rule; the first turn, which seeds the cursor, too", async () => {
+    const world = await leadWorld({ cursor: false, watch: "never" });
+    expect(
+      await runHook(
+        leadNotesHook,
+        {
+          hook_event_name: "SessionStart",
+          session_id: LEAD_SESSION,
+          cwd: world.repo,
+          source: "resume",
+        },
+        world.env,
+      ),
+    ).toEqual(addContext("SessionStart", `${START_NOTE}\n${NEVER}`));
+    expect(readNotesState(world.stateDir, world.repo, LEAD_SESSION)).not.toBeNull();
+  });
+
+  test("a lead whose plan ended hears nothing about its watch", async () => {
+    const world = await leadWorld({ watch: "never" });
+    const lead = JSON.parse(
+      readFileSync(leadFile(world.stateDir, world.repo, LEAD_SESSION), "utf8"),
+    );
+    writeStoreFile(
+      leadFile(world.stateDir, world.repo, LEAD_SESSION),
+      `${JSON.stringify({ ...lead, endedAt: "2026-10-21T11:00:00.000Z" })}\n`,
+    );
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a lead whose crew sessions are all merged has no news to miss", async () => {
+    const world = await leadWorld({ watch: "never" });
+    await updateCrew(world.stateDir, world.repo, CREW_ID, { state: "merged" }, T0);
+    // The merge is news, said alone: no line about the watch beside it, and none after it.
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", "C app W2 hooks: merged"),
+    );
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("a lease the hook cannot read says nothing: a wrong line is worse than none", async () => {
+    const world = await leadWorld({ watch: "never" });
+    // A folder where the lease file should be: reading it fails, and the lead's turn goes on.
+    mkdirSync(watchLeaseFile(world.stateDir, world.repo, LEAD_SESSION), { recursive: true });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual({});
+  });
+
+  test("another lead's live watch is not this lead's", async () => {
+    const world = await leadWorld({ watch: "never" });
+    await takeWatchLease(world.stateDir, world.repo, OTHER_SESSION, {
+      ...currentHolder(),
+      at: Date.now(),
+      token: "another-lead's-watch",
+    });
+    expect(await runHook(leadNotesHook, leadInput(world.repo), world.env)).toEqual(
+      addContext("UserPromptSubmit", NEVER),
+    );
   });
 });

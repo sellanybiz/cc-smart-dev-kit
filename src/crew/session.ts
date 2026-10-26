@@ -5,11 +5,16 @@
  * - **A crew session** is named in its own environment: `crew start` launches it with a settings
  *   file whose `env` sets `CREW_ENV` to its id (proved live, L1a.1: the crew session's Bash sees the
  *   variable). A crew session never starts crew sessions and is never a lead.
- * - **The calling session** is the nearest ancestor process that has a session record,
- *   `<config folder>/sessions/<pid>.json` (proved live, L1a.1 P13: the Bash tool's shell runs
- *   under the session's own process, in a terminal and in the background alike). The record
- *   holds the session's id and its name (`parseSessionRecord`, one home with the hooks). No
- *   environment variable names it to the Bash tool, so the process tree is the way.
+ * - **The calling session** is first the one Claude Code names in the Bash tool's environment:
+ *   `CLAUDE_PID` (its own process) and `CLAUDE_CODE_SESSION_ID`, seen on 2.1.310. Both must be
+ *   set and agree with its record, `<config folder>/sessions/<pid>.json`
+ *   (`sessionNamedByEnv`). Else it is the nearest ancestor process that has such a record
+ *   (proved live on Linux, L1a.1 P13: the Bash tool's shell runs under the session's own
+ *   process, in a terminal and in the background alike). The record holds the session's id and
+ *   its name (`parseSessionRecord`, one home with the hooks). **On native Windows the walk alone
+ *   finds nothing.** The launcher is a `sh` script that `exec`s bun, and Git Bash's fork and
+ *   exec leave bun's Windows parent pointing at a process that has already exited, so the chain
+ *   ends two shells up, short of `claude.exe` (seen on a Windows 11 PC, 2026-10-27).
  *
  * Reading parents: `/proc` on Linux (no process started); elsewhere one listing of the running
  * processes (`runningPrograms`: `ps` on macOS, PowerShell on Windows), read once per command.
@@ -64,28 +69,62 @@ const readText: ReadText = (file) => {
   }
 };
 
+/** The variable Claude Code sets in its Bash tool to its own process id. */
+export const CLAUDE_PID_ENV = "CLAUDE_PID";
+
+/** The variable Claude Code sets in its Bash tool to its session's id. */
+export const CLAUDE_SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
+
+/** The record of session process `pid`; null when there is none. Throws when it does not read. */
+function recordOf(claudeConfigDir: string, pid: number, read: ReadText): SessionRecord | null {
+  const file = sessionRecordFile(claudeConfigDir, pid);
+  const text = read(file);
+  if (text === null) return null;
+  const record = parseSessionRecord(text);
+  if (record === null || record.pid !== pid) {
+    throw new SessionRecordError(
+      `the session record ${file} cannot be read, so the session that runs this command is unknown`,
+    );
+  }
+  return record;
+}
+
 /**
- * The Claude Code session this process runs under: the nearest ancestor of `pid` with a session
- * record. Null when no ancestor has one (outside Claude Code). Throws `SessionRecordError` when
- * the nearest record does not read as one: walking past it would name an outer session instead.
+ * The session Claude Code names in this process's environment: `CLAUDE_PID`'s record, when
+ * `CLAUDE_CODE_SESSION_ID` is set too and is the id that record holds. Null when either is
+ * missing, when the process has no record (a variable left over from a session that ended), or
+ * when the ids differ (a reused pid): then the process tree decides.
+ */
+export function sessionNamedByEnv(
+  claudeConfigDir: string,
+  env: Env,
+  read: ReadText = readText,
+): SessionRecord | null {
+  const pid = env[CLAUDE_PID_ENV]?.trim() ?? "";
+  const id = env[CLAUDE_SESSION_ID_ENV]?.trim() ?? "";
+  if (!/^[1-9]\d*$/.test(pid) || id === "") return null;
+  const record = recordOf(claudeConfigDir, Number(pid), read);
+  return record !== null && record.sessionId === id ? record : null;
+}
+
+/**
+ * The Claude Code session this process runs under: the one its environment names
+ * (`sessionNamedByEnv`), else the nearest ancestor of `pid` with a session record. Null when
+ * neither finds one (outside Claude Code). Throws `SessionRecordError` when the record it finds
+ * does not read as one: walking past it would name an outer session instead.
  */
 export function callingSession(
   claudeConfigDir: string,
   pid: number,
   parentOf: ParentReader,
+  env: Env = {},
   read: ReadText = readText,
 ): SessionRecord | null {
+  const named = sessionNamedByEnv(claudeConfigDir, env, read);
+  if (named !== null) return named;
   for (const ancestor of ancestorsBy(pid, parentOf)) {
-    const file = sessionRecordFile(claudeConfigDir, ancestor);
-    const text = read(file);
-    if (text === null) continue;
-    const record = parseSessionRecord(text);
-    if (record === null || record.pid !== ancestor) {
-      throw new SessionRecordError(
-        `the session record ${file} cannot be read, so the session that runs this command is unknown`,
-      );
-    }
-    return record;
+    const record = recordOf(claudeConfigDir, ancestor, read);
+    if (record !== null) return record;
   }
   return null;
 }

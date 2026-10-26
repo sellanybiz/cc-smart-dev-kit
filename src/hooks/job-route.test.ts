@@ -5,24 +5,32 @@
  * ever ignores that, a denial naming the command.
  */
 import { describe, expect, it } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
 import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { mergeKinds } from "../jobs/kinds";
 import { hookEnv } from "../testing/hooks";
+import { tempDir } from "../testing/temp";
 import { pullRequestMerges } from "./after-merge";
 import { guardQuestions, PUSH_FREE } from "./git-guard";
 import type { HookInput, HookResult } from "./io";
 import {
+  bashLineOf,
+  bashToolExists,
+  jobRoute,
   jobRouteConfigAnswer,
   jobRunCommand,
   judgeCommandAnswer,
+  powerShellDenial,
   rewriteAnswer,
   routeDenial,
   routedShell,
   routeHeavyCommand,
   runsJobRun,
 } from "./job-route";
-import type { HookEnvContext } from "./run";
+import type { HookContext, HookEnvContext } from "./run";
 
 const KINDS = mergeKinds(undefined);
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
@@ -154,7 +162,8 @@ describe("which commands are routed", () => {
     const raw = [
       "bunx tsc --noEmit && rm -f marker.txt",
       "rm -f marker.txt && bunx tsc --noEmit",
-      "bunx tsc --noEmit | tail -5",
+      // A pipe into a command that is no read-only filter: `xargs` runs what it reads.
+      "bunx tsc --noEmit | xargs rm -f",
       "bunx tsc --noEmit; git push --force origin main",
       "bash -c 'bunx tsc --noEmit && git push --force origin main'",
       'sh -c "bunx tsc --noEmit; gh pr merge 5"',
@@ -305,16 +314,194 @@ describe("CC8: a crew session is never asked", () => {
     });
   });
 
-  it("a light command, and a PowerShell heavy command: silence either way", () => {
+  it("a light command: silence", () => {
     const crew = { ...hookEnv(), [CREW_ENV]: "B2-api-aaaaaa" };
     expect(jobRouteConfigAnswer("broken", input("git status"), context(crew))).toEqual({});
-    // The queue route is Bash only: a PowerShell line is never rewritten, so it never asks.
     expect(
+      jobRouteConfigAnswer("broken", input("git status", "PowerShell"), context(crew)),
+    ).toEqual({});
+  });
+
+  it("a PowerShell heavy command: refused like a Bash one, since the route may refuse it", () => {
+    // A Git Bash the lookup finds on any machine (off Windows the Bash tool is always there).
+    const bash = join(tempDir("git-bash"), "bash.exe");
+    writeFileSync(bash, "");
+    const crew = { ...hookEnv(), [CREW_ENV]: "B2-api-aaaaaa", [GIT_BASH_VAR]: bash };
+    const answer = decisionOf(
       jobRouteConfigAnswer(
         "broken",
         input("bunx vitest run src/a.test.ts", "PowerShell"),
         context(crew),
       ),
-    ).toEqual({});
+    );
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+  });
+});
+
+// A heavy command piped into read-only filters: only the heavy part is queued, and the filters
+// stay after the queue's command, where the person's own Bash rules still see them.
+describe("a heavy command piped into read-only filters", () => {
+  const routed = (line: string) => routeHeavyCommand(line, KINDS, SHELL)?.command ?? null;
+
+  it("tail: the redirection stays with the heavy step, the filter after the queue's command", () => {
+    expect(routed("bunx tsc --noEmit 2>&1 | tail -20")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bunx tsc --noEmit 2>&1' | tail -20`,
+    );
+  });
+
+  it("grep: a plain heavy step goes in as its own words", () => {
+    expect(routed("bunx vitest run src/a.test.ts | grep FAIL")).toBe(
+      `${LAUNCHER} job run --kind test:run -- bunx vitest run src/a.test.ts | grep FAIL`,
+    );
+  });
+
+  it("wc, after tail: every filter is kept, as written", () => {
+    expect(routed("bunx tsc --noEmit | tail -5 | wc -l")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit | tail -5 | wc -l`,
+    );
+  });
+
+  it("a cd before the heavy step is queued with it", () => {
+    expect(routed("cd app && bunx tsc --noEmit | tail -5")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'cd app && bunx tsc --noEmit' | tail -5`,
+    );
+  });
+
+  it("tee with a file refused: the line stays raw", () => {
+    expect(routed("bunx tsc --noEmit | tee out.txt")).toBeNull();
+    expect(routed("bunx tsc --noEmit | tee")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit | tee`,
+    );
+  });
+
+  it("sed -i refused: the line stays raw", () => {
+    expect(routed("bunx tsc --noEmit | sed -i 's/a/b/' x.ts")).toBeNull();
+    expect(routed("bunx tsc --noEmit | sed -n '1,20p'")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit | sed -n '1,20p'`,
+    );
+  });
+
+  it("filter before heavy refused: the line stays raw", () => {
+    expect(routed("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
+  });
+
+  it("two heavy steps piped: the whole line goes through the person's shell, as before", () => {
+    expect(routed("bunx tsc --noEmit | bunx vitest run")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bunx tsc --noEmit | bunx vitest run'`,
+    );
+  });
+
+  // The rewrite keeps the pipeline the person wrote, so its exit code is the one their shell
+  // gives that pipeline: the last filter's, or the heavy command's under `pipefail`. Run for
+  // real: a fake launcher that runs what follows `--`, and a fake `tsc` that fails with 2.
+  it("the exit code: the same as the line as written, with and without pipefail", () => {
+    const bash =
+      process.platform === "win32"
+        ? findGitBash(process.env, { exists: existsSync, which: (name) => Bun.which(name) }).path
+        : Bun.which("bash");
+    expect(bash).not.toBeNull();
+    const home = tempDir("route-exit");
+    const bin = join(home, ".local", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      join(bin, "cc-smart-dev-kit"),
+      '#!/bin/sh\nwhile [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n',
+    );
+    writeFileSync(join(home, "tsc"), '#!/bin/sh\necho "error TS1"\necho "error TS2" >&2\nexit 2\n');
+    chmodSync(join(bin, "cc-smart-dev-kit"), 0o755);
+    chmodSync(join(home, "tsc"), 0o755);
+    const line = "./tsc --noEmit 2>&1 | tail -1";
+    const rewritten = routeHeavyCommand(line, KINDS, "bash")?.command ?? "";
+    expect(rewritten).toBe(
+      `${LAUNCHER} job run --kind tsc -- bash -c './tsc --noEmit 2>&1' | tail -1`,
+    );
+    const run = (options: string[], command: string) => {
+      const done = Bun.spawnSync([bash ?? "bash", ...options, "-c", command], {
+        cwd: home,
+        env: { ...process.env, HOME: home },
+      });
+      return { code: done.exitCode, out: done.stdout.toString() };
+    };
+    // Both streams reach the filter, which prints the last line and ends well.
+    expect(run([], line)).toEqual({ code: 0, out: "error TS2\n" });
+    expect(run([], rewritten)).toEqual({ code: 0, out: "error TS2\n" });
+    // Under pipefail the heavy command's own failure is the line's.
+    expect(run(["-o", "pipefail"], line)).toEqual({ code: 2, out: "error TS2\n" });
+    expect(run(["-o", "pipefail"], rewritten)).toEqual({ code: 2, out: "error TS2\n" });
+  });
+});
+
+// A heavy PowerShell line, where the route is on: the queue's rewrite is a Bash line, so the
+// line is refused and the reason names the Bash tool and the line to run there.
+describe("a heavy PowerShell line", () => {
+  it("one plain command becomes the same command as a Bash line", () => {
+    expect(bashLineOf("npx tsc --noEmit")).toBe("npx tsc --noEmit");
+    expect(bashLineOf('npx vitest run "src\\a b.test.ts"')).toBe(
+      "npx vitest run 'src\\a b.test.ts'",
+    );
+    // Two commands, a pipe, a redirection, a variable or a call operator are not translated.
+    expect(bashLineOf("cd app; npx tsc")).toBeNull();
+    expect(bashLineOf("npx tsc | Select-Object -Last 5")).toBeNull();
+    expect(bashLineOf("npx tsc 2>&1")).toBeNull();
+    expect(bashLineOf("npx tsc -p $env:CONFIG")).toBeNull();
+    expect(bashLineOf("& npx tsc")).toBeNull();
+  });
+
+  it("is refused with the Bash tool and the exact line, which the Bash tool then queues", () => {
+    const answer = JSON.parse(powerShellDenial("npx tsc --noEmit", KINDS)?.stdout ?? "{}");
+    expect(answer.hookSpecificOutput).toEqual({
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason:
+        "This is a heavy command (tsc), and the job queue takes Bash lines only: run in PowerShell it would not wait for a free slot, and many heavy runs at once have run machines out of memory.\nRun it with the Bash tool instead, where it waits for a slot in the queue:\nnpx tsc --noEmit",
+    });
+  });
+
+  it("a line it cannot translate is refused too, and told to write it for Bash", () => {
+    const answer = JSON.parse(powerShellDenial("cd app; npx tsc --noEmit", KINDS)?.stdout ?? "{}");
+    expect(answer.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(answer.hookSpecificOutput.permissionDecisionReason).toEndWith(
+      "Run it with the Bash tool instead, written for Bash: there a heavy command alone (or after a cd, or piped into a filter such as tail) waits for a slot in the queue.",
+    );
+  });
+
+  it("a print-only run and a light line are not refused", () => {
+    expect(powerShellDenial("npx tsc --version", KINDS)).toBeNull();
+    expect(powerShellDenial("Get-ChildItem", KINDS)).toBeNull();
+    expect(powerShellDenial("git status", KINDS)).toBeNull();
+  });
+
+  it("the Bash tool exists off Windows, and on Windows only where Git Bash is found", () => {
+    const none = { exists: () => false, which: () => null };
+    expect(bashToolExists({}, "linux", none)).toBe(true);
+    expect(bashToolExists({}, "darwin", none)).toBe(true);
+    expect(bashToolExists({}, "win32", none)).toBe(false);
+    const installed = {
+      exists: (path: string) => path === GIT_BASH_INSTALLS[0],
+      which: () => null,
+    };
+    expect(bashToolExists({}, "win32", installed)).toBe(true);
+  });
+
+  it("with no Git Bash on Windows the line is left as written", () => {
+    const repo = tempDir("ps-route");
+    const env = hookEnv();
+    const context = {
+      cwd: repo,
+      env,
+      event: "PreToolUse",
+      input: {
+        hook_event_name: "PreToolUse",
+        tool_input: { command: "npx tsc --noEmit" },
+        tool_name: "PowerShell",
+      },
+      nowMs: 0,
+      paths: cliPaths(env),
+      project: { config: { jobs: { route: true } }, mainCheckout: null, root: repo },
+    } as unknown as HookContext;
+    expect(jobRoute(context, () => false)).toEqual({});
+    const refused = JSON.parse(jobRoute(context, () => true).stdout ?? "{}");
+    expect(refused.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 });

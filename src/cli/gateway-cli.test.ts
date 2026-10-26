@@ -1963,7 +1963,7 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         "· slot cc-smart-dev-kit-worker: Custom, first target claude-sonnet-5-5 (fallback off)",
         "· slot cc-smart-dev-kit-fable: Claude (fable goes to Anthropic as Claude Code sent it)",
         "· slot cc-smart-dev-kit-opus: Claude (opus goes to Anthropic as Claude Code sent it)",
-        "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (fallback off)",
+        "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
         "",
         "",
       ]
@@ -2056,7 +2056,7 @@ describe("cc-smart-dev-kit doctor: a gateway that is not installed, or half", ()
       "· slot cc-smart-dev-kit-worker: Claude (sonnet goes to Anthropic as Claude Code sent it)",
       "· slot cc-smart-dev-kit-fable: Claude (fable goes to Anthropic as Claude Code sent it)",
       "· slot cc-smart-dev-kit-opus: Claude (opus goes to Anthropic as Claude Code sent it)",
-      "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (fallback off)",
+      "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
     ]);
     // Asked of the fake, never the network.
     expect(m.probed).toEqual(["http://127.0.0.1:20100/__cc-smart-dev-kit/health"]);
@@ -2391,12 +2391,9 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         '✓ judge test: omniroute:m2 blocked "git push --force origin main"',
         '✓ judge test: omniroute:m1 blocked "git push --force origin main"',
         "~ cc-smart-dev-kit-judge: (new)",
-        "  now: omniroute:m2 → omniroute:m1  (fallback off: only omniroute:m2 answers; the rest are kept, not used)",
+        "  now: omniroute:m2 → omniroute:m1  (fallback on)",
         "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
         "✓ The router uses it from its next request.",
-        "Next steps:",
-        "  1. To let the next target answer when omniroute:m2 fails or rests:",
-        "       cc-smart-dev-kit gateway fallback judge on",
         "",
       ].join("\n"),
     );
@@ -2664,7 +2661,7 @@ describe("cc-smart-dev-kit gateway slot judge: never set untested", () => {
         "  cc-smart-dev-kit-worker Custom: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used; breaker on)",
         "  cc-smart-dev-kit-fable Claude: fable goes to Anthropic as Claude Code sent it, on your own login",
         "  cc-smart-dev-kit-opus Custom: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used; breaker on)",
-        "  cc-smart-dev-kit-judge Claude: Claude judges every check, alone (fallback off)",
+        "  cc-smart-dev-kit-judge Claude: Claude judges every check, alone: no worker target has passed the judge test yet (omniroute:m1, omniroute:m2; cc-smart-dev-kit gateway setup tests them)",
         "",
       ].join("\n"),
     );
@@ -2890,7 +2887,7 @@ describe("cc-smart-dev-kit gateway breaker", () => {
           "  cc-smart-dev-kit-worker Custom: omniroute:m1 → omniroute:m2  (fallback off: only omniroute:m1 answers; the rest are kept, not used; breaker off)",
           "  cc-smart-dev-kit-fable Claude: fable goes to Anthropic as Claude Code sent it, on your own login",
           "  cc-smart-dev-kit-opus Claude: opus goes to Anthropic as Claude Code sent it, on your own login",
-          "  cc-smart-dev-kit-judge Claude: Claude judges every check, alone (fallback off)",
+          "  cc-smart-dev-kit-judge Claude: Claude judges every check, alone: no worker target has passed the judge test yet (omniroute:m1, omniroute:m2; cc-smart-dev-kit gateway setup tests them)",
           "",
         ].join("\n"),
       );
@@ -3380,9 +3377,10 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
   const FAILED_LINE =
     'judge test: omniroute:m2 did not block "git push --force origin main" (let it run): it never judges; the worker slot uses it as before';
   /**
-   * D66: the worker's tested targets stand in for the judge only after the person turns the
-   * judge's fallback on (`gateway fallback judge on`). These tests are about that stand-in, so
-   * their config has the switch on; the test of the default says so.
+   * The worker's tested targets stand in for the judge unless the person turns the judge's
+   * fallback off (on by default since 2026-10-27; `gateway fallback judge off`). These tests
+   * are about that stand-in, so their config says the switch is on, as the default does; the
+   * test of the default says so.
    */
   const JUDGE_ON = { fallback: { "cc-smart-dev-kit-judge": true } };
 
@@ -3541,17 +3539,30 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
   );
 
   test(
-    "D66: Claude judges alone with no judge chain; fallback judge on lets the worker's tested targets stand in, off puts the default back",
+    "the judge's stand-in is on by default: the worker's tested targets stand in; fallback judge off keeps Claude alone, on puts the default back",
     async () => {
       const m = machine();
       const server = fakeServer({ judge: { m1: "block" } });
       m.writeConfig(server.port);
       await m.run(["gateway", "slot", "worker", "omniroute:m1"]);
-      // The default: no switch is saved, and Claude judges alone.
+      // The default: no switch is saved, and the tested worker target stands in.
       expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("fallback");
+      const off = await m.run(["gateway", "fallback", "judge", "off"]);
+      expect(off.stderr).toBe("");
+      expect(off.exitCode).toBe(0);
+      expect(off.stdout).toBe(
+        [
+          "~ cc-smart-dev-kit-judge: fallback on → off",
+          "  Claude judges every check, alone (fallback off)",
+          "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
+          "✓ The router uses it from its next request.",
+          "",
+        ].join("\n"),
+      );
+      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).fallback).toEqual({
+        "cc-smart-dev-kit-judge": false,
+      });
       const on = await m.run(["gateway", "fallback", "judge", "on"]);
-      expect(on.stderr).toBe("");
-      expect(on.exitCode).toBe(0);
       expect(on.stdout).toBe(
         [
           "~ cc-smart-dev-kit-judge: fallback off → on",
@@ -3562,19 +3573,7 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           "",
         ].join("\n"),
       );
-      expect(JSON.parse(readFileSync(m.paths.config, "utf8")).fallback).toEqual({
-        "cc-smart-dev-kit-judge": true,
-      });
-      const off = await m.run(["gateway", "fallback", "judge", "off"]);
-      expect(off.stdout).toBe(
-        [
-          "~ cc-smart-dev-kit-judge: fallback on → off",
-          "  Claude judges every check, alone (fallback off)",
-          "  Only Claude judges; when it is limited or down, its error goes back to Claude Code.",
-          "✓ The router uses it from its next request.",
-          "",
-        ].join("\n"),
-      );
+      // On is the default: no entry is kept.
       expect(JSON.parse(readFileSync(m.paths.config, "utf8"))).not.toHaveProperty("fallback");
     },
     SPAWNING_TEST_MS,
@@ -3595,12 +3594,9 @@ describe("cc-smart-dev-kit gateway: the worker's targets and the judge test (D44
           "· judge: claude-sonnet-5-5 is Claude: no test needed; it judges as the model it names",
           '✓ judge test: omniroute:m2 blocked "git push --force origin main"',
           "~ cc-smart-dev-kit-judge: (new)",
-          "  now: claude-sonnet-5-5 → omniroute:m2  (fallback off: only claude-sonnet-5-5 answers; the rest are kept, not used)",
+          "  now: claude-sonnet-5-5 → omniroute:m2  (fallback on)",
           "! a judge other than Claude decides worse: it can block good work or let a risky command through, and every check sends it the conversation and the next action",
           "✓ The router uses it from its next request.",
-          "Next steps:",
-          "  1. To let the next target answer when claude-sonnet-5-5 fails or rests:",
-          "       cc-smart-dev-kit gateway fallback judge on",
           "",
         ].join("\n"),
       );
@@ -3793,5 +3789,155 @@ describe("the gateway commands' output, as plain text", () => {
         "",
       ].join("\n"),
     );
+  });
+});
+
+describe("auto mode's safety checks are failing: status and doctor say it, with the exact fix (2026-10-27)", () => {
+  /** The test clock of `machine()` (2026-10-15T10:00:00Z), and a record 20 minutes old in it. */
+  const record = (extra: Record<string, unknown> = {}) => ({
+    claim: "five_hour",
+    lastAt: Date.UTC(2026, 9, 15, 9, 59, 0),
+    resetsAt: Date.UTC(2026, 9, 15, 13, 0, 0) / 1000,
+    since: Date.UTC(2026, 9, 15, 9, 40, 0),
+    status: 429,
+    why: "untested",
+    ...extra,
+  });
+
+  function writeState(m: ReturnType<typeof machine>, checksDown: Record<string, unknown>): void {
+    const file = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }).gatewayStateFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ checksDown, fallbacks: {}, limits: {}, version: 1 }), {
+      mode: 0o600,
+    });
+  }
+
+  /** Times in the lines are the machine's: the test says UTC, and puts it back. */
+  async function inUtc<T>(body: () => Promise<T>): Promise<T> {
+    const before = process.env.TZ;
+    process.env.TZ = "UTC";
+    try {
+      return await body();
+    } finally {
+      if (before === undefined) delete process.env.TZ;
+      else process.env.TZ = before;
+    }
+  }
+
+  test("gateway status: a ! line with since when and why, and the fix under it; none when no record is current", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeState(m, { "cc-smart-dev-kit-judge": record() });
+    const status = await inUtc(() => m.runHere(["gateway", "status"]));
+    expect(status.stderr).toBe("");
+    expect(status.stdout).toContain(
+      [
+        "  ! auto mode's safety checks are failing since 09:40: Claude is at its plan limit (five_hour) until 13:00, and no worker target has passed the judge test",
+        "    Fix: cc-smart-dev-kit gateway setup",
+        "",
+      ].join("\n"),
+    );
+    // Nobody touched the record for 15 minutes: it is stale, and the line is gone.
+    writeState(m, {
+      "cc-smart-dev-kit-judge": record({ lastAt: Date.UTC(2026, 9, 15, 9, 44, 0) }),
+    });
+    const stale = await inUtc(() => m.runHere(["gateway", "status"]));
+    expect(stale.stdout).not.toContain("safety checks are failing");
+  });
+
+  test("gateway status: a profile's record names the profile and its own command", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    writeState(m, {
+      "team/cc-smart-dev-kit-judge": record({
+        claim: null,
+        resetsAt: null,
+        status: 529,
+        why: "off",
+      }),
+    });
+    const status = await inUtc(() => m.runHere(["gateway", "status"]));
+    expect(status.stdout).toContain(
+      [
+        "  ! auto mode's safety checks are failing in profile team since 09:40: Claude is down (HTTP 529), and the judge's stand-in is switched off",
+        "    Fix: cc-smart-dev-kit gateway profile team fallback judge on",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("`gateway fallback judge on` ends a record the switch caused, at once; another cause stays", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {}, { fallback: { "cc-smart-dev-kit-judge": false } });
+    const state = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }).gatewayStateFile;
+    writeState(m, {
+      "cc-smart-dev-kit-judge": record({ claim: null, resetsAt: null, why: "off" }),
+    });
+    expect((await m.runHere(["gateway", "fallback", "judge", "on"])).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(state, "utf8"))).not.toHaveProperty("checksDown");
+    // No tested worker target is not fixed by the switch: the record stays.
+    writeState(m, { "cc-smart-dev-kit-judge": record() });
+    m.writeConfig(server.port, {}, { fallback: { "cc-smart-dev-kit-judge": false } });
+    expect((await m.runHere(["gateway", "fallback", "judge", "on"])).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(state, "utf8")).checksDown).toEqual({
+      "cc-smart-dev-kit-judge": record(),
+    });
+  });
+
+  test("gateway status: a saved judge chain shows the judge's own switch (on by default, off when the person said so)", async () => {
+    const saved = { "cc-smart-dev-kit-judge": { targets: ["omniroute:m1"] } };
+    const line = (fallback: string) =>
+      `    saved, not in use: omniroute:m1  (fallback ${fallback}; to use it: cc-smart-dev-kit gateway slot judge custom)`;
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {}, { kept: saved });
+    expect((await m.runHere(["gateway", "status"])).stdout).toContain(line("on"));
+    m.writeConfig(server.port, {}, { fallback: { "cc-smart-dev-kit-judge": false }, kept: saved });
+    expect((await m.runHere(["gateway", "status"])).stdout).toContain(line("off"));
+  });
+
+  test("doctor: a ! warning with the fix, never a failure", async () => {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port);
+    // Installed means the router copy is there; its content is not what this test is about.
+    mkdirSync(dirname(m.paths.copy), { recursive: true });
+    writeFileSync(m.paths.copy, "// a router copy\n");
+    writeState(m, {
+      "cc-smart-dev-kit-judge": record(),
+      "team/cc-smart-dev-kit-judge": record({
+        claim: null,
+        resetsAt: null,
+        why: "no-worker",
+        status: 503,
+      }),
+    });
+    const checks = await inUtc(() =>
+      gatewayChecks({
+        paths: cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir }),
+        bundle: BUILT_ROUTER,
+        nowMs: Date.UTC(2026, 9, 15, 10, 0, 0),
+        runner: () => ({ exitCode: 0, output: "active\n" }),
+        service: "systemd",
+        fetch: m.probe.fetch,
+      }),
+    );
+    expect(checks.filter((check) => check.text.startsWith("auto mode's safety checks"))).toEqual([
+      {
+        ok: true,
+        warn: true,
+        text: "auto mode's safety checks are failing since 09:40: Claude is at its plan limit (five_hour) until 13:00, and no worker target has passed the judge test",
+        fix: "cc-smart-dev-kit gateway setup",
+      },
+      {
+        ok: true,
+        warn: true,
+        text: "auto mode's safety checks are failing in profile team since 09:40: Claude is down (HTTP 503), and the worker slot has no affordable target to stand in",
+        fix: "cc-smart-dev-kit gateway profile team slot worker <targets>",
+      },
+    ]);
   });
 });

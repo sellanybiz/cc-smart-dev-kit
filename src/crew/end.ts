@@ -553,7 +553,8 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
   let sessionId: null | string;
   try {
     sessionId =
-      callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf)?.sessionId ?? null;
+      callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env)
+        ?.sessionId ?? null;
   } catch (error) {
     return refuse(failure(`crew resume: ${reasonOf(error)}`), ctx);
   }

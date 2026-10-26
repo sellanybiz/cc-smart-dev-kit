@@ -196,8 +196,8 @@ function startDetached(platform, argv, options) {
 }
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync3 } from "fs";
-import { join as join9 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
+import { join as join8 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6159,8 +6159,25 @@ var breakerSchema = object({
   since: number2(),
   targets: array(breakerTargetSchema)
 });
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
 var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
   seenClaude: record(string2(), number2()).optional(),
@@ -6179,8 +6196,11 @@ function parseLimitState(text) {
   const parsed = stateSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
+var UNKNOWN_CLOCK = "an unknown time";
 function formatClock(epochSec, nowMs, timeZone) {
   const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime()))
+    return UNKNOWN_CLOCK;
   const day = (date) => new Intl.DateTimeFormat("en-CA", {
     day: "2-digit",
     month: "2-digit",
@@ -6558,7 +6578,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return false;
+  return slot === JUDGE_SLOT;
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -6739,7 +6759,7 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.4.1",
+  version: "1.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6921,19 +6941,20 @@ var matchRuleSchema = union([
   })
 ]);
 var kindSpecSchema = strictObject({
-  gb: number2().int().min(0).max(1024),
-  filesGb: number2().int().min(0).max(1024).optional(),
-  maxFiles: number2().int().min(1).optional(),
   printOnly: array(string2().min(1)).optional(),
+  noSlotForFiles: boolean2().optional(),
   skipWords: array(string2().min(1)).optional(),
   valuedFlags: array(string2().min(1)).optional(),
+  match: array(matchRuleSchema).optional(),
+  about: string2().min(1).optional(),
+  gb: number2().int().min(0).max(1024).optional(),
+  filesGb: number2().int().min(0).max(1024).optional(),
+  maxFiles: number2().int().min(1).optional(),
   workers: strictObject({
     flag: string2().min(1),
     aliases: array(string2().min(1)).optional(),
     gbEach: number2().positive()
-  }).optional(),
-  match: array(matchRuleSchema).optional(),
-  about: string2().min(1).optional()
+  }).optional()
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
@@ -7090,6 +7111,9 @@ var workflowSchema = strictObject({
     archiveDays: numberField("crew.archiveDays"),
     tag: tagSchema.optional()
   }).optional()
+});
+var personalWorkflowSchema = workflowSchema.extend({
+  switches: strictObject({ jobRoute: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
   autoCommit: false,
@@ -7551,7 +7575,7 @@ function loadWorkflow(file) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
-  const parsed = workflowSchema.safeParse(raw);
+  const parsed = personalWorkflowSchema.safeParse(raw);
   if (!parsed.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
@@ -7632,86 +7656,8 @@ function alertsAt(paths, cwd, env) {
   }
 }
 
-// src/jobs/config.ts
-import { isAbsolute, join as join7 } from "path";
-var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
-var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
-var jobsMachineConfigSchema = strictObject({
-  stateDir: absolutePath.optional(),
-  budgetGb: number2().int().min(1).optional(),
-  reserveGb: number2().int().min(0).optional(),
-  sharedDirs: array(absolutePath).optional(),
-  launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: weightSchema.optional(),
-  ioWeight: weightSchema.optional()
-});
-
 // src/jobs/memory.ts
 var GIB = 1024 ** 3;
-
-// src/jobs/queue.ts
-var GIB2 = 1024 ** 3;
-
-// src/jobs/store.ts
-import {
-  chmodSync,
-  existsSync as existsSync6,
-  mkdirSync as mkdirSync3,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync6,
-  realpathSync as realpathSync3,
-  renameSync as renameSync2,
-  statfsSync,
-  statSync as statSync4,
-  unlinkSync as unlinkSync2,
-  utimesSync,
-  writeFileSync as writeFileSync2
-} from "fs";
-var NETWORK_FS = new Map([
-  [26985, "NFS"],
-  [20859, "SMB"],
-  [4283649346, "CIFS"],
-  [4266872130, "SMB2"],
-  [16914839, "9p"],
-  [1397113167, "AFS"],
-  [1799439955, "AFS"],
-  [12805120, "Ceph"],
-  [1937076805, "Coda"],
-  [22092, "NCP"],
-  [198183888, "Lustre"],
-  [18225520, "GFS2"],
-  [1952539503, "OCFS2"]
-]);
-var NETWORK_FUSE = new Set([
-  "sshfs",
-  "rclone",
-  "s3fs",
-  "gcsfuse",
-  "goofys",
-  "glusterfs",
-  "juicefs",
-  "davfs",
-  "curlftpfs",
-  "cephfs"
-]);
-var realSharedFolderFacts = {
-  platform: process.platform,
-  fsType: (dir) => {
-    try {
-      return statfsSync(dir).type;
-    } catch {
-      return null;
-    }
-  },
-  mountinfo: () => {
-    try {
-      return readFileSync6("/proc/self/mountinfo", "utf8");
-    } catch {
-      return null;
-    }
-  }
-};
 
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
@@ -7831,6 +7777,11 @@ var waitingForSchema = discriminatedUnion("kind", [
     resetsAt: text2.nullable()
   }),
   looseObject({
+    kind: literal("safety-checks"),
+    scope: text2,
+    since: text2
+  }),
+  looseObject({
     kind: literal("unknown"),
     since: text2,
     slot: text2.exactOptional()
@@ -7891,6 +7842,7 @@ var crewFields = object({
     why: text2
   }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
+  lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
   startedAt: text2.nullable().optional(),
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
@@ -7989,7 +7941,7 @@ var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
-  noted: boolean2().default(false),
+  noted: boolean2().optional(),
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
@@ -7999,11 +7951,13 @@ var watchStateFields = object({
 var watchLeaseFields = object({
   at: number2().int().min(0),
   host: string2(),
+  once: boolean2().optional(),
   pid: number2().int().positive(),
   pidns: string2().nullable().default(null),
   startTime: string2().nullable(),
   token: text2
 });
+var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
   last: _enum(["report", "step"]).nullable(),
@@ -8105,48 +8059,41 @@ function uiEffortAllowed(effort) {
 var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
 var EFFORT_AUTO = "auto";
 var CREW_KINDS = {
-  build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
+  build: { about: "routine building", effort: "high", model: "sonnet" },
   docs: {
     about: "docs and their updates",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
-  tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
+  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
   security: {
     about: "code that touches security",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   money: {
     about: "code that touches money",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   permissions: {
     about: "code that touches permissions",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   schema: {
     about: "a schema or a contract",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
-  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
+  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
   architecture: {
     about: "architecture and design",
-    affordableEffort: "xhigh",
     effort: "xhigh",
     model: "opus"
   },
   ui: {
     about: "UI and UX judgment",
-    affordableEffort: null,
     effort: UI_POLICY.minEffort,
     model: UI_POLICY.tiers[0]
   }
@@ -8271,7 +8218,7 @@ function levelsText(levels) {
   return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
 }
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
@@ -8372,8 +8319,8 @@ function windowsToastArgvFor(title, body, critical = false) {
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/update/major.ts
-import { join as join8 } from "path";
-var MAJOR_NOTES_PATH = join8("src", "update", "major-notes.json");
+import { join as join7 } from "path";
+var MAJOR_NOTES_PATH = join7("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
@@ -8450,8 +8397,8 @@ function breakerAlert(input, ctx) {
 }
 function rememberBreakerAlert(paths, alerted, opening) {
   try {
-    mkdirSync4(paths.stateDir, { recursive: true, mode: 448 });
-    writeFileSync3(join9(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
+    mkdirSync3(paths.stateDir, { recursive: true, mode: 448 });
+    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
 `, { mode: 384 });
   } catch {}
 }
@@ -8491,11 +8438,11 @@ function planAlert(input, ctx) {
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync6(paths.gatewayConfigFile);
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync6(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -8523,7 +8470,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync7(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync6(join8(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));

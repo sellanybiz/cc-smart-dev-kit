@@ -4,10 +4,10 @@
  * WHY
  *   Some heavy commands start others: a project script that runs the type check, then
  *   the build, each through `cc-smart-dev-kit job run`. The outer job already holds its
- *   gigabytes. If the inner one queued too, it could wait for memory the outer job holds,
- *   while the outer job waits for the inner one to end: neither would ever move. So an
- *   inner job runs its command directly: no queue, no new memory group (it already lives
- *   in the outer job's, with its kill mark).
+ *   slot. If the inner one queued too, it could wait for a slot the outer job holds (when
+ *   every slot is taken), while the outer job waits for the inner one to end: neither would
+ *   ever move. So an inner job runs its command directly: no queue, no new memory group (it
+ *   already lives in the outer job's, with its kill mark).
  *
  * HOW: no environment variable
  *   The job must get exactly the environment it was given, so nothing is passed down to

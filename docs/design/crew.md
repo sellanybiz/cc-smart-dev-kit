@@ -83,8 +83,9 @@ blocked one is stopped (D35: a crew session never outlives its work) — and the
 **The kinds** (D46, D50) say what a phase needs, and so the model and effort its crew session runs on:
 `CREW_KINDS` in `src/models/launch-policy.ts`, the one home of the launch policy the Agent
 guard judges subagents by (§ The Agent guard). Routine work — `build`, `docs`, `tests` — runs on
-`sonnet`, the worker slot: at `max` when an affordable gateway slot answers it, at `high` when
-Claude Sonnet does (`isAffordable`, the guard's own reading of "affordable"). Which gateway answers
+`sonnet`, the worker slot, at `high` whatever answers the slot (the owner, 2026-10-26: no level
+is forced on an affordable backend; until then it ran at `max`, and a person who wants a backend
+at one level pins it in the router, D64). Which gateway answers
 is the project's: the address its own settings choose over the machine's — its personal file, its
 team file, then the user's — and a profile's chains when the address names one (`crewGatewayOf`,
 `src/crew/usage-guard.ts`). It reads the settings files at the lead's own folder
@@ -100,8 +101,7 @@ settings file naming one, is not seen. So does code that
 touches security, money, permissions, a schema or deploy plumbing: it builds like any other code.
 Work that needs judgment — `architecture` — runs on `opus` at `xhigh`, whatever answers the
 tier. `ui` is the exception (`UI_POLICY`, D50): it runs on `opus` at `high`, never on an
-affordable model — `crewLaunch` names a tier, so `isAffordable` is false whatever answers it,
-and `crew kinds` prints `never` in its affordable-slot column. A `ui` session's override that
+affordable model — `crewLaunch` names a tier, whatever answers it. A `ui` session's override that
 would put it on an affordable model or below `high` is refused by the launcher with one plain
 line (`uiRefusal`), before the guard is asked. `crewLaunch(kind, gateway, env)` makes that
 choice from the same reading of the gateway the guard makes, so a crew session never starts on a
@@ -244,10 +244,14 @@ repository, under the state folder:
 ### The lead and the launch
 
 **`crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
-that runs it as a lead of this repository. **Which session** is found the way L1a.1 proved it:
-the nearest ancestor process with a Claude Code session record, `<config folder>/sessions/<pid>.json`
-(`callingSession`, `src/crew/session.ts`; parents from `/proc` on Linux, one process listing
-elsewhere). Its name, `LEAD <tag> <plan>`, is written into the lead record as data, and the
+that runs it as a lead of this repository. **Which session** is first the one Claude Code names in
+the Bash tool's environment: `CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID`, when both are set and agree
+with the record `<config folder>/sessions/<pid>.json` (`sessionNamedByEnv`). Else it is found the way
+L1a.1 proved it: the nearest ancestor process with such a record (`callingSession`,
+`src/crew/session.ts`; parents from `/proc` on Linux, one process listing elsewhere). On native
+Windows the walk alone never reaches the session: the launcher is a `sh` script that `exec`s bun,
+and after Git Bash's fork and exec bun's recorded parent is a process that has already exited, so
+the chain ends two shells up. Its name, `LEAD <tag> <plan>`, is written into the lead record as data, and the
 `lead-notes` hook sets it at the lead's next prompt by itself (§ The lead's name below); the
 command never renames the session, and prints one line saying so. The tag is
 `--tag`, else `workflow.crew.tag`, else the main checkout's folder name; the plan is `--plan`,
@@ -306,7 +310,7 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    is no commit. A wrong command line is exit 2: no phase, slug or kind, an unknown kind, an effort
    a crew session never runs at, a phase that waits for itself.
 2. **The model and effort**: the kind's (`crewLaunch`, D46). An override (`--model`, `--effort`;
-   a model alone runs at the kind's effort, or `max` when an affordable model answers it) is
+   a model alone runs at the kind's effort, whatever answers it) is
    judged by the Agent guard's own `judgeLaunch`: one it refuses is refused with its words, and
    one it would **ask** the person about (`opus` at `max`, an unreadable name) is refused too,
    because `crew start` never asks — the person starts such a session themselves. Fable is
@@ -345,8 +349,8 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    `cc-smart-dev-kit statusline` in `<stateDir>/usage-window.json` (the reader's one home,
    `src/cli/usage-window.ts`), and with no reading — or one whose window has reset — the guard
    does not hold, and `crew start` and `crew list` say so once; **the memory** — the memory free
-   now less what heavy
-   jobs reserved and have not used yet (the job queue's own reading) is at least
+   now (the job queue's own reading of the machine, cgroup ceilings included; heavy jobs reserve
+   nothing, so what they use is already gone from it) is at least
    `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS); **the CPU** — a
    start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (3) times the
    cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
@@ -398,6 +402,13 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    resets more than 24 hours away ends the crew session's turn, and § Waiting out a limit's
    pause and resume take over: the phase goes on after the reset. A crew session is unattended,
    which is what the watchdog is for.
+   **The same file keeps Remote Control off** (`remoteControlAtStartup: false`, the owner's
+   rule): nobody attaches to a crew session from a phone, and `setup` turns auto-connect on for
+   the person's own sessions (D66). The key is security-sensitive — Claude Code takes a `true`
+   only from the user's, a `--settings` or managed settings, but a `false` from any — so this
+   file turns it off for the crew session alone (read from the 2.1.310 binary; a session that
+   shows no Remote Control is still owed, `docs/claude-code-contract.md`). A crew session started
+   before the key keeps its old file until its next start.
    **The same file makes the session lean**: `enabledPlugins` turns off every plugin the machine
    enabled except this one, what `workflow.crew.keep` names, and every plugin those depend on,
    `disableClaudeAiConnectors: true`
@@ -423,8 +434,15 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    (`src/worktrees/include.ts`, as Claude Code does for its own worktrees), then from the main
    checkout `claude --bg -w crew-<phase>-<slug> --name "C <tag> <plan> <phase> <slug>" --model <m> --effort
    <e> --permission-mode auto --autocompact auto --strict-mcp-config --mcp-config <mcp.json>
-   --settings <settings.json> "<first line>"`. The
-   first line names the crew session, its lead and the brief's path; it holds no `"` or `%`, which a
+   --settings <settings.json> -- "/cc-smart-dev-kit:crew <first line>"`. The
+   prompt starts with **the crew command** (`CREW_COMMAND`, built from the plugin's name): Claude
+   Code arms a plugin monitor only when its skill is dispatched under the full name, by the
+   `Skill` tool or by a slash command, so a prompt that said "work by /cc-smart-dev-kit:crew" in
+   the middle of a sentence armed nothing, and a crew session whose model never called the `Skill`
+   tool ran with no `crew-self` monitor (the paragraph on the monitors, further down this page).
+   The first line comes after the command as its arguments, which Claude Code puts under
+   `ARGUMENTS:` at the end of the skill. It names the crew session, its lead and the brief's path;
+   it holds no `"` or `%`, which a
    `.cmd`'s `cmd.exe` line could not carry. `--autocompact auto`: Claude Code's own window for
    the model stands, and none of the person's `autoCompactWindow` settings applies to the crew
    session (`auto` skips them; `CLAUDE_CODE_AUTO_COMPACT_WINDOW` still does). Its compaction comes
@@ -940,9 +958,12 @@ tried again. A record from before the field has no `deliveredAt` at all: its ans
 hand and are not printed again. The monitor writes a heartbeat every 15 s (a one-shot `--once` run
 writes none) (`<store>/answer-watch/<id>.json`); `crew answer` reads it, waits up to 10 s for the delivery, and
 says which happened — `delivered`, or `recorded, not delivered` (no heartbeat, one older than 60 s,
-or a monitor that did not pass it on in time) with the one line the lead sends it with by hand
+or a monitor that did not pass it on in time) with the lines the lead sends it with by hand
 (the person's click in the portal gets words instead — they cannot send it; and an answer sent by
-hand while the monitor lives arrives twice) —
+hand while the monitor lives arrives twice) — first a line that says to load the tool
+(`SendMessage` is **deferred**: Claude Code leaves it out until a session looks it up, and the
+router drops a deferred tool a backend model has not loaded, so such a model must run `ToolSearch`
+with `select:SendMessage` before it can call it), then
 `SendMessage {"to":"<name>","message":"<text>"}`, the tool's arguments as JSON, so a quote or a
 line break in the answer is escaped and never changed. The lead is never left without a way. **A
 second answer to the same question is a correction**: the first is kept in the question's
@@ -954,8 +975,13 @@ by the phase's end takes no correction
 idles past `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt
 (that prompt is the delivery, and the same write records it as delivered; a correction's prompt
 carries the replace words too):
-`claude --bg --resume <session id> "<text>"`, run in the crew session's own worktree — which
-starts a copy with a new id (§ The session a resume brings back). **A crew session the answer
+`claude --bg --resume <session id> -- "/cc-smart-dev-kit:crew <text>"`, run in the crew session's
+own worktree — which starts a copy with a new id (§ The session a resume brings back). **Every
+resume prompt starts with the crew command** (`resumeArgs`, the one place that adds it: `crew
+answer`, `crew resume` with the bare command, `crew model`, and the watch's wake of a paused
+session): `--resume` does not arm a plugin monitor, so a resumed process ran with no `crew-self`
+monitor until the command dispatched the skill again. A message to a process that still runs
+(`SendMessage`) keeps the bare text: its monitor runs already. **A crew session the answer
 reaches or resumes is `working` again, in the same hold that records the answer, with the session
 the resume brought back**: a record that kept saying `blocked` would let the watch stop a crew
 session that is busy, and one that kept the old id would read that session's stopped row as its
@@ -978,19 +1004,30 @@ nothing else**, from two readers:
   goes on is **per lead** (`<store>/watch/<lead session id>.json`), so two leads watch their own
   crew sessions and neither loses the other's lines; the mark is written when the lead records itself
   (`crew lead`), so the lines before it are history the lead already saw.
-- **agent view** (`claude agents --json --all`), read on every pass. It raises four alerts, each
+- **agent view** (`claude agents --json --all`), read on every pass. It raises five alerts, each
   said once while it lasts and none of them an action: a crew session that **needs the person** (a
   permission prompt or an input; when the wait ends and the record is still at work, one more
-  line, `<name>: going again — the wait is answered`, so the lead stops naming it as waiting), one
+  line, `<name>: going again — the wait is answered`, so the lead stops naming it as waiting;
+  agent view shows a turn that ended on a model limit as `blocked` too, and on a record the pause
+  marked `paused` the line says so — `(paused: the watch resumes it once a model answers; do not
+  attach)` — because that is no wait for the person), one
   whose transcript has not moved for `workflow.crew.quietMinutes` (**quiet**: one line when the
   stretch starts, one more at three times the quiet minutes, then nothing until the crew session
   writes again — the line carries the minutes, so the watch remembers the alert's key, not its
   text; WN1), one whose turn **ended with no report**, and one that
   **never confirmed its worktree** — its session is listed and alive, but its own start hook has
   not turned the `starting` record `working` within `WORKTREE_CONFIRM_MS` (3 minutes: the hook
-  may have crashed, been silenced by `ownHooks`, or run outside git). It
+  may have crashed, been silenced by `ownHooks`, or run outside git) — and the fifth, one **with no
+  monitor of its own**: a session at work for more than `SELF_WATCH_GRACE_MS` (5 minutes) whose
+  `crew self-watch` wrote no heartbeat in the last 60 seconds (`ANSWER_BEAT_STALE_MS`, the age `crew
+  answer` calls "not running"). One line, once: `<name>: no self-watch — answers will not reach it by
+  themselves; crew answer prints the SendMessage line to send`. A monitor is armed once for each
+  Claude process, so a monitor that ended — or a session resumed into a new process whose crew skill
+  nobody ran again — stays gone (the monitors paragraph below). The mark is dropped while the heartbeat is fresh,
+  so a monitor that comes back and goes is said again. It
   also keeps the store true, because the caps count the crew that hold a place
-  (`RUNNING_STATES`): a session that **failed** is recorded `failed`, and one the person
+  (`RUNNING_STATES`): a session that **failed** is recorded `failed` — unless a backend refused its
+  turn (§ Waiting out a limit, "A backend's refusal is no crash") — and one the person
   **stopped by hand** is recorded `stopped`; neither then holds a place and keeps a queued crew session
   waiting for ever. A permission wait does **not** make a crew session `blocked`: the idle stop below
   would kill a crew session that only waits for the person to approve a call.
@@ -1085,10 +1122,13 @@ list` and the portal read it, and into the event the watch writes when it ends t
 It is **Linux only**, and it is never faked: on macOS and Windows the board and `crew status`
 show `-` (`docs/windows-setup.md` § The short version).
 
-`--once` ends on the next change: the fallback where monitors do not run (the lead runs it with
-`run_in_background: true`, re-armed per event, and the end of the run starts the lead's next
-turn); a pass with nothing to say waits for the next, so it never wakes the lead with no news.
-`--timeout <seconds>` bounds the wait.
+`--once` ends on the next change (the lead runs it with `run_in_background: true`, and the end of
+the run starts the lead's next turn); a pass with nothing to say waits for the next, so it never
+wakes the lead with no news. `--timeout <seconds>` bounds the wait. It is the lead's one look, not
+a way to hear: Claude Code 2.1.310 runs the plugin's monitors with telemetry off too, so the old
+fallback for a machine where they do not — a note the watch printed once, the lead's `--once` loop —
+is gone (`telemetry.ts` with it). A `--once` **never takes the lease from a live watch that is not
+one** (below).
 
 **One acting watch per lead: the newest wins** (WF1). Seen live on 2026-10-25: 13 watches whose
 monitor had ended (parent pid 1), up to 30 hours old, up to 5 for one lead — each one starting,
@@ -1099,14 +1139,26 @@ resumed five sessions at once), and each writing the same state file over the ot
   the watch that acts: its process, as the store's lock records a holder (`currentHolder`,
   `holderIsGone`, `src/setup/lock.ts`: pid, start time, host, pid namespace), and a token of its
   own. A watch takes it when it starts, whoever holds it — a monitor the lead restarts is its
-  intent — and before it reads the state, so it goes on from where the last one wrote. `--once`
-  follows the same rule. Two leads never share one.
+  intent — and before it reads the state, so it goes on from where the last one wrote. Two leads
+  never share one. **A `--once` is no restart**: its lease carries `once: true`, and it takes the
+  lease from nobody who is alive and not a `--once` itself (`takeWatchLeaseUnlessLive`, under the
+  store's lock). It says `crew watch: a watch already runs for this lead (pid <pid>) and its lines
+  reach the lead; this --once ends without taking the lease` and ends with 0, before it reads
+  anything: that watch's lines reach the lead already, and a `--once` that took the lease would end
+  it at its next look — the lead would lose its monitor to its own look. A `--once` still replaces
+  another `--once`, and takes a lease whose holder is gone.
 - **Before each pass**, again right before it starts queued crew sessions and before it resumes
   one (each launches a Claude session), and before it writes its state, a watch checks it still
   holds the lease (under the store's lock). A watch that lost it says one line — `crew watch: a
-  newer watch of this lead runs (pid <pid>); this one ends` — and ends with 0, before it acts. A
-  lease whose holder is gone (its pid dead or reused) is free, and the watch takes it back. So
-  only the lease holder writes `<store>/watch/<lead session id>.json`.
+  newer watch of this lead runs (pid <pid>); this one ends` — and ends with 0, before it acts. That
+  line carries no restart step: the newer watch's lines reach the lead, and a lead that restarted
+  on it would end that one too. A lease whose holder is gone (its pid dead or reused) is free, and
+  the watch takes it back, with the time of now as its `at` (never its start time, which an
+  age-only host would read as gone at once). **A watch that is no `--once` takes the lease back
+  from a `--once`** instead of ending: on an age-only host, after a sleep or a store busy for
+  minutes, a `--once` may take a lease whose holder only looked gone, and it ends at its first
+  news, so nobody would watch. So only the lease holder writes
+  `<store>/watch/<lead session id>.json`.
 - **A watch ends when nobody started or reads it**: when its parent pid changes (Claude Code ends
   a monitor by ending its shell, and the watch is re-parented), and when a line to stdout found
   nobody reading (EPIPE). Bun's `console.log` drops such a write without a word, and
@@ -1117,9 +1169,36 @@ resumed five sessions at once), and each writing the same state file over the ot
   `WatchEnd`, and `runCrewWatch` catches it once, says why, and ends with 0. **On Windows the
   parent check never fires** — a process there is not re-parented, so its parent pid never
   changes — and the lease and the closed output are what end a watch.
+- **A lease is renewed.** Where a process's start time cannot be read (Windows, a `ps` that does not
+  say), a lease is judged by its age (`holderIsGone`, ten minutes), so a live watch would read as gone.
+  `keepWatchLease` writes the lease's `at` again when it is older than `WATCH_LEASE_REFRESH_MS` (two
+  minutes): `watchIsAlive`, the lead's notes and the `--once` rule above read a live watch as alive
+  everywhere.
 - **A store too busy to answer** (its lock held past its wait) is no reason to end a watch: a
   monitor that ended is not started again. The watch acts on nothing that time — no pass, no
   start, no resume, no state write — and asks again at its next look.
+- **A watch never dies silently.** Claude Code arms a plugin's monitor once for each Claude
+  process (a set of the monitors it armed, never cleared when a monitor's command exits;
+  read from the 2.1.310 binary), so a watch that ended is not started again by running the lead
+  skill again, and a monitor shows the lead its **stdout** lines only. So: a pass that throws
+  — a store write that waited its three seconds (`LockBusyError`), a disk, a broken file — is
+  **logged and the watch goes on** with the next pass, as the folders-left-half-done look already
+  did. A failed pass keeps what it had done (`PassFailed` carries its state: the lines it said and
+  the byte of the log it read to), so a failure late in a pass never says the lines of its early
+  part twice. Each failure is a line on stderr; the **first of a run** is also a line on stdout —
+  `crew watch: a pass failed (<why>); the watch goes on and tries again in 20 s` — and a pass
+  that works ends the run, so a later failure is said again. Only `WATCH_FAILED_PASSES_MAX` (60
+  passes, about twenty minutes) in a row end the watch, with exit 1 and one line on stdout:
+  `crew watch ended: <n> passes in a row failed, the last with: <why> — start the watch again with
+  Claude Code's Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew
+  watch`. Every other end that can still write says why on stdout too: a lease lost to a newer
+  watch (its own line, above), a start that cannot name its lead or find crew sessions on, a
+  lease it cannot take — each as `crew watch ended: <why> — <the same restart>`. The ends that
+  cannot write (the output closed, the parent gone) stay on stderr. The command in the line is
+  the plugin's own `crew-events` monitor command (`WATCH_MONITOR_COMMAND`; a test keeps the two
+  equal). The presence mark every pass writes for every lead (`setLeadPresence`) reads the
+  record first and takes the lock only when the answer changed, so the pass that costs most
+  does not wait for a lock it does not need.
 - **One resume of a record at a time**: before `claude` runs, every resume claims the record in
   the store, in the state its caller judged it in (`claimResume`, a `resumeClaim` on the
   record). A second resume — the person's `crew resume --paused` beside the watch, or a watch
@@ -1154,6 +1233,35 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   answers`), and `lastPause` records when the wait began and the hold-off it carries: 0 on a
   first pause, then 5, 10 and 20 minutes while pauses come within 15 minutes of each other.
   A crew session that ended its phase, was stopped, or still waits in the queue pauses nothing.
+  **The error is kept and shown.** The hook writes it on the record for every class
+  (`lastApiError`: Claude Code's class, the text it showed — `error_details` when it sends them, else
+  `last_assistant_message` — masked, one line, 400 characters, and the time), and the pause line
+  ends with it, `· server_error: API Error: 500 …`, so the lead can tell a provider that failed from
+  a plan that ran out. A change of state to `working` drops it, and so does a turn that ended
+  normally (the Stop hook): an error the record still held would otherwise turn a later crash
+  into a backend's refusal.
+- **A backend's refusal is no crash** (`BACKEND_REFUSAL_ERRORS`). Agent view gives a turn that
+  ended on an API error a state by its class (read from the 2.1.310 binary): `blocked` with the
+  words it needs for `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`,
+  `cloud_credential_error`, `verification_required`, `billing_error`, `rate_limit`, `overloaded`,
+  `server_error` and `invalid_request`, and **`failed` with "API error" for every other class** —
+  `unknown`, which is what a router's 424 (a backend's refusal, `src/gateway/refusal.ts`) is
+  called, and `model_not_found`. The watch used to record that `failed` as the end of the crew
+  session, and stopped its session. It now reads `lastApiError`: for `unknown` or
+  `model_not_found`, on a `failed` row whose words are "API error", the record **does not fail**.
+  The lead is told once, with the router's reason, in two lines: a **question** — `<name>:
+  question · its backend refused its turn (unknown: <reason>) · answer it: crew answer …` — and the
+  state change `<name>: stopped — its backend refused the turn; your answer to its question
+  resumes it`. The state is `stopped` with `stoppedByWatch`: the end a `blocked` crew session that
+  waits on its lead reaches after the idle stop, reached at once because the session has no process
+  — and the only state `crew answer` resumes (a `blocked` record is sent a message, and nothing
+  hears it). It holds no place, a plain `crew resume` brings it back too, and the watch's daily
+  reminder for a stopped, unmerged session applies. **Nothing retries it by itself** — unlike a pause, there is no
+  breaker or limit to wait out, and the same request would be refused again. A session that
+  already has a question open on its lead is not given another (it would close the real one): the
+  stop's line carries the reason. The question is asked once for each refusal; the watch's mark of
+  it goes once the record left `stopped`. Any other class,
+  or no recorded error, or a `failed` row that says something else, stays a real failure.
 - **The resume** (the lead's watch): never while the slot's breaker is open (its first target in
   use is not one the record says rests) or the model's limit is current. A slot wait is over when
   the breaker record closed (the router recorded an answer — only an answer closes it) or the
@@ -1166,14 +1274,44 @@ overloaded model, a server error. The kit waits it out, with no time limit (D42:
   request since — its health page's count grew, and the state file's closed breaker or dropped
   limit is that answer when the page is not there. The transport is `crew answer`'s, one home for
   every resume (`resumeSession`): a message for a session whose process lives (the watch prints the
-  `SendMessage` line, because only a session holds that tool), `claude --bg --resume <id> "<text>"`
+  `SendMessage` line, after the line that says to load that deferred tool, because only a session
+  holds it), `claude --bg --resume <id> -- "/<plugin>:crew <text>"`
   **in its worktree, with the record's own `--settings` and `--strict-mcp-config --mcp-config`
   files** for one whose session has no process; the text names what changed and the phase. The
   record is `working` with its wait cleared, in the same act, with the session the resume brought
-  back (§ The session a resume brings back). `crew resume --paused` is the
+  back (§ The session a resume brings back) — only while it is still `paused`, so a state the
+  woken session wrote at once (a report) is never overwritten. **A resume the store could not
+  record is held**: the record stays `paused` and names the session it had, so a second try after
+  the claim (`RESUME_CLAIM_MS`) would wake or copy it again. The watch leaves it, as it leaves a
+  resume that started a session it could not name, says so in the line, and the lead's `crew
+  resume` brings it back. `crew resume --paused` is the
   person's way at once — after `/login` on another account — for every paused crew session of a
   lead: the same `resumeOne`, so a session whose process lives is woken with a message and one
   that has none is resumed, never copied.
+- **The safety-checks pause** (owner, 2026-10-27). When auto mode's safety checks get no verdict
+  (Claude at its limit and nothing standing in for the judge), Claude Code denies every tool call
+  that needs a check, `crew report` included (`docs/claude-code-contract.md` § The gateway). Such a
+  turn ends with no report, and the report block (§ The crew session's and the lead's hooks) could only start
+  a turn that fails again. So at **Stop**, a crew session on the gateway whose own scope has a
+  current failing-checks record (the router's `checksDown`, keyed `cc-smart-dev-kit-judge` or
+  `<profile>/cc-smart-dev-kit-judge`; the scope is the profile its `ANTHROPIC_BASE_URL` names,
+  read like the StopFailure pause's) and whose turn ended with no report is **not blocked**: it is
+  marked `paused` with `waitingFor: { kind: "safety-checks", scope: <that key>, since }` and the
+  same `lastPause` hold-off, and one `state` event in the checks' own words
+  (`checksDownText`, `src/gateway/checks-down.ts`): `<name>: paused — auto mode's safety checks
+  are failing since 09:40: Claude is at its plan limit (five_hour) until 13:00, and no worker
+  target has passed the judge test; goes on by itself when they answer again`. It holds on the
+  stop that answers a block too (`stop_hook_active`: a pause is no second block). A report
+  counts as this turn's only while the record is out of `starting`, `working` and `quiet`: a
+  session that reported `blocked`, was answered and works again has that old report as its newest
+  event, and it pauses like any other. A turn that reported, a `blocked` session (its question
+  stays open, and a resume would tell it to go on), a session off the gateway, another scope's
+  record, a stale one, a state file that cannot be read, and a phase that ended keep the answer
+  the Stop gave before; a pause the store cannot write is one stderr line beside that answer. The watch resumes it when the record for
+  its scope is gone (a check got a verdict) or no longer current (15 minutes after the last
+  failure, `currentChecksDown`), with the spacing and the "the router answered since" rule above,
+  and the text `The wait is over: auto mode's safety checks answer again. Go on with phase <p>, then
+  hand it back as usual.` A check that still fails pauses it again, with the doubled hold-off.
 
 **The hand-off** — `crew start <phase> --continue <old crew session>` — starts the next crew session of a
 phase that ran out of room: the same phase and slug, cut from the **old crew session's head** (not
@@ -1255,7 +1393,7 @@ same line is not said again before 15 minutes have passed, so a crew session tha
 again and a crew session that acted does not; the loop ends when the crew session's phase is over. A monitor
 is a process of the host, whose environment may not carry the settings' `env`, so this one command
 finds its crew session by its worktree when `CC_SMART_DEV_KIT_CREW` is not set; `--once` checks once
-and exits (for a hook, and for a host where monitors do not run).
+and exits (for a hook).
 
 **The monitors** (`plugin/monitors/monitors.json`) arm the two of them: `crew-events` on the
 lead's skill (`on-skill-invoke:cc-smart-dev-kit:lead`) runs the watch, and `crew-self` on the
@@ -1263,19 +1401,30 @@ crew session's (`on-skill-invoke:cc-smart-dev-kit:crew`) runs the self-watch. Th
 monitors with exactly the four fields Claude Code's loader reads (`name`, `command`,
 `description`, `when`); `when` for a plugin's own skill is the namespaced
 `on-skill-invoke:<plugin>:<skill>` (the loader compares it with the name the skill is invoked by,
-`<plugin>:<skill>`). Each stdout line reaches the model as a task notification — **at most ten at
+`<plugin>:<skill>`). **What arms one** (read from the 2.1.310 binary, the live proof owed): the
+skill is dispatched — by the `Skill` tool, or by a slash command — under that exact full name; a
+bare `crew` loads the skill and arms nothing. It arms once for each process, and a `--resume` does
+not emit it. So every prompt the kit gives a crew session's process starts with the slash command
+(`/cc-smart-dev-kit:crew`: the launch and every resume, described above), and the crew skill and the
+brief's frame tell a model that started without it to call the `Skill` tool with the full name.
+Each stdout line reaches the model as a task notification — **at most ten at
 once and then one every two seconds**; the host drops the rest with a notice — which is why the
 watch says only what is news. **They are session-scoped**: the host arms them as persistent tasks
 of the session, and they end with it, so the long-lived-parts rule of `bundles-and-releases.md` (a
 part that outlives a session must run from a copy in `~/.local/share/`) does not apply to them.
-**They do not run where telemetry is off** (`DISABLE_TELEMETRY`, or
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`), and there the lead uses `crew watch --once` in the
-background instead — the fallback the lead skill names. On native Windows each command is a
+**They run with telemetry off too** (Claude Code 2.1.310's changelog; the kit's earlier
+`telemetry.ts`, which read `DISABLE_TELEMETRY` and told the lead to run `crew watch --once` in a
+loop instead, is gone). **A monitor is armed once for each Claude process**: Claude Code keeps a
+set of the monitors it armed (`plugin:name`) and skips one already in it, and the set is never
+cleared when the monitor's command exits (read from the 2.1.310 binary). So **a monitor whose
+command ended never comes back in that process**, and running the skill again does not start it;
+only a new Claude process (a restart) does. The lead's way back is Claude Code's own `Monitor`
+tool, with the same command line as the `crew-events` monitor. Both ways the lead learns of it
+are written into the kit: the watch's end line ("A watch never dies silently", above), and the `lead-notes` hook's line
+(§ The crew session's and the lead's hooks). On native Windows each command is a
 `$HOME` shell line naming the launcher, so it needs Git Bash; that Claude Code starts a monitor
 through Git Bash there is the one live check owed (`docs/windows-setup.md` § The owner's
-checklist, step 5). The watch knows which case it is in (the
-environment and the user's settings' `env`, `telemetry.ts`) and says so once, so the lead knows to
-re-arm it; the watch's own help names the fallback too. **`claude plugin validate` does not read
+checklist, step 5). **`claude plugin validate` does not read
 this file** (it checks a monitors path or an inline list in the manifest, not the default
 location), so `monitors.test.ts` is what keeps it to the loader's shape; one wrong key would stop
 the whole plugin from loading.
@@ -1305,8 +1454,9 @@ tell, as it decides everything else about a crew session.
   and one note carries the related facts together.
 - **The command records a `tell` event** — the kind, from, to, and the first line — so the lead's
   watch shows it as one line (`<name>: told <names> · <kind> · <first line>`), and then prints
-  **one `SendMessage` line per receiver**, the JSON form `crew answer` prints: only a session holds
-  the tool, so the crew session sends it.
+  **one `SendMessage` line per receiver**, the JSON form `crew answer` prints, after the one line
+  that says to load the deferred tool first (`sendMessageHint`): only a session holds the tool, so
+  the crew session sends it.
 - **Never status.** "How it goes" and "done" are the lead's, through `crew report`: the crew
   skill says so, and the guard below refuses the alternative.
 
@@ -1321,7 +1471,8 @@ itself, and a session that never ran `crew lead` are each refused with one line,
 recorded or printed: all or none**. A crew session never runs it at all: `readCaller` refuses it,
 because a crew session talks to its own lead. The command records **one `lead-tell` event per
 receiver**, with that lead's session id in `lead` — so its watch prints one line and its
-`lead-notes` hook covers a missed one — and then prints one `SendMessage` line per receiver. The
+`lead-notes` hook covers a missed one — and then prints one `SendMessage` line per receiver, after
+the one line that says to load that deferred tool first (`sendMessageHint`). The
 event's text is the note's first line without the tag: the watch line already names the sender.
 
 **A merge into the base reaches the other leads** (D55, `after-merge.ts`). The note after a pull
@@ -1350,8 +1501,11 @@ least 20) gets one `warning:` line at the start, naming the glob; it never refus
 glob that wide makes every other lead's session clash with it.
 
 **The message guard** (`src/hooks/message-guard.ts`, PreToolUse on `SendMessage`) is the
-enforcement. Its other-repo rule is unchanged and runs first (§ The hooks): a message to a session
-that works outside this repo is denied. Then, when the sender is a crew session (its environment
+enforcement. Its other-repo rule runs first (§ The hooks): a message to a session that works
+outside this repo **asks the person** (owner, 2026-10-27: a cross-repo message goes with their
+yes), and a crew session's such message is **denied** in the guard's crew part with
+`CREW_QUESTION_STEP` — so it holds with no file, a broken or too new one, and whatever `ownHooks`
+says. Then, when the sender is a crew session (its environment
 names a crew id, `CREW_ENV`) whose record this repo's store holds, and the target is the name of
 **another crew session of the same repo**, the message's first line must carry the tag
 `[<its phase>] CONTRACT:` or `[<its phase>] QUESTION:`; an untagged one is **denied**, and the
@@ -1420,13 +1574,23 @@ each is silent unless its own session is the one it is about, and neither reads
   (`<cross-session-message …>`), a monitor's line (`<task-notification>`), a subagent's hand-back
   the session itself launched (`<agent-message from=…>`, seen live on 2.1.309) and a Stop hook's
   own continuation (`Stop hook feedback:`, the kit's block line included) are its lead's or its
-  own subagent's, and so are the three prompts a transport gives a crew session **bare** —
-  `crew start`'s launch line (its own name, lead and brief file, from `firstPrompt`; a hand-off's
-  next crew session gets its own), `crew answer`'s resume of a stopped session (a question still
-  open, or the answer the store recorded) and the watch's `resumeText` of a paused one. A bare
-  prompt none of those explain is recorded as the person's: nothing else in the kit gives a crew
-  session a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has
-  no other way to be heard. One the hook cannot read at all records nothing. It never blocks and
+  own subagent's, and so are the prompts a transport gives a crew session, **every one behind the
+  crew command** (`afterCrewCommand`: the typed `/cc-smart-dev-kit:crew …`, or the
+  `<command-name>`/`<command-args>` form Claude Code writes for it) — `crew start`'s launch line
+  (its own name, lead and brief file, from `launchLine`; a hand-off's next crew session gets its
+  own), `crew answer`'s resume of a stopped session (a question still open, or the answer the
+  store recorded), its resume with a **correction** (the head `deliveryHead` writes, naming one of
+  the question's answers — the current one before the store records the correction, a superseded
+  one after; a correction of an answer the session never heard has no head, so while the record
+  is stopped and an answer is unheard, the command and any text are that resume), `crew model`'s
+  resume (`modelChangeText`, read back by `isModelChangeText` with the model and effort the
+  record now holds — `crew model` writes them before it resumes), the watch's `resumeText` of a
+  paused one, and the bare command of a resume with nothing to add (`crew resume`). Each is read
+  back from the function that writes it (`src/crew/brief.ts`), never a copy of its words. The
+  same words without the command are the person's. A prompt
+  none of those explain is recorded as the person's: nothing else in the kit gives a crew session
+  a prompt, and a stopped crew session the person reopens by hand (`claude attach`) has no other
+  way to be heard. One the hook cannot read at all records nothing. It never blocks and
   never asks. **Whatever the turn is, the record's name goes back on the title when the title says
   something else** (`titleAnswer`, through `titleToSet`): a crew session its lead drives gets no
   person prompt at all, so the address is put right on those turns too, and `session-name` stays
@@ -1440,9 +1604,19 @@ each is silent unless its own session is the one it is about, and neither reads
   byte after the last line it read, and the newest `step` or `report` it saw), through the store's
   one `readCrewEvents`, so a Stop costs the same on day 30 as on day 1: the log only grows.
   Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
-  blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` is not
-  empty: that turn is not over, and Claude Code wakes the session when the work lands. At
-  **StopFailure** on `rate_limit`, `overloaded` or `server_error` it marks the crew session
+  blocks at 9; this hook blocks at most once per turn. Nothing runs while `background_tasks` holds
+  work other than the session's own monitor: that turn is not over, and Claude Code wakes the
+  session when the work lands. **The `crew-self` monitor is in that list for the whole session**
+  (read from the 2.1.310 binary: a plugin monitor is a shell task, so its entry is `{id, type:
+  "shell", status, description, command}` with no field that says "monitor"), so counting it
+  switched this gate off for every session whose monitor worked. The hook knows the entry by its
+  command — the launcher as one word (quoted or not, with or without its folder), then
+  `crew self-watch`, and nothing else (`isSelfWatchTask`, `src/crew/brief.ts`) — and a task that
+  only names those words still counts. Its sibling `isLeadWatchTask` knows the lead's
+  `crew-events` monitor the same way, for `verify-gate`, which would otherwise be silent in every
+  lead. At
+  **StopFailure** it keeps the error on the record (`lastApiError`, every class), and on
+  `rate_limit`, `overloaded` or `server_error` it also marks the crew session
   **paused**, with what it waits for taken from the router's state file (D42, § Waiting out a
   limit), and answers nothing: Claude Code ignores that hook's output, so the pause is the
   record and its event, and the lead's watch is what resumes it. A store that
@@ -1464,4 +1638,11 @@ each is silent unless its own session is the one it is about, and neither reads
   the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
   (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
   turn — at a start, a resume and a compaction, never at a prompt and never on an edit.
-  **Never a block**: a lead is reminded, never held.
+  **A lead whose watch is gone is told, at every turn it lasts**: when the lead's plan is not
+  ended, it has a crew session that is not yet merged or removed, and no live watch holds its lease
+  (`watchIsAlive`), one line says how to start it, after the reminder and before the news. A lease
+  that was never taken means the lead skill never ran in this session — the line says to run it.
+  A lease whose watch is gone means its monitor ended, which the skill cannot undo (§ The
+  monitors) — the line gives the `Monitor` tool's command, the same as `crew-events`
+  (`WATCH_RESTART`). A lease or a store it cannot read says nothing: a wrong line is worse than
+  none. **Never a block**: a lead is reminded, never held.

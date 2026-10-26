@@ -12,6 +12,7 @@ import {
   crewIdOf,
   realProcessFacts,
   SessionRecordError,
+  sessionNamedByEnv,
   sessionRecordFile,
 } from "./session";
 
@@ -78,6 +79,49 @@ describe("the calling session", () => {
       JSON.stringify({ cwd: "/x", name: "n", pid: 999, sessionId: "s" }),
     );
     expect(() => callingSession(config, 300, tree({ 300: 200 }))).toThrow(SessionRecordError);
+  });
+
+  test("the session Claude Code names in the environment comes first", () => {
+    const config = tempDir("config");
+    record(config, 200, { cwd: "/home/user/my-app", name: "lead", sessionId: "s-200" });
+    record(config, 100, { cwd: "/home/user", name: "outer", sessionId: "s-100" });
+    // Windows: the chain stops two shells up, short of the session (a parent that exited).
+    const env = { CLAUDE_CODE_SESSION_ID: "s-200", CLAUDE_PID: "200" };
+    expect(callingSession(config, 500, tree({ 500: 400, 400: 300 }), env)).toEqual({
+      cwd: "/home/user/my-app",
+      name: "lead",
+      pid: 200,
+      sessionId: "s-200",
+    });
+    // And it wins over a walk that would reach another session.
+    expect(callingSession(config, 500, tree({ 500: 100 }), env)?.sessionId).toBe("s-200");
+  });
+
+  test("the environment's session is used only when both variables agree with its record", () => {
+    const config = tempDir("config");
+    record(config, 200, { cwd: "/home/user/my-app", name: "lead", sessionId: "s-200" });
+    record(config, 100, { cwd: "/home/user", name: "outer", sessionId: "s-100" });
+    const walk = tree({ 500: 100 });
+    // The pid alone, the id alone, an id that differs (a reused pid), a pid with no record
+    // (a session that ended), a pid that is no number: the walk decides each time.
+    for (const env of [
+      { CLAUDE_PID: "200" },
+      { CLAUDE_CODE_SESSION_ID: "s-200" },
+      { CLAUDE_CODE_SESSION_ID: "s-other", CLAUDE_PID: "200" },
+      { CLAUDE_CODE_SESSION_ID: "s-300", CLAUDE_PID: "300" },
+      { CLAUDE_CODE_SESSION_ID: "s-200", CLAUDE_PID: "2O0" },
+    ]) {
+      expect(sessionNamedByEnv(config, env)).toBeNull();
+      expect(callingSession(config, 500, walk, env)?.sessionId).toBe("s-100");
+    }
+  });
+
+  test("the environment's record that does not read stops the lookup, as the walk's does", () => {
+    const config = tempDir("config");
+    mkdirSync(join(config, "sessions"), { recursive: true });
+    writeFileSync(sessionRecordFile(config, 200), "{ not json");
+    const env = { CLAUDE_CODE_SESSION_ID: "s-200", CLAUDE_PID: "200" };
+    expect(() => callingSession(config, 500, tree({}), env)).toThrow(SessionRecordError);
   });
 
   test("Linux: the real reader walks /proc up to this test's own parent", () => {

@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { planClaudeDefaults } from "./claude-defaults";
-import { type GatewayConfig, parseConfig } from "./config";
+import { fallbackOn, type GatewayConfig, parseConfig } from "./config";
 
 const SCOUT = "cc-smart-dev-kit-scout";
 const WORKER = "cc-smart-dev-kit-worker";
@@ -89,9 +89,39 @@ describe("D66: the move to Claude defaults, planned", () => {
     }
     // Only a switch that was ON is a change worth a line (an explicit off was the default's).
     expect(plan.lines).toContain("fallback worker: on → off");
-    expect(plan.lines).toContain("fallback judge: on → off");
     expect(plan.lines).toContain("fallback fable (saved chain): on → off");
     expect(plan.lines.filter((line) => line.startsWith("fallback scout"))).toEqual([]);
+  });
+
+  it("the judge's explicit on is the default's own value (on since 2026-10-27): it goes, with no line saying off", () => {
+    const plan = planned(parsed(raw()));
+    expect(plan.lines.filter((line) => line.startsWith("fallback judge"))).toEqual([]);
+    expect(plan.config).not.toHaveProperty("fallback");
+    expect(fallbackOn(plan.config, JUDGE)).toBe(true);
+  });
+
+  it("the judge's explicit off is the person's own and stays, the machine's and a profile's; the rest of the switches go", () => {
+    const plan = planned(
+      parsed(
+        raw({
+          fallback: { [JUDGE]: false, [SCOUT]: false, [WORKER]: true },
+          profiles: {
+            team: {
+              fallback: { [JUDGE]: false, [WORKER]: true },
+              slots: { [WORKER]: ["omniroute:p1"] },
+            },
+          },
+        }),
+      ),
+    );
+    expect(plan.config.fallback).toEqual({ [JUDGE]: false });
+    expect(plan.config.profiles?.team?.fallback).toEqual({ [JUDGE]: false });
+    expect(fallbackOn(plan.config, JUDGE)).toBe(false);
+    // The explicit off is no change, so no line; the worker's on is one.
+    expect(plan.lines).toContain("fallback worker: on → off");
+    expect(
+      plan.lines.filter((line) => line.includes("judge") && line.includes("fallback")),
+    ).toEqual([]);
   });
 
   it("a profile's chains go (Claude, over the machine's), its explicit Claude stays, its switches go", () => {
@@ -159,12 +189,13 @@ describe("D66: the move to Claude defaults, planned", () => {
     const plan = planned(
       parsed({
         backends: { omniroute: { apiKey: "omni-key-123456", baseUrl: "http://127.0.0.1:20128" } },
-        fallback: { [JUDGE]: false },
-        slots: {},
+        fallback: { [SCOUT]: false },
+        slots: { [SCOUT]: ["omniroute:a1"] },
         version: 1,
       }),
     );
-    expect(plan.lines).toEqual([]);
+    // The chain moves (its line); its explicit off is the default's own value (no line).
+    expect(plan.lines).toEqual(["scout: omniroute:a1 → Claude"]);
     expect(plan.config).not.toHaveProperty("fallback");
   });
 

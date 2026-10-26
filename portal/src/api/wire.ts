@@ -205,7 +205,7 @@ export interface OverviewAnswer extends NotSetUp {
   dashboardUrl: null | string;
   fallbacks: FallbackRow[];
   fiveHour: null | PlanWindow;
-  jobs: { budgetGb: number; heldGb: number; waiting: number };
+  jobs: { slots: number; used: number; waiting: number };
   limits: LimitRow[];
   limitsRead: boolean;
   requests: OverviewRequests;
@@ -689,6 +689,7 @@ export interface CrewSummary {
     kind: string;
     model?: string;
     resetsAt?: null | string;
+    scope?: string;
     since?: string;
     slot?: string;
   };
@@ -955,12 +956,17 @@ export interface JobHolderItem {
   command: string;
   exclusive?: string;
   folder: string;
-  gb: number;
   kind: string;
   pid: number;
   since: null | string;
+  slot: boolean;
   user: string;
   unknown?: true;
+}
+
+export interface JobCeilingState {
+  gb: null | number;
+  why: string;
 }
 
 export interface JobWeightState {
@@ -973,16 +979,22 @@ export interface JobWeightsState {
   io: JobWeightState;
 }
 
+/** `src/jobs/status.ts` › `JobRouteState`: the resolved job route, and where it comes from. */
+export interface JobRouteState {
+  on: boolean;
+  project: null | string;
+  source: "default" | "personal" | "project";
+}
+
 export interface JobsAnswer {
-  budgetGb: number;
-  freeGb: null | number;
-  keptGb: number;
+  ceiling: JobCeilingState;
   memoryGb: number;
+  route: JobRouteState;
   stores: {
-    budgetGb: number;
-    freeGb: number;
     held: JobHolderItem[];
     note?: string;
+    slots: number;
+    used: number;
     waiting: JobHolderItem[];
     where: string;
   }[];

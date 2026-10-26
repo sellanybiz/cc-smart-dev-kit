@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
-import { kindsSchema } from "../jobs/kinds";
+import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { type Workflow, workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
@@ -117,6 +117,18 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
   handoffTokens: "1.2.0",
   loadPerCore: "1.3.0",
   archiveDays: "1.3.0",
+};
+
+/**
+ * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
+ * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
+ * file whose kind sets one needs that plugin version or newer, for the same reason as
+ * `WORKFLOW_CREW_SINCE`: an older plugin reads a kind strictly and refuses the whole file. The
+ * keys are typed from the kind's schema; `config.test.ts` fails when a new kind field has no
+ * entry here.
+ */
+export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string>>> = {
+  noSlotForFiles: "1.5.0",
 };
 
 /**

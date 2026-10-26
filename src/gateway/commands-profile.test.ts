@@ -194,8 +194,8 @@ describe("gateway profile <name> slot", () => {
 
   test("judge off in a profile says who judges there: Claude first, the profile's tested worker targets while it cannot (RV3)", async () => {
     // The router keeps those stand-ins in a profile (`claudeFirstJudge` reads the profile's
-    // view), so "plain Claude in this profile" would say more than it does. They stand in only
-    // once the judge's fallback switch is on (off by default, D66).
+    // view), so "plain Claude in this profile" would say more than it does. They stand in
+    // unless the judge's fallback switch is off (on by default, the owner, 2026-10-27).
     const m = machine({ judgeFallback: true, judgeProof: true });
     await m.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
     m.reset();
@@ -213,13 +213,13 @@ describe("gateway profile <name> slot", () => {
     expect(alone.output()).toContain(
       "team: cc-smart-dev-kit-judge: Claude: Claude judges every check, alone (fallback off)",
     );
-    // No switch turned on anywhere (D66): Claude judges alone too.
+    // No switch set anywhere: the default is on, so the tested worker target stands in too.
     const plain = machine({ judgeProof: true });
     await plain.run(["profile", "team", "slot", "worker", "omniroute:m1"]);
     plain.reset();
     expect(await plain.run(["profile", "team", "slot", "judge", "off"])).toBe(0);
     expect(plain.output()).toContain(
-      "team: cc-smart-dev-kit-judge: Claude: Claude judges every check, alone (fallback off)",
+      "team: cc-smart-dev-kit-judge: Claude: Claude first; while Claude is limited or down: omniroute:m1 (fallback on)",
     );
   });
 

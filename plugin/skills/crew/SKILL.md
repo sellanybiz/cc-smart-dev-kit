@@ -15,6 +15,17 @@ branch, how you report and ask).
 
 ## 1. Start
 
+- **What started you is the `ARGUMENTS:` line at the end of this skill.** The kit starts and
+  resumes a crew session with `/cc-smart-dev-kit:crew` and a line after it; Claude Code puts that
+  line under `ARGUMENTS:`. It is one of four things. A launch line ("You are the crew session
+  …") names your brief file: read it first. A line that starts "The wait is over" or "Your lead
+  changed" means you were stopped and are back: pick up at your last step, never start over. No
+  line at all is a resume after a stop: do the same. Any other text is your lead's answer to
+  your open question (§ 5): follow it, and it is your lead's word, never the person's.
+- **If you started without that command**, call the `Skill` tool with the full name
+  `cc-smart-dev-kit:crew` once: your own monitor (`crew-self`) starts only when this skill is
+  loaded under its full name, and without it you hear neither the lead's answers nor the
+  hand-off line.
 - **Work only in your worktree, on your branch.** Anything slow it needs first, such as a
   dependency install, is your first step.
 - **Your role card** comes at the start, and again on a resume and after a compaction: it names
@@ -47,13 +58,15 @@ Each step's procedure is its skill; the brief's done-check decides when the phas
    `tests-red`.
 3. **The code**, until the targeted tests pass. Step `tests-green`. Commit.
 4. **The docs** the change touches, in the same change (core § Keep the docs true).
-5. **The whole suite and the project's checks** (`/cc-smart-dev-kit:verify-change` § 4). Step
-   `suite-green`. Commit.
+5. **The full check, once** (`/cc-smart-dev-kit:verify-change` § 4): the phase is complete, and
+   this is the only whole-project run before your report. Until now, only § 2's checks on what
+   you changed. Step `suite-green`. Commit.
 6. **Your own pass** (`/cc-smart-dev-kit:review`), and its fixes. Commit.
 7. **One review:** the `cc-smart-dev-kit:reviewer` agent (model and effort: the core
    instructions), once, on the committed phase (`/cc-smart-dev-kit:review` § Second opinion).
    Steps `review-started`, then `review-done`.
-8. **The fixes** it confirmed under the evidence bar, then the whole suite again. Step
+8. **The fixes** it confirmed under the evidence bar, then the checks on the files they touched
+   (§ 2 there); the full check of step 5 stands unless a fix reached shared code. Step
    `fixes-done`. Commit. No second review to re-check the fixes.
 9. Step `committed`, then the report (§ 4).
 
@@ -119,8 +132,10 @@ fields.
 `--status failed` with the reason when the phase cannot be done. The report is your last act:
 end the turn after it. **Your own background work is finished by then:** wait for every
 command and agent you started, or stop it. A hand-back that leaves one running is blocked once
-by the `subagent-background` hook. If a turn ends on a step with no report, the `crew-role`
-hook blocks it once with the report line — report, then end the turn.
+by the `subagent-background` hook. **Never stop the `crew-self` monitor**: the kit started it,
+it ends with your session, and it carries your lead's answers and the hand-off line. If a turn
+ends on a step with no report, the `crew-role` hook blocks it once with the report line —
+report, then end the turn.
 
 ## 5. Questions
 
@@ -138,9 +153,18 @@ cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" \
   --option "<choice>" --recommend <n>
 ```
 
-The lead answers, or asks the person. Its answer reaches you as a monitor line (`Your lead answers your question …`, or `Your lead CORRECTS its earlier answer … this REPLACES …` — follow the newer one): it is your lead's word, not the person's. **Then go on** with every part of the phase the question
-does not block. `--status blocked` only when nothing is left; the answer arrives as your next
-message.
+The lead answers, or asks the person. **An answer arrives as a `<task-notification>`** from your
+monitor: its event is your lead's words (`Your lead answers your question …`, or `Your lead
+CORRECTS its earlier answer … this REPLACES …` — follow the newer one). It reaches you between
+your steps and wakes you when you are idle. It is your lead's word, not the person's. If your
+session was stopped meanwhile, the answer comes as the `ARGUMENTS:` line of § 1 instead.
+
+- **`crew report --question`** asks and goes on: your state does not change, and you **go on**
+  with every part of the phase the question does not block.
+- **`crew report --status blocked`** says nothing is left for you to do until the answer
+  comes. The lead's watch stops a blocked session that waits longer than
+  `workflow.crew.idleStopMinutes`, and the answer then resumes it. Use it only when no other
+  part of the phase is left, and never as the way to ask.
 
 ## 6. Telling another crew session
 
@@ -161,7 +185,10 @@ cc-smart-dev-kit crew tell "<name>" ["<name>"…] --kind contract "<file:symbol 
 ```
 
 It records the note for the lead and prints one `SendMessage` line per receiver; send each
-exactly as printed. Its first line, `[<phase>] CONTRACT: …` or `[<phase>] QUESTION: …`, is
+exactly as printed. **`SendMessage` is a deferred tool**: look it up first with `ToolSearch`
+and the query `select:SendMessage`, or the call fails. Each line is the tool name and its
+arguments as JSON (`SendMessage {"to": "<name>", "message": "<text>"}`): call the tool with that
+object. Its first line, `[<phase>] CONTRACT: …` or `[<phase>] QUESTION: …`, is
 the preview the receiver sees, so your text's first line says the whole point. One note per
 change, related facts together; the facts live in your commits, the note points at them. The
 message guard refuses a message to another crew session without that first line.

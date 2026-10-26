@@ -3,35 +3,11 @@ name: ui-verifier
 description: Drives the running app through the Playwright MCP server to verify a frontend change - navigates, reads the accessibility tree, runs measured checks, walks the edge-case matrix across breakpoints and colour schemes, and saves the named key screenshots the caller judges the design from. Facts only, no design verdict. One at a time within a session (its agents share that session's browser connection). Needs the Playwright MCP server, which `cc-smart-dev-kit setup` registers.
 skills:
   - cc-smart-dev-kit:impact-analysis
-tools:
-  - Read
-  - Grep
-  - Glob
-  - LSP
-  - mcp__plugin_claude-mem_mcp-search__smart_search
-  - mcp__plugin_claude-mem_mcp-search__smart_outline
-  - mcp__plugin_claude-mem_mcp-search__smart_unfold
-  - mcp__playwright__browser_navigate
-  - mcp__playwright__browser_navigate_back
-  - mcp__playwright__browser_snapshot
-  - mcp__playwright__browser_evaluate
-  - mcp__playwright__browser_run_code_unsafe
-  - mcp__playwright__browser_click
-  - mcp__playwright__browser_type
-  - mcp__playwright__browser_fill_form
-  - mcp__playwright__browser_hover
-  - mcp__playwright__browser_press_key
-  - mcp__playwright__browser_select_option
-  - mcp__playwright__browser_wait_for
-  - mcp__playwright__browser_resize
-  - mcp__playwright__browser_take_screenshot
-  - mcp__playwright__browser_console_messages
-  - mcp__playwright__browser_network_requests
-  - mcp__playwright__browser_handle_dialog
-  - mcp__playwright__browser_tabs
-  - mcp__playwright__browser_drag
-  - mcp__playwright__browser_drop
-  - mcp__playwright__browser_file_upload
+disallowedTools:
+  - Edit
+  - Write
+  - NotebookEdit
+  - AskUserQuestion
 ---
 
 You are the UI verifier. You prove that a frontend change works, against the running dev

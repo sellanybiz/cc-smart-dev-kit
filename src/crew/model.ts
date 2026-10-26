@@ -39,6 +39,7 @@ import { isCrewKind } from "../models/launch-policy";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resumedAs, resumeSession, sessionLiveness, UNREADABLE_VIEW_WHY } from "./answer";
 import { findCrew } from "./board";
+import { modelChangeText } from "./brief";
 import { readCaller, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
@@ -108,17 +109,6 @@ async function noteChange(
       ? `model change undone: ${line} (the session could not be stopped)`
       : `model changed: ${line}`,
   });
-}
-
-/** The prompt a resumed crew session gets: what changed, and to go on. */
-function changePrompt(
-  from: { effort: string; model: string },
-  to: { effort: string; model: string },
-): string {
-  const parts: string[] = [];
-  if (from.model !== to.model) parts.push(`your model from ${from.model} to ${to.model}`);
-  if (from.effort !== to.effort) parts.push(`your effort from ${from.effort} to ${to.effort}`);
-  return `Your lead changed ${parts.join(" and ")}. Go on from where you stopped.`;
 }
 
 /**
@@ -290,7 +280,11 @@ async function moveSession(
   const resumed = await resumeSession(
     ctx,
     { ...record, effort, model: to, state },
-    changePrompt({ effort: record.effort, model: record.model.named }, { effort, model: to.named }),
+    // What changed, and to go on: the text the session's hook reads back (`isModelChangeText`).
+    modelChangeText(
+      { effort: record.effort, model: record.model.named },
+      { effort, model: to.named },
+    ),
   );
   if (!resumed.ok) return { line: `${head} · ${resumed.why}; ${kept}`, ok: false };
   const { session } = resumed;

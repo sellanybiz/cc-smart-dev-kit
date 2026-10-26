@@ -504,17 +504,26 @@ export function modelSlotError(
 
 /**
  * Is this slot's fallback switch on? The person's own setting (`fallback`) when there is one,
- * else off, for every slot (D66, the owner): a chain answers with its first target alone until
- * the person turns the switch on (`gateway fallback <slot> on`). That holds for the judge too:
- * with no judge chain of the person's own, Claude judges alone, and the worker's tested targets
- * stand in while Claude is limited or down (D44) only after `gateway fallback judge on`. A
- * 0.4.x opus or fable chain, and every other chain, starts off the same way: "on" moves on at
- * any 408, 429, 5xx, 529 or network error, so turning it on is the person's choice.
+ * else the slot's default: off for every slot but the judge (D66, the owner), on for the judge
+ * (the owner, 2026-10-27).
+ *
+ * - **Every slot but the judge** answers with its first target alone until the person turns the
+ *   switch on (`gateway fallback <slot> on`). A 0.4.x opus or fable chain starts off the same
+ *   way: "on" moves on at any 408, 429, 5xx, 529 or network error, so turning it on is the
+ *   person's choice.
+ * - **The judge**: Claude judges auto mode's safety checks first, and with no judge chain of the
+ *   person's own, the worker's tested targets stand in while Claude is limited or down (D44), by
+ *   default. The default is safe because a stand-in must have passed the judge test
+ *   (`workerJudgeTargets`): with none tested, Claude judges alone, as before. An explicit
+ *   `gateway fallback judge off` wins. The same switch lets the next target of a judge chain
+ *   the person set answer, as it does for any chain.
+ *
+ * One home, no list of slots anywhere else: every reader asks here.
  */
 export function fallbackOn(config: Pick<GatewayConfig, "fallback">, slot: string): boolean {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot)) return set[slot] === true;
-  return false;
+  return slot === JUDGE_SLOT;
 }
 
 /**
@@ -792,6 +801,35 @@ export function workerJudgeTargets(
     if ("target" in parsed) targets.push(parsed.target);
   }
   return targets;
+}
+
+/**
+ * Who may judge auto mode's safety checks in Claude's place, in `config` (the machine's, or a
+ * profile's view of it): `ready` when the worker's tested targets stand in while Claude is
+ * limited or down, else the one reason none does (the router records it when a check fails for
+ * want of capacity, `ChecksDownWhy`, and `claudeFirstJudge` asks here):
+ *   - `chain-untested`: the person set a judge chain (it wins, the worker's targets are never
+ *     added to it); Claude judges alone when none of its targets is usable;
+ *   - `no-worker`: the worker slot has no affordable (backend) target;
+ *   - `untested`: it has some, and none has passed the judge test;
+ *   - `off`: one passed, and the person turned the judge's fallback switch off.
+ * Untested is said before off: turning the switch on would change nothing without a tested target.
+ */
+export function judgeStandInState(
+  config: Pick<GatewayConfig, "backends" | "fallback" | "judgeTested" | "slots">,
+): "chain-untested" | "no-worker" | "off" | "ready" | "untested" {
+  if (Object.hasOwn(config.slots, JUDGE_SLOT)) return "chain-untested";
+  if (workerJudgeTargets(config).length === 0) {
+    const worker = Object.hasOwn(config.slots, WORKER_SLOT)
+      ? (config.slots[WORKER_SLOT] ?? [])
+      : [];
+    const affordable = worker.some((text) => {
+      const parsed = parseTarget(text);
+      return "target" in parsed && parsed.target.kind === "backend";
+    });
+    return affordable ? "untested" : "no-worker";
+  }
+  return fallbackOn(config, JUDGE_SLOT) ? "ready" : "off";
 }
 
 /** The words of a caught error, whatever was thrown. */

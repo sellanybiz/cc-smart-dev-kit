@@ -1,7 +1,7 @@
 /**
  * Reading this machine's memory (`memory.ts`) from fake files: `/proc/meminfo`, and a
  * cgroup ceiling when the process lives in a container or a limited group. A wrong number
- * here makes the budget and the live check wrong on every job.
+ * here makes the memory ceiling of the heavy jobs' slice wrong on every job.
  */
 import { describe, expect, test } from "bun:test";
 import { freemem, totalmem } from "node:os";
@@ -9,12 +9,12 @@ import {
   cgroupLimit,
   GIB,
   type MemoryFacts,
-  machineBudgetGb,
+  MIN_CEILING_GB,
   machineMemory,
   meminfoBytes,
+  memoryCeilingGb,
   ownCgroup,
   realMemoryFacts,
-  sliceBytes,
   sliceChain,
   userManagerCgroup,
   userManagerControllers,
@@ -210,23 +210,26 @@ describe("the machine's own readings", () => {
   });
 });
 
-describe("machineBudgetGb", () => {
-  test("leaves the reserve for what never queues", () => {
-    expect(machineBudgetGb(54 * GIB, 22, 14)).toBe(32);
-    expect(machineBudgetGb(64 * GIB, 22, 14)).toBe(42);
-    expect(machineBudgetGb(54 * GIB + 0.9 * GIB, 22, 14)).toBe(32);
+describe("memoryCeilingGb", () => {
+  test("leaves the reserve for what the heavy jobs never take", () => {
+    expect(memoryCeilingGb(54 * GIB, 8)).toBe(46);
+    expect(memoryCeilingGb(64 * GIB, 8)).toBe(56);
+    expect(memoryCeilingGb(54 * GIB + 0.9 * GIB, 8)).toBe(46);
+    expect(memoryCeilingGb(64 * GIB, 0)).toBe(64);
   });
 
-  // The largest job (a 14 GB build) must still run on a 16 GB machine, alone.
-  test("never drops below the largest single job", () => {
-    expect(machineBudgetGb(16 * GIB, 22, 14)).toBe(14);
-    expect(machineBudgetGb(37 * GIB, 22, 14)).toBe(15);
+  // A job must always have room to run, even on a small machine.
+  test("never drops below the floor", () => {
+    expect(MIN_CEILING_GB).toBe(14);
+    expect(memoryCeilingGb(16 * GIB, 8)).toBe(14);
+    expect(memoryCeilingGb(22 * GIB, 8)).toBe(14);
+    expect(memoryCeilingGb(23 * GIB, 8)).toBe(15);
   });
 });
 
-describe("userSliceCgroup and sliceBytes", () => {
-  // A dash in a slice name is nesting: the flat path never exists, and the live check
-  // would never see the heavy jobs' memory.
+describe("userSliceCgroup", () => {
+  // A dash in a slice name is nesting: the flat path never exists, and the weights would
+  // be set on a group that is not there.
   test("nests at every dash, and leaves a dashless slice at the top", () => {
     expect(userSliceCgroup(1000, "cc-smart-dev-kit-heavy.slice")).toBe(
       "/user.slice/user-1000.slice/user@1000.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-heavy.slice",
@@ -234,15 +237,6 @@ describe("userSliceCgroup and sliceBytes", () => {
     expect(userSliceCgroup(7, "solo.slice")).toBe(
       "/user.slice/user-7.slice/user@7.service/solo.slice",
     );
-  });
-
-  test("reads the slice's memory.current, or null", () => {
-    const path =
-      "/sys/fs/cgroup/user.slice/user-7.slice/user@7.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-heavy.slice/memory.current";
-    expect(sliceBytes(facts({ [path]: "4096\n" }).read, 7, "cc-smart-dev-kit-heavy.slice")).toBe(
-      4096,
-    );
-    expect(sliceBytes(facts({}).read, 7, "cc-smart-dev-kit-heavy.slice")).toBeNull();
   });
 
   // The weights go on every slice of this chain: systemd shares CPU and I/O between

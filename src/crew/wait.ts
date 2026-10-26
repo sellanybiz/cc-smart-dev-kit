@@ -16,6 +16,19 @@
  *     slot (a `slot` wait from now), never for a Claude reset days away (the 2026-10-25 pause);
  *   - `unknown`: nothing the state file explains.
  *
+ * **The safety-checks pause** (`crew-role`'s Stop answer, owner 2026-10-27): when auto mode's
+ * safety checks get no verdict for the crew session's own gateway scope (the router's
+ * `checksDown` record, `src/gateway/checks-down.ts`), Claude Code denies every tool call that
+ * needs a check, `crew report` included, so a turn that ends with no report is not the session's
+ * fault. It is marked `paused` with a `safety-checks` wait (`checksWait`) instead of being
+ * blocked for its report, and its line is the checks' own reason (`checksPauseText`).
+ *
+ * The same write keeps the error on the record (`lastApiError`: class, text, time), and the
+ * pause's line ends with its text (`pauseText`), so the lead can tell a provider that failed from
+ * a plan that ran out. A stop whose class is a backend's refusal (`isBackendRefusal`) pauses
+ * nothing: no limit or breaker explains it and the same request would be refused again, so the
+ * watch tells the lead and stops the session instead (`src/crew/watch.ts`).
+ *
  * **No time limit** (the owner): the watch never fails a paused crew session for waiting, and
  * the crew session's own settings turn Claude Code's retry watchdog on with no `…_MAX_WAIT_MS`
  * (`src/crew/start.ts`, the keys from `src/setup/retry-watchdog.ts`). What still ends waits
@@ -28,6 +41,8 @@
  *   - a Claude limit's reset time passed, plus `LIMIT_RESET_JITTER_MS`, and the router dropped
  *     its record (Anthropic answered the model again). A `claude-limit` wait an older kit
  *     recorded for a slot whose chain starts elsewhere is judged as that slot's wait;
+ *   - a `safety-checks` wait: the router's record for its scope is gone (a check got a verdict)
+ *     or no longer current (`currentChecksDown`: 15 minutes after the last check that failed);
  *   - an `unknown` wait: the backoff alone, and no breaker or limit that would explain it now;
  *   - one first (the canary); the next no sooner than `RESUME_SPACING_MS` after it, and only
  *     after the router answered a request since — its health page's request count grew, and
@@ -45,6 +60,7 @@
 import { readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import { slotShortName } from "../gateway/breaker";
+import { checksDownText, type DownProfile } from "../gateway/checks-down";
 import {
   fallbackOn,
   type GatewayConfig,
@@ -55,7 +71,9 @@ import {
 import { type HealthFetch, routerHealth } from "../gateway/health";
 import {
   type BreakerRecord,
+  type ChecksDownRecord,
   currentBreakers,
+  currentChecksDown,
   currentLimits,
   emptyLimitState,
   formatClock,
@@ -65,7 +83,7 @@ import {
   scopeOfStateKey,
   stateKeyFor,
 } from "../gateway/limit-state";
-import { familySlotFor, targetsInUse, withoutContextSuffix } from "../gateway/targets";
+import { familySlotFor, JUDGE_SLOT, targetsInUse, withoutContextSuffix } from "../gateway/targets";
 import type { CrewRecord, WaitingFor } from "./store";
 
 /**
@@ -106,12 +124,42 @@ export function pausesCrew(error: null | string): error is string {
   return error !== null && (CREW_PAUSE_ERRORS as readonly string[]).includes(error);
 }
 
+/**
+ * The StopFailure classes that are a backend's refusal, not a crash: `unknown` — what Claude Code
+ * calls the answer of a router that refused the request (a 424, `src/gateway/refusal.ts`) — and
+ * `model_not_found`. Agent view shows every class outside its fixed list as `failed` with the
+ * words "API error" (read from the 2.1.310 binary), so the state alone cannot tell a refusal from
+ * a dead session; the class the hook stored on the record (`lastApiError`) can. A refusal is
+ * told to the lead with the router's own reason and leaves the session resumable
+ * (`src/crew/watch.ts`); any other class stays a failure.
+ */
+export const BACKEND_REFUSAL_ERRORS = ["unknown", "model_not_found"] as const;
+
+/** True when a stored API error class is a backend's refusal (`BACKEND_REFUSAL_ERRORS`). */
+export function isBackendRefusal(errorClass: string): boolean {
+  return (BACKEND_REFUSAL_ERRORS as readonly string[]).includes(errorClass);
+}
+
+/** The longest piece of an API error's text a pause's line carries. */
+const PAUSE_DETAIL_CHARS = 100;
+
+/** `text` on one line, cut to `max` characters with an ellipsis. */
+function clipped(text: string, max: number): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
+}
+
 /** What the gateway says now about the pauses a crew session waits out. */
 export interface WaitFacts {
   /** The breakers current at the time read, by slot (`currentBreakers`, or the live health answer). */
   breakers: Record<string, BreakerRecord>;
   /** The plan limits current at the time read, by Claude model (`currentLimits`). */
   limits: Record<string, LimitRecord>;
+  /**
+   * Auto mode's safety checks failing at the time read, by the judge's state key
+   * (`currentChecksDown`): what a `safety-checks` wait waits out.
+   */
+  checksDown: Record<string, ChecksDownRecord>;
   /**
    * Each slot's targets in use now — the whole chain while its fallback switch is on, its
    * first target alone while it is off (`targetsInUse`). Null when there is no readable
@@ -171,9 +219,18 @@ export function readWaitFacts(
   const config = readConfig(paths.gatewayConfigFile);
   return {
     breakers: breakersBySlot(state, nowMs),
+    checksDown: checksDownByKey(state, nowMs),
     inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs),
   };
+}
+
+/** The current safety-check records, keyed by the judge's state key. */
+export function checksDownByKey(
+  state: LimitState,
+  nowMs: number,
+): Record<string, ChecksDownRecord> {
+  return Object.fromEntries(currentChecksDown(state, nowMs));
 }
 
 /**
@@ -268,6 +325,8 @@ export async function gatewayNow(
   }
   return {
     breakers,
+    // The health page does not carry them: the state file is the one record of failing checks.
+    checksDown: checksDownByKey(state, nowMs),
     inUse: config === null ? null : targetsNow(config),
     limits: limitsByModel(state, nowMs),
     requests,
@@ -322,6 +381,12 @@ export function claudeLimitHolds(
 }
 
 /**
+ * The waits a model limit ends a turn with (StopFailure): every kind but `safety-checks`, which
+ * only the Stop answer records (`checksWait`).
+ */
+export type LimitWait = Exclude<WaitingFor, { kind: "safety-checks" }>;
+
+/**
  * What a stop of `record` waits for, recorded on its pause: the slot's breaker first, then
  * Claude's plan limit when it holds the session (`claudeLimitHolds`), else `unknown`. A Claude
  * limit that does not hold it — its slot's chain starts with a backend — makes it wait for its
@@ -339,7 +404,7 @@ export function waitFor(
   facts: WaitFacts,
   nowMs: number,
   profile: null | string = null,
-): WaitingFor {
+): LimitWait {
   const slot = record.model.slot === null ? null : stateKeyFor(record.model.slot, profile);
   const breaker = slot === null ? undefined : facts.breakers[slot];
   if (slot !== null && breaker !== undefined) {
@@ -386,32 +451,74 @@ export function lastPauseOf(
 
 /**
  * The line the watch shows when a crew session pauses (it is the `state` event's text):
- * `worker slot limited since 21:05; goes on by itself when it answers`.
+ * `worker slot limited since 21:05; goes on by itself when it answers`. `detail` is the text of
+ * the error Claude Code showed (`lastApiError.text`): it ends the line as `· <error>: <text>`, so
+ * the lead can tell a stall from a limit — an `unknown` wait that says "500 Internal Server
+ * Error" is a provider that failed, not a plan that ran out.
  */
 export function pauseText(
-  waiting: WaitingFor,
+  waiting: LimitWait,
   error: string,
   nowMs: number,
   timeZone?: string,
+  detail: null | string = null,
 ): string {
   const goesOn = "goes on by itself when it answers";
+  const said = detail === null || detail === "" ? "" : clipped(detail, PAUSE_DETAIL_CHARS);
+  const because = said === "" ? "" : ` · ${oneLine(error)}: ${said}`;
   switch (waiting.kind) {
     case "slot": {
       const { profile, slot } = scopeOfStateKey(waiting.slot);
       const where = profile === null ? "slot" : `slot in profile ${profile}`;
-      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}`;
+      return `${slotShortName(slot)} ${where} limited since ${formatClock(Math.floor(Date.parse(waiting.since) / 1000), nowMs, timeZone)}; ${goesOn}${because}`;
     }
     case "claude-limit": {
       const reset =
         waiting.resetsAt === null
           ? "at its limit, no reset time named"
           : `at its limit, resets ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
-      return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts`;
+      return `${waiting.model} is ${reset}; ${goesOn} once the limit lifts${because}`;
     }
     default:
       // The error is Claude Code's own word (`server_error`); one line of it at most.
-      return `it stopped on ${oneLine(error)}; the watch goes on with it once a model answers`;
+      return `it stopped on ${oneLine(error)}${said === "" ? "" : `: ${said}`}; the watch goes on with it once a model answers`;
   }
+}
+
+/**
+ * The failing safety checks of a crew session's own gateway scope, as `[state key, record]`, or
+ * null. `profile` is the profile the session's URL names (null: the machine's chains): the router
+ * keeps the record under the judge's state key for that scope (`stateKeyFor(JUDGE_SLOT, …)`), so
+ * a profile's failing checks never pause a session on the machine's chains, nor the other way.
+ */
+export function checksDownFor(
+  checksDown: Record<string, ChecksDownRecord>,
+  profile: DownProfile,
+): null | [string, ChecksDownRecord] {
+  const key = stateKeyFor(JUDGE_SLOT, profile);
+  const record = checksDown[key];
+  return record === undefined ? null : [key, record];
+}
+
+/** The `safety-checks` wait of a crew session whose checks fail under `key`, since they began. */
+export function checksWait(key: string, record: ChecksDownRecord): WaitingFor {
+  return { kind: "safety-checks", scope: key, since: iso(record.since) };
+}
+
+/**
+ * The line the watch shows when the safety checks pause a crew session (its `state` event's
+ * text): the checks' own words (`checksDownText`, one home with the status line, `gateway status`
+ * and `doctor`), then that it goes on by itself. The fix is not in it: the lead reads the fix in
+ * `gateway status` or `doctor`, and the crew session waits either way.
+ */
+export function checksPauseText(
+  record: ChecksDownRecord,
+  key: string,
+  nowMs: number,
+  timeZone?: string,
+): string {
+  const { profile } = scopeOfStateKey(key);
+  return `${checksDownText(record, profile, nowMs, timeZone)}; goes on by itself when they answer again`;
 }
 
 /**
@@ -423,7 +530,7 @@ export function pauseStartedAt(record: CrewRecord): number {
   const waiting = record.waitingFor;
   const since =
     record.lastPause?.since ??
-    (waiting?.kind === "slot" || waiting?.kind === "unknown" ? waiting.since : null);
+    (waiting === undefined || waiting.kind === "claude-limit" ? null : waiting.since);
   const at =
     since === null || since === undefined ? Date.parse(record.updatedAt) : Date.parse(since);
   return Number.isFinite(at) ? at : 0;
@@ -443,8 +550,8 @@ function slotAnswers(slot: string, facts: WaitFacts): boolean {
 
 /**
  * True when the watch may resume a paused crew session: the pause's hold-off is over, and the
- * gateway no longer says the wait goes on. Never true while the slot's breaker is open or a
- * Claude limit that holds it (`claudeLimitHolds`) is current.
+ * gateway no longer says the wait goes on. Never true while the slot's breaker is open, a
+ * Claude limit that holds it (`claudeLimitHolds`) is current, or its safety checks still fail.
  */
 export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): boolean {
   const waiting: WaitingFor = record.waitingFor ?? { kind: "unknown", since: record.updatedAt };
@@ -466,7 +573,12 @@ export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): b
       const reset = Date.parse(waiting.resetsAt);
       return Number.isFinite(reset) && nowMs >= reset + LIMIT_RESET_JITTER_MS;
     }
-    default: {
+    case "safety-checks":
+      // The router deletes the record when a check gets a verdict, and a record nobody refreshed
+      // for 15 minutes is no longer current (`currentChecksDown`): either way, try again. A check
+      // that still fails then pauses the session once more, with the doubled hold-off.
+      return facts.checksDown[waiting.scope] === undefined;
+    case "unknown": {
       // Nothing the pause named: no breaker on its slot, no limit on its model, and the
       // backoff has passed. The slot is the key the pause looked under (`<profile>/<slot>` in
       // a profile): the machine's breaker is another session's.
@@ -483,7 +595,9 @@ export function waitOver(record: CrewRecord, facts: WaitFacts, nowMs: number): b
  * True when the router answered a request since the resume `before` (its health page's count
  * then): the count grew. With no page (no router, a test's own facts) the state file's own
  * record is the evidence — the watch reaches this only with a pause that is over, and a
- * breaker closes and a limit drops only when the router recorded an answer.
+ * breaker closes and a limit drops only when the router recorded an answer. (A safety-checks
+ * record may also just go stale; with no page the watch cannot tell, and the hold-off a re-pause
+ * doubles is what keeps that from a storm.)
  */
 export function routerAnsweredSince(now: GatewayNow, before: null | number): boolean {
   if (now.requests === null || before === null) return true;
@@ -508,6 +622,8 @@ export function resumeText(
       waiting.resetsAt === null
         ? "Claude's limit lifted"
         : `Claude's limit reset at ${formatClock(Math.floor(Date.parse(waiting.resetsAt) / 1000), nowMs, timeZone)}`;
+  } else if (waiting?.kind === "safety-checks") {
+    what = "auto mode's safety checks answer again";
   }
   return `The wait is over: ${what}. Go on with phase ${record.phase}, then hand it back as usual.`;
 }

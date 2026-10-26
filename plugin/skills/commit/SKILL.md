@@ -53,8 +53,8 @@ and the merge order.
 2. **The review ran?** If not (the person said "commit" cold, in a fresh session), run
    `/cc-smart-dev-kit:review` now. A Critical stops the commit. A Warning is fixed, or shipped only
    with the person's explicit yes. A small fix is exempt: say so in one line.
-3. **The checks the push will run, already run?** `/cc-smart-dev-kit:verify-change` § 4. A commit
-   hook that fails: fix the cause and commit again.
+3. **The checks on what you changed ran?** `/cc-smart-dev-kit:verify-change` § 2. The full check
+   (§ 4) runs once, not per commit. A commit hook that fails: fix the cause and commit again.
 4. **Stage by path** — never `git add -A` while subagents still write. Then read
    `git diff --staged --stat`: an unexpected path is investigated before the commit, not
    explained after it.

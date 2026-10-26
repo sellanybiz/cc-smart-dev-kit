@@ -10,11 +10,11 @@
  * there too, which is why the keys here are the module's own (`WorkflowKey`).
  *
  * **Where each setting lives** (the module's own rule, `src/workflow/schema.ts`): the policy
- * is the person's, in `~/.config/cc-smart-dev-kit/workflow.json`; `switches.sessionNames` and
- * `switches.jobRoute` are the project's `sessionNames` and `jobs.route`, so they are written
- * into the project's committed file — and a row whose value the project sets is never
- * changed from this page at all: the Project card on Machine is where the project's own
- * settings are made.
+ * is the person's, in `~/.config/cc-smart-dev-kit/workflow.json`; `switches.sessionNames` is the
+ * project's `sessionNames`, so it is written into the project's committed file;
+ * `switches.jobRoute` is the person's machine-wide default (the project's `jobs.route` wins
+ * over it). A row whose value the project sets is never changed from this page at all: the
+ * Project card on Machine is where the project's own settings are made.
  */
 
 import {
@@ -187,12 +187,12 @@ export const SETTINGS: readonly SettingSpec[] = [
   },
   {
     card: "switches",
-    help: "The type check, the build, the tests and the coverage run go through the queue, one at a time, by memory.",
+    help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
     id: "set-jobs",
     key: "switches.jobRoute",
     kind: "boolean",
     label: "Heavy jobs through the queue",
-    where: "project",
+    where: "personal",
   },
   {
     card: "switches",

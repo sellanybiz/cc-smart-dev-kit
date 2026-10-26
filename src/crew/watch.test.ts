@@ -21,7 +21,7 @@ import { type FeedMemory, newFeedMemory } from "../issues/feed";
 import { MARKS_PER_PASS, queueMarks, readPending } from "../issues/pending";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
-import { currentHolder } from "../setup/lock";
+import { currentHolder, LockBusyError } from "../setup/lock";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { fakeGh } from "../testing/fake-gh";
 import { commitConfig } from "../testing/hooks";
@@ -30,9 +30,14 @@ import { git } from "../testing/temp";
 import type { GhExec } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
+import { sendMessageHint } from "./answer";
+import { withCrewCommand } from "./brief";
+import type { ProgramRun } from "./claude";
 import { runCrew } from "./command";
 import type { CrewContext } from "./context";
+import { runningCrew } from "./places";
 import {
+  answerCrewQuestion,
   appendCrewEvent,
   type CrewRecord,
   createCrew,
@@ -53,7 +58,9 @@ import {
   updateCrew,
   type WatchLease,
   type WatchState,
+  watchIsAlive,
   watchLeaseFile,
+  writeAnswerWatchBeat,
   writeJsonFile,
   writeLead,
   writeStoreFile,
@@ -61,9 +68,12 @@ import {
 } from "./store";
 import type { GatewayNow } from "./wait";
 import {
+  crewAlert,
   eventLine,
   issueMarksFile,
   PARKED_PASS_MS,
+  PassFailed,
+  WATCH_MONITOR_COMMAND,
   WatchEnd,
   type WatchScope,
   watchPass,
@@ -2539,18 +2549,22 @@ describe("crew watch", () => {
     expect(queued?.state).toBe("failed");
   });
 
-  test("D25: where the monitors do not run, the watch says so once", async () => {
+  test("telemetry off is no case of its own: Claude Code 2.1.310 runs the monitors there too, and the watch says nothing about it", async () => {
     const world = await leadWorld();
     await addCrew(world, "working");
-    const ctx = world.ctx({}, { DISABLE_TELEMETRY: "1" });
-    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
-    expect(world.out).toContain(
-      "the plugin's monitors do not run on this machine (telemetry is off), so run this watch again after each event",
+    const ctx = world.ctx(
+      {},
+      { DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     );
-    // Once, not on every pass.
-    world.out.length = 0;
     expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
     expect(world.out).toEqual([]);
+    expect(world.err).toEqual([]);
+    // The state it wrote holds no mark of a telemetry note.
+    const written = readFileSync(
+      join(crewStoreDir(world.paths.stateDir, world.repo), "watch", `${LEAD_SESSION}.json`),
+      "utf8",
+    );
+    expect(written).not.toContain("noted");
   });
 
   test("D25: a watch from outside a lead's session is refused", async () => {
@@ -2606,7 +2620,7 @@ describe("D42: the watch resumes a paused crew session", () => {
 
   /** What the gateway says: ready (no breaker), or a breaker still open on the worker slot. */
   function facts(change: Partial<GatewayNow> = {}): GatewayNow {
-    return { breakers: {}, inUse: null, limits: {}, requests: 10, ...change };
+    return { breakers: {}, checksDown: {}, inUse: null, limits: {}, requests: 10, ...change };
   }
 
   const openBreaker = () =>
@@ -2659,8 +2673,9 @@ describe("D42: the watch resumes a paused crew session", () => {
     // Closed: the watch sends the message line (only a session holds SendMessage), and the
     // record is working again, with one state event.
     const done = await pass(world, resolved, facts(), fresh(world));
-    expect(done.lines).toBe(2);
+    expect(done.lines).toBe(3);
     expect(world.out).toEqual([
+      sendMessageHint(),
       `SendMessage {"to":"${NAME}","message":"The wait is over: worker answers again. Go on with phase B6b, then hand it back as usual."}`,
       `${NAME}: working — the wait is over; the message to it wakes it`,
     ]);
@@ -2710,7 +2725,9 @@ describe("D42: the watch resumes a paused crew session", () => {
         "--settings",
         crewSettingsFile(world.paths.stateDir, world.repo, record.id),
         "--",
-        "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
+        withCrewCommand(
+          "The wait is over: Claude's limit reset at 09:58. Go on with phase B6b, then hand it back as usual.",
+        ),
       ],
     ]);
     // Resumed in its own worktree, never the main checkout.
@@ -2760,6 +2777,71 @@ describe("D42: the watch resumes a paused crew session", () => {
     );
   });
 
+  test("failing safety checks: never while their record is current; then one message that says they answer", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const JUDGE = "cc-smart-dev-kit-judge";
+    const record = await pausedCrew(world, {
+      waitingFor: { kind: "safety-checks", scope: JUDGE, since: "2026-10-21T09:40:00.000Z" },
+    });
+    const failing = facts({
+      checksDown: {
+        [JUDGE]: {
+          claim: "five_hour",
+          lastAt: T0 - MINUTE,
+          resetsAt: null,
+          since: T0 - 20 * MINUTE,
+          status: 429,
+          why: "untested",
+        },
+      },
+    });
+    // Current: nothing happens, no line, the record stays paused.
+    let done = await pass(world, resolved, failing, fresh(world));
+    expect(done.lines).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+
+    // Gone (a check got a verdict): the message says so, and the record works again.
+    done = await pass(world, resolved, facts(), fresh(world));
+    expect(world.out).toEqual([
+      sendMessageHint(),
+      `SendMessage {"to":"${NAME}","message":"The wait is over: auto mode's safety checks answer again. Go on with phase B6b, then hand it back as usual."}`,
+      `${NAME}: working — the wait is over; the message to it wakes it`,
+    ]);
+    const after = readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("working");
+    expect(after?.waitingFor).toBeUndefined();
+  });
+
+  test("failing safety checks: a session with no process is resumed with the crew command and the checks' text", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world, {
+      waitingFor: {
+        kind: "safety-checks",
+        scope: "cc-smart-dev-kit-judge",
+        since: "2026-10-21T09:40:00.000Z",
+      },
+    });
+    const ctx = world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: "[]" });
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    await watchPass(fresh(world), ctx, scope);
+    const resume = world.claudeCalls().find((call) => call[0] === "--bg");
+    expect(resume?.at(-1)).toBe(
+      withCrewCommand(
+        "The wait is over: auto mode's safety checks answer again. Go on with phase B6b, then hand it back as usual.",
+      ),
+    );
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+  });
+
   test("a limit still current: the session waits, however long its reset time has passed", async () => {
     const world = await leadWorld();
     const resolved = resolvedOf(world);
@@ -2783,9 +2865,12 @@ describe("D42: the watch resumes a paused crew session", () => {
     // The router dropped it, but the reset time plus the jitter is still ahead.
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
     expect(done.lines).toBe(0);
-    // Both are past: it goes.
+    // Both are past: it goes, with the same three lines as any resume (the hint, the message,
+    // the state).
     done = await pass(world, resolved, facts(), done.state, T0 + 6 * MINUTE);
-    expect(done.lines).toBe(2);
+    expect(done.lines).toBe(3);
+    expect(world.out[0]).toBe(sendMessageHint());
+    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
     expect(readCrew(world.paths.stateDir, world.repo, limited.id)?.state).toBe("working");
   });
 
@@ -2800,7 +2885,9 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(0);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("paused");
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
-    expect(done.lines).toBe(2);
+    expect(done.lines).toBe(3);
+    expect(world.out[0]).toBe(sendMessageHint());
+    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("working");
   });
 
@@ -2931,6 +3018,101 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
   });
 
+  /**
+   * A context whose agent view lists the paused record's own session as live (so the resume is a
+   * message, with no fake `claude` on PATH: this runs on Windows too), and whose printer runs
+   * `onMessage` when the `SendMessage` line is said — between the wake and the store's write.
+   */
+  function liveViewCtx(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    nowMs: number,
+    lines: string[],
+    onMessage: () => void,
+  ): CrewContext {
+    const row = {
+      id: "a1b2c3d4",
+      pid: 4242,
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      state: "idle",
+    };
+    return withView(world, [row], {
+      now: () => nowMs,
+      print: (line: string) => {
+        lines.push(line);
+        if (line.startsWith("SendMessage")) onMessage();
+      },
+    });
+  }
+
+  test("a resume the store could not record is held: no second wake after the claim (watch review #2)", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const file = crewFile(world.paths.stateDir, world.repo, record.id);
+    const kept = readFileSync(file, "utf8");
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const first: string[] = [];
+    // The record cannot be read when the watch writes `working`: the store refuses the write.
+    const done = await watchPass(
+      fresh(world),
+      liveViewCtx(world, T0, first, () => writeFileSync(file, "{ not json")),
+      scope,
+    );
+    writeFileSync(file, kept);
+    expect(first.filter((line) => line.startsWith("SendMessage"))).toHaveLength(1);
+    expect(
+      first.some((line) => line.includes(": resumed, but the store could not record it:")),
+    ).toBe(true);
+    expect(first.find((line) => line.includes("could not record it"))).toEndWith(
+      `; the watch leaves it paused: ${COMMAND} crew resume "${NAME}" brings it back`,
+    );
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+    // Three minutes later — past any resume claim — and the router answered: still no second wake.
+    const second: string[] = [];
+    await watchPass(
+      done.state,
+      liveViewCtx(world, T0 + 3 * 60_000, second, () => undefined),
+      { ...scope, gateway: () => Promise.resolve(facts({ requests: 11 })) },
+    );
+    expect(second.filter((line) => line.startsWith("SendMessage"))).toEqual([]);
+  });
+
+  test("a resume never writes working over a state the session wrote meanwhile (watch review #2)", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const file = crewFile(world.paths.stateDir, world.repo, record.id);
+    const lines: string[] = [];
+    await watchPass(
+      fresh(world),
+      liveViewCtx(world, T0, lines, () => {
+        // The woken session reported at once: its record is `done` before the watch writes.
+        const now = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+        writeFileSync(
+          file,
+          `${JSON.stringify({ ...now, state: "done", waitingFor: undefined })}\n`,
+        );
+      }),
+      {
+        gateway: () => Promise.resolve(facts()),
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved,
+      },
+    );
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("done");
+    expect(lines).toContain(
+      `${NAME}: resumed, but its record had left paused meanwhile (done), so it was not changed`,
+    );
+  });
+
   test("a resume that claude refuses is one line, and the record stays paused", async () => {
     const world = await leadWorld();
     const resolved = resolvedOf(world);
@@ -3025,16 +3207,56 @@ describe("WF1: one acting watch per lead", () => {
     );
   });
 
+  test("a watch takes its lease back from a --once look instead of ending (watch review #3)", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let sleeps = 0;
+    let closed = false;
+    const ctx = world.ctx({
+      outputClosed: () => closed,
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps > 1) {
+          closed = true;
+          return;
+        }
+        // A `--once` took the lease while this watch's own looked gone, and news arrives.
+        await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, {
+          ...currentHolder(),
+          at: Date.now(),
+          once: true,
+          token: "a-once-look",
+        });
+        await step(world, "tests-green");
+      },
+    });
+    expect(await runCrew(["watch"], ctx)).toBe(0);
+    // It went on: the news is its line, and no "a newer watch runs" end.
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
+    expect(held?.token).not.toBe("a-once-look");
+    expect(held?.once).toBeUndefined();
+  });
+
   test("a watch takes the lease when it starts, whoever holds it: the newest wins", async () => {
     const world = await leadWorld();
     await addCrew(world, "working");
     await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer("an-older-watch"));
     await step(world, "tests-red");
-    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    // A restarted monitor is no `--once`: it ends when nobody reads its output any more.
+    let closed = false;
+    const ctx = world.ctx({
+      outputClosed: () => closed,
+      sleep: async () => {
+        closed = true;
+      },
+    });
+    expect(await runCrew(["watch"], ctx)).toBe(0);
     expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
     const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
     expect(held?.pid).toBe(process.pid);
     expect(held?.token).not.toBe("an-older-watch");
+    expect(held?.once).toBeUndefined();
   });
 
   test("a lease whose watch died is free: the watch takes it back and goes on", async () => {
@@ -3084,29 +3306,37 @@ describe("WF1: one acting watch per lead", () => {
     expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
   });
 
-  // A file mode does not stop root, so this test means nothing there.
-  test.skipIf(process.getuid?.() === 0)(
-    "a lease it cannot read ends the watch as a failed pass does: one line, exit 1",
-    async () => {
-      const world = await leadWorld();
-      await addCrew(world, "working");
-      const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
-      const ctx = waiting(world, async () => {
-        chmodSync(file, 0o000);
-        await step(world, "tests-green");
-      });
-      let code: number;
-      try {
-        code = await runCrew(["watch", "--once", "--timeout", "60"], ctx);
-      } finally {
-        chmodSync(file, 0o600);
-      }
-      expect(code).toBe(1);
-      expect(world.out).toEqual([]);
-      expect(world.err).toHaveLength(1);
-      expect(world.err[0]).toStartWith("crew watch: EACCES");
-    },
-  );
+  test("a lease it cannot read fails each pass the way any failure does: said once, and the watch ends after a long run of them", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const file = watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION);
+    let sleeps = 0;
+    const ctx = world.ctx({
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 1) {
+          // A folder where the lease file stood: reading it fails on every platform.
+          rmSync(file);
+          mkdirSync(file);
+        }
+      },
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "86400"], ctx)).toBe(1);
+    // 60 passes in a row failed: the 60th ended it, and it slept before each of the 59 others.
+    expect(sleeps).toBe(60);
+    expect(world.out).toHaveLength(2);
+    expect(world.out[0]).toStartWith("crew watch: a pass failed (");
+    expect(world.out[0]).toEndWith("); the watch goes on and tries again in 20 s");
+    expect(world.out[1]).toStartWith(
+      "crew watch ended: 60 passes in a row failed, the last with: ",
+    );
+    expect(world.out[1]).toEndWith(
+      ' — start the watch again with Claude Code\'s Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch',
+    );
+    // Every failure is also a line on stderr, for the log nobody has to open.
+    expect(world.err).toHaveLength(60);
+    for (const line of world.err) expect(line).toStartWith("crew watch: ");
+  }, 60_000);
 
   test("two leads never share a lease", async () => {
     const world = await leadWorld();
@@ -3152,7 +3382,8 @@ describe("WF1: one acting watch per lead", () => {
     const checkout = locateCheckout(world.repo, { env: world.ctx().env });
     if (checkout === null) throw new Error("the world's repo is not a checkout");
     const scope: WatchScope = {
-      gateway: () => Promise.resolve({ breakers: {}, inUse: null, limits: {}, requests: 10 }),
+      gateway: () =>
+        Promise.resolve({ breakers: {}, checksDown: {}, inUse: null, limits: {}, requests: 10 }),
       leadSessionId: LEAD_SESSION,
       mergeInto: world.repo,
       repo: world.repo,
@@ -3248,6 +3479,29 @@ describe("WF1: the lease in the store", () => {
     expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)?.token).toBe("mine");
   });
 
+  test("a lease taken back from a watch that died carries the time of now, not the watch's start (watch review #3)", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    const ended = Bun.spawnSync([process.execPath, "-e", ""]);
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, {
+      ...currentHolder(),
+      at: T0,
+      pid: ended.pid,
+      token: "a-watch-that-died",
+    });
+    // This watch started an hour ago: its own lease's `at` is that old.
+    const mine: WatchLease = { ...currentHolder(), at: Date.now() - 60 * 60_000, token: "mine" };
+    const before = Date.now();
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    const taken = readWatchLease(stateDir, world.repo, LEAD_SESSION);
+    expect(taken?.token).toBe("mine");
+    expect(taken?.at).toBeGreaterThanOrEqual(before);
+    // The file ends in one plain line end, as every lease the store writes.
+    expect(readFileSync(watchLeaseFile(stateDir, world.repo, LEAD_SESSION), "utf8")).toEndWith(
+      "}\n",
+    );
+  });
+
   test("a lease file that cannot be read is free", async () => {
     const world = await leadWorld();
     const { stateDir } = world.paths;
@@ -3255,6 +3509,46 @@ describe("WF1: the lease in the store", () => {
     expect(readWatchLease(stateDir, world.repo, LEAD_SESSION)).toBeNull();
     const mine: WatchLease = { ...currentHolder(), at: T0, token: "mine" };
     expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+  });
+
+  test("a watch that holds the lease renews its time when it is old, and leaves a fresh one alone", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    // Older than two minutes, the age at which a holder renews.
+    const mine: WatchLease = {
+      ...currentHolder(),
+      at: Date.now() - 121_000,
+      once: true,
+      token: "mine",
+    };
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, mine);
+    const before = Date.now();
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    const renewed = readWatchLease(stateDir, world.repo, LEAD_SESSION);
+    expect(renewed?.at).toBeGreaterThanOrEqual(before);
+    expect(renewed?.token).toBe("mine");
+    expect(renewed?.once).toBe(true);
+    // Fresh now: the next look writes nothing.
+    const file = watchLeaseFile(stateDir, world.repo, LEAD_SESSION);
+    const written = readFileSync(file, "utf8");
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(readFileSync(file, "utf8")).toBe(written);
+  });
+
+  test("where a process's start time cannot be read, a lease reads as alive only while its watch renews it", async () => {
+    const world = await leadWorld();
+    const { stateDir } = world.paths;
+    // Eleven minutes old, and a holder that cannot be judged by its process: the age decides.
+    const mine: WatchLease = {
+      ...currentHolder(),
+      at: Date.now() - 11 * 60_000,
+      startTime: null,
+      token: "mine",
+    };
+    await takeWatchLease(stateDir, world.repo, LEAD_SESSION, mine);
+    expect(watchIsAlive(stateDir, world.repo, LEAD_SESSION)).toBe(false);
+    expect(await keepWatchLease(stateDir, world.repo, LEAD_SESSION, mine)).toEqual({ held: true });
+    expect(watchIsAlive(stateDir, world.repo, LEAD_SESSION)).toBe(true);
   });
 });
 
@@ -3907,5 +4201,572 @@ describe("GI4: the lead hears new issues and comments (D67)", () => {
     advance(MINUTE);
     await a.pass();
     expect(feed.requests).toHaveLength(2);
+  });
+});
+
+/** A finished program run: what a `claude` that is a function answers. */
+function ran(stdout: string, exitCode = 0): ProgramRun {
+  return { error: null, exitCode, stderr: "", stdout, timedOut: false };
+}
+
+/**
+ * A context whose `claude` is a function: agent view prints `rows`, `claude stop` works, and any
+ * other call fails. No process starts, so the test runs where the fake shell script cannot
+ * (native Windows). `calls` collects the arguments of every call.
+ */
+function withView(
+  world: Awaited<ReturnType<typeof leadWorld>>,
+  rows: Array<Record<string, unknown>>,
+  change: Partial<CrewContext> = {},
+  calls: string[][] = [],
+): CrewContext {
+  return world.ctx({
+    runProgram: (argv) => {
+      calls.push(argv.slice(1));
+      if (argv[1] === "agents") return ran(JSON.stringify(rows));
+      if (argv[1] === "stop") return ran("");
+      return ran("", 4);
+    },
+    which: () => "/fake/claude",
+    ...change,
+  });
+}
+
+/** A lease a live process holds: this test's own, with the real clock (a lease is judged by its age where the start time is unknown). */
+function liveLease(token: string, change: Partial<WatchLease> = {}): WatchLease {
+  return { ...currentHolder(), at: Date.now(), token, ...change };
+}
+
+describe("a watch never dies silently", () => {
+  const BUSY = "the store is busy: another run holds its lock";
+  const FAILED = `crew watch: a pass failed (${BUSY}); the watch goes on and tries again in 20 s`;
+  const RESTART =
+    'start the watch again with Claude Code\'s Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch';
+
+  /** A step of the crew session in the log. */
+  async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      T0,
+    );
+  }
+
+  test("a pass that fails after it said a line: the watch goes on, says the failure once on stdout, and never says the line twice", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await step(world, "tests-green");
+    // The agent view of the first two passes and of the fourth fails, the way a store busy for a
+    // moment fails a pass: after the pass said its first lines.
+    let failing = 2;
+    let sleeps = 0;
+    let closed = false;
+    const base = withView(world, []);
+    const ctx: CrewContext = {
+      ...base,
+      outputClosed: () => closed,
+      runProgram: (argv, options) => {
+        if (argv[1] === "agents" && failing > 0) {
+          failing -= 1;
+          throw new LockBusyError(BUSY);
+        }
+        return base.runProgram(argv, options);
+      },
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 2) await step(world, "committed");
+        if (sleeps === 3) failing = 1;
+        if (sleeps === 4) closed = true;
+      },
+    };
+    expect(await runCrew(["watch"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: tests-green",
+      FAILED,
+      "C my-app B6b portal-live: committed",
+      FAILED,
+    ]);
+    // Each failure is a line on stderr as well; the end is the lead's closed output.
+    expect(world.err).toEqual([
+      `crew watch: ${BUSY}`,
+      `crew watch: ${BUSY}`,
+      `crew watch: ${BUSY}`,
+      "crew watch: nobody reads its output any more; this watch ends",
+    ]);
+    // What the failed passes had read stands: the state on disk is at the end of the log.
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.offset).toBe(
+      eventsEndOffset(world.paths.stateDir, world.repo),
+    );
+  });
+
+  test("a failed pass hands back the state it reached: the offset of the lines it said, and the lines", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await step(world, "tests-green");
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    };
+    const ctx: CrewContext = {
+      ...withView(world, []),
+      runProgram: () => {
+        throw new LockBusyError(BUSY);
+      },
+    };
+    const failure = await watchPass({ offset: 0, said: {} }, ctx, scope).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(PassFailed);
+    if (!(failure instanceof PassFailed)) throw new Error("the pass did not fail");
+    expect(failure.message).toBe(BUSY);
+    expect(failure.lines).toBe(1);
+    expect(failure.state.offset).toBe(eventsEndOffset(world.paths.stateDir, world.repo));
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+  });
+
+  test("a pass that works starts the count again: 59 failures, a good pass and one more do not end it", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let sleeps = 0;
+    let failing = true;
+    let closed = false;
+    const base = withView(world, []);
+    const ctx: CrewContext = {
+      ...base,
+      outputClosed: () => closed,
+      runProgram: (argv, options) => {
+        if (argv[1] === "agents" && failing) throw new LockBusyError(BUSY);
+        return base.runProgram(argv, options);
+      },
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 59) failing = false;
+        if (sleeps === 60) failing = true;
+        if (sleeps === 61) closed = true;
+      },
+    };
+    // Had the count not started again, the 60th failure (the 61st pass) would have ended it.
+    expect(await runCrew(["watch"], ctx)).toBe(0);
+    expect(sleeps).toBe(61);
+    // The failure was said at the first pass and again after the good one: two runs of failures.
+    expect(world.out).toEqual([FAILED, FAILED]);
+    expect(world.err).toHaveLength(61);
+    expect(world.err.at(-1)).toBe("crew watch: nobody reads its output any more; this watch ends");
+  }, 60_000);
+
+  test("a start that cannot name its lead says why on stdout, not only on stderr", async () => {
+    const world = await leadWorld();
+    // No session above this command and no --lead: the watch cannot tell whose crew it is.
+    const ctx = world.ctx({ processes: { commandLineOf: () => null, parentOf: () => null } });
+    // Two leads, so "the only lead of the repository" does not name one either.
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        name: "LEAD my-app other-plan",
+        plan: "other-plan",
+        repo: world.repo,
+        sessionId: OTHER_SESSION,
+        tag: "my-app",
+      },
+      T0,
+    );
+    expect(await runCrew(["watch"], ctx)).toBe(2);
+    const why = `which lead's crew sessions? name one with --lead <session> (the leads here: ${LEAD_SESSION}, ${OTHER_SESSION})`;
+    expect(world.err).toEqual([`crew watch: ${why}`]);
+    expect(world.out).toEqual([`crew watch ended: ${why} — ${RESTART}`]);
+  });
+
+  test("a project with crew sessions off says why on stdout, not only on stderr", async () => {
+    const world = await leadWorld();
+    world.writeConfig({ enabled: false });
+    expect(await runCrew(["watch"], world.ctx())).toBe(1);
+    expect(world.err).toEqual([
+      "crew watch: crew sessions are off in this project: turn them on with workflow.crew.enabled",
+      "Fix: cc-smart-dev-kit workflow set crew.enabled true --project (this project), or the same without --project (every project of yours)",
+    ]);
+    expect(world.out).toEqual([
+      `crew watch ended: crew sessions are off in this project: turn them on with workflow.crew.enabled — ${RESTART}`,
+    ]);
+  });
+
+  test("the command it tells the lead to start is the one the plugin's lead monitor runs", () => {
+    const monitors = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "..", "..", "plugin", "monitors", "monitors.json"),
+        "utf8",
+      ),
+    ) as Array<{ command: string; name: string }>;
+    expect(monitors.find((one) => one.name === "crew-events")?.command).toBe(WATCH_MONITOR_COMMAND);
+    expect(WATCH_MONITOR_COMMAND).toBe('"$HOME/.local/bin/cc-smart-dev-kit" crew watch');
+  });
+});
+
+describe("a --once is the lead's one look, never a restart", () => {
+  /** A step of the crew session in the log: news a watch that acts would say. */
+  async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      T0,
+    );
+  }
+
+  test("a live watch that is not a --once keeps the lease: one line, no pass, nothing taken", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, liveLease("the-monitor"));
+    await step(world, "tests-green");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `crew watch: a watch already runs for this lead (pid ${process.pid}) and its lines reach the lead; this --once ends without taking the lease`,
+    ]);
+    expect(world.err).toEqual([]);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.token).toBe(
+      "the-monitor",
+    );
+    // It read nothing and wrote nothing: the step is still the monitor's to say.
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)).toBeNull();
+  });
+
+  test("a lease older kits wrote (no once field) is a watch that is not a --once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    // `liveLease` sets no `once`: the file holds none, as one an older kit wrote.
+    await takeWatchLease(
+      world.paths.stateDir,
+      world.repo,
+      LEAD_SESSION,
+      liveLease("an-old-monitor"),
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith("crew watch: a watch already runs for this lead");
+  });
+
+  test("a live --once is replaced by the newest --once, which keeps the lease for itself", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await takeWatchLease(
+      world.paths.stateDir,
+      world.repo,
+      LEAD_SESSION,
+      liveLease("the-older-once", { once: true }),
+    );
+    await step(world, "tests-red");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
+    expect(held?.once).toBe(true);
+    expect(held?.token).not.toBe("the-older-once");
+  });
+
+  test("a lease whose watch is gone is free to a --once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ended = Bun.spawnSync([process.execPath, "-e", ""]);
+    await takeWatchLease(
+      world.paths.stateDir,
+      world.repo,
+      LEAD_SESSION,
+      liveLease("a-watch-that-died", { pid: ended.pid }),
+    );
+    await step(world, "tests-red");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.pid).toBe(process.pid);
+  });
+
+  test("another lead's live watch is not in the way", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await takeWatchLease(
+      world.paths.stateDir,
+      world.repo,
+      OTHER_SESSION,
+      liveLease("the-other-leads-monitor"),
+    );
+    await step(world, "tests-red");
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+  });
+});
+
+describe("a backend's refusal is not a final failure", () => {
+  const REFUSED_AT = "2026-10-21T09:59:30.000Z";
+  const TEXT = "API Error: 424 the backend refused the request: content filter";
+  const REASON = `its backend refused its turn (unknown: ${TEXT})`;
+  const QUESTION = `${NAME}: question · ${REASON} · answer it: crew answer "${NAME}" "<text>"`;
+  const STOPPED = `${NAME}: stopped — its backend refused the turn; your answer to its question resumes it`;
+
+  /** A working crew session whose last turn ended on `lastApiError`, and the row agent view shows for it. */
+  async function refused(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    error: { class: string; text?: string; at?: string },
+    row: Record<string, unknown> = {},
+    changes: Partial<CrewRecord> = {},
+  ): Promise<{ calls: string[][]; ctx: CrewContext }> {
+    await addCrew(world, "working", {
+      lastApiError: { at: REFUSED_AT, text: TEXT, ...error },
+      ...changes,
+    });
+    const calls: string[][] = [];
+    const failed = agentRowOf({
+      pid: null,
+      state: "failed",
+      status: "idle",
+      waitingFor: "API error",
+      ...row,
+    });
+    return { calls, ctx: withView(world, [failed], {}, calls) };
+  }
+
+  const record = (world: Awaited<ReturnType<typeof leadWorld>>) =>
+    readCrew(world.paths.stateDir, world.repo, ID);
+
+  test("unknown: the lead is told once with the router's reason, and the session is stopped and resumable, not failed", async () => {
+    const world = await leadWorld();
+    const { calls, ctx } = await refused(world, { class: "unknown" });
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(world.out).toEqual([QUESTION, STOPPED]);
+    const after = record(world);
+    expect(after?.state).toBe("stopped");
+    expect(after?.stoppedByWatch).toBe(true);
+    expect(after?.questions).toHaveLength(1);
+    expect(after?.questions[0]).toMatchObject({
+      answer: null,
+      options: [
+        "go on: resume it with your answer as its next prompt (the same request may be refused again)",
+        "leave it stopped: change its model first (crew model), or take the phase back",
+      ],
+      question: REASON,
+      recommended: 1,
+    });
+    // Nothing to stop: its session has no process.
+    expect(calls.filter((call) => call[0] === "stop")).toEqual([]);
+    // Said once: the next look finds a stopped record and says nothing more.
+    world.out.length = 0;
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(record(world)?.questions).toHaveLength(1);
+  });
+
+  test("the refusal's mark stays while the record is stopped, and goes once it left (watch review #7)", async () => {
+    const world = await leadWorld();
+    const { ctx } = await refused(world, { class: "unknown" });
+    const said = () => readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.said ?? {};
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(said()[`${ID}:refusal`]).toBe(REFUSED_AT);
+    // Still stopped: the next look keeps it, so the question is never asked twice.
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(said()[`${ID}:refusal`]).toBe(REFUSED_AT);
+    // The lead's answer brought it back: the mark goes with the next look.
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "working" }, T0);
+    await runCrew(["watch", "--once", "--timeout", "0"], withView(world, []));
+    expect(said()).not.toHaveProperty(`${ID}:refusal`);
+  });
+
+  test("model_not_found is a refusal too", async () => {
+    const world = await leadWorld();
+    const { ctx } = await refused(world, { class: "model_not_found", text: "no such model" });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(record(world)?.state).toBe("stopped");
+    expect(record(world)?.questions[0]?.question).toBe(
+      "its backend refused its turn (model_not_found: no such model)",
+    );
+  });
+
+  test("any other class is a real failure, as ever", async () => {
+    for (const errorClass of [
+      "authentication_failed",
+      "rate_limit",
+      "server_error",
+      "invalid_request",
+    ]) {
+      const world = await leadWorld();
+      const { ctx } = await refused(world, { class: errorClass });
+      await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+      expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+      expect(record(world)?.state).toBe("failed");
+      expect(record(world)?.questions).toEqual([]);
+    }
+  });
+
+  test("a failed session with no recorded error is a real failure", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const ctx = withView(world, [
+      agentRowOf({ pid: null, state: "failed", status: "idle", waitingFor: "API error" }),
+    ]);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(record(world)?.state).toBe("failed");
+  });
+
+  test("a failed row that says something other than an API error is not that turn's end", async () => {
+    const world = await leadWorld();
+    const { ctx } = await refused(world, { class: "unknown" }, { waitingFor: "crashed" });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(record(world)?.state).toBe("failed");
+  });
+
+  test("a session that already asked its lead a question is not given another: the stop's line carries the reason", async () => {
+    const world = await leadWorld();
+    const open = {
+      answer: null,
+      answeredAt: null,
+      askedAt: "2026-10-21T09:00:00.000Z",
+      options: ["a", "b"],
+      question: "which file first?",
+      recommended: 1,
+    };
+    const { ctx } = await refused(world, { class: "unknown" }, {}, { questions: [open] });
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([
+      `${NAME}: stopped — its backend refused the turn (unknown: ${TEXT}); your answer to its open question resumes it`,
+    ]);
+    expect(record(world)?.questions).toEqual([open]);
+  });
+
+  test("refused again after the lead brought it back: the lead is told again, once for each refusal", async () => {
+    const world = await leadWorld();
+    const { ctx } = await refused(world, { class: "unknown" });
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("the world's repo is not a checkout");
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    };
+    const first = await watchPass(
+      { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+      ctx,
+      scope,
+    );
+    expect(record(world)?.questions).toHaveLength(1);
+    // The lead answered: working again, which drops the old error. The same text comes back later.
+    await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 0, "go on", T0, "working");
+    expect(record(world)?.state).toBe("working");
+    expect(record(world)?.lastApiError).toBeUndefined();
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { lastApiError: { at: "2026-10-21T11:30:00.000Z", class: "unknown", text: TEXT } },
+      T0,
+    );
+    await watchPass(first.state, ctx, scope);
+    expect(record(world)?.state).toBe("stopped");
+    expect(record(world)?.questions.map((one) => [one.question, one.answer])).toEqual([
+      [REASON, "go on"],
+      [REASON, null],
+    ]);
+  });
+
+  test("a crew session stopped for a refusal holds no place", async () => {
+    const world = await leadWorld();
+    const { ctx } = await refused(world, { class: "unknown" });
+    expect(runningCrew(listCrew(world.paths.stateDir, world.repo).records)).toHaveLength(1);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(runningCrew(listCrew(world.paths.stateDir, world.repo).records)).toEqual([]);
+  });
+});
+
+describe("the pause alert: a model limit in agent view is not the person's wait", () => {
+  const ROW = {
+    cwd: "/w",
+    id: "aaaa1111",
+    pid: 4242,
+    sessionId: "aaaa1111-2222-3333-4444-555555555555",
+    state: "blocked",
+    status: "waiting",
+    waitingFor: "rate limit",
+  };
+
+  test("a paused record says the watch resumes it, and not to attach", async () => {
+    const world = await leadWorld();
+    const paused = await addCrew(world, "paused", {
+      waitingFor: { kind: "unknown", since: "2026-10-21T09:50:00.000Z" },
+    });
+    expect(crewAlert(paused, ROW, T0, 10, world.paths.projectsDir)?.line).toBe(
+      `${NAME}: needs you — rate limit (paused: the watch resumes it once a model answers; do not attach)`,
+    );
+  });
+
+  test("a working record that waits for the person is the alert it always was", async () => {
+    const world = await leadWorld();
+    const working = await addCrew(world, "working");
+    expect(
+      crewAlert(
+        working,
+        { ...ROW, waitingFor: "permission prompt" },
+        T0,
+        10,
+        world.paths.projectsDir,
+      )?.line,
+    ).toBe(`${NAME}: needs you — permission prompt`);
+  });
+});
+
+describe("a running session with no self-watch is told to the lead", () => {
+  const LINE = `${NAME}: no self-watch — answers will not reach it by themselves; crew answer prints the SendMessage line to send`;
+  const MINUTE = 60_000;
+
+  test("past the grace, with no heartbeat: once, and again only after the monitor came back and went", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working", { startedAt: new Date(T0 - 10 * MINUTE).toISOString() });
+    const ctx = withView(world, [agentRowOf()]);
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(world.out).toEqual([LINE]);
+    // Said once, not on every look.
+    world.out.length = 0;
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    // The monitor writes its heartbeat: nothing to say.
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 15_000);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([]);
+    // The heartbeat is 61 seconds old: the monitor is not running again.
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 61_000);
+    await runCrew(["watch", "--once", "--timeout", "0"], ctx);
+    expect(world.out).toEqual([LINE]);
+  });
+
+  test("a heartbeat 60 seconds old still counts as running", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working", { startedAt: new Date(T0 - 10 * MINUTE).toISOString() });
+    writeAnswerWatchBeat(world.paths.stateDir, world.repo, ID, T0 - 60_000);
+    await runCrew(["watch", "--once", "--timeout", "0"], withView(world, [agentRowOf()]));
+    expect(world.out).toEqual([]);
+  });
+
+  test("a session within its first five minutes is not judged: its monitor is arming", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working", { startedAt: new Date(T0 - 5 * MINUTE).toISOString() });
+    await runCrew(["watch", "--once", "--timeout", "0"], withView(world, [agentRowOf()]));
+    expect(world.out).toEqual([]);
+  });
+
+  test("only a session at work is judged: a record that is not working, or a session with no process, is not", async () => {
+    const started = new Date(T0 - 10 * MINUTE).toISOString();
+    for (const [state, row] of [
+      ["blocked", agentRowOf()],
+      ["working", agentRowOf({ pid: null })],
+      ["working", agentRowOf({ state: "idle" })],
+    ] as const) {
+      const world = await leadWorld();
+      await addCrew(world, state, { startedAt: started });
+      await runCrew(["watch", "--once", "--timeout", "0"], withView(world, [row]));
+      expect(world.out).not.toContain(LINE);
+    }
   });
 });

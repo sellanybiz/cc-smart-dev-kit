@@ -11,6 +11,7 @@ import {
 import { join, win32 } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
+  claudeImportPath,
   copiesUnder,
   copyDifferences,
   forgetInstructionsState,
@@ -258,6 +259,58 @@ describe("instructionsBlockBody", () => {
     expect(instructionsBlockBody("/abs/core.md")).toBe(
       "<!-- Written by cc-smart-dev-kit setup. `cc-smart-dev-kit setup --no-instructions` takes it out. -->\n@/abs/core.md",
     );
+  });
+});
+
+describe("claudeImportPath: the path as Claude Code's @ import reads it", () => {
+  // Claude Code 2.1.310's own parser for an import (read in its code): a run with no space and
+  // no backslash, where `\ ` is an escaped space.
+  const claudeCodeReads = (line: string): string | null =>
+    /(?:^|\s)@((?:[^\s\\]|\\ )+)/.exec(line)?.[1] ?? null;
+
+  test("a path under a POSIX home starts ~/", () => {
+    expect(
+      claudeImportPath("/home/user/.claude/cc-smart-dev-kit/instructions/core.md", "/home/user"),
+    ).toBe("~/.claude/cc-smart-dev-kit/instructions/core.md");
+  });
+
+  test("a Windows path under the home starts ~/ and has / for every separator", () => {
+    expect(
+      claudeImportPath(
+        "C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions\\core.md",
+        "C:\\Users\\me",
+      ),
+    ).toBe("~/.claude/cc-smart-dev-kit/instructions/core.md");
+  });
+
+  test("a Windows path outside the home keeps its drive, with / separators", () => {
+    expect(
+      claudeImportPath("D:\\claude\\cc-smart-dev-kit\\instructions\\core.md", "C:\\Users\\me"),
+    ).toBe("D:/claude/cc-smart-dev-kit/instructions/core.md");
+  });
+
+  test("a home that only starts the same is not the home", () => {
+    expect(claudeImportPath("/home/username/x/core.md", "/home/user")).toBe(
+      "/home/username/x/core.md",
+    );
+  });
+
+  test("a space is written as Claude Code's escape", () => {
+    expect(claudeImportPath("D:\\My Config\\instructions\\core.md", "C:\\Users\\me")).toBe(
+      "D:/My\\ Config/instructions/core.md",
+    );
+  });
+
+  test("Claude Code's parser reads every form back whole; the old Windows form it cuts at ~", () => {
+    for (const [path, home] of [
+      ["C:\\Users\\me\\.claude\\cc-smart-dev-kit\\instructions\\core.md", "C:\\Users\\me"],
+      ["D:\\My Config\\instructions\\core.md", "C:\\Users\\me"],
+      ["/home/user/.claude/cc-smart-dev-kit/instructions/core.md", "/home/user"],
+    ] as const) {
+      const importPath = claudeImportPath(path, home);
+      expect(claudeCodeReads(instructionsBlockBody(importPath))).toBe(importPath);
+    }
+    expect(claudeCodeReads("@~\\.claude\\cc-smart-dev-kit\\instructions\\core.md")).toBe("~");
   });
 });
 

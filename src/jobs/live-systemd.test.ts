@@ -13,7 +13,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
-import { DEFAULT_KINDS } from "./kinds";
 import { realLaunchFacts, realScope, realSliceControl, spawnAndWait, unitName } from "./launch";
 import { realReadText, userSliceCgroup } from "./memory";
 import { runJob } from "./run";
@@ -95,28 +94,23 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       "-e",
       "const a = []; for (;;) a.push(Buffer.alloc(16 * 1024 * 1024, 1));",
     ];
-    const spec = DEFAULT_KINDS.tsc;
-    if (spec === undefined) throw new Error("no tsc kind");
     const code = await runJob(
       {
         kind: "tsc",
-        spec,
         command: hog,
         cpuWeight: 20,
-        gb: 1,
         ioWeight: 20,
+        memoryMax: "128M",
         pid: process.pid,
         checkout: process.cwd(),
         slice: SLICE,
+        slot: true,
         startedAt: Date.now(),
       },
       {
         isNested: () => Promise.resolve(false),
         ancestorHoldsName: () => Promise.resolve(false),
-        acquire: (job) =>
-          Promise.resolve({ gb: job.gb, release: () => undefined, waitedSince: null }),
-        workersFor: () => 1,
-        memoryMaxFor: () => "128M",
+        acquire: () => Promise.resolve({ release: () => undefined, waitedSince: null }),
         launchFacts: () => realLaunchFacts(SLICE),
         now: Date.now,
         slice: realSliceControl(realReadText),

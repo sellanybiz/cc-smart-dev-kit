@@ -1,8 +1,8 @@
 /**
  * `plugin/workflows/research-sweep.js`: the run the `research-first` skill starts for a question
- * with several sources. One read-only researcher per angle on `sonnet` at `max` (an affordable
- * worker slot allows no lower effort), one refuter per claim on `opus` at `high` to open the
- * cited source, all allowed by the agent guard. The script returns the verified claims, the
+ * with several sources. One read-only researcher per angle on `sonnet` at `max` (the guard allows
+ * it on any tier), one refuter per claim on `opus` at `high` to open the cited source, all
+ * allowed by the agent guard. The script returns the verified claims, the
  * refuted ones, the unproven ones and the ones past the budget; it never drops a claim.
  */
 import { describe, expect, test } from "bun:test";

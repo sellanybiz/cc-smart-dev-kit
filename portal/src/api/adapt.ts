@@ -318,7 +318,7 @@ export function workflowValueText(value: unknown, unsetWords?: string): string {
 }
 
 /**
- * What a paused crew session waits for, as the record names it. The three kinds stay three: a
+ * What a paused crew session waits for, as the record names it. The four kinds stay four: a
  * wait the watch could not name (`unknown`) is shown as unknown, with the slot of its session
  * when the record has one, never as a Claude limit on no model.
  */
@@ -326,6 +326,9 @@ function waitingOf(waiting: CrewSummary["waitingFor"]): CrewRecord["waitingFor"]
   if (waiting === null) return undefined;
   if (waiting.kind === "slot") {
     return { kind: "slot", since: waiting.since ?? "", slot: waiting.slot ?? "" };
+  }
+  if (waiting.kind === "safety-checks") {
+    return { kind: "safety-checks", scope: waiting.scope ?? "", since: waiting.since ?? "" };
   }
   if (waiting.kind === "unknown") {
     return waiting.slot === undefined
@@ -701,25 +704,24 @@ export function jobsOf(answer: JobsAnswer): JobsData {
   const entry = (item: JobsAnswer["stores"][number]["held"][number]) => ({
     command: item.command,
     folder: item.folder,
-    gb: item.gb,
     kind: item.kind,
     pid: item.pid,
     since: item.since === null ? null : Date.parse(item.since),
+    slot: item.slot,
     user: item.user,
   });
   return {
-    budgetGb: answer.budgetGb,
-    freeGb: answer.freeGb,
-    keptGb: answer.keptGb,
+    ceiling: answer.ceiling,
     memoryGb: answer.memoryGb,
+    route: answer.route,
     stores: answer.stores.map((store) => ({
-      budgetGb: store.budgetGb,
-      freeGb: store.freeGb,
       held: store.held.map((item) => ({
         ...entry(item),
         ...(item.exclusive === undefined ? {} : { exclusive: true }),
       })),
       ...(store.note === undefined ? {} : { note: store.note }),
+      slots: store.slots,
+      used: store.used,
       waiting: store.waiting.map(entry),
       where: store.where,
     })),

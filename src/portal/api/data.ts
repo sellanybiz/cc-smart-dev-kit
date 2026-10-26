@@ -85,24 +85,24 @@ function notSetUp(deps: PageDataDeps): NotSetUp {
   };
 }
 
-/** The three numbers the Overview shows about the queue. */
+/**
+ * The three numbers the Overview shows about the queue: this machine's slots, how many are in
+ * use, and how many jobs wait (here and on every shared folder).
+ */
 async function jobsAtAGlance(
   deps: PageDataDeps,
-): Promise<{ budgetGb: number; heldGb: number; waiting: number }> {
+): Promise<{ slots: number; used: number; waiting: number }> {
   try {
     const queue = jobsAnswer(await readJobs(jobContext(deps.action)));
-    const heldGb = queue.stores.reduce(
-      (sum, store) => sum + store.held.reduce((each, item) => each + item.gb, 0),
-      0,
-    );
+    const machine = queue.stores.find((store) => store.where === "machine");
     return {
-      budgetGb: queue.budgetGb,
-      heldGb: Math.round(heldGb * 10) / 10,
+      slots: machine?.slots ?? 0,
+      used: machine?.used ?? 0,
       waiting: queue.stores.reduce((sum, store) => sum + store.waiting.length, 0),
     };
   } catch {
     // A broken jobs.json is `job status`'s and doctor's to report; the Overview still draws.
-    return { budgetGb: 0, heldGb: 0, waiting: 0 };
+    return { slots: 0, used: 0, waiting: 0 };
   }
 }
 

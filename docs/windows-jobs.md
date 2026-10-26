@@ -1,34 +1,40 @@
 # Heavy jobs on Windows
 
-`cc-smart-dev-kit job` works the same on native Windows: `job run` waits for the memory a job
-needs, runs it and gives the memory back; `job status` shows who holds and who waits;
-`job kinds` lists the kinds. Three things work differently, because Windows has no `/proc`,
-no memory groups and no signals. This page is those three things, what they cost, and the
-live checks still owed on a Windows machine. The queue itself — the budgets, the line, the
+`cc-smart-dev-kit job` works the same on native Windows: `job run` waits for a free slot (three
+heavy jobs run at once by default), runs the job and gives the slot back; `job status` shows
+how many slots are in use, who holds them and who waits; `job kinds` lists the kinds; `job set
+max-jobs <n>` changes how many run at once. Three things work differently, because Windows has
+no `/proc`, no memory groups and no signals. This page is those three things, what they cost,
+and the live checks still owed on a Windows machine. The queue itself — the slots, the line, the
 shared folders, the launch on Linux — is `jobs.md`.
 
 ## Memory
 
 - The total is `os.totalmem()` and the free memory is `os.freemem()`: Windows reads both
   itself, and there is no cgroup to lower them. (`machineMemory`, `src/jobs/memory.ts`.)
-- **The budget rule is the same:** this machine's memory in whole GB less `reserveGb`
-  (22 by default), and never less than the largest default job (14 GB), so that job can
-  always run alone.
-- **The live check is on.** A job waits while the real free memory, less what admitted jobs
-  have not used yet, is below what it needs (and never when no other heavy job holds memory
-  here, so a wait always ends). Windows counts its standby cache as used, so `os.freemem()`
-  is lower than what the machine can really hand out: the live check then waits longer than
-  it must. That is the safe side — a job waits, it never overruns.
-- `job status` reads the free number and says plainly that there is no ceiling:
+- **The queue does not read the free memory.** It counts slots, so Windows' habit of counting
+  its standby cache as used costs nothing here: it can no longer make a job wait longer than it
+  must. (The crew's start gate still reads the free memory, and so it is a little cautious on
+  Windows for the same reason.)
+- **There is no ceiling.** On Linux all heavy jobs together run under one memory ceiling of
+  their systemd slice. Windows has no memory group, so nothing caps the memory of a job or of
+  all of them together: the slots are what keeps heavy jobs apart. Lower `maxJobs`
+  (`cc-smart-dev-kit job set max-jobs 2`) on a machine that runs short.
+- `job status` says plainly that there is no ceiling:
 
   ```text
-  Memory: 31.9 GB, 11.2 GB free now.
-  Budget for heavy jobs here: 14 GB (31 GB of memory less 22 GB kept for everything else).
-  No memory ceiling on this system: Windows has no memory group, so a heavy job runs as a
-  plain child, and the queue is what keeps heavy jobs apart.
+  Memory: 31.9 GB.
+  Memory ceiling for heavy jobs: none: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.
+  CPU priority: not set: only a Linux systemd user manager has weights.
+  Disk I/O priority: not set: only a Linux systemd user manager has weights.
+  This machine (~.localsharecc-smart-dev-kitjobs): 0 of 3 slots in use
+    nothing held, nobody waits
+  Heavy jobs at once on this machine: 3 (the default). Change it with: cc-smart-dev-kit job set max-jobs <n>
   ```
 
-## Leases: who holds memory
+  A weight is a Linux slice setting, and Windows never has one (`jobs.md` § The launch).
+
+## Leases: who holds a slot
 
 A lease names its writer: a pid, that process's start time, the host name, the pid namespace
 (`src/jobs/store.ts`). Linux and macOS read the start time from `/proc`, then from `ps`.
@@ -58,11 +64,11 @@ Windows has neither, so:
 - **Fail safe: a holder nobody can judge counts as alive.** A start time that cannot be read
   — no PowerShell on the machine, or a process it may not open — hands the recorded value
   back, so the holder counts as held and a waiting job keeps waiting. It never runs on top
-  of memory someone may still hold. A start time another system wrote (a lease Linux or
+  of a slot someone may still hold. A start time another system wrote (a lease Linux or
   macOS wrote) cannot be compared on Windows either: it counts as alive too.
 - A pid reused inside one Windows clock tick (about 16 ms) could still look like the same
   process. That mistake makes a job wait, never run on top.
-- **The folder's lock** (one job taking memory at a time) is judged by the pid alone: a lock
+- **The folder's lock** (one job taking a slot at a time) is judged by the pid alone: a lock
   whose writer is gone is freed at the next look, and one whose writer died with its pid
   taken by another process is taken over 30 seconds after it was written (the age rule). The
   Linux and macOS path also reads that lock's start time; on Windows only a POSIX `ps` on
@@ -80,8 +86,8 @@ Windows has neither, so:
 
 - **No memory group, no kill mark, no CPU or I/O weight.** Windows has no cgroup and no
   `choom`, so a job runs as a plain child with its lease, the same as macOS. There is no
-  slice to carry a weight, and `job status` says both are not set. The queue applies in
-  full: the budget, the oldest-ticket line, the fair share, the live check, `--exclusive`.
+  slice to carry a ceiling or a weight, and `job status` says they are not set. The queue
+  applies in full: the slots, the oldest-ticket line, the fair share, `--exclusive`.
 - **No "killed for memory" line.** That line reads the heavy-job slice's `memory.events`,
   which only Linux has.
 - **Stopping a job ends its process tree with `taskkill`.** Windows has no signals, so
@@ -99,20 +105,27 @@ Windows has neither, so:
   do: the job was already gone. Where `taskkill` cannot run at all, `job run` falls back to
   Node's own kill for the job's first process.
 - **`job run` watches the job's first process** on Windows, not its whole process group: a
-  worker the job leaves behind is not seen, so the memory is given back while it still runs.
+  worker the job leaves behind is not seen, so the slot is given back while it still runs.
   On Linux the group is watched instead. (Whether a worker can outlive `job run` at all
   there depends on how Bun ends a child it started: § Live checks, item 5.)
+- **The route sends heavy commands to the Bash tool.** The `job-route` hook rewrites a heavy
+  Bash line into `job run`, but it cannot rewrite a PowerShell one: the rewritten line is a
+  `sh` line. So where the job route is on, a heavy PowerShell line (`bunx tsc --noEmit`) is
+  refused, and the refusal names the Bash tool and the exact Bash line to run, which then
+  waits for a slot (`jobs.md` § The route). It does this only when Git Bash is found — the
+  same finder `doctor` uses, in Claude Code's own order (`CLAUDE_CODE_GIT_BASH_PATH`, then
+  Git's install folders, then beside the `git` on PATH; `src/cli/git-bash.ts`) — because without Git Bash Claude Code has no
+  Bash tool to send it to. A light or print-only PowerShell line, and every PowerShell line
+  while the route is off, runs as written. A live check is owed (§ Live checks, item 7).
 - **Nesting is found on Linux only** (`/proc`). On Windows a heavy job must not start
-  another one through `cc-smart-dev-kit job run`: the inner one would queue for memory its
+  another one through `cc-smart-dev-kit job run`: the inner one would queue for a slot its
   parent holds. Same as macOS.
 
 ## Limits
 
 - No memory ceiling, no kill mark, no CPU or I/O weight, no "killed for memory" line: the
-  queue is what keeps heavy jobs apart, and nothing caps one job's memory or its CPU share.
-- The live check uses Windows' free memory, which counts the standby cache as used: it can
-  make a job wait longer than the machine needs.
-- A worker a job leaves behind is not seen when `job run` ends: its memory is given back
+  slots are what keeps heavy jobs apart, and nothing caps one job's memory or its CPU share.
+- A worker a job leaves behind is not seen when `job run` ends: its slot is given back
   while the worker runs.
 - A holder whose start time cannot be read counts as alive, however long it runs: only its
   pid being gone frees its lease. If PowerShell cannot run on a machine at all, a lease is
@@ -136,9 +149,10 @@ None of these can be checked from Linux: they need one real Windows machine. Eac
    holder (host, kind, command, folder, since, pid). The first `job run`'s lease must count
    as held: a start time that came out wrong would free it at once and the second job would
    run on top. The lease file's `holder.startTime` is `win:<digits>`.
-2. **`job status` wording.** Expected: a real free number near Task Manager's, the budget
-   line, the ceiling line from § Memory, and the holders below. Also with a `jobs.json` that
-   sets `budgetGb`. The start-time call, by hand (it answers one number, the ticks):
+2. **`job status` wording.** Expected: the memory total near Task Manager's, the ceiling
+   line from § Memory, the slots in use and the holders below, and the line that changes
+   `maxJobs`. Also with a `jobs.json` that sets `maxJobs` (`cc-smart-dev-kit job set max-jobs 1`):
+   then the second job in item 1 waits with "this machine's only slot is taken". The start-time call, by hand (it answers one number, the ticks):
    `powershell -NoProfile -Command "(Get-Process -Id $PID).StartTime.ToFileTimeUtc()"`.
 3. **Staleness after a killed holder.** With the first job running, kill its `job run` with
    `taskkill /F /PID <the job run's pid>` (there is no SIGKILL on Windows). Expected: the
@@ -152,7 +166,7 @@ None of these can be checked from Linux: they need one real Windows machine. Eac
 5. **A worker left behind.** One `job run` with a job that starts a helper and ends:
    `cc-smart-dev-kit job run --kind tsc -- cmd /c "start /b ping -n 120 127.0.0.1 > NUL & exit"`.
    Expected on the current design: `job run` ends at once, the `ping` lives on, and the
-   memory is given back while it runs (§ Running a job). Write down whether the `ping`
+   slot is given back while it runs (§ Running a job). Write down whether the `ping`
    really survives: if the child of a Bun process is ended with it, this limit does not
    exist and the page changes. A job that ends by itself must not print "the job left
    processes running": that line means its first process was still there after it ended,
@@ -161,3 +175,9 @@ None of these can be checked from Linux: they need one real Windows machine. Eac
    PATH without it): a running job's lease must count as held (a second job waits), and a
    killed job's lease must still be freed (its pid is dead). Expected: a job waits longer
    than it must, and no job ever runs on top of a live holder.
+7. **A heavy PowerShell line with the route on.** In a project with `"jobs": { "route": true }`,
+   ask a session to run `bunx tsc --noEmit` with the PowerShell tool. Expected: the call is
+   refused, the reason names the Bash tool and the line `bunx tsc --noEmit`, and the session
+   runs it again with the Bash tool, where it goes through `job run`. Then the same with
+   `CLAUDE_CODE_GIT_BASH_PATH` pointing at no file and Git not installed: the PowerShell line
+   runs as written. Write down the Claude Code version.

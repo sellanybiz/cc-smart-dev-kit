@@ -39,6 +39,7 @@ import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
@@ -271,6 +272,11 @@ export function requiresFloor(file: Record<string, unknown>): {
     needs.push(WORKFLOW_CREW_SINCE);
   }
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  const jobs = isObject(file.jobs) ? file.jobs : {};
+  const kinds = isObject(jobs.kinds) ? Object.values(jobs.kinds) : [];
+  for (const [key, since] of Object.entries(JOB_KIND_KEYS_SINCE)) {
+    if (kinds.some((kind) => isObject(kind) && Object.hasOwn(kind, key))) needs.push(since);
+  }
   if (needs.length === 0) {
     return {
       floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,

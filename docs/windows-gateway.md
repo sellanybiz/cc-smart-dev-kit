@@ -40,6 +40,13 @@ port is written into the task's description: the router reads its port from `gat
 so nothing else in the definition would change when the port does and setup would never
 restart the router on a moved port (on Linux the socket unit changes there).
 
+The file's XML declaration names **no encoding** (`<?xml version="1.0"?>`). `-Xml` takes the
+file's text as a string, which reaches Task Scheduler as UTF-16, and Task Scheduler refuses a
+string whose declaration names another encoding. Up to 1.4.1 the declaration said
+`encoding="UTF-8"`, and on a Windows 11 PC every registration failed with
+`(1,40)::ERROR: unable to switch the encoding` (2026-10-26). With no encoding named the
+string parses, and the file on disk is still valid XML, because UTF-8 is XML's default.
+
 Everything is PowerShell, never `schtasks`: `schtasks` prints localized words (a task is
 "Ready" in one Windows language and "Bereit" in another), while `Get-ScheduledTask` answers
 with Task Scheduler's own state names (`Running`, `Ready`, `Disabled`, `Queued`, `Unknown`)
@@ -116,7 +123,9 @@ platform cover the logic (see the tests below), but these need a real Windows ru
    logged on", no elevation, and starts the router at the next logon.
 3. `Register-ScheduledTask -Xml` accepts the definition as written (element order,
    `PT0S`, `RestartOnFailure`), and `Get-ScheduledTask`'s state names come back in the
-   words this code expects.
+   words this code expects. **Part of this is proved now:** Task Scheduler's own parser
+   reads the definition and gives back its action (`src/gateway/service-windows.test.ts`,
+   on a Windows 11 PC and in the Windows CI job). A real registration is still owed.
 4. A restart: `gateway setup --yes` with a changed copy — the router is stopped, its port
    closes, it starts again, and Claude Code's retry covers the moment of refusal.
 5. `Stop-ScheduledTask` really frees the port (a stopped router must not hold it), and it
@@ -128,7 +137,17 @@ platform cover the logic (see the tests below), but these need a real Windows ru
 9. A machine with **no PowerShell**: setup refuses (it is on PATH of every Windows 10/11).
 10. A restart on a battery-powered laptop actually starts the task.
 
-## The tests (all on Linux, with a fake machine)
+## The tests
+
+Most of them run on Linux, with a fake machine. The fake Task Scheduler never parses the XML,
+so one test runs on Windows only, with the real one:
+
+- `src/gateway/service-windows.test.ts`: the declaration names no encoding (on every
+  platform), and on Windows, Task Scheduler's own parser (`Schedule.Service`, `NewTask(0)`,
+  `XmlText`) reads the definition from a string, as `-Xml` hands it over. It gives back the
+  action setup wrote and registers nothing. The Windows CI job runs it. Both cases were seen
+  to fail with the old `encoding="UTF-8"` declaration, the second with Task Scheduler's own
+  "unable to switch the encoding".
 
 - `src/gateway/commands.test.ts` § "the router as a Windows Scheduled Task": a fake
   `powershell` answers the task queries, logs each call, and reads the definition file back

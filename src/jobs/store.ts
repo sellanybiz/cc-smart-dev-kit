@@ -1,16 +1,16 @@
 /**
- * Where reservations live: a folder of small files, one per lease (memory held) and one
- * per ticket (a place in the line).
+ * Where reservations live: a folder of small files, one per lease (a slot or a name held) and
+ * one per ticket (a place in the line).
  *
- *   <dir>/leases/<token>.json    a job holds this many GB
+ *   <dir>/leases/<token>.json    a job holds a slot (or only a name)
  *   <dir>/tickets/<token>.json   a job waits for its turn
- *   <dir>/lock                   held for a moment while a job takes memory
+ *   <dir>/lock                   held for a moment while a job takes a slot
  *
  * Each file names the process that wrote it: its pid, that process's start time, the host
  * name and the pid namespace. A file is stale when that process is gone: the pid is dead,
  * or alive with another start time (the pid was reused). The judge is the plugin's one
  * lock judge, `holderIsGone` in `src/setup/lock.ts`. A stale file counts for nothing, and
- * the next reader removes it. So a job killed with SIGKILL frees its memory at the next
+ * the next reader removes it. So a job killed with SIGKILL frees its slot at the next
  * look, with no clean-up step. Windows reads a process's start time with PowerShell
  * (`windows.ts`), and a holder it cannot judge counts as alive: a job waits, never runs
  * on top.
@@ -20,9 +20,9 @@
  * 5 seconds (the heartbeat), and it is stale when it was not touched for 30 seconds
  * (`HEARTBEAT_MS`, `UNSEEN_STALE_MS`: why those numbers).
  *
- * Taking memory happens under the folder's lock (`withLock`, the same lock as setup's,
+ * Taking a slot happens under the folder's lock (`withLock`, the same lock as setup's,
  * here with mode 0664 so every user of a shared folder can read who holds it), so two jobs
- * never both take the last free GB. Every file is written whole: a temp file, then a
+ * never both take the last free slot. Every file is written whole: a temp file, then a
  * rename, so a reader never sees half a record. Lease and ticket files are 0644: every
  * user of a shared folder reads them; only their writer changes them.
  *
@@ -54,20 +54,23 @@ import {
   type StartTimeReader,
   withLock,
 } from "../setup/lock";
-import type {
-  LiveReading,
-  Store,
-  StoreHeld,
-  StoreLineEntry,
-  StoreTicket,
-  StoreUnits,
+import {
+  parseHolder,
+  type Store,
+  type StoreHeld,
+  type StoreLineEntry,
+  type StoreTicket,
+  type StoreUnits,
+  slotOfWire,
+  slotsUsed,
+  wireOfSlot,
 } from "./queue";
 import { leaseHolder, startTimeReader } from "./windows";
 
 /**
  * How often a holder touches its files, so a reader that cannot see its pid knows it lives.
  *
- * Why 5 s and 30 s: a container on this host that dies with SIGKILL holds its memory in
+ * Why 5 s and 30 s: a container on this host that dies with SIGKILL holds its slot in
  * the other containers' view until its files go stale. At 30 s that wait stays short.
  * Stale after 6 missed touches leaves room for a writer slowed by a busy machine (its
  * timer runs late, never early). A touch changes one file's time, a few files per job:
@@ -94,7 +97,12 @@ export interface FileHolder extends ProcessHolder {
   pidns: string | null;
 }
 
-/** What one lease or ticket file holds. The record is the queue's text, untrusted. */
+/**
+ * What one lease or ticket file holds. The record is the queue's text, untrusted. `gb` is the
+ * wire's old name for what the job holds (`wireOfSlot`): an older `job run` counted gigabytes
+ * there. This plugin reads any number above 0 as one slot, so a lease an older version wrote
+ * counts as one, whatever it reserved.
+ */
 interface StoreFile {
   store: 1;
   gb: number;
@@ -104,12 +112,17 @@ interface StoreFile {
   record: string;
 }
 
+/** A file as the store reads it: `StoreFile`, with the old number turned into a slot. */
+interface ReadFile extends Omit<StoreFile, "gb"> {
+  slot: boolean;
+}
+
 /** This process, as the writer of a file. Windows' start time comes from PowerShell. */
 export function currentFileHolder(): FileHolder {
   return leaseHolder(process.platform);
 }
 
-function parseStoreFile(text: string): StoreFile | null {
+function parseStoreFile(text: string): ReadFile | null {
   try {
     const value = JSON.parse(text) as Partial<StoreFile> | null;
     const holder = value?.holder;
@@ -128,7 +141,7 @@ function parseStoreFile(text: string): StoreFile | null {
     }
     return {
       store: 1,
-      gb: value.gb,
+      slot: slotOfWire(value.gb),
       ...(value.exclusive !== undefined && { exclusive: value.exclusive }),
       record: value.record,
       holder: {
@@ -199,11 +212,10 @@ export interface LeaseStoreOptions {
   /** How waiting lines name it: "this machine", or the shared folder. */
   label: string;
   shared: boolean;
-  /** The GB this store gives out, read again for every decision. May throw. */
-  capacityGb: () => number;
+  /** The slots this store gives out, read again for every decision. May throw. */
+  capacity: () => number;
   /** Does this store keep an `--exclusive` name to one job? Default: every name. May throw. */
   keepsExclusive?: (name: string) => boolean;
-  live?: (() => LiveReading | null) | undefined;
   /** A remark about one file (one this user may not read). Each file is named once. */
   onNote?: (line: string) => void;
   /** The writer of this process's files. Default: this process (`currentFileHolder`). */
@@ -255,7 +267,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
         utimesSync(file, now, now);
       } catch (error) {
         // Removed by a reader that judged it stale (a long pause, a clock jump): write it
-        // again, so the memory this job holds counts again.
+        // again, so the slot this job holds counts again.
         if (errorCode(error) === "ENOENT") {
           try {
             writeWhole(file, text, crypto.randomUUID());
@@ -300,7 +312,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
   };
 
   /** The live files in `folder`, each with its token. Stale ones are removed on the way. */
-  const readLive = (folder: string): { token: string; file: StoreFile }[] => {
+  const readLive = (folder: string): { token: string; file: ReadFile }[] => {
     let names: string[];
     try {
       names = readdirSync(folder);
@@ -315,7 +327,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
       if (!startTimes.has(key)) startTimes.set(key, readStartTime(pid, like));
       return startTimes.get(key) ?? null;
     };
-    const live: { token: string; file: StoreFile }[] = [];
+    const live: { token: string; file: ReadFile }[] = [];
     for (const name of names) {
       const path = join(folder, name);
       if (name.startsWith(".")) {
@@ -338,7 +350,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
         const code = errorCode(error);
         if (code === "ENOENT") continue; // released just now
         if (code !== "EACCES" && code !== "EPERM") throw error;
-        // Another user wrote it with a narrow mode (an older plugin): its GB cannot be
+        // Another user wrote it with a narrow mode (an older plugin): its slot cannot be
         // counted. Judged like a file in a shape we cannot read: by its touches.
         unreadable = code;
         text = null;
@@ -355,10 +367,10 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
       if (unreadable !== null) {
         noteOnce(
           path,
-          `${path} cannot be read (${unreadable}): its GB do not count until its writer stops touching it.`,
+          `${path} cannot be read (${unreadable}): it does not count as a slot until its writer stops touching it.`,
         );
       }
-      // A file in a shape this plugin cannot read (a newer one wrote it) holds no GB we
+      // A file in a shape this plugin cannot read (a newer one wrote it) holds no slot we
       // can count; it goes once nobody touches it.
       if (file !== null) live.push({ token: name.slice(0, -5), file });
     }
@@ -367,7 +379,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
 
   const write = (
     folder: string,
-    gb: number,
+    slot: boolean,
     record: string,
     exclusive?: string,
   ): { path: string; token: string } => {
@@ -375,7 +387,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
     const path = join(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
-      gb,
+      gb: wireOfSlot(slot),
       ...(exclusive !== undefined && { exclusive }),
       holder: me,
       record,
@@ -390,24 +402,23 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
     dir: options.dir,
     label: options.label,
     shared: options.shared,
-    live: options.live,
-    capacityGb: () => Promise.resolve().then(options.capacityGb),
+    capacity: () => Promise.resolve().then(options.capacity),
     keepsExclusive: (name) => Promise.resolve().then(() => options.keepsExclusive?.(name) ?? true),
 
     held: () =>
       Promise.resolve().then(() =>
-        readLive(leases).map(({ file }): StoreHeld => ({ gb: file.gb, text: file.record })),
+        readLive(leases).map(({ file }): StoreHeld => ({ slot: file.slot, text: file.record })),
       ),
 
     waiting: () =>
       Promise.resolve().then(() =>
-        readLive(tickets).map(({ file }): StoreHeld => ({ gb: file.gb, text: file.record })),
+        readLive(tickets).map(({ file }): StoreHeld => ({ slot: file.slot, text: file.record })),
       ),
 
     enqueue: (recordText) =>
       Promise.resolve().then((): StoreTicket => {
-        const gb = (JSON.parse(recordText) as { gb?: unknown }).gb;
-        const { path, token } = write(tickets, typeof gb === "number" ? gb : 0, recordText);
+        const slot = parseHolder(recordText)?.slot ?? false;
+        const { path, token } = write(tickets, slot, recordText);
         return {
           line: () =>
             Promise.resolve().then(() =>
@@ -423,7 +434,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
         };
       }),
 
-    tryTake: async (gb, recordText, exclusive) => {
+    tryTake: async (slot, recordText, exclusive) => {
       try {
         return await withLock(
           options.dir,
@@ -432,10 +443,9 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
             if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
               return null;
             }
-            const heldGb = held.reduce((sum, { file }) => sum + file.gb, 0);
-            if (gb > 0 && heldGb + gb > options.capacityGb()) return null;
-            const { path } = write(leases, gb, recordText, exclusive);
-            return { gb, release: () => letGo(path) };
+            if (slot && slotsUsed(held.map(({ file }) => file)) >= options.capacity()) return null;
+            const { path } = write(leases, slot, recordText, exclusive);
+            return { release: () => letGo(path) };
           },
           { waitMs: LOCK_WAIT_MS, fallbackStaleMs: LOCK_STALE_MS, mode: LOCK_MODE },
         );
@@ -447,20 +457,36 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
   };
 }
 
-/** A whole number of GB in a `budget` file, or a reason it is not one. */
-export function readBudgetFile(dir: string): { gb: number } | { problem: string } {
-  const file = join(dir, "budget");
+/** The file of a shared folder that says how many heavy jobs run at once for all its users. */
+export const MAX_JOBS_FILE = "max-jobs";
+/** The file an older plugin read from a shared folder: whole GB, which the queue no longer counts. */
+const LEGACY_BUDGET_FILE = "budget";
+
+/**
+ * The number of heavy jobs at once in a shared folder's `max-jobs` file (a whole number, 1 or
+ * more), or a reason it is not usable. A folder that has only the old `budget` file (GB) is not
+ * usable: the reason names the fix. A folder with both is read by `max-jobs`, and an older
+ * plugin goes on reading `budget`, so a shared folder can be moved over while both run.
+ */
+export function readMaxJobsFile(dir: string): { slots: number } | { problem: string } {
+  const file = join(dir, MAX_JOBS_FILE);
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (error) {
-    return { problem: `${file} cannot be read (${errorCode(error) ?? String(error)})` };
+    const code = errorCode(error);
+    if (code === "ENOENT" && existsSync(join(dir, LEGACY_BUDGET_FILE))) {
+      return {
+        problem: `it has only the old ${LEGACY_BUDGET_FILE} file (GB), and the queue counts jobs now: write the number of heavy jobs at once, for every user of the folder, into ${file} (a whole number, for example 3)`,
+      };
+    }
+    return { problem: `${file} cannot be read (${code ?? String(error)})` };
   }
   const value = text.trim();
   if (!/^\d+$/.test(value) || Number(value) < 1) {
-    return { problem: `${file} does not hold a whole number of GB` };
+    return { problem: `${file} does not hold a whole number of jobs, 1 or more` };
   }
-  return { gb: Number(value) };
+  return { slots: Number(value) };
 }
 
 /**
@@ -590,17 +616,17 @@ export function networkFileSystem(dir: string, facts: SharedFolderFacts): string
 
 /**
  * Opens a shared folder as a store, or says why it cannot be used: the folder is missing,
- * it sits on a network file system, its `budget` file is missing or wrong, its `leases/`
- * or `tickets/` is missing, or a file cannot be written and removed there. It never makes
- * a folder there: the machine's own setup prepares it. Never a wait that cannot end: a
- * folder that does not work is left out, with a note.
+ * it sits on a network file system, its `max-jobs` file is missing or wrong (or it has only
+ * the old `budget` file), its `leases/` or `tickets/` is missing, or a file cannot be written
+ * and removed there. It never makes a folder there: the machine's own setup prepares it. Never
+ * a wait that cannot end: a folder that does not work is left out, with a note.
  */
 export function openSharedStore(
   dir: string,
   options: { facts?: SharedFolderFacts; onNote?: (line: string) => void } = {},
 ): { store: LeaseStore } | { note: string } {
   if (!existsSync(dir)) {
-    return { note: `The shared folder ${dir} is missing: this job runs without its budget.` };
+    return { note: `The shared folder ${dir} is missing: this job runs without its slots.` };
   }
   const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
   if (network !== null) {
@@ -608,9 +634,9 @@ export function openSharedStore(
       note: `The shared folder ${dir} is left out: it is on a network file system (${network}). A shared folder is for one host: containers or users on this machine, through a bind mount.`,
     };
   }
-  const budget = readBudgetFile(dir);
-  if ("problem" in budget) {
-    return { note: `The shared folder ${dir} is left out: ${budget.problem}.` };
+  const limit = readMaxJobsFile(dir);
+  if ("problem" in limit) {
+    return { note: `The shared folder ${dir} is left out: ${limit.problem}.` };
   }
   for (const folder of ["leases", "tickets"]) {
     const path = join(dir, folder);
@@ -637,10 +663,10 @@ export function openSharedStore(
     dir,
     label: dir,
     shared: true,
-    capacityGb: () => {
-      const now = readBudgetFile(dir);
+    capacity: () => {
+      const now = readMaxJobsFile(dir);
       if ("problem" in now) throw new Error(now.problem);
-      return now.gb;
+      return now.slots;
     },
     keepsExclusive: (name) => readExclusiveNames(dir).has(name),
     ...(options.onNote !== undefined && { onNote: options.onNote }),

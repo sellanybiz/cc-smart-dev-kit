@@ -8,7 +8,7 @@
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
- * | message-guard | PreToolUse (SendMessage) | asking before every message |
+ * | message-guard | PreToolUse (SendMessage) | judging the same way: its other-repo rule reads nothing from the file (`message-guard.ts`) |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
@@ -43,7 +43,8 @@
  * **crew part** (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command
  * that would throw work away without reading the step that replaces it, opens no pull request
  * and merges none, is never asked about a launch (each question is a denial naming the step
- * that reaches its lead), and its peer messages carry the `crew tell` tag (D24, D36, D47). The
+ * that reaches its lead), its peer messages carry the `crew tell` tag, and its message to
+ * another repo is refused with that same step (D24, D36, D47). The
  * frame runs that part **before `ownHooks` and before the project's file is read**, so a
  * project with no `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the
  * guard, cannot lose it. Each part is the guard's own detector (`crewGitAnswer`,
@@ -93,7 +94,7 @@ import {
 import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { crewPullRequestAnswer, mergeGuard } from "./merge-guard";
-import { crewMessageAnswer, messageGuard } from "./message-guard";
+import { crewMessageAnswer, messageGuard, messageGuardConfigProblem } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
@@ -270,8 +271,16 @@ export const mainFolderGuardHook: HookSpec = {
 export const messageGuardHook: HookSpec = {
   name: "message-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message) =>
-    toolDecision("ask", cannotCheck("whether this message may go to that session", message)),
+  // The other-repo rule reads nothing from the project's file, so a broken or too new file
+  // gets the same judgement as `run`, with the file's problem on the question's last line.
+  onConfigProblem: (message, input, _event, checkout, { env, paths }) =>
+    messageGuardConfigProblem(
+      message,
+      input,
+      env,
+      checkout.mainCheckout ?? checkout.root,
+      paths.claudeConfigDir,
+    ),
   // A crash must not let a message through: the guard asks about the message it was asked
   // to judge.
   onCrash: guardCrash(
@@ -279,9 +288,16 @@ export const messageGuardHook: HookSpec = {
     (input) => toolOf(input) === "SendMessage",
   ),
   // The D47 crew rule, whatever the project's file says, and with no file: a peer message
-  // carries the `crew tell` tag, and a message to its own lead goes through `crew report`.
+  // carries the `crew tell` tag, a message to its own lead goes through `crew report`, and a
+  // message to another repo is refused with the step to the lead.
   crewLimits: (input, checkout, { env, paths }) =>
-    crewMessageAnswer(input, env, checkout.mainCheckout ?? checkout.root, paths.stateDir),
+    crewMessageAnswer(
+      input,
+      env,
+      checkout.mainCheckout ?? checkout.root,
+      paths.stateDir,
+      paths.claudeConfigDir,
+    ),
   run: messageGuard,
 };
 
@@ -459,8 +475,11 @@ export const crewRoleHook: HookSpec = {
  * input's `session_id` is a lead recorded in this repository, and it reads no project file. At a
  * SessionStart — a start, a resume, a compaction — it adds one line first: the lead's
  * crew sessions build the work (D61). At a prompt it also adds one reminder line while the lead's
- * own task folder holds no task file (D23); never a block. A crash is one line on stderr and
- * exit 0: a note never stops a lead's turn.
+ * own task folder holds no task file (D23); never a block. At every start and prompt it adds one
+ * line while the lead's watch is not running and a crew session of its open plan can still talk:
+ * run the lead skill, or — when the watch ran and ended — start the same command with Claude
+ * Code's `Monitor` tool (`watchNote`). A crash is one line on stderr and exit 0: a note never
+ * stops a lead's turn.
  */
 export const leadNotesHook: HookSpec = {
   name: "lead-notes",
@@ -636,9 +655,11 @@ export const tierViewHook: HookSpec = {
  *   session's `crew start` is denied, and a polling loop over `crew list|status` or
  *   `claude agents --json` is denied. It is always on because it limits what the session itself
  *   may launch: a session must not switch it off by editing a file it owns.
- * - **The route** is the project's opt-in (`"jobs": { "route": true }`, the `switches.jobRoute`
- *   switch): a heavy command is rewritten to run through `cc-smart-dev-kit job run` (or refused
- *   with that command line). Off, a heavy command runs raw. In a session recorded as a lead, a CI
+ * - **The route** is the `switches.jobRoute` switch (the project's `"jobs": { "route": true }`
+ *   over the person's machine-wide default, one resolver, off until one says on): a heavy command
+ *   is rewritten to run through `cc-smart-dev-kit job run` (or refused with that command line),
+ *   and a heavy PowerShell line is refused, naming the Bash tool, where Git Bash lets that tool
+ *   run. Off, a heavy command runs raw. In a session recorded as a lead, a CI
  *   watch, a queued job and the full check are moved to the background instead.
  *
  * It is the one guard that changes the call rather than asking about it.

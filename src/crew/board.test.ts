@@ -750,29 +750,18 @@ describe("crew status", () => {
 });
 
 describe("crew kinds", () => {
-  test("the table of CREW_KINDS, a row each, with the effort on Claude and on an affordable slot", async () => {
+  test("the table of CREW_KINDS, a row each, with one effort whatever model answers", async () => {
     const world = await boardWorld();
     expect(await runCrew(["kinds"], world.ctx())).toBe(0);
     expect(world.out).toHaveLength(CREW_KIND_NAMES.length + 1);
-    expect(world.out[0]).toBe("kind          model   effort on Claude  effort on a slot  for");
-    expect(world.out[1]).toBe(
-      "build         sonnet  high              max               routine building",
-    );
-    expect(world.out[4]).toBe(
-      "security      sonnet  high              max               code that touches security",
-    );
-    // Every row is the table's own: the kind, the model, both efforts and what it is for.
+    expect(world.out[0]).toBe("kind          model   effort  for");
+    expect(world.out[1]).toBe("build         sonnet  high    routine building");
+    expect(world.out[4]).toBe("security      sonnet  high    code that touches security");
+    // Every row is the table's own: the kind, the model, the effort and what it is for.
     for (const [index, kind] of CREW_KIND_NAMES.entries()) {
       const policy = CREW_KINDS[kind];
       const cells = (world.out[index + 1] ?? "").split(/ {2,}/);
-      expect(cells).toEqual([
-        kind,
-        policy.model,
-        policy.effort,
-        // A kind that never runs on an affordable model prints so (`ui`, D50).
-        policy.affordableEffort ?? "never",
-        policy.about,
-      ]);
+      expect(cells).toEqual([kind, policy.model, policy.effort, policy.about]);
     }
   });
 });

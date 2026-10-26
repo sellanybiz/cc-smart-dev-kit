@@ -211,7 +211,7 @@ describe("the live stream's hub", () => {
 
   test("a published event is kept for a page that connects after it", async () => {
     const hub = new LiveHub({ now: () => 42, pingMs: 60_000 });
-    hub.publish("jobs", { heldGb: 2 });
+    hub.publish("jobs", { used: 2 });
     const reader = open(hub, `${hub.runId}:0`);
     try {
       const text = await readUntil(reader, "event: hello");

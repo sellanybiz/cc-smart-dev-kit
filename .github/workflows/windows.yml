@@ -67,6 +67,13 @@ jobs:
           src/mcp/mcp.test.ts
           src/gateway/gateway.test.ts
 
+      - name: The router's task definition, read by Task Scheduler itself
+        # The gateway's other tests use a fake Task Scheduler, which never parses the XML: a
+        # declaration naming UTF-8 passed them all and failed every real registration ("unable
+        # to switch the encoding"). This file hands the definition to Task Scheduler's own
+        # parser, as `Register-ScheduledTask -Xml` does, and registers nothing.
+        run: bun test src/gateway/service-windows.test.ts
+
       - name: The 1.0.0 parts on Windows — the crew, the guards' Windows paths, the clean
         # What this step proves, file by file:
         # - the crew store and names, and the launch's `claude.exe`/`claude.cmd` argv: a `.cmd`

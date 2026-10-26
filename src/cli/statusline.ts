@@ -25,13 +25,19 @@
  *     the router holds its requests and then asks Claude Code to retry; a profile's record
  *     reads `worker slot in profile <name>` and names `gateway profile <name> slot worker
  *     <targets>`, never the `gateway slot` command, which would change the machine's chain;
+ *   - auto mode's safety checks failing (`⛔ auto mode's safety checks are failing since 14:05:
+ *     Claude is at its plan limit … until 18:00, and no worker target has passed the judge test →
+ *     cc-smart-dev-kit gateway setup`, `currentChecksDown`): Claude is limited or down and nothing
+ *     stood in, so auto mode approves nothing. The words and the exact fix are
+ *     `checks-down.ts`'s, the same in `gateway status`, `doctor` and the session's note; a
+ *     profile's record reads `in profile <name>` and names the profile's own command;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
  * Claude Code's settings files (the auto-compact window, each file once, `compactWindowsOf`), and
- * prints; no network, no git. **A fallback or
- * breaker record shows only in a session on its chain** (`sessionGatewayOf`: the
+ * prints; no network, no git. **A fallback, breaker or
+ * failing-checks record shows only in a session on its chain** (`sessionGatewayOf`: the
  * `ANTHROPIC_BASE_URL` the command's environment carries is the session's own,
  * `docs/claude-code-contract.md`): the machine's records on the machine's address (or when it
  * carries none), a profile's on that profile's address, none off the gateway. A plan limit shows
@@ -53,8 +59,10 @@ import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { recordClaudeWindow } from "../crew/context-window";
 import { breakerChangeCommand, slotShortName } from "../gateway/breaker";
+import { checksDownStatusline } from "../gateway/checks-down";
 import {
   currentBreakers,
+  currentChecksDown,
   currentFallbacks,
   currentLimits,
   formatClock,
@@ -147,6 +155,11 @@ export function statuslineText(
       parts.push(
         `${where}: every target limited since ${formatClock(Math.floor(record.since / 1000), nowMs, timeZone)} → ${breakerChangeCommand(slot, profile)}`,
       );
+    }
+    // Auto mode's safety checks that fail with nothing standing in: the same scope rule.
+    for (const [key, record] of currentChecksDown(state, nowMs)) {
+      if (!aboutThisSession(key)) continue;
+      parts.push(checksDownStatusline(record, scopeOfStateKey(key).profile, nowMs, timeZone));
     }
   }
 

@@ -31,7 +31,12 @@ import {
 } from "../../gateway/history-read";
 import type { BreakerRecord, FallbackRecord, LimitRecord } from "../../gateway/limit-state";
 import type { GuardAsk } from "../../hooks/ask-log";
-import type { JobsAnswer, JobWeightState, JobWeightsState } from "../../jobs/status";
+import type {
+  JobCeilingState,
+  JobsAnswer,
+  JobWeightState,
+  JobWeightsState,
+} from "../../jobs/status";
 import type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
@@ -86,6 +91,7 @@ export type {
   FlowReport,
   GuardAsk,
   HistoryKeys,
+  JobCeilingState,
   JobsAnswer,
   JobWeightState,
   JobWeightsState,
@@ -128,7 +134,7 @@ export interface NotSetUp {
  */
 export interface OverviewAnswer extends NotSetUp, OverviewData {
   fiveHour: null | PlanWindow;
-  jobs: { budgetGb: number; heldGb: number; waiting: number };
+  jobs: { slots: number; used: number; waiting: number };
 }
 
 /** `GET /api/slots`: the Slots page, its switches and each backend target's optional effort pin. */
@@ -450,6 +456,8 @@ export interface CrewSummary {
     kind: string;
     model?: string;
     resetsAt?: null | string;
+    /** A `safety-checks` wait: the judge's state key it waits on (`src/crew/wait.ts`). */
+    scope?: string;
     since?: string;
     slot?: string;
   };

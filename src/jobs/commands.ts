@@ -1,16 +1,19 @@
 /**
  * `cc-smart-dev-kit job <command>`: the machine-wide queue for heavy jobs.
  *
- *   run     waits until the memory for the job is free, runs it, and passes its stdio,
- *           exit code and signals through.
- *   status  who holds what, who waits, and the free memory: here and on each shared folder.
- *   kinds   the kinds of heavy job, and what each reserves.
+ *   run     waits until a slot is free, runs the job, and passes its stdio, exit code and
+ *           signals through.
+ *   status  how many slots are in use, who holds them, who waits: here and on each shared
+ *           folder; the memory ceiling and the weights.
+ *   kinds   the kinds of heavy job.
+ *   set     the person's own settings: how many jobs run at once, the weights.
  *
  * How it works and why: docs/jobs.md.
  */
 
 import { readdirSync, statSync } from "node:fs";
-import { availableParallelism, hostname } from "node:os";
+import { hostname } from "node:os";
+import { resolve } from "node:path";
 import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
@@ -23,7 +26,7 @@ import {
   jobsPaths,
   loadJobsConfig,
 } from "./config";
-import { type Kinds, mergeKinds, reservedGb, workerCount } from "./kinds";
+import { isPrintOnly, type Kinds, mergeKinds, namesOnlyFiles } from "./kinds";
 import {
   exitCodeOf,
   realLaunchFacts,
@@ -34,6 +37,7 @@ import {
 } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { runJob } from "./run";
+import { JOB_SETTINGS, setJobsSetting } from "./set";
 import { type JobContext, type OpenedStores, openStores, readJobs, statusLines } from "./status";
 
 export type { JobContext } from "./status";
@@ -41,14 +45,19 @@ export type { JobContext } from "./status";
 export const USAGE = `Usage: ${COMMAND} job <command>
 
 Commands:
-  run [--kind <kind>] [--gb <n>] [--exclusive <name>] -- <command...>
-                 Wait until this machine has the memory for the job, then run it.
-                 Its output, exit code and signals pass through. --exclusive: at
-                 most one job with that name at a time, in order. --kind, or
-                 --exclusive, or both.
-  status         Who holds memory, who waits, how much is free, and the CPU
-                 and disk I/O weights of the heavy slices (or why one is not set).
-  kinds          The kinds of heavy job, and what each reserves.
+  run [--kind <kind>] [--exclusive <name>] -- <command...>
+                 Wait until this machine has a free slot for the job, then run
+                 it. Up to max-jobs heavy jobs run at once. Its output, exit code
+                 and signals pass through. --exclusive: at most one job with that
+                 name at a time, in order. --kind, or --exclusive, or both.
+                 (--gb <n> is accepted and ignored: the queue counts jobs now.)
+  status         How many slots are in use, who holds them, who waits, the memory
+                 ceiling, and the CPU and disk I/O weights of the heavy slices.
+  kinds          The kinds of heavy job.
+  set <setting> <value>
+                 Your own settings, written to jobs.json: ${Object.keys(JOB_SETTINGS).join(", ")}.
+                 max-jobs is how many heavy jobs run at once (default 3).
+                 The weights are off, or 1 to 10000 (off leaves systemd's 100).
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
@@ -63,14 +72,13 @@ function envFilesIn(dir: string): string[] {
   }
 }
 
-function isFileIn(cwd: string): (path: string) => boolean {
-  return (path) => {
-    try {
-      return statSync(path.startsWith("/") ? path : `${cwd}/${path}`).isFile();
-    } catch {
-      return false; // not there, or not readable: not an existing file
-    }
-  };
+/** True when `word` names a file (not a folder) from `cwd`; anything that cannot be read is no file. */
+function isFileIn(cwd: string, word: string): boolean {
+  try {
+    return statSync(resolve(cwd, word)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function projectKinds(cwd: string): Kinds {
@@ -165,8 +173,17 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   const now = ctx.now ?? Date.now;
   const slice = config.slice ?? DEFAULT_SLICE;
   const call = toolCallOfArgv(parsed.command);
-  const gb = parsed.gb ?? (spec === null ? 0 : reservedGb(spec, call.args, isFileIn(ctx.cwd)));
+  // A job takes a slot when it has a kind, unless it only prints (`tsc --version`) or, for a
+  // kind with `noSlotForFiles`, names only existing files (`vitest run src/a.test.ts`). A job
+  // with a name alone takes none: it holds its name, and nothing else.
+  const slot =
+    spec !== null &&
+    !isPrintOnly(spec, call.args) &&
+    !namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word));
   const exclusive = parsed.exclusive ?? undefined;
+  if (parsed.gb !== null) {
+    say(`--gb is ignored: the queue counts jobs now, not gigabytes (see "${COMMAND} job status")`);
+  }
 
   // A signal while it waits: give back what it holds, and end as a shell would.
   const stop = new AbortController();
@@ -195,12 +212,12 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     const code = await runJob(
       {
         kind: parsed.kind ?? "",
-        spec,
         command: parsed.command,
         exclusive,
-        gb,
+        slot,
         pid: process.pid,
         checkout: ctx.cwd,
+        memoryMax: sliceMemoryMax(opened.ceilingGb),
         slice,
         cpuWeight: cpuWeightOf(config),
         ioWeight: ioWeightOf(config),
@@ -211,9 +228,9 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         ancestorHoldsName: (name) => nestedIn(name),
         acquire: async (job, onWaiting) => {
           for (const note of opened.notes) say(note);
-          // Nothing to reserve and no name to hold: no queue at all.
-          if (job.gb <= 0 && job.exclusive === undefined) {
-            return { gb: 0, release: () => undefined, waitedSince: null };
+          // No slot to take and no name to hold: no queue at all.
+          if (!job.slot && job.exclusive === undefined) {
+            return { release: () => undefined, waitedSince: null };
           }
           const reservation = await acquireFrom(stores, job, {
             onWaiting,
@@ -224,8 +241,6 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
           held = reservation;
           return reservation;
         },
-        workersFor: (size, gbEach) => workerCount(size, gbEach, availableParallelism()),
-        memoryMaxFor: (size) => sliceMemoryMax(opened.budget.gb, size),
         launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
         now,
         slice: realSliceControl(ctx.memory.read),
@@ -263,18 +278,26 @@ function jobKinds(ctx: JobContext): number {
   const kinds = mergeKinds(own);
   const width = Math.max(...Object.keys(kinds).map((name) => name.length));
   for (const [name, kind] of Object.entries(kinds)) {
-    const sizes = [`${kind.gb} GB`];
-    if (kind.filesGb !== undefined) {
-      const few = kind.maxFiles === undefined ? "" : ` up to ${kind.maxFiles}`;
-      sizes.push(`${kind.filesGb} GB for${few} files`);
-    }
-    if (kind.workers !== undefined) {
-      sizes.push(`${kind.workers.flag} at ${kind.workers.gbEach} GB a worker`);
-    }
     const from = name in own ? "project" : "default";
-    ctx.print(`${name.padEnd(width)}  ${sizes.join(", ")} (${from})`);
+    ctx.print(`${name.padEnd(width)}  (${from})`);
     if (kind.about !== undefined) ctx.print(`${"".padEnd(width)}  ${kind.about}`);
   }
+  return 0;
+}
+
+/** `job set <setting> <value>`: one machine-wide setting, written to `jobs.json`. */
+async function jobSet(args: readonly string[], ctx: JobContext): Promise<number> {
+  const [name, value, ...extra] = args;
+  if (name === undefined || value === undefined || extra.length > 0) {
+    ctx.say(`${PREFIX} set needs a setting and one value\n\n${USAGE}`);
+    return 2;
+  }
+  const result = await setJobsSetting(ctx.paths, name, value);
+  if (!result.ok) {
+    ctx.say(`${PREFIX} ${result.error}`);
+    return result.code;
+  }
+  for (const line of result.lines) ctx.print(line);
   return 0;
 }
 
@@ -287,6 +310,8 @@ export async function runJobCommand(args: readonly string[], ctx: JobContext): P
       return jobStatus(ctx);
     case "kinds":
       return jobKinds(ctx);
+    case "set":
+      return jobSet(rest, ctx);
     case undefined:
     case "help":
     case "--help":

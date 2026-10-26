@@ -82,8 +82,8 @@ export const STORE_LOCK_WAIT_MS = 3_000;
  *   `claude agents --json` reports the launch folder until a `-w` session has entered it;
  * - `working` — its session is running a turn;
  * - `blocked` — it waits on the lead or the person (a question, a permission);
- * - `paused` — it waits for a usage limit to reset, or for its gateway slot to answer again
- *   (`waitingFor` says which);
+ * - `paused` — it waits for a usage limit to reset, for its gateway slot to answer again, or for
+ *   auto mode's safety checks to answer again (`waitingFor` says which);
  * - `quiet` — agent view says working, but its transcript has not moved for a while (an alert);
  * - `done` / `failed` — its turn ended with that report; **`done` stays `done`** when the
  *   watch stops its session afterwards (D62: `stopped` means something else);
@@ -380,8 +380,9 @@ export function openQuestionIndex(record: CrewRecord): null | number {
 /**
  * What a crew session waits for while it is `paused` (D42): the slot whose every target is
  * limited or down (the router holds its requests), Claude's own plan limit (no target can
- * answer), or nothing the router's state explains (a server error, an overloaded backend the
- * router does not hold). The times are ISO 8601, like every other time in a record. Loose, like
+ * answer), auto mode's safety checks that get no verdict (`safety-checks`: every tool call that
+ * needs a check is denied, so the turn ended with no report), or nothing the router's state
+ * explains (a server error, an overloaded backend the router does not hold). The times are ISO 8601, like every other time in a record. Loose, like
  * every nested object here: a field a newer kit adds is kept when this kit writes the record again.
  */
 const waitingForSchema = z.discriminatedUnion("kind", [
@@ -398,6 +399,16 @@ const waitingForSchema = z.discriminatedUnion("kind", [
     model: text,
     /** When the limit resets (ISO 8601); null when Anthropic named no reset. */
     resetsAt: text.nullable(),
+  }),
+  z.looseObject({
+    kind: z.literal("safety-checks"),
+    /**
+     * The router's state key of the failing checks (`checksDown`, `src/gateway/limit-state.ts`):
+     * `cc-smart-dev-kit-judge`, or `<profile>/cc-smart-dev-kit-judge` in a profile.
+     */
+    scope: text,
+    /** When the checks began to fail (ISO 8601). */
+    since: text,
   }),
   z.looseObject({
     kind: z.literal("unknown"),
@@ -544,6 +555,16 @@ const crewFields = z.object({
    * Absent on a record a kit wrote before the field.
    */
   lastPause: z.looseObject({ backoffMs: count, since: text }).optional(),
+  /**
+   * The API error that ended the session's last turn, as its StopFailure hook saw it (every
+   * class, not only the ones that pause): Claude Code's class (`rate_limit`, `server_error`,
+   * `unknown`, …), the text it showed (masked, one line) and when. The watch reads it when agent
+   * view says `failed` with "API error": a backend's refusal (`unknown`, `model_not_found`;
+   * `isBackendRefusal`, `src/crew/wait.ts`) is no crash and does not fail the record. A change
+   * of state to `working` drops it (`changeCrew`), so an old error never explains a later
+   * failure. Absent on a record an older kit wrote, and on one whose turns never ended on an error.
+   */
+  lastApiError: z.looseObject({ at: text, class: text, text: z.string() }).optional(),
   /**
    * When its session started (ISO 8601), not when it was recorded: a crew session that waited in the
    * queue for hours has not run for hours (the crew session's own time caps count from here). Absent on
@@ -1366,6 +1387,9 @@ async function changeCrew(
     // goes on in clears it here, so no path — an answer, a resume, a report — can leave a wait
     // behind on a crew session that is running again (D42). `lastPause` stays: a re-pause reads it.
     if (merged.state !== "paused") delete merged.waitingFor;
+    // The error that ended a turn explains the failure that follows it, and nothing later: a
+    // session that is working again (an answer, a resume, the watch's own resume) starts clean.
+    if (merged.state === "working" && before.state !== "working") delete merged.lastApiError;
     // A resume's claim (`claimResume`) lasts while the record stays in the state it was claimed
     // in: the write that makes the resumed session `working` ends it.
     if (merged.state !== before.state) delete merged.resumeClaim;
@@ -1469,6 +1493,12 @@ export async function writeLead(
 /**
  * Records one successful agent-view observation without changing the lead's activity time.
  * The lock keeps an ended plan or a concurrently refreshed lead intact.
+ *
+ * **Nothing changed, nothing taken**: the watch calls this on every pass for every lead, and
+ * almost always the answer is the one on record. That case reads the record without the lock and
+ * returns it, so a busy store (`LockBusyError`) never fails a pass for a write that was not
+ * needed. A lead with no mark yet and a session agent view lists is the same case (`null` and an
+ * absent mark both say "known").
  */
 export async function setLeadPresence(
   stateDir: string,
@@ -1478,11 +1508,18 @@ export async function setLeadPresence(
   atMs: number,
 ): Promise<LeadRecord | null> {
   const file = leadFile(stateDir, repo, sessionId);
+  const unchanged = (before: LeadRecord): boolean =>
+    known
+      ? (before.sessionUnknownSince ?? null) === null
+      : before.sessionUnknownSince !== undefined && before.sessionUnknownSince !== null;
+  const seen = readRecord(leadRecordSchema, file);
+  if (seen === null) return null;
+  if (unchanged(seen)) return seen;
   return await underStoreLock(stateDir, repo, () => {
     const before = readRecord(leadRecordSchema, file);
     if (before === null) return null;
-    const since = known ? null : (before.sessionUnknownSince ?? iso(atMs));
-    if (before.sessionUnknownSince === since) return before;
+    if (unchanged(before)) return before;
+    const since = known ? null : iso(atMs);
     const after = checked(leadRecordSchema, { ...before, sessionUnknownSince: since }, file);
     writeJsonFile(file, after);
     return after;
@@ -1777,8 +1814,12 @@ export interface WatchState {
   offset: number;
   /** What the watch last said about each crew session, by its id. */
   said: Record<string, string>;
-  /** True when the watch already told the lead that the monitors do not run here. */
-  noted: boolean;
+  /**
+   * Legacy: true once, when the watch had told the lead that the monitors do not run with
+   * telemetry off. Claude Code 2.1.310 runs them there too, so the watch neither writes nor reads
+   * it; a state file an older kit wrote may still carry it.
+   */
+  noted?: boolean | undefined;
   /**
    * When the watch last resumed a paused crew session (ms), and the router's request count
    * then: the next one waits 30 s and for the router to answer since (D42,
@@ -1800,7 +1841,7 @@ export interface WatchState {
 const watchStateFields = z.object({
   removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
   parkedAt: z.number().int().min(0).optional(),
-  noted: z.boolean().default(false),
+  noted: z.boolean().optional(),
   offset: count,
   said: z.record(z.string(), z.string()),
   resumedAt: z.number().int().min(0).optional(),
@@ -1873,16 +1914,23 @@ export function watchLeaseFile(stateDir: string, repo: string, leadSessionId: st
  * The lease that names the one watch of a lead that acts (WF1): the process that holds it — its
  * pid, start time, host and pid namespace, as the store's lock records a holder
  * (`currentHolder`, `src/setup/lock.ts`) — its own token, so two watches in one process stay
- * apart, and when it took the lease (ms).
+ * apart, and when it took the lease or last renewed it (ms; `WATCH_LEASE_REFRESH_MS`).
  */
 export interface WatchLease extends ProcessHolder {
   at: number;
+  /**
+   * True for a `crew watch --once`, the lead's one look in the background: it never takes the lease
+   * from a live watch that is not one (`takeWatchLeaseUnlessLive`). Absent on a lease an older kit
+   * wrote, and read as false.
+   */
+  once?: boolean | undefined;
   token: string;
 }
 
 const watchLeaseFields = z.object({
   at: z.number().int().min(0),
   host: z.string(),
+  once: z.boolean().optional(),
   pid: z.number().int().positive(),
   pidns: z.string().nullable().default(null),
   startTime: z.string().nullable(),
@@ -1930,6 +1978,12 @@ export function watchIsAlive(stateDir: string, repo: string, leadSessionId: stri
 }
 
 /**
+ * How old a watch's own lease may grow before `keepWatchLease` renews its `at`: a fifth of
+ * `FALLBACK_STALE_MS`, the age at which a lease whose process cannot be judged reads as gone.
+ */
+export const WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
+
+/**
  * Takes the lead's watch lease for `lease`, whoever holds it: **the newest watch wins** — a
  * monitor the lead restarts is its intent, and the watch it replaces ends at its next pass
  * (`keepWatchLease`). Under the store's lock, so it never lands between another watch's look
@@ -1950,6 +2004,37 @@ export async function takeWatchLease(
 }
 
 /**
+ * Takes the lead's watch lease for a `crew watch --once` (`lease.once`) **unless a live watch that
+ * is not a `--once` holds it**: that watch's lines reach the lead already, and a `--once` that took
+ * the lease would end it at its next look (WF1). Under the store's lock, like `takeWatchLease`.
+ * Another `--once`, a lease whose holder is gone, and no lease at all are taken: the newest
+ * `--once` wins, as the newest watch does. Else `holder` is the live watch that keeps the lease.
+ */
+export async function takeWatchLeaseUnlessLive(
+  stateDir: string,
+  repo: string,
+  leadSessionId: string,
+  lease: WatchLease,
+): Promise<{ held: false; holder: WatchLease } | { held: true }> {
+  return await underStoreLock(stateDir, repo, () => {
+    const now = readWatchLease(stateDir, repo, leadSessionId);
+    if (
+      now !== null &&
+      now.once !== true &&
+      now.token !== lease.token &&
+      !holderIsGone(now, now.at, FALLBACK_STALE_MS)
+    ) {
+      return { held: false, holder: now };
+    }
+    writeStoreFile(
+      watchLeaseFile(stateDir, repo, leadSessionId),
+      `${JSON.stringify(lease, null, 2)}\n`,
+    );
+    return { held: true };
+  });
+}
+
+/**
  * Whether the watch `lease` may still act for its lead, judged under the store's lock: it holds
  * the lease, or the lease is free — none, unreadable, or its holder is gone (`holderIsGone`: the
  * pid is dead or was reused) — and it takes it back. Else `holder` is the live watch that took it.
@@ -1962,13 +2047,25 @@ export async function keepWatchLease(
 ): Promise<{ held: true } | { held: false; holder: WatchLease }> {
   return await underStoreLock(stateDir, repo, () => {
     const now = readWatchLease(stateDir, repo, leadSessionId);
-    if (now !== null && now.token === lease.token) return { held: true };
+    if (now !== null && now.token === lease.token) {
+      // Where a process's start time cannot be read (Windows), a lease is judged by its age
+      // (`holderIsGone`): a watch that holds it shows it lives by renewing `at` now and then.
+      if (Date.now() - now.at > WATCH_LEASE_REFRESH_MS) {
+        writeStoreFile(
+          watchLeaseFile(stateDir, repo, leadSessionId),
+          `${JSON.stringify({ ...now, at: Date.now() }, null, 2)}\n`,
+        );
+      }
+      return { held: true };
+    }
     if (now !== null && !holderIsGone(now, now.at, FALLBACK_STALE_MS)) {
       return { held: false, holder: now };
     }
+    // Taken back with the time of now, never the watch's start: where a lease is judged by its
+    // age, an old `at` would read as gone at once, and a `--once` could take it again.
     writeStoreFile(
       watchLeaseFile(stateDir, repo, leadSessionId),
-      `${JSON.stringify(lease, null, 2)}\n`,
+      `${JSON.stringify({ ...lease, at: Date.now() }, null, 2)}\n`,
     );
     return { held: true };
   });

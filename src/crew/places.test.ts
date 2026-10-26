@@ -1,6 +1,6 @@
 /** Start now or wait in the queue (`places.ts`): the phases waited for, the cap, the memory. */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFacts } from "../jobs/memory";
 import type { LoadFacts } from "../machine/load";
@@ -317,68 +317,50 @@ function calm(): LoadFacts {
   return { cores: () => 8, loadavg: () => [1, 1, 1], platform: "linux" };
 }
 
-/**
- * Linux with `MemAvailable` of `availableKb`, no cgroup ceiling, and — when `sliceGb` is given
- * — the heavy jobs' slice using that much (`memory.current` of `cc-smart-dev-kit-heavy.slice`).
- */
-function linux(availableKb: number, sliceGb?: number): MemoryFacts {
+/** Linux with `MemAvailable` of `availableKb` and no cgroup ceiling. */
+function linux(availableKb: number): MemoryFacts {
   const files: Record<string, string> = {
     "/proc/meminfo": `MemTotal:       33554432 kB\nMemAvailable:   ${availableKb} kB\n`,
   };
   return {
     freemem: () => 0,
     platform: "linux",
-    read: (path) => {
-      if (sliceGb !== undefined && path.endsWith("/cc-smart-dev-kit-heavy.slice/memory.current")) {
-        return String(sliceGb * 1024 ** 3);
-      }
-      return files[path] ?? null;
-    },
+    read: (path) => files[path] ?? null,
     totalmem: () => 32 * 1024 ** 3,
   };
 }
 
 describe("the memory a new crew session may use", () => {
-  /** A heavy job's lease of `gb` in `home`'s queue, written just now by another host's process. */
-  function lease(home: string, gb: number): void {
-    const leases = join(home, ".local", "share", "cc-smart-dev-kit", "jobs", "leases");
-    mkdirSync(leases, { recursive: true });
-    writeFileSync(
-      join(leases, "11111111-1111-1111-1111-111111111111.json"),
-      JSON.stringify({ gb, holder: { host: "another-host", pid: 1 }, record: "{}", store: 1 }),
-    );
-  }
-
-  test("the free memory, with no heavy job holding any", async () => {
-    const home = tempDir("home");
-    expect(await freeForCrewGb(home, linux(3 * 1024 ** 2))).toBe(3);
+  // The queue counts jobs, not gigabytes: a running heavy job reserves nothing, so what it uses
+  // is already gone from the free memory, and the free memory is the whole answer.
+  test("the free memory now, as the job queue reads it", () => {
+    expect(freeForCrewGb(linux(3 * 1024 ** 2))).toBe(3);
   });
 
-  test("less what heavy jobs reserved and have not used yet", async () => {
-    if (process.getuid === undefined) return;
-    const home = tempDir("home");
-    lease(home, 3);
-    // 3 GB reserved, the slice uses 1 GB of it: 2 GB of the free 5 are spoken for.
-    expect(await freeForCrewGb(home, linux(5 * 1024 ** 2, 1))).toBe(3);
-    // No slice reading: used and unused cannot be told apart, so none is counted twice.
-    expect(await freeForCrewGb(home, linux(5 * 1024 ** 2))).toBe(5);
+  test("a cgroup ceiling below the machine counts, as it does for the job queue", () => {
+    const files: Record<string, string> = {
+      "/proc/meminfo": "MemTotal: 33554432 kB\nMemAvailable: 33554432 kB\n",
+      "/proc/self/cgroup": "0::/\n",
+      "/sys/fs/cgroup/memory.max": `${8 * 1024 ** 3}\n`,
+      "/sys/fs/cgroup/memory.current": `${6 * 1024 ** 3}\n`,
+    };
+    const limited: MemoryFacts = {
+      freemem: () => 0,
+      platform: "linux",
+      read: (path) => files[path] ?? null,
+      totalmem: () => 32 * 1024 ** 3,
+    };
+    expect(freeForCrewGb(limited)).toBe(2);
   });
 
-  test("macOS: free memory cannot be read, so only the cap counts", async () => {
+  test("macOS: free memory cannot be read, so only the cap counts", () => {
     const mac: MemoryFacts = {
       freemem: () => 0,
       platform: "darwin",
       read: () => null,
       totalmem: () => 16 * 1024 ** 3,
     };
-    expect(await freeForCrewGb(tempDir("home"), mac)).toBeNull();
-  });
-
-  test("a jobs.json that cannot be used counts no reservation", async () => {
-    const home = tempDir("home");
-    mkdirSync(join(home, ".config", "cc-smart-dev-kit"), { recursive: true });
-    writeFileSync(join(home, ".config", "cc-smart-dev-kit", "jobs.json"), "{ not json");
-    expect(await freeForCrewGb(home, linux(4 * 1024 ** 2))).toBe(4);
+    expect(freeForCrewGb(mac)).toBeNull();
   });
 });
 

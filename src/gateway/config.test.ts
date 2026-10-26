@@ -447,17 +447,18 @@ describe("the judge's targets (D44)", () => {
     expect(workerJudgeTargets(parsed(raw()))).toEqual([]);
   });
 
-  it("D66: every slot's fallback switch is off by default, the judge's too", () => {
+  it("D66: every slot's fallback switch is off by default; the judge's is on (the owner, 2026-10-27)", () => {
     const config = parsed(raw());
-    for (const slot of [SCOUT, WORKER, OPUS, FABLE, JUDGE, "cc-smart-dev-kit-own"]) {
+    for (const slot of [SCOUT, WORKER, OPUS, FABLE, "cc-smart-dev-kit-own"]) {
       expect(fallbackOn(config, slot)).toBe(false);
     }
+    expect(fallbackOn(config, JUDGE)).toBe(true);
     // No config at all (a `kept` chain's default reads `fallbackOn({}, slot)`).
     expect(fallbackOn({}, SCOUT)).toBe(false);
-    expect(fallbackOn({}, JUDGE)).toBe(false);
+    expect(fallbackOn({}, JUDGE)).toBe(true);
   });
 
-  it("D66: a switch the person turned on stays on, the judge's with no judge chain too", () => {
+  it("a switch the person set wins over the default, the judge's too: an explicit off keeps Claude alone", () => {
     const on = parsed(raw({ fallback: { [JUDGE]: true, [SCOUT]: true } }));
     expect(fallbackOn(on, JUDGE)).toBe(true);
     expect(fallbackOn(on, SCOUT)).toBe(true);
@@ -465,6 +466,8 @@ describe("the judge's targets (D44)", () => {
     expect(fallbackOn(on, WORKER)).toBe(false);
     const off = parsed(raw({ fallback: { [JUDGE]: false } }));
     expect(fallbackOn(off, JUDGE)).toBe(false);
+    // Another slot's explicit off beside it changes nothing for the judge.
+    expect(fallbackOn(parsed(raw({ fallback: { [SCOUT]: false } })), JUDGE)).toBe(true);
   });
 
   it("the judge's fallback switch can be saved with no judge chain; another slot's cannot", () => {

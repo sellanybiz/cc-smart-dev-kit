@@ -145,9 +145,9 @@ export function judgeSwitchWords(now: boolean): string {
 /**
  * What the judge is, in words, while the person set no judge chain (owner D44): Claude
  * judges every check first, as it always did; while it is limited or down, the worker
- * chain's targets that passed the judge test judge in its place, but only once the person
- * turned the judge's fallback switch on (off by default, D66). One home for the words that
- * `gateway status`,
+ * chain's targets that passed the judge test judge in its place, unless the person turned the
+ * judge's fallback switch off (on by default, the owner, 2026-10-27; every other slot's is off
+ * by default, D66). One home for the words that `gateway status`,
  * `slot judge off`, `fallback judge` and `doctor` say, and for the profile commands: a
  * profile's judge is read from the profile's view the same way (`claudeFirstJudge`).
  */

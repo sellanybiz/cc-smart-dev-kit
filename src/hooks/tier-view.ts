@@ -2,8 +2,9 @@
  * SessionStart and UserPromptSubmit: tell Claude what each subagent tier runs now, so it picks
  * the effort the task needs (the owner, 2026-10-25). Claude models are not cheap models: a
  * Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task, and `max` when the
- * task wants it. An affordable backend runs at `max`. Nothing used to tell a session which of
- * the two its tiers were: the Agent guard knew, and the session read "the gateway is on".
+ * task wants it, and so does a backend that answers the tier (the owner, 2026-10-26). Nothing
+ * used to tell a session what answered its tiers: the Agent guard knew, and the session read
+ * "the gateway is on".
  *
  * **What it says.** `tierNote` (`src/models/tier-view.ts`): a header and one line per tier the
  * Agent tool's `model` names, read the Agent guard's way (`resolveLaunchModel`) through the
@@ -29,6 +30,16 @@
  * and never to Claude (its contract); `lead-notes` and `crew-role` speak for a lead and a crew
  * session; `session-name` names the session. None has this job.
  *
+ * **One more line, while auto mode's safety checks fail** (the owner, 2026-10-27): when the
+ * router has recorded that Claude is limited or down and nothing stood in for it
+ * (`checksDownNote`, `src/gateway/checks-down.ts`), the session's gateway scope is told once,
+ * under the tiers: the checks fail, it cannot fix that, who can and how, and to stop and wait
+ * rather than retry. Claude Code's own message to the model says the checker is "temporarily
+ * unavailable" and to try again; this line is why it should not. It rides the same marks: said at
+ * every start, and at a prompt only when the note differs from the last one said, so it appears
+ * when the checks start failing and the tiers' note repeats when they recover. Only a session on
+ * the gateway gets it (`sessionGatewayOf`), its own profile's record only.
+ *
  * **Machine-wide**, like `agent-guard` whose view it reads: the note never depends on the
  * project's file, a folder outside git gets it, and a crew session gets it too (its subagents
  * run on these tiers). A config that cannot be read is said plainly, never a crash; the address
@@ -39,6 +50,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { checksDownNote, checksDownNow } from "../gateway/checks-down";
+import { scopeOfStateKey } from "../gateway/limit-state";
 import { tierNote } from "../models/tier-view";
 import { sessionGatewayOf } from "./agent-guard";
 import { addContext, type HookInput, type HookResult, SILENT, stringField } from "./io";
@@ -67,6 +80,19 @@ export function currentNote(paths: CliPaths, env: Env): string {
   return tierNote(gateway, env);
 }
 
+/**
+ * The line for this session's gateway scope while auto mode's safety checks fail, or null: no
+ * record, a session off the gateway, or a record that went stale (`currentChecksDown`).
+ */
+export function checksNote(paths: CliPaths, env: Env, nowMs: number): null | string {
+  const gateway = sessionGatewayOf(paths, env);
+  if (!gateway.gatewayOn) return null;
+  const found = checksDownNow(paths.gatewayStateFile, nowMs).find(
+    ([key]) => scopeOfStateKey(key).profile === gateway.profile,
+  );
+  return found === undefined ? null : checksDownNote(found[1], gateway.profile, nowMs);
+}
+
 /** The note last said in this session, or null: no mark, or one that cannot be read. */
 function lastSaid(mark: string): null | string {
   try {
@@ -88,12 +114,19 @@ function keep(mark: string, note: string): boolean {
 }
 
 /** The note as context at a start, or at a prompt when what the tiers run has changed. */
-export function tierView(input: HookInput, env: Env, paths: CliPaths): HookResult {
+export function tierView(
+  input: HookInput,
+  env: Env,
+  paths: CliPaths,
+  nowMs: number = Date.now(),
+): HookResult {
   const event = stringField(input.hook_event_name);
   if (event !== "SessionStart" && event !== "UserPromptSubmit") return SILENT;
   const sessionId = input.session_id;
   const mark = isSessionId(sessionId) ? tierViewMark(env, sessionId) : null;
-  const note = currentNote(paths, env);
+  const checks = checksNote(paths, env, nowMs);
+  const note =
+    checks === null ? currentNote(paths, env) : [currentNote(paths, env), checks].join("\n\n");
   if (event === "SessionStart") {
     // A new context every time: said whatever the mark holds, and kept for the prompts after it.
     if (mark !== null) keep(mark, note);

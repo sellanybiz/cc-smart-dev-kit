@@ -519,3 +519,58 @@ describe("D17: a git too old to measure fixes after a review", () => {
     expect(await check(repo, withGitVersion(hookEnv(), "2.40.0"))).toEqual([]);
   });
 });
+
+describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
+  const SIZED = {
+    jobs: {
+      kinds: {
+        e2e: {
+          filesGb: 2,
+          gb: 6,
+          match: [{ script: "e2e" }],
+          workers: { flag: "--workers", gbEach: 1 },
+        },
+        tsc: { gb: 8, match: [{ tool: "tsc" }] },
+      },
+      route: true,
+    },
+  };
+
+  test("says once, for the whole file, which kinds still size a job and how to set the real limit", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SIZED);
+    ignoreWorktrees(repo);
+    const lines = await check(repo);
+    expect(lines).toHaveLength(1);
+    // The file is named relative to the project on POSIX, and by its full path on Windows
+    // (`shown`, the same for every project line): the rest is the same everywhere.
+    expect(lines[0]).toStartWith("· project: ");
+    expect(lines[0]).toEndWith(
+      "cc-smart-dev-kit.json sets size fields in jobs.kinds (e2e: gb, filesGb, workers; tsc: gb) that the job queue ignores: it counts jobs now, not gigabytes Fix: remove them from jobs.kinds; how many heavy jobs run at once is your own setting: cc-smart-dev-kit job set max-jobs <n>",
+    );
+  });
+
+  test("is information, never a warning or a failure", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SIZED);
+    ignoreWorktrees(repo);
+    const lines = await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ info: true, ok: true });
+  });
+
+  test("a kind that sets none of them, or no kinds at all: nothing to say", async () => {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    for (const jobs of [
+      {},
+      { route: true },
+      {
+        kinds: { e2e: { about: "Browser tests.", match: [{ script: "e2e" }], printOnly: ["-h"] } },
+      },
+    ]) {
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs });
+      expect(await check(repo)).toEqual([]);
+    }
+  });
+});

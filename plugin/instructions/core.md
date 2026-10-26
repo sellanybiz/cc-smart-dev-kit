@@ -45,9 +45,9 @@ You are the senior engineer and the team lead on this project, not an assistant 
   one line in your summary (the lead files it with `issue file` where issues are on), no fix.
   Inside the plan is the code it changes and anything that would make its result wrong. A new
   ask that does not belong needs its own session, unless the person says to do it here.
-- **Test it with the person.** Run every check you can. What only a person can judge (their
-  login, their device, whether the flow makes sense) gets short, exact steps and what they
-  should see; then fix what they find (`/cc-smart-dev-kit:verify-change` § 6).
+- **Check only what you changed while you build;** the full check runs once, at the end, never
+  in a subagent. **Test with the person** what only they can judge (their login, their device,
+  the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
 - **In a subagent, the brief is your task.** Report to your caller. No commit, push, new agent,
   message to another session or question to the person unless the brief says so. A crew
   session works by `/cc-smart-dev-kit:crew`.
@@ -71,8 +71,8 @@ every launch. Which agent fits which job, how to brief it, and model and effort 
 - **UI/UX design runs only on `opus` or `fable`, at `high` or above** — never on `haiku`,
   `sonnet` or an affordable slot; checking a UI is not design. All other building runs on `sonnet`.
 - **Effort:** `medium` for searches and reads, `high` for building and reviews, `xhigh` for the
-  hardest judgment. The session-start note says what each tier runs now: Claude `haiku` or `sonnet`
-  takes the effort its task needs, `max` too; `opus` at `max` asks the person; a backend, `max`.
+  hardest judgment. Every tier but `opus` and `fable` takes the effort its task needs, `max` too;
+  `opus` at `max` asks the person.
 - **Say it when you launch:** the reply that starts an agent names its slot, model and effort —
   "a reviewer (`sonnet` → Claude Sonnet, effort high)" — so the person sees whose usage it spends.
 - **Your own model:** never remark on it or on a `/model` switch unasked; asked, answer plainly.

@@ -18,8 +18,9 @@
  *   the new one is delivered the same way, with words that say it replaces the earlier answer.
  *   A question closed by the phase's end takes none.
  * - A **stopped** crew session (D35: the watch stops a blocked crew session that idles past
- *   `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt:
- *   `claude --bg --resume <session id> "<text>"` — the form `claude --help` gives in 2.1.306
+ *   `workflow.crew.idleStopMinutes`) is resumed with the answer as its next prompt, behind the
+ *   crew command (`resumeArgs`): `claude --bg --resume <session id> -- "/<plugin>:crew <text>"`
+ *   — the form `claude --help` gives in 2.1.306
  *   ("With --resume <session-id>, continues that session in the background under the same ID,
  *   or starts a copy and says so when the session is already running"). The conversation stays
  *   on disk, so the crew session picks up where it stopped. Because of that copy, agent view is read
@@ -41,6 +42,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { findCrew } from "./board";
+import { deliveryHead, withCrewCommand } from "./brief";
 import { readCaller, reasonOf } from "./caller";
 import {
   type ClaudeDeps,
@@ -103,17 +105,6 @@ const CONFIRM_LOOKS = 10;
 const CONFIRM_WAIT_MS = 1000;
 
 /**
- * The words that open what a crew session hears: its lead's answer, or — for a correction — that
- * the answer replaces the earlier one (`earlier`). Question and earlier answer go in as JSON
- * strings, so the head is one line whatever they hold.
- */
-function deliveryHead(question: string, earlier: null | string): string {
-  return earlier === null
-    ? `Your lead answers your question ${JSON.stringify(question)}:`
-    : `Your lead CORRECTS its earlier answer to your question ${JSON.stringify(question)}: this REPLACES the earlier answer (${JSON.stringify(earlier)}). Follow this one instead:`;
-}
-
-/**
  * The one line the crew session's monitor prints for an answer (AN1): a monitor line is one
  * notification, so the answer goes in as a JSON string and is never changed.
  */
@@ -131,10 +122,22 @@ export function deliveryText(question: string, answer: string, earlier: null | s
 
 /**
  * The line the lead sends the answer with: the arguments of the `SendMessage` tool, as JSON, so
- * a quote or a line break in the answer is escaped and never changed.
+ * a quote or a line break in the answer is escaped and never changed. The text after the tool's
+ * name is a valid JSON object with the two keys `to` and `message`, and nothing else.
  */
 export function sendMessageLine(name: string, text: string): string {
   return `SendMessage ${JSON.stringify({ to: name, message: text })}`;
+}
+
+/**
+ * The line that goes before the first `SendMessage` line a command prints. `SendMessage` is a
+ * **deferred** tool: Claude Code leaves it out until a session looks it up with `ToolSearch`, and
+ * the router drops a deferred tool a backend model has not loaded, so such a model cannot call it
+ * at all until it runs `ToolSearch` with `select:SendMessage`. Every command that prints the
+ * line prints this one first (`crew answer`, `crew tell`).
+ */
+export function sendMessageHint(): string {
+  return "The SendMessage tool is deferred: load it first with ToolSearch, query select:SendMessage. Then call SendMessage with the JSON object on each line below.";
 }
 
 /**
@@ -323,6 +326,7 @@ async function deliveryReport(
         ]
       : [
           `recorded, not delivered: ${why}, so send it yourself:`,
+          sendMessageHint(),
           sendMessageLine(record.name, text),
         ];
   }
@@ -342,6 +346,7 @@ async function deliveryReport(
     ? [`${late} it still will`]
     : [
         `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+        sendMessageHint(),
         sendMessageLine(record.name, text),
       ];
 }
@@ -425,8 +430,8 @@ export const UNREADABLE_VIEW_WHY =
  * The arguments that bring a crew session back: `claude --bg --resume <session id>` with what
  * `crew start` gave it — **the record's own files** (`--strict-mcp-config --mcp-config <mcp.json>`
  * and `--settings <settings.json>`) and the model, effort, permission mode and autocompact it was
- * launched with (`sessionFlags`, the same home the launch reads them from) — and then the text,
- * when there is one. **The text comes after a bare `--`**: a text that starts with `-` ("-1 is
+ * launched with (`sessionFlags`, the same home the launch reads them from) — and then the
+ * prompt (below). **The prompt comes after a bare `--`**: a text that starts with `-` ("-1 is
  * wrong: use 2") would otherwise be read as a flag, and the resume fails with `unknown option`
  * (proved live on 2.1.309 with `claude -p`: without `--` it answered `error: unknown option
  * '-1 is wrong: use 2'`; with it the fake Anthropic's log held the text as the prompt,
@@ -436,6 +441,15 @@ export const UNREADABLE_VIEW_WHY =
  * **`--mcp-config` comes before `--settings`**: it takes any number of files, so a prompt after
  * it would be read as one more config file (proved live on 2.1.309, `launchArgs`), and
  * `--settings` takes one value and ends the flag list.
+ *
+ * **The prompt is the crew command, then the text** (`withCrewCommand`; no text is the bare
+ * command). `--resume` does not arm a plugin monitor by itself — Claude Code arms one only
+ * when the skill is dispatched under its full name, once for each process — so a resumed crew
+ * session ran with no `crew-self` monitor: no lead's answer, no hand-off line. The command
+ * dispatches the skill in the new process. This is the one place the command is added, so
+ * every resume has it (`crew answer`, `crew resume`, `crew model`, the watch's wake of a paused
+ * session), while a message to a process that still runs (`SendMessage`) keeps the bare text.
+ * The text then sits under `ARGUMENTS:` at the end of the skill.
  */
 export function resumeArgs(
   launch: { effort: string; model: string; permissionMode: string; sessionId: string },
@@ -450,7 +464,7 @@ export function resumeArgs(
   ];
   if (files.mcpFile !== null) args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
   args.push("--settings", files.settingsFile);
-  if (text !== null) args.push("--", text);
+  args.push("--", withCrewCommand(text ?? ""));
   return args;
 }
 

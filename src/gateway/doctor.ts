@@ -9,6 +9,7 @@ import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
+import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
 import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import {
   chainWithEffort,
@@ -32,6 +33,7 @@ import {
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
+import { scopeOfStateKey } from "./limit-state";
 import {
   decisionWords,
   gatewayCopiesAmong,
@@ -84,6 +86,8 @@ export async function gatewayChecks(options: {
   read?: CommandRunner;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
+  /** Milliseconds since the epoch, for the records that go stale; default `Date.now()`. */
+  nowMs?: number;
   /** Asks the router's health page; a test passes a fake. The real `fetch` by default. */
   fetch?: HealthFetch;
   /** The folder `doctor` runs in: the project its per-project lines mark `(here)`. */
@@ -340,6 +344,19 @@ export async function gatewayChecks(options: {
       ok: false,
       text: `slot ${JUDGE_SLOT}: ${target} has not passed the judge test, so the router ignores it`,
       fix: `${COMMAND} gateway slot judge ${(config.slots[JUDGE_SLOT] ?? []).join(",")}`,
+    });
+  }
+  // Auto mode's safety checks that fail with nothing standing in (the owner, 2026-10-27): a
+  // warning with the exact fix, from the router's state file. The router ends it at the next
+  // check that gets a verdict, and it goes stale after 15 minutes.
+  const nowMs = options.nowMs ?? Date.now();
+  for (const [key, record] of checksDownNow(paths.gatewayStateFile, nowMs)) {
+    const profile = scopeOfStateKey(key).profile;
+    checks.push({
+      ok: true,
+      warn: true,
+      text: checksDownText(record, profile, nowMs),
+      fix: checksDownFix(record, profile, nowMs),
     });
   }
   // The projects, last: each one's own state (the same reader `gateway project status` uses),

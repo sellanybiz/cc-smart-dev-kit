@@ -17,6 +17,13 @@ const PEER_NAME = "C my-app B2 api";
 
 const MODEL = { named: "sonnet", resolved: "sonnet", slot: null, tier: null };
 
+/**
+ * The line before the `SendMessage` lines: the tool is deferred, so a model that cannot see it
+ * (one on a backend) loads it with `ToolSearch` first.
+ */
+const SEND_MESSAGE_LOAD =
+  "The SendMessage tool is deferred: load it first with ToolSearch, query select:SendMessage. Then call SendMessage with the JSON object on each line below.";
+
 /** One crew session's record, working, in a worktree folder that need not exist. */
 function record(change: {
   id: string;
@@ -110,6 +117,7 @@ describe("crew tell", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B2 api","message":"[B1] CONTRACT: the lookup index now returns Item[]\\nrunGitLookup is gone; use lookup(query)\\nNo reply needed."}',
     ]);
     const events = readCrewEvents(world.paths.stateDir, world.repo).events;
@@ -135,6 +143,7 @@ describe("crew tell", () => {
       world.ctx({}, env),
     );
     expect(world.out).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B2 api","message":"[B1] QUESTION: does your endpoint page after 50?"}',
     ]);
     world.out.length = 0;
@@ -143,6 +152,7 @@ describe("crew tell", () => {
       world.ctx({}, env),
     );
     expect(world.out).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B2 api","message":"[B1] CONTRACT: x.ts:lookup is gone\\nNo reply needed."}',
     ]);
   });
@@ -166,6 +176,7 @@ describe("crew tell", () => {
     );
     expect(code).toBe(0);
     expect(world.out).toEqual([
+      SEND_MESSAGE_LOAD,
       'SendMessage {"to":"C my-app B2 api","message":"[B1] CONTRACT: x.ts:lookup is gone\\nNo reply needed."}',
       'SendMessage {"to":"C my-app B3 docs","message":"[B1] CONTRACT: x.ts:lookup is gone\\nNo reply needed."}',
     ]);
@@ -174,6 +185,22 @@ describe("crew tell", () => {
     );
     expect(notes).toHaveLength(1);
     expect(notes[0]?.tell).toEqual({ kind: "contract", to: [PEER_NAME, "C my-app B3 docs"] });
+  });
+
+  test("each line after the hint is the tool's name and its arguments as valid JSON", async () => {
+    const { world } = await tellWorld();
+    await runCrew(
+      ["tell", PEER_NAME, "--kind", "question", 'does "lookup" take\nan empty query?'],
+      world.ctx({}, { CC_SMART_DEV_KIT_CREW: SELF }),
+    );
+    expect(world.out).toHaveLength(2);
+    expect(world.out[0]).toBe(SEND_MESSAGE_LOAD);
+    const line = world.out[1] ?? "";
+    expect(line.startsWith("SendMessage {")).toBe(true);
+    expect(JSON.parse(line.slice("SendMessage ".length))).toEqual({
+      message: '[B1] QUESTION: does "lookup" take\nan empty query?',
+      to: PEER_NAME,
+    });
   });
 
   test("D47: a name the store does not know is refused, and nothing is recorded or printed", async () => {

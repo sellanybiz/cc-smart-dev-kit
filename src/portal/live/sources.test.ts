@@ -61,10 +61,9 @@ function world(options: { now?: () => number; recent?: () => unknown[]; routerUp
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
   let jobs: JobsAnswer = {
-    budgetGb: 8,
-    freeGb: 8,
-    keptGb: 22,
+    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
     memoryGb: 32,
+    route: { on: false, project: null, source: "default" },
     stores: [],
     weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
   };
@@ -198,14 +197,13 @@ describe("the live stream's sources", () => {
     // The first poll records the empty queue; a job arriving is the change that matters.
     await world1.sources.pollOnce();
     const before = world1.of("jobs").length;
-    writeFileSync(join(leases, "job-1"), JSON.stringify({ gb: 4, v: 1 }));
+    writeFileSync(join(leases, "job-1"), JSON.stringify({ gb: 1, v: 1 }));
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
     world1.setJobs({
-      budgetGb: 8,
-      freeGb: 4,
-      keptGb: 22,
+      ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
       memoryGb: 32,
+      route: { on: false, project: null, source: "default" },
       stores: [],
       weights: {
         cpu: { value: 20 },

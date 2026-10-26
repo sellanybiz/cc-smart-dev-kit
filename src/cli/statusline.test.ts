@@ -5,6 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { claudeWindowSaid } from "../crew/context-window";
 import type { LimitState } from "../gateway/limit-state";
 import { tempDir } from "../testing/temp";
@@ -339,5 +340,100 @@ describe("RV3: a record shows in the session it is about", () => {
     expect(lines[3]).toContain("omniroute:machine-opus");
     expect(lines[3]).not.toContain("team-fable");
     expect(lines[4]).not.toContain("omniroute:");
+  });
+});
+
+describe("auto mode's safety checks are failing (the owner, 2026-10-27)", () => {
+  const down = (extra: Record<string, unknown> = {}) => ({
+    claim: "five_hour",
+    lastAt: NOW - 60_000,
+    resetsAt: AT_13,
+    since: NOW - 20 * 60_000,
+    status: 429,
+    why: "untested",
+    ...extra,
+  });
+  const state = (checksDown: Record<string, unknown>): LimitState =>
+    ({ checksDown, fallbacks: {}, limits: {}, version: 1 }) as LimitState;
+
+  it("the machine's record: since when, Claude's reason with its reset, and the exact fix", () => {
+    expect(
+      statuslineText(input(null, null), state({ "cc-smart-dev-kit-judge": down() }), NOW, "UTC"),
+    ).toBe(
+      `Opus 5.5 · ⛔ auto mode's safety checks are failing since 09:40: Claude is at its plan limit (five_hour) until 13:00, and no worker target has passed the judge test → ${COMMAND} gateway setup`,
+    );
+  });
+
+  it("the fix follows the cause: the switch turned off, and a stand-in that failed too (a wait)", () => {
+    expect(
+      statuslineText(
+        input(null, null),
+        state({
+          "cc-smart-dev-kit-judge": down({ claim: null, resetsAt: null, status: 529, why: "off" }),
+        }),
+        NOW,
+        "UTC",
+      ),
+    ).toBe(
+      `Opus 5.5 · ⛔ auto mode's safety checks are failing since 09:40: Claude is down (HTTP 529), and the judge's stand-in is switched off → ${COMMAND} gateway fallback judge on`,
+    );
+    expect(
+      statuslineText(
+        input(null, null),
+        state({ "cc-smart-dev-kit-judge": down({ status: 503, why: "failed" }) }),
+        NOW,
+        "UTC",
+      ),
+    ).toBe(
+      "Opus 5.5 · ⛔ auto mode's safety checks are failing since 09:40: Claude is at its plan limit (five_hour) until 13:00, and the stand-in failed too (HTTP 503) → wait until 13:00",
+    );
+  });
+
+  it("a record nobody touched for 15 minutes is stale: the line is gone with it", () => {
+    expect(
+      statuslineText(
+        input(null, null),
+        state({ "cc-smart-dev-kit-judge": down({ lastAt: NOW - 15 * 60_000 }) }),
+        NOW,
+        "UTC",
+      ),
+    ).toBe("Opus 5.5");
+  });
+
+  it("shows only in the session on its gateway scope: a profile's own record, never the machine's, and none off the gateway", () => {
+    const both = state({
+      "cc-smart-dev-kit-judge": down(),
+      "team/cc-smart-dev-kit-judge": down({ claim: null, resetsAt: null, status: 529, why: "off" }),
+    });
+    const machine = statuslineText(input(null, null), both, NOW, "UTC", undefined, {
+      gatewayOn: true,
+      profile: null,
+    });
+    expect(machine).toContain("no worker target has passed the judge test");
+    expect(machine).not.toContain("in profile team");
+    const team = statuslineText(input(null, null), both, NOW, "UTC", undefined, {
+      gatewayOn: true,
+      profile: "team",
+    });
+    expect(team).toBe(
+      `Opus 5.5 · ⛔ auto mode's safety checks are failing in profile team since 09:40: Claude is down (HTTP 529), and the judge's stand-in is switched off → ${COMMAND} gateway profile team fallback judge on`,
+    );
+    expect(
+      statuslineText(input(null, null), both, NOW, "UTC", undefined, {
+        gatewayOn: false,
+        profile: null,
+      }),
+    ).toBe("Opus 5.5");
+    // Run by hand, with no session to judge by: every record shows.
+    const byHand = statuslineText(input(null, null), both, NOW, "UTC");
+    expect(byHand).toContain("no worker target has passed the judge test");
+    expect(byHand).toContain("in profile team");
+  });
+
+  it("sits before the usage numbers, and no record means no part", () => {
+    expect(
+      statuslineText(input(30, null), state({ "cc-smart-dev-kit-judge": down() }), NOW, "UTC"),
+    ).toContain(`→ ${COMMAND} gateway setup · 5h 30%`);
+    expect(statuslineText(input(30, null), EMPTY, NOW, "UTC")).toBe("Opus 5.5 · 5h 30%");
   });
 });

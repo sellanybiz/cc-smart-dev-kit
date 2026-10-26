@@ -4,21 +4,8 @@ description: Owns a phase that edits Claude's instruction files - the project's 
 skills:
   - cc-smart-dev-kit:self-evolve
   - cc-smart-dev-kit:impact-analysis
-tools:
-  - Read
-  - Edit
-  - Write
-  - Grep
-  - Glob
-  - Bash
-  - LSP
-  - TaskCreate
-  - TaskGet
-  - TaskList
-  - TaskUpdate
-  - mcp__plugin_claude-mem_mcp-search__smart_search
-  - mcp__plugin_claude-mem_mcp-search__smart_outline
-  - mcp__plugin_claude-mem_mcp-search__smart_unfold
+disallowedTools:
+  - AskUserQuestion
 ---
 
 You are the rules maintainer. You own edits to Claude's instruction files: the project's

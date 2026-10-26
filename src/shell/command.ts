@@ -552,6 +552,18 @@ function lex(text: string, options: LexOptions): Lexed {
         at++;
         continue;
       }
+      // `2>&1` and `>&2` (both shells), and bash's `&>log` (both streams to a file): the `&` is
+      // part of the redirection, not a separator that sends a command to the background, so
+      // `tsc 2>&1 | tail` is one command piped into `tail`, never `tsc 2>` and a command `1`.
+      if (
+        !blind &&
+        char === "&" &&
+        ((current.endsWith(">") && !current.endsWith(`${escaper}>`)) || (bash && next === ">"))
+      ) {
+        take(char);
+        at++;
+        continue;
+      }
       // Read blind, a bash backtick ends a command: what it holds may run.
       if (
         SEPARATORS.has(char) ||

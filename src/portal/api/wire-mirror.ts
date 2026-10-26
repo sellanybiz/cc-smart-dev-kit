@@ -89,6 +89,7 @@ export const MIRRORED = {
   HistoryRange: same<Server.HistoryRange, Wire.HistoryRange>(true),
   HistoryRequest: same<Server.HistoryRequest, Wire.HistoryRequest>(true),
   HistorySeries: same<Server.HistorySeries, Wire.HistorySeries>(true),
+  JobCeilingState: same<Server.JobCeilingState, Wire.JobCeilingState>(true),
   JobWeightState: same<Server.JobWeightState, Wire.JobWeightState>(true),
   JobWeightsState: same<Server.JobWeightsState, Wire.JobWeightsState>(true),
   JobsAnswer: same<Server.JobsAnswer, Wire.JobsAnswer>(true),

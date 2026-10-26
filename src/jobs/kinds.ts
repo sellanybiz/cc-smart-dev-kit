@@ -1,25 +1,27 @@
 /**
- * The kinds of heavy job, and how much memory each one reserves.
+ * The kinds of heavy job: which commands the queue counts.
  *
  * A heavy job is a command that can use many gigabytes: a type check, a type-aware lint,
  * a test run, a production build, a container image build. The queue (`queue.ts`) counts
- * memory in whole gigabytes, and a job starts only when the gigabytes it reserves are free.
+ * jobs, not gigabytes: up to `maxJobs` heavy jobs run at once on this machine, and one job
+ * alone may use all the memory and every core. So a kind has no size. It only says which
+ * commands are heavy (`match`), which options only print and stop (`printOnly`: such a run
+ * takes no slot), whether a run on named files goes at once (`noSlotForFiles`, read with
+ * `skipWords` and `valuedFlags`: such a run takes no slot either), and one line for
+ * `cc-smart-dev-kit job kinds` (`about`).
  *
- * WHY RESERVE A GUESS, NOT MEASURE LIVE
- *   A type check or a test run grows to its peak over 20 to 60 seconds. A queue that only
- *   looked at free memory would let a whole burst start before any of it shows, and the
- *   burst would run the machine out together. So each job reserves its expected peak up
- *   front; the queue's live check only adds a second look on top.
+ * WHY THE SIZES WENT
+ *   A fixed size per kind made work slow: on a 32 GB machine one type check at a time ran
+ *   across every session and agent, and a live free-memory check added more waiting. The
+ *   memory is kept safe another way now: all heavy jobs together run under one ceiling
+ *   (`MemoryMax` of their systemd slice, `launch.ts`), so a job over it dies inside the
+ *   slice and never takes the memory kept for the desktop and the sessions.
  *
- * WHY SMALL RUNS STILL RESERVE 2 GB
- *   Many agents looping on one test file each are a burst too. 2 GB lets many of them run
- *   together, but not an unlimited number.
- *
- * The numbers were measured on a large TypeScript web app (2026-10): a type check peaked
- * at 7.7 to 8 GB, a framework production build at 9 + 3 GB, a type-aware lint of the
- * whole repo at 8.4 GB, a full test run at about 0.43 GB per worker. A coverage run was
- * not measured: 12 GB is a guess on the safe side. A project with other numbers sets its
- * own in `.claude/cc-smart-dev-kit.json` (`jobs.kinds`).
+ * OLD PROJECT FILES STILL PARSE
+ *   A project's `.claude/cc-smart-dev-kit.json` may still set the fields the sizes used
+ *   (`IGNORED_KIND_FIELDS`). They are accepted and ignored, and `doctor` says once that they
+ *   can go. Two fields of that time came back in 1.5.0 with the meaning they had then:
+ *   `skipWords` and `valuedFlags` tell `noSlotForFiles` where a run's files are.
  */
 
 import { z } from "zod";
@@ -47,37 +49,59 @@ export const matchRuleSchema = z.union([
 export type MatchRule = z.infer<typeof matchRuleSchema>;
 
 export const kindSpecSchema = z.strictObject({
-  /** What a full ("wide") run reserves, in whole GB. */
-  gb: z.number().int().min(0).max(1024),
-  /** What a run given only existing files reserves (`maxFiles` of them at most). */
-  filesGb: z.number().int().min(0).max(1024).optional(),
-  /** At most this many files still count as a small run. Default: no limit. */
-  maxFiles: z.number().int().min(1).optional(),
-  /** Options that only print and stop (`--version`): such a run reserves nothing. */
+  /** Options that only print and stop (`--version`): such a run takes no slot. */
   printOnly: z.array(z.string().min(1)).optional(),
-  /** Leading words that are the tool's own command, not files (`vitest run`). */
+  /**
+   * A run of this kind that names only existing files (`vitest run src/a.test.ts`, `bun run
+   * test:run src/a.test.ts`) runs at once, with no slot, like a print-only run: a scoped run
+   * must not wait behind full runs. A folder, a filter that is no file, or no file at all: a
+   * slot, as always. The operands are read past `skipWords` and the values of `valuedFlags`.
+   * Came with 1.5.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`).
+   */
+  noSlotForFiles: z.boolean().optional(),
+  /** Leading words that are the tool's own command, not files (`vitest run`): `noSlotForFiles` reads past them. */
   skipWords: z.array(z.string().min(1)).optional(),
-  /** Options whose value is the next word, so the value is not read as a file. */
+  /**
+   * Options whose value is the next word (`--project x`), over vitest's and jest's own list, so
+   * `noSlotForFiles` never reads it as a file. An option no list knows gives the run a slot.
+   */
   valuedFlags: z.array(z.string().min(1)).optional(),
-  /** A test runner: add a worker-count option sized to the reservation. */
-  workers: z
-    .strictObject({
-      /** The option, written as `<flag>=<n>`: `--maxWorkers`. */
-      flag: z.string().min(1),
-      /** Other spellings that mean the caller already chose (`--max-workers`). */
-      aliases: z.array(z.string().min(1)).optional(),
-      /** The memory one worker uses at its peak, in GB. */
-      gbEach: z.number().positive(),
-    })
-    .optional(),
   /** How the classifier finds this kind in a Bash command. None: never by itself. */
   match: z.array(matchRuleSchema).optional(),
   /** One line for `cc-smart-dev-kit job kinds`. */
   about: z.string().min(1).optional(),
+
+  // The fields below sized a job. The queue counts jobs now and ignores every one of them;
+  // they stay in the schema only so a project file written for an older plugin still parses.
+  /** Ignored: what a full run reserved, in GB. */
+  gb: z.number().int().min(0).max(1024).optional(),
+  /** Ignored: what a run given only existing files reserved. */
+  filesGb: z.number().int().min(0).max(1024).optional(),
+  /** Ignored: how many files still counted as a small run. */
+  maxFiles: z.number().int().min(1).optional(),
+  /** Ignored: a worker-count option the queue added to a test runner. */
+  workers: z
+    .strictObject({
+      flag: z.string().min(1),
+      aliases: z.array(z.string().min(1)).optional(),
+      gbEach: z.number().positive(),
+    })
+    .optional(),
 });
 
 export type KindSpec = z.infer<typeof kindSpecSchema>;
 export type Kinds = Readonly<Record<string, KindSpec>>;
+
+/**
+ * The fields of a kind that sized a job, in the order `doctor` names them. The queue ignores
+ * each one; a project file that still sets one parses, and `doctor` says it can go.
+ */
+export const IGNORED_KIND_FIELDS = [
+  "gb",
+  "filesGb",
+  "maxFiles",
+  "workers",
+] as const satisfies readonly (keyof KindSpec)[];
 
 /** A kind's name: letters, digits, and `:` `-` `_` `.` inside (`tsc`, `test:run`). */
 export const KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
@@ -89,28 +113,86 @@ export const kindsSchema = z.record(
 
 /** The type checker's options that print and stop. tsc reads options in any case. */
 const TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
-/** Print-only options of the test runners. */
+/** Print-only options of the test runners and linters. */
 const TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
-/** Options of the linters and runners whose value follows as the next word. */
-const VALUED = ["--config", "-c", "--max-warnings", "--reporter", "--project", "--root"];
-const TEST_WORKERS = { flag: "--maxWorkers", aliases: ["--max-workers"], gbEach: 0.5 };
+
+/**
+ * The options of vitest and jest whose value is the next word. A value that happens to be a
+ * file (`--config vitest.config.ts`) must never make a full run look like a run on named files.
+ */
+const TEST_VALUED_FLAGS = [
+  "--bail",
+  "--config",
+  "--coverageDirectory",
+  "--dir",
+  "--environment",
+  "--env",
+  "--exclude",
+  "--hookTimeout",
+  "--maxWorkers",
+  "--minWorkers",
+  "--mode",
+  "--outputFile",
+  "--pool",
+  "--project",
+  "--reporter",
+  "--reporters",
+  "--retry",
+  "--root",
+  "--rootDir",
+  "--roots",
+  "--selectProjects",
+  "--shard",
+  "--testEnvironment",
+  "--testNamePattern",
+  "--testPathIgnorePatterns",
+  "--testPathPattern",
+  "--testTimeout",
+  "-c",
+  "-r",
+  "-t",
+  "-w",
+];
+
+/**
+ * The options of vitest and jest that take no value. With `TEST_VALUED_FLAGS`, the only options
+ * `namesOnlyFiles` knows how to read past without `=`: any other one gives the run a slot, so an
+ * option whose value is a file (`--outputFile.junit results.xml`, `--setupFilesAfterEnv
+ * jest.setup.ts`) never makes a full run look like a run on named files. Short on purpose, and
+ * no option that may take a value: vitest's `--silent` takes an optional one (`passed-only`),
+ * and `-u`/`--update` may in a newer release, so a file after either could be that value. They
+ * are left out: such a run takes a slot.
+ */
+const TEST_BARE_FLAGS = [
+  "--ci",
+  "--detectOpenHandles",
+  "--forceExit",
+  "--no-cache",
+  "--no-color",
+  "--passWithNoTests",
+  "--run",
+  "--runInBand",
+  "--updateSnapshot",
+  "--verbose",
+  "-i",
+];
 
 /**
  * The defaults: one kind per common heavy tool. The names are the jobs, not the tools:
  * a project points its own commands at them, or adds kinds of its own.
+ *
+ * The order matters when two kinds match the same command: the first one listed wins
+ * (`kindOfCall` in `classify.ts`). So a specific kind sits before the general one it would
+ * also match: `test:coverage` (`vitest --coverage`) before `test:run` (`vitest`).
  */
 export const DEFAULT_KINDS: Kinds = {
   tsc: {
     about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
-    gb: 8,
     printOnly: TSC_PRINT_ONLY,
     match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }],
   },
   "lint:typed": {
     about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
-    gb: 12,
-    filesGb: 6,
-    valuedFlags: VALUED,
     printOnly: TEST_PRINT_ONLY,
     match: [
       { tool: "eslint", argIncludes: "typed" },
@@ -120,33 +202,28 @@ export const DEFAULT_KINDS: Kinds = {
   },
   "test:coverage": {
     about: "A test run with coverage (vitest or jest with --coverage).",
-    gb: 12,
     printOnly: TEST_PRINT_ONLY,
-    workers: TEST_WORKERS,
     match: [
       { tool: "vitest", argIncludes: "--coverage" },
       { tool: "jest", argIncludes: "--coverage" },
     ],
   },
   "test:run": {
-    about: "A test run (vitest, jest). Up to 3 existing files: the small size.",
-    gb: 8,
-    filesGb: 2,
-    maxFiles: 3,
-    skipWords: ["run"],
-    valuedFlags: VALUED,
+    about: "A test run (vitest, jest). A run on named test files runs at once, with no slot.",
     printOnly: TEST_PRINT_ONLY,
-    workers: TEST_WORKERS,
+    // `vitest related` is no skip word on purpose: the tests that import a file may be all of
+    // them, so such a run takes a slot.
+    noSlotForFiles: true,
+    skipWords: ["run"],
+    valuedFlags: TEST_VALUED_FLAGS,
     match: [{ tool: "vitest" }, { tool: "jest" }],
   },
   build: {
     about: "A framework production build (next build).",
-    gb: 14,
     match: [{ tool: "next", sub: ["build"] }],
   },
   "image:build": {
     about: "A container image build (docker, podman, compose).",
-    gb: 14,
     match: [
       { tool: "docker", sub: ["build"] },
       { tool: "docker", sub: ["image", "build"] },
@@ -178,77 +255,53 @@ export function mergeKinds(projectKinds: Kinds | undefined): Kinds {
   return { ...DEFAULT_KINDS, ...(projectKinds ?? {}) };
 }
 
-/** The largest single job of any kind: a machine's budget never drops below it. */
-export function largestJobGb(kinds: Kinds): number {
-  return Math.max(0, ...Object.values(kinds).map((kind) => Math.max(kind.gb, kind.filesGb ?? 0)));
-}
-
-/** The arguments that are not options or option values: the files, folders or filters. */
-function positionals(kind: KindSpec, args: readonly string[]): string[] {
-  const valued = new Set(kind.valuedFlags ?? []);
-  const found: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i] ?? "";
-    if (valued.has(arg)) i++;
-    else if (!arg.startsWith("-")) found.push(arg);
-  }
-  return found;
+/**
+ * Does a run of `kind`, given `args` (the tool's own arguments), only print and stop
+ * (`--version`, `--help`)? Such a run takes no slot and never waits. Any one print-only option
+ * is enough, as it always was.
+ */
+export function isPrintOnly(kind: KindSpec, args: readonly string[]): boolean {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  return args.some((arg) => printOnly.has(arg.toLowerCase()));
 }
 
 /**
- * The GB a job of `kind`, run with `args` (the tool's own arguments), reserves. `isFile`
- * says whether a path is an existing file, not a folder.
- *
- * - Any print-only option (`--version`, `--help`): 0. Such a run never waits.
- * - With `filesGb`: the smaller size only when every file argument is an existing file,
- *   and there are at most `maxFiles` of them. A folder, `.`, a glob, a name filter, no
- *   argument, or the value of an option written apart from it: the full size. A wrong
- *   guess on that side only makes a job wait longer; it never overruns the machine.
+ * Does a run of `kind`, given `args` (the tool's own arguments, or the words after a script's
+ * name), name only existing files? Such a run takes no slot when the kind says
+ * `noSlotForFiles`. The leading `skipWords` are read past, and every word after `--` is an
+ * operand. An option is read past only when its reading is certain: written with `=`
+ * (`--reporter=dot`), a known option with a value (`TEST_VALUED_FLAGS` and the kind's own
+ * `valuedFlags`: the next word goes with it), or a known option with none (`TEST_BARE_FLAGS`).
+ * Any other option may take the next word, which may be a file, so it gives the run a slot. No
+ * operand at all is a full run, and one operand that is not a file (`isFile`: a folder, a name
+ * filter, a word that names nothing) gives the run a slot: the safe answer.
  */
-export function reservedGb(
+export function namesOnlyFiles(
   kind: KindSpec,
   args: readonly string[],
-  isFile: (path: string) => boolean,
-): number {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  if (args.some((arg) => printOnly.has(arg.toLowerCase()))) return 0;
-  if (kind.filesGb === undefined) return kind.gb;
+  isFile: (word: string) => boolean,
+): boolean {
+  if (kind.noSlotForFiles !== true) return false;
   const skip = new Set(kind.skipWords ?? []);
-  const given = positionals(kind, args);
-  const files = given.length > 0 && skip.has(given[0] ?? "") ? given.slice(1) : given;
-  const few = kind.maxFiles === undefined || files.length <= kind.maxFiles;
-  return few && files.length > 0 && files.every((path) => isFile(path)) ? kind.filesGb : kind.gb;
+  const valued = new Set([...TEST_VALUED_FLAGS, ...(kind.valuedFlags ?? [])]);
+  const bare = new Set(TEST_BARE_FLAGS);
+  let index = 0;
+  while (index < args.length && skip.has(args[index] ?? "")) index++;
+  const operands: string[] = [];
+  let optionsEnded = false;
+  for (; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!optionsEnded && arg === "--") optionsEnded = true;
+    else if (!optionsEnded && arg.startsWith("-")) {
+      if (arg.includes("=") || bare.has(arg)) continue; // `--reporter=dot` holds its own value
+      if (!valued.has(arg)) return false; // an option it cannot read: a slot
+      index++; // `--project x`
+    } else operands.push(arg);
+  }
+  return operands.length > 0 && operands.every(isFile);
 }
 
-/**
- * How many test workers fit in the reserved GB: one per `gbEach`, at least one, at most
- * `cores - 1` (the runners' own default). The same rule on every machine; no environment
- * is read (a runner may read `VITEST_MAX_WORKERS` with `parseInt`, so "50%" becomes 50).
- */
-export function workerCount(gb: number, gbEach: number, cores: number): number {
-  return Math.max(1, Math.min(Math.floor(gb / gbEach), cores - 1));
-}
-
-/**
- * The command with `<flag>=<n>` added for a kind with `workers`, unless the command
- * already says how many. Added before a `--`, where a runner would read it as a filter.
- */
-export function withWorkers(
-  kind: KindSpec,
-  command: readonly [string, ...string[]],
-  workers: number,
-): [string, ...string[]] {
-  const [program, ...args] = command;
-  const spec = kind.workers;
-  if (spec === undefined) return [program, ...args];
-  const names = [spec.flag, ...(spec.aliases ?? [])];
-  const chosen = args.some((arg) =>
-    names.some((name) => arg === name || arg.startsWith(`${name}=`)),
-  );
-  if (chosen) return [program, ...args];
-  const flag = `${spec.flag}=${String(workers)}`;
-  const end = args.indexOf("--");
-  return end === -1
-    ? [program, ...args, flag]
-    : [program, ...args.slice(0, end), flag, ...args.slice(end)];
+/** The ignored size fields one kind still sets, in `IGNORED_KIND_FIELDS` order. */
+export function ignoredFieldsOf(kind: KindSpec): string[] {
+  return IGNORED_KIND_FIELDS.filter((field) => kind[field] !== undefined);
 }

@@ -2565,10 +2565,10 @@ describe("the actions", () => {
         csrf,
       );
       expect(JSON.parse(saved.body).ok).toBe(true);
-      // On is the judge's non-default switch since D66 (off is the default, so "off" would be
-      // written as no entry and there would be nothing to put back).
+      // Off is the judge's non-default switch since 2026-10-27 (on is the default, so "on" would
+      // be written as no entry and there would be nothing to put back).
       expect(
-        JSON.parse((await world.post("slot.fallback", { on: true, slot: "judge" }, csrf)).body).ok,
+        JSON.parse((await world.post("slot.fallback", { on: false, slot: "judge" }, csrf)).body).ok,
       ).toBe(true);
       expect(
         JSON.parse((await world.post("switch", { name: "judge", on: false }, csrf)).body).ok,
@@ -2578,7 +2578,7 @@ describe("the actions", () => {
       const config = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         fallback?: Record<string, boolean>;
       };
-      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": true });
+      expect(config.fallback).toEqual({ "cc-smart-dev-kit-judge": false });
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2998,23 +2998,51 @@ describe("the settings page", () => {
       await world.call("/");
       const csrf = await world.csrfOf();
       // No confirmation: nothing is written, and the answer says so.
-      const no = await world.post("workflow.set", { key: "switches.jobRoute", value: true }, csrf);
+      const no = await world.post(
+        "workflow.set",
+        { key: "switches.sessionNames", value: true },
+        csrf,
+      );
       expect(JSON.parse(no.body).ok).toBe(false);
       expect(workflow.calls.writeProjectSetting).toEqual([]);
       expect(workflow.calls.writePersonalSetting).toEqual([]);
       // Confirmed: the project's own writer, with the folder the portal runs in.
       const yes = await world.post(
         "workflow.set",
-        { confirm: true, key: "switches.jobRoute", value: true },
+        { confirm: true, key: "switches.sessionNames", value: true },
         csrf,
       );
       expect(JSON.parse(yes.body).ok).toBe(true);
       // The project's own writer, with the folder the portal runs in and the portal's own
       // environment: git inside it never reads `process.env`.
       expect(workflow.calls.writeProjectSetting).toEqual([
-        { cwd: world.cwd, env: world.ctx.env, key: "switches.jobRoute", value: true },
+        { cwd: world.cwd, env: world.ctx.env, key: "switches.sessionNames", value: true },
       ]);
       expect(workflow.calls.writePersonalSetting).toEqual([]);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  // The heavy-job route is the person's default for every project (the project's own value
+  // wins over it): the page writes it into their own file, with no project file and no yes.
+  test("the heavy-job route is the person's default: written to their own file, not the project's", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const workflow = fakeWorkflow();
+    const world = await open({ backendPort: backend.port, workflow });
+    try {
+      await world.call("/");
+      const answer = await world.post(
+        "workflow.set",
+        { key: "switches.jobRoute", value: true },
+        await world.csrfOf(),
+      );
+      expect(JSON.parse(answer.body).ok).toBe(true);
+      expect(workflow.calls.writeProjectSetting).toEqual([]);
+      expect(workflow.calls.writePersonalSetting).toEqual([
+        { key: "switches.jobRoute", value: true },
+      ]);
     } finally {
       world.portal.stop();
       backend.stop();
@@ -4148,11 +4176,8 @@ describe("the JSON API", () => {
       expect(body.error).toBe(null);
       expect((body.slots as unknown[]).length).toBe(5);
       expect(body.switches).toMatchObject({ gateway: false, judge: false, models: false });
-      expect(body.jobs).toEqual({
-        budgetGb: expect.any(Number),
-        heldGb: expect.any(Number),
-        waiting: expect.any(Number),
-      });
+      // Slots in use of the slots there are, and who waits: three slots by default.
+      expect(body.jobs).toEqual({ slots: 3, used: 0, waiting: 0 });
       expect((body.router as { up: boolean }).up).toBe(true);
       // The planted key never reaches any answer.
       expect(response.body).not.toContain(KEY);
@@ -4297,33 +4322,34 @@ describe("the JSON API", () => {
       writeFileSync(join(jobs, "leases", "job-1.json"), holderRecord(4, "bunx tsc --noEmit"));
       writeFileSync(join(jobs, "tickets", "job-2.json"), holderRecord(3, "next build"));
       const body = JSON.parse((await world.call("/api/jobs")).body) as {
-        budgetGb: number;
-        freeGb: null | number;
-        keptGb: number;
+        ceiling: { gb: null | number; why: string };
         memoryGb: number;
         stores: {
-          budgetGb: number;
-          freeGb: number;
           held: Record<string, unknown>[];
+          slots: number;
+          used: number;
           waiting: Record<string, unknown>[];
           where: string;
         }[];
       };
-      expect(body.budgetGb).toBe(10);
-      expect(body.keptGb).toBe(22);
+      // The ceiling is the budget the file names where this machine makes a memory group, and
+      // none (with its reason) where it does not: which one depends on the machine under test.
+      expect([null, 10]).toContain(body.ceiling.gb);
+      expect(body.ceiling.why.length).toBeGreaterThan(0);
       expect(typeof body.memoryGb).toBe("number");
       expect(body.stores).toHaveLength(1);
       expect(body.stores[0]?.where).toBe("machine");
-      expect(body.stores[0]?.budgetGb).toBe(10);
-      expect(body.stores[0]?.freeGb).toBe(6);
+      // One slot of the three default ones is in use; the waiting job holds none yet.
+      expect(body.stores[0]?.slots).toBe(3);
+      expect(body.stores[0]?.used).toBe(1);
       expect(body.stores[0]?.held).toEqual([
         {
           command: "bunx tsc --noEmit",
           folder: "/home/user/my-app",
-          gb: 4,
           kind: "build",
           pid: process.pid,
           since: "2026-10-22T10:00:00.000Z",
+          slot: true,
           user: "my-host",
         },
       ]);
@@ -4331,10 +4357,10 @@ describe("the JSON API", () => {
         {
           command: "next build",
           folder: "/home/user/my-app",
-          gb: 3,
           kind: "build",
           pid: process.pid,
           since: "2026-10-22T10:00:00.000Z",
+          slot: true,
           user: "my-host",
         },
       ]);
@@ -5441,7 +5467,7 @@ describe("the live stream", () => {
       const id = /id: ([^\n]+)/.exec(hello)?.[1] ?? "";
       expect(id.startsWith(`${world.portal.live.runId}:`)).toBe(true);
       await reader.cancel();
-      world.portal.live.publish("jobs", { heldGb: 4 });
+      world.portal.live.publish("jobs", { used: 2 });
       const again = await fetch(`${base}/events`, {
         headers: { "last-event-id": id, "sec-fetch-site": "same-origin" },
       });
@@ -5449,7 +5475,7 @@ describe("the live stream", () => {
       if (next === undefined) throw new Error("no body");
       const text = await readStreamUntil(next, "event: hello");
       expect(text).toContain("event: jobs");
-      expect(text).toContain('"heldGb":4');
+      expect(text).toContain('"used":2');
       // The portal stops for a new version: every stream is told before it ends.
       world.portal.stop();
       const rest = await readToEnd(next);

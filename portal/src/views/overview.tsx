@@ -258,15 +258,14 @@ function PlanCard({
 
 /** The heavy-job queue in one line, linking to its card on Machine. */
 function JobsTile({ jobs }: { jobs: OverviewData["jobs"] }) {
-  const gb = (value: number) => `${value.toLocaleString("en", { maximumFractionDigits: 1 })}`;
   return (
     <AppLink
       href="/machine#heavy-jobs"
       className="flex items-center justify-between gap-3 rounded-xl border bg-card px-6 py-4 text-sm text-card-foreground shadow-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
     >
       <span>
-        <span className="font-semibold">Heavy jobs:</span> {gb(jobs.heldGb)} of {gb(jobs.budgetGb)}{" "}
-        GB
+        <span className="font-semibold">Heavy jobs:</span> {jobs.used} of {jobs.slots}{" "}
+        {jobs.slots === 1 ? "slot" : "slots"} in use
         {jobs.waiting > 0 ? `, ${jobs.waiting} waiting` : ", nobody waits"}
       </span>
       {jobs.waiting > 0 ? (

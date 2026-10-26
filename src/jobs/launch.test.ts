@@ -16,7 +16,6 @@ import {
   readProcStat,
   type StatReader,
 } from "./ancestry";
-import { DEFAULT_KINDS, type KindSpec } from "./kinds";
 import {
   ceilingArgv,
   chooseLaunch,
@@ -243,10 +242,10 @@ describe("exit codes, the kill count, the ceiling", () => {
     expect(oomKiller(null, events(1, 3))).toBeNull();
   });
 
-  test("the slice's ceiling is the machine budget, never below the job, in whole GB", () => {
-    expect(sliceMemoryMax(32, 8)).toBe("32G");
-    expect(sliceMemoryMax(14, 20)).toBe("20G");
-    expect(sliceMemoryMax(32.7, 2.5)).toBe("32G");
+  test("the slice's ceiling is the machine's memory ceiling for heavy jobs, in whole GB", () => {
+    expect(sliceMemoryMax(32)).toBe("32G");
+    expect(sliceMemoryMax(14)).toBe("14G");
+    expect(sliceMemoryMax(32.7)).toBe("32G");
   });
 });
 
@@ -642,16 +641,16 @@ function deps(
     acquire: (job, onWaiting) => {
       const name = job.exclusive === undefined ? "" : ` exclusive ${job.exclusive}`;
       const nested = job.nested === true ? " nested" : "";
+      const held = job.slot ? "a slot" : "no slot";
       r.events.push(
-        `acquire ${job.kind} ${job.gb} GB${name}${nested} pid ${job.pid} in ${job.checkout}: ${job.what}`,
+        `acquire ${job.kind} ${held}${name}${nested} pid ${job.pid} in ${job.checkout}: ${job.what}`,
       );
       const release = () => r.events.push("release");
       // A job that never had to wait says nothing, and reports no wait: the two facts go
       // together, as they do in the queue.
-      if (waitedMs === undefined)
-        return Promise.resolve({ gb: job.gb, release, waitedSince: null });
-      onWaiting("waiting: 8 GB held by host-a (tsc)");
-      return Promise.resolve({ gb: job.gb, release, waitedSince: clock.now - waitedMs });
+      if (waitedMs === undefined) return Promise.resolve({ release, waitedSince: null });
+      onWaiting("waiting: all 3 slots are taken");
+      return Promise.resolve({ release, waitedSince: clock.now - waitedMs });
     },
     isNested: () => Promise.resolve(false),
     ancestorHoldsName: (name) => {
@@ -668,7 +667,6 @@ function deps(
         return true;
       },
     }),
-    memoryMaxFor: (size) => `${32 + size}G`,
     now: () => clock.now,
     run: (argv, scopeUnit) => {
       r.runs.push(argv);
@@ -705,40 +703,33 @@ function deps(
         return true;
       },
     },
-    workersFor: (size, gbEach) => size / gbEach / 4,
     ...rest,
   };
-}
-
-function testRun(): KindSpec {
-  const spec = DEFAULT_KINDS["test:run"];
-  if (spec === undefined) throw new Error("no test:run kind");
-  return spec;
 }
 
 const request: JobRequest = {
   checkout: "/home/user/app-wt-x",
   command: ["vitest", "run", "src/a.test.ts"],
   cpuWeight: 20,
-  gb: 8,
   ioWeight: 20,
   kind: "test:run",
-  spec: testRun(),
+  memoryMax: "32G",
   pid: 4242,
   slice: SLICE,
+  slot: true,
   startedAt: 46_655,
 };
 
-const tsc: Partial<JobRequest> = { command: ["tsgo"], kind: "tsc", spec: { gb: 8 } };
+const tsc: Partial<JobRequest> = { command: ["tsgo"], kind: "tsc" };
 
 describe("runJob", () => {
-  test("reserves, probes, sets the ceiling and the weights, runs once in the scope, then gives back", async () => {
+  test("takes a slot, probes, sets the ceiling and the weights, runs once in the scope, then gives back", async () => {
     const r = recorder();
     expect(await runJob(request, deps(r, { code: 0, oom: [2, 2] }))).toBe(0);
     expect(r.events).toEqual([
-      "acquire test:run 8 GB pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
+      "acquire test:run a slot pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
       "probe",
-      "set cc-smart-dev-kit-heavy.slice MemoryMax=40G",
+      "set cc-smart-dev-kit-heavy.slice MemoryMax=32G",
       "weights cc.slice CPUWeight=20",
       "weights cc-smart.slice CPUWeight=20",
       "weights cc-smart-dev.slice CPUWeight=20",
@@ -768,7 +759,6 @@ describe("runJob", () => {
         "vitest",
         "run",
         "src/a.test.ts",
-        "--maxWorkers=4",
       ],
     ]);
     expect(r.said).toEqual([]); // it never waited: the queue said nothing, and so does the wrapper
@@ -780,8 +770,8 @@ describe("runJob", () => {
       await runJob(request, deps(r, { code: 0, ranMs: 3 * 60_000, waitedMs: 18 * 60_000 })),
     ).toBe(0);
     expect(r.said).toEqual([
-      "waiting: 8 GB held by host-a (tsc)",
-      "Heavy job starts after 18 min: vitest run src/a.test.ts (8 GB)",
+      "waiting: all 3 slots are taken",
+      "Heavy job starts after 18 min: vitest run src/a.test.ts",
       "Heavy job ended: vitest run src/a.test.ts, exit 0 after 3 min",
     ]);
   });
@@ -797,8 +787,8 @@ describe("runJob", () => {
     const end = { code: 143, ranMs: 2 * 60_000, signal: "SIGTERM" as const, waitedMs: 60_000 };
     expect(await runJob(request, deps(r, end))).toBe(143);
     expect(r.said).toEqual([
-      "waiting: 8 GB held by host-a (tsc)",
-      "Heavy job starts after 1 min: vitest run src/a.test.ts (8 GB)",
+      "waiting: all 3 slots are taken",
+      "Heavy job starts after 1 min: vitest run src/a.test.ts",
       "Heavy job ended: vitest run src/a.test.ts, stopped by SIGTERM after 2 min",
     ]);
     const sent = recorder();
@@ -844,8 +834,8 @@ describe("runJob", () => {
     };
     expect(await runJob(request, deps(r, overrides))).toBe(1);
     expect(r.said).toEqual([
-      "waiting: 8 GB held by host-a (tsc)",
-      "Heavy job starts after 18 min: vitest run src/a.test.ts (8 GB)",
+      "waiting: all 3 slots are taken",
+      "Heavy job starts after 18 min: vitest run src/a.test.ts",
       "killed for memory: the heavy jobs running here together went over cc-smart-dev-kit-heavy.slice's ceiling, and the kernel stopped the largest. Run it again when fewer heavy jobs run (exit code 1).",
       "Heavy job ended: vitest run src/a.test.ts, exit 1 after 1 min",
     ]);
@@ -891,7 +881,7 @@ describe("runJob", () => {
     }
   });
 
-  test("runs a nested job directly: no queue, no scope, no worker option", async () => {
+  test("runs a nested job directly: no queue, no scope, no extra option", async () => {
     const r = recorder();
     expect(await runJob(request, deps(r, { code: 4, isNested: () => Promise.resolve(true) }))).toBe(
       4,
@@ -900,20 +890,20 @@ describe("runJob", () => {
     expect(r.runs).toEqual([["vitest", "run", "src/a.test.ts"]]);
   });
 
-  test("a nested job with a name its ancestors do not hold takes the name (0 GB, no line), then runs directly", async () => {
+  test("a nested job with a name its ancestors do not hold takes the name (no slot, no line), then runs directly", async () => {
     const r = recorder();
     const nested = deps(r, { code: 4, isNested: () => Promise.resolve(true) });
     expect(await runJob({ ...request, exclusive: "image" }, nested)).toBe(4);
     expect(r.events).toEqual([
       "ancestor holds image?",
-      "acquire test:run 0 GB exclusive image nested pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
+      "acquire test:run no slot exclusive image nested pid 4242 in /home/user/app-wt-x: vitest run src/a.test.ts",
       "run",
       "release",
     ]);
     expect(r.runs).toEqual([["vitest", "run", "src/a.test.ts"]]);
   });
 
-  test("a nested job that waited for its name says when it starts and how it ended, with no GB", async () => {
+  test("a nested job that waited for its name says when it starts and how it ended, with no slot", async () => {
     const r = recorder();
     const nested = deps(r, {
       code: 4,
@@ -923,7 +913,7 @@ describe("runJob", () => {
     });
     expect(await runJob({ ...request, exclusive: "image" }, nested)).toBe(4);
     expect(r.said).toEqual([
-      "waiting: 8 GB held by host-a (tsc)",
+      "waiting: all 3 slots are taken",
       "Heavy job starts after 2 min: vitest run src/a.test.ts",
       "Heavy job ended: vitest run src/a.test.ts, exit 4 after 30 s",
     ]);
@@ -939,32 +929,31 @@ describe("runJob", () => {
     expect(r.events).toEqual(["run"]);
   });
 
-  test("a job with a name only (no kind, 0 GB) takes the name and runs plain", async () => {
+  test("a job with a name only (no kind, no slot) takes the name and runs plain", async () => {
     const r = recorder();
     await runJob(
       {
         ...request,
         command: ["docker", "build", "."],
         exclusive: "image",
-        gb: 0,
         kind: "",
-        spec: null,
+        slot: false,
       },
       deps(r),
     );
     expect(r.events).toEqual([
-      "acquire  0 GB exclusive image pid 4242 in /home/user/app-wt-x: docker build .",
+      "acquire  no slot exclusive image pid 4242 in /home/user/app-wt-x: docker build .",
       "run",
       "release",
     ]);
     expect(r.runs).toEqual([["docker", "build", "."]]);
   });
 
-  test("a print-only job (0 GB) runs plain: no probe, no ceiling change", async () => {
+  test("a print-only job (no slot) runs plain: no probe, no ceiling change", async () => {
     const r = recorder();
-    await runJob({ ...request, ...tsc, command: ["tsgo", "--version"], gb: 0 }, deps(r));
+    await runJob({ ...request, ...tsc, command: ["tsgo", "--version"], slot: false }, deps(r));
     expect(r.events).toEqual([
-      "acquire tsc 0 GB pid 4242 in /home/user/app-wt-x: tsgo --version",
+      "acquire tsc no slot pid 4242 in /home/user/app-wt-x: tsgo --version",
       "run",
       "release",
     ]);
@@ -1011,17 +1000,34 @@ describe("runJob", () => {
     );
     expect(r.runs[0]?.[0]).toBe("systemd-run");
     expect(r.said).toContain(
-      "could not set cc-smart-dev-kit-heavy.slice MemoryMax=40G: the job runs without the slice's ceiling",
+      "could not set cc-smart-dev-kit-heavy.slice MemoryMax=32G: the job runs without the slice's ceiling",
     );
   });
 
-  test("adds no worker option to a shell line, where it would land in $0", async () => {
+  // The queue counts jobs, not gigabytes: it adds no worker count, so the runner's own
+  // default applies on a machine that is shared by a few jobs, not sliced by memory.
+  test("adds no option to the command: a test runner's own worker default applies", async () => {
     const r = recorder();
+    await runJob(request, deps(r, { launchFacts: () => null }));
     await runJob(
       { ...request, command: ["sh", "-c", "vitest run"] },
       deps(r, { launchFacts: () => null }),
     );
-    expect(r.runs).toEqual([["sh", "-c", "vitest run"]]);
+    await runJob(
+      { ...request, command: ["bun", "test", "--", "heavy-job"] },
+      deps(r, { launchFacts: () => null }),
+    );
+    expect(r.runs).toEqual([
+      ["vitest", "run", "src/a.test.ts"],
+      ["sh", "-c", "vitest run"],
+      ["bun", "test", "--", "heavy-job"],
+    ]);
+  });
+
+  test("sets the ceiling the request carries, whatever the job is", async () => {
+    const r = recorder();
+    await runJob({ ...request, memoryMax: "7G" }, deps(r));
+    expect(r.events).toContain("set cc-smart-dev-kit-heavy.slice MemoryMax=7G");
   });
 
   test("starts nothing when a signal came while it waited, and still gives back", async () => {
@@ -1030,7 +1036,7 @@ describe("runJob", () => {
     expect(r.runs).toEqual([]);
     // It waited, so the queue's own line is there; nothing started, so there is no start
     // line and no end line to print.
-    expect(r.said).toEqual(["waiting: 8 GB held by host-a (tsc)"]);
+    expect(r.said).toEqual(["waiting: all 3 slots are taken"]);
     expect(r.events.at(-1)).toBe("release");
   });
 

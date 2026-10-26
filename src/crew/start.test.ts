@@ -18,9 +18,10 @@ import {
 } from "../testing/crew-world";
 import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
+import { launchLine, withCrewCommand } from "./brief";
 import { runCrew } from "./command";
 import { withPlacesLock } from "./places";
-import { clashPairKey, filesOverlap, startQueued } from "./start";
+import { chooseLaunch, clashPairKey, crewSettings, filesOverlap, startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -218,7 +219,9 @@ describe("D25: crew start returns at once", () => {
         "--settings",
         settingsFile,
         "--",
-        `You are the crew session C my-app master-plan B6b portal-live for the lead LEAD my-app master-plan. Work by /cc-smart-dev-kit:crew. Read ${briefFile} first: it is your task, and it says how you report.`,
+        withCrewCommand(
+          launchLine("C my-app master-plan B6b portal-live", "LEAD my-app master-plan", briefFile),
+        ),
       ],
       ["agents", "--json", "--all"],
     ]);
@@ -278,11 +281,11 @@ describe("D25: crew start returns at once", () => {
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD").trim()).toBe("crew/B6b-portal-live");
     expect(git(worktree, "rev-parse", "HEAD").trim()).toBe(head);
     // The settings file names the crew session to its own session, turns Claude Code's retry
-    // watchdog on with no wait limit (D42), and drops the claude.ai connectors; with no plugin
-    // list read, it turns no plugin off. The `--mcp-config` file passes no server, because this
-    // world has no Tavily key. All three files are the kit's, 0600.
+    // watchdog on with no wait limit (D42), drops the claude.ai connectors, and keeps Remote
+    // Control off; with no plugin list read, it turns no plugin off. The `--mcp-config` file
+    // passes no server, because this world has no Tavily key. All three files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
     expect(readFileSync(mcpFile, "utf8")).toBe(`{\n  "mcpServers": {}\n}\n`);
@@ -403,7 +406,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     // The registration is the kit's own, with Claude Code's placeholder, never a key.
     expect(readFileSync(mcpFile, "utf8")).toBe(
@@ -931,10 +934,10 @@ describe("RV3: a crew session runs on the PROJECT's gateway, not the user's file
     return world;
   }
 
-  test("the machine is off and the project is on: the project's chain answers, at the affordable effort", async () => {
+  test("the machine is off and the project is on: the project's chain answers, at the kind's own effort", async () => {
     const world = await gatewayWorld(null, ROUTER);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash high ·");
   });
 
   test("D50: a ui session under the project's gateway stays on the opus tier at high: the name is the tier, whatever answers it", async () => {
@@ -945,16 +948,61 @@ describe("RV3: a crew session runs on the PROJECT's gateway, not the user's file
     expect(world.out[0]).toContain("· opus → omniroute:glm-5.3-flash high ·");
   });
 
-  test("the machine is on and the project is off: Claude answers, so no affordable effort is chosen", async () => {
+  test("the machine is on and the project is off: Claude answers, at the same effort", async () => {
     const world = await gatewayWorld(ROUTER, "https://api.anthropic.com");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out[0]).toContain("· sonnet high ·");
   });
 
-  test("the machine is on and the project says nothing: the machine's gateway answers, at the affordable effort", async () => {
+  test("the machine is on and the project says nothing: the machine's gateway answers, at the kind's own effort", async () => {
     const world = await gatewayWorld(ROUTER, null);
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
-    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash max ·");
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash high ·");
+  });
+
+  test.each(["medium", "high", "xhigh", "max"])(
+    "an affordable backend takes --effort %s, like Claude (the owner, 2026-10-26)",
+    async (effort) => {
+      const world = await gatewayWorld(null, ROUTER);
+      expect(await runCrew(startArgs(world.brief, "--effort", effort), world.ctx())).toBe(0);
+      expect(world.out[0]).toContain(`· sonnet → omniroute:glm-5.3-flash ${effort} ·`);
+    },
+  );
+
+  test("a model asked for alone on a backend runs at the kind's effort, not at max", async () => {
+    const world = await gatewayWorld(null, ROUTER);
+    expect(await runCrew(startArgs(world.brief, "--model", "sonnet"), world.ctx())).toBe(0);
+    expect(world.out[0]).toContain("· sonnet → omniroute:glm-5.3-flash high ·");
+  });
+
+  describe("chooseLaunch, with no process started (the owner, 2026-10-26)", () => {
+    const choose = async (override: { effort: null | string; model: null | string }) => {
+      const world = await gatewayWorld(null, ROUTER);
+      const { env, paths } = world.ctx();
+      return chooseLaunch("build", override, { env, paths }, world.repo);
+    };
+
+    test("the kind's own effort on a backend: high, not max", async () => {
+      expect(await choose({ effort: null, model: null })).toMatchObject({
+        effort: "high",
+        model: "sonnet",
+      });
+      expect(await choose({ effort: null, model: "sonnet" })).toMatchObject({ effort: "high" });
+    });
+
+    test.each(["medium", "high", "xhigh", "max"])(
+      "--effort %s on a backend is allowed",
+      async (effort) => {
+        const chosen = await choose({ effort, model: null });
+        expect(chosen).toMatchObject({ effort, model: "sonnet" });
+        expect("refusal" in chosen).toBe(false);
+      },
+    );
+
+    test("`low` stays refused on a backend, by the guard", async () => {
+      const chosen = await choose({ effort: "low", model: null });
+      expect(chosen).toHaveProperty("refusal");
+    });
   });
 });
 
@@ -1805,5 +1853,26 @@ describe("WN1: a clash pair is said once, and a glob that matches too much is wa
     trackDocs(world);
     expect(await startSlug(world, "narrow", "docs/p3*.md, docs/p2.md")).toBe(0);
     expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([]);
+  });
+});
+
+describe("Remote Control: off in every crew session", () => {
+  test("the settings file a launch writes holds remoteControlAtStartup false, beside a plugin list or none", () => {
+    // Setup turns auto-connect on for the person's own sessions; a crew session's `--settings`
+    // file is the one source that turns it off for that session alone (a project file cannot
+    // turn it on, and need not turn it off). No process is started here, so it runs anywhere.
+    expect(crewSettings("c1", [])).toEqual({
+      disableClaudeAiConnectors: true,
+      env: {
+        CC_SMART_DEV_KIT_CREW: "c1",
+        CLAUDE_CODE_RETRY_WATCHDOG: "1",
+        CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS: "300000",
+      },
+      remoteControlAtStartup: false,
+    });
+    expect(crewSettings("c2", ["stripe@claude-plugins-official"])).toMatchObject({
+      enabledPlugins: { "stripe@claude-plugins-official": false },
+      remoteControlAtStartup: false,
+    });
   });
 });

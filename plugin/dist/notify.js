@@ -1,7 +1,7 @@
 // @bun
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync9 } from "fs";
-import { join as join13 } from "path";
+import { existsSync as existsSync8 } from "fs";
+import { join as join12 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -95,7 +95,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.4.1",
+  version: "1.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -182,9 +182,9 @@ function shellQuote(value) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync8, readFileSync as readFileSync9, rmSync, statSync as statSync5, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync7, readFileSync as readFileSync8, rmSync, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename2, join as join11 } from "path";
+import { basename as basename2, join as join10 } from "path";
 
 // src/crew/names.ts
 var MAX_SESSION_NAME = 60;
@@ -6367,19 +6367,20 @@ var matchRuleSchema = union([
   })
 ]);
 var kindSpecSchema = strictObject({
-  gb: number2().int().min(0).max(1024),
-  filesGb: number2().int().min(0).max(1024).optional(),
-  maxFiles: number2().int().min(1).optional(),
   printOnly: array(string2().min(1)).optional(),
+  noSlotForFiles: boolean2().optional(),
   skipWords: array(string2().min(1)).optional(),
   valuedFlags: array(string2().min(1)).optional(),
+  match: array(matchRuleSchema).optional(),
+  about: string2().min(1).optional(),
+  gb: number2().int().min(0).max(1024).optional(),
+  filesGb: number2().int().min(0).max(1024).optional(),
+  maxFiles: number2().int().min(1).optional(),
   workers: strictObject({
     flag: string2().min(1),
     aliases: array(string2().min(1)).optional(),
     gbEach: number2().positive()
-  }).optional(),
-  match: array(matchRuleSchema).optional(),
-  about: string2().min(1).optional()
+  }).optional()
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
@@ -6520,6 +6521,9 @@ var workflowSchema = strictObject({
     archiveDays: numberField("crew.archiveDays"),
     tag: tagSchema.optional()
   }).optional()
+});
+var personalWorkflowSchema = workflowSchema.extend({
+  switches: strictObject({ jobRoute: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
   autoCommit: false,
@@ -6945,7 +6949,7 @@ function loadWorkflow(file) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
-  const parsed = workflowSchema.safeParse(raw);
+  const parsed = personalWorkflowSchema.safeParse(raw);
   if (!parsed.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
@@ -7208,8 +7212,8 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync3 } from "fs";
-import { join as join10 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
+import { join as join9 } from "path";
 
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
@@ -7236,8 +7240,25 @@ var breakerSchema = object({
   since: number2(),
   targets: array(breakerTargetSchema)
 });
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
 var stateSchema2 = object({
   breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
   seenClaude: record(string2(), number2()).optional(),
@@ -7256,8 +7277,11 @@ function parseLimitState(text) {
   const parsed = stateSchema2.safeParse(raw);
   return parsed.success ? parsed.data : null;
 }
+var UNKNOWN_CLOCK = "an unknown time";
 function formatClock(epochSec, nowMs, timeZone) {
   const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime()))
+    return UNKNOWN_CLOCK;
   const day = (date) => new Intl.DateTimeFormat("en-CA", {
     day: "2-digit",
     month: "2-digit",
@@ -7586,7 +7610,7 @@ function fallbackOn(config, slot) {
   const set = config.fallback;
   if (set !== undefined && Object.hasOwn(set, slot))
     return set[slot] === true;
-  return false;
+  return slot === JUDGE_SLOT;
 }
 function aliasError(name, to, config) {
   if (name.trim() === "" || /\s/.test(name))
@@ -7898,86 +7922,8 @@ function retryWatchdogState(paths) {
   return turnsOn(current.value) ? "yours" : "disabled";
 }
 
-// src/jobs/config.ts
-import { isAbsolute, join as join9 } from "path";
-var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
-var weightSchema = union([literal(0), literal("off"), number2().int().min(1).max(1e4)]);
-var jobsMachineConfigSchema = strictObject({
-  stateDir: absolutePath.optional(),
-  budgetGb: number2().int().min(1).optional(),
-  reserveGb: number2().int().min(0).optional(),
-  sharedDirs: array(absolutePath).optional(),
-  launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: weightSchema.optional(),
-  ioWeight: weightSchema.optional()
-});
-
 // src/jobs/memory.ts
 var GIB = 1024 ** 3;
-
-// src/jobs/queue.ts
-var GIB2 = 1024 ** 3;
-
-// src/jobs/store.ts
-import {
-  chmodSync,
-  existsSync as existsSync6,
-  mkdirSync as mkdirSync4,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync7,
-  realpathSync as realpathSync3,
-  renameSync as renameSync2,
-  statfsSync,
-  statSync as statSync4,
-  unlinkSync as unlinkSync2,
-  utimesSync,
-  writeFileSync as writeFileSync2
-} from "fs";
-var NETWORK_FS = new Map([
-  [26985, "NFS"],
-  [20859, "SMB"],
-  [4283649346, "CIFS"],
-  [4266872130, "SMB2"],
-  [16914839, "9p"],
-  [1397113167, "AFS"],
-  [1799439955, "AFS"],
-  [12805120, "Ceph"],
-  [1937076805, "Coda"],
-  [22092, "NCP"],
-  [198183888, "Lustre"],
-  [18225520, "GFS2"],
-  [1952539503, "OCFS2"]
-]);
-var NETWORK_FUSE = new Set([
-  "sshfs",
-  "rclone",
-  "s3fs",
-  "gcsfuse",
-  "goofys",
-  "glusterfs",
-  "juicefs",
-  "davfs",
-  "curlftpfs",
-  "cephfs"
-]);
-var realSharedFolderFacts = {
-  platform: process.platform,
-  fsType: (dir) => {
-    try {
-      return statfsSync(dir).type;
-    } catch {
-      return null;
-    }
-  },
-  mountinfo: () => {
-    try {
-      return readFileSync7("/proc/self/mountinfo", "utf8");
-    } catch {
-      return null;
-    }
-  }
-};
 
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
@@ -8097,6 +8043,11 @@ var waitingForSchema = discriminatedUnion("kind", [
     resetsAt: text2.nullable()
   }),
   looseObject({
+    kind: literal("safety-checks"),
+    scope: text2,
+    since: text2
+  }),
+  looseObject({
     kind: literal("unknown"),
     since: text2,
     slot: text2.exactOptional()
@@ -8157,6 +8108,7 @@ var crewFields = object({
     why: text2
   }).optional(),
   lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
+  lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
   startedAt: text2.nullable().optional(),
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
@@ -8255,7 +8207,7 @@ var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
-  noted: boolean2().default(false),
+  noted: boolean2().optional(),
   offset: count,
   said: record(string2(), string2()),
   resumedAt: number2().int().min(0).optional(),
@@ -8265,11 +8217,13 @@ var watchStateFields = object({
 var watchLeaseFields = object({
   at: number2().int().min(0),
   host: string2(),
+  once: boolean2().optional(),
   pid: number2().int().positive(),
   pidns: string2().nullable().default(null),
   startTime: string2().nullable(),
   token: text2
 });
+var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
   last: _enum(["report", "step"]).nullable(),
@@ -8376,48 +8330,41 @@ function uiEffortAllowed(effort) {
 var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
 var EFFORT_AUTO = "auto";
 var CREW_KINDS = {
-  build: { about: "routine building", affordableEffort: "max", effort: "high", model: "sonnet" },
+  build: { about: "routine building", effort: "high", model: "sonnet" },
   docs: {
     about: "docs and their updates",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
-  tests: { about: "tests and test runs", affordableEffort: "max", effort: "high", model: "sonnet" },
+  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
   security: {
     about: "code that touches security",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   money: {
     about: "code that touches money",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   permissions: {
     about: "code that touches permissions",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
   schema: {
     about: "a schema or a contract",
-    affordableEffort: "max",
     effort: "high",
     model: "sonnet"
   },
-  deploy: { about: "deploy plumbing", affordableEffort: "max", effort: "high", model: "sonnet" },
+  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
   architecture: {
     about: "architecture and design",
-    affordableEffort: "xhigh",
     effort: "xhigh",
     model: "opus"
   },
   ui: {
     about: "UI and UX judgment",
-    affordableEffort: null,
     effort: UI_POLICY.minEffort,
     model: UI_POLICY.tiers[0]
   }
@@ -8596,7 +8543,7 @@ function levelsText(levels) {
   return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
 }
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).";
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 var NO_EFFORT = [
   "This Agent launch names no `effort`.",
   `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
@@ -8704,11 +8651,11 @@ function planAlert(input, ctx) {
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync6(paths.gatewayConfigFile);
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync8(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -8736,7 +8683,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync8(join10(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync7(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
@@ -8774,6 +8721,57 @@ var spawnRunner = ({ argv, timeoutMs }) => {
   } catch {
     return { exitCode: null, stdout: "", timedOut: false };
   }
+};
+
+// src/crew/skills.ts
+var CREW_SKILL = `${PLUGIN}:crew`;
+var LEAD_SKILL = `${PLUGIN}:lead`;
+
+// src/crew/brief.ts
+var CREW_COMMAND = `/${CREW_SKILL}`;
+var SELF_WATCH_ARGS = "crew self-watch";
+var LEAD_WATCH_ARGS = "crew watch";
+function literal2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function monitorCommand(args) {
+  const launcher = literal2(COMMAND);
+  return new RegExp(`^\\s*(?:"(?:[^"]*[\\\\/])?${launcher}"|(?:[^\\s"]*[\\\\/])?${launcher})\\s+${literal2(args)}\\s*$`);
+}
+var SELF_WATCH_COMMAND = monitorCommand(SELF_WATCH_ARGS);
+var LEAD_WATCH_COMMAND = monitorCommand(LEAD_WATCH_ARGS);
+function taskCommand(task) {
+  if (typeof task !== "object" || task === null || Array.isArray(task))
+    return null;
+  const command = task.command;
+  return typeof command === "string" ? command : null;
+}
+function isLeadWatchTask(task) {
+  const command = taskCommand(task);
+  return command !== null && LEAD_WATCH_COMMAND.test(command);
+}
+var COMMAND_WRAPPER = new RegExp(`^<command-message>${CREW_SKILL}</command-message>\\r?\\n<command-name>/${CREW_SKILL}</command-name>(?:\\r?\\n<command-args>([\\s\\S]*)</command-args>)?$`);
+var REPORT_COMMAND = `${COMMAND} crew report`;
+var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
+var CREW_NEVER_DOES = {
+  answer: "answers its lead's questions",
+  lead: "leads",
+  "lead tell": "tells another lead",
+  model: "changes a crew session's model or effort",
+  resume: "stops, removes or resumes crew sessions",
+  start: "starts crew sessions",
+  watch: "watches its lead's crew sessions"
+};
+var CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  model: CREW_NEVER_DOES.model,
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch
 };
 
 // src/shell/command.ts
@@ -9139,6 +9137,11 @@ function lex(text, options) {
         }
       }
       if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
+      if (!blind && char === "&" && (current.endsWith(">") && !current.endsWith(`${escaper}>`) || bash && next === ">")) {
         take(char);
         at++;
         continue;
@@ -10248,8 +10251,9 @@ function verifyGateWouldBlock(input, config, env) {
     return false;
   if (crewIdOf(env) !== null)
     return false;
-  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
     return false;
+  }
   const check = config.checks?.fast;
   if (check === undefined)
     return false;
@@ -10322,20 +10326,20 @@ function forget(file) {
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync5(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync4(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
 }
 function markWaiting(file) {
   try {
-    writeFileSync4(file, `${Date.now()}
+    writeFileSync3(file, `${Date.now()}
 `);
   } catch {}
 }
 function markFinished(file) {
   try {
-    writeFileSync4(file, `${Date.now()}
+    writeFileSync3(file, `${Date.now()}
 `);
   } catch {}
 }
@@ -10349,7 +10353,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync9(join11(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync8(join10(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject3(settings) || !isJsonObject3(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
@@ -10358,7 +10362,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync9(join11(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync8(join10(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject3(installed) || !isJsonObject3(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
@@ -10478,7 +10482,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync8(ctx.finished))
+      if (input.stop_hook_active === true && existsSync7(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -10535,7 +10539,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync9(file, "utf8").trim();
+    const text = readFileSync8(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -10543,7 +10547,7 @@ function readFailed(file) {
 }
 function writeFailed(file, key) {
   try {
-    writeFileSync4(file, key);
+    writeFileSync3(file, key);
   } catch {}
 }
 function terminalRoute(event, env, notificationType = "") {
@@ -10587,7 +10591,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync9(file, "utf8"));
+    parsed = JSON.parse(readFileSync8(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -10652,9 +10656,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join11(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join11(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join11(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join10(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join10(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join10(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -10739,8 +10743,8 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync3, constants, openSync as openSync3, readlinkSync as readlinkSync2, statSync as statSync6, writeSync } from "fs";
-import { join as join12 } from "path";
+import { closeSync as closeSync3, constants, openSync as openSync3, readlinkSync as readlinkSync2, statSync as statSync5, writeSync } from "fs";
+import { join as join11 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -10759,7 +10763,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join12(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join11(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -10796,7 +10800,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync6(path).uid;
+        return statSync5(path).uid;
       } catch {
         return null;
       }
@@ -10822,11 +10826,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join13(paths.binDir, LAUNCHER_NAME);
+    const launcher = join12(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync9(launcher) ? launcher : null,
+      launcher: existsSync8(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,

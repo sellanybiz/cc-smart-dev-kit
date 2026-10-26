@@ -12,9 +12,14 @@
  *   0.4.x `modelSlots` entry go with it. A profile has no saved chain of its own, so its chain
  *   goes (the file's backup keeps it), and the slot is the machine's again, which is Claude. A
  *   profile's own `"claude"` stays: it says what it says.
- * - **Every fallback switch is off**: the setting is removed (off is the default now), the
- *   judge's included, a saved chain's and each profile's too. A switch that was on gets a line;
- *   an explicit off is the default's own value, so it goes without one.
+ * - **Every fallback switch is off**: the setting is removed (off is the default now), a saved
+ *   chain's and each profile's too. A switch that was on gets a line; an explicit off is the
+ *   default's own value, so it goes without one. **The judge's switch is the one exception** (the
+ *   owner, 2026-10-27): its default is on (`fallbackOn`), so an explicit on is the default's own
+ *   value and goes without a line, and an explicit off stays, the machine's and each profile's.
+ *   Before D66 the judge's default was on too, so an explicit off in a config this move reads is
+ *   the person's own `gateway fallback judge off`; no version of the kit wrote one for them, and
+ *   removing it would turn a stand-in on that they turned off.
  * - **Nothing else is touched**: the backends and their keys, the port, the aliases, the
  *   judge's test proofs. A profile left with nothing to say stays a profile, so its project's
  *   URL still resolves.
@@ -67,13 +72,28 @@ function inSlotOrder(keys: readonly string[]): string[] {
   return [...known, ...keys.filter((key) => !known.includes(key)).sort()];
 }
 
-/** The slots a `{"<slot>": true | false}` record turns on. */
+/**
+ * The slots a `{"<slot>": true | false}` record turns on, the move's change to off. Not the
+ * judge: its default is on, so an explicit on changes nothing.
+ */
 function switchedOn(record: Readonly<Record<string, boolean>> | undefined): string[] {
   return inSlotOrder(
     Object.entries(record ?? {})
-      .filter(([, on]) => on)
+      .filter(([slot, on]) => on && slot !== JUDGE_SLOT)
       .map(([slot]) => slot),
   );
+}
+
+/**
+ * The one switch the move keeps: the judge's explicit off, as a `fallback` record; undefined
+ * when there is none (an absent entry, or an explicit on, which is the default's own value).
+ */
+function judgeOffOf(
+  record: Readonly<Record<string, boolean>> | undefined,
+): Record<string, boolean> | undefined {
+  return record !== undefined && Object.hasOwn(record, JUDGE_SLOT) && record[JUDGE_SLOT] === false
+    ? { [JUDGE_SLOT]: false }
+    : undefined;
 }
 
 /** A saved chain without its fallback switch. */
@@ -112,7 +132,8 @@ export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | 
   // (the config refuses one without), and none is left.
   const profiles = Object.fromEntries(
     Object.entries(next.profiles ?? {}).map(([name, profile]) => {
-      const { breaker: _breaker, fallback: _fallback, kept, slots, ...rest } = profile;
+      const { breaker: _breaker, fallback, kept, slots, ...rest } = profile;
+      const judgeOff = judgeOffOf(fallback);
       const own = Object.entries(slots ?? {});
       for (const [key, entry] of own) {
         if (entry !== "claude") {
@@ -139,6 +160,7 @@ export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | 
         name,
         {
           ...rest,
+          ...(judgeOff === undefined ? {} : { fallback: judgeOff }),
           ...(Object.keys(claudeOnly).length > 0 ? { slots: claudeOnly } : {}),
           ...(kept === undefined ? {} : { kept: keptWithoutFallback(kept) }),
         },
@@ -159,9 +181,11 @@ export function planClaudeDefaults(config: GatewayConfig): ClaudeDefaultsPlan | 
     (key) => `fallback ${slotName(key)} (saved chain): on → off`,
   );
 
-  const { fallback: _machine, kept, profiles: _profiles, ...rest } = next;
+  const { fallback: machine, kept, profiles: _profiles, ...rest } = next;
+  const judgeOff = judgeOffOf(machine);
   const moved: GatewayConfig = {
     ...rest,
+    ...(judgeOff === undefined ? {} : { fallback: judgeOff }),
     ...(kept === undefined ? {} : { kept: keptWithoutFallback(kept) }),
     ...(Object.keys(profiles).length === 0 ? {} : { profiles }),
   };

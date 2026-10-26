@@ -314,7 +314,8 @@ A local router in front of OmniRoute and Ollama Cloud (`gateway.md`). It gives m
 affordable models to subagent slots, and an opt-in judge for auto mode's safety check.
 
 - Slots `cc-smart-dev-kit-scout`, `cc-smart-dev-kit-worker`, `cc-smart-dev-kit-judge`
-  (the judge off by default).
+  (the judge: Claude first; since 2026-10-27 its tested worker stand-ins judge while Claude is
+  limited or down, by default).
 - A general `aliases` map in its config, so a machine's old slot names keep working while
   it moves to the new ones. The plugin ships none; `migrate` writes the ones a 0.2.x
   machine needs.
@@ -424,9 +425,9 @@ The release on every machine, `doctor` green on each.
 
 ## 12 — The heavy-job queue (done, 0.3.0)
 
-`cc-smart-dev-kit job run` makes heavy jobs (a type check, a test run, a build) wait for
-free memory instead of freezing the machine: each job reserves its gigabytes, waits its
-turn in one machine-wide queue, and runs in its own cgroup inside
+`cc-smart-dev-kit job run` makes heavy jobs (a type check, a test run, a build) take turns
+instead of freezing the machine: each job takes one slot (it reserved its gigabytes in the
+first version), waits its turn in one machine-wide queue, and runs in its own cgroup inside
 `cc-smart-dev-kit-heavy.slice`. How a job waits and runs, the kinds, the config and the
 shared view: [jobs.md](jobs.md).
 
@@ -446,7 +447,10 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   extension, so `doctor` neither warns nor gives that advice.
 - **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
   finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
-  for a removal by hand. Reading mount points there is a design decision.
+  for a removal by hand. The same answer refuses every `crew rm --discard` there ("its mount
+  points could not be read"), so a crew session whose work is not merged cannot be dropped on
+  Windows or macOS (seen on a Windows 11 PC, 2026-10-27); after a merge `crew rm` works. Reading
+  mount points there is a design decision.
 - **One quiet-facts helper for the crew tests.** Three copies give a test fixed machine facts
   today (`QUIET_MACHINE` in `src/crew/end.test.ts`, `quietFacts`, `quietScan`); one helper in
   `src/testing/`, and a default `scanFacts` in `crew-world.ts`'s `ctx`, would keep every crew
@@ -476,11 +480,16 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
   stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
   person's machine.
-- **Plugin monitors with telemetry off.** Claude Code 2.1.310's changelog says a plugin's
-  monitors now run with telemetry off too. The kit still assumes they do not:
-  `monitorsRunHere` (`src/crew/telemetry.ts`), the `crew watch --once` fallback
-  (`src/crew/watch.ts`), the lead skill, `docs/design/crew.md` and the contract's monitors row.
-  Prove it in a throwaway session, then let the kit follow (a plugin change: a version bump).
-  Until then a lead with telemetry off keeps polling with `--once`, which works either way.
+- **Plugin monitors with telemetry off: the live proof.** Claude Code 2.1.310's changelog says a
+  plugin's monitors now run with telemetry off too, and the kit follows it (1.5.0): the
+  telemetry check (`src/crew/telemetry.ts`) and the `crew watch --once` fallback for it are
+  gone, and the lead skill, `docs/design/crew.md` and the contract's monitors row say so. Still
+  owed: a throwaway session with `DISABLE_TELEMETRY=1` in which `crew-events` and `crew-self`
+  start and print a line (`docs/claude-code-contract.md`, the monitors row).
+- **Crew arming and Remote Control, live.** Read from the 2.1.310 binary, not yet seen in a
+  session: a monitor arms once per process on the skill's dispatch (a `--bg --resume` with the
+  crew command arms `crew-self` again), a slash prompt dispatches in `--bg`, the
+  `background_tasks` entry of a monitor, and a crew session's `--settings` file turning Remote
+  Control off (`docs/claude-code-contract.md`, the rows that say "owed").
 - **Windows on Claude Code 2.1.310, by a person.** `doctor --live` on a Windows machine, and a
   `PreToolUse` hook that still blocks with Git Bash absent (`docs/windows-setup.md`).

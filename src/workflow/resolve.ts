@@ -18,9 +18,14 @@
  * line in Claude Code's `settings.json` (setup's `--statusline`), the project's
  * `sessionNames`, its `jobs.route`, and the update hold file (`update --hold`). The value
  * resolved here is that setting's value right now, read where it lives; nothing is stored in
- * the workflow file (`schema.ts`). So `switches.sessionNames` and `switches.jobRoute` read
- * as `project`, `switches.statusLine` and `switches.updateHold` as `personal`, and a switch
- * that is off with nothing set behind it as `default`.
+ * the workflow file (`schema.ts`), with one exception. So `switches.sessionNames` reads as
+ * `project`, `switches.statusLine` and `switches.updateHold` as `personal`, and a switch that
+ * is off with nothing set behind it as `default`.
+ *
+ * **`switches.jobRoute` has two homes, and the project's wins** (`jobRouteFrom`, the one place
+ * that decides it): the project's `jobs.route` when it sets one (`project`), else the person's
+ * machine-wide default `switches.jobRoute` in the workflow file (`personal`), else off
+ * (`default`). The `job-route` hook reads it through `resolveJobRoute`, never its own reader.
  *
  * A broken personal file throws `WorkflowConfigError` (the message names the file and the
  * field): the person must hear that their file is wrong. A caller that must not fail — a
@@ -41,10 +46,11 @@ import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
   type AlertEvent,
+  type PersonalWorkflow,
+  personalWorkflowSchema,
   type Workflow,
   type WorkflowKey,
   workflowDefaults,
-  workflowSchema,
   workflowValue,
 } from "./schema";
 
@@ -128,8 +134,8 @@ export function personalWorkflowFile(paths: CliPaths): string {
   return paths.workflowConfigFile;
 }
 
-/** Reads one workflow object: `{}` when the file does not exist, throws when it is broken. */
-export function loadWorkflow(file: string): Workflow {
+/** Reads the person's workflow file: `{}` when it does not exist, throws when it is broken. */
+export function loadWorkflow(file: string): PersonalWorkflow {
   if (!existsSync(file)) return {};
   let raw: unknown;
   try {
@@ -138,7 +144,7 @@ export function loadWorkflow(file: string): Workflow {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
   }
-  const parsed = workflowSchema.safeParse(raw);
+  const parsed = personalWorkflowSchema.safeParse(raw);
   if (!parsed.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
@@ -151,7 +157,7 @@ export function loadWorkflow(file: string): Workflow {
  * warning, in `project init`'s plan and the portal's preview. A broken file is `workflow
  * show`'s and the guards' own question, in their own words; a plan must still be shown.
  */
-export function personalWorkflowOrDefault(paths: CliPaths): Workflow {
+export function personalWorkflowOrDefault(paths: CliPaths): PersonalWorkflow {
   try {
     return loadWorkflow(personalWorkflowFile(paths));
   } catch {
@@ -257,6 +263,34 @@ function current<T>(value: T, source: WorkflowSource): ResolvedValue<T> {
 /** The project's value of a boolean field that lives in `.claude/cc-smart-dev-kit.json`. */
 function projectFlag(value: boolean | undefined): ResolvedValue<boolean> {
   return value === undefined ? current(false, "default") : current(value, "project");
+}
+
+/**
+ * `switches.jobRoute`: the project's `jobs.route` when it sets one, else the person's
+ * machine-wide default, else off. The project wins field by field, as every other workflow
+ * setting does; the one place that decides it.
+ */
+export function jobRouteFrom(
+  personal: PersonalWorkflow,
+  projectConfig: CcSmartDevKitConfig | null,
+): ResolvedValue<boolean> {
+  const project = projectConfig?.jobs?.route;
+  if (project !== undefined) return current(project, "project");
+  const own = personal.switches?.jobRoute;
+  return own === undefined ? current(false, "default") : current(own, "personal");
+}
+
+/**
+ * `switches.jobRoute` on its own, for the `job-route` hook: it runs on every Bash call, so it
+ * reads the person's workflow file and the project's config, not the status line or the update
+ * hold the whole resolution also looks at. A personal file that cannot be used is the case the
+ * resolver's header names for a hook: the project's value and the default still stand.
+ */
+export function resolveJobRoute(
+  paths: CliPaths,
+  projectConfig: CcSmartDevKitConfig | null,
+): ResolvedValue<boolean> {
+  return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
 }
 
 /**
@@ -504,7 +538,7 @@ export function resolveWorkflow(
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
-      jobRoute: projectFlag(projectConfig?.jobs?.route),
+      jobRoute: jobRouteFrom(personal, projectConfig),
       updateHold: isHeld(updateFiles(paths.stateDir))
         ? current(true, "personal")
         : current(false, "default"),

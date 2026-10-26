@@ -23,15 +23,16 @@ repository (the installed plugin does not carry the docs).
 - **Every slot is Claude or Custom, and `slots` in the config alone says which** (D2): a slot
   with a chain there is Custom, and the chain answers; a slot without one is Claude — that
   model is plain Claude, sent to Anthropic unchanged. **Every slot is Claude by default, the
-  judge's too, the gateway is off, and no fallback is on** (D66): setup gives no slot a chain,
-  and the plugin never picks a model for anyone.
+  judge's too, and the gateway is off** (D66): setup gives no slot a chain, and the plugin
+  never picks a model for anyone. Every fallback is off by default except the judge's
+  stand-in (§ The judge for auto mode).
 - **A switch to Claude never forgets the chain**: `gateway slot <slot> claude` moves it to the
   config's `kept` field, saved and not in use; `custom` brings it back with its fallback
   switch; `clear` deletes it. `off` still means `claude`. A router or CLI of 0.5.x reads the
   same file right (it never looks at `kept`), so a rollback turns nothing back on.
 - **A slot's chain** is a list of targets the person picked: the first answers; the next
-  only while the slot's **fallback switch** is on (default: off for every slot; the person
-  turns it on, slot by slot). The router never adds a target, Claude included: a chain that is
+  only while the slot's **fallback switch** is on (default: off for every slot but the judge;
+  the person turns it on, slot by slot). The router never adds a target, Claude included: a chain that is
   used up returns its error.
 - A target is `claude-<id>` or `<backend>:<model>`, from the live list (`gateway models`).
   A `claude-<id>` target that is the very model asked for gets the request as sent; another
@@ -173,13 +174,18 @@ launched, which model wrote each reply, and the share on Opus. Read only; no mes
 
 ## The judge for auto mode
 
-**Claude judges auto mode's safety checks (should this action run?) first, and alone by
-default.** The judge's fallback switch is off (D66). Only when the person turns it on
-(`cc-smart-dev-kit gateway fallback judge on`) do the person's worker-slot targets that passed the
-judge test judge in Claude's place, while Claude is limited or down, in that chain's order.
-`gateway slot worker …` runs the test and says which target passed and which failed; a failed
-or untested target never judges, and `doctor` does not fail on it. There is no hidden Claude
-step after a judge chain's targets.
+**Claude judges auto mode's safety checks (should this action run?) first.** The judge's
+fallback switch is on by default (the owner, 2026-10-27): while Claude is limited or down, the
+person's worker-slot targets that passed the judge test judge in Claude's place, in that chain's
+order. With none tested, Claude judges alone. `gateway slot worker …` runs the test and says
+which target passed and which failed; a failed or untested target never judges, and `doctor`
+does not fail on it. `cc-smart-dev-kit gateway fallback judge off` is the person's way to keep
+Claude alone. There is no hidden Claude step after a judge chain's targets.
+
+**When the checks fail with nothing standing in**, Claude Code denies every tool call that needs
+a check. The status line, `gateway status` and `doctor` say so with the one fix; a session is
+told once, and a crew session pauses until the checks answer. Tell the person that fix once, then
+wait: no retry, no workaround.
 
 The person may give the judge slot a chain of their own, which wins (the worker's targets are
 never added to it), only when they ask:
@@ -197,7 +203,8 @@ never added to it), only when they ask:
 included: it decides worse. It can block good work, and a weak one can let a risky command
 through; the test proves one obvious case only. Every check sends the conversation and the next
 action to that provider. "Auto mode blocks good work": `gateway slot judge claude` for your own
-chain, or `gateway fallback judge off` so Claude alone judges (the default).
+chain, or `gateway fallback judge off` so Claude alone judges (its checks then fail while Claude
+is at its limit).
 
 **WebSearch** runs on Claude only: a request that carries Anthropic's web search tool goes to
 Anthropic as sent, whatever the slot. When Claude is at its limit or down, the search result is

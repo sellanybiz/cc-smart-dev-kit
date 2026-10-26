@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.4.1",
+  version: "1.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -2112,13 +2112,18 @@ function instructionsPaths(paths, source) {
     target,
     claudeMd: join11(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
-    importPath: tildify(join11(target, ALWAYS_ON_FILE), paths.home),
+    importPath: claudeImportPath(join11(target, ALWAYS_ON_FILE), paths.home),
     installedPluginsFile: paths.installedPluginsFile
   };
 }
 function instructionsFolder(bundleDir) {
   const beside = join11(bundleDir, "..", "instructions");
   return existsSync11(beside) ? beside : join11(bundleDir, "..", "..", "plugin", "instructions");
+}
+function claudeImportPath(path, home) {
+  const rest = path.slice(home.length);
+  const underHome = path.startsWith(home) && /^[\\/]/.test(rest);
+  return (underHome ? `~${rest}` : path).replaceAll("\\", "/").replaceAll(" ", "\\ ");
 }
 function listInstructionFiles(source) {
   if (!existsSync11(source)) {
@@ -9037,8 +9042,25 @@ var breakerSchema = object({
   since: number2(),
   targets: array(breakerTargetSchema)
 });
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
 var stateSchema = object({
   breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
   fallbacks: record(string2(), fallbackSchema),
   limits: record(string2(), limitSchema),
   seenClaude: record(string2(), number2()).optional(),

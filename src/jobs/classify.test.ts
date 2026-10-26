@@ -7,7 +7,9 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyHeavyCommand,
   classifyRoutableLine,
+  routableLine,
   type ScriptSource,
+  sedScriptReadsOnly,
   toolCallOfArgv,
   toolName,
 } from "./classify";
@@ -72,7 +74,7 @@ describe("classifyHeavyCommand: type checks", () => {
 });
 
 describe("classifyHeavyCommand: tests", () => {
-  test("finds vitest and jest runs, and coverage as its own, larger kind", () => {
+  test("finds vitest and jest runs, and coverage as its own kind", () => {
     expectKind("test:run", [
       "vitest run src/x.test.ts",
       "bunx vitest run src/x.test.ts",
@@ -244,16 +246,35 @@ describe("classifyHeavyCommand: text is not a command", () => {
 });
 
 describe("classifyHeavyCommand: several steps, and a project's own kinds", () => {
-  test("names the step that reserves the most", () => {
-    expect(kindOf("bunx tsc --noEmit && bunx next build")).toBe("build");
-    expect(kindOf("bunx tsc; bunx vitest run --coverage")).toBe("test:coverage");
-    // A tie (8 and 8 GB): the first.
+  // A kind has no size (the queue counts jobs), so no step is "the largest": the first heavy one
+  // the line runs names the job.
+  test("names the first heavy step the line runs", () => {
+    expect(kindOf("bunx tsc --noEmit && bunx next build")).toBe("tsc");
+    expect(kindOf("bunx next build && bunx tsc --noEmit")).toBe("build");
+    expect(kindOf("bunx tsc; bunx vitest run --coverage")).toBe("tsc");
     expect(kindOf("bunx vitest run a.ts; bunx tsc")).toBe("test:run");
     expect(kindOf("ls && echo done")).toBeNull();
   });
 
+  // `vitest --coverage` matches the coverage kind and the test kind: the first listed wins.
+  test("names the first listed kind when one command matches two", () => {
+    expect(kindOf("bunx vitest run --coverage")).toBe("test:coverage");
+    expect(kindOf("bunx vitest run")).toBe("test:run");
+    const kinds = mergeKinds({ mine: { match: [{ tool: "vitest" }] } });
+    // A project's own kind comes after the defaults.
+    expect(classifyHeavyCommand("bunx vitest run", kinds)).toBe("test:run");
+  });
+
+  test("a line the hook can route names its first heavy kind", () => {
+    expect(classifyRoutableLine("bunx tsc --noEmit && bunx next build", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyRoutableLine("bunx next build && bunx tsc --noEmit", DEFAULT_KINDS)).toBe(
+      "build",
+    );
+    expect(classifyRoutableLine("bunx vitest run a.ts; bunx tsc", DEFAULT_KINDS)).toBe("test:run");
+  });
+
   test("finds a project's script by its name, through every package manager", () => {
-    const kinds = mergeKinds({ typecheck: { gb: 8, match: [{ script: "typecheck" }] } });
+    const kinds = mergeKinds({ typecheck: { match: [{ script: "typecheck" }] } });
     for (const command of [
       "bun run typecheck",
       "bun typecheck",
@@ -274,7 +295,7 @@ describe("classifyHeavyCommand: several steps, and a project's own kinds", () =>
   });
 
   test("a project's kind can replace a default's rules", () => {
-    const kinds = mergeKinds({ tsc: { gb: 8, match: [{ tool: "tsc" }] } });
+    const kinds = mergeKinds({ tsc: { match: [{ tool: "tsc" }] } });
     expect(classifyHeavyCommand("bunx tsgo --noEmit", kinds)).toBeNull();
     expect(classifyHeavyCommand("bunx tsc --noEmit", kinds)).toBe("tsc");
   });
@@ -381,7 +402,7 @@ describe("a package script is a script, not the tool of the same name", () => {
   });
 
   test("a script rule of the same name still matches the script", () => {
-    const kinds = mergeKinds({ typecheck: { gb: 8, match: [{ script: "tsc" }] } });
+    const kinds = mergeKinds({ typecheck: { match: [{ script: "tsc" }] } });
     const { source } = readerOf({ "/repo": ["tsc"] });
     expect(classifyHeavyCommand("bun run tsc --noEmit", kinds, source)).toBe("typecheck");
     expect(classifyHeavyCommand("bun run tsc --noEmit", DEFAULT_KINDS, source)).toBeNull();
@@ -466,5 +487,240 @@ describe("a runner's line is never routed (the review of the runner follow-up)",
     expect(classifyRoutableLine("timeout 60 tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
     expect(classifyRoutableLine("bash -c 'tsc --noEmit'", DEFAULT_KINDS)).toBe("tsc");
     expect(classifyRoutableLine("xargs tsc", DEFAULT_KINDS)).toBe("tsc");
+  });
+});
+
+// A builder pipes a heavy command into a filter all the time (`tsc --noEmit 2>&1 | tail -20`).
+// Such a line is routable when everything after the heavy command is a read-only filter fed by
+// the pipe (`READ_ONLY_FILTERS`): the filters stay outside the queue's command, so the person's
+// own Bash rules still see them. Anything that writes a file or runs a program is no filter.
+describe("routableLine: a heavy command piped into read-only filters", () => {
+  const line = (command: string) => routableLine(command, DEFAULT_KINDS);
+
+  test("tail: the heavy part is queued, `| tail` stays after it", () => {
+    expect(line("tsc --noEmit 2>&1 | tail -20")).toEqual({
+      filters: "| tail -20",
+      heavy: "tsc --noEmit 2>&1",
+      kind: "tsc",
+    });
+  });
+
+  test("grep: a test run whose failures are picked out", () => {
+    expect(line("bunx vitest run src/a.test.ts | grep FAIL")).toEqual({
+      filters: "| grep FAIL",
+      heavy: "bunx vitest run src/a.test.ts",
+      kind: "test:run",
+    });
+  });
+
+  test("wc, after another filter: every filter after the heavy command stays outside", () => {
+    expect(line("bunx tsc --noEmit | tail -5 | wc -l")).toEqual({
+      filters: "| tail -5 | wc -l",
+      heavy: "bunx tsc --noEmit",
+      kind: "tsc",
+    });
+  });
+
+  test("a cd before the heavy command goes into the queue with it", () => {
+    expect(line("cd app && bunx tsc --noEmit | head -40")).toEqual({
+      filters: "| head -40",
+      heavy: "cd app && bunx tsc --noEmit",
+      kind: "tsc",
+    });
+  });
+
+  test("the other filters of the list, in their read-only forms", () => {
+    for (const filter of [
+      "head -n 5",
+      "egrep -i 'error|fail'",
+      "fgrep FAIL",
+      "rg -n FAIL",
+      "sort -u",
+      "uniq -c",
+      "cut -c1-80",
+      "tr -d '\r'",
+      "cat",
+      "cat -n -",
+      "tee",
+      "tee -a /dev/null",
+      "sed -n '1,20p'",
+      "sed -E 's/\\x1b\\[[0-9;]*m//g'",
+      "sed '/^$/d;5q'",
+      "sed -n -e '/error/p' -e '$p'",
+      "awk '{print $1}'",
+      "awk -F: -v n=2 'NR<n {print}'",
+      "tail -1 2>/dev/null",
+    ]) {
+      expect([filter, line(`bunx tsc --noEmit | ${filter}`)?.filters]).toEqual([
+        filter,
+        `| ${filter}`,
+      ]);
+    }
+  });
+
+  test("tee with a file refused: it writes the file, and a Bash(tee:*) rule must see it", () => {
+    expect(line("bunx tsc --noEmit | tee out.txt")).toBeNull();
+    expect(line("bunx tsc --noEmit | tee -a out.txt")).toBeNull();
+    expect(line("bunx tsc --noEmit | tee /dev/null out.txt")).toBeNull();
+  });
+
+  test("sed -i refused, and every sed or awk script that writes, runs or cannot be read", () => {
+    for (const filter of [
+      "sed -i 's/a/b/' file.ts",
+      "sed -ni '1p' file.ts",
+      "sed --in-place 's/a/b/' file.ts",
+      "sed -f script.sed",
+      "sed 's/a/b/w out.txt'",
+      "sed 's/a/b/e'",
+      "sed -n '1w out.txt'",
+      "sed '1r other.txt'",
+      "sed '1e rm -f x'",
+      "sed ':a;N;ba'",
+      "awk '{print > \"out.txt\"}'",
+      "awk '{print | \"sh\"}'",
+      "awk '{system(\"rm -f x\")}'",
+      "awk -f prog.awk",
+      "gawk '@include \"x\"'",
+    ]) {
+      expect([filter, line(`bunx tsc --noEmit | ${filter}`)]).toEqual([filter, null]);
+    }
+  });
+
+  test("the other forms that write or run something are refused", () => {
+    for (const filter of [
+      "sort -o out.txt",
+      "sort -uo out.txt",
+      "sort --output=out.txt",
+      "sort --compress-program=gzip",
+      "uniq in.txt out.txt",
+      "rg --pre ./run.sh FAIL",
+      "rg -z FAIL",
+      "cat other.txt",
+      "tail -5 > out.txt",
+      "tail -5 >> out.txt",
+      "grep FAIL $(rm -f x)",
+      "sudo tail -5",
+      "LC_ALL=C sort",
+      "less",
+      "more",
+      "xargs rm -f",
+    ]) {
+      expect([filter, line(`bunx tsc --noEmit | ${filter}`)]).toEqual([filter, null]);
+    }
+  });
+
+  test("review #4: sort's unique starts of --compress-program and --output are refused", () => {
+    // GNU sort takes any unique start of a long option: `--co` can only be --compress-program.
+    for (const filter of [
+      "sort --co=evil",
+      "sort --co evil",
+      "sort --compress=gzip",
+      "sort --ou=out.txt",
+      "sort --out out.txt",
+      "sort -k1 --outp=out.txt",
+    ]) {
+      expect([filter, line(`tsc --noEmit | ${filter}`)]).toEqual([filter, null]);
+    }
+    // Options that only change the order still pass.
+    expect(line("tsc --noEmit | sort -n --check")?.filters).toBe("| sort -n --check");
+  });
+
+  test("review #4: rg's --hostname-bin is refused, alone and with =", () => {
+    expect(line("tsc --noEmit | rg --hostname-bin=evil x")).toBeNull();
+    expect(line("tsc --noEmit | rg --hostname-bin evil x")).toBeNull();
+    expect(line("tsc --noEmit | rg --hyperlink-format=default x")?.filters).toBe(
+      "| rg --hyperlink-format=default x",
+    );
+  });
+
+  test("review #4: a sed bracket that BSD sed reads past the delimiter is refused", () => {
+    // BSD sed reads `/` inside `[...]` as a plain character, so there the script is
+    // `s/[/]/;/` with the flag `w /p;p`: it writes a file.
+    expect(line("tsc | sed 's/[/]/;/w /p;p'")).toBeNull();
+    expect(line("tsc | sed '/[/]/w out'")).toBeNull();
+    expect(line("tsc | sed 'y/[/]/;/w x/'")).toBeNull();
+    // A plain bracket, with no delimiter in it, reads the same in both: still a filter.
+    expect(line("tsc | sed 's/[0-9]//g'")?.filters).toBe("| sed 's/[0-9]//g'");
+  });
+
+  test("filter before heavy refused: the filter would not be fed by the heavy command", () => {
+    expect(line("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
+    expect(line("tail -5 log.txt | bunx vitest run")).toBeNull();
+  });
+
+  test("two heavy steps piped: the whole line is queued, as before", () => {
+    expect(line("bunx tsc --noEmit | bunx vitest run")).toEqual({
+      filters: "",
+      heavy: "bunx tsc --noEmit | bunx vitest run",
+      kind: "tsc",
+    });
+  });
+
+  test("a pipe whose meaning the cut would change stays raw", () => {
+    // The filter read only the test run's output: queueing both would filter tsc's too.
+    expect(line("bunx tsc --noEmit && bunx vitest run | tail -5")).toBeNull();
+    // `!` turns the whole pipeline's exit code around, not the heavy command's.
+    expect(line("! bunx tsc --noEmit | tail -5")).toBeNull();
+    // `||` is no pipe, and a filter inside a shell string would be hidden in the queue's line.
+    expect(line("bunx tsc --noEmit || tail -5 log.txt")).toBeNull();
+    expect(line("bash -c 'bunx tsc --noEmit | tail -5'")).toBeNull();
+    // A command after the filter, and a comment the cut cannot place, keep the line raw.
+    expect(line("bunx tsc --noEmit | tail -5; rm -f x")).toBeNull();
+    expect(line("bunx tsc --noEmit | tail -5 # last lines")).toBeNull();
+  });
+
+  test("classifyRoutableLine names the kind of such a line", () => {
+    expect(classifyRoutableLine("bunx tsc --noEmit 2>&1 | tail -20", DEFAULT_KINDS)).toBe("tsc");
+  });
+});
+
+describe("sedScriptReadsOnly", () => {
+  test("prints, deletes, quits and substitutions without w or e are read-only", () => {
+    for (const script of [
+      "p",
+      "1,20p",
+      "$p",
+      "/x/,/y/d",
+      "5q",
+      "Q3",
+      "s/a/b/g",
+      "s|a|b|2",
+      "y/ab/cd/",
+      "1~2p",
+      "/a/!d",
+      "/x/{p;q}",
+      // Plain brackets, and an escaped `\[`, read the same in GNU and BSD sed.
+      "s/[0-9]//g",
+      "/[a-z]/p",
+      "s/[^ ]*$//",
+      "s/\\[x\\]//",
+    ]) {
+      expect([script, sedScriptReadsOnly(script)]).toEqual([script, true]);
+    }
+  });
+
+  test("w, e, r, a and anything unread are not", () => {
+    for (const script of [
+      "w out",
+      "s/a/b/w out",
+      "s/a/b/e",
+      "1e ls",
+      "r x",
+      "a text",
+      "b",
+      ":a",
+      "s/a/b",
+      "1,p",
+      // Review #4: a bracket two seds read differently.
+      "s/[/]/;/w x/p",
+      "/[/]/p",
+      "s/[]x]//",
+      "s/[^]x]//",
+      "s/[[:digit:]]//",
+      "s/[\\/]//",
+      "s/[a//",
+    ]) {
+      expect([script, sedScriptReadsOnly(script)]).toEqual([script, false]);
+    }
   });
 });

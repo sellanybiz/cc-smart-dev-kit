@@ -130,8 +130,8 @@ describe("which model a launch runs on", () => {
   });
 
   it("a tier keeps its name whatever the override answers with (owner, 2026-10-16)", () => {
-    // `opus` is the tier even when a backend answers it: never affordable, never forced to max,
-    // and the family the messages and the record read stays the tier's own.
+    // `opus` is the tier even when a backend answers it, and the family the messages and the
+    // record read stays the tier's own.
     expect(
       resolveLaunchModel("opus", NO_GATEWAY, { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" }),
     ).toEqual({ claude: false, family: "opus", model: "openai:gpt-5.5", tier: "opus" });
@@ -429,7 +429,7 @@ describe("the verdict", () => {
     expect(verdict({ effort: "xhigh", model: "haiku", prompt: "search" }).decision).toBe("allow");
   });
 
-  it("`low` is refused on every model; `medium` runs on Claude, and an affordable slot still needs `max`", () => {
+  it("`low` is refused on every model; `medium` runs on Claude and on an affordable slot alike", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
     for (const model of ["haiku", "sonnet", "cc-smart-dev-kit-worker"]) {
       for (const ctx of [CTX, on]) {
@@ -446,10 +446,9 @@ describe("the verdict", () => {
     for (const model of ["haiku", "sonnet"]) {
       expect(verdict({ effort: "medium", model, prompt: "search it" }).decision).toBe("allow");
     }
-    // An affordable slot works well only at `max`: `medium` there is refused for that reason.
+    // An affordable slot takes `medium` as Claude does (the owner, 2026-10-26).
     const slot = verdict({ effort: "medium", model: "cc-smart-dev-kit-worker", prompt: "x" }, on);
-    expect(slot.decision).toBe("deny");
-    expect(slot.reason).not.toContain("asks for effort `medium`");
+    expect(slot.decision).toBe("allow");
     // A fork inherits, but one that names a level itself is held to the same rule.
     const fork = verdict(
       { effort: "low", prompt: "x", subagent_type: "fork" },
@@ -473,21 +472,18 @@ describe("the verdict", () => {
     expect(odd.reason).toContain("asks for effort `none`");
   });
 
-  it("an affordable slot is allowed with the gateway off, and needs effort max with it on", () => {
+  it("an affordable slot takes every allowed effort, gateway on or off (the owner, 2026-10-26)", () => {
     const on: GuardContext = { ...CTX, config: configWithModelSlot(), gatewayOn: true };
-    const affordable = verdict(
-      { effort: "high", model: "cc-smart-dev-kit-worker", prompt: "build" },
-      on,
-    );
-    expect(affordable.decision).toBe("deny");
-    expect(affordable.reason).toContain("an affordable gateway slot");
-    expect(affordable.reason).toContain('pass `effort: "max"`');
-    expect(
-      verdict({ effort: "max", model: "cc-smart-dev-kit-worker", prompt: "build" }, on).decision,
-    ).toBe("allow");
-    expect(
-      verdict({ effort: "high", model: "cc-smart-dev-kit-worker", prompt: "build" }).decision,
-    ).toBe("allow");
+    for (const effort of ALLOWED_EFFORTS) {
+      for (const ctx of [on, CTX]) {
+        const result = verdict({ effort, model: "cc-smart-dev-kit-worker", prompt: "build" }, ctx);
+        expect(`${effort}: ${result.decision}`).toBe(`${effort}: allow`);
+      }
+    }
+    // `low` is the one level still refused there, as on Claude.
+    const low = verdict({ effort: "low", model: "cc-smart-dev-kit-worker", prompt: "build" }, on);
+    expect(low.decision).toBe("deny");
+    expect(low.reason).toContain("asks for effort `low`");
   });
 
   it("a name the guard does not know is never affordable: the strictest rule answers", () => {
@@ -823,7 +819,7 @@ describe("the verdict", () => {
 
 describe("tiers, not vendors (owner, 2026-10-16)", () => {
   // `opus` and `fable` mean the TIER: an override that points one at a backend keeps its gates,
-  // and it is never affordable, never forced to `max`, and always named with what answers it.
+  // and it is always named with what answers it.
   const OPENAI_OPUS = { ANTHROPIC_DEFAULT_OPUS_MODEL: "openai:gpt-5.5" };
   const OPENAI_FABLE = { ANTHROPIC_DEFAULT_FABLE_MODEL: "openai:gpt-5.5" };
   const ON: GuardContext = { config: null, gatewayOn: true, sessionModel: null };
@@ -1476,21 +1472,18 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
 
   const WORKER_ON_BACKEND = { "cc-smart-dev-kit-worker": ["omniroute:glm-x"] };
 
-  it("a sonnet launch on a worker chain that starts with a backend is affordable: effort max", async () => {
+  it("a sonnet launch on a worker chain that starts with a backend takes any allowed effort, `low` refused (2026-10-26)", async () => {
     const where = machine(WORKER_ON_BACKEND, true);
-    expect(await answer(where, { effort: "high", model: "sonnet", prompt: "build it" })).toEqual({
-      decision: "deny",
-      reason: [
-        "This launch runs on omniroute:glm-x, an affordable gateway slot.",
-        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
-      ].join("\n"),
-    });
-    expect(await answer(where, { effort: "max", model: "sonnet", prompt: "build it" })).toBeNull();
+    for (const effort of ["medium", "high", "xhigh", "max"]) {
+      expect(await answer(where, { effort, model: "sonnet", prompt: "build it" })).toBeNull();
+    }
     // The full id goes to the same slot: the router reads the family, not the exact id.
     expect(
-      (await answer(where, { effort: "xhigh", model: "claude-sonnet-9-9", prompt: "build it" }))
-        ?.decision,
-    ).toBe("deny");
+      await answer(where, { effort: "high", model: "claude-sonnet-9-9", prompt: "build it" }),
+    ).toBeNull();
+    const low = await answer(where, { effort: "low", model: "sonnet", prompt: "build it" });
+    expect(low?.decision).toBe("deny");
+    expect(low?.reason).toContain("asks for effort `low`");
     // Haiku's slot is the scout: with no scout chain, a haiku launch is Claude Haiku.
     expect(await answer(where, { effort: "high", model: "haiku", prompt: "search" })).toBeNull();
   });
@@ -1523,7 +1516,7 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
       },
       true,
     );
-    // Never affordable, never forced to `max`: the opus tier at `max` asks, naming what answers it.
+    // The opus tier at `max` asks, naming what answers it.
     const bare = await answer(where, { effort: "max", model: "opus", prompt: "do it" });
     expect(bare?.decision).toBe("ask");
     expect(bare?.reason).toContain("`opus` (answered by omniroute:glm-x) launch at effort `max`");
@@ -1585,11 +1578,22 @@ describe("RF1-2: the guard judges the session's own gateway, not the machine's f
     expect(await answer(bare, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
   });
 
-  it("the machine is off, the project is on: the backend worker chain answers, so effort max", async () => {
+  // A launch that declares UI/UX work is refused on Sonnet whatever answers it, and its message
+  // names the model that really answers: that shows which gateway the guard read.
+  const UI_ON_SONNET = {
+    effort: "high",
+    model: "sonnet",
+    prompt: "Build it.\nOpus reason: ui - the page",
+  };
+
+  it("the machine is off, the project is on: the backend worker chain answers, at any effort", async () => {
     const where = guardMachine(WORKER_ON_BACKEND, SESSION_ROUTER);
-    expect(
-      (await answer(where, { effort: "high", model: "sonnet", prompt: "build it" }))?.reason,
-    ).toStartWith("This launch runs on omniroute:glm-x, an affordable gateway slot.");
+    for (const effort of ["medium", "high", "max"]) {
+      expect(await answer(where, { effort, model: "sonnet", prompt: "build it" })).toBeNull();
+    }
+    expect((await answer(where, UI_ON_SONNET))?.reason).toContain(
+      "would run on `omniroute:glm-x` at effort `high`",
+    );
   });
 
   it("an opus launch at max: the premium ask names what really answers it", async () => {
@@ -1615,17 +1619,13 @@ describe("RF1-2: the guard judges the session's own gateway, not the machine's f
     };
     // The machine's worker answers on Claude; the profile `cheap` puts it on a backend.
     const cheap = guardMachine({}, `${SESSION_ROUTER}/p/cheap`, { profiles });
-    expect(
-      (await answer(cheap, { effort: "high", model: "sonnet", prompt: "build it" }))?.reason,
-    ).toStartWith("This launch runs on omniroute:glm-x, an affordable gateway slot.");
+    expect((await answer(cheap, UI_ON_SONNET))?.reason).toContain("would run on `omniroute:glm-x`");
     // The machine's worker is on a backend; the profile `plain` turns it off there.
     const plain = guardMachine(WORKER_ON_BACKEND, `${SESSION_ROUTER}/p/plain`, { profiles });
-    expect(await answer(plain, { effort: "high", model: "sonnet", prompt: "build it" })).toBeNull();
+    expect((await answer(plain, UI_ON_SONNET))?.reason).toContain("would run on `sonnet`");
     // A name the config does not hold answers as plain Claude, as the router does.
     const unknown = guardMachine(WORKER_ON_BACKEND, `${SESSION_ROUTER}/p/nope`, { profiles });
-    expect(
-      await answer(unknown, { effort: "high", model: "sonnet", prompt: "build it" }),
-    ).toBeNull();
+    expect((await answer(unknown, UI_ON_SONNET))?.reason).toContain("would run on `sonnet`");
   });
 });
 
@@ -1801,7 +1801,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
       [
         "This launch asks for effort `low`, which no subagent may run at (the plugin's rule).",
         "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
-        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on a Claude `haiku` or `sonnet` (the `opus` tier asks the person at `max`; an affordable backend always runs at `max`).",
+        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).",
       ].join("\n"),
     );
   });
@@ -1824,7 +1824,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
       verdict({ effort: "low", model: "sonnet", prompt: "x" }),
       verdict({ effort: "high", model: "fable", prompt: "x", subagent_type: "Plan" }),
       verdict({ effort: "high", model: "fable", prompt: "x", subagent_type: "general-purpose" }),
-      verdict({ effort: "high", model: "cc-smart-dev-kit-worker", prompt: "x" }, on),
+      verdict({ effort: "low", model: "cc-smart-dev-kit-worker", prompt: "x" }, on),
       verdict({ effort: "max", model: "opus", prompt: "x" }, CTX, unattended),
     ];
     for (const one of denials) {
@@ -2205,18 +2205,12 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     ).toBe("allow");
   });
 
-  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on an affordable slot: refused, naming the variable", () => {
+  it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on an affordable slot: allowed, as on Claude (2026-10-26)", () => {
     const on: GuardContext = { ...ON_SLOTS, sessionModel: null };
-    const refused = verdict({ model: "sonnet", prompt: "x" }, on, {
+    const allowed = verdict({ model: "sonnet", prompt: "x" }, on, {
       CLAUDE_CODE_EFFORT_LEVEL: "auto",
     });
-    expect(refused.decision).toBe("deny");
-    expect(refused.reason).toBe(
-      [
-        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
-        `An affordable slot runs at effort \`max\` (its reasoning costs cents), and \`CLAUDE_CODE_EFFORT_LEVEL\` runs every subagent at \`auto\`: only the person can change the variable — ask them to set it to \`max\`, or to remove it, ${WHERE}.`,
-      ].join("\n"),
-    );
+    expect(allowed.decision).toBe("allow");
   });
 
   it("G1: CLAUDE_CODE_EFFORT_LEVEL=auto on the fable tier: its reason-line rules, as before", () => {
@@ -2255,40 +2249,27 @@ describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.30
     );
   });
 
-  it("G1: FORCE onto an affordable slot: its `max` comes from the call, or from CLAUDE_CODE_EFFORT_LEVEL", () => {
+  it("G1: FORCE onto an affordable slot: any allowed effort, from the call or from CLAUDE_CODE_EFFORT_LEVEL (2026-10-26)", () => {
     const on: GuardContext = { ...ON_SLOTS, sessionModel: null };
     const slot = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker" };
-    const forcedNote =
-      "This launch runs on `cc-smart-dev-kit-worker` because `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set, with `CLAUDE_CODE_SUBAGENT_MODEL=cc-smart-dev-kit-worker`: Claude Code ignores the launch's own `model`.";
-    const low = verdict({ effort: "high", prompt: "x" }, on, slot);
-    expect(low.decision).toBe("deny");
-    expect(low.reason).toBe(
-      [
-        forcedNote,
-        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
-        'An affordable slot runs at effort `max` (its reasoning costs cents): pass `effort: "max"`.',
-      ].join("\n"),
-    );
-    expect(verdict({ effort: "max", prompt: "x" }, on, slot).decision).toBe("allow");
-    // The variable sets the effort: only the person can change it.
-    const levelled = verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: "high" });
+    for (const effort of ["medium", "high", "max"]) {
+      expect(verdict({ effort, prompt: "x" }, on, slot).decision).toBe("allow");
+      // The variable sets the effort: judged on what it sets, as on Claude.
+      expect(
+        verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: effort }).decision,
+      ).toBe("allow");
+    }
+    // `low` stays refused there, naming the variable when it sets it.
+    expect(verdict({ effort: "low", prompt: "x" }, on, slot).decision).toBe("deny");
+    const levelled = verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: "low" });
     expect(levelled.decision).toBe("deny");
-    expect(levelled.reason).toBe(
-      [
-        forcedNote,
-        "This launch runs on omniroute:glm-5.3-flash, an affordable gateway slot.",
-        `An affordable slot runs at effort \`max\` (its reasoning costs cents), and \`CLAUDE_CODE_EFFORT_LEVEL\` runs every subagent at \`high\`: only the person can change the variable — ask them to set it to \`max\`, or to remove it, ${WHERE}.`,
-      ].join("\n"),
-    );
-    expect(
-      verdict({ prompt: "x" }, on, { ...slot, CLAUDE_CODE_EFFORT_LEVEL: "max" }).decision,
-    ).toBe("allow");
-    // A `<backend>:<model>` target forced the same way.
+    expect(levelled.reason).toContain("`CLAUDE_CODE_EFFORT_LEVEL` is `low`");
+    // A `<backend>:<model>` target forced the same way, with the gateway on or off.
     const backend = { ...FORCE, CLAUDE_CODE_SUBAGENT_MODEL: "omniroute:glm-5.3" };
-    expect(verdict({ effort: "max", prompt: "x" }, on, backend).decision).toBe("allow");
-    expect(verdict({ effort: "high", prompt: "x" }, on, backend).decision).toBe("deny");
-    // With the gateway off, the affordable rule does not apply (as before).
-    expect(verdict({ effort: "high", prompt: "x" }, CTX, backend).decision).toBe("allow");
+    for (const ctx of [on, CTX]) {
+      expect(verdict({ effort: "max", prompt: "x" }, ctx, backend).decision).toBe("allow");
+      expect(verdict({ effort: "high", prompt: "x" }, ctx, backend).decision).toBe("allow");
+    }
   });
 
   it("G1: guardFacts logs the override and what the launch ran on", () => {

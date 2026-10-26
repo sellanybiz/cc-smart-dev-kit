@@ -42,7 +42,10 @@ function liveView(world: BoardWorld): string {
   ]);
 }
 
-/** The `claude --bg --resume` a model change runs: the new flags, the record's files, the prompt. */
+/**
+ * The `claude --bg --resume` a model change runs: the new flags, the record's files, the prompt
+ * (`text` behind the crew command).
+ */
 function resumeCall(
   world: BoardWorld,
   id: string,
@@ -67,7 +70,8 @@ function resumeCall(
     "--settings",
     crewSettingsFile(world.paths.stateDir, world.repo, id),
     "--",
-    text,
+    // The crew command first, so the resumed process dispatches the skill and its monitor starts.
+    `/cc-smart-dev-kit:crew ${text}`,
   ];
 }
 
@@ -211,6 +215,10 @@ describe("crew model: a session with no process to move", () => {
       crewMcpFile(world.paths.stateDir, world.repo, record.id),
       "--settings",
       crewSettingsFile(world.paths.stateDir, world.repo, record.id),
+      // A resume with no text of its own is the bare crew command, so the skill and its
+      // monitor arm again.
+      "--",
+      "/cc-smart-dev-kit:crew",
     ]);
   });
 

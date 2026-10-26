@@ -43,6 +43,7 @@ import {
   readLead,
   readReport,
   recordCrewReport,
+  setLeadPresence,
   updateCrew,
   updateCrewIfState,
   writeLead,
@@ -917,6 +918,33 @@ describe("what a paused crew session waits for", () => {
     ]);
   });
 
+  test("or on failing safety checks: their scope and since when, kept as written", async () => {
+    const state = tempDir("state");
+    await createCrew(state, queued(), T0);
+    const wait = {
+      kind: "safety-checks",
+      scope: "my-project/cc-smart-dev-kit-judge",
+      since: "2026-10-21T21:40:00.000Z",
+    } as const;
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "paused", waitingFor: wait }, T1);
+    const saved = JSON.parse(readFileSync(crewFile(state, REPO, "crew-K-contracts"), "utf8"));
+    expect(saved.waitingFor).toEqual({
+      kind: "safety-checks",
+      scope: "my-project/cc-smart-dev-kit-judge",
+      since: "2026-10-21T21:40:00.000Z",
+    });
+    expect(readCrew(state, REPO, "crew-K-contracts")?.waitingFor).toEqual(wait);
+    // A safety-checks wait with no scope is a broken record, like any wait with a field missing.
+    const file = onDisk(
+      state,
+      { state: "paused", waitingFor: { kind: "safety-checks", since: "t" } },
+      "crew-e",
+    );
+    expect(() => readCrew(state, REPO, "crew-e")).toThrow(
+      `Invalid ${file}: waitingFor.scope: Invalid input: expected string, received undefined`,
+    );
+  });
+
   test("or on Claude's own limit, with the reset time or with none", async () => {
     const state = tempDir("state");
     await createCrew(state, queued("crew-a"), T0);
@@ -1080,7 +1108,7 @@ describe("what a paused crew session waits for", () => {
     );
     const unknown = fail({ waitingFor: { kind: "account-switch" } }, "crew-d");
     expect(unknown.read).toThrow(
-      `Invalid ${unknown.file}: waitingFor.kind: Invalid discriminator value. Expected 'slot' | 'claude-limit' | 'unknown'`,
+      `Invalid ${unknown.file}: waitingFor.kind: Invalid discriminator value. Expected 'slot' | 'claude-limit' | 'safety-checks' | 'unknown'`,
     );
     const noSince = fail({ waitingFor: { kind: "unknown" } }, "crew-e");
     expect(noSince.read).toThrow(
@@ -1374,5 +1402,111 @@ describe("RG1: a new question supersedes the crew session's older open one", () 
     expect(after.questions[0]?.supersededBy ?? null).toBeNull();
     expect(after.questions[0]?.answer).toBe("a");
     expect(openQuestionIndex(after)).toBe(1);
+  });
+});
+
+describe("the lead's presence mark takes no lock when nothing changed", () => {
+  const lead = {
+    cwd: REPO,
+    name: "LEAD my-app master-plan",
+    plan: "master-plan",
+    repo: REPO,
+    sessionId: LEAD,
+    tag: "my-app",
+  };
+
+  test("a lead agent view lists, with no mark on record: nothing is read under the lock, nothing is written", async () => {
+    const state = tempDir("state");
+    await writeLead(state, lead, T0);
+    const file = leadFile(state, REPO, LEAD);
+    const before = readFileSync(file, "utf8");
+    // Another run holds the store's lock for the whole call: a write would wait three seconds and
+    // fail with `LockBusyError`.
+    await withLock(crewStoreDir(state, REPO), async () => {
+      const seen = await setLeadPresence(state, REPO, LEAD, true, T1);
+      expect(seen?.sessionUnknownSince ?? null).toBeNull();
+    });
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("a lead agent view stopped listing: the first look marks it, a later look keeps that time and takes no lock", async () => {
+    const state = tempDir("state");
+    await writeLead(state, lead, T0);
+    const marked = await setLeadPresence(state, REPO, LEAD, false, T0 + 1000);
+    expect(marked?.sessionUnknownSince).toBe("2026-10-21T10:00:01.000Z");
+    const file = leadFile(state, REPO, LEAD);
+    const before = readFileSync(file, "utf8");
+    await withLock(crewStoreDir(state, REPO), async () => {
+      const again = await setLeadPresence(state, REPO, LEAD, false, T1);
+      expect(again?.sessionUnknownSince).toBe("2026-10-21T10:00:01.000Z");
+    });
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("a change is still a write under the lock: listed again clears the mark, and a busy store says so", async () => {
+    const state = tempDir("state");
+    await writeLead(state, lead, T0);
+    await setLeadPresence(state, REPO, LEAD, false, T0 + 1000);
+    const cleared = await setLeadPresence(state, REPO, LEAD, true, T1);
+    expect(cleared?.sessionUnknownSince).toBeNull();
+    expect(readLead(state, REPO, LEAD)?.sessionUnknownSince).toBeNull();
+    // A lead nobody recorded has no mark to set.
+    expect(await setLeadPresence(state, REPO, "no-such-lead", false, T1)).toBeNull();
+  });
+});
+
+describe("lastApiError: the error that ended the session's last turn", () => {
+  const ERROR = {
+    at: "2026-10-21T10:01:00.000Z",
+    class: "unknown",
+    text: "API Error: 424 the backend refused the request",
+  };
+
+  test("it is kept as written, moves no state and writes no event", async () => {
+    const state = tempDir("state");
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    const events = readCrewEvents(state, REPO).events.length;
+    await updateCrew(state, REPO, "crew-K-contracts", { lastApiError: ERROR }, T1);
+    expect(readCrew(state, REPO, "crew-K-contracts")).toMatchObject({
+      lastApiError: ERROR,
+      state: "working",
+    });
+    expect(readCrewEvents(state, REPO).events).toHaveLength(events);
+  });
+
+  test("a pause keeps it, and a state that goes on working drops it: an old error never explains a later failure", async () => {
+    const state = tempDir("state");
+    const id = "crew-K-contracts";
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(
+      state,
+      REPO,
+      id,
+      {
+        lastApiError: ERROR,
+        state: "paused",
+        waitingFor: { kind: "unknown", since: ERROR.at },
+      },
+      T1,
+    );
+    expect(readCrew(state, REPO, id)?.lastApiError).toEqual(ERROR);
+    // Resumed: working again, clean.
+    await updateCrew(state, REPO, id, { state: "working" }, T1 + 1000);
+    expect(readCrew(state, REPO, id)).not.toHaveProperty("lastApiError");
+    // A write that leaves it `working` does not drop what a StopFailure just wrote.
+    await updateCrew(state, REPO, id, { lastApiError: ERROR }, T1 + 2000);
+    await updateCrew(state, REPO, id, { lastLine: "still here" }, T1 + 3000);
+    expect(readCrew(state, REPO, id)?.lastApiError).toEqual(ERROR);
+  });
+
+  test("a stopped record keeps it until an answer or a resume makes it work again", async () => {
+    const state = tempDir("state");
+    const id = "crew-K-contracts";
+    await createCrew(state, { ...queued(), state: "working" }, T0);
+    await updateCrew(state, REPO, id, { lastApiError: ERROR }, T1);
+    await updateCrew(state, REPO, id, { state: "stopped", stoppedByWatch: true }, T1 + 1000);
+    expect(readCrew(state, REPO, id)?.lastApiError).toEqual(ERROR);
+    await updateCrew(state, REPO, id, { state: "working" }, T1 + 2000);
+    expect(readCrew(state, REPO, id)?.lastApiError).toBeUndefined();
   });
 });

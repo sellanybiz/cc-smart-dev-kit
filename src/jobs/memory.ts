@@ -1,5 +1,7 @@
 /**
- * How much memory this machine has, and how much is free right now.
+ * How much memory this machine has, and how much is free right now. The queue reads only the
+ * total (its ceiling, `memoryCeilingGb`); the free number is for the crew's start gate
+ * (`freeForCrewGb`).
  *
  * - **Linux:** `MemTotal` and `MemAvailable` from `/proc/meminfo`. `MemAvailable` is what
  *   the kernel can still hand out without swapping. Some container systems (lxcfs) already
@@ -11,10 +13,8 @@
  *   smaller of the two views wins.
  * - **Windows:** `os.totalmem()` and `os.freemem()`: both are real readings there. There
  *   is no cgroup. Windows counts the standby cache as used, so its free memory is lower
- *   than what can really still be handed out: the live check then waits a little longer,
- *   the safe side (docs/windows-jobs.md § Memory).
- * - **macOS and others:** `os.totalmem()` for the total, and no free-memory reading: the
- *   queue still works on its budget, without the live check.
+ *   than what can really still be handed out (docs/windows-jobs.md § Memory).
+ * - **macOS and others:** `os.totalmem()` for the total, and no free-memory reading.
  *
  * Every read goes through `MemoryFiles`, so a test feeds fake files.
  */
@@ -159,21 +159,24 @@ export function machineMemory(facts: MemoryFacts): MachineMemory {
   };
 }
 
+/** The lowest memory ceiling the heavy jobs get, however small the machine is. */
+export const MIN_CEILING_GB = 14;
+
 /**
- * The GB heavy jobs on this machine may hold together: its memory in whole GB less
- * `reserveGb` (kept for what never queues: the desktop, the Claude sessions, MCP
- * servers, dev servers, a local database), and never less than the largest single job,
- * so that job can always run, alone.
+ * The memory ceiling of all heavy jobs on this machine together, in whole GB: its memory less
+ * `reserveGb` (kept for what the heavy jobs never take: the desktop, the Claude sessions, MCP
+ * servers, dev servers, a local database), and never less than `MIN_CEILING_GB`, so a job
+ * always has room to run. On Linux it is the `MemoryMax` of the jobs' slice.
  */
-export function machineBudgetGb(totalBytes: number, reserveGb: number, largestGb: number): number {
-  return Math.max(largestGb, Math.floor(totalBytes / GIB) - reserveGb);
+export function memoryCeilingGb(totalBytes: number, reserveGb: number): number {
+  return Math.max(MIN_CEILING_GB, Math.floor(totalBytes / GIB) - reserveGb);
 }
 
 /**
  * The slices a slice nests in, outermost first. systemd reads every dash in a slice name
  * as nesting: `cc-smart-dev-kit-heavy.slice` sits inside `cc-smart-dev-kit.slice`, which
  * sits inside `cc-smart-dev.slice`, and so on up to `cc.slice`. One home for that rule, so
- * the launcher, the live check, the weights and the controller read all agree.
+ * the launcher, the weights and the controller read all agree.
  */
 export function sliceChain(slice: string): string[] {
   const parts = slice.replace(/\.slice$/, "").split("-");
@@ -187,7 +190,7 @@ export function userManagerCgroup(uid: number): string {
 
 /**
  * The cgroup path (under `/sys/fs/cgroup`) of a slice of user `uid`'s systemd manager.
- * One home for that rule, so the launcher, the live check and the weights agree.
+ * One home for that rule, so the launcher and the weights agree.
  */
 export function userSliceCgroup(uid: number, slice: string): string {
   return `${userManagerCgroup(uid)}/${sliceChain(slice).join("/")}`;
@@ -206,9 +209,4 @@ export function userManagerControllers(read: ReadText, uid: number): string[] | 
     .trim()
     .split(/\s+/)
     .filter((name) => name !== "");
-}
-
-/** What every heavy job of this user uses right now: the slice's `memory.current`. */
-export function sliceBytes(read: ReadText, uid: number, slice: string): number | null {
-  return cgroupNumber(read(`/sys/fs/cgroup${userSliceCgroup(uid, slice)}/memory.current`));
 }

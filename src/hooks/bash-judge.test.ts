@@ -17,7 +17,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
+import { CREW_ENV } from "../crew/session";
 import { leadFile, writeStoreFile } from "../crew/store";
 import { locateCheckout } from "../project/resolve";
 import { shellQuote } from "../setup/launcher";
@@ -858,12 +860,17 @@ describe("the judge reads the PowerShell tool too (native Windows)", () => {
     });
   });
 
-  test("the queue route stays Bash-only: a PowerShell heavy line is left as it is", async () => {
+  test("the queue's rewrite stays Bash-only: a PowerShell heavy line is refused, never rewritten", async () => {
     const { env, repo } = project({ jobs: { route: true } });
+    const bash = join(tempDir("git-bash"), "bash.exe");
+    writeFileSync(bash, "");
+    env[GIT_BASH_VAR] = bash;
     // The rewritten line is a `sh` line (`routedShell`), which the PowerShell tool cannot run.
-    expect(
-      output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit", "PowerShell"), env)),
-    ).toEqual({});
+    const answer = output(
+      await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit", "PowerShell"), env),
+    );
+    expect(answer.updatedInput).toBeUndefined();
+    expect(answer.permissionDecision).toBe("deny");
   });
 });
 
@@ -903,6 +910,103 @@ describe("J1: a package script is a script, not the tool of the same name", () =
     ).updatedInput as { command: string };
     expect(routed.command).toContain("job run --kind tsc");
     expect(routed.command).toContain("cd sub && bun run tsc --noEmit");
+  });
+});
+
+// The route is the `switches.jobRoute` switch: the project's `jobs.route` when it sets one, else
+// the person's machine-wide default in their workflow file, else off. The hook asks the one
+// resolver (`resolveJobRoute`), with or without a project file.
+describe("the route switch: the person's default, and the project wins", () => {
+  const TSC = "bunx tsc --noEmit";
+  const ROUTED = { command: `${LAUNCHER} job run --kind tsc -- ${TSC}` };
+  const on = { switches: { jobRoute: true } };
+  const off = { switches: { jobRoute: false } };
+
+  /** What the hook does with a type check in `repo`: the rewrite, or `null` when it stays raw. */
+  async function routed(repo: string, env: Record<string, string>, tool = "Bash") {
+    const answer = output(await runHook(jobRouteHook, call(repo, TSC, tool), env));
+    return answer.updatedInput === undefined ? null : answer.updatedInput;
+  }
+
+  test("off for everyone until someone turns it on: a heavy command runs raw", async () => {
+    const withFile = project({});
+    expect(await routed(withFile.repo, withFile.env)).toBeNull();
+    const noFile = project(undefined);
+    expect(await routed(noFile.repo, noFile.env)).toBeNull();
+  });
+
+  test("the person's default routes a project that says nothing, even one with no file", async () => {
+    const noFile = project(undefined);
+    writePersonalWorkflow(noFile.env, on);
+    expect(await routed(noFile.repo, noFile.env)).toEqual(ROUTED);
+    const silent = project({});
+    writePersonalWorkflow(silent.env, on);
+    expect(await routed(silent.repo, silent.env)).toEqual(ROUTED);
+    // Another job setting in the project's file is not its route.
+    const kinds = project({ jobs: { kinds: { e2e: { match: [{ script: "e2e" }] } } } });
+    writePersonalWorkflow(kinds.env, on);
+    expect(await routed(kinds.repo, kinds.env)).toEqual(ROUTED);
+  });
+
+  test("the project's value wins over the person's, in both directions", async () => {
+    const projectOff = project({ jobs: { route: false } });
+    writePersonalWorkflow(projectOff.env, on);
+    expect(await routed(projectOff.repo, projectOff.env)).toBeNull();
+    const projectOn = project({ jobs: { route: true } });
+    writePersonalWorkflow(projectOn.env, off);
+    expect(await routed(projectOn.repo, projectOn.env)).toEqual(ROUTED);
+  });
+
+  test("a personal file that cannot be used leaves the project's value standing", async () => {
+    const broken = (config: unknown) => {
+      const made = project(config);
+      const file = cliPaths(made.env).workflowConfigFile;
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, "{not json");
+      return made;
+    };
+    const projectOn = broken({ jobs: { route: true } });
+    expect(await routed(projectOn.repo, projectOn.env)).toEqual(ROUTED);
+    const silent = broken({});
+    expect(await routed(silent.repo, silent.env)).toBeNull();
+  });
+
+  test("a heavy PowerShell line is refused where the route is on, naming the Bash tool", async () => {
+    const made = project({});
+    // A Git Bash the lookup finds on any machine (off Windows the Bash tool is always there).
+    const bash = join(tempDir("git-bash"), "bash.exe");
+    writeFileSync(bash, "");
+    made.env[GIT_BASH_VAR] = bash;
+    const answer = async () =>
+      output(await runHook(jobRouteHook, call(made.repo, TSC, "PowerShell"), made.env));
+    // Off: left exactly as written.
+    expect(await answer()).toEqual({});
+    writePersonalWorkflow(made.env, on);
+    const refused = await answer();
+    expect(refused.updatedInput).toBeUndefined();
+    expect(refused.permissionDecision).toBe("deny");
+    expect(refused.permissionDecisionReason).toEndWith(
+      `Run it with the Bash tool instead, where it waits for a slot in the queue:\n${TSC}`,
+    );
+    // A crew session gets the same refusal; a light line and a print-only run are left alone.
+    const crew = { ...made.env, [CREW_ENV]: "B2-api-aaaaaa" };
+    expect(
+      output(await runHook(jobRouteHook, call(made.repo, TSC, "PowerShell"), crew))
+        .permissionDecision,
+    ).toBe("deny");
+    for (const command of ["git status", "bunx tsc --version"]) {
+      expect(
+        output(await runHook(jobRouteHook, call(made.repo, command, "PowerShell"), made.env)),
+      ).toEqual({});
+    }
+  });
+
+  // A folder outside git is no project: only the judge answers there, as before.
+  test("outside git there is no route: a heavy command runs raw", async () => {
+    const env = hookEnv();
+    writePersonalWorkflow(env, on);
+    const answer = output(await runHook(jobRouteHook, call(tempDir("outside-git"), TSC), env));
+    expect(answer).toEqual({});
   });
 });
 

@@ -58,12 +58,19 @@ const INPUT = {
 function task(over: Partial<Parameters<typeof rowContent>[0]> = {}) {
   return {
     agentType: "general-purpose",
+    contextWindowSize: null as null | number,
     effort: "high",
     id: "a1",
     label: "proof agent",
     model: "claude-sonnet-5-5",
+    tokenCount: null as null | number,
     ...over,
   };
+}
+
+/** A task with a context reading: 45k of a 200k window. */
+function usedTask(over: Partial<Parameters<typeof rowContent>[0]> = {}) {
+  return task({ contextWindowSize: 200000, tokenCount: 45000, ...over });
 }
 
 describe("MD-13: the subagent status line", () => {
@@ -114,8 +121,75 @@ describe("MD-13: the subagent status line", () => {
     expect(statusTasks(INPUT).map((one) => one.id)).toEqual(["a54a3667034e503a8", "b1"]);
     expect(subagentRows(INPUT)).toEqual([
       { content: "proof agent · worker → claude-sonnet-5-5 → high", id: "a54a3667034e503a8" },
-      { content: "Review the diff · opus → claude-opus-5-5 → xhigh", id: "b1" },
+      // The first task's count is 0 (no reading yet): no context part. The second has a count
+      // and no window: the count alone.
+      {
+        content: "Review the diff · opus → claude-opus-5-5 → xhigh · ~1k ctx",
+        id: "b1",
+      },
     ]);
+  });
+
+  it("the context use follows the route, from tokenCount and contextWindowSize", () => {
+    expect(rowContent(usedTask())).toBe(
+      "proof agent · worker → claude-sonnet-5-5 → high · ~45k/200k ctx (23%)",
+    );
+    expect(rowContent(usedTask({ tokenCount: 312000, contextWindowSize: 1000000 }))).toBe(
+      "proof agent · worker → claude-sonnet-5-5 → high · ~312k/1M ctx (31%)",
+    );
+    expect(rowContent(usedTask({ label: null, tokenCount: 950, contextWindowSize: 200000 }))).toBe(
+      "worker → claude-sonnet-5-5 → high · ~950/200k ctx (0%)",
+    );
+    // The statusTasks reader takes both fields from the input, as numbers.
+    const [first] = statusTasks({
+      tasks: [{ id: "a", contextWindowSize: 200000, tokenCount: 45000 }],
+    });
+    expect(first?.contextWindowSize).toBe(200000);
+    expect(first?.tokenCount).toBe(45000);
+  });
+
+  it("a missing, zero or garbled field leaves the context part out, or only the window", () => {
+    // No window: the count alone. No count (or none yet): nothing.
+    expect(rowContent(usedTask({ contextWindowSize: null }))).toBe(
+      "proof agent · worker → claude-sonnet-5-5 → high · ~45k ctx",
+    );
+    expect(rowContent(usedTask({ contextWindowSize: 0 }))).toBe(
+      "proof agent · worker → claude-sonnet-5-5 → high · ~45k ctx",
+    );
+    const bare = "proof agent · worker → claude-sonnet-5-5 → high";
+    expect(rowContent(usedTask({ tokenCount: null }))).toBe(bare);
+    expect(rowContent(usedTask({ tokenCount: 0 }))).toBe(bare);
+    expect(rowContent(usedTask({ tokenCount: -5 }))).toBe(bare);
+    // From raw input, a string or a NaN-like value is no number at all.
+    const [garbled] = statusTasks({
+      tasks: [{ id: "a", contextWindowSize: "200000", tokenCount: "45000" }],
+    });
+    expect(garbled?.contextWindowSize).toBeNull();
+    expect(garbled?.tokenCount).toBeNull();
+    const [infinite] = statusTasks({
+      tasks: [{ id: "a", contextWindowSize: Number.POSITIVE_INFINITY, tokenCount: null }],
+    });
+    expect(infinite?.contextWindowSize).toBeNull();
+    expect(infinite?.tokenCount).toBeNull();
+  });
+
+  it("a narrow row keeps the context: the label shrinks first, then the context moves forward", () => {
+    const tail = "worker → claude-sonnet-5-5 → high · ~45k/200k ctx (23%)";
+    const label = "reviewer-agent";
+    // Whole body is 72 characters: at 66 columns the label gives way, route and context stay.
+    expect(rowContent(usedTask({ label }), 66)).toBe(`review… · ${tail}`);
+    expect(rowContent(usedTask({ label }), 66).length).toBe(65);
+    // No room for even a short label: the route and the context, whole.
+    expect(rowContent(usedTask({ label }), 60)).toBe(tail);
+    // Not even those fit: the context goes first, the end of the route is cut.
+    expect(rowContent(usedTask({ label }), 40)).toBe("~45k/200k ctx (23%) · worker → claude-s…");
+    expect(rowContent(usedTask({ label: null }), 40)).toBe(
+      "~45k/200k ctx (23%) · worker → claude-s…",
+    );
+    // Every cut row fits its columns.
+    for (const columns of [20, 30, 45, 55, 66, 72]) {
+      expect(rowContent(usedTask({ label }), columns).length).toBeLessThanOrEqual(columns);
+    }
   });
 
   it("a broken or empty input prints nothing and exits 0", async () => {
@@ -143,7 +217,7 @@ describe("MD-13: the subagent status line", () => {
     }
     expect(logged).toEqual([
       '{"content":"proof agent · worker → claude-sonnet-5-5 → high","id":"a54a3667034e503a8"}',
-      '{"content":"Review the diff · opus → claude-opus-5-5 → xhigh","id":"b1"}',
+      '{"content":"Review the diff · opus → claude-opus-5-5 → xhigh · ~1k ctx","id":"b1"}',
     ]);
   });
 

@@ -65,6 +65,7 @@ import {
   planUsageLimit,
   resolveRoute,
 } from "./targets";
+import { threadContinueRefusal } from "./threads";
 
 /**
  * The judge test proofs of the test config's two affordable targets, as `gateway slot judge`
@@ -1837,6 +1838,303 @@ describe("auto mode's safety check", () => {
     const answered = await second.handle(clientRequest({ body: JSON.stringify(guardBody()) }));
     expect(answered.status).toBe(200);
     expect(second.calls.map((c) => c.url)).toEqual([OLLAMA_URL]);
+  });
+
+  // ─── The judge's stand-in is on by default; safety checks that fail are recorded (2026-10-27) ───
+
+  /** `claudeFirst`'s config with no fallback setting at all: every switch at its default. */
+  function noSwitches(tested: (keyof typeof JUDGE_PROOFS)[]): GatewayConfig {
+    const { fallback: _set, ...rest } = claudeFirst(tested);
+    return rest;
+  }
+
+  /** The `checksDown` record of the last state file the router wrote, or undefined. */
+  function checksDownOf(states: string[]): unknown {
+    const last = states.at(-1);
+    return last === undefined
+      ? undefined
+      : (JSON.parse(last) as { checksDown?: unknown }).checksDown;
+  }
+
+  /** The test clock (2026-10-15T10:00:00Z) in milliseconds, and `atLimit`'s reset in seconds. */
+  const CHECK_NOW = 1_792_058_400_000;
+  const LIMIT_RESET = 1_792_090_800;
+  const JUDGE_KEY = "cc-smart-dev-kit-judge";
+
+  it("2026-10-27: with no fallback setting the judge's stand-in is on: Claude first, and a tested worker target while Claude answers 429", async () => {
+    const config = noSwitches([...BOTH]);
+    expect(config.fallback).toBeUndefined();
+    const first = router([ok], { config });
+    const sent = JSON.stringify(guardBody());
+    expect((await first.handle(clientRequest({ body: sent }))).status).toBe(200);
+    // Claude answered: it alone was asked, byte for byte.
+    expect(first.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(nth(first.calls, 0).body).toBe(sent);
+    const states: string[] = [];
+    const limited = router([atLimit, ok], { config, states });
+    const res = await limited.handle(clientRequest({ body: sent }));
+    expect(res.status).toBe(200);
+    expect(limited.calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL]);
+    // A stand-in judged: nothing is failing, so nothing is recorded.
+    expect(checksDownOf(states)).toBeUndefined();
+  });
+
+  it("an explicit `fallback judge off` wins over the default: Claude alone, and the record says why", async () => {
+    const states: string[] = [];
+    const config: GatewayConfig = { ...noSwitches([...BOTH]), fallback: { [JUDGE_KEY]: false } };
+    const { calls, handle } = router([atLimit], { config, states });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: "five_hour",
+        lastAt: CHECK_NOW,
+        resetsAt: LIMIT_RESET,
+        since: CHECK_NOW,
+        status: 429,
+        why: "off",
+      },
+    });
+  });
+
+  it("no tested worker target: Claude alone, its 429 as it is, and the down state is recorded with Claude's reason and reset", async () => {
+    const states: string[] = [];
+    const { calls, handle, logs } = router([atLimit], { config: noSwitches([]), states });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(res.headers.get("anthropic-ratelimit-unified-status")).toBe("rejected");
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: "five_hour",
+        lastAt: CHECK_NOW,
+        resetsAt: LIMIT_RESET,
+        since: CHECK_NOW,
+        status: 429,
+        why: "untested",
+      },
+    });
+    expect(logs).toContain(
+      "WARN cc-smart-dev-kit-judge: auto mode's safety checks are failing (HTTP 429; Claude's plan limit five_hour resets 2026-10-15T19:00:00.000Z): no worker target has passed the judge test; cc-smart-dev-kit doctor says the fix",
+    );
+  });
+
+  it("a reset past Date's range: the check still answers, and the record and its line hold no reset time (review #7)", async () => {
+    // An integer header no date can hold: `toISOString` would throw inside the check's promise.
+    const farReset = () =>
+      new Response(
+        '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}',
+        {
+          headers: {
+            "anthropic-ratelimit-unified-representative-claim": "five_hour",
+            "anthropic-ratelimit-unified-reset": "99999999999999",
+            "anthropic-ratelimit-unified-status": "rejected",
+            "content-type": "application/json",
+          },
+          status: 429,
+        },
+      );
+    const states: string[] = [];
+    const { calls, handle, logs } = router([farReset], { config: noSwitches([]), states });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(429);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: "five_hour",
+        lastAt: CHECK_NOW,
+        resetsAt: null,
+        since: CHECK_NOW,
+        status: 429,
+        why: "untested",
+      },
+    });
+    expect(logs).toContain(
+      "WARN cc-smart-dev-kit-judge: auto mode's safety checks are failing (HTTP 429): no worker target has passed the judge test; cc-smart-dev-kit doctor says the fix",
+    );
+  });
+
+  it("a worker slot with no affordable target is recorded as no-worker; a judge chain with no usable target as chain-untested", async () => {
+    const worker: GatewayConfig = {
+      ...noSwitches([]),
+      slots: { ...config().slots, "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] },
+    };
+    const states: string[] = [];
+    await router([atLimit], { config: worker, states }).handle(
+      clientRequest({ body: JSON.stringify(guardBody()) }),
+    );
+    expect(checksDownOf(states)).toMatchObject({ [JUDGE_KEY]: { why: "no-worker" } });
+    const own: GatewayConfig = {
+      ...noSwitches([]),
+      slots: { ...noSwitches([]).slots, [JUDGE_KEY]: ["ollama:deepseek-v4.1-flash"] },
+    };
+    const ownStates: string[] = [];
+    await router([atLimit], { config: own, states: ownStates }).handle(
+      clientRequest({ body: JSON.stringify(guardBody()) }),
+    );
+    expect(checksDownOf(ownStates)).toMatchObject({ [JUDGE_KEY]: { why: "chain-untested" } });
+  });
+
+  it("every stand-in failed too: recorded as failed, with the 503 the last one gave and Claude's limit", async () => {
+    const states: string[] = [];
+    const { calls, handle } = router([atLimit, down, down], {
+      config: noSwitches([...BOTH]),
+      states,
+    });
+    const res = await handle(clientRequest({ body: JSON.stringify(guardBody()) }));
+    expect(res.status).toBe(503);
+    expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL, OMNI_URL, OLLAMA_URL]);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: "five_hour",
+        lastAt: CHECK_NOW,
+        resetsAt: LIMIT_RESET,
+        since: CHECK_NOW,
+        status: 503,
+        why: "failed",
+      },
+    });
+  });
+
+  it("a judge chain the person set that fails is recorded as chain-failed, with no word of Claude's limit", async () => {
+    const cfg = noSwitches([...BOTH]);
+    const own: GatewayConfig = {
+      ...cfg,
+      slots: { ...cfg.slots, [JUDGE_KEY]: ["ollama:deepseek-v4.1-flash"] },
+    };
+    const states: string[] = [];
+    const res = await router([down], { config: own, states }).handle(
+      clientRequest({ body: JSON.stringify(guardBody()) }),
+    );
+    expect(res.status).toBe(503);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: null,
+        lastAt: CHECK_NOW,
+        resetsAt: null,
+        since: CHECK_NOW,
+        status: 503,
+        why: "chain-failed",
+      },
+    });
+  });
+
+  it("Claude not answering at all (a network error) is a capacity failure too: recorded with its 502", async () => {
+    const states: string[] = [];
+    const unreachable = (): Response => {
+      throw new Error("connect ECONNREFUSED");
+    };
+    const res = await router([unreachable], { config: noSwitches([]), states }).handle(
+      clientRequest({ body: JSON.stringify(guardBody()) }),
+    );
+    expect(res.status).toBe(502);
+    expect(checksDownOf(states)).toEqual({
+      [JUDGE_KEY]: {
+        claim: null,
+        lastAt: CHECK_NOW,
+        resetsAt: null,
+        since: CHECK_NOW,
+        status: 502,
+        why: "untested",
+      },
+    });
+  });
+
+  it("the next check that gets a verdict clears the record; a 400 neither records nor clears", async () => {
+    const refused = () => new Response("bad request", { status: 400 });
+    const alone = noSwitches([]);
+    const sent = JSON.stringify(guardBody());
+    // A 400 first: not a capacity failure, so nothing is recorded.
+    const first: string[] = [];
+    await router([refused], { config: alone, states: first }).handle(clientRequest({ body: sent }));
+    expect(checksDownOf(first)).toBeUndefined();
+    // A 429, a 400 (the record stays), then a 200 (it ends) on one router.
+    const states: string[] = [];
+    const { handle, logs } = router([atLimit, refused, ok], { config: alone, states });
+    await handle(clientRequest({ body: sent }));
+    expect(checksDownOf(states)).toMatchObject({ [JUDGE_KEY]: { status: 429 } });
+    const written = states.length;
+    await handle(clientRequest({ body: sent }));
+    expect(states.length).toBe(written);
+    expect((await handle(clientRequest({ body: sent }))).status).toBe(200);
+    expect(checksDownOf(states)).toBeUndefined();
+    expect(logs).toContain(
+      "cc-smart-dev-kit-judge: auto mode's safety checks get a verdict again; the failing record is over",
+    );
+  });
+
+  it("a run of failures keeps its first `since` and moves `lastAt`", async () => {
+    let now = CHECK_NOW;
+    const states: string[] = [];
+    const { handle } = router([atLimit, atLimit], {
+      config: noSwitches([]),
+      now: () => now,
+      states,
+    });
+    const sent = JSON.stringify(guardBody());
+    await handle(clientRequest({ body: sent }));
+    now += 120_000;
+    await handle(clientRequest({ body: sent }));
+    expect(checksDownOf(states)).toMatchObject({
+      [JUDGE_KEY]: { lastAt: CHECK_NOW + 120_000, since: CHECK_NOW },
+    });
+  });
+
+  it("a profile's record is its own: keyed by the profile, with its own cause", async () => {
+    const states: string[] = [];
+    const base = noSwitches([...BOTH]);
+    const profiled: GatewayConfig = {
+      ...base,
+      profiles: { proj: { fallback: { [JUDGE_KEY]: false } } },
+    };
+    const res = await router([atLimit], { config: profiled, states }).handle(
+      clientRequest({ body: JSON.stringify(guardBody()), path: "/p/proj/v1/messages?beta=true" }),
+    );
+    expect(res.status).toBe(429);
+    expect(checksDownOf(states)).toMatchObject({ [`proj/${JUDGE_KEY}`]: { why: "off" } });
+    expect(checksDownOf(states)).not.toHaveProperty(JUDGE_KEY);
+  });
+
+  it("a record the config has since fixed ends at the next request, and a stale one is not carried over a restart", async () => {
+    const states: string[] = [];
+    let config: GatewayConfig = { ...noSwitches([...BOTH]), fallback: { [JUDGE_KEY]: false } };
+    const { handle } = router([atLimit, ok], { getConfig: () => config, states });
+    const sent = JSON.stringify(guardBody());
+    await handle(clientRequest({ body: sent }));
+    expect(checksDownOf(states)).toMatchObject({ [JUDGE_KEY]: { why: "off" } });
+    // The person turns the switch on. The next request is no safety check, so no verdict ends
+    // the record: it is the router reading the changed config that does.
+    config = noSwitches([...BOTH]);
+    const opus = JSON.stringify(message("claude-opus-5-5"));
+    expect((await handle(clientRequest({ body: opus }))).status).toBe(200);
+    expect(checksDownOf(states)).toBeUndefined();
+    // A router that starts from a file whose record nobody touched for 15 minutes forgets it.
+    const stale = JSON.stringify({
+      checksDown: {
+        [JUDGE_KEY]: {
+          claim: null,
+          lastAt: CHECK_NOW - 16 * 60_000,
+          resetsAt: null,
+          since: CHECK_NOW - 20 * 60_000,
+          status: 529,
+          why: "untested",
+        },
+      },
+      fallbacks: {},
+      limits: {},
+      version: 1,
+    });
+    // The first request writes the router's whole state (Claude's limit is new): no record in it.
+    const restarted: string[] = [];
+    const again = router([atLimit, ok], {
+      config: noSwitches([...BOTH]),
+      loadedState: stale,
+      states: restarted,
+    });
+    expect((await again.handle(clientRequest({ body: sent }))).status).toBe(200);
+    expect(restarted.length).toBeGreaterThan(0);
+    expect(checksDownOf(restarted)).toBeUndefined();
   });
 
   it("D44: a judge backend refusing its key answers a 400 (a check has no deferred tools), and the log says 400", async () => {
@@ -4304,6 +4602,238 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     ]);
   });
 
+  describe("message threads: a backend never gets a thread continue (Claude Code 2.1.310)", () => {
+    /** The beta header Claude Code sends once threads are on for the session. */
+    const THREAD_BETA = "oauth-2025-04-20,message-threads-2026-08-12";
+    const THREAD_HEADERS = { "anthropic-beta": THREAD_BETA };
+    const BACKEND_CHAIN = ["omniroute:ollama-cloud/glm-5.3-flash"];
+    const BACKEND = "omniroute:ollama-cloud/glm-5.3-flash";
+
+    /**
+     * A normal turn of a session with threads on: only the messages after the last assistant
+     * message, `thread` pointing at it, and no `system` or `tools` (they did not change).
+     */
+    function continueBody(): Record<string, unknown> {
+      return {
+        max_tokens: 32000,
+        messages: [{ content: "and the second one?", role: "user" }],
+        model: "claude-opus-5-5",
+        stream: true,
+        thinking: { type: "adaptive" },
+        thread: { previous_message_id: "msg_01", type: "continue" },
+      };
+    }
+
+    /** Written by hand: the 400 whose `error.details.error_code` Claude Code reads. */
+    const REFUSED = {
+      error: {
+        details: { error_code: "thread_unsupported_request" },
+        message:
+          "cc-smart-dev-kit-router: this gateway target keeps no thread: resend the whole conversation",
+        type: "invalid_request_error",
+      },
+      type: "error",
+    };
+
+    it("the first target is a backend: the 400 Claude Code resends a turn on, and the backend is never called", async () => {
+      const { calls, handle, logs } = router([ok, ok], {
+        config: withOpus(BACKEND_CHAIN),
+      });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(continueBody()), headers: THREAD_HEADERS }),
+      );
+      // The backend is never called: with no change it would get one message and the `thread`.
+      expect(calls.map((c) => c.body)).toEqual([]);
+      expect(res.status).toBe(400);
+      expect(res.headers.get("content-type")).toBe("application/json;charset=utf-8");
+      expect(await res.json()).toEqual(REFUSED);
+      // The request line is the record (`recent` and the history row are made from the same
+      // outcome); one WARN says why, once per target.
+      expect(logs).toEqual([
+        `WARN cc-smart-dev-kit-opus: ${BACKEND} keeps no message thread; a thread continue is answered 400 thread_unsupported_request and Claude Code resends the turn whole (logged once per target)`,
+        `2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → ${BACKEND} 400 0ms fallbacks=0`,
+      ]);
+      // Asked again (the resend is a whole turn: the same call, no thread): a second refusal
+      // adds its request line only.
+      await handle(
+        clientRequest({ body: JSON.stringify(continueBody()), headers: THREAD_HEADERS }),
+      );
+      expect(logs).toHaveLength(3);
+      expect(logs[2]).toBe(
+        `2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → ${BACKEND} 400 0ms fallbacks=0`,
+      );
+      expect(calls).toHaveLength(0);
+    });
+
+    it("the refusal is in the `recent` view, rests nothing and is never held: the turn Claude Code resends whole is answered", async () => {
+      // The breaker on, as it is by default: a 400 is no capacity failure, so no hold and no 429.
+      const { calls, handle } = router([ok], {
+        breaker: true,
+        config: withOpus(BACKEND_CHAIN),
+      });
+      const refused = await handle(
+        clientRequest({ body: JSON.stringify(continueBody()), headers: THREAD_HEADERS }),
+      );
+      expect(refused.status).toBe(400);
+      // Claude Code's recovery: the same turn whole, with no `thread`.
+      const { thread: _thread, ...whole } = continueBody();
+      const resent = await handle(
+        clientRequest({ body: JSON.stringify(whole), headers: THREAD_HEADERS }),
+      );
+      expect(resent.status).toBe(200);
+      expect(calls.map((c) => c.url)).toEqual([OMNI_URL]);
+      expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+        max_tokens: 32000,
+        messages: [{ content: "and the second one?", role: "user" }],
+        model: "ollama-cloud/glm-5.3-flash",
+        stream: true,
+        thinking: { type: "adaptive" },
+      });
+      const health = (await (
+        await handle(clientRequest({ method: "GET", path: "/__cc-smart-dev-kit/health" }))
+      ).json()) as { breakers: unknown; cooling: unknown; recent: unknown };
+      expect(health.breakers).toEqual({});
+      expect(health.cooling).toEqual({});
+      expect(health.recent).toEqual([
+        {
+          at: T0,
+          ms: 0,
+          nextTarget: false,
+          slot: "cc-smart-dev-kit-opus",
+          status: 400,
+          target: BACKEND,
+        },
+        {
+          at: T0,
+          ms: 0,
+          nextTarget: false,
+          slot: "cc-smart-dev-kit-opus",
+          status: 200,
+          target: BACKEND,
+        },
+      ]);
+    });
+
+    it("a backend behind a Claude target that failed: the same 400, never a skip to a later target, the backend not called", async () => {
+      const { calls, handle, logs } = router([down, ok, ok], {
+        config: withOpus(
+          ["claude-opus-5-5", "omniroute:ollama-cloud/glm-5.3-flash", "ollama:deepseek-v4.1-flash"],
+          true,
+        ),
+      });
+      const sent = JSON.stringify(continueBody(), null, 1);
+      const res = await handle(clientRequest({ body: sent, headers: THREAD_HEADERS }));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(REFUSED);
+      // Only Claude was asked, with the request as sent; neither backend was.
+      expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+      expect(nth(calls, 0).body).toBe(sent);
+      expect(nth(calls, 0).headers).toContainEqual(["anthropic-beta", THREAD_BETA]);
+      // Claude's 503 is logged in the background, so its line may come after ours: the two
+      // WARNs in either order, then the request line, which names the backend and the one
+      // fallback that was made.
+      expect([...logs].sort()).toEqual(
+        [
+          "WARN claude-opus-5-5 answered 503; trying the next target — down",
+          `WARN cc-smart-dev-kit-opus: ${BACKEND} keeps no message thread; a thread continue is answered 400 thread_unsupported_request and Claude Code resends the turn whole (logged once per target)`,
+          `2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → ${BACKEND} 400 0ms fallbacks=1`,
+        ].sort(),
+      );
+      expect(logs.at(-1)).toBe(
+        `2026-10-15T10:00:00.000Z POST /v1/messages claude-opus-5-5 → ${BACKEND} 400 0ms fallbacks=1`,
+      );
+    });
+
+    it("a `create` body is a whole request: the backend answers it as it does today", async () => {
+      const { calls, handle } = router([ok], { config: withOpus(BACKEND_CHAIN) });
+      const create = { ...continueBody(), thread: { type: "create" } };
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(create), headers: THREAD_HEADERS }),
+      );
+      expect(res.status).toBe(200);
+      expect(calls.map((c) => c.url)).toEqual([OMNI_URL]);
+      expect(JSON.parse(nth(calls, 0).body ?? "")).toEqual({
+        max_tokens: 32000,
+        messages: [{ content: "and the second one?", role: "user" }],
+        model: "ollama-cloud/glm-5.3-flash",
+        stream: true,
+        thinking: { type: "adaptive" },
+        thread: { type: "create" },
+      });
+      // The backend never gets the beta header, threads or not.
+      expect(nth(calls, 0).headers.map(([name]) => name)).not.toContain("anthropic-beta");
+    });
+
+    it("an Anthropic target gets the continue byte for byte, the beta header and `thread` included", async () => {
+      const sent = JSON.stringify(continueBody(), null, 1); // spaced: a re-written body would differ
+      // A slot with no chain (the default), and a chain that starts with the very model asked.
+      for (const config of [
+        undefined,
+        withOpus(["claude-opus-5-5", "omniroute:glm-5.3-flash"], true),
+      ]) {
+        const { calls, handle } = router([ok], config === undefined ? {} : { config });
+        const res = await handle(clientRequest({ body: sent, headers: THREAD_HEADERS }));
+        expect(res.status).toBe(200);
+        expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+        expect(nth(calls, 0).body).toBe(sent);
+        expect(nth(calls, 0).headers).toContainEqual(["anthropic-beta", THREAD_BETA]);
+        expect(nth(calls, 0).headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+      }
+    });
+
+    it("another Claude model as the target keeps `thread` and the beta header too: only `model` changes", async () => {
+      const { calls, handle } = router([ok], { config: withOpus(["claude-sonnet-5-5"]) });
+      const res = await handle(
+        clientRequest({ body: JSON.stringify(continueBody()), headers: THREAD_HEADERS }),
+      );
+      expect(res.status).toBe(200);
+      expect(calls.map((c) => c.url)).toEqual([ANTHROPIC_URL]);
+      const sent = JSON.parse(nth(calls, 0).body ?? "") as Record<string, unknown>;
+      expect(sent.model).toBe("claude-sonnet-5-5");
+      expect(sent.thread).toEqual({ previous_message_id: "msg_01", type: "continue" });
+      expect(sent.messages).toEqual([{ content: "and the second one?", role: "user" }]);
+      expect(nth(calls, 0).headers).toContainEqual(["anthropic-beta", THREAD_BETA]);
+    });
+
+    it("an explicit <backend>:<model> gets the same 400 (it is a backend too)", async () => {
+      const { calls, handle } = router([ok]);
+      const res = await handle(
+        clientRequest({
+          body: JSON.stringify({
+            ...continueBody(),
+            model: "omniroute:ollama-cloud/glm-5.3-flash",
+          }),
+          headers: THREAD_HEADERS,
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(REFUSED);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('threadContinueRefusal: null unless thread.type is "continue"', async () => {
+      expect(threadContinueRefusal({ model: "m" })).toBeNull();
+      expect(threadContinueRefusal({ thread: undefined })).toBeNull();
+      expect(threadContinueRefusal({ thread: null })).toBeNull();
+      expect(threadContinueRefusal({ thread: { type: "create" } })).toBeNull();
+      expect(threadContinueRefusal({ thread: {} })).toBeNull();
+      // Not an object: a string, a number, a list.
+      expect(threadContinueRefusal({ thread: "continue" })).toBeNull();
+      expect(threadContinueRefusal({ thread: 1 })).toBeNull();
+      expect(threadContinueRefusal({ thread: ["continue"] })).toBeNull();
+      // The type decides, not the pointer.
+      const refusal = threadContinueRefusal({ thread: { type: "continue" } });
+      expect(refusal?.status).toBe(400);
+      expect(await refusal?.json()).toEqual(REFUSED);
+      // A fresh answer each time: a Response body is read once.
+      const first = threadContinueRefusal(continueBody());
+      const second = threadContinueRefusal(continueBody());
+      expect(first).not.toBe(second);
+      expect(await first?.json()).toEqual(REFUSED);
+      expect(await second?.json()).toEqual(REFUSED);
+    });
+  });
+
   it("a request reaches its family's slot by the id it names: a newer Opus, an Opus with [1m], Haiku and Sonnet", async () => {
     const cfg = withOpus(["omniroute:glm-5.3-flash"]);
     const { calls, handle } = router([ok, ok, ok, ok], { config: cfg });
@@ -4614,6 +5144,13 @@ describe("model slots (opus, fable) and every slot by its family", () => {
         }),
       ),
     ).toEqual({ claim: null, resetsAt: null });
+    // A reset past what a date can hold is dropped too: a line that prints it would throw.
+    expect(
+      planUsageLimit(
+        429,
+        headers({ ...rejected, "anthropic-ratelimit-unified-reset": "9007199254740991" }),
+      ),
+    ).toEqual({ claim: "seven_day_opus", resetsAt: null });
   });
 
   it("the config: a model slot takes any chain; a 0.4.x modelSlots entry still loads, its family and slot checked; fallback names a slot", () => {
@@ -4647,7 +5184,7 @@ describe("model slots (opus, fable) and every slot by its family", () => {
     );
   });
 
-  it("each slot's fallback switch (D66): its own setting, else off for every slot, the judge's too", () => {
+  it("each slot's fallback switch: its own setting, else off for every slot but the judge, whose stand-in is on (2026-10-27)", () => {
     const slots = {
       "cc-smart-dev-kit-fable": ["omniroute:glm-5.3-flash"],
       "cc-smart-dev-kit-judge": ["ollama:deepseek-v4.1-flash"],
@@ -4659,18 +5196,18 @@ describe("model slots (opus, fable) and every slot by its family", () => {
       Object.keys(slots).map((slot) => [slot, fallbackOn(cfg, slot)]);
     expect(states({})).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", false],
+      ["cc-smart-dev-kit-judge", true],
       ["cc-smart-dev-kit-opus", false],
       ["cc-smart-dev-kit-scout", false],
       ["cc-smart-dev-kit-worker", false],
     ]);
     expect(
       states({
-        fallback: { "cc-smart-dev-kit-judge": true, "cc-smart-dev-kit-worker": true },
+        fallback: { "cc-smart-dev-kit-judge": false, "cc-smart-dev-kit-worker": true },
       }),
     ).toEqual([
       ["cc-smart-dev-kit-fable", false],
-      ["cc-smart-dev-kit-judge", true],
+      ["cc-smart-dev-kit-judge", false],
       ["cc-smart-dev-kit-opus", false],
       ["cc-smart-dev-kit-scout", false],
       ["cc-smart-dev-kit-worker", true],

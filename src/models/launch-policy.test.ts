@@ -1,6 +1,6 @@
 /**
  * The launch policy (`launch-policy.ts`): the parts the Agent guard does not test through its
- * own verdicts — what "affordable" means, and the model and effort each crew kind runs on
+ * own verdicts — which tier a model answers, and the model and effort each crew kind runs on
  * (D46). The guard's own tests (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
  */
 import { describe, expect, test } from "bun:test";
@@ -15,7 +15,6 @@ import {
   effectiveLaunch,
   effortAllowed,
   type GatewayFacts,
-  isAffordable,
   isCrewKind,
   resolveLaunchModel,
   UI_EFFORTS,
@@ -66,61 +65,51 @@ describe("D46: the crew kinds", () => {
     expect(CREW_KINDS).toEqual({
       build: {
         about: "routine building",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       docs: {
         about: "docs and their updates",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       tests: {
         about: "tests and test runs",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       security: {
         about: "code that touches security",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       money: {
         about: "code that touches money",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       permissions: {
         about: "code that touches permissions",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       schema: {
         about: "a schema or a contract",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       deploy: {
         about: "deploy plumbing",
-        affordableEffort: "max",
         effort: "high",
         model: "sonnet",
       },
       architecture: {
         about: "architecture and design",
-        affordableEffort: "xhigh",
         effort: "xhigh",
         model: "opus",
       },
       ui: {
         about: "UI and UX judgment",
-        affordableEffort: null,
         effort: "high",
         model: "opus",
       },
@@ -146,10 +135,10 @@ describe("D46: the crew kinds", () => {
     expect(isCrewKind("toString")).toBe(false);
   });
 
-  test("D46: a sonnet kind runs at max on an affordable worker slot", () => {
+  test("D46, 2026-10-26: a sonnet kind runs at the kind's own effort on an affordable worker slot too", () => {
     const launch = crewLaunch("build", AFFORDABLE, NO_ENV);
     expect(launch.model).toBe("sonnet");
-    expect(launch.effort).toBe("max");
+    expect(launch.effort).toBe("high");
     expect(launch.real).toEqual({
       claude: false,
       family: "sonnet",
@@ -161,6 +150,7 @@ describe("D46: the crew kinds", () => {
   test.each([
     ["the gateway off", NO_GATEWAY],
     ["the worker slot answered by Claude Sonnet", CLAUDE_SLOTS],
+    ["the worker slot answered by a backend", AFFORDABLE],
     ["a backend chain, but the gateway off", CONFIG_BUT_OFF],
   ] as const)("D46: a sonnet kind runs at high with %s", (_label, gateway) => {
     for (const kind of [
@@ -180,24 +170,23 @@ describe("D46: the crew kinds", () => {
     }
   });
 
-  test("D46: a person's own override to a backend is affordable too: max", () => {
+  test("D46: a person's own override to a backend changes the model, not the kind's effort", () => {
     const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: "omniroute:glm-5.3-flash" };
-    expect(crewLaunch("tests", NO_GATEWAY, env).effort).toBe("max");
+    const launch = crewLaunch("tests", NO_GATEWAY, env);
+    expect(launch.effort).toBe("high");
+    expect(launch.real.claude).toBe(false);
   });
 
   test.each([
     ["the gateway off", NO_GATEWAY],
     ["the opus slot answered by a backend", AFFORDABLE],
     ["the opus slot answered by Claude Opus", CLAUDE_SLOTS],
-  ] as const)(
-    "D46: an opus kind runs at xhigh with %s: a tier is never affordable",
-    (_l, gateway) => {
-      const launch = crewLaunch("architecture", gateway, NO_ENV);
-      expect(launch.model).toBe("opus");
-      expect(launch.effort).toBe("xhigh");
-      expect(launch.real.tier).toBe("opus");
-    },
-  );
+  ] as const)("D46: an opus kind runs at xhigh with %s", (_l, gateway) => {
+    const launch = crewLaunch("architecture", gateway, NO_ENV);
+    expect(launch.model).toBe("opus");
+    expect(launch.effort).toBe("xhigh");
+    expect(launch.real.tier).toBe("opus");
+  });
 
   test("D46: the Agent guard allows every kind's own launch, on every gateway", () => {
     for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
@@ -258,12 +247,11 @@ describe("D50: UI/UX work runs only on the tiers and efforts UI_POLICY names", (
     }
   });
 
-  test("D50: the ui kind is opus at high, on every gateway, and never affordable", () => {
+  test("D50: the ui kind is opus at high, on every gateway, and always the opus tier", () => {
     for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
       const launch = crewLaunch("ui", gateway, NO_ENV);
       expect(launch).toMatchObject({ effort: "high", model: "opus" });
       expect(launch.real.tier).toBe("opus");
-      expect(isAffordable(launch.real)).toBe(false);
       expect(uiTierAllowed(launch.real)).toBe(true);
       expect(uiEffortAllowed(launch.effort)).toBe(true);
     }
@@ -299,17 +287,25 @@ describe("the slot that answers a launch", () => {
   });
 });
 
-describe("what the policy calls affordable", () => {
-  test("a model a backend answers, with no premium tier", () => {
-    expect(isAffordable(resolveLaunchModel("omniroute:glm-5.3", NO_GATEWAY, NO_ENV))).toBe(true);
-    expect(isAffordable(resolveLaunchModel("sonnet", AFFORDABLE, NO_ENV))).toBe(true);
-  });
-
-  test("never Claude, and never a premium tier, whatever answers it", () => {
-    expect(isAffordable(resolveLaunchModel("sonnet", NO_GATEWAY, NO_ENV))).toBe(false);
-    expect(isAffordable(resolveLaunchModel("haiku", CLAUDE_SLOTS, NO_ENV))).toBe(false);
-    expect(isAffordable(resolveLaunchModel("opus", AFFORDABLE, NO_ENV))).toBe(false);
-    expect(isAffordable(resolveLaunchModel("best", AFFORDABLE, NO_ENV))).toBe(false);
+describe("which tier a model answers (`resolveLaunchModel`)", () => {
+  test("a backend answers sonnet with no premium tier; a premium name keeps its tier", () => {
+    expect(resolveLaunchModel("omniroute:glm-5.3", NO_GATEWAY, NO_ENV)).toMatchObject({
+      claude: false,
+      tier: null,
+    });
+    expect(resolveLaunchModel("sonnet", AFFORDABLE, NO_ENV)).toMatchObject({
+      claude: false,
+      tier: null,
+    });
+    expect(resolveLaunchModel("sonnet", NO_GATEWAY, NO_ENV)).toMatchObject({
+      claude: true,
+      tier: null,
+    });
+    expect(resolveLaunchModel("opus", AFFORDABLE, NO_ENV)).toMatchObject({
+      claude: false,
+      tier: "opus",
+    });
+    expect(resolveLaunchModel("best", AFFORDABLE, NO_ENV)).toMatchObject({ tier: "opus" });
   });
 });
 

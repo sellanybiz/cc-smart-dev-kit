@@ -1,5 +1,5 @@
 /**
- * The lease store (`store.ts`) on real files in a temp folder: takes are all or nothing,
+ * The lease store (`store.ts`) on real files in a temp folder: a take is a slot or nothing,
  * stale leases (a dead pid, a reused pid, a file nobody touched) count for nothing and are
  * removed, a holder's heartbeat keeps its file, and two machines share one folder.
  */
@@ -9,6 +9,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -32,24 +33,31 @@ import {
 } from "./store";
 import { startTimeReader } from "./windows";
 
-function record(person: string, gb: number, pid = process.pid): string {
+function record(person: string, slot = true, pid = process.pid): string {
   return holderText({
     checkout: "/home/user/app",
-    gb,
     kind: "tsc",
     person,
     pid,
     since: Date.now(),
+    slot,
     v: 1,
     what: "bunx tsc --noEmit",
   });
 }
 
-/** A lease file as another process wrote it; `ageMs` sets how long ago it was touched. */
+/**
+ * A lease file as another process wrote it; `ageMs` sets how long ago it was touched. `gb` is
+ * the number the file carries: an older plugin wrote the gigabytes it reserved there, this one
+ * writes 1 for a slot and 0 for a name held alone.
+ */
 function plantLease(dir: string, holder: FileHolder, gb: number, ageMs = 0): string {
   mkdirSync(join(dir, "leases"), { recursive: true });
   const file = join(dir, "leases", `${crypto.randomUUID()}.json`);
-  writeFileSync(file, JSON.stringify({ store: 1, gb, holder, record: record(holder.host, gb) }));
+  writeFileSync(
+    file,
+    JSON.stringify({ store: 1, gb, holder, record: record(holder.host, gb > 0) }),
+  );
   const at = (Date.now() - ageMs) / 1000;
   utimesSync(file, at, at);
   return file;
@@ -66,12 +74,12 @@ function leaseFiles(dir: string): string[] {
   return existsSync(folder) ? readdirSync(folder).filter((name) => name.endsWith(".json")) : [];
 }
 
-function store(dir: string, capacity = 10, self?: FileHolder, startTimeOf?: StartTimeReader) {
+function store(dir: string, slots = 3, self?: FileHolder, startTimeOf?: StartTimeReader) {
   return leaseStore({
     dir,
     label: "this machine",
     shared: false,
-    capacityGb: () => capacity,
+    capacity: () => slots,
     ...(self !== undefined && { self }),
     ...(startTimeOf !== undefined && { startTimeOf }),
   });
@@ -82,33 +90,89 @@ function windowsReader(ticks: string | null): StartTimeReader {
   return startTimeReader("win32", { powershell: () => ticks, taskkill: () => 0 });
 }
 
-describe("leaseStore: taking memory", () => {
-  test("takes all the GB or none, and gives them back", async () => {
+describe("leaseStore: taking slots", () => {
+  test("takes a slot while one is free, and gives it back", async () => {
     const dir = tempDir("store");
-    const machine = store(dir, 10);
-    const first = await machine.tryTake(6, record("host-a", 6));
-    expect(first?.gb).toBe(6);
-    expect(await machine.tryTake(5, record("host-a", 5))).toBeNull();
+    const machine = store(dir, 2);
+    const first = await machine.tryTake(true, record("host-a"));
+    const second = await machine.tryTake(true, record("host-a"));
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+    expect(leaseFiles(dir)).toHaveLength(2);
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([true, true]);
+    first?.release();
+    first?.release();
     expect(leaseFiles(dir)).toHaveLength(1);
-    const second = await machine.tryTake(4, record("host-a", 4));
-    expect(second?.gb).toBe(4);
-    expect((await machine.held()).map((unit) => unit.gb).sort()).toEqual([4, 6]);
-    first?.release();
-    first?.release();
+    // The slot is free again.
+    const third = await machine.tryTake(true, record("host-a"));
+    expect(third).not.toBeNull();
     second?.release();
+    third?.release();
     expect(leaseFiles(dir)).toEqual([]);
     expect(await machine.held()).toEqual([]);
+  });
+
+  test("one slot means one job at a time", async () => {
+    const machine = store(tempDir("store"), 1);
+    const only = await machine.tryTake(true, record("host-a"));
+    expect(only).not.toBeNull();
+    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+    only?.release();
+    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+  });
+
+  // Mixed versions: an older `job run` wrote the GB it reserved in a lease's `gb`. This
+  // plugin counts every live lease as one slot, whatever that number says.
+  test("counts a lease an older plugin wrote as one slot, whatever GB it reserved", async () => {
+    const dir = tempDir("store");
+    plantLease(dir, currentFileHolder(), 14);
+    plantLease(dir, currentFileHolder(), 2);
+    const machine = store(dir, 3);
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([true, true]);
+    // Two slots in use of three: one more fits, and then the machine is full.
+    const third = await machine.tryTake(true, record("host-a"));
+    expect(third).not.toBeNull();
+    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+  });
+
+  test("a lease that holds a name alone (0) uses no slot", async () => {
+    const dir = tempDir("store");
+    plantLease(dir, currentFileHolder(), 0);
+    const machine = store(dir, 1);
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([false]);
+    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+  });
+
+  // An older `job run` reads `gb` as the GB a lease reserves: 1 for a slot, 0 for a name.
+  test("writes 1 in a lease's old gb field for a slot and 0 for a name, and no other new field", async () => {
+    const dir = tempDir("store");
+    const machine = store(dir, 3);
+    const slot = await machine.tryTake(true, record("host-a"));
+    const name = await machine.tryTake(false, record("host-a", false), "image");
+    const written = leaseFiles(dir).map(
+      (file) =>
+        JSON.parse(readFileSync(join(dir, "leases", file), "utf8")) as Record<string, unknown>,
+    );
+    expect(written.map((one) => one.gb).sort()).toEqual([0, 1]);
+    for (const one of written) {
+      expect(Object.keys(one).sort()).toEqual(
+        ["gb", "holder", "record", "store", ...("exclusive" in one ? ["exclusive"] : [])].sort(),
+      );
+    }
+    slot?.release();
+    name?.release();
   });
 
   test("lists the line with its own ticket marked, and drops it on release", async () => {
     const dir = tempDir("store");
     const machine = store(dir);
-    const mine = await machine.enqueue(record("host-a", 2));
-    const other = await store(dir).enqueue(record("host-a", 8));
+    const mine = await machine.enqueue(record("host-a"));
+    const other = await store(dir).enqueue(record("host-a", false));
     const line = (await mine?.line()) ?? [];
     expect(line.map((entry) => entry.mine).sort()).toEqual([false, true]);
-    expect(line.map((entry) => JSON.parse(entry.text).gb).sort()).toEqual([2, 8]);
-    expect((await machine.waiting()).map((unit) => unit.gb).sort()).toEqual([2, 8]);
+    expect(line.map((entry) => JSON.parse(entry.text).gb).sort()).toEqual([0, 1]);
+    expect((await machine.waiting()).map((unit) => unit.slot).sort()).toEqual([false, true]);
     mine?.release();
     other?.release();
     expect(readdirSync(join(dir, "tickets"))).toEqual([]);
@@ -120,42 +184,42 @@ describe("leaseStore: stale holders are cleaned up", () => {
 
   test("a lease whose process is dead counts for nothing, and is removed", async () => {
     const dir = tempDir("store");
-    const file = plantLease(dir, { ...here(), pid: await deadPid() }, 8);
-    const machine = store(dir, 10);
+    const file = plantLease(dir, { ...here(), pid: await deadPid() }, 1);
+    const machine = store(dir, 1);
     expect(await machine.held()).toEqual([]);
     expect(existsSync(file)).toBe(false);
-    // And its memory is free again: all 10 GB can be taken.
-    expect((await machine.tryTake(10, record("host-a", 10)))?.gb).toBe(10);
+    // And its slot is free again.
+    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
   });
 
   test("a lease whose pid was reused (alive, another start time) is removed", async () => {
     const dir = tempDir("store");
-    const file = plantLease(dir, { ...here(), startTime: "proc:1" }, 8);
+    const file = plantLease(dir, { ...here(), startTime: "proc:1" }, 1);
     expect(await store(dir).held()).toEqual([]);
     expect(existsSync(file)).toBe(false);
   });
 
   test("a lease of a live process stays, however old its file is", async () => {
     const dir = tempDir("store");
-    const file = plantLease(dir, here(), 8, 10 * UNSEEN_STALE_MS);
-    expect((await store(dir).held()).map((unit) => unit.gb)).toEqual([8]);
+    const file = plantLease(dir, here(), 1, 10 * UNSEEN_STALE_MS);
+    expect((await store(dir).held()).map((unit) => unit.slot)).toEqual([true]);
     expect(existsSync(file)).toBe(true);
   });
 
   test("a lease from a process this machine cannot see stays while it is touched, then goes", async () => {
     const dir = tempDir("store");
     const elsewhere: FileHolder = { pid: 1, startTime: "proc:5", host: "host-b", pidns: "pid:[1]" };
-    const fresh = plantLease(dir, elsewhere, 4, UNSEEN_STALE_MS - 30_000);
-    const old = plantLease(dir, elsewhere, 6, UNSEEN_STALE_MS + 30_000);
+    const fresh = plantLease(dir, elsewhere, 1, UNSEEN_STALE_MS - 30_000);
+    const old = plantLease(dir, elsewhere, 1, UNSEEN_STALE_MS + 30_000);
     // Same host name, another pid namespace (a container): judged by its touches too.
-    const container = plantLease(dir, { ...here(), pidns: "pid:[2]" }, 2, UNSEEN_STALE_MS + 30_000);
-    expect((await store(dir).held()).map((unit) => unit.gb)).toEqual([4]);
+    const container = plantLease(dir, { ...here(), pidns: "pid:[2]" }, 1, UNSEEN_STALE_MS + 30_000);
+    expect(await store(dir).held()).toHaveLength(1);
     expect(existsSync(fresh)).toBe(true);
     expect(existsSync(old)).toBe(false);
     expect(existsSync(container)).toBe(false);
   });
 
-  test("a file it cannot read holds no GB, and goes once nobody touches it", async () => {
+  test("a file it cannot read holds no slot, and goes once nobody touches it", async () => {
     const dir = tempDir("store");
     mkdirSync(join(dir, "leases"));
     const newer = join(dir, "leases", "newer.json");
@@ -174,12 +238,12 @@ describe("leaseStore: stale holders are cleaned up", () => {
 describe("leaseStore: a Windows holder", () => {
   test("a lease whose pid was reused (another start time) is removed", async () => {
     const dir = tempDir("store");
-    const file = plantLease(dir, { ...currentFileHolder(), startTime: "win:1000" }, 8);
-    const machine = store(dir, 10, undefined, windowsReader("2000"));
+    const file = plantLease(dir, { ...currentFileHolder(), startTime: "win:1000" }, 1);
+    const machine = store(dir, 1, undefined, windowsReader("2000"));
     expect(await machine.held()).toEqual([]);
     expect(existsSync(file)).toBe(false);
-    // And its memory is free again: all 10 GB can be taken.
-    expect((await machine.tryTake(10, record("host-a", 10)))?.gb).toBe(10);
+    // And its slot is free again.
+    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
   });
 
   test("a lease of a live process stays, however old its file is", async () => {
@@ -187,26 +251,26 @@ describe("leaseStore: a Windows holder", () => {
     const file = plantLease(
       dir,
       { ...currentFileHolder(), startTime: "win:1000" },
-      8,
+      1,
       10 * UNSEEN_STALE_MS,
     );
-    const machine = store(dir, 10, undefined, windowsReader("1000"));
-    expect((await machine.held()).map((unit) => unit.gb)).toEqual([8]);
+    const machine = store(dir, 3, undefined, windowsReader("1000"));
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([true]);
     expect(existsSync(file)).toBe(true);
   });
 
   // The fail-safe (`windows.ts`): a holder PowerShell cannot judge counts as ALIVE, so a
-  // job waits instead of running on top of memory someone may still hold.
+  // job waits instead of running on top of a slot someone may still hold.
   test("a holder PowerShell cannot answer for stays: the lease is not freed", async () => {
     const dir = tempDir("store");
     const file = plantLease(
       dir,
       { ...currentFileHolder(), startTime: "win:1000" },
-      8,
+      1,
       10 * UNSEEN_STALE_MS,
     );
-    const machine = store(dir, 10, undefined, windowsReader(null));
-    expect((await machine.held()).map((unit) => unit.gb)).toEqual([8]);
+    const machine = store(dir, 3, undefined, windowsReader(null));
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([true]);
     expect(existsSync(file)).toBe(true);
   });
 });
@@ -218,10 +282,10 @@ describe("leaseStore: the heartbeat", () => {
       dir,
       label: "this machine",
       shared: false,
-      capacityGb: () => 10,
+      capacity: () => 3,
       heartbeatMs: 20,
     });
-    const units = await machine.tryTake(3, record("host-a", 3));
+    const units = await machine.tryTake(true, record("host-a"));
     const [name] = leaseFiles(dir);
     const file = join(dir, "leases", name ?? "");
     const old = (Date.now() - 60_000) / 1000;
@@ -230,7 +294,7 @@ describe("leaseStore: the heartbeat", () => {
     expect(Date.now() - statSync(file).mtimeMs).toBeLessThan(10_000);
     unlinkSync(file);
     await Bun.sleep(80);
-    expect((await machine.held()).map((unit) => unit.gb)).toEqual([3]);
+    expect((await machine.held()).map((unit) => unit.slot)).toEqual([true]);
     units?.release();
     await Bun.sleep(80);
     expect(leaseFiles(dir)).toEqual([]);
@@ -245,7 +309,7 @@ describe("a shared view: two machines, one folder", () => {
     pidns,
   });
 
-  test("one budget for both: what host-a holds, host-b waits for", async () => {
+  test("one count of slots for both: what host-a holds, host-b waits for", async () => {
     const dir = tempDir("shared");
     mkdirSync(join(dir, "leases"));
     mkdirSync(join(dir, "tickets"));
@@ -254,7 +318,7 @@ describe("a shared view: two machines, one folder", () => {
         dir,
         label: dir,
         shared: true,
-        capacityGb: () => 30,
+        capacity: () => 2,
         self: holderOn(host, `pid:[${host}]`),
       });
     const a = shared("host-a");
@@ -264,26 +328,31 @@ describe("a shared view: two machines, one folder", () => {
       person,
       pollMs: 10,
     });
-    const job = (gb: number) => ({
+    const job = () => ({
       checkout: "/w",
-      gb,
       kind: "build",
       pid: process.pid,
+      slot: true,
       what: "x",
     });
-    const first = await acquireFrom([a], job(20), options("host-a"));
-    // host-b sees host-a's 20 GB, through its own view of the folder.
-    expect((await b.held()).map((unit) => JSON.parse(unit.text).person)).toEqual(["host-a"]);
+    const first = await acquireFrom([a], job(), options("host-a"));
+    const firstToo = await acquireFrom([a], job(), options("host-a"));
+    // host-b sees host-a's two slots, through its own view of the folder.
+    expect((await b.held()).map((unit) => JSON.parse(unit.text).person)).toEqual([
+      "host-a",
+      "host-a",
+    ]);
     let second: Reservation | null = null;
-    void acquireFrom([b], job(14), options("host-b")).then((reservation) => {
+    void acquireFrom([b], job(), options("host-b")).then((reservation) => {
       second = reservation;
     });
     await Bun.sleep(150);
     expect(second).toBeNull();
     first.release();
     for (let i = 0; i < 100 && second === null; i++) await Bun.sleep(10);
-    expect((second as Reservation | null)?.gb).toBe(14);
+    expect(second).not.toBeNull();
     (second as Reservation | null)?.release();
+    firstToo.release();
   });
 });
 
@@ -293,8 +362,8 @@ describe("leaseStore: other users' files", () => {
     const before = process.umask(0o077);
     try {
       const machine = store(dir);
-      const units = await machine.tryTake(2, record("host-a", 2));
-      const ticket = await machine.enqueue(record("host-a", 2));
+      const units = await machine.tryTake(true, record("host-a"));
+      const ticket = await machine.enqueue(record("host-a"));
       const [lease] = leaseFiles(dir);
       const [waiting] = readdirSync(join(dir, "tickets"));
       expect(statSync(join(dir, "leases", lease ?? "")).mode & 0o777).toBe(0o644);
@@ -306,7 +375,7 @@ describe("leaseStore: other users' files", () => {
     }
   });
 
-  test("takes memory under a lock every user can read, whatever the umask", async () => {
+  test("takes a slot under a lock every user can read, whatever the umask", async () => {
     const dir = tempDir("store");
     let lockMode: number | null = null;
     const before = process.umask(0o077);
@@ -316,12 +385,12 @@ describe("leaseStore: other users' files", () => {
         label: "this machine",
         shared: false,
         // Read under the folder's lock: the lock file is there.
-        capacityGb: () => {
+        capacity: () => {
           lockMode = statSync(join(dir, "lock")).mode & 0o777;
-          return 10;
+          return 3;
         },
       });
-      (await machine.tryTake(2, record("host-a", 2)))?.release();
+      (await machine.tryTake(true, record("host-a")))?.release();
     } finally {
       process.umask(before);
     }
@@ -335,7 +404,7 @@ describe("leaseStore: other users' files", () => {
       const lock = join(dir, "lock");
       writeFileSync(lock, "{}");
       chmodSync(lock, 0o000);
-      expect(await store(dir).tryTake(2, record("host-a", 2))).toBeNull();
+      expect(await store(dir).tryTake(true, record("host-a"))).toBeNull();
       expect(leaseFiles(dir)).toEqual([]);
     },
   );
@@ -344,8 +413,8 @@ describe("leaseStore: other users' files", () => {
     "a lease it may not read counts nothing, says so once, and goes once nobody touches it",
     async () => {
       const dir = tempDir("store");
-      const fresh = plantLease(dir, currentFileHolder(), 4);
-      const old = plantLease(dir, currentFileHolder(), 6, UNSEEN_STALE_MS + 30_000);
+      const fresh = plantLease(dir, currentFileHolder(), 1);
+      const old = plantLease(dir, currentFileHolder(), 1, UNSEEN_STALE_MS + 30_000);
       chmodSync(fresh, 0o000);
       chmodSync(old, 0o000);
       const notes: string[] = [];
@@ -353,13 +422,13 @@ describe("leaseStore: other users' files", () => {
         dir,
         label: "this machine",
         shared: false,
-        capacityGb: () => 10,
+        capacity: () => 3,
         onNote: (line) => notes.push(line),
       });
       expect(await machine.held()).toEqual([]);
       expect(await machine.held()).toEqual([]);
       expect(notes).toEqual([
-        `${fresh} cannot be read (EACCES): its GB do not count until its writer stops touching it.`,
+        `${fresh} cannot be read (EACCES): it does not count as a slot until its writer stops touching it.`,
       ]);
       expect(existsSync(fresh)).toBe(true);
       expect(existsSync(old)).toBe(false);
@@ -407,19 +476,19 @@ describe("leaseStore: a look", () => {
   // On macOS each read starts `ps`: one per file every half second adds up.
   test("reads each pid's start time once per look, however many files it holds", async () => {
     const dir = tempDir("store");
-    for (const gb of [1, 2, 3]) plantLease(dir, currentFileHolder(), gb);
+    for (let index = 0; index < 3; index++) plantLease(dir, currentFileHolder(), 1);
     const reads: number[] = [];
     const machine = leaseStore({
       dir,
       label: "this machine",
       shared: false,
-      capacityGb: () => 10,
+      capacity: () => 3,
       startTimeOf: (pid, like) => {
         reads.push(pid);
         return processStartTime(pid, like);
       },
     });
-    expect((await machine.held()).map((unit) => unit.gb).sort()).toEqual([1, 2, 3]);
+    expect(await machine.held()).toHaveLength(3);
     expect(reads).toEqual([process.pid]);
     await machine.held();
     expect(reads).toEqual([process.pid, process.pid]);
@@ -427,24 +496,32 @@ describe("leaseStore: a look", () => {
 });
 
 describe("leaseStore: exclusive names", () => {
-  test("takes a name only while no lease holds it, with or without memory", async () => {
+  test("takes a name only while no lease holds it, with or without a slot", async () => {
     const dir = tempDir("store");
-    const machine = store(dir, 10);
-    const first = await machine.tryTake(0, record("host-a", 0), "image");
-    expect(first?.gb).toBe(0);
-    expect(await machine.tryTake(4, record("host-a", 4), "image")).toBeNull();
-    const other = await machine.tryTake(4, record("host-a", 4), "deploy");
-    expect(other?.gb).toBe(4);
+    const machine = store(dir, 3);
+    const first = await machine.tryTake(false, record("host-a", false), "image");
+    expect(first).not.toBeNull();
+    expect(await machine.tryTake(true, record("host-a"), "image")).toBeNull();
+    const other = await machine.tryTake(true, record("host-a"), "deploy");
+    expect(other).not.toBeNull();
     first?.release();
-    const second = await machine.tryTake(4, record("host-a", 4), "image");
-    expect(second?.gb).toBe(4);
+    const second = await machine.tryTake(true, record("host-a"), "image");
+    expect(second).not.toBeNull();
     other?.release();
     second?.release();
   });
 
+  test("a name held alone leaves the slots free", async () => {
+    const machine = store(tempDir("store"), 1);
+    const name = await machine.tryTake(false, record("host-a", false), "image");
+    expect(name).not.toBeNull();
+    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect((await machine.held()).map((unit) => unit.slot).sort()).toEqual([false, true]);
+  });
+
   test("this machine keeps every name; a shared folder only the names its exclusive file lists", async () => {
     const dir = tempDir("shared");
-    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "3\n");
     mkdirSync(join(dir, "leases"));
     mkdirSync(join(dir, "tickets"));
     expect(await store(tempDir("store")).keepsExclusive("image")).toBe(true);
@@ -501,7 +578,7 @@ describe("network file systems", () => {
 
   test("leaves out a shared folder on one, and says why", () => {
     const dir = tempDir("shared");
-    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "3\n");
     expect(openSharedStore(dir, { facts: facts(0x6969) })).toEqual({
       note: `The shared folder ${dir} is left out: it is on a network file system (NFS). A shared folder is for one host: containers or users on this machine, through a bind mount.`,
     });
@@ -512,25 +589,51 @@ describe("openSharedStore", () => {
   test("leaves out a missing folder, and says so", () => {
     const dir = join(tempDir("shared"), "missing");
     expect(openSharedStore(dir)).toEqual({
-      note: `The shared folder ${dir} is missing: this job runs without its budget.`,
+      note: `The shared folder ${dir} is missing: this job runs without its slots.`,
     });
   });
 
-  test("leaves out a folder whose budget is missing or not a whole number, and says why", () => {
+  test("leaves out a folder whose max-jobs is missing or not a whole number of jobs, and says why", () => {
     const dir = tempDir("shared");
     expect(openSharedStore(dir)).toEqual({
-      note: `The shared folder ${dir} is left out: ${join(dir, "budget")} cannot be read (ENOENT).`,
+      note: `The shared folder ${dir} is left out: ${join(dir, "max-jobs")} cannot be read (ENOENT).`,
     });
-    writeFileSync(join(dir, "budget"), "lots\n");
+    for (const text of ["lots\n", "0\n", "2.5\n", "-1\n", "\n"]) {
+      writeFileSync(join(dir, "max-jobs"), text);
+      expect(openSharedStore(dir)).toEqual({
+        note: `The shared folder ${dir} is left out: ${join(dir, "max-jobs")} does not hold a whole number of jobs, 1 or more.`,
+      });
+    }
+  });
+
+  // Mixed versions: a folder an older plugin prepared has only `budget` (GB). The queue counts
+  // jobs now, so the folder is left out, once, and the note names the fix.
+  test("leaves out a folder that has only the old budget file, and names the fix", () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
     expect(openSharedStore(dir)).toEqual({
-      note: `The shared folder ${dir} is left out: ${join(dir, "budget")} does not hold a whole number of GB.`,
+      note: `The shared folder ${dir} is left out: it has only the old budget file (GB), and the queue counts jobs now: write the number of heavy jobs at once, for every user of the folder, into ${join(dir, "max-jobs")} (a whole number, for example 3).`,
     });
+  });
+
+  test("a folder with both files is read by max-jobs, and the budget file is left alone", async () => {
+    const dir = tempDir("shared");
+    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "2\n");
+    mkdirSync(join(dir, "leases"));
+    mkdirSync(join(dir, "tickets"));
+    const opened = openSharedStore(dir);
+    if (!("store" in opened)) throw new Error(opened.note);
+    expect(await opened.store.capacity()).toBe(2);
+    expect(readFileSync(join(dir, "budget"), "utf8")).toBe("30\n");
   });
 
   // The machine's own setup prepares the folder: the plugin makes nothing in it.
   test("leaves out a folder without its leases/ or tickets/, names the missing one, and makes none", () => {
     const dir = tempDir("shared");
-    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "3\n");
     expect(openSharedStore(dir)).toEqual({
       note: `The shared folder ${dir} is left out: ${join(dir, "leases")} is missing.`,
     });
@@ -538,18 +641,18 @@ describe("openSharedStore", () => {
     expect(openSharedStore(dir)).toEqual({
       note: `The shared folder ${dir} is left out: ${join(dir, "tickets")} is missing.`,
     });
-    expect(readdirSync(dir).sort()).toEqual(["budget", "leases"]);
+    expect(readdirSync(dir).sort()).toEqual(["leases", "max-jobs"]);
   });
 
   test("a shared store never makes a folder: a take after its leases/ went away fails", async () => {
     const dir = tempDir("shared");
-    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "3\n");
     mkdirSync(join(dir, "leases"));
     mkdirSync(join(dir, "tickets"));
     const opened = openSharedStore(dir);
     if (!("store" in opened)) throw new Error(opened.note);
     rmSync(join(dir, "leases"), { recursive: true });
-    await expect(opened.store.tryTake(2, record("host-a", 2))).rejects.toThrow("ENOENT");
+    await expect(opened.store.tryTake(true, record("host-a"))).rejects.toThrow("ENOENT");
     expect(existsSync(join(dir, "leases"))).toBe(false);
   });
 
@@ -557,7 +660,7 @@ describe("openSharedStore", () => {
     "leaves out a folder where a file cannot be written, and says why",
     () => {
       const dir = tempDir("shared");
-      writeFileSync(join(dir, "budget"), "30\n");
+      writeFileSync(join(dir, "max-jobs"), "3\n");
       mkdirSync(join(dir, "leases"), { mode: 0o500 });
       mkdirSync(join(dir, "tickets"));
       try {
@@ -570,20 +673,22 @@ describe("openSharedStore", () => {
     },
   );
 
-  test("uses a working folder, and reads its budget for every decision", async () => {
+  test("uses a working folder, and reads its max-jobs for every decision", async () => {
     const dir = tempDir("shared");
-    writeFileSync(join(dir, "budget"), "30\n");
+    writeFileSync(join(dir, "max-jobs"), "3\n");
     mkdirSync(join(dir, "leases"));
     mkdirSync(join(dir, "tickets"));
     const opened = openSharedStore(dir);
     if (!("store" in opened)) throw new Error(opened.note);
     expect(opened.store.shared).toBe(true);
     expect(opened.store.label).toBe(dir);
-    expect(await opened.store.capacityGb()).toBe(30);
-    writeFileSync(join(dir, "budget"), "40\n");
-    expect(await opened.store.capacityGb()).toBe(40);
-    writeFileSync(join(dir, "budget"), "x\n");
-    await expect(opened.store.capacityGb()).rejects.toThrow("does not hold a whole number of GB");
+    expect(await opened.store.capacity()).toBe(3);
+    writeFileSync(join(dir, "max-jobs"), "5\n");
+    expect(await opened.store.capacity()).toBe(5);
+    writeFileSync(join(dir, "max-jobs"), "x\n");
+    await expect(opened.store.capacity()).rejects.toThrow(
+      "does not hold a whole number of jobs, 1 or more",
+    );
     expect(readdirSync(join(dir, "leases"))).toEqual([]);
   });
 });

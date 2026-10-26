@@ -1,7 +1,7 @@
 /**
  * The router's limit state file (`limit-state.ts`), its optional `breakers`: that a file written
  * before they existed reads as before, that a reader which does not know them ignores them, and
- * when a breaker's record counts as current.
+ * when a breaker's record counts as current, and how a time in it prints.
  *
  * Pure: no file, no clock. Expected values by hand.
  */
@@ -11,6 +11,7 @@ import {
   type BreakerRecord,
   currentBreakers,
   emptyLimitState,
+  formatClock,
   formatLimitState,
   type LimitState,
   mergeSeenClaude,
@@ -260,5 +261,20 @@ describe("seenClaude: the Claude ids Claude Code sent", () => {
     expect(merged["claude-model-9"]).toBeUndefined();
     expect(merged["claude-model-10"]).toBe(NOW + 10);
     expect(merged["claude-model-59"]).toBe(NOW + 59);
+  });
+});
+
+describe("formatClock", () => {
+  it("shows a time today as the clock, another day with its date", () => {
+    expect(formatClock(Date.parse("2026-10-22T13:05:00.000Z") / 1000, NOW, "UTC")).toBe("13:05");
+    expect(formatClock(Date.parse("2026-10-24T08:30:00.000Z") / 1000, NOW, "UTC")).toBe(
+      "Oct 24 08:30",
+    );
+  });
+
+  it("never throws on a time no date can hold: the file accepts any number", () => {
+    expect(formatClock(Number.MAX_SAFE_INTEGER, NOW, "UTC")).toBe("an unknown time");
+    expect(formatClock(-9e15, NOW)).toBe("an unknown time");
+    expect(formatClock(Number.NaN, NOW)).toBe("an unknown time");
   });
 });

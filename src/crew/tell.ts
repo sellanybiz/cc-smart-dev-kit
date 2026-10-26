@@ -7,7 +7,9 @@
  * (`tell-format.ts`). This command is the one way: it checks each receiver, records the note so
  * the lead's watch shows it as one line, and prints the `SendMessage` line to send to each. The
  * CLI cannot send the message itself — `SendMessage` is a tool only a session holds — so, as in
- * `crew answer`, it prints the line and the session sends it.
+ * `crew answer`, it prints the line and the session sends it. The lines come after one line that
+ * says to load the tool first (`sendMessageHint`): `SendMessage` is deferred, and a backend
+ * model cannot call it before `ToolSearch` with `select:SendMessage`.
  *
  * **A receiver is a live crew session of the same lead**, found in the store. A name the store
  * does not know, the lead, a crew session of another lead, and one whose session is not running
@@ -17,7 +19,7 @@
  * crew session that does not carry the tag this command writes.
  */
 import { COMMAND } from "../build-info/names";
-import { sendMessageLine } from "./answer";
+import { sendMessageHint, sendMessageLine } from "./answer";
 import { findCrew } from "./board";
 import { readCrewSelf, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -111,6 +113,8 @@ export async function runCrewTell(args: TellArgs, ctx: CrewContext): Promise<num
     return 1;
   }
   const message = tellMessage(self.phase, args.kind, args.text);
+  // Once, before the first line: the tool is deferred, and a backend model must load it.
+  ctx.print(sendMessageHint());
   for (const one of receivers) ctx.print(sendMessageLine(one.name, message));
   return 0;
 }
