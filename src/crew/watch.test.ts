@@ -2865,9 +2865,12 @@ describe("D42: the watch resumes a paused crew session", () => {
     // The router dropped it, but the reset time plus the jitter is still ahead.
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
     expect(done.lines).toBe(0);
-    // Both are past: it goes.
+    // Both are past: it goes, with the same three lines as any resume (the hint, the message,
+    // the state).
     done = await pass(world, resolved, facts(), done.state, T0 + 6 * MINUTE);
-    expect(done.lines).toBe(2);
+    expect(done.lines).toBe(3);
+    expect(world.out[0]).toBe(sendMessageHint());
+    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
     expect(readCrew(world.paths.stateDir, world.repo, limited.id)?.state).toBe("working");
   });
 
@@ -2882,7 +2885,9 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(0);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("paused");
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
-    expect(done.lines).toBe(2);
+    expect(done.lines).toBe(3);
+    expect(world.out[0]).toBe(sendMessageHint());
+    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("working");
   });
 

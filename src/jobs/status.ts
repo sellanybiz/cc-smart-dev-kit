@@ -295,7 +295,7 @@ function routeState(ctx: JobContext, notes: string[]): JobRouteState {
     project = resolveProject(ctx.cwd);
   } catch (error) {
     notes.push(
-      `The job route here cannot be read from the project's file: ${error instanceof Error ? error.message : String(error)}`,
+      `The job route here is not known: the project's file does not load, so the job-route hook asks before a heavy command there. ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   const route = resolveJobRoute(ctx.paths, project?.config ?? null);

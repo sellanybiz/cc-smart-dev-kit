@@ -215,6 +215,10 @@ describe("crew model: a session with no process to move", () => {
       crewMcpFile(world.paths.stateDir, world.repo, record.id),
       "--settings",
       crewSettingsFile(world.paths.stateDir, world.repo, record.id),
+      // A resume with no text of its own is the bare crew command, so the skill and its
+      // monitor arm again.
+      "--",
+      "/cc-smart-dev-kit:crew",
     ]);
   });
 

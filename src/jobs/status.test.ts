@@ -466,8 +466,11 @@ describe("the resolved job route", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: "yes" } });
     const read = await readJobs({ ...world1.ctx, cwd: repo });
     expect(read.route).toEqual({ on: false, project: null, source: "default" });
-    expect(read.notes.some((note) => note.startsWith("The job route here cannot be read"))).toBe(
-      true,
+    const note = read.notes.find((line) => line.startsWith("The job route here"));
+    expect(note?.split(" Invalid ")[0]).toBe(
+      "The job route here is not known: the project's file does not load, so the job-route hook asks before a heavy command there.",
     );
+    // The parser's own reason follows, naming the file.
+    expect(note).toContain(join(repo, ".claude", "cc-smart-dev-kit.json"));
   });
 });
