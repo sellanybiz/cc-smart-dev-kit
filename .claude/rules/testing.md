@@ -21,6 +21,13 @@ the machine it runs on. A test that cannot fail proves nothing.
 - **Git in a test** uses `git()` and `cleanGitEnv()` from `src/testing/temp.ts`: no
   `GIT_*` variable from outside, no global or system git config, a fixed author.
 
+## The time zone
+
+`bun test` runs in UTC but leaves `TZ` unset. The preload writes that zone into `TZ`, so a
+test that sets `TZ` and restores it puts UTC back, not the machine's own zone
+(`src/testing/setup.test.ts`). Restore `TZ` the way you found it, and never assume the
+machine's zone.
+
 ## Fake binaries on PATH
 
 A test never reaches the network or a real tool it does not test (`git ls-remote`,

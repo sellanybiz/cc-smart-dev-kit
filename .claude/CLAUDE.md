@@ -132,7 +132,7 @@ Each rule loads itself when you touch a file it covers.
 | `portal.md` | `src/portal/`, `src/omniroute/`, `src/entries/portal.ts` | The portal's door; OmniRoute's three-day rule. |
 | `cc-smart-dev-kit-json.md` | `src/project/`, `src/workflow/schema.ts`, `src/jobs/kinds.ts` | The `.claude/cc-smart-dev-kit.json` contract. |
 | `installer.md` | `install.sh`, `install.ps1`, `scripts/install*` | The one-command installer: it ships on merge, its exit codes, its secret cleaners, the Windows smoke test. |
-| `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; every test can fail. |
+| `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; the time zone; every test can fail. |
 
 ## Skills
 

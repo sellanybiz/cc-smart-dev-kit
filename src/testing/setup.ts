@@ -13,6 +13,11 @@ if (tooOld !== null) {
   process.exit(1);
 }
 
+// bun test runs in UTC but leaves TZ unset. A test that sets TZ and deletes it again to restore
+// it would drop every later test into the machine's own zone. With bun's zone written into TZ,
+// a save and restore puts UTC back. A TZ the person set stays.
+process.env.TZ ||= Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 // No test may reach the live router's port (port-guard.ts). A call fails the test that made
 // it, even when the code under test caught the error.
 installPortGuard();
