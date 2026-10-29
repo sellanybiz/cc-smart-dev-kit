@@ -36,7 +36,8 @@ the work) is an ordinary session's rule. A lead follows this section instead.
   from your own workflow file).
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
-- **Keep your own task list** (`TaskCreate`, after a `ToolSearch` for the task tools):
+- **Keep your own Claude Code task list, not claude-mem's work state** (the choice of list:
+  `/cc-smart-dev-kit:memory-routing`; `TaskCreate`, after looking the task tools up):
   the person's asks and your open work — each phase to start, each question to answer, each
   branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
   so it never goes stale unseen; you are never held back by it.

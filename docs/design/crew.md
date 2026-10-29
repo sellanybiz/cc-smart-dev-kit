@@ -1553,7 +1553,8 @@ each is silent unless its own session is the one it is about, and neither reads
   one, and outside git.
   At **PreToolUse** on `Edit`, `Write` and `NotebookEdit` it **denies a crew session's first
   edit until its task list exists** (D23): while the session's task folder holds no task file, the
-  call is refused with the step — look the task tools up (`ToolSearch
+  call is refused with the step — use Claude Code's task tools, not claude-mem's work state;
+  look them up (`ToolSearch
   select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per part of the brief, each with
   its done-check — and the card names the same step at the start. The list is Claude Code's own
   (`src/crew/tasks.ts`: `<config dir>/tasks/<CLAUDE_CODE_TASK_LIST_ID or the input's session id>/`,
@@ -1634,7 +1635,8 @@ each is silent unless its own session is the one it is about, and neither reads
   record `session-name` keeps (§ The lead and the launch › The lead's name). **At a prompt it also
   reminds a lead with no to-do list** (D23): while the lead's own task folder (`taskListId`, the
   same reader the crew session's gate uses) holds no task file, one more line of context — put the
-  person's asks and the lead's open work on the list, and keep it true as they move — said before
+  person's asks and the lead's open work on Claude Code's list (`TaskCreate`, not claude-mem's
+  work state), and keep it true as they move — said before
   the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
   (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
   turn — at a start, a resume and a compaction, never at a prompt and never on an edit.
