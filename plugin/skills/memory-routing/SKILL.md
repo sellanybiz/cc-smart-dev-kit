@@ -21,7 +21,7 @@ person, or the whole team — and by **how fast it goes stale**.
 | **Doc** | the project's docs (in git) | whole team | how something works today, and why — never a rule |
 | **Hook** | the project's settings (in git) | whole team | what must happen every time, with no judgment |
 | **Memory** | the session's memory tool (claude-mem's, or Claude Code's auto memory), on this machine | this person, across sessions | knowledge: decisions and their reasons, surprises, dead ends, personal preferences |
-| **To-do list** | Claude Code's task tools — `TaskCreate`, `TaskList`, `TaskUpdate` (`cc-smart-dev-kit setup` turns them on); with none, the plan file | this session, through compactions | each ask, and where it stands |
+| **To-do list** | claude-mem's work state (work_state_write, work_state_read) when its tools are there: kept per project, its open items shown at each session start. A lead and a crew session use Claude Code's task tools instead (TaskCreate, TaskList, TaskUpdate; look them up first), because the kit's hooks read that list. Without claude-mem's tools, Claude Code's; with neither, the plan file | this person, across the project's sessions | each ask, and where it stands |
 | **Plan file** | the project's plans folder (`/cc-smart-dev-kit:plan-task`) | every session of the plan | durable state: phases, decisions, progress |
 | **Live system** | the database, the service, the config | whoever asks | current data — columns, rows, lists of things. Never copy it into markdown; it drifts. |
 
