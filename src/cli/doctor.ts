@@ -20,6 +20,7 @@ import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { hasDesktop } from "../hooks/desktop-alert";
 import {
+  MEMORY_USE_KEY,
   readStartBlocks,
   START_BLOCK_KEYS,
   type StartBlockReading,
@@ -874,10 +875,9 @@ function describeStartBlock(reading: StartBlockReading): string {
 }
 
 /**
- * D23: claude-mem's two start blocks (its to-do list and its memory-use block), off. Both
- * on (or one, with nobody having chosen it) is a ✗ that names setup: together they pass
- * Claude Code's hook output limit in about one start in six. A value the person set is
- * information, never a failure. An unreadable file is a warning: doctor cannot judge it.
+ * D68: memory-use stays off, and work state returns to claude-mem's default. An older
+ * setup's work-state value needs setup again. A person's contrary choice is information.
+ * An unreadable file is a warning: doctor cannot judge it.
  */
 function claudeMemStartBlocksCheck(
   paths: CliPaths,
@@ -885,34 +885,40 @@ function claudeMemStartBlocksCheck(
 ): Check {
   if ("problem" in readings) return { ok: true, warn: true, text: readings.problem };
   const base = `claude-mem's start blocks in ${tildify(paths.claudeMemSettingsFile, paths.home)}: ${readings.map(describeStartBlock).join(", ")}`;
-  const unset = readings.filter((reading) => reading.value !== "false" && reading.by !== "person");
-  if (unset.length > 0) {
+  const memory = readings.find((reading) => reading.key === MEMORY_USE_KEY);
+  const work = readings.find((reading) => reading.key === WORK_STATE_KEY);
+  const reasons: string[] = [];
+  if (memory && memory.value !== "false" && memory.by !== "person") {
+    reasons.push(
+      ". The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit",
+    );
+  }
+  if (work?.value === "false" && work.by === "setup") {
+    reasons.push(
+      ". Work state is off from an older setup, so sessions get no to-do list from claude-mem",
+    );
+  }
+  if (reasons.length > 0) {
     return {
       ok: false,
-      text: `${base}. Together they overflow Claude Code's start context in about one start in six`,
+      text: `${base}${reasons.join("")}`,
       fix: SETUP_FIX,
     };
   }
-  // Both off, or one left on by the person: their machine, their call. Information only.
+  // Only a person's choice contrary to the kit's aim needs an information mark.
   return {
     ok: true,
-    ...(readings.some((reading) => reading.value !== "false") && { info: true }),
+    ...(((memory?.by === "person" && memory.value !== "false") ||
+      (work?.by === "person" && work.value === "false")) && { info: true }),
     text: base,
   };
 }
 
 /**
- * D23: Claude Code's own task tools, the to-do home of a session while claude-mem's work
- * state is off. Checked only while that is off; with work state on, claude-mem's own list
- * is there and this setting changes nothing.
+ * D68: task tools are the lead and crew list, and the list without claude-mem.
+ * Check them on every machine, independently of claude-mem's settings.
  */
-function claudeMemTodoToolsCheck(
-  paths: CliPaths,
-  readings: StartBlockReading[] | { problem: string },
-): Check | null {
-  if ("problem" in readings) return null;
-  const workState = readings.find((reading) => reading.key === WORK_STATE_KEY);
-  if (workState?.value !== "false") return null;
+export function claudeMemTodoToolsCheck(paths: CliPaths): Check {
   const path = ["env", TODO_TOOLS_KEY];
   const current = getKey(readSettings(paths.settingsFile) ?? {}, path);
   const key = formatKeyPath(path);
@@ -926,7 +932,7 @@ function claudeMemTodoToolsCheck(
   if (!current.found) {
     return {
       ok: false,
-      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off`,
+      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a lead, and a session without claude-mem's work state, has no task list`,
       fix: SETUP_FIX,
     };
   }
@@ -936,18 +942,14 @@ function claudeMemTodoToolsCheck(
   return {
     ok: true,
     info: true,
-    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a session has no to-do list while claude-mem's work state is off`,
+    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a lead, and a session without claude-mem's work state, has no task list`,
   };
 }
 
-/** D23's lines: all `!` or `·`, except a gap setup fills. */
+/** D68's start-block reading, when claude-mem is installed. */
 export function claudeMemChecks(paths: CliPaths): Check[] {
   const readings = readStartBlocks(paths);
-  const todoTools = readings === null ? null : claudeMemTodoToolsCheck(paths, readings);
-  return [
-    ...(readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)]),
-    ...(todoTools === null ? [] : [todoTools]),
-  ];
+  return readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)];
 }
 
 /**
@@ -1258,6 +1260,7 @@ function doctorGroups(
           ...(await checkLauncher(paths, machine.platform, readCommand)),
           checkGitBash(machine.platform, env, machine),
           checkInstructions(paths, local.instructionsSource),
+          claudeMemTodoToolsCheck(paths),
           checkNameClash(settings),
           await checkOldPlugin(settings, paths, readCommand),
         ]),

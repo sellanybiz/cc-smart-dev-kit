@@ -116,7 +116,7 @@ export function leadStartNote(): string {
  * start — belong on the list, not in a context a compaction takes away.
  */
 export function taskListReminder(): string {
-  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+  return "You have no to-do list: put the person's asks and your open work on Claude Code's task list (TaskCreate, not claude-mem's work state), and keep it true as they move.";
 }
 
 /**
