@@ -215,7 +215,7 @@ describe("SessionStart: the role card", () => {
       "You are the crew session `C app W2 hooks`, phase `W2` of `plan`, for the lead `LEAD app plan`.",
       `Your brief, which is your task: ${brief}`,
       "The files this phase owns: `src/hooks/a.ts`, `src/hooks/b.ts`. Say in your report why you changed any other file.",
-      "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done --file -` waits until no task is open.",
+      "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done --file -` waits until no task is open.",
       "Hand the phase back with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review), or `--status failed` and why, then end the turn.",
       'Ask your lead, never the person: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`',
       'Tell another crew session only a contract change or a contract question: `cc-smart-dev-kit crew tell <name…> --kind contract|question "<text>"`',
@@ -468,7 +468,7 @@ describe("D23: a crew session's first edit waits for its task list", () => {
   const SESSION_ID = "9b4632f1-d3bd-43ce-bc1a-00349c5f30ac";
   /** The deny, written out: the why, the step, and the way out when there are no task tools. */
   const REFUSAL =
-    'A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. If ToolSearch finds no task tools in this session, tell your lead: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`';
+    'A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. Write your task list first, in Claude Code\'s task tools (not claude-mem\'s work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. If ToolSearch finds no task tools in this session, tell your lead: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`';
 
   /** A project, the crew session's environment, and where its task list would be. */
   function gateWorld(extraEnv: Record<string, string> = {}) {

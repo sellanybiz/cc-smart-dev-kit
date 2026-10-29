@@ -488,12 +488,10 @@ function setupStdout(
   ].join("\n");
 }
 
-/** The companions' section of a first setup: claude-mem's two start blocks off (D23), and the warning. */
+/** The companions' section of a first setup: claude-mem's memory-use block off (D68), with no work-state change. */
 const CLAUDE_MEM_OFF = [
-  "! Companion plugins     2 changes, 1 warning",
-  '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"',
+  "✓ Companion plugins     1 change",
   '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"',
-  "  ! claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting CLAUDE_MEM_WORK_STATE_ENABLED to \"true\" in ~/.claude-mem/settings.json.",
 ];
 
 /** A re-run with nothing to change on a machine with no Tavily key: what it prints, whole. */
@@ -555,7 +553,7 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
-          // D23: work state off gives sessions Claude Code's own task tools.
+          // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
@@ -566,7 +564,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 15 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 14 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -671,19 +669,19 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
-          // D23: work state off gives sessions Claude Code's own task tools.
+          // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           "· Instructions          3 to change",
           ...INSTRUCTIONS_CREATED,
-          "! Companion plugins     2 to change, 1 warning",
+          "· Companion plugins     1 to change",
           ...CLAUDE_MEM_OFF.slice(1),
           "! MCP servers           2 to change, 1 warning",
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 15 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 14 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -860,7 +858,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
-          // D23: work state off gives sessions Claude Code's own task tools.
+          // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
@@ -871,7 +869,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 13 changes, with 2 warnings to read above. ${BACKUPS}`],
+        [`! Done: 12 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1036,13 +1034,13 @@ describe("cc-smart-dev-kit doctor", () => {
       [
         `cc-smart-dev-kit ${VERSION}: checking this machine`,
         "",
-        "✓ The plugin         6 passed, 1 note",
+        "✓ The plugin         7 passed, 1 note",
         // The portal starts with the next session: information, not a failure.
         "  · the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
         "✓ Updates            3 passed, 1 note",
         // The self-update has not checked yet: information, not a failure.
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✓ Companion plugins  4 passed, 1 note",
+        "✓ Companion plugins  3 passed, 1 note",
         // Warp is optional.
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✓ MCP servers        2 passed, 1 note",
@@ -1079,8 +1077,8 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ no other enabled plugin is named cc-smart-dev-kit",
       "✓ claude-mem@thedotmack 13.39.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
-      // D23: claude-mem's two start blocks off, and Claude Code's own task tools on.
-      "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
+      // D68: claude-mem's memory-use block off, and Claude Code's own task tools on.
+      "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is off (set by cc-smart-dev-kit setup)",
       '✓ Claude Code\'s task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ~/.claude/settings.json',
       ...MCP_DOCTOR_OK,
       // The browser's own lines. This world's Chrome is the path it claims (host.exists is
@@ -1326,7 +1324,7 @@ describe("cc-smart-dev-kit doctor", () => {
       [
         `cc-smart-dev-kit ${VERSION}: checking this machine`,
         "",
-        "✗ The plugin         3 to fix, 3 passed",
+        "✗ The plugin         4 to fix, 3 passed",
         "  ✗ cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun)",
         "    Fix: upgrade this Bun (bun upgrade), then run: cc-smart-dev-kit doctor",
         `  ✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
@@ -1335,14 +1333,16 @@ describe("cc-smart-dev-kit doctor", () => {
         "    Fix: cc-smart-dev-kit setup",
         "  ✗ the instructions are not installed in ~/.claude/cc-smart-dev-kit/instructions/",
         "    Fix: cc-smart-dev-kit setup",
+        "  ✗ Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is not set in ~/.claude/settings.json, so a lead, and a session without claude-mem's work state, has no task list",
+        "    Fix: cc-smart-dev-kit setup",
         "  ✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ Updates            3 passed, 1 note",
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
         "✗ Companion plugins  1 to fix, 2 passed, 1 note",
         "  ✓ claude-mem@thedotmack 13.39.0 is installed and on",
         "  ✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
-        // No setup ran here: claude-mem's two start blocks are still on (D23).
-        "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). Together they overflow Claude Code's start context in about one start in six",
+        // No setup ran here: claude-mem's memory-use block is still on (D68).
+        "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit",
         "    Fix: cc-smart-dev-kit setup",
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✗ Alerts and limits  1 to fix, 1 note",
@@ -1352,7 +1352,7 @@ describe("cc-smart-dev-kit doctor", () => {
         "· Gateway            1 note",
         "  · gateway: not checked on this Bun (its checks send the backend key)",
         "",
-        "✗ 5 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
+        "✗ 6 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
         "To see the 3 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
@@ -1928,10 +1928,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  6 changes, 1 note",
+          "✓ Claude Code settings  7 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           "✓ Instructions          3 changes",
@@ -1942,7 +1943,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 14 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 15 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2028,10 +2029,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  6 changes, 1 note",
+          "✓ Claude Code settings  7 changes, 1 note",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS: (none) -> "1"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           "✓ Instructions          3 changes",
@@ -2392,8 +2394,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(backend.seen).toEqual([CHAT_CHECK]);
     expect(readJson(file)).toEqual({
       ...SEEDED,
-      // D23: claude-mem's two start blocks, off.
-      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      // D68: claude-mem's memory-use block, off.
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
@@ -2471,14 +2472,14 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       const written = readJson(file);
       expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
       expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
-      // D23's two start blocks do not depend on the gateway: they are set all the same.
-      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      // D68's memory-use block does not depend on the gateway: they are set all the same.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
       expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
       expect(backend.seen).toEqual([]);
     }
   });
 
-  test("the person chose another provider: the five provider keys stay, and D23's two are set", () => {
+  test("the person chose another provider: the five provider keys stay, and D68's memory-use key is set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -2492,8 +2493,8 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     // The provider keys stay exactly as the person left them...
     expect(written.CLAUDE_MEM_PROVIDER).toBe("gemini");
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_PRESET).toBe("");
-    // ...while D23's two start blocks are still turned off.
-    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    // ...while D68's memory-use block is still turned off.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
@@ -2512,7 +2513,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(result.stdout).not.toContain("sk-their-own-key");
   });
 
-  test("the backend refuses the key: the provider keys stay, and D23's two are still set", async () => {
+  test("the backend refuses the key: the provider keys stay, and D68's memory-use key is still set", async () => {
     const { home, runAsync } = setup();
     writeGatewayConfig(home, fakeBackend(401).url);
     const file = writeClaudeMem(home, SEEDED);
@@ -2525,19 +2526,18 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     // Nothing of the provider's is written...
     expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
-    // ...and the two start blocks, which need no backend, are written anyway.
-    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    // ...and the memory-use block, which need no backend, are written anyway.
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
-  test("claude-mem never ran yet: its settings file is made with the five keys and D23's two, mode 600", async () => {
+  test("claude-mem never ran yet: its settings file is made with the five keys and D68's memory-use key, mode 600", async () => {
     const { home, run, runAsync } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
     expect((await runAsync(["setup"])).exitCode).toBe(0);
     const file = join(home, ".claude-mem", "settings.json");
     expect(readJson(file)).toEqual({
-      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_PROVIDER: "openai-compatible",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "custom",
@@ -2561,7 +2561,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(written.CLAUDE_MEM_PROVIDER).toBeUndefined();
   });
 
-  test("claude-mem older than 13.29.0: one note (the range check's), the provider keys left alone, D23's two still set", () => {
+  test("claude-mem older than 13.29.0: one note (the range check's), the provider keys left alone, D68's memory-use key still set", () => {
     const { home, configDir, run } = setup();
     writeGatewayConfig(home, fakeBackend().url);
     const file = writeClaudeMem(home, SEEDED);
@@ -2579,7 +2579,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
     // Both start blocks are still planned: an unknown key is harmless to an older claude-mem.
-    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 
@@ -2614,8 +2614,8 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
       // The provider keys stay as they were: they point at a backend that failed.
       expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
       expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
-      // D23's two start blocks need no backend: they are written anyway.
-      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+      // D68's memory-use block needs no backend: they are written anyway.
+      expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
       expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     }
   });
@@ -2707,7 +2707,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
-  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): the provider keys left alone, never printed; D23's two set", () => {
+  test("a key pool of the person's (CLAUDE_MEM_OPENAI_COMPAT_API_KEYS): the provider keys left alone, never printed; D68's memory-use key set", () => {
     const { home, run } = setup();
     const backend = fakeBackend();
     writeGatewayConfig(home, backend.url);
@@ -2723,7 +2723,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     const written = readJson(file);
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_API_KEYS).toBe("sk-pool-one-000000,sk-pool-two-000000");
     expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
-    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
     expect(backend.seen).toEqual([]);
   });
@@ -2740,18 +2740,16 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  test("no gateway: only the two start blocks are set, and no provider key", () => {
+  test("no gateway: only the memory-use block is set, and no provider key", () => {
     const { home, run } = setup();
     const file = writeClaudeMem(home, SEEDED);
     const result = run(["setup"]);
-    expect(result.stdout).toContain(
-      '  ~ ~/.claude-mem/settings.json: CLAUDE_MEM_WORK_STATE_ENABLED: (none) -> "false"\n',
-    );
+    expect(result.stdout).toContain('CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: (none) -> "false"');
     expect(result.stdout).not.toContain("CLAUDE_MEM_PROVIDER");
     const written = readJson(file);
     expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
-    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });
 });
@@ -3331,7 +3329,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
   const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
   const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
   const CAP = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
-  /** The key setup writes beside them whenever claude-mem is installed (D23). */
+  /** The key setup writes beside them whenever claude-mem is installed (D68). */
   const TODO = { CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" };
   const ON_LINE = `  ~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
   const RECHECK_LINE = `  ~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;

@@ -380,9 +380,9 @@ function applySetup(
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
-  // claude-mem's work state goes off (D23): Claude Code's own task tools are a session's
-  // to-do home then. A value the person set themselves stays, and is named below.
-  const todoTools = managed.claudeMem?.todoTools === true ? planTodoTools(paths) : null;
+  // D68: every machine needs task tools for leads and crew, and without claude-mem.
+  // A value the person set themselves stays, and is named below.
+  const todoTools = planTodoTools(paths);
   if (todoTools?.kind === "set") set.push([todoTools.path, TODO_TOOLS_VALUE]);
   // The key's source moved: the environment has it now (or there is no key at all), so the
   // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
@@ -783,16 +783,12 @@ function decideRetryWatchdog(paths: CliPaths, managed: Managed): void {
   }
 }
 
-/**
- * Said before claude-mem's work state goes off (D23): its to-do lists stop showing in a
- * session, and the person may want to read one last time, or turn it back on (`setup`
- * leaves a value they set alone, also `"true"`).
- */
-function workStateWarning(paths: CliPaths): ReportLine {
+/** D68: explain only a work-state value that setup takes back. */
+function workStateRestored(paths: CliPaths): ReportLine {
   return {
     section: "companions",
-    mark: "warn",
-    text: `claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`,
+    mark: "info",
+    text: `claude-mem's work state is back on: its open to-do lists show at the start of each session again. To keep it off, set ${WORK_STATE_KEY} to "false" in ${tildify(paths.claudeMemSettingsFile, paths.home)}; setup leaves a value you set alone.`,
   };
 }
 
@@ -817,12 +813,14 @@ async function decideClaudeMem(
   report.push(...reportLines("companions", plan.notes));
   // A dry run of the plan: what this run would change. No file is written.
   const changes = applyClaudeMem(paths, plan, true).changes;
-  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
-    report.push(workStateWarning(paths));
+  if (
+    changes.some((change) => change.path.at(-1) === WORK_STATE_KEY && change.after === undefined)
+  ) {
+    report.push(workStateRestored(paths));
   }
 
   // The backend is asked only when one of the provider keys changes: taking out a retired
-  // key, or writing only the two start blocks, needs no answer from it.
+  // key, or writing only the memory-use block, needs no answer from it.
   const provider = plan.provider;
   if (provider === null) return plan;
   const providerChanges = changes.some((change) =>
@@ -842,7 +840,7 @@ async function decideClaudeMem(
     () => checkAffordableTarget(provider.target),
   );
   if (problem !== null) {
-    // The two start blocks are independent of the backend: they are still written.
+    // The memory-use block is independent of the backend: it is still written.
     report.push({
       section: "companions",
       mark: "warn",
@@ -854,8 +852,8 @@ async function decideClaudeMem(
 }
 
 /**
- * Claude Code's own task tools (D23): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
- * settings, so a session whose claude-mem work state is off has a to-do home. A value the
+ * Claude Code's own task tools (D68): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
+ * settings, for leads and crew and sessions without claude-mem's work state. A value the
  * person set themselves is theirs: it stays, and setup names it.
  */
 function planTodoTools(

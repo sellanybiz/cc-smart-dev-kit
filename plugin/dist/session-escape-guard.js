@@ -16303,7 +16303,7 @@ function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 function taskListStep() {
-  return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+  return "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
 }
 function taskListRefusal() {
   return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep2()}\``;
@@ -19502,7 +19502,7 @@ function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
 }
 function taskListReminder() {
-  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+  return "You have no to-do list: put the person's asks and your open work on Claude Code's task list (TaskCreate, not claude-mem's work state), and keep it true as they move.";
 }
 function reminderFor(paths, env, sessionId, event) {
   if (event !== "UserPromptSubmit")

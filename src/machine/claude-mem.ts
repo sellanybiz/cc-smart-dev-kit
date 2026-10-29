@@ -46,13 +46,13 @@ import { companionState, companions, comparableVersion } from "./companions";
  * `CHOICES_FILE` as the person's: setup then leaves the provider keys (together) and a chosen
  * fallback as they are (`isPersonsChoice`). The person choosing is not the plugin choosing.
  *
- * **claude-mem's two start blocks are off on every machine** (D23, owner 2026-10-21): work
- * state (its to-do list) and the memory-use block. Both are planned whenever claude-mem is
- * installed, whether or not the gateway is set up (`START_BLOCK_KEYS`).
+ * **The memory-use block stays off** (D68). Work state uses claude-mem's default again:
+ * its room is reserved in claude-mem's 10,000-character budget; the memory-use block's is not.
+ * Setup withdraws its old work-state claim. See `docs/design/claude-mem.md`.
  *
- * Seven keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a restore
- * takes them out and claude-mem is back on its own defaults: the five provider keys, and the
- * two start blocks. claude-mem writes every default into that file on its first run, so a key
+ * Six keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a restore
+ * takes them out: the five provider keys and the memory-use block. claude-mem writes every
+ * default into that file on its first run, so a key
  * that holds claude-mem's own default (`""`, `claude` for the provider, `true` for a start
  * block) counts as "nobody chose it" and may be taken. Any other value is the person's choice,
  * also in a key cc-smart-dev-kit set before and the person changed since: then setup leaves
@@ -122,31 +122,28 @@ export const OPENROUTER_API_KEY_POOL = "CLAUDE_MEM_OPENROUTER_API_KEYS";
 export const OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_API_KEY] as const;
 
 /**
- * claude-mem's two start blocks (D23), off on every machine. Work state is claude-mem's
- * to-do list, which tells every session to use its `work_state_write` tool; the memory-use
- * block tells it how to use memories. Together they pass Claude Code's 10,000-character
- * hook output limit in about one start in six (measured over 14 days: 36 of 218 starts).
- * `CLAUDE_MEM_WORK_STATE_ENABLED` came in 13.36.0 and also removes the work_state tools;
- * `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED` came in 13.35.0. Setup plans both whatever the
- * version: an older claude-mem ignores a key it does not know, and `plugin.json` asks for
- * 13.36.0, so every machine that installs claude-mem has both.
+ * claude-mem's two start blocks, read by doctor. D68 keeps only the memory-use block off:
+ * work state's room is reserved in claude-mem's 10,000-character budget, while memory-use
+ * is not. Work state returns to claude-mem's default. See `docs/design/claude-mem.md`.
  */
 export const START_BLOCK_KEYS = [
   "CLAUDE_MEM_WORK_STATE_ENABLED",
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED",
 ] as const;
 
-/** The start-block key that decides whether sessions need Claude Code's own task tools. */
+/** The work-state key whose old setup claim is withdrawn. */
 export const WORK_STATE_KEY = START_BLOCK_KEYS[0];
+export const MEMORY_USE_KEY = START_BLOCK_KEYS[1];
 
-/** What setup writes into both start blocks: off. */
+/** What setup writes into the memory-use block: off. */
 const START_BLOCK_OFF = "false";
 
 /**
  * The user setting that turns on Claude Code's own task tools (its to-do list, `TaskCreate`
  * and the rest). The live proof on Claude Code 2.1.306: they are absent in `claude -p` and
  * foreground sessions on newer models, and present in background sessions; `1` turns them on
- * everywhere. With claude-mem's work state off, this is a session's to-do home.
+ * everywhere. Leads and crew sessions use this list because the kit's hooks read it. It is
+ * also the to-do home without claude-mem.
  */
 export const TODO_TOOLS_KEY = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
 export const TODO_TOOLS_VALUE = "1";
@@ -244,7 +241,7 @@ export function gatewayAffordableTarget(
 export interface ClaudeMemPlan {
   /** The keys to take out while they hold cc-smart-dev-kit's value (`RETIRED_KEYS`). */
   remove: KeyPath[];
-  /** claude-mem's two start blocks, off (D23). Planned whenever claude-mem is installed. */
+  /** The memory-use block, off (D68). Planned whenever claude-mem is installed. */
   startBlocks: Array<readonly [KeyPath, string]>;
   /**
    * The keys that point claude-mem at the gateway's affordable model, or null when they are
@@ -260,10 +257,10 @@ export interface ClaudeMemPlan {
    */
   notes: string[];
   /**
-   * Work state is off (or goes off), so a session has no to-do list from claude-mem: setup
-   * also turns on Claude Code's own task tools (`TODO_TOOLS_KEY` in the user settings' `env`).
+   * The old work-state claim, only where setup holds a record. Withdraw removes setup's
+   * value, keeps the person's, and drops the claim either way.
    */
-  todoTools: boolean;
+  withdraw: KeyPath[];
 }
 
 /** One start block as `doctor` reads it. */
@@ -435,7 +432,7 @@ function shownStartBlock(value: unknown): string {
 }
 
 /**
- * The two start blocks, planned off. claude-mem's own default (`"true"` or `""`) counts as
+ * The memory-use block, planned off. claude-mem's own default (`"true"` or `""`) counts as
  * unchosen, so setup may take it. Any other value is the person's: it stays, and the note
  * says so. A value setup wrote before and the person changed since is theirs too — also
  * `"true"`, which is how the README's way back on reads, so setup must never undo it.
@@ -445,7 +442,7 @@ function planStartBlocks(
   notes: string[],
 ): Array<readonly [KeyPath, string]> {
   const planned: Array<readonly [KeyPath, string]> = [];
-  for (const key of START_BLOCK_KEYS) {
+  for (const key of [MEMORY_USE_KEY]) {
     const path = read.at(key);
     const current = getKey(read.data, path);
     if (!current.found || Bun.deepEquals(current.value, START_BLOCK_OFF)) {
@@ -607,7 +604,7 @@ export function isOldNestedForm(data: JsonObject): boolean {
 
 /**
  * What setup does for claude-mem:
- * - `plan`: the keys to set (the two start blocks, and the provider keys when a plan has them);
+ * - `plan`: memory-use off, the old work-state claim withdrawn, and any provider keys;
  * - `note`: a line that says why it leaves the whole file alone (it cannot be read, or it is
  *   in claude-mem's old nested form);
  * - `notInstalled`: claude-mem is not installed yet. Setup may install it (a companion
@@ -653,7 +650,9 @@ export function claudeMemPlan(
       startBlocks,
       provider,
       notes,
-      todoTools: startBlocks.some(([path]) => path.at(-1) === WORK_STATE_KEY),
+      withdraw: read.records.some((record) => samePath(record.path, read.at(WORK_STATE_KEY)))
+        ? [read.at(WORK_STATE_KEY)]
+        : [],
     },
   };
 }
@@ -728,6 +727,7 @@ export function applyClaudeMem(
     stateDir: paths.stateDir,
     set: [...plan.startBlocks, ...(plan.provider?.set ?? [])],
     remove: plan.remove,
+    withdraw: plan.withdraw,
     dryRun,
     unchosen,
     secret: isSecretPath,

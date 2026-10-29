@@ -909,7 +909,7 @@ export async function followSetup(
     };
   }
   const lines: string[] = [];
-  let plan: ClaudeMemPlan = { ...planned.plan, startBlocks: [] };
+  let plan: ClaudeMemPlan = { ...planned.plan, startBlocks: [], withdraw: [] };
   if (plan.provider !== null) {
     const problem = await check(plan.provider.target);
     if (problem !== null) {

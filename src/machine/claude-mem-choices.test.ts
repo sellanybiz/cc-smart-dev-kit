@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { ownedRecords } from "../setup/managed-json";
+import { applyManagedJson, ownedRecords } from "../setup/managed-json";
 import { restore } from "../setup/restore";
 import { listBackups, realTarget } from "../setup/write";
 import { tempDir } from "../testing/temp";
@@ -464,10 +464,10 @@ describe("PM1: setup and restore after a portal write", () => {
     const before = w.settings();
     const plan = w.setup();
     expect(plan.provider).toBeNull();
-    // The start blocks are setup's own, and still go off; the route is untouched.
+    // Only memory-use goes off; work state and the route stay untouched.
     expect(w.settings()).toEqual({
       ...before,
-      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_WORK_STATE_ENABLED: "true",
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
     });
     expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("glm/flash");
@@ -531,6 +531,21 @@ describe("PM1: setup and restore after a portal write", () => {
 });
 
 describe("PM1: back to setup", () => {
+  test("D68: following the scout leaves an old work-state claim alone", async () => {
+    const w = machine({ settings: SEEDED, gateway: "scout" });
+    applyManagedJson({
+      file: w.paths.claudeMemSettingsFile,
+      stateDir: w.paths.stateDir,
+      set: [[["CLAUDE_MEM_WORK_STATE_ENABLED"], "false"]],
+      unchosen: () => true,
+    });
+    await followSetup(w.paths, w.check());
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(ownedRecords(w.paths.stateDir, w.paths.claudeMemSettingsFile)).toContainEqual({
+      path: ["CLAUDE_MEM_WORK_STATE_ENABLED"],
+      value: "false",
+    });
+  });
   test("PM1: the person's choices are forgotten, and setup's own step puts the scout's model back", async () => {
     const w = machine({ settings: SEEDED, gateway: "scout" });
     await chooseRoute(
@@ -1328,7 +1343,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
       ],
       ok: true,
     });
-    // After one, setup decides its own two start blocks again, and leaves the value as it is.
+    // After take-over, setup still disables memory-use and leaves the person's route alone.
     const hand = machine({
       settings: { ...SEEDED, CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model" },
     });
@@ -1337,7 +1352,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
     expect(hand.settings()).toMatchObject({
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
-      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
+      CLAUDE_MEM_WORK_STATE_ENABLED: "true",
     });
   });
 
@@ -1496,6 +1511,6 @@ describe("MS1: what a later setup does to a taken-over value", () => {
     });
     // The taken values read as the person's, not as setup's.
     expect(readClaudeMemFacts(w.paths).current?.route.source).toBe("portal");
-    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("true");
   });
 });
