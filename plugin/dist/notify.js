@@ -95,7 +95,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.5.0",
+  version: "1.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

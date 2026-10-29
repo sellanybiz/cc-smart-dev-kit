@@ -1,42 +1,54 @@
-# claude-mem: the two start blocks, off (D23)
+# claude-mem: the memory-use block off, work state on (D68)
 
+claude-mem's work state is its to-do list, kept across sessions. D68 (2026-10-29) restores
+it on every machine while keeping the memory-use block off. D23 turned both blocks off;
+its overflow came from the memory-use block, not work state.
 
-claude-mem puts two blocks at the start of every session: work state (a to-do list, with the
-instruction to use its `work_state_write` tool) and the memory-use block (how to use the
-memories it loaded). Measured over 14 days, together they pass Claude Code's 10,000-character
-hook output limit in 36 of 218 starts. The owner decided both go off on every machine (D23).
+The [research](../../.claude/research/archive/2026-10-29-claude-mem-work-state.md) reads
+claude-mem 15.4.0's worker and CHANGELOG. Work state is capped at 3,000 characters, with
+its room reserved inside the 10,000-character context budget since 13.29.0; the kit requires
+`>=13.36.0`. The 2,466-character memory-use block has no room reserved unless TeamBrain is
+set up. Measured on one machine with memory-use off, context grew from 4,824 to 7,053
+characters when work state was enabled. The worker code was checked in 15.4.0; the earlier
+budget guarantee comes from its CHANGELOG.
 
-- **Two keys in `~/.claude-mem/settings.json`**: `CLAUDE_MEM_WORK_STATE_ENABLED` (13.36.0 and
-  later; `false` also makes its work_state tools answer "Work state is turned off") and
-  `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED` (13.35.0 and later), both `"false"`
-  (`START_BLOCK_KEYS`).
-- **Planned on their own.** `claudeMemPlan` (`src/machine/claude-mem.ts`) builds them whenever
-  claude-mem is installed, separate from the gateway's provider keys: no affordable scout
-  changes nothing about them, and a backend check that fails drops only the provider keys. An
-  older claude-mem gets them too: its `loadFromFile` overlays only the defaults it knows, so
-  an unknown key changes nothing. `plugin.json` asks for 13.36.0, so both exist on every
-  machine that installs claude-mem.
-- **Owned like the provider keys**, through `applyManagedJson`: claude-mem's own default
-  (`"true"` or `""`) counts as unchosen; any other value is the person's, and setup names it
-  in a `!` line. A value setup wrote and the person changed since is theirs too — also
-  `"true"`, which is the README's way back on, so setup never undoes it. `restore` removes
-  both keys, and claude-mem falls back to its defaults.
-- **A session's to-do home.** While work state is off, setup sets
-  `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user settings (`src/cli/setup.ts`, through
-  `applyManagedJson`). Live proof on Claude Code 2.1.306: the task tools (`TaskCreate`, …) are
-  absent in `claude -p` and foreground sessions on newer models, and present in background
-  ones; `1` turns them on everywhere. A value the person set is theirs: it stays, named in an
-  information line. `doctor` checks it while work state is off.
-- **Said before the write.** When the plan changes work state, setup prints one `!` line: the
-  lists stop showing, `work_state_read` reads one while the switch is still on, and
-  `CLAUDE_MEM_WORK_STATE_ENABLED` set to `"true"` turns it back on. After a write it prints the
-  restart step: a new session's start hook reads the settings, and claude-mem's worker reads
-  them when it starts.
-- **An old nested file** (only `env`, which claude-mem rewrites flat on its next start) waits
-  as a whole, the two start blocks included: a key written under `env` would lose its owned
-  path in the rewrite.
-- `doctor` shows both values and who set each (cc-smart-dev-kit's setup, the person, or
-  claude-mem's default); a value the person set is information, never a failure.
+- **Memory-use stays off.** `claudeMemPlan` (`src/machine/claude-mem.ts`) plans
+  `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false"` in `~/.claude-mem/settings.json`,
+  separate from the provider keys. Its default may be taken; a value the person chose stays.
+- **Work state returns to its default.** Setup no longer writes
+  `CLAUDE_MEM_WORK_STATE_ENABLED`. Where it holds a record, `applyManagedJson`'s `withdraw`
+  removes the key only while it still holds setup's `"false"`, and drops the claim either
+  way. A person's unowned `"false"` stays. A changed `"true"` stays too, without a file write.
+  When the old key is removed, setup prints one information line explaining that open lists
+  return and how to keep work state off: set the key to `"false"` again after setup.
+- **Task tools everywhere.** Setup sets `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
+  settings on every machine, with or without claude-mem, through the managed writer. A
+  person's value stays. Normal sessions use claude-mem's work state when available; leads
+  and crew sessions use Claude Code's list because the kit's hooks read it. The memory-routing
+  skill owns the routing rule and its fallbacks. Crew sessions also load claude-mem, so their
+  card and the lead's reminder explicitly name Claude Code's list despite its work-state text.
+- **Notes as you go.** The memory-use block also told a session to save its own notes with
+  `save_memory`. With the block off, the kit's general instructions say that part in one rule
+  (`plugin/instructions/core.md`, "Save as you go"):
+  - The main session saves a decision and why, a surprise, a dead end or a preference with
+    `save_memory` when it happens. The memory-routing skill holds the detail: the search
+    before a save, and where an instruction for next time goes instead.
+  - It writes a to-do with `work_state_write`; a lead writes its own with `TaskCreate`.
+
+  claude-mem has been asked to count the block in its budget without TeamBrain too
+  ([thedotmack/claude-mem#5180](https://github.com/thedotmack/claude-mem/issues/5180)). Once a
+  release does, the block can come back on.
+- **Doctor explains the source.** The start-blocks line fails when the unchosen memory-use
+  block is on or work state is still off from an older setup, with `cc-smart-dev-kit setup`
+  as the fix. A person's value is information, not a failure. The task-tools line belongs to
+  **The plugin** group and runs on every machine: missing is a failure, `"1"` passes, and a
+  person's value is information.
+- **Restore and restart.** Restore removes only what setup still owns. After withdrawal,
+  no work-state record remains to restore; before it, restore removes the old owned value.
+  Setup prints its restart step when the settings file changes. A new session receives the
+  work-state block; the worker reads the switch on each render.
+- **An old nested file waits.** Setup leaves the whole file alone until claude-mem rewrites
+  it flat. Dry runs show the planned removal and information line without writing anything.
 
 ## claude-mem on the gateway
 
@@ -109,8 +121,8 @@ three writers; the actions `claudemem.route`, `claudemem.key` and `claudemem.fal
   behind would match the same value a later setup writes (`openai-compatible`, `custom`) and
   stop setup following the scout for good. **Let setup decide again** (`claudemem.follow`,
   `followSetup`) ends them without a restore: it empties the choices and runs setup's own
-  claude-mem step for the provider and retired fallback keys (the start blocks stay `setup`'s,
-  because turning them off also turns Claude Code's task tools on, in another file).
+  claude-mem step for the provider and retired fallback keys only. Following the scout is
+  about provider keys; the start blocks and work-state withdrawal stay with `setup`.
 - **Setup leaves it.** `planProvider` stops at a person's choice in any of the five provider
   keys (one note line), and the retired fallback keys are taken out only while they are not a
   person's choice: a fallback the person chose holds the same Claude value 0.4.3 wrote.

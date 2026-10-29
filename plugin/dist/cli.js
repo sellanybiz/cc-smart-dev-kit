@@ -52,7 +52,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.5.0",
+  version: "1.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10651,6 +10651,7 @@ var START_BLOCK_KEYS = [
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED"
 ];
 var WORK_STATE_KEY = START_BLOCK_KEYS[0];
+var MEMORY_USE_KEY = START_BLOCK_KEYS[1];
 var START_BLOCK_OFF = "false";
 var TODO_TOOLS_KEY = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
 var TODO_TOOLS_VALUE = "1";
@@ -10803,7 +10804,7 @@ function shownStartBlock(value) {
 }
 function planStartBlocks(read, notes) {
   const planned = [];
-  for (const key of START_BLOCK_KEYS) {
+  for (const key of [MEMORY_USE_KEY]) {
     const path = read.at(key);
     const current = getKey(read.data, path);
     if (!current.found || Bun.deepEquals(current.value, START_BLOCK_OFF)) {
@@ -10932,7 +10933,7 @@ function claudeMemPlan(paths, gatewayAfter) {
       startBlocks,
       provider,
       notes,
-      todoTools: startBlocks.some(([path]) => path.at(-1) === WORK_STATE_KEY)
+      withdraw: read.records.some((record) => samePath(record.path, read.at(WORK_STATE_KEY))) ? [read.at(WORK_STATE_KEY)] : []
     }
   };
 }
@@ -10986,6 +10987,7 @@ function applyClaudeMem(paths, plan, dryRun) {
     stateDir: paths.stateDir,
     set: [...plan.startBlocks, ...plan.provider?.set ?? []],
     remove: plan.remove,
+    withdraw: plan.withdraw,
     dryRun,
     unchosen,
     secret: isSecretPath
@@ -54909,7 +54911,7 @@ function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
 function taskListStep() {
-  return "Write your task list first: look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+  return "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
 }
 function taskListRefusal() {
   return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep2()}\``;
@@ -56377,7 +56379,7 @@ function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
 }
 function taskListReminder() {
-  return "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+  return "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
 }
 function reminderFor(paths, env, sessionId, event) {
   if (event !== "UserPromptSubmit")
@@ -59088,26 +59090,29 @@ function claudeMemStartBlocksCheck(paths, readings) {
   if ("problem" in readings)
     return { ok: true, warn: true, text: readings.problem };
   const base = `claude-mem's start blocks in ${tildify(paths.claudeMemSettingsFile, paths.home)}: ${readings.map(describeStartBlock).join(", ")}`;
-  const unset = readings.filter((reading) => reading.value !== "false" && reading.by !== "person");
-  if (unset.length > 0) {
+  const memory = readings.find((reading) => reading.key === MEMORY_USE_KEY);
+  const work = readings.find((reading) => reading.key === WORK_STATE_KEY);
+  const reasons = [];
+  if (memory && memory.value !== "false" && memory.by !== "person") {
+    reasons.push(". The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit");
+  }
+  if (work?.value === "false" && work.by === "setup") {
+    reasons.push(". Work state is off from an older setup, so sessions get no to-do list from claude-mem");
+  }
+  if (reasons.length > 0) {
     return {
       ok: false,
-      text: `${base}. Together they overflow Claude Code's start context in about one start in six`,
+      text: `${base}${reasons.join("")}`,
       fix: SETUP_FIX
     };
   }
   return {
     ok: true,
-    ...readings.some((reading) => reading.value !== "false") && { info: true },
+    ...(memory?.by === "person" && memory.value !== "false" || work?.by === "person" && work.value === "false") && { info: true },
     text: base
   };
 }
-function claudeMemTodoToolsCheck(paths, readings) {
-  if ("problem" in readings)
-    return null;
-  const workState = readings.find((reading) => reading.key === WORK_STATE_KEY);
-  if (workState?.value !== "false")
-    return null;
+function taskToolsCheck(paths) {
   const path = ["env", TODO_TOOLS_KEY];
   const current = getKey(readSettings2(paths.settingsFile) ?? {}, path);
   const key = formatKeyPath(path);
@@ -59121,7 +59126,7 @@ function claudeMemTodoToolsCheck(paths, readings) {
   if (!current.found) {
     return {
       ok: false,
-      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a session has no to-do list while claude-mem's work state is off`,
+      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a lead, and a session without claude-mem's work state, has no task list`,
       fix: SETUP_FIX
     };
   }
@@ -59130,16 +59135,12 @@ function claudeMemTodoToolsCheck(paths, readings) {
   return {
     ok: true,
     info: true,
-    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a session has no to-do list while claude-mem's work state is off`
+    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a lead, and a session without claude-mem's work state, has no task list`
   };
 }
 function claudeMemChecks(paths) {
   const readings = readStartBlocks(paths);
-  const todoTools = readings === null ? null : claudeMemTodoToolsCheck(paths, readings);
-  return [
-    ...readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)],
-    ...todoTools === null ? [] : [todoTools]
-  ];
+  return readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)];
 }
 async function omnirouteCheck(paths, env, gateway) {
   const line = await omnirouteDoctorLine({
@@ -59296,6 +59297,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
         ...await checkLauncher(paths, machine.platform, readCommand),
         checkGitBash(machine.platform, env, machine),
         checkInstructions(paths, local.instructionsSource),
+        taskToolsCheck(paths),
         checkNameClash(settings),
         await checkOldPlugin(settings, paths, readCommand)
       ])
@@ -60743,7 +60745,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
-  const todoTools = managed.claudeMem?.todoTools === true ? planTodoTools(paths) : null;
+  const todoTools = planTodoTools(paths);
   if (todoTools?.kind === "set")
     set.push([todoTools.path, TODO_TOOLS_VALUE]);
   const tavilyOwned = managed.tavilyKeyPlan.kind === "remove" && ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).some((path) => formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH));
@@ -60963,11 +60965,11 @@ function decideRetryWatchdog(paths, managed) {
       managed.retryWatchdog = "on";
   } catch {}
 }
-function workStateWarning(paths) {
+function workStateRestored(paths) {
   return {
     section: "companions",
-    mark: "warn",
-    text: `claude-mem's work state goes off: its to-do lists are no longer shown in a session. Read one first with claude-mem's work_state_read tool, or turn work state back on by setting ${WORK_STATE_KEY} to "true" in ${tildify(paths.claudeMemSettingsFile, paths.home)}.`
+    mark: "info",
+    text: `claude-mem's work state is back on: its open to-do lists show at the start of each session again. To keep it off, set ${WORK_STATE_KEY} to "false" in ${tildify(paths.claudeMemSettingsFile, paths.home)}; setup leaves a value you set alone.`
   };
 }
 async function decideClaudeMem(paths, dryRun, report, out, gatewayAfter) {
@@ -60982,8 +60984,8 @@ async function decideClaudeMem(paths, dryRun, report, out, gatewayAfter) {
   const plan = planned.plan;
   report.push(...reportLines("companions", plan.notes));
   const changes = applyClaudeMem(paths, plan, true).changes;
-  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY)) {
-    report.push(workStateWarning(paths));
+  if (changes.some((change) => change.path.at(-1) === WORK_STATE_KEY && change.after === undefined)) {
+    report.push(workStateRestored(paths));
   }
   const provider = plan.provider;
   if (provider === null)

@@ -884,9 +884,10 @@ export async function chooseFallback(
  * Hands claude-mem back to setup: forgets the person's portal choices, then runs setup's own
  * claude-mem step for the provider keys and the retired fallback keys (`claudeMemPlan`, the
  * same tiny chat before a backend write, `applyClaudeMem`), so claude-mem follows the scout
- * slot again and its fallback goes back to claude-mem's own default. The start blocks are
- * left to `setup` itself: turning them off also turns Claude Code's own task tools on, in
- * another file. A value the person set by hand stays theirs, as it does for setup.
+ * slot again and its fallback goes back to claude-mem's own default. The start blocks (the
+ * memory-use key, and the old work-state value it takes back) are left to `setup` itself, which
+ * also sets Claude Code's task tools in another file. A value the person set by hand stays
+ * theirs, as it does for setup.
  */
 export async function followSetup(
   paths: CliPaths,
@@ -909,7 +910,7 @@ export async function followSetup(
     };
   }
   const lines: string[] = [];
-  let plan: ClaudeMemPlan = { ...planned.plan, startBlocks: [] };
+  let plan: ClaudeMemPlan = { ...planned.plan, startBlocks: [], withdraw: [] };
   if (plan.provider !== null) {
     const problem = await check(plan.provider.target);
     if (problem !== null) {

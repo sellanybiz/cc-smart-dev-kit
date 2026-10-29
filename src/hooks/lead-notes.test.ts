@@ -524,7 +524,7 @@ describe("D61: a lead's start note, and never a prompt", () => {
 describe("D23: a lead with no to-do list is reminded, never blocked", () => {
   /** The reminder, written out. */
   const REMINDER =
-    "You have no to-do list: put the person's asks and your open work on it (TaskCreate), and keep it true as they move.";
+    "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
   const NAME = "LEAD app plan";
 
   test("a prompt while the lead has no list: the reminder, as the one line of context", async () => {

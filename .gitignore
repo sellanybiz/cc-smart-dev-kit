@@ -5,3 +5,5 @@ node_modules/
 .claude/worktrees/
 # Claude Code's personal settings for this repo: one person's, never committed.
 .claude/settings.local.json
+# The kit's record of each crew run: it holds this machine's absolute paths, so it stays here.
+.claude/plans/**/runs/
