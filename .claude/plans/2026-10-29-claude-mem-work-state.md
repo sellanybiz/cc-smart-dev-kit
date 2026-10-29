@@ -216,3 +216,5 @@ Commits, the push and the pull request follow `cc-smart-dev-kit workflow show`: 
   - **Trims that blurred meaning** in `core.md` were put back (the opus row's "at `high` or above"). `core.md` is 2,399 tokens against 2,400, and 131 lines (the warning is above 130; the limit is 140).
   - **Stale text:** a README line (an older claude-mem), the `followSetup` comment, two test comments. The lead's reminder now says "no Claude Code task list", the list it reads. The task-tools check is now `taskToolsCheck`: it runs without claude-mem.
   - **Left as they are:** the dry-run wording and the `~` mark for a removal (an existing pattern).
+- **Shipped for review (the owner's yes, 2026-10-29).** Commit `17c1c3df` on `claude-mem-work-state`, pushed; pull request #29 into `main`. The full check passed before the commit (8548 pass, 0 fail, the test step in UTC; both validates). The merge waits for the owner's yes.
+- **The zone leak, its own fix (the owner's choice):** branch `fix-test-timezone`, pull request #30. The test preload writes bun's UTC zone into `TZ`, so `inUtc`'s restore puts UTC back. With `TZ` unset on a UTC+5 machine: 8539 pass, 0 fail.
