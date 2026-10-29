@@ -27,6 +27,17 @@ budget guarantee comes from its CHANGELOG.
   and crew sessions use Claude Code's list because the kit's hooks read it. The memory-routing
   skill owns the routing rule and its fallbacks. Crew sessions also load claude-mem, so their
   card and the lead's reminder explicitly name Claude Code's list despite its work-state text.
+- **Notes as you go.** The memory-use block also told a session to save its own notes with
+  `save_memory`. With the block off, the kit's general instructions say that part in one rule
+  (`plugin/instructions/core.md`, "Save as you go"):
+  - The main session saves a decision and why, a surprise, a dead end or a preference with
+    `save_memory` when it happens. The memory-routing skill holds the detail: the search
+    before a save, and where an instruction for next time goes instead.
+  - It writes a to-do with `work_state_write`; a lead writes its own with `TaskCreate`.
+
+  claude-mem has been asked to count the block in its budget without TeamBrain too
+  ([thedotmack/claude-mem#5180](https://github.com/thedotmack/claude-mem/issues/5180)). Once a
+  release does, the block can come back on.
 - **Doctor explains the source.** The start-blocks line fails when the unchosen memory-use
   block is on or work state is still off from an older setup, with `cc-smart-dev-kit setup`
   as the fix. A person's value is information, not a failure. The task-tools line belongs to

@@ -876,7 +876,7 @@ describe("the crew-role edit gate, through the frame", () => {
     const output = JSON.parse(denied.stdout ?? "{}").hookSpecificOutput;
     expect(output.permissionDecision).toBe("deny");
     expect(output.permissionDecisionReason).toContain(
-      "Write your task list first: look up the task tools",
+      "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools",
     );
     const listed = await runHook(
       crewRoleHook,

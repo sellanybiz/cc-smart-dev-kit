@@ -618,20 +618,21 @@ describe("setup turns claude-mem's memory-use block off (D68)", () => {
     expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(settingsBefore);
   });
 
-  test('a person\'s own "true" is kept, named in a ! line, and the task tools go with it', async () => {
+  test('a person\'s own "true" over setup\'s memory-use "false" is kept, and named in a ! line', async () => {
     const w = world();
     const file = seed(w);
     await w.setup();
-    // The way back on from the README: the person sets it to "true".
+    expect(readJson(file)[MEMORY]).toBe("false");
+    // The person turns the memory-use block back on over the value setup wrote.
     const settings = readJson(file);
-    settings[WORK_STATE] = "true";
+    settings[MEMORY] = "true";
     writeFileSync(file, JSON.stringify(settings, null, 2));
     printed.length = 0;
     expect(await w.setup()).toBe(0);
-    expect(printed.join("\n")).not.toContain(WORK_STATE);
-    expect(readJson(file)[WORK_STATE]).toBe("true");
-    // Its to-do list is back: task tools are still needed, and setup leaves the ones it set.
-    expect(printed).not.toContain("CLAUDE_CODE_ENABLE_TODO_TOOLS");
+    expect(readJson(file)[MEMORY]).toBe("true");
+    expect(printed).toContain(
+      `  ! claude-mem settings left alone: ${MEMORY} is "true" in ~/.claude-mem/settings.json (your choice)`,
+    );
   });
 
   test("claude-mem older than 13.36.0: memory-use stays off", async () => {

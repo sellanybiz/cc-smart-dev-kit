@@ -13,11 +13,11 @@ import {
   checkPortal,
   checkUserNotifyHook,
   claudeMemChecks,
-  claudeMemTodoToolsCheck,
   countChecks,
   doctorReport,
   doctorVerdict,
   groupSummary,
+  taskToolsCheck,
 } from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
 
@@ -150,7 +150,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     return { home, paths };
   }
 
-  /** What setup writes: both start blocks off, and the task-tools key owned. */
+  /** What setup writes: the memory-use block off, and the task-tools key owned. */
   function afterSetup(paths: ReturnType<typeof world>["paths"]) {
     const planned = claudeMemPlan(paths);
     if (!("plan" in planned)) throw new Error("expected a plan");
@@ -166,7 +166,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
 
   test("D68: task tools are checked without claude-mem", () => {
     const w = world(undefined, false);
-    expect(checkLine(claudeMemTodoToolsCheck(w.paths))).toBe(
+    expect(checkLine(taskToolsCheck(w.paths))).toBe(
       `✗ Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is not set in ${SETTINGS}, so a lead, and a session without claude-mem's work state, has no task list Fix: cc-smart-dev-kit setup`,
     );
   });
@@ -252,14 +252,14 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);
     const on = `✓ Claude Code's task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ${SETTINGS}`;
-    expect(checkLine(claudeMemTodoToolsCheck(w.paths))).toBe(on);
+    expect(checkLine(taskToolsCheck(w.paths))).toBe(on);
     writeFileSync(w.paths.settingsFile, `﻿${readFileSync(w.paths.settingsFile, "utf8")}`);
-    expect(checkLine(claudeMemTodoToolsCheck(w.paths))).toBe(on);
+    expect(checkLine(taskToolsCheck(w.paths))).toBe(on);
     writeFileSync(
       w.paths.settingsFile,
       JSON.stringify({ env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" } }),
     );
-    expect(checkLine(claudeMemTodoToolsCheck(w.paths))).toBe(
+    expect(checkLine(taskToolsCheck(w.paths))).toBe(
       `· Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" in ${SETTINGS} (your choice), so a lead, and a session without claude-mem's work state, has no task list`,
     );
     applyManagedJson({
@@ -268,7 +268,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       set: [[["env", TODO_TOOLS_KEY], "0"]],
       unchosen: () => true,
     });
-    expect(checkLine(claudeMemTodoToolsCheck(w.paths))).toBe(
+    expect(checkLine(taskToolsCheck(w.paths))).toBe(
       `· Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" in ${SETTINGS} (set by cc-smart-dev-kit setup), so a lead, and a session without claude-mem's work state, has no task list`,
     );
   });

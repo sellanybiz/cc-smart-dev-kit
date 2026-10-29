@@ -1633,7 +1633,7 @@ each is silent unless its own session is the one it is about, and neither reads
   watch's own line is the one that resolves a project's list. At a prompt it also sets the lead's
   name (`sessionTitle`, beside the note in the same answer), through `titleToSet`, the one rule and
   record `session-name` keeps (§ The lead and the launch › The lead's name). **At a prompt it also
-  reminds a lead with no to-do list** (D23): while the lead's own task folder (`taskListId`, the
+  reminds a lead with no Claude Code task list** (D23): while the lead's own task folder (`taskListId`, the
   same reader the crew session's gate uses) holds no task file, one more line of context — put the
   person's asks and the lead's open work on Claude Code's list (`TaskCreate`, not claude-mem's
   work state), and keep it true as they move — said before

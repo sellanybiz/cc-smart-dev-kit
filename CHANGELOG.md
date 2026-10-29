@@ -3,6 +3,45 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.6.0
+
+claude-mem's to-do list is back. Each session starts with claude-mem's work state again: its
+to-do lists, with what is still open, kept across sessions in each project.
+
+**What to run** after the update:
+
+- `cc-smart-dev-kit setup`. It takes out the `"false"` that 1.0.0 to 1.5.0 wrote into
+  `CLAUDE_MEM_WORK_STATE_ENABLED` in `~/.claude-mem/settings.json`, so claude-mem's own default
+  (on) applies again. Until you run it, `doctor` shows a ✗ for that line.
+- To keep work state off, set `CLAUDE_MEM_WORK_STATE_ENABLED` to `"false"` again in
+  `~/.claude-mem/settings.json` after setup ran. Setup leaves a value you set alone.
+- Start a new Claude Code session: claude-mem's work-state tools (`work_state_write`,
+  `work_state_read`) come with a new session.
+
+claude-mem's start blocks (D68, which replaces D23 for work state):
+
+- **Work state is on again, and the memory-use block stays off.** D23 turned both blocks off:
+  together they went over Claude Code's 10,000-character limit for a hook's output in about one
+  start in six. The overflow came from the memory-use block alone. claude-mem caps its
+  work-state block at 3,000 characters, and fits its memories into what is left of the 10,000.
+  It keeps no such room for the 2,466-character memory-use block. Measured on one machine: 7,053
+  characters with work state on.
+- **Which to-do list.** A session uses claude-mem's work state. A lead and a crew session use
+  Claude Code's own task list (`TaskCreate`), because the kit's hooks read it: the crew-role
+  step and the lead's reminder now say so. Without claude-mem, every session uses Claude Code's
+  list (the memory-routing skill).
+- **Claude Code's task tools are on for every machine.** `setup` sets
+  `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` to `"1"` with or without claude-mem. Before, it did that
+  only while work state was off. `doctor` checks it on every machine, in the plugin group.
+- **Sessions save notes as they go again.** claude-mem's memory-use block, which stays off, also
+  told a session to save its own notes. The kit's instructions now say it in one short rule:
+  where claude-mem is installed, the main session saves a decision and why, a surprise, a dead
+  end or a preference with `save_memory` when it happens, and a to-do with `work_state_write`
+  (a lead uses `TaskCreate`). A subagent saves nothing. claude-mem itself is asked to count the
+  memory-use block in its budget
+  ([thedotmack/claude-mem#5180](https://github.com/thedotmack/claude-mem/issues/5180)), so the
+  block can come back once a release does.
+
 ## 1.5.0
 
 Faster work under Claude, native Windows fixed end to end, and crew sessions that keep their

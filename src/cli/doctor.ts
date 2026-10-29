@@ -918,7 +918,7 @@ function claudeMemStartBlocksCheck(
  * D68: task tools are the lead and crew list, and the list without claude-mem.
  * Check them on every machine, independently of claude-mem's settings.
  */
-export function claudeMemTodoToolsCheck(paths: CliPaths): Check {
+export function taskToolsCheck(paths: CliPaths): Check {
   const path = ["env", TODO_TOOLS_KEY];
   const current = getKey(readSettings(paths.settingsFile) ?? {}, path);
   const key = formatKeyPath(path);
@@ -1260,7 +1260,7 @@ function doctorGroups(
           ...(await checkLauncher(paths, machine.platform, readCommand)),
           checkGitBash(machine.platform, env, machine),
           checkInstructions(paths, local.instructionsSource),
-          claudeMemTodoToolsCheck(paths),
+          taskToolsCheck(paths),
           checkNameClash(settings),
           await checkOldPlugin(settings, paths, readCommand),
         ]),

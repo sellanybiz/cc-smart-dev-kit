@@ -6081,7 +6081,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.5.0",
+  version: "1.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -19502,7 +19502,7 @@ function leadStartNote() {
   return "You lead: your crew sessions build the work \u2014 your context is re-read every turn, so every file you read or write costs on every later turn.";
 }
 function taskListReminder() {
-  return "You have no to-do list: put the person's asks and your open work on Claude Code's task list (TaskCreate, not claude-mem's work state), and keep it true as they move.";
+  return "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
 }
 function reminderFor(paths, env, sessionId, event) {
   if (event !== "UserPromptSubmit")

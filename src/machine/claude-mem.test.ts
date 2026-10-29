@@ -172,6 +172,29 @@ describe("D68: claude-mem's start blocks", () => {
     });
   });
 
+  test('D68: a memory-use value setup wrote and the person changed back to "true" is kept, and named', () => {
+    const w = machine({ settings: SEEDED });
+    const first = w.plan();
+    if (!("plan" in first)) throw new Error("expected a plan");
+    applyClaudeMem(w.paths, first.plan, false);
+    expect(readJson(w.paths.claudeMemSettingsFile)[MEMORY]).toBe("false");
+    // "true" is claude-mem's own default, so only setup's record says the person chose it.
+    const settings = readJson(w.paths.claudeMemSettingsFile);
+    settings[MEMORY] = "true";
+    writeFileSync(w.paths.claudeMemSettingsFile, JSON.stringify(settings));
+    expect(w.plan()).toEqual({
+      plan: {
+        remove: RETIRED,
+        startBlocks: [],
+        provider: null,
+        notes: [
+          '! claude-mem settings left alone: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
+        ],
+        withdraw: [],
+      },
+    });
+  });
+
   test.each(["false", "true"])("D68: withdraw an old setup claim under %s", (value) => {
     const w = machine({ settings: SEEDED });
     applyManagedJson({

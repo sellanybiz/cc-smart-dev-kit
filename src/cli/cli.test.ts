@@ -2578,7 +2578,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     // No provider key: that provider came in 13.29.0.
     expect(written.CLAUDE_MEM_PROVIDER).toBe("claude");
     expect(written.CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("");
-    // Both start blocks are still planned: an unknown key is harmless to an older claude-mem.
+    // The memory-use block is still planned: an unknown key is harmless to an older claude-mem.
     expect(written.CLAUDE_MEM_WORK_STATE_ENABLED).toBeUndefined();
     expect(written.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED).toBe("false");
   });

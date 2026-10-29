@@ -1567,8 +1567,8 @@ Code installs and turns them on with it:
   load. `cc-smart-dev-kit setup` adds each missing marketplace, and that installs the companion.
 - **A companion you have already stays as it is.** A claude-mem in the range is not
   updated or reinstalled. One older than 13.36.0 stops the install: run
-  `claude plugin update claude-mem@thedotmack` first. (Setup still writes the two start
-  blocks for an older one: see [claude-mem](#claude-mem).)
+  `claude plugin update claude-mem@thedotmack` first. (Setup still turns the
+  memory-use block off for an older one: see [claude-mem's start blocks](#claude-mems-start-blocks).)
 - **You turned one off?** Setup leaves it off and says how to turn it on; cc-smart-dev-kit does
   not load while it is off.
 - `restore` does not uninstall them.
