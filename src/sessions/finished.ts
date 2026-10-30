@@ -1,33 +1,40 @@
 /**
  * Finished background sessions: one reader for the command and the portal, never an automatic
- * removal. Beside them, what removed crew sessions left in `/resume` (`readCrewLeftovers`, AR1).
+ * removal. What crew sessions left in `/resume` is the timeline's (`readCrewLeftovers`, `archive.ts`).
  */
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
-import {
-  ARCHIVED_STATES,
-  archiveDaysOf,
-  conversationOf,
-  differingArchivedCopy,
-  expiredArchives,
-  holdsNothing,
-  type PrunedArchive,
-  sessionsNeverTaken,
-} from "../crew/archive";
+import { agentRows, listsAnySession } from "../crew/agents";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
-import type { Env } from "../crew/context";
+import type { CrewContext } from "../crew/context";
+import { leadGone, observeLeadPresence, RELEASE_STATES } from "../crew/lifecycle";
 import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
-import {
-  type CrewRecord,
-  crewSessions,
-  listAllCrew,
-  listAllLeads,
-  readCrewEvents,
-} from "../crew/store";
-import { liveSessions } from "../hooks/sessions";
-import { isSessionId } from "./saved-sessions";
+import { type CrewRecord, crewSessions, listAllCrew, listAllLeads } from "../crew/store";
+
+/**
+ * Finished crew records whose registered lead is provably gone; unknown presence keeps them. One
+ * released already is listed again while agent view still lists a row of it: its `claude rm` failed.
+ */
+export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewRecord[]> {
+  const crew = listAllCrew(ctx.paths.stateDir);
+  const leads = listAllLeads(ctx.paths.stateDir);
+  if (crew.broken.length > 0 || leads.broken.length > 0 || crew.records.length === 0) return [];
+  const rows = agentRows(ctx);
+  if (rows === null) return [];
+  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
+  return crew.records.filter(
+    (record) =>
+      (record.released === undefined || listsAnySession(rows, record)) &&
+      RELEASE_STATES.includes(record.state) &&
+      leadGone(
+        observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null,
+        rows,
+        ctx.now(),
+      ),
+  );
+}
 
 /** A finished session is offered only after a full day in a terminal state. */
 export const FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
@@ -184,146 +191,6 @@ export function readFinishedSessions(
       sessions: [],
       error: `Could not read finished sessions: ${error instanceof Error ? error.message : String(error)}`,
     };
-  }
-}
-
-/** A removed crew session whose conversation is still in Claude Code's projects folder. */
-export interface LeftConversation {
-  record: CrewRecord;
-  /** Its files there: the transcript, its subagents' and its tool results. */
-  files: number;
-  projectDir: string;
-  /** The sessions of the record that passed every check; the move takes these and no others. */
-  sessionIds: string[];
-}
-
-/**
- * What the crew sessions the kit removed left in `/resume` (AR1), and the archives past their
- * days: what `sessions --finished` lists and `--remove` moves. Machine-wide, like the list of
- * finished sessions.
- */
-export interface CrewLeftovers {
-  conversations: LeftConversation[];
-  /** The empty project folders of removed crew sessions' worktrees. */
-  emptyFolders: string[];
-  /** A removed crew session's conversation that stays, and why. */
-  kept: Array<{ record: CrewRecord; why: string }>;
-  /** The archives past their `crew.archiveDays`. */
-  expired: PrunedArchive[];
-  error: string | null;
-}
-
-/**
- * When each crew record was removed, from the event that removed it (the store's own log, read
- * once per repository when first asked), else from the record's last write. The last write moves
- * on whenever the record is touched again (the prune of an old discard archive does), and a
- * conversation the person resumed after the removal must stay theirs.
- */
-function removalTimes(stateDir: string): { at: (record: CrewRecord) => number } {
-  const byRepo = new Map<string, Map<string, number>>();
-  return {
-    at(record) {
-      let events = byRepo.get(record.repo);
-      if (events === undefined) {
-        events = new Map();
-        try {
-          for (const event of readCrewEvents(stateDir, record.repo).events) {
-            if (event.type !== "state" || !ARCHIVED_STATES.includes(event.state)) continue;
-            const at = Date.parse(event.at);
-            const first = events.get(event.crew);
-            if (Number.isFinite(at) && (first === undefined || at < first))
-              events.set(event.crew, at);
-          }
-        } catch {
-          // A log that cannot be read: every record falls back to its own last write.
-        }
-        byRepo.set(record.repo, events);
-      }
-      return events.get(record.id) ?? Date.parse(record.updatedAt);
-    },
-  };
-}
-
-/**
- * Reads what removed crew sessions left: only records the store marks removed or discarded,
- * never a lead's session, one a record still on the board names, or one a running Claude holds;
- * a conversation written after its record was removed was resumed by the person since, and is
- * theirs. A store or a session record it cannot read fails closed: nothing is listed, so
- * nothing moves.
- */
-export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number }): CrewLeftovers {
-  const none = (error: string): CrewLeftovers => ({
-    conversations: [],
-    emptyFolders: [],
-    error,
-    expired: [],
-    kept: [],
-  });
-  try {
-    const crew = listAllCrew(paths.stateDir);
-    if (crew.broken.length > 0)
-      return none("Could not read every crew record; repair the crew store before moving them.");
-    const neverTaken = sessionsNeverTaken(paths.stateDir, null);
-    const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
-    const out = none("");
-    out.error = null;
-    const removals = removalTimes(paths.stateDir);
-    // One line per reason for a record, however many of its sessions stay for it.
-    const keep = (record: CrewRecord, why: string): void => {
-      if (!out.kept.some((one) => one.record.id === record.id && one.why === why)) {
-        out.kept.push({ record, why });
-      }
-    };
-    for (const record of crew.records) {
-      if (!ARCHIVED_STATES.includes(record.state)) continue;
-      // Every session the record had (a resume is a copy with a new id, WF1): one entry per record.
-      for (const { sessionId } of crewSessions(record)) {
-        if (sessionId === null || !isSessionId(sessionId) || neverTaken.has(sessionId)) continue;
-        const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
-        if (found.files.length === 0) {
-          if (holdsNothing(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
-            out.emptyFolders.push(found.projectDir);
-          continue;
-        }
-        if (running.has(sessionId)) {
-          keep(record, "a running Claude session holds it");
-          continue;
-        }
-        const differing = differingArchivedCopy(paths, record, found);
-        if (differing !== null) {
-          keep(record, `${differing} differs from its archived copy, so neither is overwritten`);
-          continue;
-        }
-        const removedAt = removals.at(record);
-        const newest = Math.max(
-          ...found.files.map((file) => statSync(join(found.projectDir, file)).mtimeMs),
-        );
-        if (newest > removedAt) {
-          keep(record, "it was written after its crew session was removed");
-          continue;
-        }
-        const listed = out.conversations.find(
-          (one) => one.record.id === record.id && one.record.repo === record.repo,
-        );
-        if (listed === undefined) {
-          out.conversations.push({
-            files: found.files.length,
-            projectDir: found.projectDir,
-            record,
-            sessionIds: [sessionId],
-          });
-        } else {
-          listed.files += found.files.length;
-          listed.sessionIds.push(sessionId);
-        }
-      }
-    }
-    out.expired = expiredArchives(paths.stateDir, archiveDaysOf(paths, deps.env), deps.now).pruned;
-    return out;
-  } catch (error) {
-    return none(
-      `Could not read what removed crew sessions left: ${error instanceof Error ? error.message : String(error)}`,
-    );
   }
 }
 

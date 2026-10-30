@@ -419,7 +419,12 @@ export async function crewAnswerFor(
     insertions: 0,
     outsideBrief: [],
   };
-  if (record.base === null) {
+  if (record.released !== undefined) {
+    diff = {
+      ...diff,
+      error: `released — branch ${record.branch} kept; resume to recreate its worktree`,
+    };
+  } else if (record.base === null) {
     diff = { ...diff, error: "it has not started, so it has no base to compare with" };
   } else {
     try {

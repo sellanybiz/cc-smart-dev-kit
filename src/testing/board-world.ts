@@ -75,6 +75,8 @@ export interface AddCrew {
   baseRef?: string;
   /** The base commit; default the branch's HEAD when a worktree is made. */
   base?: null | { ref: string; sha: string };
+  /** The crew session that handed off and this one continues (D70); default none. */
+  continues?: null | string;
   effort?: string;
   files?: string[];
   kind?: CrewKind;
@@ -149,6 +151,7 @@ export async function boardWorld(): Promise<BoardWorld> {
         base: change.base ?? (made ? { ref: "main", sha } : null),
         baseRef: change.baseRef ?? "main",
         branch,
+        ...(change.continues === undefined ? {} : { continues: change.continues }),
         effort: change.effort ?? "high",
         files: change.files ?? [],
         id,

@@ -117,6 +117,7 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
   handoffTokens: "1.2.0",
   loadPerCore: "1.3.0",
   archiveDays: "1.3.0",
+  deleteDays: "1.7.0",
 };
 
 /**

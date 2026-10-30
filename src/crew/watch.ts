@@ -60,7 +60,7 @@
  * failures last, and only `WATCH_FAILED_PASSES_MAX` in a row end the watch (`PassFailed`).
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
@@ -72,7 +72,7 @@ import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
-import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { agentRows, claudeDeps, isLiveRow, listsAnySession, rowOf } from "./agents";
 import {
   type ResumedSession,
   resumedAs,
@@ -81,6 +81,7 @@ import {
   sendMessageLine,
   UNREADABLE_VIEW_WHY,
 } from "./answer";
+import { sweepCrewConversations } from "./archive";
 import { LEAD_WATCH_ARGS } from "./brief";
 import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
@@ -90,14 +91,16 @@ import {
   holdsItsPredecessor,
   mergeProof,
   observeLeadPresence,
+  RELEASE_STATES,
   STOPPED_REMINDER_MS,
   stoppedCrewNeed,
 } from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
+import { releaseCrewSession } from "./release";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
-import { startQueued } from "./start";
+import { handoffStopLine, startQueued } from "./start";
 import {
   ANSWER_BEAT_STALE_MS,
   addCrewQuestion,
@@ -236,6 +239,9 @@ export const PARKED_PASS_MS = 5 * 60_000;
 
 /** The key under which the watch remembers it said a look for moved-aside folders failed. */
 const PARKED_SAID_KEY = "watch:parked";
+
+/** The key under which the watch remembers it said the conversation timeline's sweep failed. */
+const SWEEP_SAID_KEY = "watch:timeline";
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -871,6 +877,15 @@ export function doneStopLine(record: CrewRecord): string {
 }
 
 /**
+ * The line the watch says, once, when a finished crew session is not released (D69): what holds
+ * it, and the removal's own fix (`fix`), or a plain one when it gave none. The release is tried
+ * again by itself.
+ */
+export function releaseKeptLine(record: CrewRecord, why: string, fix: null | string): string {
+  return `${record.name}: not released yet — ${why}\n${fix ?? "Fix: clear that; the watch then releases it by itself"}`;
+}
+
+/**
  * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
  * Null when done; else why not, for an alert.
  */
@@ -1181,6 +1196,10 @@ export async function watchPass(
   return { lines: draft.lines, state: stateAfter(state, draft) };
 }
 
+/** How often a watch runs the conversation timeline's sweep (D69): its dates are days apart. */
+const CONVERSATION_SWEEP_MS = 60 * 60 * 1000;
+const conversationSweepAt = new Map<string, number>();
+
 /** The body of `watchPass`: it writes what it did into `draft` as it goes. */
 async function runPass(
   state: WatchState,
@@ -1194,6 +1213,24 @@ async function runPass(
     ctx.print(line);
     draft.lines += 1;
   };
+
+  if (
+    ctx.now() - (conversationSweepAt.get(ctx.paths.stateDir) ?? -Infinity) >=
+    CONVERSATION_SWEEP_MS
+  ) {
+    conversationSweepAt.set(ctx.paths.stateDir, ctx.now());
+    // A sweep that fails is said once while the reason stays the same, not every hour.
+    try {
+      await sweepCrewConversations(ctx.paths, ctx.env, ctx.now());
+      delete said[SWEEP_SAID_KEY];
+    } catch (error) {
+      const line = `crew watch: the conversation timeline could not run: ${reasonOf(error)}`;
+      if (said[SWEEP_SAID_KEY] !== line) {
+        say(line);
+        said[SWEEP_SAID_KEY] = line;
+      }
+    }
+  }
 
   // What happened since the last pass.
   draft.offset = sayEvents(draft.offset, scope, ctx, say);
@@ -1405,8 +1442,11 @@ async function runPass(
         continue;
       }
       // Retry refusals only when the folder changes, or after the parked-folder interval.
-      const head = runGit(record.worktree, ["rev-parse", "HEAD"], ctx.env);
-      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
+      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+      const status =
+        record.released === undefined
+          ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
+          : { ok: true, out: "released" };
       const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
       const previous = removals[record.id];
       if (
@@ -1461,6 +1501,39 @@ async function runPass(
         say(stopped);
         said[stopKey] = stopped;
       }
+    } else if (
+      RELEASE_STATES.includes(record.state) &&
+      agents !== null &&
+      !listed &&
+      (record.released === undefined
+        ? existsSync(record.worktree)
+        : listsAnySession(agents, record))
+    ) {
+      // D69: its session is over and holds no process (a `done`, `handoff` or `failed` one is
+      // stopped by the branches below first), so it leaves agent view now; its branch stays for
+      // the merge. A record released already whose rows agent view still lists had a `claude rm`
+      // that failed: the release runs it again. Its own event says the release; a refusal is said
+      // once, and tried again when the folder changes or after the parked-folder interval.
+      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+      const status = existsSync(record.worktree)
+        ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
+        : null;
+      const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
+      const key = `${record.id}:release`;
+      const previous = removals[key];
+      if (
+        previous === undefined ||
+        previous.signature !== signature ||
+        ctx.now() - previous.at >= PARKED_PASS_MS
+      ) {
+        removals[key] = { at: ctx.now(), signature };
+        const result = await releaseCrewSession(record, ctx);
+        const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
+        if (line !== null && said[key] !== line) {
+          say(line);
+          said[key] = line;
+        }
+      }
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a
       // stop that hides it. Its session is ended all the same (D35), once (a pass while agent
@@ -1472,11 +1545,12 @@ async function runPass(
       } else {
         news = line;
       }
-    } else if (record.state === "done" && listed) {
+    } else if ((record.state === "done" || record.state === "handoff") && listed) {
       // Its session ends; its record keeps `done` (D62: `stopped` is for a phase something
       // stopped before it ended, and its removal is the lead's call). Stopped once: the mark
-      // in `said` remembers it while agent view catches up.
-      const line = doneStopLine(record);
+      // in `said` remembers it while agent view catches up. A hand-off's session is stopped when
+      // its next crew session starts (`stopContinued`); one that stop missed is stopped here.
+      const line = record.state === "done" ? doneStopLine(record) : handoffStopLine(record.name);
       if (said[stopKey] !== line) {
         refusal = await stopSession(record, ctx);
         if (refusal === null) news = line;
@@ -1526,11 +1600,16 @@ async function runPass(
     }
   }
 
-  // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
+  // Crew sessions that wait for a place: start them, a hand-off's next crew session first (it
+  // takes the place the one that handed off left, D70), then oldest first. Each start is state events.
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort(
+      (a, b) =>
+        Number(b.continues != null) - Number(a.continues != null) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
   for (const record of queued) {
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.

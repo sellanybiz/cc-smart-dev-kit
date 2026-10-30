@@ -1,10 +1,12 @@
 /**
- * The crew archive (AR1): a removed crew session's conversation moves out of Claude Code's
- * projects folder into the kit's state, gzipped file by file, and is deleted after
- * `crew.archiveDays`. Every path is in a temp folder; no real Claude session runs.
+ * The crew archive (AR1, D69): the conversation of a crew session whose session ended moves out of
+ * Claude Code's projects folder into the kit's state `crew.archiveDays` after that end, gzipped
+ * file by file, comes back on a resume, and is deleted `crew.deleteDays` after the same end. Every
+ * path is in a temp folder; no real Claude session runs.
  */
 import { describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -30,8 +32,10 @@ import {
   DAY_MS,
   expiredArchives,
   pruneCrewArchives,
+  restoreConversation,
   sessionsNeverTaken,
   sourceAfterCopy,
+  sweepCrewConversations,
 } from "./archive";
 import { crewArchiveRoot, transcriptBytes, transcriptTree } from "./archive-read";
 import type { CrewRecord } from "./store";
@@ -129,6 +133,84 @@ async function holdArchiveLock(stateDir: string): Promise<() => void> {
 
 const gunzipped = (file: string) => gunzipSync(readFileSync(file)).toString("utf8");
 
+describe("D69 timeline", () => {
+  test("keeps six days, moves eight days, restores, and deletes after thirty days", async () => {
+    const w = world();
+    const ended = NOW - 6 * DAY_MS;
+    const record = await createCrew(
+      w.paths.stateDir,
+      w.record({ sessionEndedAt: new Date(ended).toISOString() }),
+      ended,
+    );
+    w.write(`${SESSION}.jsonl`, "conversation", ended - 1000);
+    await sweepCrewConversations(w.paths, {}, NOW);
+    expect(existsSync(join(w.project, `${SESSION}.jsonl`))).toBe(true);
+    await sweepCrewConversations(w.paths, {}, NOW + 2 * DAY_MS);
+    expect(existsSync(join(w.project, `${SESSION}.jsonl`))).toBe(false);
+    expect((await restoreConversation(w.paths, record)).ok).toBe(true);
+    expect(readFileSync(join(w.project, `${SESSION}.jsonl`), "utf8")).toBe("conversation");
+    await sweepCrewConversations(w.paths, {}, NOW + 3 * DAY_MS);
+    await sweepCrewConversations(w.paths, {}, ended + 31 * DAY_MS);
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, record.id))).toBe(false);
+  });
+
+  /** A record whose session ended eight days ago, with its conversation in the archive. */
+  async function archived() {
+    const w = world();
+    const ended = NOW - 8 * DAY_MS;
+    const record = await createCrew(
+      w.paths.stateDir,
+      w.record({ sessionEndedAt: new Date(ended).toISOString(), state: "done" }),
+      ended,
+    );
+    // Its conversation, last written before its session ended.
+    w.write(`${SESSION}.jsonl`, '{"type":"user"}\n{"type":"assistant"}\n', ended - 1000);
+    w.write(`${SESSION}/subagents/agent-1.jsonl`, '{"type":"assistant"}\n', ended - 1000);
+    const swept = await sweepCrewConversations(w.paths, {}, NOW);
+    expect(swept.outcomes.map((one) => one.outcome.kind)).toEqual(["archived"]);
+    expect(existsSync(join(w.project, `${SESSION}.jsonl`))).toBe(false);
+    return { record, w };
+  }
+
+  test("a released record's conversation is due eight days after its end, like a removed one", async () => {
+    const { record, w } = await archived();
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, record.id))).toBe(true);
+  });
+
+  test("a restore refuses a different file in its place before writing anything", async () => {
+    const { record, w } = await archived();
+    w.write(`${SESSION}.jsonl`, "someone else's");
+    const result = await restoreConversation(w.paths, record);
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.why).toContain("differs from its archived copy");
+    expect(readFileSync(join(w.project, `${SESSION}.jsonl`), "utf8")).toBe("someone else's");
+    expect(existsSync(join(w.project, SESSION))).toBe(false);
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, record.id))).toBe(true);
+  });
+
+  test("a restore that cannot write takes back every file and folder it made; the next one works", async () => {
+    const { record, w } = await archived();
+    // The subagent file (walked first) can be written; the transcript beside the folder cannot.
+    mkdirSync(join(w.project, SESSION, "subagents"), { recursive: true });
+    chmodSync(w.project, 0o500);
+    let result: Awaited<ReturnType<typeof restoreConversation>>;
+    try {
+      result = await restoreConversation(w.paths, record);
+    } finally {
+      chmodSync(w.project, 0o700);
+    }
+    expect(result.ok).toBe(false);
+    expect(readdirSync(w.project).sort()).toEqual([SESSION]);
+    expect(readdirSync(join(w.project, SESSION, "subagents"))).toEqual([]);
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, record.id))).toBe(true);
+    expect(await restoreConversation(w.paths, record)).toEqual({ ok: true });
+    expect(readFileSync(join(w.project, `${SESSION}.jsonl`), "utf8")).toBe(
+      '{"type":"user"}\n{"type":"assistant"}\n',
+    );
+    expect(existsSync(crewArchiveDir(w.paths.stateDir, w.repo, record.id))).toBe(false);
+  });
+});
+
 describe("archiveConversation", () => {
   test("moves the transcript, its folder and the empty project folder, gzipped, keeping each file's time", async () => {
     const w = world();
@@ -157,6 +239,7 @@ describe("archiveConversation", () => {
     expect(statSync(join(into, `${SESSION}.jsonl.gz`)).mtimeMs).toBe(NOW - 60_000);
     expect(JSON.parse(readFileSync(join(dir, ARCHIVE_MANIFEST), "utf8"))).toEqual({
       archivedAt: "2026-10-25T10:00:00.000Z",
+      sessionEndedAt: "2026-10-25T09:00:00.000Z",
       crew: "B1-help-1a2b3c",
       name: "C my-app B1 help",
       projectFolder: w.project.split("/").at(-1),

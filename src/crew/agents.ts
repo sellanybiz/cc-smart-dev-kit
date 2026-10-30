@@ -11,7 +11,7 @@ import {
   parseAgentPresence,
 } from "./claude";
 import type { CrewContext } from "./context";
-import type { CrewRecord } from "./store";
+import { type CrewRecord, crewSessions } from "./store";
 
 /** What `claude` needs to run here. */
 export function claudeDeps(ctx: CrewContext): ClaudeDeps {
@@ -31,6 +31,16 @@ export function agentRows(ctx: CrewContext): null | AgentRow[] {
   const called = callClaude(claudeDeps(ctx), claude, ["agents", "--json", "--all"], ctx.cwd);
   if (!called.ok || called.run.exitCode !== 0) return null;
   return parseAgentPresence(called.run.stdout);
+}
+
+/** True while agent view lists a row of any session the record has had (`crewSessions`). */
+export function listsAnySession(rows: readonly AgentRow[], record: CrewRecord): boolean {
+  return crewSessions(record).some((one) =>
+    rows.some(
+      (row) =>
+        row.id === one.shortId || (one.sessionId !== null && row.sessionId === one.sessionId),
+    ),
+  );
 }
 
 /** The row of agent view for the session `record`, or null when it is not listed. */

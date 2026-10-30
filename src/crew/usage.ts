@@ -91,11 +91,11 @@ because nothing else went. In this order, stopping at the first refusal:
      it, no file git does not keep) and removed, then its branch;
   5. only then claude rm deletes the session, and the crew session is marked removed, keeping
      whether the lead had merged it before the removal;
-  6. last, the session's conversation, which claude rm leaves in /resume, moves out of Claude
-     Code's projects folder into the kit's crew archive (gzipped, deleted after
-     workflow.crew.archiveDays, ${workflowDefaults.crew.archiveDays} by default). A lead's session, one a running Claude holds and any
-     file the kit does not know stay where they are. A move that cannot happen says why and never
-     fails the removal: sessions --finished --remove moves it later.
+  6. record when the session ended; its conversation stays in /resume for crew.archiveDays
+     (${workflowDefaults.crew.archiveDays} days by default), then moves to the gzipped crew archive. The archive is deleted
+     crew.deleteDays (${workflowDefaults.crew.deleteDays} by default) after the session ended. The watch and
+     sessions --finished --remove run the timeline. A resume restores an archived conversation first.
+     Leads, running sessions and files the kit does not own stay where they are.
 Nothing is ever forced. A step that fails leaves the crew session as it is: fix the cause and run the
 command again.
 
@@ -123,7 +123,9 @@ Brings that one crew session's Claude session back, in its own worktree, with it
 MCP files and the model, effort and permission mode it was launched with (claude --bg --resume); it
 keeps its conversation. Never all sessions. A session that still has a process is left alone: a
 resume would start a copy beside it. Refused for a crew session that is removed, discarded or merged, has no
-session yet, or has no worktree or settings file any more.
+session yet, or has no settings file any more. A released worktree is made again at its original
+path on its kept branch, with .worktreeinclude copied. Install dependencies before running anything.
+A missing worktree the kit did not release still refuses.
 
 --paused brings every paused crew session of the lead back at once: the way on after /login on
 another account, without waiting for the limit to lift. Each goes back the way the lead's watch

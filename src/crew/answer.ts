@@ -41,6 +41,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { restoreConversation } from "./archive";
 import { findCrew } from "./board";
 import { deliveryHead, withCrewCommand } from "./brief";
 import { readCaller, reasonOf } from "./caller";
@@ -55,6 +56,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
+import { restoreReleasedWorktree } from "./release";
 import { actorOfCaller } from "./runs-actor";
 import {
   ANSWER_BEAT_STALE_MS,
@@ -393,7 +395,7 @@ export type ResumePlace = { folder: string; ok: true } | { ok: false; why: strin
 export function resumePlace(record: CrewRecord): ResumePlace {
   const pending = pendingDiscardWhy(record);
   if (pending !== null) return { ok: false, why: pending };
-  if (!existsSync(record.worktree)) {
+  if (!existsSync(record.worktree) && record.released === undefined) {
     return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
   }
   return { folder: record.worktree, ok: true };
@@ -531,7 +533,24 @@ export async function resumeSession(
       why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`,
     };
   }
-  const result = launchResume(ctx, record, text, {
+  // D69: its conversation and its worktree come back only once this command owns the resume. The
+  // claim comes first so the timeline's sweep, which reads the record again under the archive lock
+  // the restore holds, never takes a conversation away again while it is being resumed.
+  const conversation = await restoreConversation(ctx.paths, record);
+  if (!conversation.ok) {
+    await releaseResume(stateDir, record.repo, record.id, token);
+    return { ok: false, unnamed: false, why: conversation.why };
+  }
+  if (conversation.note !== undefined) ctx.print(conversation.note);
+  const restored = await restoreReleasedWorktree(record, ctx);
+  if (!restored.ok) {
+    await releaseResume(stateDir, record.repo, record.id, token);
+    return { ok: false, unnamed: false, why: restored.why };
+  }
+  const prompt = restored.remade
+    ? `Your worktree was made again on your kept branch. Install its dependencies before running anything.\n${text ?? "Continue your phase."}`
+    : text;
+  const result = launchResume(ctx, record, prompt, {
     claude,
     folder: place.folder,
     mcpFile: existsSync(mcpFile) ? mcpFile : null,

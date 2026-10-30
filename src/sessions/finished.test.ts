@@ -400,7 +400,7 @@ if (process.argv[3] === "aaaaaaaa") {
 describe("what removed crew sessions left in /resume (AR1)", () => {
   const CREW_SESSION = "f00d0000-1111-2222-3333-444444444444";
   /** Before the record's removal (`OLD`): the conversation a crew session wrote while it ran. */
-  const WRITTEN = OLD - 60 * 60 * 1000;
+  const WRITTEN = OLD - 8 * DAY - 60 * 60 * 1000;
 
   /** A crew record the store marks removed (at `OLD`), and where its conversation is. */
   async function removedCrew(
@@ -436,6 +436,7 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
         shortId: "f00d0000",
         slug,
         state: "removed",
+        sessionEndedAt: new Date(OLD - 8 * DAY).toISOString(),
         waitsFor: [],
         worktree,
         ...over,
@@ -497,7 +498,7 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     });
     mkdirSync(join(noted.project, "memory"), { recursive: true });
     writeFileSync(join(noted.project, "memory", "MEMORY.md"), "a note\n");
-    const expired = archive(w, "crew-V-old", 8 * DAY);
+    const expired = archive(w, "crew-V-old", 31 * DAY);
 
     expect(await w.run()).toBe(0);
 
@@ -507,8 +508,8 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
       "· C my-app T tests — ~/repo/.claude/worktrees/crew-T-tests — 2 files",
       "Empty project folders of removed crew sessions",
       `· ${tildify(empty.project, w.home)}`,
-      "Archived crew conversations past crew.archiveDays",
-      "· C my-app crew-V-old — archived 8d 0h ago",
+      "Archived crew conversations past crew.deleteDays",
+      "· C my-app crew-V-old — archived 31d 0h ago",
     ]);
     expect(existsSync(transcript)).toBe(true);
     expect(existsSync(empty.project)).toBe(true);
@@ -572,7 +573,7 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
       slug: "empty",
     });
     mkdirSync(join(empty.project, "memory"), { recursive: true });
-    const expired = archive(w, "crew-V-old", 8 * DAY);
+    const expired = archive(w, "crew-V-old", 31 * DAY);
     const questions: string[] = [];
     w.deps.confirm = (question) => {
       questions.push(question);
@@ -582,7 +583,7 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     expect(await w.run({ remove: true })).toBe(0);
 
     expect(questions).toEqual([
-      "Move 1 conversation out of /resume into the kit's archive, remove 1 empty project folder and delete 1 archive past crew.archiveDays?",
+      "Move 1 conversation out of /resume into the kit's archive, remove 1 empty project folder and delete 1 archive past crew.deleteDays?",
     ]);
     expect(existsSync(project)).toBe(false);
     expect(existsSync(empty.project)).toBe(false);
@@ -626,7 +627,11 @@ describe("what removed crew sessions left in /resume (AR1)", () => {
     const w = world();
     w.rows.length = 0;
     // Still on the board: its record is stopped, not removed.
-    const stopped = await removedCrew(w, { slug: "stopped", state: "stopped" });
+    const stopped = await removedCrew(w, {
+      slug: "stopped",
+      state: "stopped",
+      sessionEndedAt: undefined,
+    });
     const stoppedFile = conversation(stopped.project);
     // A lead's session, under a removed record's name.
     const lead = await removedCrew(w, { id: "crew-T-lead", sessionId: LEAD, slug: "lead" });

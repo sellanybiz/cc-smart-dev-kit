@@ -113,6 +113,7 @@ export interface ResolvedWorkflow {
     maxHours: ResolvedValue<number>;
     /** Days a removed crew session's conversation stays in the kit's archive. */
     archiveDays: ResolvedValue<number>;
+    deleteDays: ResolvedValue<number>;
     /** Null: no tag is set, and the main checkout's folder name stands in. */
     tag: ResolvedValue<null | string>;
   };
@@ -423,6 +424,7 @@ const RESOLVED: {
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
   "crew.archiveDays": (r) => r.crew.archiveDays,
+  "crew.deleteDays": (r) => r.crew.deleteDays,
   "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
@@ -458,6 +460,12 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  // Deletion never comes before archiving (D69). One file that sets both lower is refused by the
+  // schema; a `deleteDays` left out, or lower in the other file, rises to `archiveDays`. Before
+  // 1.7.0 `archiveDays` was how long the archive kept a conversation: a file that set it above 30
+  // still has the conversation kept that long.
+  const archiveDays = of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays);
+  const deleteDays = of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays);
   const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
@@ -532,7 +540,8 @@ export function resolveWorkflow(
       ),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
-      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
+      archiveDays,
+      deleteDays: deleteDays.value < archiveDays.value ? archiveDays : deleteDays,
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {

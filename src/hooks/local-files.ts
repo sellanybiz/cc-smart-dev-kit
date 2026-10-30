@@ -6,10 +6,11 @@
  * local notes file, a key. So the plugin asks git for the ignored files too
  * (`git status --porcelain --ignored`), and drops only what is safe to lose:
  *
- * - what comes back by itself: dependency folders, build output, caches, logs
- *   (`REBUILDABLE`);
+ * - what comes back by itself — dependency folders, build output, caches — and the logs a
+ *   tool or an app writes as it runs: a `logs/` folder, a `.log` file (`REBUILDABLE`);
  * - a file the main checkout holds byte for byte at the same place (a `.worktreeinclude`
- *   copy nobody changed): the main checkout keeps it.
+ *   copy nobody changed): the main checkout keeps it;
+ * - a folder git names as one entry whose every file is one of the above.
  *
  * Everything else counts, because nobody can say whether someone still needs it.
  */
@@ -40,6 +41,10 @@ export const REBUILDABLE: readonly RegExp[] = [
   /(?:^|\/)Thumbs\.db$/,
   // Package manager logs.
   /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/,
+  // Logs: a `logs/` folder and a `.log` file, at any depth. Only what git ignores is judged
+  // here, so a tracked file of either name is never at stake.
+  /(?:^|\/)logs\/$/,
+  /\.log$/,
 ];
 
 /** How many files of one ignored folder are compared with the main checkout before giving up. */
@@ -132,22 +137,24 @@ export function localFiles(
   );
   if (!status.ok) return null;
   const safe = (entry: string): boolean => safeIgnoredEntry(worktree, mainCheckout, entry);
-  // Git reports an ignored directory as one entry. Inspect only this tool's directory,
-  // so exempting one cache never exempts changed link state beside it. Bound the walk and
-  // keep unreadable files and links, just as the main-copy comparison does.
-  const supabaseCacheOnly = (entry: string): boolean => {
-    if (!/(?:^|\/)supabase\/(?:\.temp\/)?$/.test(entry)) return false;
+  // Git reports a folder that holds only ignored files as one entry (`server/` for a
+  // `server/logs/` and a `server/vitest.log`). Such a folder is safe only when every entry
+  // inside it is, judged one by one, so exempting one cache never exempts changed link state
+  // beside it. Bound the walk and keep unreadable files and links, just as the main-copy
+  // comparison does.
+  const onlySafeInside = (entry: string): boolean => {
+    if (!entry.endsWith("/")) return false;
     let budget = MAX_COMPARED;
     const visit = (path: string): boolean => {
       if (--budget < 0) return false;
-      if (safe(path)) return true;
       try {
-        const stat = lstatSync(join(worktree, path));
+        if (!lstatSync(join(worktree, path)).isDirectory()) return safe(path);
+        // A folder is named the way git names one, ending in `/`: `logs/` matches inside too, and
+        // a file's pattern (`.log`) never takes a folder whole.
+        const folder = `${path.replace(/\/$/, "")}/`;
         return (
-          stat.isDirectory() &&
-          readdirSync(join(worktree, path)).every((name) =>
-            visit(`${path.replace(/\/$/, "")}/${name}`),
-          )
+          safe(folder) ||
+          readdirSync(join(worktree, path)).every((name) => visit(`${folder}${name}`))
         );
       } catch {
         return false;
@@ -155,5 +162,5 @@ export function localFiles(
     };
     return visit(entry);
   };
-  return parseIgnored(status.out).filter((entry) => !safe(entry) && !supabaseCacheOnly(entry));
+  return parseIgnored(status.out).filter((entry) => !safe(entry) && !onlySafeInside(entry));
 }

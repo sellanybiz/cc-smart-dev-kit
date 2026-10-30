@@ -101,6 +101,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.crew.handoffTokens": "1.2.0",
   "workflow.crew.loadPerCore": "1.3.0",
   "workflow.crew.archiveDays": "1.3.0",
+  "workflow.crew.deleteDays": "1.7.0",
   "workflow.issues": "1.4.0",
   "workflow.issues.enabled": "1.4.0",
   "workflow.issues.allowPublic": "1.4.0",

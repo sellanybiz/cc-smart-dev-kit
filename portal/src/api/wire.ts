@@ -477,6 +477,7 @@ export type WorkflowKey =
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.archiveDays"
+  | "crew.deleteDays"
   | "crew.tag"
   | "switches.statusLine"
   | "switches.sessionNames"

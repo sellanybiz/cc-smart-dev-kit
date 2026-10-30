@@ -324,6 +324,7 @@ export function heldBy(
   const running = runningCrew(machine);
   const mine = runningForLead(machine, record.leadSessionId);
   const input = {
+    continuation: record.continues != null,
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
@@ -371,6 +372,7 @@ export function boardLines(
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
+  if (record.released !== undefined) lines.push(`  released — branch ${record.branch} kept`);
   if (options.leadGone === true && !["removed", "discarded"].includes(record.state)) {
     lines.push(
       `  its lead is gone: remove it with crew rm "${record.name}", or continue it with crew start ${record.phase} --continue "${record.name}"`,
@@ -408,7 +410,12 @@ export function statusLines(
       : `cut from ${record.baseRef} at ${record.base.sha.slice(0, 7)}`;
   lines.push(
     label("branch", `${record.branch}, ${from}`),
-    label("worktree", tildify(record.worktree, options.home)),
+    label(
+      "worktree",
+      record.released === undefined
+        ? tildify(record.worktree, options.home)
+        : `released — branch ${record.branch} kept`,
+    ),
     label(
       "session",
       record.shortId === null || record.sessionId === null

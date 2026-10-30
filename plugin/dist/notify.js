@@ -1,4 +1,32 @@
 // @bun
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
+
+// node_modules/zod/v4/classic/iso.js
+var exports_iso = {};
+__export(exports_iso, {
+  ZodISODate: () => ZodISODate,
+  ZodISODateTime: () => ZodISODateTime,
+  ZodISODuration: () => ZodISODuration,
+  ZodISOTime: () => ZodISOTime,
+  date: () => date2,
+  datetime: () => datetime2,
+  duration: () => duration2,
+  time: () => time2
+});
+
 // src/hooks/notify-entry.ts
 import { existsSync as existsSync8 } from "fs";
 import { join as join12 } from "path";
@@ -95,7 +123,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.6.0",
+  version: "1.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6293,6 +6321,19 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+// node_modules/zod/v4/classic/iso.js
+function datetime2(params) {
+  return _isoDateTime(ZodISODateTime, params);
+}
+function date2(params) {
+  return _isoDate(ZodISODate, params);
+}
+function time2(params) {
+  return _isoTime(ZodISOTime, params);
+}
+function duration2(params) {
+  return _isoDuration(ZodISODuration, params);
+}
 // src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 
@@ -6425,6 +6466,7 @@ var NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "crew.deleteDays": AT_LEAST_ONE,
   "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
@@ -6519,8 +6561,9 @@ var workflowSchema = strictObject({
     softHours: numberField("crew.softHours"),
     maxHours: numberField("crew.maxHours"),
     archiveDays: numberField("crew.archiveDays"),
+    deleteDays: numberField("crew.deleteDays"),
     tag: tagSchema.optional()
-  }).optional()
+  }).refine((crew) => crew.deleteDays === undefined || crew.archiveDays === undefined || crew.deleteDays >= crew.archiveDays, { message: "crew.deleteDays must be at least crew.archiveDays", path: ["deleteDays"] }).optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
   switches: strictObject({ jobRoute: boolean2().optional() }).optional()
@@ -6571,6 +6614,7 @@ var workflowDefaults = {
     softHours: 2,
     maxHours: 4,
     archiveDays: 7,
+    deleteDays: 30,
     tag: null
   }
 };
@@ -6614,6 +6658,7 @@ var POLICY_KEYS = [
   "crew.softHours",
   "crew.maxHours",
   "crew.archiveDays",
+  "crew.deleteDays",
   "crew.tag"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -8066,6 +8111,7 @@ var crewFields = object({
   sessionId: text2.nullable(),
   shortId: text2.nullable(),
   earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
+  sessionEndedAt: exports_iso.datetime().optional(),
   leadSessionId: text2,
   leadName: text2,
   repo: text2,
@@ -8082,6 +8128,7 @@ var crewFields = object({
   effort: text2,
   permissionMode: text2,
   worktree: text2,
+  released: object({ at: text2 }).optional(),
   branch: text2,
   baseRef: text2,
   baseCommit: sha.optional(),

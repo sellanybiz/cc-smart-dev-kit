@@ -26,21 +26,27 @@
  *      all of it);
  *   8. then `claude rm <short id>` — which refuses a worktree that is still there. If it fails,
  *      the record says what is left, and a second run goes straight to this step;
- *   9. last, once `claude rm` let the session go, its conversation leaves Claude Code's `/resume`
- *      list for the kit's archive, and the archives past `crew.archiveDays` are deleted
- *      (`archive.ts`, AR1). A conversation that stays says why, and never fails the removal.
+ *   9. last, once `claude rm` let the session go, the record notes when its session ended
+ *      (`sessionEndedAt`, kept from a release before): its conversation stays in `/resume` and
+ *      leaves on the timeline (`archive.ts`, AR1, D69).
+ *
+ * A release (D69, `release.ts`) runs the same steps with `release`: judged against the record's
+ * own branch, so no merge is needed, and it keeps that branch and the record's state. It marks the
+ * record `released` as soon as the worktree is gone, before `claude rm`, so a `claude rm` that fails
+ * leaves a record a resume can make the worktree again for, and the watch runs it again. A
+ * discard of a released crew session makes its worktree again first.
  *
  * A folder git does not list as a worktree is not ours to delete: it is said, and the command
  * stops there. Nothing is called gone that is not.
  */
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
-import { liveSessions } from "../hooks/sessions";
+import { localFiles } from "../hooks/local-files";
 import { LockBusyError, withLock } from "../setup/lock";
 import { holdCleanLock } from "../worktrees/clean";
+import { copyWorktreeInclude } from "../worktrees/include";
 import { containersUsing, mountKeptWhy, programsInside } from "../worktrees/machine-facts";
 import {
   deleteBranchOnRef,
@@ -55,14 +61,6 @@ import {
 import { finishParked, finishStrays } from "../worktrees/scan-parked";
 import { containersWhy, programsWhy } from "../worktrees/verdict";
 import { agentRows, rowOf } from "./agents";
-import {
-  type ArchiveOutcome,
-  archiveConversation,
-  archiveDaysOf,
-  DAY_MS,
-  pruneCrewArchives,
-  sessionsNeverTaken,
-} from "./archive";
 import { isRefusal, type Refusal } from "./board";
 import type { CrewContext } from "./context";
 import {
@@ -93,8 +91,16 @@ import {
   stopOwnLeftovers,
   stopSession,
 } from "./end";
-import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, type CrewRecord, crewFilesDir, crewSessions, listCrew } from "./store";
+import { RELEASE_STATES, validMergeProof } from "./lifecycle";
+import {
+  appendCrewEvent,
+  type CrewRecord,
+  crewFilesDir,
+  crewSessions,
+  listCrew,
+  resumeClaimHeld,
+  updateCrew,
+} from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -107,7 +113,7 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
     const all = listWorktrees(record.repo, ctx.env);
     const listed = all.find((one) => samePath(one.path, record.worktree));
     if (listed === undefined || samePath(record.worktree, record.repo))
-      return "discard needs its registered non-main worktree";
+      return "its worktree is not one git lists apart from the main checkout";
     if (
       all.some((one) => !samePath(one.path, record.worktree) && isInside(one.path, record.worktree))
     )
@@ -151,6 +157,8 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
 
 /** What `crew rm` may be given besides the crew session. */
 interface CrewRmOptions {
+  /** Internal release: judge against its own branch, keep that branch and the conversation. */
+  release?: boolean;
   skipParked?: boolean;
   against?: { label: string; ref: string };
   discard?: boolean;
@@ -169,6 +177,63 @@ interface CrewRmOptions {
  */
 export function crewRemovalLockDir(stateDir: string, repo: string, id: string): string {
   return join(crewFilesDir(stateDir, repo, id), "removal");
+}
+
+/** A released worktree made again, or why not: the record as stored after it. */
+export type RemakeResult =
+  | { ok: true; remade: boolean; record: CrewRecord }
+  | { ok: false; why: string };
+
+/**
+ * Makes a worktree the kit released (D69) again, at its own path on its kept branch, and clears
+ * `released`; with `include`, the `.worktreeinclude` files are copied in too (a resume needs them,
+ * a discard does not). The caller holds the record's removal lock (`crewRemovalLockDir`), so a
+ * release never crosses it. All or nothing: when the copy or the store write fails, the folder it
+ * just made goes again. A folder already at that path is never replaced. A record that is not
+ * released comes back as it is.
+ */
+export async function remakeReleasedWorktree(
+  record: CrewRecord,
+  ctx: CrewContext,
+  options: { include: boolean },
+): Promise<RemakeResult> {
+  if (record.released === undefined) return { ok: true, remade: false, record };
+  if (existsSync(record.worktree))
+    return { ok: false, why: `${record.worktree} exists already; inspect it first` };
+  const added = runGit(
+    record.repo,
+    ["worktree", "add", record.worktree, record.branch],
+    ctx.env,
+    GIT_TIMEOUT_MS,
+  );
+  if (!added.ok) return { ok: false, why: `worktree could not be made again: ${added.err}` };
+  try {
+    if (options.include) copyWorktreeInclude(record.repo, record.worktree, ctx.env);
+    const stored = await updateCrew(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      { released: undefined },
+      ctx.now(),
+    );
+    return { ok: true, remade: true, record: stored };
+  } catch (error) {
+    // Nothing but this command wrote into the folder it made a moment ago: it goes whole.
+    const undone = runGit(
+      record.repo,
+      ["worktree", "remove", "--force", record.worktree],
+      ctx.env,
+      GIT_TIMEOUT_MS,
+    );
+    return {
+      ok: false,
+      why: `the worktree's files or the store could not be written (${reasonOf(error)}); ${
+        undone.ok
+          ? "the worktree was taken back"
+          : `remove ${record.worktree} by hand: ${undone.err.trim()}`
+      }`,
+    };
+  }
 }
 
 /**
@@ -200,9 +265,14 @@ export async function runCrewRm(
     // Only the lock being held is "busy": a LockBusyError from inside the removal is its own.
     if (error instanceof LockBusyError && !entered) {
       return refuse(
-        failure(
-          `crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`,
-        ),
+        options.release === true
+          ? failure(
+              `crew rm: ${first.record.name} is being removed or resumed by another run`,
+              "Fix: nothing to do; the watch tries the release again by itself",
+            )
+          : failure(
+              `crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`,
+            ),
         ctx,
       );
     }
@@ -219,6 +289,26 @@ async function removeCrewSession(
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   let { record } = found;
+  const release = options.release === true;
+  // How a fix line ends: the watch tries a release again by itself (D69); a removal is run again.
+  const then = release ? "; the watch then releases it by itself" : ", then run crew rm again";
+  // Released already (its worktree went, a `claude rm` after it did not): the steps below find no
+  // worktree and go straight to `claude rm` again.
+  const releasedBefore = record.released !== undefined;
+  if (release) {
+    if (!RELEASE_STATES.includes(record.state))
+      return refuse(failure(`crew rm: ${record.name} is not over or stopped`), ctx);
+    if (record.discardPending !== undefined)
+      return refuse(failure(`crew rm: ${pendingDiscardWhy(record)}`), ctx);
+    if (resumeClaimHeld(record.resumeClaim, ctx.now()))
+      return refuse(
+        failure(
+          `crew rm: a resume of ${record.name} is starting`,
+          "Fix: nothing to do; the watch tries the release again once the resume is over",
+        ),
+        ctx,
+      );
+  }
   if (record.discardPending !== undefined) {
     try {
       record = await rollbackCrewDiscard(record, ctx);
@@ -237,6 +327,14 @@ async function removeCrewSession(
     const stored = await markState(record, "removed", "removed before it started", ctx);
     ctx.print(`removed ${record.name}; it had not started, so nothing else went`);
     return stored ? 0 : 1;
+  }
+  // A released crew session (D69) has no worktree to discard from: it is made again on its kept
+  // branch first, under this same lock, so the discard below shows and archives what it always does.
+  if (discard && record.released !== undefined) {
+    const remade = await remakeReleasedWorktree(record, ctx, { include: false });
+    if (!remade.ok) return refuse(failure(`crew rm: ${remade.why}`), ctx);
+    record = remade.record;
+    ctx.print(`made ${relative(repo, record.worktree)} again on ${record.branch}, to discard it`);
   }
 
   // 2. The lead's branch decides whether the work is kept (D24). A durable proof holds
@@ -307,7 +405,7 @@ async function removeCrewSession(
     return refuse(
       failure(
         `crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`,
-        "Fix: commit or discard them there, then run crew rm again; it never forces",
+        `Fix: commit or discard them there${then}; it never forces`,
       ),
       ctx,
     );
@@ -328,7 +426,7 @@ async function removeCrewSession(
     return refuse(
       failure(
         `crew rm: ${shown} is locked${why}, and not by Claude Code`,
-        `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`,
+        `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock${release ? then : ""}`,
       ),
       ctx,
     );
@@ -385,8 +483,27 @@ async function removeCrewSession(
     }
   }
 
+  if (release && existsSync(record.worktree)) {
+    const blocker = discardBlocker(record, ctx);
+    const local = blocker === null ? localFiles(record.worktree, record.repo, ctx.env) : [];
+    if (blocker !== null || local === null || local.length > 0) {
+      return refuse(
+        blocker !== null || local === null
+          ? failure(
+              `crew rm: ${blocker ?? "git could not list the files it does not keep"}`,
+              `Fix: clear that${then}`,
+            )
+          : failure(
+              `crew rm: local files git does not keep: ${local.join(", ")}`,
+              `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`,
+            ),
+        ctx,
+      );
+    }
+  }
+
   // 4. Its session goes first, so nothing writes into the worktree while it is judged.
-  if (record.shortId !== null && record.state !== "stopped") {
+  if (record.shortId !== null && (record.state !== "stopped" || release)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(
@@ -459,7 +576,7 @@ async function removeCrewSession(
       return refuse(
         failure(
           `crew rm: ${shown} could not be unlocked: ${unlock.err}`,
-          `Fix: git worktree unlock ${record.worktree} by hand, then run crew rm again`,
+          `Fix: git worktree unlock ${record.worktree} by hand${then}`,
         ),
         ctx,
       );
@@ -545,7 +662,7 @@ async function removeCrewSession(
     return await refuseKept(
       failure(
         `crew rm: ${relative(repo, stuck.path)} is kept: ${stuck.why}`,
-        "Fix: clear that, then run crew rm again; it never forces",
+        `Fix: clear that${then}; it never forces`,
       ),
     );
   }
@@ -579,7 +696,7 @@ async function removeCrewSession(
         return await refuseKept(
           failure(
             `crew rm: ${shown} is kept: ${judged.state.why}`,
-            "Fix: clear that, then run crew rm again; it never forces",
+            `Fix: clear that${then}; it never forces`,
           ),
         );
       }
@@ -590,7 +707,9 @@ async function removeCrewSession(
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         deleteBranch: (_repo, branch) =>
-          deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
+          release
+            ? `kept branch ${branch}`
+            : deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
         env: ctx.env,
         ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
@@ -598,10 +717,16 @@ async function removeCrewSession(
       for (const said of removal.said) ctx.print(said);
       if (removal.status !== "removed") {
         return await refuseKept(
-          failure(
-            `crew rm: ${shown} was not removed`,
-            "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces",
-          ),
+          // The watch shows a release's refusal alone, so it carries what the removal said.
+          release
+            ? failure(
+                `crew rm: ${shown} was not removed${removal.said.length > 0 ? `: ${removal.said.join("; ")}` : ""}`,
+                `Fix: clear what holds it${then}; it never forces`,
+              )
+            : failure(
+                `crew rm: ${shown} was not removed`,
+                "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces",
+              ),
         );
       }
     }
@@ -612,7 +737,7 @@ async function removeCrewSession(
     return await refuseKept(
       failure(
         `crew rm: ${shown} is still there, and git does not list it as a worktree`,
-        "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know",
+        `Fix: remove that folder yourself${then}; crew rm never deletes what git does not know`,
       ),
     );
   }
@@ -624,16 +749,28 @@ async function removeCrewSession(
       ctx.env,
       GIT_TIMEOUT_MS,
     ).ok;
-  if (branchLeft()) {
+  if (branchLeft() && !release) {
     ctx.print(deleteBranchOnRef(repo, removalBase.ref, removalBase.label, record.branch, ctx.env));
   }
   if (discard && record.discardPending !== undefined && !branchLeft())
     record = await completeCrewDiscard(record, ctx);
+  // D69: the worktree is gone and its branch kept, so the record says released now, before
+  // `claude rm`: when that fails, a resume can still make the worktree again, and the watch tries
+  // `claude rm` again while agent view lists a row of it.
+  if (release && record.released === undefined)
+    record = await updateCrew(
+      ctx.paths.stateDir,
+      repo,
+      record.id,
+      { released: { at: new Date(ctx.now()).toISOString() } },
+      ctx.now(),
+    );
 
   // 8. Last, `claude rm`: it refuses a worktree that is still there. Every session the crew
   // session has had goes (`crewSessions`): a resume is a copy with a new id (WF1), and the
   // original stays in `/resume` and agent view until it is removed too.
   const sessions = crewSessions(record);
+  let removedAny = false;
   for (const one of sessions) {
     const rm = claudeFailure(ctx, repo, ["rm", one.shortId]);
     // A job Claude Code no longer has cannot be removed again: `claude rm` fails on it ("No job
@@ -645,33 +782,67 @@ async function removeCrewSession(
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
       ctx.error(
-        `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`,
+        release
+          ? `Fix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)`
+          : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`,
       );
-      try {
-        await appendCrewEvent(
-          ctx.paths.stateDir,
-          repo,
-          {
-            lead: record.leadSessionId,
-            name: record.name,
-            state: record.state,
-            text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
-            type: "step",
-            crew: record.id,
-          },
-          ctx.now(),
-        );
-      } catch (error) {
-        ctx.error(`crew rm: the store could not record it: ${reasonOf(error)}`);
+      // A release's retry says nothing new: the record holds its first failure already.
+      if (!(release && releasedBefore)) {
+        try {
+          await appendCrewEvent(
+            ctx.paths.stateDir,
+            repo,
+            {
+              lead: record.leadSessionId,
+              name: record.name,
+              state: record.state,
+              text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
+              type: "step",
+              crew: record.id,
+            },
+            ctx.now(),
+          );
+        } catch (error) {
+          ctx.error(`crew rm: the store could not record it: ${reasonOf(error)}`);
+        }
       }
       return 1;
     }
+    if (!goneAlready) removedAny = true;
     ctx.print(
       goneAlready ? `session ${one.shortId} was gone already` : `removed session ${one.shortId}`,
     );
   }
-  // 9. Its conversations leave `/resume` (AR1): only now that Claude Code has let the sessions go.
-  if (sessions.length > 0) await archiveAfterRemoval(record, ctx);
+  // D69: the conversations stay in `/resume`; their timeline counts from the first end, which
+  // a release before this removal already wrote.
+  const endedAt = new Date(ctx.now()).toISOString();
+  record = await updateCrew(
+    ctx.paths.stateDir,
+    repo,
+    record.id,
+    { sessionEndedAt: record.sessionEndedAt ?? endedAt },
+    ctx.now(),
+  );
+  if (release) {
+    // A retry that found every row gone already has nothing new to say.
+    if (!releasedBefore || removedAny)
+      await appendCrewEvent(
+        ctx.paths.stateDir,
+        repo,
+        {
+          lead: record.leadSessionId,
+          name: record.name,
+          state: record.state,
+          text: releasedBefore
+            ? `released: its agent-view rows are removed now; branch ${record.branch} kept`
+            : `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+          type: "step",
+          crew: record.id,
+        },
+        ctx.now(),
+      );
+    return 0;
+  }
   if (discard) record = await completeCrewDiscard(record, ctx);
   const state = discard ? "discarded" : "removed";
   const stored = await markState(
@@ -682,79 +853,6 @@ async function removeCrewSession(
   );
   ctx.print(`${state} ${record.name}`);
   return stored ? 0 : 1;
-}
-
-/**
- * After `claude rm` (AR1): the crew session's conversation moves out of Claude Code's projects
- * folder into the kit's archive (`archive.ts`), and every archive past its `crew.archiveDays`
- * goes. Nothing here fails the removal: a conversation that stays says why, and
- * `sessions --finished --remove` moves it later.
- */
-export async function archiveAfterRemoval(
-  record: CrewRecord,
-  ctx: CrewContext,
-  options: { lockWaitMs?: number } = {},
-): Promise<void> {
-  const home = ctx.paths.home;
-  const daysOf = archiveDaysOf(ctx.paths, ctx.env);
-  const shortIds = crewSessions(record).map((one) => one.shortId);
-  const session =
-    shortIds.length === 0
-      ? `session ${record.sessionId ?? record.name}`
-      : `session${shortIds.length > 1 ? "s" : ""} ${shortIds.join(", ")}`;
-  let outcome: ArchiveOutcome;
-  try {
-    // The machine's facts were read before this removal began (the background clean reads them
-    // once for a whole pass), so a session that started since is only in Claude Code's own
-    // records now: both count.
-    const running = [
-      ...(ctx.scanFacts?.sessions ?? []),
-      ...liveSessions(ctx.paths.claudeConfigDir),
-    ];
-    outcome = await archiveConversation({
-      ...(options.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
-      neverTaken: sessionsNeverTaken(ctx.paths.stateDir, record.id),
-      nowMs: ctx.now(),
-      paths: ctx.paths,
-      record,
-      running: new Set(running.map((one) => one.sessionId)),
-    });
-  } catch (error) {
-    outcome = { kind: "failed", moved: 0, why: reasonOf(error) };
-  }
-  if (outcome.kind === "archived") {
-    const days = daysOf(record.repo);
-    const until =
-      days === null
-        ? "is kept until its repository's settings can be read"
-        : `is deleted after ${String(days)} day${days === 1 ? "" : "s"}`;
-    ctx.print(
-      `archived the conversation of ${session} (${String(outcome.files)} file${outcome.files === 1 ? "" : "s"}) in ${tildify(outcome.dir, home)}: it leaves /resume, and ${until}`,
-    );
-    for (const why of outcome.stayed ?? []) {
-      ctx.error(`note: another conversation of ${record.name} stays where it is: ${why}`);
-    }
-  } else if (outcome.kind === "kept") {
-    ctx.error(`note: the conversation of ${session} stays where it is: ${outcome.why}`);
-  } else if (outcome.kind === "failed") {
-    const moved =
-      outcome.moved === 0 ? "" : ` (${String(outcome.moved)} of its files moved before it stopped)`;
-    ctx.error(
-      `note: the conversation of ${session} stays in /resume${moved}: ${outcome.why}; ${COMMAND} sessions --finished --remove moves it later`,
-    );
-  }
-  try {
-    const pruned = await pruneCrewArchives(ctx.paths.stateDir, daysOf, ctx.now(), options);
-    for (const one of pruned.pruned) {
-      ctx.print(
-        `deleted the archived conversation of ${one.name} (${String(Math.floor(one.ageMs / DAY_MS))} days old)`,
-      );
-    }
-    for (const one of pruned.kept) ctx.error(`note: kept ${tildify(one.dir, home)}: ${one.why}`);
-  } catch (error) {
-    // The removal is done: an archive another run holds is deleted at the next removal or sweep.
-    ctx.error(`note: old crew archives could not be deleted now: ${reasonOf(error)}`);
-  }
 }
 
 /** What a pass over a repository's moved-aside folders came to: the ones that stayed, and why. */

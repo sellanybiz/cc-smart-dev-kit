@@ -816,11 +816,17 @@ function reportBlock(report: HandBackReport): string {
 /**
  * True when a recorded crew session still holds its name: every one but a `removed` crew session, and a
  * `failed` one that never got a session and left no worktree (its launch started nothing, and
- * what it made was taken back) — the record stays as history, and a second try may start.
+ * what it made was taken back) — the record stays as history, and a second try may start. A
+ * released one (D69) keeps its branch, so it keeps its name.
  */
 export function holdsName(record: CrewRecord): boolean {
   if (["removed", "discarded"].includes(record.state)) return false;
-  return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
+  return !(
+    record.state === "failed" &&
+    record.shortId === null &&
+    record.released === undefined &&
+    !existsSync(record.worktree)
+  );
 }
 
 /**
@@ -1076,8 +1082,9 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
 /**
  * Stops the session of the crew session a continuation took over from. Its work is done (it handed
  * off), and a session holds memory (D35). **Its record stays `handoff`** — the store's own word
- * for "handed off to a next crew session, and ended" — and so do its branch and its worktree, so the
- * lead can read what it did and `crew rm` can clean it up once the lead has merged.
+ * for "handed off to a next crew session, and ended" — and so does its branch, so the lead can
+ * read what it did and `crew rm` can clean it up once the lead has merged; the watch's next pass
+ * releases its worktree and its agent-view row (D69).
  */
 async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
   const records = listCrew(ctx.paths.stateDir, planned.caller.repo).records;
@@ -1093,7 +1100,12 @@ async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
     );
     return;
   }
-  ctx.print(`${old.name}: session stopped — it handed off; its branch and its record stay`);
+  ctx.print(handoffStopLine(old.name));
+}
+
+/** The line said when a hand-off's own session is stopped: here, or by the watch when this missed it. */
+export function handoffStopLine(name: string): string {
+  return `${name}: session stopped — it handed off; its branch and its record stay`;
 }
 
 /**
@@ -1398,6 +1410,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         all.filter((one) => one.repo === caller.repo),
       );
       const input = placeInputOf(all, lead.sessionId, crew, usage, {
+        continuation: planned.continues != null,
         opus: chosen.real.tier === OPUS_TIER,
         unmet,
       });
@@ -1575,6 +1588,7 @@ export async function startQueued(
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const input = placeInputOf(all, record.leadSessionId, crew, usage, {
+      continuation: record.continues != null,
       opus: record.model.tier === OPUS_TIER,
       unmet: unmetWaits(record.waitsFor, here),
     });

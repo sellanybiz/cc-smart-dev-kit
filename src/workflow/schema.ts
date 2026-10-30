@@ -84,6 +84,7 @@ const NUMBER_RULES = {
   "crew.softHours": ABOVE_ZERO,
   "crew.maxHours": ABOVE_ZERO,
   "crew.archiveDays": AT_LEAST_ONE,
+  "crew.deleteDays": AT_LEAST_ONE,
   "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
@@ -344,13 +345,22 @@ export const workflowSchema = z.strictObject({
       /** Hours after which a crew session hands off. Default: 4. */
       maxHours: numberField("crew.maxHours"),
       /**
-       * Days a removed crew session's conversation stays in the kit's archive, out of `/resume`,
-       * before it is deleted (`src/crew/archive.ts`). Default: 7.
+       * Days after a crew session ended before its conversation leaves `/resume` for the archive.
+       * Default: 7 (`src/crew/archive.ts`, D69).
        */
       archiveDays: numberField("crew.archiveDays"),
+      /** Days after the session ended before its archive is deleted. Default: 30. */
+      deleteDays: numberField("crew.deleteDays"),
       /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
       tag: tagSchema.optional(),
     })
+    .refine(
+      (crew) =>
+        crew.deleteDays === undefined ||
+        crew.archiveDays === undefined ||
+        crew.deleteDays >= crew.archiveDays,
+      { message: "crew.deleteDays must be at least crew.archiveDays", path: ["deleteDays"] },
+    )
     .optional(),
 });
 
@@ -428,6 +438,7 @@ export const workflowDefaults = {
     softHours: 2,
     maxHours: 4,
     archiveDays: 7,
+    deleteDays: 30,
     /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
     tag: null,
   },
@@ -486,6 +497,7 @@ export type WorkflowKey =
   | "crew.softHours"
   | "crew.maxHours"
   | "crew.archiveDays"
+  | "crew.deleteDays"
   | "crew.tag"
   | `switches.${SwitchName}`;
 
@@ -529,6 +541,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.softHours",
   "crew.maxHours",
   "crew.archiveDays",
+  "crew.deleteDays",
   "crew.tag",
 ];
 

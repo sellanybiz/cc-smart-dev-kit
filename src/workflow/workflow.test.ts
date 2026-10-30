@@ -41,6 +41,14 @@ function writeSettings(env: Record<string, string>, value: unknown): string {
 }
 
 describe("the workflow schema", () => {
+  test("D69: deleteDays is accepted and cannot precede archiveDays", () => {
+    expect(workflowSchema.safeParse({ crew: { archiveDays: 7, deleteDays: 30 } }).success).toBe(
+      true,
+    );
+    expect(workflowSchema.safeParse({ crew: { archiveDays: 8, deleteDays: 7 } }).success).toBe(
+      false,
+    );
+  });
   test("an empty object is every field left out", () => {
     expect(workflowSchema.parse({})).toEqual({});
   });
@@ -452,6 +460,7 @@ describe("resolveWorkflow: the order", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
     expect(resolved.crew).toEqual({
       archiveDays: { value: 7, source: "default" },
+      deleteDays: { value: 30, source: "default" },
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       handoffTokens: { value: 400000, source: "default" },
@@ -514,6 +523,25 @@ describe("resolveWorkflow: the order", () => {
     const off = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { enabled: false } } });
     expect(resolveWorkflow(pathsFor(env), off).crew.enabled).toEqual({
       value: false,
+      source: "project",
+    });
+  });
+
+  test("D69: a deleteDays left out, or lower in the other file, rises to archiveDays", () => {
+    const env = hookEnv();
+    // Set before 1.7.0, when it meant how long the archive kept a conversation.
+    writePersonal(env, { crew: { archiveDays: 40 } });
+    const alone = resolveWorkflow(pathsFor(env), null);
+    expect(alone.crew.archiveDays).toEqual({ value: 40, source: "personal" });
+    expect(alone.crew.deleteDays).toEqual({ value: 40, source: "personal" });
+    const lower = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 35 } } });
+    expect(resolveWorkflow(pathsFor(env), lower).crew.deleteDays).toEqual({
+      value: 40,
+      source: "personal",
+    });
+    const higher = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 60 } } });
+    expect(resolveWorkflow(pathsFor(env), higher).crew.deleteDays).toEqual({
+      value: 60,
       source: "project",
     });
   });

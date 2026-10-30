@@ -130,7 +130,7 @@ function opusHold(
     record.leadSessionId,
     crew,
     usageFacts(ctx.paths, ctx.now(), record.repo),
-    { opus: true, unmet: [] },
+    { continuation: record.continues != null, opus: true, unmet: [] },
   );
   const place = placeFor({
     ...input,

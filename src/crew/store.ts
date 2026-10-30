@@ -325,7 +325,12 @@ export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recom
 export function crewOfWorktree(records: readonly CrewRecord[], path: string): CrewRecord | null {
   let found: CrewRecord | null = null;
   for (const one of records) {
-    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path)) continue;
+    if (
+      one.released !== undefined ||
+      ["removed", "discarded"].includes(one.state) ||
+      !samePath(one.worktree, path)
+    )
+      continue;
     // `records` are oldest first: the last match is the newest.
     found = one;
   }
@@ -456,6 +461,11 @@ const crewFields = z.object({
    * replacement, and on a record an older kit wrote.
    */
   earlierSessions: z.array(z.looseObject({ sessionId: text, shortId: text })).optional(),
+  /**
+   * When this record's last Claude session ended (ISO 8601): written when the kit releases or
+   * removes it, and cleared when it works again; the conversation's timeline counts from it (D69).
+   */
+  sessionEndedAt: z.iso.datetime().optional(),
   /** The lead that started it: its session id and its name. */
   leadSessionId: text,
   leadName: text,
@@ -485,6 +495,8 @@ const crewFields = z.object({
   permissionMode: text,
   /** Its worktree's folder and branch. */
   worktree: text,
+  /** The kit released its worktree and agent-view rows (D69); its branch and conversation stay. */
+  released: z.object({ at: text }).optional(),
   branch: text,
   /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
   baseRef: text,
@@ -1389,7 +1401,10 @@ async function changeCrew(
     if (merged.state !== "paused") delete merged.waitingFor;
     // The error that ended a turn explains the failure that follows it, and nothing later: a
     // session that is working again (an answer, a resume, the watch's own resume) starts clean.
-    if (merged.state === "working" && before.state !== "working") delete merged.lastApiError;
+    if (merged.state === "working" && before.state !== "working") {
+      delete merged.lastApiError;
+      delete merged.sessionEndedAt;
+    }
     // A resume's claim (`claimResume`) lasts while the record stays in the state it was claimed
     // in: the write that makes the resumed session `working` ends it.
     if (merged.state !== before.state) delete merged.resumeClaim;
@@ -1610,6 +1625,13 @@ export async function writeReport(
  */
 export const RESUME_CLAIM_MS = 2 * 60_000;
 
+/** True while a resume's claim still holds its record at `atMs`: younger than `RESUME_CLAIM_MS`. */
+export function resumeClaimHeld(claim: CrewRecord["resumeClaim"], atMs: number): boolean {
+  if (claim === undefined) return false;
+  const since = Date.parse(claim.at);
+  return Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS;
+}
+
 /**
  * Claims the resume of crew session `id` for the resume `token` (WF1): true when the record is
  * still in one of `states` — the state its caller judged it in — and no other resume holds an
@@ -1633,10 +1655,7 @@ export async function claimResume(
     }
     if (!states.includes(before.state)) return false;
     const held = before.resumeClaim;
-    if (held !== undefined && held.token !== token) {
-      const since = Date.parse(held.at);
-      if (Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS) return false;
-    }
+    if (held !== undefined && held.token !== token && resumeClaimHeld(held, atMs)) return false;
     writeJsonFile(
       file,
       checked(crewRecordSchema, { ...before, resumeClaim: { at: iso(atMs), token } }, file),

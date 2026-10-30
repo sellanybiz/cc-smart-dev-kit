@@ -60,6 +60,7 @@ export function defaultResolved(): ResolvedWorkflow {
     },
     crew: {
       archiveDays: at(7),
+      deleteDays: at(30),
       enabled: at(false),
       handoffPercent: at(70),
       handoffTokens: at(400_000),

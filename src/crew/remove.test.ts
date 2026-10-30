@@ -1,8 +1,10 @@
 /**
- * `crew rm` moves the removed crew session's conversation out of Claude Code's `/resume` list
- * (AR1), only after `claude rm` succeeded, and deletes the archives past `crew.archiveDays`. The
- * same steps run when the watch removes a merged crew session (`runCrewRm`). A real git repo, the
- * store and Claude Code's projects folder in temp folders, the fake `claude` of the board world.
+ * `crew rm` and the conversation (AR1, D69): once `claude rm` succeeded it notes when the session
+ * ended (`sessionEndedAt`) and leaves every conversation in `/resume` for the timeline
+ * (`archive.ts`), which moves and deletes; the removal itself never moves, prunes or waits on the
+ * archive. The same steps run when the watch removes a merged crew session (`runCrewRm`). A real
+ * git repo, the store and Claude Code's projects folder in temp folders, the fake `claude` of the
+ * board world.
  */
 import { describe, expect, test } from "bun:test";
 import {
@@ -14,8 +16,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { COMMAND } from "../build-info/names";
-import { tildify } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { boardWorld, NOW } from "../testing/board-world";
 import { writeSessionRecord } from "../testing/crew-world";
@@ -23,7 +23,7 @@ import { git } from "../testing/temp";
 import { ARCHIVE_MANIFEST, crewArchiveDir, DAY_MS } from "./archive";
 import { crewArchiveRoot } from "./archive-read";
 import { runCrew } from "./command";
-import { archiveAfterRemoval, crewRemovalLockDir } from "./remove";
+import { crewRemovalLockDir } from "./remove";
 import { crewFile, readCrew, updateCrew, writeLead } from "./store";
 import { transcriptFile } from "./transcript";
 
@@ -85,8 +85,8 @@ function oldArchive(world: World, crew: string, ageMs: number): string {
   return dir;
 }
 
-describe("crew rm: the conversation leaves /resume (AR1)", () => {
-  test("after claude rm, the transcript, its folder and the empty project folder move into the archive", async () => {
+describe("crew rm: the conversation stays for the timeline (AR1, D69)", () => {
+  test("D69: crew rm writes sessionEndedAt and leaves the conversation in /resume for seven days", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();
     const project = conversation(world, record.worktree);
@@ -102,20 +102,17 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       `removed ${record.worktree}`,
       "deleted branch crew/B1-help",
       "removed session a1b2c3d4",
-      `archived the conversation of session a1b2c3d4 (3 files) in ${tildify(dir, world.home)}: it leaves /resume, and is deleted after 7 days`,
       "removed C my-app B1 help",
     ]);
-    expect(existsSync(project)).toBe(false);
-    const into = join(dir, "projects", project.split("/").at(-1) ?? "");
-    expect(readdirSync(into).sort()).toEqual([SESSION, `${SESSION}.jsonl.gz`]);
-    expect(readdirSync(join(into, SESSION, "subagents")).sort()).toEqual([
-      "agent-1.jsonl.gz",
-      "agent-1.meta.json.gz",
-    ]);
+    expect(existsSync(project)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.sessionEndedAt).toBe(
+      new Date(NOW).toISOString(),
+    );
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
   });
 
-  test("RX1: a resumed record leaves no earlier session behind: each is claude rm'd and archived", async () => {
+  test("RX1: a resumed record leaves no earlier row behind: each is claude rm'd, each conversation waits", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();
     const project = conversation(world, record.worktree);
@@ -137,11 +134,9 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     expect(world.err).toEqual([]);
     const removed = world.claudeCalls().filter((call) => call[0] === "rm");
     expect(removed.map((call) => call[1]).sort()).toEqual(["a1b2c3d4", "f9e8d7c6"]);
-    // Nothing of the crew session is left in Claude Code's projects folder.
-    expect(existsSync(project)).toBe(false);
-    const dir = crewArchiveDir(world.paths.stateDir, world.repo, record.id);
-    const into = join(dir, "projects", project.split("/").at(-1) ?? "");
-    expect(readdirSync(into).sort()).toEqual([SESSION, `${SESSION}.jsonl.gz`, `${copy}.jsonl.gz`]);
+    // D69 keeps every earlier conversation until the archive deadline.
+    expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
+    expect(existsSync(join(project, `${copy}.jsonl`))).toBe(true);
   });
 
   test("RX1: a record that has a short id and no session id (a failed start) still gets its claude rm", async () => {
@@ -185,7 +180,7 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
 
     expect(world.out).toContain("session a1b2c3d4 was gone already");
     expect(world.out).toContain("session f9e8d7c6 was gone already");
-    expect(existsSync(project)).toBe(false);
+    expect(existsSync(project)).toBe(true);
   });
 
   test("RX1: a removal that runs holds the record: a second one refuses, and rolls nothing back", async () => {
@@ -279,9 +274,7 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
     ).toBe(0);
 
-    expect(world.err).toEqual([
-      "note: the conversation of session a1b2c3d4 stays where it is: a lead, or a crew session still on the board, holds that session",
-    ]);
+    expect(world.err).toEqual([]);
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
     expect(existsSync(join(world.paths.stateDir, "crew-archive"))).toBe(false);
   });
@@ -296,7 +289,9 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
     ).toBe(0);
 
-    expect(readdirSync(project)).toEqual([`${OTHER}.jsonl`]);
+    expect(readdirSync(project).sort()).toEqual(
+      [SESSION, `${SESSION}.jsonl`, `${OTHER}.jsonl`].sort(),
+    );
   });
 
   test("a session a running Claude holds stays where it is", async () => {
@@ -315,9 +310,7 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       ),
     ).toBe(0);
 
-    expect(world.err).toEqual([
-      "note: the conversation of session a1b2c3d4 stays where it is: a running Claude session holds it",
-    ]);
+    expect(world.err).toEqual([]);
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
   });
 
@@ -332,33 +325,29 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
     ).toBe(0);
 
-    expect(world.err).toEqual([
-      "note: the conversation of session a1b2c3d4 stays where it is: a running Claude session holds it",
-    ]);
+    expect(world.err).toEqual([]);
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
   });
 
-  test("an archive another run holds never fails the removal: both steps say so and go on", async () => {
+  test("D69: a removal never waits on the archive: it ends while another run holds the lock", async () => {
     const world = await boardWorld();
-    const record = await world.addCrew({ state: "removed" });
+    const record = await world.addCrew();
     const project = conversation(world, record.worktree);
     const release = await holdArchiveLock(world.paths.stateDir);
     try {
-      await archiveAfterRemoval(record, world.ctx(), { lockWaitMs: 0 });
+      expect(
+        await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
+      ).toBe(0);
     } finally {
       release();
     }
 
-    expect(world.err).toHaveLength(2);
-    expect(world.err[0]).toStartWith(
-      "note: the conversation of session a1b2c3d4 stays in /resume: ",
-    );
-    expect(world.err[0]).toContain("is busy");
-    expect(world.err[1]).toStartWith("note: old crew archives could not be deleted now: ");
+    expect(world.err).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
   });
 
-  test("the archives past crew.archiveDays are deleted, and the younger ones stay", async () => {
+  test("D69: a removal deletes no archive, past its days or not: the timeline's sweep does", async () => {
     const world = await boardWorld();
     const old = oldArchive(world, "C9-old-1a2b3c", 8 * DAY_MS);
     const young = oldArchive(world, "C8-young-1a2b3c", 6 * DAY_MS);
@@ -371,20 +360,19 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       ),
     ).toBe(0);
 
-    // No conversation of its own to move: only the prune speaks.
+    // Nothing of the archive is said: the removal does not touch it.
     expect(world.out).toEqual([
       "stopped session a1b2c3d4",
       `removed ${record.worktree}`,
       "deleted branch crew/B1-help",
       "removed session a1b2c3d4",
-      "deleted the archived conversation of C my-app C9-old-1a2b3c (8 days old)",
       "removed C my-app B1 help",
     ]);
-    expect(existsSync(old)).toBe(false);
+    expect(existsSync(old)).toBe(true);
     expect(existsSync(young)).toBe(true);
   });
 
-  test("the project's crew.archiveDays decides", async () => {
+  test("D69: a removal moves no conversation, whatever the project's crew.archiveDays says", async () => {
     const world = await boardWorld();
     world.writeConfig({ archiveDays: 30 });
     git(world.repo, "add", ".");
@@ -401,12 +389,10 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     ).toBe(0);
 
     expect(existsSync(old)).toBe(true);
-    expect(world.out).toContain(
-      `archived the conversation of session a1b2c3d4 (3 files) in ${tildify(crewArchiveDir(world.paths.stateDir, world.repo, record.id), world.home)}: it leaves /resume, and is deleted after 30 days`,
-    );
+    expect(existsSync(crewArchiveDir(world.paths.stateDir, world.repo, record.id))).toBe(false);
   });
 
-  test("the watch's removal after a merge runs the same steps: the conversation leaves /resume", async () => {
+  test("the watch's removal after a merge runs the same steps: the conversation stays for its date", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "done" });
     writeFileSync(join(record.worktree, "done.txt"), "x\n");
@@ -422,14 +408,14 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
     );
 
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
-    expect(existsSync(project)).toBe(false);
+    expect(existsSync(project)).toBe(true);
     const dir = crewArchiveDir(world.paths.stateDir, world.repo, record.id);
     expect(
       existsSync(join(dir, "projects", project.split("/").at(-1) ?? "", `${SESSION}.jsonl.gz`)),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  test("an archive that fails says so, and the removal still ends", async () => {
+  test("D69: a broken archive folder never holds a removal", async () => {
     const world = await boardWorld();
     const record = await world.addCrew();
     const project = conversation(world, record.worktree);
@@ -443,11 +429,7 @@ describe("crew rm: the conversation leaves /resume (AR1)", () => {
       await runCrew(["rm", record.id], world.ctx({}, { FAKE_WORKTREE: record.worktree })),
     ).toBe(0);
 
-    expect(world.err.length).toBe(1);
-    expect(world.err[0]).toStartWith(
-      "note: the conversation of session a1b2c3d4 stays in /resume: ",
-    );
-    expect(world.err[0]).toEndWith(`; ${COMMAND} sessions --finished --remove moves it later`);
+    expect(world.err).toEqual([]);
     expect(existsSync(join(project, `${SESSION}.jsonl`))).toBe(true);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
   });
