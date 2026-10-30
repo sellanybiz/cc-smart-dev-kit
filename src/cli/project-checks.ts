@@ -65,6 +65,7 @@ import { isObject } from "../setup/managed-json";
 import { readUserJson } from "../setup/user-json";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
+import { MACHINE_CREW_KEYS, workflowValue } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -451,6 +452,28 @@ function jobKindLines(
   ];
 }
 
+/** Legacy project limits still parse, but only the person's file controls this machine. */
+function crewLimitLines(
+  config: CcSmartDevKitConfig | null,
+  configFile: string | null,
+  projectDir: string,
+  home: string,
+): ProjectLine[] {
+  if (config === null || configFile === null) return [];
+  const keys = MACHINE_CREW_KEYS.filter(
+    (key) => workflowValue(config.workflow ?? {}, key) !== undefined,
+  );
+  if (keys.length === 0) return [];
+  return [
+    {
+      ok: true,
+      info: true,
+      text: `project: ${shown(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
+      fix: `remove them from workflow.crew; set your own with ${COMMAND} workflow set crew.max <n>`,
+    },
+  ];
+}
+
 /** The project checks for the folder `cwd`; none outside git. */
 export async function projectChecks(
   cwd: string,
@@ -499,6 +522,7 @@ export async function projectChecks(
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
     ...jobKindLines(config, configFile, projectDir, paths.home),
+    ...crewLimitLines(config, configFile, projectDir, paths.home),
     ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.

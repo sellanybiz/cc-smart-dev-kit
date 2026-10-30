@@ -418,7 +418,10 @@ describe("D59: would a crew start from this lead queue now", () => {
   /** A real project with a recorded lead, its crew caps as the test's file sets them. */
   async function leadWorld(crew: Record<string, unknown> = {}) {
     const world = crewWorld();
-    world.writeConfig({ memoryGb: 1, ...crew });
+    // The switch is the project's, the limits are the person's own (D71).
+    const { enabled, ...limits } = crew;
+    if (enabled !== undefined) world.writeConfig({ enabled });
+    world.writePersonal({ memoryGb: 1, ...limits });
     const checkout = locateCheckout(world.repo, { env: cleanGitEnv() });
     if (checkout === null) throw new Error("the test repository has no checkout");
     await writeLead(

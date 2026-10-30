@@ -466,12 +466,12 @@ describe("resolveWorkflow: the order", () => {
       handoffTokens: { value: 400000, source: "default" },
       idleStopMinutes: { value: 10, source: "default" },
       keep: { value: [], source: "default" },
-      loadPerCore: { value: 3, source: "default" },
+      loadPerCore: { value: 1.5, source: "default" },
       startGapSeconds: { value: 60, source: "default" },
-      max: { value: 24, source: "default" },
+      max: { value: 12, source: "default" },
       maxOpus: { value: null, source: "default" },
       maxHours: { value: 4, source: "default" },
-      memoryGb: { value: 2, source: "default" },
+      memoryGb: { value: 6, source: "default" },
       perLead: { value: 4, source: "default" },
       perLeadOpus: { value: 2, source: "default" },
       quietMinutes: { value: 20, source: "default" },
@@ -507,7 +507,7 @@ describe("resolveWorkflow: the order", () => {
     const resolved = resolveWorkflow(pathsFor(env), config);
     expect(resolved.crew.archiveDays).toEqual({ value: 14, source: "project" });
     expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
-    expect(resolved.crew.max).toEqual({ value: 3, source: "project" });
+    expect(resolved.crew.max).toEqual({ value: 2, source: "personal" });
     expect(resolved.crew.loadPerCore).toEqual({ value: 4, source: "personal" });
     // A list is one value: the project's list wins whole, never merged entry by entry.
     expect(resolved.crew.keep).toEqual({
@@ -764,4 +764,15 @@ describe("autoMergeAllowed", () => {
     });
     expect(autoMergeAllowed(resolved, withProtection, "dev", "main")).toBe(true);
   });
+});
+
+test("D71: project limits are ignored, but enabled and tag still win", () => {
+  const env = hookEnv();
+  const config = ccSmartDevKitConfigSchema.parse({
+    workflow: { crew: { max: 99, enabled: true, tag: "my-app" } },
+  });
+  const resolved = resolveWorkflow(pathsFor(env), config);
+  expect(resolved.crew.max).toEqual({ value: 12, source: "default" });
+  expect(resolved.crew.enabled).toEqual({ value: true, source: "project" });
+  expect(resolved.crew.tag).toEqual({ value: "my-app", source: "project" });
 });

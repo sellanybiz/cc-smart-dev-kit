@@ -265,7 +265,7 @@ describe("crew model: a session with no process to move", () => {
 describe("crew model: the caps", () => {
   test("to opus past perLeadOpus: queued with the reason, and the session runs on", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     await world.addCrew({ model: OPUS, phase: "B2", slug: "other", suffix: "2b2b2b" });
     const record = await world.addCrew();
     expect(await runCrew(["model", NAME, "--model", "opus"], world.ctx())).toBe(0);
@@ -285,7 +285,7 @@ describe("crew model: the caps", () => {
 
   test("the watch applies a queued change once a place is free, and not before", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     const other = await world.addCrew({
       model: OPUS,
       phase: "B2",
@@ -314,7 +314,7 @@ describe("crew model: the caps", () => {
 
   test("workflow.crew.maxOpus holds a move onto opus across leads", async () => {
     const world = await boardWorld();
-    world.writeConfig({ maxOpus: 1, perLeadOpus: 3 });
+    world.writePersonal({ maxOpus: 1, perLeadOpus: 3 });
     await world.addCrew({
       leadSessionId: "other-lead-session",
       model: OPUS,
@@ -331,7 +331,7 @@ describe("crew model: the caps", () => {
 
   test("a queued change that was replaced or dropped since the watch read it is not applied", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     const other = await world.addCrew({
       model: OPUS,
       phase: "B2",
@@ -356,7 +356,7 @@ describe("crew model: the caps", () => {
 
   test("RX1: a queued change read a pass ago is not applied to a session that ended since", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     const other = await world.addCrew({
       model: OPUS,
       phase: "B2",
@@ -419,7 +419,7 @@ describe("crew model: the caps", () => {
 
   test("a queued change of a crew session that ended is dropped", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     await world.addCrew({ model: OPUS, phase: "B2", slug: "other", suffix: "2b2b2b" });
     const record = await world.addCrew();
     await runCrew(["model", NAME, "--model", "opus"], world.ctx());
@@ -452,7 +452,7 @@ describe("crew model: the caps", () => {
 
   test("a change that moves off opus is never held by a cap", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     await world.addCrew({ model: OPUS, phase: "B2", slug: "other", suffix: "2b2b2b" });
     await world.addCrew({ model: OPUS });
     expect(await runCrew(["model", NAME, "--model", "sonnet"], world.ctx())).toBe(0);
@@ -654,7 +654,7 @@ describe("IN1: crew model and the plan's run record", () => {
 
   test("a change an opus cap holds is no change yet: the run has no line until the watch applies it", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLeadOpus: 1 });
+    world.writePersonal({ perLeadOpus: 1 });
     const planFile = planFileOf();
     const other = await world.addCrew({
       model: OPUS,

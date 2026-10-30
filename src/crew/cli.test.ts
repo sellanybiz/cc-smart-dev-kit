@@ -38,7 +38,7 @@ describe("crew through the CLI", () => {
 
   test.if(unix)("crew lead, then crew start: the session found above the CLI", async () => {
     const world = crewWorld();
-    world.writeConfig({ memoryGb: 0.001 });
+    world.writePersonal({ memoryGb: 0.001 });
     const sessionId = "e22fabc7-1111-2222-3333-444444444444";
     writeSessionRecord(world.paths, process.pid, sessionId, world.repo);
     const env = {

@@ -1011,20 +1011,14 @@ describe("a project's workflow settings (D57)", () => {
       value: false,
     });
     expect(of("switches.statusLine")).toBeUndefined();
-    // An unset crew.tag and crew.maxOpus carry what `workflow show` prints in their place, so
-    // the card and the command word the same unset value the same way (one home: showValue).
+    // An unset tag uses workflow show's words; machine limits are not project settings.
     expect(of("crew.tag")).toEqual({
       key: "crew.tag",
       source: "default",
       unsetWords: "(the main checkout's folder name)",
       value: null,
     });
-    expect(of("crew.maxOpus")).toEqual({
-      key: "crew.maxOpus",
-      source: "default",
-      unsetWords: "(no machine-wide opus count)",
-      value: null,
-    });
+    expect(of("crew.maxOpus")).toBeUndefined();
   });
 
   test("the person's own file is the source of a value the project does not set", async () => {

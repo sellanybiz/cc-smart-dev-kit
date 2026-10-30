@@ -301,32 +301,32 @@ export const workflowSchema = z.strictObject({
       keep: z.array(crewKeepSchema).optional(),
       /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
       idleStopMinutes: numberField("crew.idleStopMinutes"),
-      /** The machine's safety ceiling: at most this many crew sessions run here at once, across leads (D54). Default: 24. */
+      /** The machine's safety ceiling across leads (D54), read from the person's file only. Default: 12. */
       max: numberField("crew.max"),
       /**
        * An optional machine-wide opus ceiling inside `max` (D37). Unset: no machine-wide
-       * count, and each lead's `perLeadOpus` alone bounds the opus tier. Default: unset.
+       * count, and each lead's `perLeadOpus` alone bounds the opus tier. Read from the person's file only. Default: unset.
        */
       maxOpus: numberField("crew.maxOpus"),
-      /** The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. Default: 2. */
+      /** Free memory in GB a start needs, read from the person's file only. Default: 6. */
       memoryGb: numberField("crew.memoryGb"),
       /**
        * A new crew session waits while the 1-minute load average is above this many per core
        * (the cores times this number). Where the platform gives no load average (native
-       * Windows), the hold does not apply. Default: 3.
+       * Windows), the hold does not apply. Read from the person's file only. Default: 1.5.
        */
       loadPerCore: numberField("crew.loadPerCore"),
-      /** Whole seconds between launches on this machine, including resumes and continuations (D72). Default: 60. */
+      /** Whole seconds between launches on this machine, including resumes and continuations (D72), read from the person's file only. Default: 60. */
       startGapSeconds: numberField("crew.startGapSeconds"),
-      /** At most this many crew sessions run for one lead at once, in every repository (D54). Default: 4. */
+      /** One lead's cap across repositories (D54), read from the person's file only. Default: 4. */
       perLead: numberField("crew.perLead"),
-      /** At most this many of one lead's crew sessions on the opus tier (D54). Default: 2. */
+      /** One lead's opus-tier cap (D54), read from the person's file only. Default: 2. */
       perLeadOpus: numberField("crew.perLeadOpus"),
       /**
        * Past this share of the 5-hour usage window, a new opus-tier crew session waits,
        * unless the gateway's opus slot has a chain with its fallback on (D54). The window
        * is the one the status line reads; with no reading, the guard does not hold.
-       * Default: 85.
+       * Read from the person's file only. Default: 85.
        */
       usagePercent: numberField("crew.usagePercent"),
       /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
@@ -426,12 +426,16 @@ export const workflowDefaults = {
     enabled: false,
     keep: [],
     idleStopMinutes: 10,
-    max: 24,
+    max: 12,
     /** Null: no machine-wide opus count; one set is the person's own ceiling. */
     maxOpus: null,
-    memoryGb: 2,
-    /** A start waits past a 1-minute load of 3 per core: busy but not drowning, queued work still finishes (seen: load 85 on 16 cores, 5 per core, with 24 sessions). */
-    loadPerCore: 3,
+    memoryGb: 6,
+    /**
+     * A start waits past a 1-minute load of 1.5 per core. The load average lags, so the line
+     * sits low enough to leave room for the sessions already starting (seen: load 85 on 16 cores
+     * with 24 sessions, and load 34–76 on 12 cores after a reboot started 15 at once).
+     */
+    loadPerCore: 1.5,
     startGapSeconds: 60,
     perLead: 4,
     perLeadOpus: 2,
@@ -606,12 +610,32 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
 export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
 
 /**
- * True when the project's own file can hold the key: every policy key, and the project's two
- * switches. The one answer behind `workflow propose`'s refusal and the portal's list of what a
+ * The crew limits (D71): read from the person's own file only. They protect one machine, and a
+ * project's file is shared by every machine that checks it out. A project file that still sets
+ * one parses as before; the value is ignored, and `doctor` says so once.
+ */
+export const MACHINE_CREW_KEYS = [
+  "crew.max",
+  "crew.maxOpus",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.memoryGb",
+  "crew.loadPerCore",
+  "crew.usagePercent",
+  "crew.startGapSeconds",
+] as const satisfies readonly WorkflowKey[];
+
+/**
+ * True when the project's own file can hold the key: every policy key but the crew limits
+ * (`MACHINE_CREW_KEYS`), and the project's two switches. The one answer behind
+ * `workflow set --project`'s and `workflow propose`'s refusals and the portal's list of what a
  * project's card may change; `propose.test.ts` holds it equal to what the writer accepts.
  */
 export function isProjectKey(key: WorkflowKey): boolean {
-  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+  return (
+    !(MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(key) &&
+    (!isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key)))
+  );
 }
 
 /** True when the person's own file holds the key (a switch with a machine-wide default). */

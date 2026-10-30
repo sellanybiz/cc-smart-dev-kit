@@ -508,7 +508,7 @@ describe("the crew caps on Settings", () => {
     expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly, row.unit])).toEqual([
       ["crew.perLead", 4, "default", false, undefined],
       ["crew.perLeadOpus", 2, "default", false, undefined],
-      ["crew.max", 24, "default", false, undefined],
+      ["crew.max", 12, "default", false, undefined],
       ["crew.usagePercent", 85, "default", false, "%"],
     ]);
   });
