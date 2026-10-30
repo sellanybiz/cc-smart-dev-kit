@@ -87,7 +87,9 @@ import {
   crewSessions,
   listAllCrew,
   listAllLeads,
+  readCrew,
   readCrewEvents,
+  resumeClaimHeld,
   writeStoreFile,
 } from "./store";
 import { transcriptFile } from "./transcript";
@@ -383,15 +385,22 @@ export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string):
   for (const lead of leads.records) kept.add(lead.sessionId);
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
-    const archived =
-      ARCHIVED_STATES.includes(record.state) ||
-      (record.sessionEndedAt !== undefined && RELEASE_STATES.includes(record.state)) ||
-      record.id === exceptCrew;
-    if (!archived) {
+    if (!sessionOver(record) && record.id !== exceptCrew) {
       for (const one of crewSessions(record)) if (one.sessionId !== null) kept.add(one.sessionId);
     }
   }
   return kept;
+}
+
+/**
+ * True when a crew record's session ended for the timeline: removed or discarded, or an over
+ * record with `sessionEndedAt` (D69). A record that works again lost its `sessionEndedAt`.
+ */
+function sessionOver(record: CrewRecord): boolean {
+  return (
+    ARCHIVED_STATES.includes(record.state) ||
+    (record.sessionEndedAt !== undefined && RELEASE_STATES.includes(record.state))
+  );
 }
 
 /** What archiving one crew session's conversation came to. */
@@ -626,7 +635,17 @@ async function archiveSession(input: ArchiveInput, sessionId: string): Promise<A
     }
     return await withArchiveLock(
       paths.stateDir,
-      () => moveConversation(input, sessionId),
+      () => {
+        // Read again under the lock: a resume claims its record before it restores the
+        // conversation under this same lock (D69), so one it just put back is never taken again.
+        const now = readCrew(paths.stateDir, record.repo, record.id);
+        if (now !== null && (resumeClaimHeld(now.resumeClaim, input.nowMs) || !sessionOver(now)))
+          return {
+            kind: "kept",
+            why: "its crew session is being resumed, or works again",
+          } as const;
+        return moveConversation(input, sessionId);
+      },
       input.lockWaitMs,
     );
   } catch (error) {

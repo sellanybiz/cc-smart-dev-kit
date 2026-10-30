@@ -606,17 +606,21 @@ no remote and not on the default branch, and a crew session never pushes; so the
 worktree away itself, and the row can go. The watch releases a `done`, `handoff`, `failed` or
 `stopped` record (`RELEASE_STATES`, `lifecycle.ts`) on the first pass where agent view could be
 read and shows no process for it — a `done` or `failed` session the watch stops first (D35), and
-releases on the pass after. `blocked` is never released: its question is live until its idle stop
+releases on the pass after; so is a `handoff` whose session the next crew session's start could not
+stop (`stopContinued`). `blocked` is never released: its question is live until its idle stop
 makes it `stopped`. The release (`release.ts`) is `crew rm`'s own steps (`runCrewRm` with
 `release`: its lock, its dirty-work check, the machine verdict, the leftovers it may stop, the D62
 move-aside), judged against the record's own branch, so no merge is needed: the worktree goes, and
 `claude rm` runs on every session id of the record, earlier ones too (RX1). **The branch, the
-record, its state and the conversation stay**; the record carries `released.at`, and
-`sessionEndedAt` — the first end, which a later removal keeps — starts the conversation's timeline
-(§ A removed crew session's conversation). Uncommitted work, a local file git does not keep, a
-person's lock, program or container, or machine facts nobody could read keep the worktree and the
-row: one line says why, with its fix, and the watch tries again when the branch or the folder
-changes, or after `PARKED_PASS_MS`.
+record, its state and the conversation stay**; the record carries `released.at` from the moment
+the worktree is gone — before `claude rm`, so a `claude rm` that fails leaves a record a resume can
+still make the worktree again for, and the watch runs `claude rm` again while agent view lists a
+row of it — and `sessionEndedAt`, the first end, which a later removal keeps, once `claude rm` let
+the sessions go; it starts the conversation's timeline (§ A removed crew session's conversation).
+Uncommitted work, a local file git does not keep, a person's lock, program or container, a resume
+that holds its claim (`resumeClaimHeld`, under `RESUME_CLAIM_MS`), or machine facts nobody could
+read keep the worktree and the row: one line says why, with the removal's own fix, and the watch
+tries again when the branch or the folder changes, or after `PARKED_PASS_MS`.
 
 A released record stays on the board (`released — branch … kept`), its reminder still comes once
 a day, and the lead merges from its branch; after the merge the watch's removal (or `crew rm`)
@@ -625,7 +629,11 @@ worktree again first (`restoreReleasedWorktree`): at its own path, on its kept b
 `.worktreeinclude` files, under the record's removal lock and from the record read again inside
 it, so a resume and a release never cross. All or nothing: a copy or store write that fails takes
 the new folder back, and a folder already at that path is never replaced. The resumed session is
-told its folder is new and to install dependencies first. A lead that is gone runs no watch, so
+told its folder is new and to install dependencies first. `crew rm --discard` of a released
+record makes the worktree again the same way, under the lock the removal already holds and
+without the `.worktreeinclude` copies, then discards as for any record: plain `crew rm` still
+refuses the unmerged branch, and a released record keeps its name (`holdsName`) while its branch
+is kept. A lead that is gone runs no watch, so
 `sessions --finished` lists the finished records of a lead seen gone for a day first, and
 `--remove` releases them after its own question; an unreadable agent view or a lead not yet seen
 gone releases nothing.
@@ -823,8 +831,11 @@ end starts a new timeline. For `crew.archiveDays` (7) after that end the convers
 (`sweepCrewConversations`, `archive.ts`): the lead's watch runs it at most once an hour, and
 `sessions --finished --remove` runs it too; `sessions --finished` lists what is due, the date
 each waiting conversation moves and the date each archive goes. `runCrewRm` itself moves,
-prunes and waits on nothing of the archive. **A resume puts the conversation back first**
-(`restoreConversation`, before the worktree is made again): under the archive lock, only the
+prunes and waits on nothing of the archive. Each move reads its record again under the archive
+lock, and keeps a conversation whose record a resume holds a claim on or that works again. **A
+resume puts the conversation back first** (`restoreConversation`, once it holds its claim and
+before the worktree is made again — so a sweep never takes back what it just restored): under the
+archive lock, only the
 files of the record's own sessions, never through a link, refusing a file of other bytes at a
 target before it writes anything, staging each file and linking it into place (a link never
 replaces a file that appeared meanwhile), and taking back every file and folder it made when one

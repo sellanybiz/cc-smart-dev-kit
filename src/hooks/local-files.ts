@@ -147,10 +147,10 @@ export function localFiles(
     let budget = MAX_COMPARED;
     const visit = (path: string): boolean => {
       if (--budget < 0) return false;
-      if (safe(path)) return true;
       try {
-        if (!lstatSync(join(worktree, path)).isDirectory()) return false;
-        // A folder is named the way git names one, ending in `/`, so `logs/` matches inside too.
+        if (!lstatSync(join(worktree, path)).isDirectory()) return safe(path);
+        // A folder is named the way git names one, ending in `/`: `logs/` matches inside too, and
+        // a file's pattern (`.log`) never takes a folder whole.
         const folder = `${path.replace(/\/$/, "")}/`;
         return (
           safe(folder) ||

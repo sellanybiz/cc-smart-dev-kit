@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   copyFileSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -208,6 +209,11 @@ function protectedIgnored(record: CrewRecord, ctx: CrewContext): string[] {
 
 /** Read-only facts and exact confirmation words for the CLI and the portal's off-loop reader. */
 export function buildCrewDiscardFacts(record: CrewRecord, ctx: CrewContext): CrewDiscardFacts {
+  // A released crew session (D69) has only its branch; `crew rm --discard` makes the worktree again.
+  if (record.released !== undefined && !existsSync(record.worktree))
+    throw new Error(
+      "its worktree was released; crew rm --discard makes it again on its kept branch first",
+    );
   const head = checkedGit(
     record.repo,
     ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`],

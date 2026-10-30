@@ -494,10 +494,6 @@ export async function resumeSession(
   if (record.sessionId === null) {
     return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
   }
-  // Its conversation first, when the timeline moved it to the archive (D69).
-  const conversation = await restoreConversation(ctx.paths, record);
-  if (!conversation.ok) return { ok: false, unnamed: false, why: conversation.why };
-  if (conversation.note !== undefined) ctx.print(conversation.note);
   const place = resumePlace(record);
   if (!place.ok) return { ok: false, unnamed: false, why: place.why };
   // Its own settings: without them the session comes back as a plain one, not as this crew session.
@@ -537,7 +533,15 @@ export async function resumeSession(
       why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`,
     };
   }
-  // D69: restore the same project folder only after this command owns the resume.
+  // D69: its conversation and its worktree come back only once this command owns the resume. The
+  // claim comes first so the timeline's sweep, which reads the record again under the archive lock
+  // the restore holds, never takes a conversation away again while it is being resumed.
+  const conversation = await restoreConversation(ctx.paths, record);
+  if (!conversation.ok) {
+    await releaseResume(stateDir, record.repo, record.id, token);
+    return { ok: false, unnamed: false, why: conversation.why };
+  }
+  if (conversation.note !== undefined) ctx.print(conversation.note);
   const restored = await restoreReleasedWorktree(record, ctx);
   if (!restored.ok) {
     await releaseResume(stateDir, record.repo, record.id, token);

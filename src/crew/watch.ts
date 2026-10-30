@@ -72,7 +72,7 @@ import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
-import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { agentRows, claudeDeps, isLiveRow, listsAnySession, rowOf } from "./agents";
 import {
   type ResumedSession,
   resumedAs,
@@ -100,7 +100,7 @@ import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
 import { releaseCrewSession } from "./release";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
-import { startQueued } from "./start";
+import { handoffStopLine, startQueued } from "./start";
 import {
   ANSWER_BEAT_STALE_MS,
   addCrewQuestion,
@@ -877,11 +877,12 @@ export function doneStopLine(record: CrewRecord): string {
 }
 
 /**
- * The line the watch says, once, when a finished crew session must keep its worktree and its
- * agent-view row (D69): what holds it, and the way on. The release is tried again by itself.
+ * The line the watch says, once, when a finished crew session is not released (D69): what holds
+ * it, and the removal's own fix (`fix`), or a plain one when it gave none. The release is tried
+ * again by itself.
  */
-export function releaseKeptLine(record: CrewRecord, why: string): string {
-  return `${record.name}: its worktree stays — ${why}\nFix: commit what it names on ${record.branch}, or move it out of ${record.worktree}; the watch then releases it by itself`;
+export function releaseKeptLine(record: CrewRecord, why: string, fix: null | string): string {
+  return `${record.name}: not released yet — ${why}\n${fix ?? "Fix: clear that; the watch then releases it by itself"}`;
 }
 
 /**
@@ -1502,18 +1503,22 @@ async function runPass(
       }
     } else if (
       RELEASE_STATES.includes(record.state) &&
-      record.released === undefined &&
       agents !== null &&
       !listed &&
-      existsSync(record.worktree)
+      (record.released === undefined
+        ? existsSync(record.worktree)
+        : listsAnySession(agents, record))
     ) {
-      // D69: its session is over and holds no process (a `done` or `failed` one is stopped by
-      // the branches below first), so it leaves agent view now; its branch stays for the merge.
-      // Its own event says the release; a refusal is said once, and tried again when the folder
-      // changes or after the parked-folder interval.
+      // D69: its session is over and holds no process (a `done`, `handoff` or `failed` one is
+      // stopped by the branches below first), so it leaves agent view now; its branch stays for
+      // the merge. A record released already whose rows agent view still lists had a `claude rm`
+      // that failed: the release runs it again. Its own event says the release; a refusal is said
+      // once, and tried again when the folder changes or after the parked-folder interval.
       const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
-      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
-      const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
+      const status = existsSync(record.worktree)
+        ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
+        : null;
+      const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
       const key = `${record.id}:release`;
       const previous = removals[key];
       if (
@@ -1523,7 +1528,7 @@ async function runPass(
       ) {
         removals[key] = { at: ctx.now(), signature };
         const result = await releaseCrewSession(record, ctx);
-        const line = result.ok ? null : releaseKeptLine(record, result.why);
+        const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
         if (line !== null && said[key] !== line) {
           say(line);
           said[key] = line;
@@ -1540,11 +1545,12 @@ async function runPass(
       } else {
         news = line;
       }
-    } else if (record.state === "done" && listed) {
+    } else if ((record.state === "done" || record.state === "handoff") && listed) {
       // Its session ends; its record keeps `done` (D62: `stopped` is for a phase something
       // stopped before it ended, and its removal is the lead's call). Stopped once: the mark
-      // in `said` remembers it while agent view catches up.
-      const line = doneStopLine(record);
+      // in `said` remembers it while agent view catches up. A hand-off's session is stopped when
+      // its next crew session starts (`stopContinued`); one that stop missed is stopped here.
+      const line = record.state === "done" ? doneStopLine(record) : handoffStopLine(record.name);
       if (said[stopKey] !== line) {
         refusal = await stopSession(record, ctx);
         if (refusal === null) news = line;

@@ -816,11 +816,17 @@ function reportBlock(report: HandBackReport): string {
 /**
  * True when a recorded crew session still holds its name: every one but a `removed` crew session, and a
  * `failed` one that never got a session and left no worktree (its launch started nothing, and
- * what it made was taken back) — the record stays as history, and a second try may start.
+ * what it made was taken back) — the record stays as history, and a second try may start. A
+ * released one (D69) keeps its branch, so it keeps its name.
  */
 export function holdsName(record: CrewRecord): boolean {
   if (["removed", "discarded"].includes(record.state)) return false;
-  return !(record.state === "failed" && record.shortId === null && !existsSync(record.worktree));
+  return !(
+    record.state === "failed" &&
+    record.shortId === null &&
+    record.released === undefined &&
+    !existsSync(record.worktree)
+  );
 }
 
 /**
@@ -1094,7 +1100,12 @@ async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
     );
     return;
   }
-  ctx.print(`${old.name}: session stopped — it handed off; its branch and its record stay`);
+  ctx.print(handoffStopLine(old.name));
+}
+
+/** The line said when a hand-off's own session is stopped: here, or by the watch when this missed it. */
+export function handoffStopLine(name: string): string {
+  return `${name}: session stopped — it handed off; its branch and its record stay`;
 }
 
 /**

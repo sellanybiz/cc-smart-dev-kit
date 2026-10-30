@@ -527,6 +527,25 @@ describe("resolveWorkflow: the order", () => {
     });
   });
 
+  test("D69: a deleteDays left out, or lower in the other file, rises to archiveDays", () => {
+    const env = hookEnv();
+    // Set before 1.7.0, when it meant how long the archive kept a conversation.
+    writePersonal(env, { crew: { archiveDays: 40 } });
+    const alone = resolveWorkflow(pathsFor(env), null);
+    expect(alone.crew.archiveDays).toEqual({ value: 40, source: "personal" });
+    expect(alone.crew.deleteDays).toEqual({ value: 40, source: "personal" });
+    const lower = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 35 } } });
+    expect(resolveWorkflow(pathsFor(env), lower).crew.deleteDays).toEqual({
+      value: 40,
+      source: "personal",
+    });
+    const higher = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 60 } } });
+    expect(resolveWorkflow(pathsFor(env), higher).crew.deleteDays).toEqual({
+      value: 60,
+      source: "project",
+    });
+  });
+
   test("a personal file that is not JSON throws, naming the file", () => {
     const env = hookEnv();
     const paths = pathsFor(env);

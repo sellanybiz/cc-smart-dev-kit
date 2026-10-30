@@ -38,15 +38,25 @@ What changed:
   at the removal and the archive went 7 days later. A resume puts an archived conversation back
   first. The lead's watch runs the timeline at most once an hour, and `sessions --finished`
   lists the date each conversation moves and each archive goes.
-- **New setting `workflow.crew.deleteDays`** (default 30, at least `crew.archiveDays`). A
+- **New setting `workflow.crew.deleteDays`** (default 30, never below `crew.archiveDays`). A
   project that sets it needs `"requires": ">=1.7"`.
+- **`crew.archiveDays` means something new.** Before, it was how long the archive kept a
+  removed crew session's conversation; now it is how long the conversation stays in `/resume`.
+  A file that set it above 30 keeps working: with no `deleteDays` beside it, `deleteDays` rises
+  to the same number, so the conversation is still kept that long in all.
+- **A release that `claude rm` could not finish is finished later.** The record says released
+  once its worktree is gone, so a resume still works, and the watch runs `claude rm` again while
+  agent view lists its row. A hand-off whose session its next crew session could not stop is
+  stopped by the watch, then released. `crew rm --discard` of a released crew session makes its
+  worktree again on the kept branch first, then discards as before.
 - **A hand-off goes first (D70).** The next crew session of a hand-off takes the place the
   session that handed off left, so the CPU load no longer holds it, and it starts before any
   queued new phase. Memory, the session caps and the usage window still hold it. New phases
   still wait for the load.
 - **Logs are safe to lose.** An ignored `logs/` folder and ignored `*.log` files no longer keep
   a finished worktree (and its agent-view row): they come back by themselves. A folder of
-  ignored files is now judged file by file, so a log beside a file of yours still keeps it.
+  ignored files is now judged file by file, so a log beside a file of yours still keeps it, and
+  a folder named like a log file (`app.log/`) is read, never taken whole.
 
 ## 1.6.0
 

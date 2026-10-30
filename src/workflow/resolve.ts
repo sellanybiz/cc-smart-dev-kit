@@ -460,12 +460,12 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
-  if (
-    (crew.deleteDays ?? workflowDefaults.crew.deleteDays) <
-    (crew.archiveDays ?? workflowDefaults.crew.archiveDays)
-  ) {
-    throw new Error("crew.deleteDays must be at least crew.archiveDays");
-  }
+  // Deletion never comes before archiving (D69). One file that sets both lower is refused by the
+  // schema; a `deleteDays` left out, or lower in the other file, rises to `archiveDays`. Before
+  // 1.7.0 `archiveDays` was how long the archive kept a conversation: a file that set it above 30
+  // still has the conversation kept that long.
+  const archiveDays = of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays);
+  const deleteDays = of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays);
   const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
@@ -540,8 +540,8 @@ export function resolveWorkflow(
       ),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
-      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
-      deleteDays: of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays),
+      archiveDays,
+      deleteDays: deleteDays.value < archiveDays.value ? archiveDays : deleteDays,
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {

@@ -56,6 +56,16 @@ test("an ignored logs/ folder and ignored .log files alone do not keep a finishe
   });
 });
 
+test("a folder named like a log file is read, never taken whole by the .log pattern", () => {
+  const { worktree, state } = world("supabase/.temp/\nserver/\n");
+  mkdirSync(join(worktree, "server", "app.log"), { recursive: true });
+  writeFileSync(join(worktree, "server", "app.log", "notes.txt"), "keep my notes");
+  expect(state()).toMatchObject({
+    finished: false,
+    why: "local files git does not keep: server/",
+  });
+});
+
 test("a directory or link named cli-latest is not a disposable version-cache file", () => {
   for (const kind of ["directory", "link"]) {
     const { worktree, state } = world();

@@ -1625,6 +1625,13 @@ export async function writeReport(
  */
 export const RESUME_CLAIM_MS = 2 * 60_000;
 
+/** True while a resume's claim still holds its record at `atMs`: younger than `RESUME_CLAIM_MS`. */
+export function resumeClaimHeld(claim: CrewRecord["resumeClaim"], atMs: number): boolean {
+  if (claim === undefined) return false;
+  const since = Date.parse(claim.at);
+  return Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS;
+}
+
 /**
  * Claims the resume of crew session `id` for the resume `token` (WF1): true when the record is
  * still in one of `states` — the state its caller judged it in — and no other resume holds an
@@ -1648,10 +1655,7 @@ export async function claimResume(
     }
     if (!states.includes(before.state)) return false;
     const held = before.resumeClaim;
-    if (held !== undefined && held.token !== token) {
-      const since = Date.parse(held.at);
-      if (Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS) return false;
-    }
+    if (held !== undefined && held.token !== token && resumeClaimHeld(held, atMs)) return false;
     writeJsonFile(
       file,
       checked(crewRecordSchema, { ...before, resumeClaim: { at: iso(atMs), token } }, file),

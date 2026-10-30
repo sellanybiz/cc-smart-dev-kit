@@ -13024,9 +13024,8 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
-  if ((crew.deleteDays ?? workflowDefaults.crew.deleteDays) < (crew.archiveDays ?? workflowDefaults.crew.archiveDays)) {
-    throw new Error("crew.deleteDays must be at least crew.archiveDays");
-  }
+  const archiveDays = of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays);
+  const deleteDays = of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays);
   const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
@@ -13069,8 +13068,8 @@ function resolveWorkflow(paths, projectConfig) {
       handoffTokens: of("crew.handoffTokens", crew.handoffTokens ?? workflowDefaults.crew.handoffTokens),
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
-      archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
-      deleteDays: of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays),
+      archiveDays,
+      deleteDays: deleteDays.value < archiveDays.value ? archiveDays : deleteDays,
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag)
     },
     switches: {
@@ -19189,11 +19188,9 @@ function localFiles(worktree, mainCheckout, env) {
     const visit = (path) => {
       if (--budget < 0)
         return false;
-      if (safe(path))
-        return true;
       try {
         if (!lstatSync2(join30(worktree, path)).isDirectory())
-          return false;
+          return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
         return safe(folder) || readdirSync8(join30(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {

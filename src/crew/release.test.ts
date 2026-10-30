@@ -8,21 +8,23 @@ import { type BoardWorld, boardWorld, NOW } from "../testing/board-world";
 import { LEAD_SESSION, SHORT_ID } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { resolveWorkflow } from "../workflow/resolve";
-import { resumeSession } from "./answer";
-import { crewArchiveDir, DAY_MS, sweepCrewConversations } from "./archive";
+import { resumePlace, resumeSession } from "./answer";
+import { crewArchiveDir, DAY_MS, restoreConversation, sweepCrewConversations } from "./archive";
 import { boardLines } from "./board";
 import { releaseCrewSession, restoreReleasedWorktree } from "./release";
 import { crewRemovalLockDir, runCrewRm } from "./remove";
 import {
   type CrewRecord,
+  claimResume,
   crewFile,
   eventsEndOffset,
+  RESUME_CLAIM_MS,
   readCrew,
   updateCrew,
   type WatchState,
 } from "./store";
 import { transcriptFile } from "./transcript";
-import { watchPass } from "./watch";
+import { PARKED_PASS_MS, watchPass } from "./watch";
 
 /** The record as the store holds it now; a test fails here when it is gone. */
 function stored(world: BoardWorld, record: CrewRecord): CrewRecord {
@@ -157,7 +159,7 @@ test("a folder already at a released worktree's path is never replaced", async (
   const result = await restoreReleasedWorktree(stored(world, record), world.ctx());
   expect(result).toEqual({
     ok: false,
-    why: `${record.worktree} exists already; inspect it before resuming`,
+    why: `${record.worktree} exists already; inspect it first`,
   });
   expect(stored(world, record).released).toBeDefined();
 });
@@ -213,6 +215,7 @@ test("ignored personal files refuse without stopping or writing", async () => {
   expect(await releaseCrewSession(record, world.ctx())).toEqual({
     ok: false,
     why: "local files git does not keep: private.txt",
+    fix: `Fix: commit them on ${record.branch}, or move them out of ${record.worktree}; the watch then releases it by itself`,
   });
   expect(world.claudeCalls()).toEqual([["agents", "--json", "--all"]]);
   expect(stored(world, record)).toEqual(record);
@@ -262,6 +265,117 @@ test("D69: a done session still in agent view is stopped first, then released", 
   expect(world.claudeVerbs()).toContain("rm");
 });
 
+test("D69: a hand-off whose session is still in agent view is stopped, then released", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "handoff" });
+  const { scope, state } = watchOf(world);
+  const first = await watchPass(state, world.ctx({}, agentsWith("idle")), scope);
+  expect(world.claudeVerbs()).toEqual(["agents", "stop"]);
+  expect(world.out).toEqual([
+    "C my-app B1 help: session stopped — it handed off; its branch and its record stay",
+  ]);
+  expect(existsSync(record.worktree)).toBe(true);
+  await watchPass(first.state, world.ctx({}, agentsWith("stopped")), scope);
+  expect(existsSync(record.worktree)).toBe(false);
+  expect(stored(world, record).state).toBe("handoff");
+});
+
+test("D69: a claude rm that fails leaves the record released; the watch runs it again", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "done" });
+  commitIn(record, "result");
+  const { scope, state } = watchOf(world);
+  const stopped = agentsWith("stopped");
+  const first = await watchPass(state, world.ctx({}, { ...stopped, FAKE_RM: "fail" }), scope);
+  expect(existsSync(record.worktree)).toBe(false);
+  const released = stored(world, record);
+  expect(released.released).toBeDefined();
+  expect(released.sessionEndedAt).toBeUndefined();
+  expect(git(world.repo, "show", `${record.branch}:result`).trim()).toBe("kept");
+  // Still resumable: a resume makes the worktree again.
+  expect(resumePlace(released).ok).toBe(true);
+  expect(world.out).toEqual([
+    `C my-app B1 help: not released yet — claude rm ${SHORT_ID} failed (exit 1): could not delete\nFix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${SHORT_ID} again by itself (or run it by hand)`,
+    `C my-app B1 help: the worktree is gone; claude rm ${SHORT_ID} failed (exit 1): could not delete`,
+  ]);
+  const rms = () => world.claudeVerbs().filter((verb) => verb === "rm").length;
+  const failing = { ...stopped, FAKE_RM: "fail" };
+  // The folder went, so the next pass tries again; the same refusal is not said twice.
+  const second = await watchPass(first.state, world.ctx({}, failing), scope);
+  expect(rms()).toBe(2);
+  expect(world.out).toHaveLength(2);
+  // Nothing changed since: not again before the interval.
+  const third = await watchPass(second.state, world.ctx({}, failing), scope);
+  expect(rms()).toBe(2);
+  const ctx = world.ctx({}, stopped);
+  await watchPass(third.state, { ...ctx, now: () => ctx.now() + PARKED_PASS_MS }, scope);
+  expect(rms()).toBe(3);
+  expect(stored(world, record).sessionEndedAt).toBeDefined();
+  expect(world.out.at(-1)).toBe(
+    `C my-app B1 help: released: its agent-view rows are removed now; branch ${record.branch} kept`,
+  );
+});
+
+test("D69: a released crew session whose branch is not merged can still be discarded", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "stopped" });
+  commitIn(record, "result");
+  expect(await releaseCrewSession(record, world.ctx())).toEqual({ ok: true });
+  expect(existsSync(record.worktree)).toBe(false);
+  // Plain removal still refuses the unmerged commit.
+  expect(await runCrewRm(record.id, world.ctx())).toBe(1);
+  expect(await runCrewRm(record.id, world.ctx(), { discard: true, yes: true })).toBe(0);
+  const after = stored(world, record);
+  expect(after.state).toBe("discarded");
+  expect(existsSync(record.worktree)).toBe(false);
+  expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe("");
+  const ref = after.archive?.ref ?? "";
+  expect(git(world.repo, "show", `${ref}:result`).trim()).toBe("kept");
+  expect(world.out).toContain(
+    `made .claude/worktrees/${record.worktree.split("/").at(-1)} again on ${record.branch}, to discard it`,
+  );
+});
+
+test("D69: an expired resume claim does not hold a release; a live one does", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "done" });
+  const ctx = world.ctx();
+  await claimResume(world.paths.stateDir, world.repo, record.id, ["done"], "live", ctx.now());
+  expect(await releaseCrewSession(stored(world, record), ctx)).toEqual({
+    ok: false,
+    why: "a resume of C my-app B1 help is starting",
+    fix: "Fix: nothing to do; the watch tries the release again once the resume is over",
+  });
+  expect(existsSync(record.worktree)).toBe(true);
+  const later = { ...ctx, now: () => ctx.now() + RESUME_CLAIM_MS };
+  expect(await releaseCrewSession(stored(world, record), later)).toEqual({ ok: true });
+  expect(existsSync(record.worktree)).toBe(false);
+});
+
+test("D69: a sweep never takes back a conversation a resume holds a claim on", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "stopped" });
+  const sessionId = `${SHORT_ID}-0000-1111-2222-333333333333`;
+  const transcript = transcriptFile(world.paths.projectsDir, record.worktree, sessionId);
+  mkdirSync(dirname(transcript), { recursive: true });
+  writeFileSync(transcript, '{"type":"user"}\n');
+  utimesSync(transcript, (NOW - 60_000) / 1000, (NOW - 60_000) / 1000);
+  await releaseCrewSession(record, world.ctx());
+  await sweepCrewConversations(world.paths, {}, NOW + 8 * DAY_MS);
+  expect(existsSync(transcript)).toBe(false);
+  // A resume's own order: the claim, then the conversation back; a sweep runs between it and the launch.
+  const at = NOW + 8 * DAY_MS;
+  expect(
+    await claimResume(world.paths.stateDir, world.repo, record.id, ["stopped"], "resume", at),
+  ).toBe(true);
+  expect(await restoreConversation(world.paths, stored(world, record))).toEqual({ ok: true });
+  await sweepCrewConversations(world.paths, {}, at + 60_000);
+  expect(readFileSync(transcript, "utf8")).toBe('{"type":"user"}\n');
+  // A resume that started nothing gives the claim up: the next sweep moves it again.
+  await sweepCrewConversations(world.paths, {}, at + RESUME_CLAIM_MS);
+  expect(existsSync(transcript)).toBe(false);
+});
+
 test("D69: an agent view that cannot be read releases nothing", async () => {
   const world = await boardWorld();
   const record = await world.addCrew({ state: "done" });
@@ -277,11 +391,12 @@ test("D69: a refusal is said once with its fix, and tried again when the folder 
   writeFileSync(join(record.worktree, "dirty"), "keep");
   const { scope, state } = watchOf(world);
   const first = await watchPass(state, world.ctx(), scope);
-  const kept = world.out.filter((line) => line.includes("its worktree stays"));
-  expect(kept).toHaveLength(1);
-  expect(kept[0]).toContain(`Fix: commit what it names on ${record.branch}`);
+  const kept = world.out.filter((line) => line.includes("not released yet"));
+  expect(kept).toEqual([
+    `${record.name}: not released yet — ${record.worktree} has changes that are not committed (or git cannot read it)\nFix: commit or discard them there; the watch then releases it by itself; it never forces`,
+  ]);
   const second = await watchPass(first.state, world.ctx(), scope);
-  expect(world.out.filter((line) => line.includes("its worktree stays"))).toHaveLength(1);
+  expect(world.out.filter((line) => line.includes("not released yet"))).toHaveLength(1);
   git(record.worktree, "add", "dirty");
   git(record.worktree, "commit", "-qm", "dirty");
   await watchPass(second.state, world.ctx(), scope);
@@ -298,6 +413,20 @@ test("an unknown lead is kept until absence has been observed for a day", async 
       (one) => one.id,
     ),
   ).toEqual([record.id]);
+});
+
+test("D69: a gone lead's released record is listed again only while agent view keeps its row", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "done" });
+  await updateCrew(world.paths.stateDir, world.repo, record.id, { released: { at: "x" } }, NOW);
+  const listed = async (env: Record<string, string>) => {
+    const ctx = world.ctx({}, env);
+    await releasableCrewSessions(ctx);
+    const later = { ...ctx, now: () => ctx.now() + 86_400_001 };
+    return (await releasableCrewSessions(later)).map((one) => one.id);
+  };
+  expect(await listed({})).toEqual([]);
+  expect(await listed(agentsWith("stopped"))).toEqual([record.id]);
 });
 
 test("D69: sessions --finished --remove releases a gone lead's finished crew session", async () => {

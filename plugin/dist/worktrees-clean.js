@@ -122,16 +122,17 @@ function tildify(path, home) {
 }
 
 // src/worktrees/auto-clean.ts
-import { existsSync as existsSync13, readdirSync as readdirSync11 } from "fs";
-import { join as join20 } from "path";
+import { existsSync as existsSync15, readdirSync as readdirSync11 } from "fs";
+import { join as join21 } from "path";
 
 // src/crew/discard.ts
 import { createHash as createHash3 } from "crypto";
 import {
   closeSync as closeSync4,
-  copyFileSync,
+  copyFileSync as copyFileSync2,
+  existsSync as existsSync14,
   lstatSync as lstatSync4,
-  mkdirSync as mkdirSync8,
+  mkdirSync as mkdirSync9,
   mkdtempSync as mkdtempSync2,
   openSync as openSync4,
   readdirSync as readdirSync10,
@@ -143,7 +144,7 @@ import {
   writeFileSync as writeFileSync3
 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname7, join as join19 } from "path";
+import { dirname as dirname8, join as join20 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync } from "fs";
@@ -327,11 +328,9 @@ function localFiles(worktree, mainCheckout, env) {
     const visit = (path) => {
       if (--budget < 0)
         return false;
-      if (safe(path))
-        return true;
       try {
         if (!lstatSync(join4(worktree, path)).isDirectory())
-          return false;
+          return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
         return safe(folder) || readdirSync(join4(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
@@ -344,7 +343,7 @@ function localFiles(worktree, mainCheckout, env) {
 }
 
 // src/crew/end.ts
-import { existsSync as existsSync12, readFileSync as readFileSync17 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync17 } from "fs";
 
 // src/setup/lock.ts
 import {
@@ -870,9 +869,9 @@ function mountPoints(on = platform()) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync11, mkdtempSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync9 } from "fs";
+import { existsSync as existsSync12, mkdtempSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync9 } from "fs";
 import { tmpdir } from "os";
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 
 // src/build-info/index.ts
 var info = {
@@ -952,8 +951,8 @@ function liveSessions(claudeConfigDir) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync10, readFileSync as readFileSync16, statSync as statSync8 } from "fs";
-import { basename as basename6, isAbsolute, join as join17, resolve as resolve4 } from "path";
+import { existsSync as existsSync11, readFileSync as readFileSync16, statSync as statSync8 } from "fs";
+import { basename as basename6, isAbsolute, join as join18, resolve as resolve4 } from "path";
 
 // src/crew/store.ts
 import {
@@ -7789,6 +7788,12 @@ async function appendCrewEvent(stateDir, repo, event, atMs) {
   return line;
 }
 var RESUME_CLAIM_MS = 2 * 60000;
+function resumeClaimHeld(claim, atMs) {
+  if (claim === undefined)
+    return false;
+  const since = Date.parse(claim.at);
+  return Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS;
+}
 var watchStateFields = object({
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
@@ -9631,12 +9636,44 @@ function leadGone(lead, rows, now) {
 }
 
 // src/crew/remove.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync7 } from "fs";
-import { join as join16 } from "path";
+import { existsSync as existsSync10, mkdirSync as mkdirSync8 } from "fs";
+import { join as join17 } from "path";
+
+// src/worktrees/include.ts
+import { copyFileSync, existsSync as existsSync8, mkdirSync as mkdirSync7 } from "fs";
+import { dirname as dirname6, join as join15 } from "path";
+var INCLUDE_TIMEOUT_MS = 60000;
+function copyWorktreeInclude(source, target, env) {
+  const includeFile = join15(source, ".worktreeinclude");
+  if (!existsSync8(includeFile))
+    return [];
+  const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, INCLUDE_TIMEOUT_MS);
+  if (!listed.ok || listed.out === "")
+    return [];
+  const candidates = listed.out.split("\x00").filter((path) => path !== "");
+  const ignored = Bun.spawnSync(["git", "check-ignore", "-z", "--stdin"], {
+    cwd: source,
+    env: gitEnv(env),
+    stdin: Buffer.from(`${candidates.join("\x00")}\x00`),
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: INCLUDE_TIMEOUT_MS,
+    windowsHide: true
+  });
+  const copied = [];
+  for (const path of ignored.stdout.toString().split("\x00")) {
+    if (path === "" || existsSync8(join15(target, path)))
+      continue;
+    mkdirSync7(dirname6(join15(target, path)), { recursive: true });
+    copyFileSync(join15(source, path), join15(target, path));
+    copied.push(path);
+  }
+  return copied;
+}
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync8, lstatSync as lstatSync3, readdirSync as readdirSync8, readFileSync as readFileSync15, rmSync as rmSync3 } from "fs";
-import { dirname as dirname6, join as join15, relative } from "path";
+import { existsSync as existsSync9, lstatSync as lstatSync3, readdirSync as readdirSync8, readFileSync as readFileSync15, rmSync as rmSync3 } from "fs";
+import { dirname as dirname7, join as join16, relative } from "path";
 
 // src/worktrees/verdict.ts
 var MIN_MERGE_TREE_GIT = "2.38.0";
@@ -9783,9 +9820,9 @@ function strayParkedFolders(repo, env) {
   } catch {
     return [];
   }
-  const folders = new Set([join15(repo, ".claude", "worktrees")]);
+  const folders = new Set([join16(repo, ".claude", "worktrees")]);
   for (const listed of all.slice(1))
-    folders.add(dirname6(listed.path));
+    folders.add(dirname7(listed.path));
   const found = [];
   for (const folder of folders) {
     let names;
@@ -9795,7 +9832,7 @@ function strayParkedFolders(repo, env) {
       continue;
     }
     for (const name of names) {
-      const path = join15(folder, name);
+      const path = join16(folder, name);
       const parkedAt = parkedAtOf(path);
       if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
         continue;
@@ -9842,7 +9879,7 @@ function walkLeftover(root, limitMs) {
         walk.tooMany = true;
         return walk;
       }
-      const path = join15(folder, name);
+      const path = join16(folder, name);
       let stat;
       try {
         stat = lstatSync3(path);
@@ -9866,7 +9903,7 @@ function walkLeftover(root, limitMs) {
   return walk;
 }
 function gitEntryWhy(folder) {
-  const dotGit = join15(folder, ".git");
+  const dotGit = join16(folder, ".git");
   let stat;
   try {
     stat = lstatSync3(dotGit);
@@ -9879,7 +9916,7 @@ function gitEntryWhy(folder) {
     return "its .git entry is neither a file nor a folder";
   try {
     const target = readFileSync15(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
-    return target !== "" && existsSync8(target) ? `git still has an administrative folder for it: ${target}` : null;
+    return target !== "" && existsSync9(target) ? `git still has an administrative folder for it: ${target}` : null;
   } catch {
     return "its .git file cannot be read";
   }
@@ -10040,7 +10077,7 @@ function discardBlocker(record, ctx) {
     const all = listWorktrees(record.repo, ctx.env);
     const listed = all.find((one) => samePath(one.path, record.worktree));
     if (listed === undefined || samePath(record.worktree, record.repo))
-      return "discard needs its registered non-main worktree";
+      return "its worktree is not one git lists apart from the main checkout";
     if (all.some((one) => !samePath(one.path, record.worktree) && isInside(one.path, record.worktree)))
       return "another worktree lives inside it";
     if (listed.locked && !(listed.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX))
@@ -10073,7 +10110,28 @@ function discardBlocker(record, ctx) {
   }
 }
 function crewRemovalLockDir(stateDir, repo, id) {
-  return join16(crewFilesDir(stateDir, repo, id), "removal");
+  return join17(crewFilesDir(stateDir, repo, id), "removal");
+}
+async function remakeReleasedWorktree(record, ctx, options) {
+  if (record.released === undefined)
+    return { ok: true, remade: false, record };
+  if (existsSync10(record.worktree))
+    return { ok: false, why: `${record.worktree} exists already; inspect it first` };
+  const added = runGit(record.repo, ["worktree", "add", record.worktree, record.branch], ctx.env, GIT_TIMEOUT_MS);
+  if (!added.ok)
+    return { ok: false, why: `worktree could not be made again: ${added.err}` };
+  try {
+    if (options.include)
+      copyWorktreeInclude(record.repo, record.worktree, ctx.env);
+    const stored = await updateCrew(ctx.paths.stateDir, record.repo, record.id, { released: undefined }, ctx.now());
+    return { ok: true, remade: true, record: stored };
+  } catch (error) {
+    const undone = runGit(record.repo, ["worktree", "remove", "--force", record.worktree], ctx.env, GIT_TIMEOUT_MS);
+    return {
+      ok: false,
+      why: `the worktree's files or the store could not be written (${reasonOf2(error)}); ${undone.ok ? "the worktree was taken back" : `remove ${record.worktree} by hand: ${undone.err.trim()}`}`
+    };
+  }
 }
 async function runCrewRm(ref, ctx, options = {}) {
   const first = actOn(ref, "rm", ctx);
@@ -10082,14 +10140,14 @@ async function runCrewRm(ref, ctx, options = {}) {
   const dir = crewRemovalLockDir(ctx.paths.stateDir, first.record.repo, first.record.id);
   let entered = false;
   try {
-    mkdirSync7(dir, { mode: 448, recursive: true });
+    mkdirSync8(dir, { mode: 448, recursive: true });
     return await withLock(dir, async () => {
       entered = true;
       return await removeCrewSession(ref, ctx, options);
     }, { waitMs: 0 });
   } catch (error) {
     if (error instanceof LockBusyError && !entered) {
-      return refuse(failure2(`crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`), ctx);
+      return refuse(options.release === true ? failure2(`crew rm: ${first.record.name} is being removed or resumed by another run`, "Fix: nothing to do; the watch tries the release again by itself") : failure2(`crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`), ctx);
     }
     throw error;
   }
@@ -10099,11 +10157,16 @@ async function removeCrewSession(ref, ctx, options) {
   if (isRefusal(found))
     return refuse(found, ctx);
   let { record } = found;
-  if (options.release === true) {
-    if (record.released !== undefined)
-      return 0;
-    if (!RELEASE_STATES.includes(record.state) || record.discardPending !== undefined || record.resumeClaim !== undefined)
-      return refuse(failure2("crew rm: release needs an over or stopped record with no pending discard"), ctx);
+  const release = options.release === true;
+  const then = release ? "; the watch then releases it by itself" : ", then run crew rm again";
+  const releasedBefore = record.released !== undefined;
+  if (release) {
+    if (!RELEASE_STATES.includes(record.state))
+      return refuse(failure2(`crew rm: ${record.name} is not over or stopped`), ctx);
+    if (record.discardPending !== undefined)
+      return refuse(failure2(`crew rm: ${pendingDiscardWhy(record)}`), ctx);
+    if (resumeClaimHeld(record.resumeClaim, ctx.now()))
+      return refuse(failure2(`crew rm: a resume of ${record.name} is starting`, "Fix: nothing to do; the watch tries the release again once the resume is over"), ctx);
   }
   if (record.discardPending !== undefined) {
     try {
@@ -10123,6 +10186,13 @@ async function removeCrewSession(ref, ctx, options) {
     const stored = await markState(record, "removed", "removed before it started", ctx);
     ctx.print(`removed ${record.name}; it had not started, so nothing else went`);
     return stored ? 0 : 1;
+  }
+  if (discard && record.released !== undefined) {
+    const remade = await remakeReleasedWorktree(record, ctx, { include: false });
+    if (!remade.ok)
+      return refuse(failure2(`crew rm: ${remade.why}`), ctx);
+    record = remade.record;
+    ctx.print(`made ${relative2(repo, record.worktree)} again on ${record.branch}, to discard it`);
   }
   const proof = options.against === undefined && !discard && validMergeProof(record, ctx) ? record.mergeProof : undefined;
   const lead = options.against !== undefined ? { folder: null, label: options.against.label, sha: options.against.ref } : discard ? { folder: null, label: "discard archive", sha: record.archive?.head ?? "HEAD" } : proof === undefined ? leadRef(record, ctx) : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
@@ -10146,8 +10216,8 @@ async function removeCrewSession(ref, ctx, options) {
       }
     }
   }
-  if (!discard && existsSync9(record.worktree) && hasChanges(record.worktree, ctx.env)) {
-    return refuse(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, "Fix: commit or discard them there, then run crew rm again; it never forces"), ctx);
+  if (!discard && existsSync10(record.worktree) && hasChanges(record.worktree, ctx.env)) {
+    return refuse(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, `Fix: commit or discard them there${then}; it never forces`), ctx);
   }
   let listed;
   try {
@@ -10159,9 +10229,9 @@ async function removeCrewSession(ref, ctx, options) {
   const locked = listed?.locked === true;
   if (locked && !(listed?.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX)) {
     const why = listed?.lockReason === undefined ? "" : ` (${listed.lockReason})`;
-    return refuse(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`), ctx);
+    return refuse(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock${release ? then : ""}`), ctx);
   }
-  if (discard && existsSync9(record.worktree)) {
+  if (discard && existsSync10(record.worktree)) {
     if (listed === undefined)
       return refuse(failure2("crew rm: discard needs its registered worktree; nothing archived or removed"), ctx);
     const blocker = discardBlocker(record, ctx);
@@ -10185,14 +10255,14 @@ async function removeCrewSession(ref, ctx, options) {
       return refuse(failure2(`crew rm: ${reasonOf2(error)}`), ctx);
     }
   }
-  if (options.release === true && existsSync9(record.worktree)) {
+  if (release && existsSync10(record.worktree)) {
     const blocker = discardBlocker(record, ctx);
-    const local = localFiles(record.worktree, record.repo, ctx.env);
+    const local = blocker === null ? localFiles(record.worktree, record.repo, ctx.env) : [];
     if (blocker !== null || local === null || local.length > 0) {
-      return refuse(failure2(`crew rm: ${blocker ?? (local === null ? "git could not list local files" : `local files git does not keep: ${local.join(", ")}`)}`), ctx);
+      return refuse(blocker !== null || local === null ? failure2(`crew rm: ${blocker ?? "git could not list the files it does not keep"}`, `Fix: clear that${then}`) : failure2(`crew rm: local files git does not keep: ${local.join(", ")}`, `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`), ctx);
     }
   }
-  if (record.shortId !== null && (record.state !== "stopped" || options.release === true)) {
+  if (record.shortId !== null && (record.state !== "stopped" || release)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
@@ -10239,7 +10309,7 @@ async function removeCrewSession(ref, ctx, options) {
           ctx.error(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf2(error)})`);
         }
       }
-      return refuse(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand, then run crew rm again`), ctx);
+      return refuse(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand${then}`), ctx);
     }
     releasedReason = listed.lockReason ?? "";
     ctx.print(`unlocked ${shown}`);
@@ -10276,7 +10346,7 @@ async function removeCrewSession(ref, ctx, options) {
     return samePath(one.path, repo) || original !== null && samePath(original, record.worktree);
   });
   if (stuck !== undefined) {
-    return await refuseKept(failure2(`crew rm: ${relative2(repo, stuck.path)} is kept: ${stuck.why}`, "Fix: clear that, then run crew rm again; it never forces"));
+    return await refuseKept(failure2(`crew rm: ${relative2(repo, stuck.path)} is kept: ${stuck.why}`, `Fix: clear that${then}; it never forces`));
   }
   if (listed !== undefined) {
     let judged;
@@ -10300,7 +10370,7 @@ async function removeCrewSession(ref, ctx, options) {
       ctx.print(`forgot ${shown} (its folder was already gone)`);
     } else {
       if (!judged.state.finished) {
-        return await refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, "Fix: clear that, then run crew rm again; it never forces"));
+        return await refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, `Fix: clear that${then}; it never forces`));
       }
       const stopped = await stopOwnLeftovers(record, leftovers, ctx);
       if (stopped.line !== null)
@@ -10309,7 +10379,7 @@ async function removeCrewSession(ref, ctx, options) {
         against: removalBase,
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
-        deleteBranch: (_repo, branch) => options.release === true ? `kept branch ${branch}` : deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
+        deleteBranch: (_repo, branch) => release ? `kept branch ${branch}` : deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
         env: ctx.env,
         ...facts === undefined ? {} : { facts },
         idleLimit: 0
@@ -10317,57 +10387,62 @@ async function removeCrewSession(ref, ctx, options) {
       for (const said of removal.said)
         ctx.print(said);
       if (removal.status !== "removed") {
-        return await refuseKept(failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
+        return await refuseKept(release ? failure2(`crew rm: ${shown} was not removed${removal.said.length > 0 ? `: ${removal.said.join("; ")}` : ""}`, `Fix: clear what holds it${then}; it never forces`) : failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
       }
     }
   }
-  if (existsSync9(record.worktree)) {
-    return await refuseKept(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, "Fix: remove that folder yourself, then run crew rm again; crew rm never deletes what git does not know"));
+  if (existsSync10(record.worktree)) {
+    return await refuseKept(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, `Fix: remove that folder yourself${then}; crew rm never deletes what git does not know`));
   }
   const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS).ok;
-  if (branchLeft() && options.release !== true) {
+  if (branchLeft() && !release) {
     ctx.print(deleteBranchOnRef(repo, removalBase.ref, removalBase.label, record.branch, ctx.env));
   }
   if (discard && record.discardPending !== undefined && !branchLeft())
     record = await completeCrewDiscard(record, ctx);
+  if (release && record.released === undefined)
+    record = await updateCrew(ctx.paths.stateDir, repo, record.id, { released: { at: new Date(ctx.now()).toISOString() } }, ctx.now());
   const sessions = crewSessions(record);
+  let removedAny = false;
   for (const one of sessions) {
     const rm = claudeFailure(ctx, repo, ["rm", one.shortId]);
     const goneAlready = rm !== null && sessionUnknown(ctx, record, one.shortId);
     if (rm !== null && !goneAlready) {
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
-      ctx.error(`  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
-      try {
-        await appendCrewEvent(ctx.paths.stateDir, repo, {
-          lead: record.leadSessionId,
-          name: record.name,
-          state: record.state,
-          text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
-          type: "step",
-          crew: record.id
-        }, ctx.now());
-      } catch (error) {
-        ctx.error(`crew rm: the store could not record it: ${reasonOf2(error)}`);
+      ctx.error(release ? `Fix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)` : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
+      if (!(release && releasedBefore)) {
+        try {
+          await appendCrewEvent(ctx.paths.stateDir, repo, {
+            lead: record.leadSessionId,
+            name: record.name,
+            state: record.state,
+            text: `the worktree is gone${branchGone ? " and so is the branch" : ""}; ${rm}`,
+            type: "step",
+            crew: record.id
+          }, ctx.now());
+        } catch (error) {
+          ctx.error(`crew rm: the store could not record it: ${reasonOf2(error)}`);
+        }
       }
       return 1;
     }
+    if (!goneAlready)
+      removedAny = true;
     ctx.print(goneAlready ? `session ${one.shortId} was gone already` : `removed session ${one.shortId}`);
   }
   const endedAt = new Date(ctx.now()).toISOString();
-  record = await updateCrew(ctx.paths.stateDir, repo, record.id, {
-    sessionEndedAt: record.sessionEndedAt ?? endedAt,
-    ...options.release === true ? { released: { at: endedAt } } : {}
-  }, ctx.now());
-  if (options.release === true) {
-    await appendCrewEvent(ctx.paths.stateDir, repo, {
-      lead: record.leadSessionId,
-      name: record.name,
-      state: record.state,
-      text: `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
-      type: "step",
-      crew: record.id
-    }, ctx.now());
+  record = await updateCrew(ctx.paths.stateDir, repo, record.id, { sessionEndedAt: record.sessionEndedAt ?? endedAt }, ctx.now());
+  if (release) {
+    if (!releasedBefore || removedAny)
+      await appendCrewEvent(ctx.paths.stateDir, repo, {
+        lead: record.leadSessionId,
+        name: record.name,
+        state: record.state,
+        text: releasedBefore ? `released: its agent-view rows are removed now; branch ${record.branch} kept` : `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+        type: "step",
+        crew: record.id
+      }, ctx.now());
     return 0;
   }
   if (discard)
@@ -10513,16 +10588,16 @@ function isCrewWorktree(worktree, records) {
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync16(join17(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync16(join18(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
   if (!isAbsolute(admin))
     admin = resolve4(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join17("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join18("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync8(join17(admin, file)).mtimeMs);
+      last = Math.max(last, statSync8(join18(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -10553,7 +10628,7 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join18(worktree, ".claude", "worktrees");
+  const claudeOwn = join19(worktree, ".claude", "worktrees");
   let entries;
   try {
     entries = readdirSync9(claudeOwn);
@@ -10561,7 +10636,7 @@ function innerWorktreeOf(worktree, all) {
     return null;
   }
   for (const entry of entries) {
-    const folder = join18(claudeOwn, entry);
+    const folder = join19(claudeOwn, entry);
     try {
       if (statSync9(folder).isDirectory() && readdirSync9(folder).length > 0)
         return folder;
@@ -10625,8 +10700,8 @@ function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);
   if (!common.ok || common.out === "")
     return null;
-  const dir = mkdtempSync(join18(tmpdir(), `${COMMAND}-worktrees-`));
-  const objects = join18(common.out, "objects");
+  const dir = mkdtempSync(join19(tmpdir(), `${COMMAND}-worktrees-`));
+  const objects = join19(common.out, "objects");
   return {
     dir,
     own: {
@@ -10784,7 +10859,7 @@ function scanWorktrees(repo, options) {
   const [main, ...others] = all;
   const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
-    if (listed.locked && (!existsSync11(listed.path) || !staleClaudeLock(listed, look))) {
+    if (listed.locked && (!existsSync12(listed.path) || !staleClaudeLock(listed, look))) {
       const onBase = (listed.lockReason ?? "").startsWith("claude session ") && ["ancestor", "replay"].includes(workOnRef(repo, look.ref, listed.head, env, look.replayer));
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
@@ -10793,7 +10868,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync11(listed.path)) {
+    if (listed.prunable || !existsSync12(listed.path)) {
       scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
@@ -10810,7 +10885,7 @@ function removeWorktree(repo, listed, options) {
     return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
   }
   const current = all.find((one) => samePath(one.path, listed.path));
-  if (current === undefined || !existsSync11(current.path)) {
+  if (current === undefined || !existsSync12(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -11361,7 +11436,7 @@ function leadRef(record, ctx) {
       return { why: reasonOf2(error) };
     }
   }
-  if (lead !== null && existsSync12(lead.cwd)) {
+  if (lead !== null && existsSync13(lead.cwd)) {
     const sha = runGit(lead.cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], ctx.env, GIT_TIMEOUT_MS);
     if (sha.ok) {
       const branch = runGit(lead.cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS);
@@ -11502,12 +11577,12 @@ function protectedIgnored(record, ctx) {
   const walk = (file) => {
     if (++visited > DISCARD_IGNORED_MAX_FILES * 2)
       throw new Error(`ignored files must be ${TEXT_RULE}`);
-    const stat = lstatSync4(join19(record.worktree, file));
+    const stat = lstatSync4(join20(record.worktree, file));
     const entry = stat.isDirectory() ? `${file.replace(/\/$/, "")}/` : file;
     if (safeIgnoredEntry(record.worktree, record.repo, entry))
       return;
     if (stat.isDirectory())
-      for (const name of readdirSync10(join19(record.worktree, file)))
+      for (const name of readdirSync10(join20(record.worktree, file)))
         walk(`${file.replace(/\/$/, "")}/${name}`);
     else
       files.push(file);
@@ -11517,6 +11592,8 @@ function protectedIgnored(record, ctx) {
   return files.sort();
 }
 function buildCrewDiscardFacts(record, ctx) {
+  if (record.released !== undefined && !existsSync14(record.worktree))
+    throw new Error("its worktree was released; crew rm --discard makes it again on its kept branch first");
   const head = checkedGit(record.repo, ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`], ctx);
   if (record.discardPending !== undefined)
     throw new Error(pendingDiscardWhy(record) ?? "discard recovery is pending");
@@ -11556,7 +11633,7 @@ function buildCrewDiscardFacts(record, ctx) {
     throw new Error(`ignored files must be ${TEXT_RULE}`);
   for (const file of [...new Set([...changedFiles, ...ignoredFiles])]) {
     hash.update(JSON.stringify(file));
-    const path = join19(record.worktree, file);
+    const path = join20(record.worktree, file);
     let stat;
     try {
       stat = lstatSync4(path);
@@ -11640,12 +11717,12 @@ function buildCrewDiscardFacts(record, ctx) {
 async function archiveCrewDiscard(record, facts, ctx) {
   if (buildCrewDiscardFacts(record, ctx).token !== facts.token)
     throw new Error("the work changed since confirmation; preview and confirm it again");
-  const dir = mkdtempSync2(join19(tmpdir2(), "crew-discard-"));
+  const dir = mkdtempSync2(join20(tmpdir2(), "crew-discard-"));
   try {
-    const index = join19(dir, "index");
+    const index = join20(dir, "index");
     const own = { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1" };
     const sourceIndex = checkedGit(record.worktree, ["rev-parse", "--path-format=absolute", "--git-path", "index"], ctx);
-    copyFileSync(sourceIndex, index);
+    copyFileSync2(sourceIndex, index);
     const stagedTree = checkedGit(record.worktree, ["write-tree"], ctx, own);
     let parent = facts.head;
     const headTree = checkedGit(record.repo, ["rev-parse", `${facts.head}^{tree}`], ctx);
@@ -11653,7 +11730,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
       parent = checkedGit(record.repo, ["commit-tree", stagedTree, "-p", facts.head, "-m", "discarded staged work in progress"], ctx);
     checkedGit(record.worktree, ["read-tree", facts.head], ctx, own);
     for (const file of [...new Set([...facts.changedFiles, ...facts.ignoredFiles])]) {
-      const path = join19(record.worktree, file);
+      const path = join20(record.worktree, file);
       let stat;
       try {
         stat = lstatSync4(path);
@@ -11676,11 +11753,11 @@ async function archiveCrewDiscard(record, facts, ctx) {
     checkedGit(record.repo, ["update-ref", facts.archiveRef, commit, ""], ctx);
     const archive = { ref: facts.archiveRef, head: commit, at: new Date(ctx.now()).toISOString() };
     const indexPath = checkedGit(record.worktree, ["rev-parse", "--path-format=absolute", "--git-path", "index"], ctx);
-    const indexBackup = join19(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.bak`);
-    const indexArchived = join19(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.new`);
-    mkdirSync8(dirname7(indexBackup), { recursive: true, mode: 448 });
-    copyFileSync(sourceIndex, indexBackup);
-    copyFileSync(index, indexArchived);
+    const indexBackup = join20(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.bak`);
+    const indexArchived = join20(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.new`);
+    mkdirSync9(dirname8(indexBackup), { recursive: true, mode: 448 });
+    copyFileSync2(sourceIndex, indexBackup);
+    copyFileSync2(index, indexArchived);
     const pending = {
       head: facts.head,
       archivedHead: commit,
@@ -11772,7 +11849,7 @@ function refLockUnder(dir, depth = 0) {
   try {
     for (const entry of readdirSync11(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        const found = refLockUnder(join20(dir, entry.name), depth + 1);
+        const found = refLockUnder(join21(dir, entry.name), depth + 1);
         if (found !== null)
           return found;
       } else if (entry.name.endsWith(".lock")) {
@@ -11784,10 +11861,10 @@ function refLockUnder(dir, depth = 0) {
 }
 function gitLockHeld(gitDir) {
   for (const name of GIT_LOCKS) {
-    if (existsSync13(join20(gitDir, name)))
+    if (existsSync15(join21(gitDir, name)))
       return name;
   }
-  return refLockUnder(join20(gitDir, "refs"));
+  return refLockUnder(join21(gitDir, "refs"));
 }
 function sessionsToKeep(deps, claudeConfigDir) {
   const running = deps.facts?.sessions ?? liveSessions(claudeConfigDir);
