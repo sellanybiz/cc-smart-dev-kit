@@ -29,6 +29,22 @@ const SHOWN = join("~", ".config", "cc-smart-dev-kit", "jobs.json");
 const readFile = (file: string) =>
   JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
 
+test("job set light-jobs and start-free-gb write validated limits", async () => {
+  const { file, paths } = home();
+  expect((await setJobsSetting(paths, "light-jobs", "2")).ok).toBe(true);
+  expect((await setJobsSetting(paths, "start-free-gb", "4.5")).ok).toBe(true);
+  expect(readFile(file)).toEqual({ lightJobs: 2, startFreeGb: 4.5 });
+  for (const text of ["0", "-1", "1.5", "off", "1e3"]) {
+    expect(await setJobsSetting(paths, "light-jobs", text)).toMatchObject({ ok: false, code: 2 });
+  }
+  for (const text of ["-1", "off", "Infinity", "1e3"]) {
+    expect(await setJobsSetting(paths, "start-free-gb", text)).toMatchObject({
+      ok: false,
+      code: 2,
+    });
+  }
+});
+
 describe("job set max-jobs", () => {
   test("makes jobs.json, and the next job run reads the number", async () => {
     const { file, paths } = home();
@@ -146,7 +162,13 @@ describe("job set: what it refuses", () => {
       error: `Unknown setting: maxjobs. The settings are: ${Object.keys(JOB_SETTINGS).join(", ")}`,
       ok: false,
     });
-    expect(Object.keys(JOB_SETTINGS)).toEqual(["cpu-weight", "io-weight", "max-jobs"]);
+    expect(Object.keys(JOB_SETTINGS)).toEqual([
+      "cpu-weight",
+      "io-weight",
+      "max-jobs",
+      "light-jobs",
+      "start-free-gb",
+    ]);
     // Not a property of Object.prototype either.
     expect((await setJobsSetting(paths, "constructor", "2")).ok).toBe(false);
     expect(existsSync(file)).toBe(false);

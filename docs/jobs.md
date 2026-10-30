@@ -120,7 +120,8 @@ A job that waited says three things, around its own output:
 
 ## Kinds
 
-A kind only says **which commands are heavy**. It has no size.
+A kind only says **which commands the queue counts**, and whether a run of it is light
+(§ Waiting, the lanes). It has no size.
 
 | Kind | Finds | Takes no slot with |
 |---|---|---|
@@ -129,6 +130,7 @@ A kind only says **which commands are heavy**. It has no size.
 | `test:coverage` | `vitest` / `jest` with `--coverage` | `--help`, `--version`, `-h`, `-v`. |
 | `test:run` | `vitest`, `jest` | `--help`, `--version`, `-h`, `-v`. |
 | `build` | `next build` | none. |
+| `install` | `bun install` / `i` / `add`, `npm install` / `i` / `add` / `ci`, `pnpm install` / `i` / `add`, `yarn install` / `add` and a bare `yarn`, whatever their options. A light kind: every run takes a light slot. A script with a similar name (`bun run install-hooks`) is not one. | `--help`, `--version`, `-h`, `-v`. |
 | `image:build` | `docker build`, `docker image build`, `docker builder build`, `docker buildx build` / `b` / `bake`, `docker compose build`, `compose up` / `run` / `create --build`, `docker-compose …`, `podman build`, `buildah build` | none. |
 
 When one command matches two kinds (`vitest --coverage` is a coverage run and a test run), the
@@ -162,13 +164,14 @@ there is. The fields:
 | `printOnly` | Options that only print and stop: a run with any of them takes no slot. |
 | `match` | How the classifier finds the kind (below): `{ "tool", "sub", "flags", "argIncludes", "valued" }` or `{ "script" }`. |
 | `about` | One line for `job kinds`. |
-| `noSlotForFiles` | `true`: a run whose operands are all existing files (`vitest run src/a.test.ts`) runs at once, with no slot, the way a `printOnly` run does. A run with no operand, or with one that is not a file (a folder, a pattern, a name filter), is a full run and waits for a slot. So does a run with an option the reader does not know, written without `=`: its next word may be its value, a file or not. A named file is still a filter to the runner: vitest reads each word as a part of a path and jest as a regular expression, so `vitest run a.test.ts` also runs `data.test.ts`. A full path (`src/a.test.ts`) keeps the run narrow. Came with 1.5.0: a project that sets it raises `requires` to `>=1.5`. |
+| `light` | `true`: every run that does not only print takes a light slot, never a heavy one (the `install` kind). Came with 1.8.0: a project that sets it raises `requires` to `>=1.8`. |
+| `noSlotForFiles` | `true`: a run whose operands are all existing files, at most 10 of them (`vitest run src/a.test.ts`), takes a light slot. Until 1.8.0 it took no slot at all. More than 10 files take a heavy slot. A run with no operand, or with one that is not a file (a folder, a pattern, a name filter), is a full run and waits for a slot. So does a run with an option the reader does not know, written without `=`: its next word may be its value, a file or not. A named file is still a filter to the runner: vitest reads each word as a part of a path and jest as a regular expression, so `vitest run a.test.ts` also runs `data.test.ts`. A full path (`src/a.test.ts`) keeps the run narrow. Came with 1.5.0: a project that sets it raises `requires` to `>=1.5`. |
 | `skipWords` | With `noSlotForFiles`: the words after the tool that are a subcommand, not an operand (`run` in `vitest run`). |
 | `valuedFlags` | With `noSlotForFiles`: the options whose value is the next word (`--config x.ts`, `-t name`), over vitest's and jest's own list, so that value is not read as an operand. |
 
 **A test run on named files.** The default `test:run` kind sets `noSlotForFiles`, with `run`
-as its skip word and vitest's and jest's options that take a value: a test run on one or two
-named files is short and light, and a slot would make it wait behind a build. `test:coverage`
+as its skip word and vitest's and jest's options that take a value. Up to 10 named files
+use a light slot and never wait behind a build; larger file lists use a heavy slot. `test:coverage`
 does not: a coverage run instruments and reports on the whole project whatever files it
 names. For a `script` kind, the operands are the words after the script's name
 (`bun run test src/a.test.ts`). Each operand is checked against the folder the job runs in.
@@ -325,8 +328,19 @@ How a waiting job decides, every half second:
   more (two of three, two of four) steps aside while another person has a job in the line.
   Alone, a person may use all of them, and a running job is never stopped. A "person" is a
   host name: users of one host (one container) share one fair-share slot.
-- **No live memory check.** The queue does not look at free memory. A job is held back only by
-  the count of slots; the memory is kept safe by the ceiling (§ The launch).
+- **Two lanes.** A light run (the `install` kind, a test run on at most 10 named files) takes one
+  of `lightJobs` slots (2 by default), never a heavy one, and a heavy run never takes a light
+  one. Oldest first holds within a lane: an older heavy ticket never holds a light run up.
+  Light slots are this machine's only: in a shared folder a light run takes no slot, only its
+  `--exclusive` name if the folder keeps it.
+- **Free memory.** A heavy or light run waits while this machine has less than `startFreeGb`
+  free (4 GB by default), read through `machineMemory` on every look — but only while another
+  job of the queue holds a slot here, whose end frees memory. With none running, the run
+  starts: the memory belongs to what never queues, and waiting could last for ever. Its line
+  says why: `this machine has 3.1 GB of memory free, and a job starts at 4 GB while another one
+  runs`. Where there is no free-memory reading (macOS, § Memory) it holds nothing, and a
+  print-only or name-only run never waits for memory. The check is a look, not a reservation:
+  two jobs that look at once may both start.
 - **A store it cannot read** while it reports a wait is named "cannot be read" in the
   line; the wait on the other stores goes on.
 - **No give-up timeout.** Running anyway after a while is the crash again. A waiting job
@@ -351,7 +365,10 @@ new one starts. Both read the same files, so:
   reserved: a lease of an older run that held 14 GB takes one slot of the three. A lease that
   holds a name alone (a record number of 0) takes none.
 - **The new `job run` writes `1` in the old `gb` field for a job that holds a slot, and `0` for a
-  name alone**, and no other new field. An older `job run` that reads our records sees a 1 GB
+  name alone**, and from 1.8.0 the job's `lane` (heavy, light or none), which an older `job run`
+  does not read. So it counts a light run as a heavy slot: it waits more, never less. A record
+  without a lane (an older run's) is read from its number: a heavy slot or a name. An older
+  `job run` that reads our records sees a 1 GB
   holder, or a 0 GB name, and goes on counting its own budget. So while both are running, an
   older run's budget is not full of the new runs' jobs: it may start a job on a machine that the
   new runs already fill. The mix lasts until the older runs end.
@@ -366,8 +383,9 @@ new one starts. Both read the same files, so:
 
 ## Memory
 
-Memory is read for one thing in the queue: the ceiling (§ The launch). The crew's start gate
-reads the free memory of the same reading (`docs/design/crew.md`).
+Memory is read for two things in the queue: the ceiling (§ The launch) and the free memory a
+job needs to start (§ Waiting). The crew's start gate reads the free memory of the same reading
+(`docs/design/crew.md`).
 
 - **Linux:** `MemTotal` and `MemAvailable` from `/proc/meminfo`.
 - **A container or a limited group:** the process's cgroup (`/proc/self/cgroup`), or one
@@ -468,6 +486,10 @@ This suits a trusted team on one host.
 
 ## The launch
 
+A light run uses `choom -n HEAVY_OOM_SCORE_ADJ` where available, through the same launch
+chooser as a heavy job. It never enters the heavy slice or changes its ceiling. A run in
+the `none` lane stays plain.
+
 With `launch: auto` (the default), on Linux:
 
 | Mode | When | What |
@@ -553,6 +575,8 @@ Optional. Unknown fields are an error that names the file and the field.
 
 | Field | Default | Meaning |
 |---|---|---|
+| `lightJobs` | 2 | Light runs at once on this machine, a whole number from 1. `job set light-jobs <n>` writes it. |
+| `startFreeGb` | 4 | Free GB a heavy or light run needs to start while another job runs, a number from 0 (§ Waiting). `job set start-free-gb <n>` writes it. |
 | `maxJobs` | 3 | How many heavy jobs run at once on this machine, a whole number from 1. Machine-wide only: a project's file cannot set it. `job set max-jobs <n>` writes it. |
 | `stateDir` | `~/.local/share/cc-smart-dev-kit/jobs` | This user's folder (an absolute path). |
 | `budgetGb` | memory − `reserveGb` | The memory ceiling of all heavy jobs together, in GB (Linux, in a scope). |
@@ -580,9 +604,9 @@ says so, and writes nothing. A job that already runs or waits keeps what it star
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits for a slot, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. `--gb <n>` is accepted and ignored. |
-| `cc-smart-dev-kit job status` | How many slots are in use, who holds them and who waits, here and on each shared folder; the memory ceiling; the CPU and I/O weights of the heavy slices (or why one is not set); the line that changes `maxJobs`; and the job route for the folder it runs in — on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
+| `cc-smart-dev-kit job status` | How many slots are in use, who holds them and who waits, here and on each shared folder; the light slots in use; the free-memory rule and the free memory now; the memory ceiling; the CPU and I/O weights of the heavy slices (or why one is not set); the line that changes `maxJobs`; and the job route for the folder it runs in — on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `cc-smart-dev-kit job kinds` | Every kind: where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
-| `cc-smart-dev-kit job set <setting> <value>` | `max-jobs <n>`, `cpu-weight <n\|off>`, `io-weight <n\|off>`: the person's own settings, written to `jobs.json`. |
+| `cc-smart-dev-kit job set <setting> <value>` | `max-jobs <n>`, `light-jobs <n>`, `start-free-gb <n>`, `cpu-weight <n\|off>`, `io-weight <n\|off>`: the person's own settings, written to `jobs.json`. |
 
 `job status`, on an idle machine and on a full one:
 
@@ -594,6 +618,8 @@ Disk I/O priority: not set: a job runs at systemd's own weight (100). cc-smart-d
 This machine (~/.local/share/cc-smart-dev-kit/jobs): 0 of 3 slots in use
   nothing held, nobody waits
 Heavy jobs at once on this machine: 3 (the default). Change it with: cc-smart-dev-kit job set max-jobs <n>
+Light jobs at once on this machine: 2, 0 in use. Change it with: cc-smart-dev-kit job set light-jobs <n>
+A job starts with 4 GB of memory free, or when no other job runs; 20.5 GB is free now. Change it with: cc-smart-dev-kit job set start-free-gb <n>
 Job route in ~/app: off: a heavy command runs raw, outside the queue (the default). Turn it on for every project with: cc-smart-dev-kit workflow set switches.jobRoute true
 ```
 
@@ -602,8 +628,11 @@ This machine (~/.local/share/cc-smart-dev-kit/jobs): 3 of 3 slots in use
   this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
   this machine: a slot is held by host-a: test:run, bunx vitest run in /home/user/app, since 11:51 (pid 4301)
   this machine: a slot is held by host-b: tsc, bunx tsc --noEmit in /home/user/web, since 11:52 (pid 4377)
+  this machine: a light slot is held by host-a: install, bun install in /home/user/app, since 11:52 (pid 4390)
   this machine: waits for a slot: host-a: tsc, bunx tsc --noEmit in /home/user/app, since 11:53 (pid 4420)
 Heavy jobs at once on this machine: 3 (the default). Change it with: cc-smart-dev-kit job set max-jobs <n>
+Light jobs at once on this machine: 2, 1 in use. Change it with: cc-smart-dev-kit job set light-jobs <n>
+A job starts with 4 GB of memory free, or when no other job runs; 6.2 GB is free now. Change it with: cc-smart-dev-kit job set start-free-gb <n>
 Job route in ~/app: on: a heavy Bash command waits for a slot in this queue (your own switches.jobRoute).
 ```
 

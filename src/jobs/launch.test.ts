@@ -57,6 +57,11 @@ function facts(overrides: Partial<LaunchFacts>, ok: (withOomPolicy: boolean) => 
 }
 
 describe("chooseLaunch", () => {
+  test("a light run gets the kill mark and never probes or enters the heavy scope", () => {
+    const { facts: f, probes } = facts({}, () => true);
+    expect(chooseLaunch(f, true)).toEqual({ mode: "choom" });
+    expect(probes).toEqual([]);
+  });
   test("runs in a scope with OOMPolicy=kill when the probe with it works", () => {
     const { facts: f, probes } = facts({}, () => true);
     expect(chooseLaunch(f)).toEqual({ mode: "scope", oomPolicy: true });

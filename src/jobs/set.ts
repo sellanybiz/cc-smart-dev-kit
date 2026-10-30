@@ -27,7 +27,7 @@ type Parsed = { ok: true; value: number | "off" } | { ok: false; why: string };
 
 interface SettingSpec {
   /** The field of `jobs.json` it writes. */
-  key: "cpuWeight" | "ioWeight" | "maxJobs";
+  key: "cpuWeight" | "ioWeight" | "maxJobs" | "lightJobs" | "startFreeGb";
   parse: (text: string) => Parsed;
 }
 
@@ -53,6 +53,20 @@ export const JOB_SETTINGS: Readonly<Record<string, SettingSpec>> = {
   "cpu-weight": { key: "cpuWeight", parse: parseWeight("cpu-weight") },
   "io-weight": { key: "ioWeight", parse: parseWeight("io-weight") },
   "max-jobs": { key: "maxJobs", parse: parseMaxJobs },
+  "light-jobs": {
+    key: "lightJobs",
+    parse: (text) =>
+      /^\d+$/.test(text) && Number.isSafeInteger(Number(text)) && Number(text) >= 1
+        ? { ok: true, value: Number(text) }
+        : { ok: false, why: "light-jobs is a whole number, 1 or more" },
+  },
+  "start-free-gb": {
+    key: "startFreeGb",
+    parse: (text) =>
+      /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(text) && Number.isFinite(Number(text))
+        ? { ok: true, value: Number(text) }
+        : { ok: false, why: "start-free-gb is a number, 0 or more" },
+  },
 };
 
 export type SetResult = { ok: true; lines: string[] } | { code: 1 | 2; error: string; ok: false };

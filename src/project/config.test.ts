@@ -111,6 +111,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues.fixedLabel": "1.4.0",
   "workflow.issues.readyLabel": "1.4.0",
   "jobs.kinds.*.noSlotForFiles": "1.5.0",
+  "jobs.kinds.*.light": "1.8.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */

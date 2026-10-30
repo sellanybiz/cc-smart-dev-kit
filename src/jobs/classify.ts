@@ -261,6 +261,19 @@ function scriptOrTool(word: string, args: string[]): ToolCall {
 export function toolOf(program: string, args: string[], depth = 0): ToolCall | undefined {
   if (depth > 4) return undefined;
   const at = (valued: readonly string[], from = 0) => firstWord(args, from, valued);
+  if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
+    const index = at(
+      program === "bun" ? BUN_VALUED : program === "pnpm" || program === "yarn" ? PNPM_VALUED : [],
+    );
+    const sub = args[index];
+    if (
+      (program === "yarn" && sub === undefined) ||
+      (sub !== undefined &&
+        ["install", "i", "add", ...(program === "npm" ? ["ci"] : [])].includes(sub))
+    ) {
+      return { name: program, args: sub === undefined ? ["install", ...args] : args.slice(index) };
+    }
+  }
   switch (program) {
     case "bunx":
     case "npx": {

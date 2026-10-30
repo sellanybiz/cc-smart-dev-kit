@@ -43,6 +43,10 @@ export function jobsPaths(home: string): { configFile: string; stateDir: string 
  * slot, oldest first.
  */
 export const DEFAULT_MAX_JOBS = 3;
+/** Small runs have their own lane and never consume a heavy slot. */
+export const DEFAULT_LIGHT_JOBS = 2;
+/** Free memory a new run needs, in GB. */
+export const DEFAULT_START_FREE_GB = 4;
 /**
  * GB kept for what never queues: the desktop, Claude sessions, MCP and dev servers, a DB. The
  * memory ceiling of the heavy jobs together is the machine's memory less this, and never less
@@ -80,6 +84,10 @@ export const jobsMachineConfigSchema = z.strictObject({
    * writes it.
    */
   maxJobs: z.number().int().min(1).optional(),
+  /** How many light runs may run together. Default: DEFAULT_LIGHT_JOBS. */
+  lightJobs: z.number().int().min(1).optional(),
+  /** Free GB needed before a heavy or light run starts. Default: DEFAULT_START_FREE_GB. */
+  startFreeGb: z.number().min(0).optional(),
   /**
    * The memory ceiling of all heavy jobs together on Linux, in GB, instead of the machine's
    * memory less `reserveGb`. Past it a job dies inside its slice.

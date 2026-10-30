@@ -420,7 +420,7 @@ describe("job run: what it refuses", () => {
       code: 2,
       stdout: "",
       stderr:
-        '[cc-smart-dev-kit job] unknown kind "lint": one of tsc, lint:typed, test:coverage, test:run, build, image:build\n',
+        '[cc-smart-dev-kit job] unknown kind "lint": one of tsc, lint:typed, test:coverage, test:run, build, install, image:build\n',
     });
   });
 
@@ -601,12 +601,17 @@ describe("job status", () => {
     expect(lines[1]).toBe(`Memory ceiling for heavy jobs: none: ${NO_GROUP_WHY}`);
     expect(lines[2]).toBe(`CPU priority: not set: ${WEIGHT_OFF("cpu")}`);
     expect(lines[3]).toBe(`Disk I/O priority: not set: ${WEIGHT_OFF("io")}`);
-    expect(lines.slice(4)).toEqual([
+    // The free memory is the machine's real reading, so its number is matched, not fixed.
+    expect(lines[10]).toMatch(
+      /^A job starts with 4 GB of memory free, or when no other job runs; \d+(\.\d)? GB is free now\. Change it with: cc-smart-dev-kit job set start-free-gb <n>$/,
+    );
+    expect(lines.slice(4).filter((_, index) => index !== 6)).toEqual([
       `This machine (${STATE_SHOWN}): 1 of 3 slots in use`,
       `  this machine: a slot is held by ${hostname()}: build, next build in /home/user/app, since 2026-10-11 09:05 (pid ${holder.pid})`,
       `Shared folder ${shared}: 0 of 4 slots in use`,
       "  nothing held, nobody waits",
       MAX_JOBS_LINE(3, false),
+      "Light jobs at once on this machine: 2, 0 in use. Change it with: cc-smart-dev-kit job set light-jobs <n>",
       ROUTE_OFF_LINE,
       `The shared folder ${missing} is missing: this job runs without its slots.`,
       "",
@@ -629,7 +634,7 @@ describe("job status", () => {
     expect(lines[4]).toBe(`This machine (${STATE_SHOWN}): 2 of 2 slots in use`);
     expect(lines.filter((line) => line.includes("a slot is held by"))).toHaveLength(2);
     expect(lines.filter((line) => line.includes("waits for a slot: "))).toHaveLength(1);
-    expect(lines.at(-3)).toBe(MAX_JOBS_LINE(2, true));
+    expect(lines.at(-5)).toBe(MAX_JOBS_LINE(2, true));
     expect(lines.at(-2)).toBe(ROUTE_OFF_LINE);
   });
 
@@ -706,6 +711,8 @@ describe("job kinds", () => {
         "               A test run (vitest, jest). A run on named test files runs at once, with no slot.",
         "build          (default)",
         "               A framework production build (next build).",
+        "install        (default)",
+        "               Install dependencies in the light lane.",
         "image:build    (default)",
         "               A container image build (docker, podman, compose).",
         "e2e            (project)",
@@ -753,7 +760,7 @@ describe("job set", () => {
     const name = cli(m, ["set", "parallel", "2"]);
     expect(name.code).toBe(2);
     expect(name.stderr).toBe(
-      "[cc-smart-dev-kit job] Unknown setting: parallel. The settings are: cpu-weight, io-weight, max-jobs\n",
+      "[cc-smart-dev-kit job] Unknown setting: parallel. The settings are: cpu-weight, io-weight, max-jobs, light-jobs, start-free-gb\n",
     );
     const missing = cli(m, ["set", "max-jobs"]);
     expect(missing.code).toBe(2);
@@ -806,6 +813,8 @@ describe("job status on Windows", () => {
       `This machine (${STATE_SHOWN}): 0 of 3 slots in use`,
       "  nothing held, nobody waits",
       MAX_JOBS_LINE(3, false),
+      "Light jobs at once on this machine: 2, 0 in use. Change it with: cc-smart-dev-kit job set light-jobs <n>",
+      "A job starts with 4 GB of memory free, or when no other job runs; 11 GB is free now. Change it with: cc-smart-dev-kit job set start-free-gb <n>",
       ROUTE_OFF_LINE,
     ]);
   });

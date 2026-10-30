@@ -24,6 +24,19 @@ function configFile(value: unknown): string {
   return file;
 }
 
+test("light jobs and memory admission accept machine limits", () => {
+  expect(loadJobsConfig(configFile({ lightJobs: 2, startFreeGb: 4.5 }))).toEqual({
+    lightJobs: 2,
+    startFreeGb: 4.5,
+  });
+  for (const value of [0, 1.5, -1, "2"]) {
+    expect(() => loadJobsConfig(configFile({ lightJobs: value }))).toThrow(JobsConfigError);
+  }
+  for (const value of [-1, "4", null]) {
+    expect(() => loadJobsConfig(configFile({ startFreeGb: value }))).toThrow(JobsConfigError);
+  }
+});
+
 describe("maxJobs in jobs.json", () => {
   test("three jobs at once, until the person says otherwise", () => {
     expect(DEFAULT_MAX_JOBS).toBe(3);

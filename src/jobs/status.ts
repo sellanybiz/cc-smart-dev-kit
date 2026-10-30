@@ -25,8 +25,10 @@ import { resolveProject } from "../project/resolve";
 import { resolveJobRoute, type WorkflowSource } from "../workflow/resolve";
 import {
   cpuWeightOf,
+  DEFAULT_LIGHT_JOBS,
   DEFAULT_RESERVE_GB,
   DEFAULT_SLICE,
+  DEFAULT_START_FREE_GB,
   ioWeightOf,
   type JobsMachineConfig,
   jobsPaths,
@@ -43,11 +45,13 @@ import {
 import {
   formatSince,
   holderLines,
+  laneUsed,
+  type MemoryAdmission,
+  oneDecimal,
   type ParsedHeld,
   parseHolder,
   shownHolder,
   slotsText,
-  slotsUsed,
 } from "./queue";
 import { type LeaseStore, leaseStore, openSharedStore } from "./store";
 
@@ -140,7 +144,11 @@ export interface JobRouteState {
 
 /** `GET /api/jobs`'s answer: the queue, as data. */
 export interface JobsAnswer {
+  /** This machine's free memory now (null: unreadable here), and what a job needs to start. */
+  admission: MemoryAdmission;
   ceiling: JobCeilingState;
+  /** This machine's light slots (D74): how many, and how many are in use. */
+  lightJobs: { slots: number; used: number };
   memoryGb: number;
   /** The resolved job route for the folder the reader runs in. */
   route: JobRouteState;
@@ -164,6 +172,10 @@ export interface JobsRead {
   ceiling: JobCeilingState;
   /** This machine's `maxJobs`, and whether `jobs.json` sets it. */
   maxJobs: { set: boolean; slots: number };
+  /** This machine's light slots: from `jobs.json` or the default, and the leases that use one. */
+  lightJobs: { slots: number; used: number };
+  /** The free-memory rule a job starts under (`queue.ts` › FREE MEMORY). */
+  admission: MemoryAdmission;
   memory: { limitDir: null | string; platform: string; totalGb: number };
   notes: string[];
   route: JobRouteState;
@@ -303,6 +315,15 @@ function routeState(ctx: JobContext, notes: string[]): JobRouteState {
 }
 
 /** Opens this machine's store and every shared folder it is configured with. */
+/** This machine's free memory now, and the free GB a job needs to start (`startFreeGb`). */
+export function memoryAdmissionOf(config: JobsMachineConfig, memory: MemoryFacts): MemoryAdmission {
+  const available = machineMemory(memory).availableBytes;
+  return {
+    freeGb: available === null ? null : available / GIB,
+    startFreeGb: config.startFreeGb ?? DEFAULT_START_FREE_GB,
+  };
+}
+
 export function openStores(
   ctx: JobContext,
   config: JobsMachineConfig,
@@ -317,6 +338,8 @@ export function openStores(
   }
   const machine = leaseStore({
     capacity: () => maxJobsOf(config),
+    lightCapacity: () => config.lightJobs ?? DEFAULT_LIGHT_JOBS,
+    memoryAdmission: () => memoryAdmissionOf(config, ctx.memory),
     dir,
     label: "this machine",
     onNote,
@@ -410,8 +433,9 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
   const notes: string[] = [];
   const opened = openStores(ctx, config, (line) => notes.push(line));
   const memory = machineMemory(ctx.memory);
-  const stores: JobStoreRead[] = [];
-  for (const store of [opened.machine, ...opened.shared]) stores.push(await readStore(store));
+  const machine = await readStore(opened.machine);
+  const stores: JobStoreRead[] = [machine];
+  for (const store of opened.shared) stores.push(await readStore(store));
   const controllers = managerControllers(ctx);
   const route = routeState(ctx, notes);
   return {
@@ -422,6 +446,11 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
       machineCeiling(config, ctx.memory),
     ),
     maxJobs: { set: config.maxJobs !== undefined, slots: maxJobsOf(config) },
+    lightJobs: {
+      slots: config.lightJobs ?? DEFAULT_LIGHT_JOBS,
+      used: laneUsed(machine.held, "light"),
+    },
+    admission: memoryAdmissionOf(config, ctx.memory),
     memory: {
       limitDir: memory.limit?.dir ?? null,
       platform: ctx.memory.platform,
@@ -440,17 +469,28 @@ export function jobsAnswer(read: JobsRead): JobsAnswer {
   return {
     ceiling: read.ceiling,
     memoryGb: round(read.memory.totalGb),
+    lightJobs: read.lightJobs,
+    admission: read.admission,
     route: read.route,
     stores: read.stores.map((store) => ({
       held: store.held.map(itemOf),
       ...(store.note === undefined ? {} : { note: store.note }),
       slots: store.slots,
-      used: slotsUsed(store.held),
+      used: laneUsed(store.held, "heavy"),
       waiting: store.waiting.map(itemOf),
       where: store.label === "this machine" ? "machine" : store.dir,
     })),
     weights: read.weights,
   };
+}
+
+/** `job status`'s free-memory line: what a job needs to start, and what is free now. */
+function admissionLine(admission: MemoryAdmission): string {
+  const free =
+    admission.freeGb === null
+      ? "free memory cannot be read here, so it holds no job"
+      : `${oneDecimal(admission.freeGb)} GB is free now`;
+  return `A job starts with ${oneDecimal(admission.startFreeGb)} GB of memory free, or when no other job runs; ${free}. Change it with: ${COMMAND} job set start-free-gb <n>`;
 }
 
 /** One decimal, as a number (the JSON carries a number, not a string). */
@@ -531,7 +571,7 @@ export function statusLines(read: JobsRead, home: string, now: number): string[]
       lines.push(`${title}: ${store.note}`);
       continue;
     }
-    lines.push(`${title}: ${slotsUsed(store.held)} of ${slotsText(store.slots)} in use`);
+    lines.push(`${title}: ${laneUsed(store.held, "heavy")} of ${slotsText(store.slots)} in use`);
     lines.push(...holderLines(store.held, store.label, now));
     for (const record of store.waiting) {
       lines.push(
@@ -547,6 +587,10 @@ export function statusLines(read: JobsRead, home: string, now: number): string[]
   lines.push(
     `Heavy jobs at once on this machine: ${read.maxJobs.slots} (${read.maxJobs.set ? "set in jobs.json" : "the default"}). Change it with: ${COMMAND} job set max-jobs <n>`,
   );
+  lines.push(
+    `Light jobs at once on this machine: ${read.lightJobs.slots}, ${read.lightJobs.used} in use. Change it with: ${COMMAND} job set light-jobs <n>`,
+  );
+  lines.push(admissionLine(read.admission));
   lines.push(routeLine(read.route, home));
   lines.push(...read.notes);
   return lines;

@@ -1,14 +1,15 @@
 /**
- * The kinds of heavy job: which commands the queue counts.
+ * The kinds of job: which commands the queue counts.
  *
  * A heavy job is a command that can use many gigabytes: a type check, a type-aware lint,
  * a test run, a production build, a container image build. The queue (`queue.ts`) counts
  * jobs, not gigabytes: up to `maxJobs` heavy jobs run at once on this machine, and one job
  * alone may use all the memory and every core. So a kind has no size. It only says which
- * commands are heavy (`match`), which options only print and stop (`printOnly`: such a run
- * takes no slot), whether a run on named files goes at once (`noSlotForFiles`, read with
- * `skipWords` and `valuedFlags`: such a run takes no slot either), and one line for
- * `cc-smart-dev-kit job kinds` (`about`).
+ * commands it counts (`match`), which options only print and stop (`printOnly`: such a run
+ * takes no slot), whether every run of it is light (`light`: an install), whether a run on a
+ * few named files is light (`noSlotForFiles`, read with `skipWords` and `valuedFlags`), and
+ * one line for `cc-smart-dev-kit job kinds` (`about`). A light run takes one of this machine's
+ * light slots instead of a heavy one (`queue.ts` › TWO LANES).
  *
  * WHY THE SIZES WENT
  *   A fixed size per kind made work slow: on a 32 GB machine one type check at a time ran
@@ -48,15 +49,24 @@ export const matchRuleSchema = z.union([
 
 export type MatchRule = z.infer<typeof matchRuleSchema>;
 
+/** The most named files a run may name and still be light (`noSlotForFiles`). */
+export const LIGHT_FILE_LIMIT = 10;
+
 export const kindSpecSchema = z.strictObject({
+  /**
+   * Every run of this kind that does not only print takes a light slot, never a heavy one (an
+   * install). Came with 1.8.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`).
+   */
+  light: z.boolean().optional(),
   /** Options that only print and stop (`--version`): such a run takes no slot. */
   printOnly: z.array(z.string().min(1)).optional(),
   /**
    * A run of this kind that names only existing files (`vitest run src/a.test.ts`, `bun run
-   * test:run src/a.test.ts`) runs at once, with no slot, like a print-only run: a scoped run
-   * must not wait behind full runs. A folder, a filter that is no file, or no file at all: a
-   * slot, as always. The operands are read past `skipWords` and the values of `valuedFlags`.
-   * Came with 1.5.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`).
+   * test:run src/a.test.ts`), at most `LIGHT_FILE_LIMIT` of them, takes a light slot: it never
+   * waits behind full runs. More files, a folder, a filter that is no file, or no file at all:
+   * a heavy slot. The operands are read past `skipWords` and the values of `valuedFlags`.
+   * Came with 1.5.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`); until 1.8.0 such a
+   * run took no slot at all, and many of them at once froze a machine.
    */
   noSlotForFiles: z.boolean().optional(),
   /** Leading words that are the tool's own command, not files (`vitest run`): `noSlotForFiles` reads past them. */
@@ -222,6 +232,17 @@ export const DEFAULT_KINDS: Kinds = {
     about: "A framework production build (next build).",
     match: [{ tool: "next", sub: ["build"] }],
   },
+  install: {
+    about: "Install dependencies in the light lane.",
+    light: true,
+    printOnly: TEST_PRINT_ONLY,
+    match: ["bun", "npm", "pnpm", "yarn"].flatMap((tool) =>
+      ["install", "i", "add", ...(tool === "npm" ? ["ci"] : [])].map((sub) => ({
+        tool,
+        sub: [sub],
+      })),
+    ),
+  },
   "image:build": {
     about: "A container image build (docker, podman, compose).",
     match: [
@@ -267,14 +288,15 @@ export function isPrintOnly(kind: KindSpec, args: readonly string[]): boolean {
 
 /**
  * Does a run of `kind`, given `args` (the tool's own arguments, or the words after a script's
- * name), name only existing files? Such a run takes no slot when the kind says
- * `noSlotForFiles`. The leading `skipWords` are read past, and every word after `--` is an
+ * name), name only existing files, at most `LIGHT_FILE_LIMIT`? Such a run takes a light slot
+ * when the kind says `noSlotForFiles`. The leading `skipWords` are read past, and every word after `--` is an
  * operand. An option is read past only when its reading is certain: written with `=`
  * (`--reporter=dot`), a known option with a value (`TEST_VALUED_FLAGS` and the kind's own
  * `valuedFlags`: the next word goes with it), or a known option with none (`TEST_BARE_FLAGS`).
- * Any other option may take the next word, which may be a file, so it gives the run a slot. No
- * operand at all is a full run, and one operand that is not a file (`isFile`: a folder, a name
- * filter, a word that names nothing) gives the run a slot: the safe answer.
+ * Any other option may take the next word, which may be a file, so it gives the run a heavy
+ * slot. No operand at all is a full run, and one operand that is not a file (`isFile`: a
+ * folder, a name filter, a word that names nothing) gives the run a heavy slot: the safe
+ * answer.
  */
 export function namesOnlyFiles(
   kind: KindSpec,
@@ -298,7 +320,7 @@ export function namesOnlyFiles(
       index++; // `--project x`
     } else operands.push(arg);
   }
-  return operands.length > 0 && operands.every(isFile);
+  return operands.length > 0 && operands.length <= LIGHT_FILE_LIMIT && operands.every(isFile);
 }
 
 /** The ignored size fields one kind still sets, in `IGNORED_KIND_FIELDS` order. */
