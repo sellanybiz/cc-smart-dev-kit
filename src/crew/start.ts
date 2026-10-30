@@ -1398,6 +1398,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
         all.filter((one) => one.repo === caller.repo),
       );
       const input = placeInputOf(all, lead.sessionId, crew, usage, {
+        continuation: planned.continues != null,
         opus: chosen.real.tier === OPUS_TIER,
         unmet,
       });
@@ -1575,6 +1576,7 @@ export async function startQueued(
     const all = listAllCrew(ctx.paths.stateDir).records;
     const here = all.filter((one) => one.repo === record.repo);
     const input = placeInputOf(all, record.leadSessionId, crew, usage, {
+      continuation: record.continues != null,
       opus: record.model.tier === OPUS_TIER,
       unmet: unmetWaits(record.waitsFor, here),
     });

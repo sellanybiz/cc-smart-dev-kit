@@ -181,6 +181,11 @@ export interface PlaceInput {
   maxOpus: null | number;
   /** True when the new crew session runs on the opus tier. */
   opus: boolean;
+  /**
+   * True when the new crew session continues a hand-off (`continues`, D70): it takes the place
+   * the session that handed off left, so the load never holds it. Every other hold still does.
+   */
+  continuation: boolean;
   /** The memory a crew session may use now, in GB; null where it cannot be read. */
   freeGb: null | number;
   /** `workflow.crew.memoryGb`. */
@@ -201,7 +206,8 @@ export interface PlaceInput {
 
 /**
  * The decision, pure, in the order the line names it: its phases first, then its lead's caps,
- * the machine's ceiling and optional opus ceiling, the memory, the load, and the usage window.
+ * the machine's ceiling and optional opus ceiling, the memory, the load (not for a hand-off's
+ * next crew session, D70), and the usage window.
  */
 export function placeFor(input: PlaceInput): Place {
   if (input.unmet.length > 0) {
@@ -240,7 +246,7 @@ export function placeFor(input: PlaceInput): Place {
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`,
     };
   }
-  if (input.load !== null) {
+  if (input.load !== null && !input.continuation) {
     const limit = loadLimit(input.load, input.loadPerCore);
     if (input.load.oneMinute > limit) {
       return {
@@ -274,11 +280,12 @@ export function placeInputOf(
   leadSessionId: string,
   crew: ResolvedWorkflow["crew"],
   usage: ReturnType<typeof usageFacts>,
-  more: { opus: boolean; unmet: readonly Wait[] },
+  more: { continuation: boolean; opus: boolean; unmet: readonly Wait[] },
 ): PlaceInput {
   const running = runningCrew(records);
   const mine = runningForLead(records, leadSessionId);
   return {
+    continuation: more.continuation,
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
@@ -369,7 +376,9 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
     return null;
   }
   if (!crew.enabled.value) return null;
+  // The guard judges a subagent launch, never a hand-off's next crew session (D70).
   const held = placeInputOf(records, input.leadSessionId, crew, usage, {
+    continuation: false,
     opus: input.opus,
     unmet: [],
   });

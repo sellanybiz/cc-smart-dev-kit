@@ -324,6 +324,7 @@ export function heldBy(
   const running = runningCrew(machine);
   const mine = runningForLead(machine, record.leadSessionId);
   const input = {
+    continuation: record.continues != null,
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,

@@ -132,6 +132,7 @@ describe("the phases a crew session waits for", () => {
 
 describe("D25: start now, or queued with the reason", () => {
   const free = {
+    continuation: false,
     freeGb: 10,
     leadRunning: 0,
     leadRunningOpus: 0,
@@ -237,6 +238,36 @@ describe("D25: start now, or queued with the reason", () => {
     });
     expect(placeFor({ ...busy, opus: true, usagePercent: 90 })).toMatchObject({
       why: expect.stringContaining("the load is 85"),
+    });
+  });
+
+  test("D70: a hand-off's next crew session is not held by the load; every other hold still applies", () => {
+    const busy = { ...free, continuation: true, load: { cores: 16, oneMinute: 88.1 } };
+    expect(placeFor(busy)).toEqual({ start: true });
+    // A new phase at the same load still waits.
+    expect(placeFor({ ...busy, continuation: false })).toEqual({
+      start: false,
+      why: "the load is 88.1 on 16 cores, past 48 (3 for each core); it starts when the load falls",
+    });
+    expect(placeFor({ ...busy, freeGb: 1 })).toEqual({
+      start: false,
+      why: "1 GB free, a crew session needs 2 GB; it starts when memory frees",
+    });
+    expect(placeFor({ ...busy, running: 24 })).toEqual({
+      start: false,
+      why: "24 of 24 crew sessions running on this machine; it starts when one finishes",
+    });
+    expect(placeFor({ ...busy, leadRunning: 4 })).toEqual({
+      start: false,
+      why: "its lead has 4 of 4 crew sessions running; it starts when one of them finishes",
+    });
+    expect(placeFor({ ...busy, opus: true, usagePercent: 90 })).toEqual({
+      start: false,
+      why: "the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
+    });
+    expect(placeFor({ ...busy, unmet: [{ phase: "B", state: "working" }] })).toEqual({
+      start: false,
+      why: "waits for B (working); it starts when each is merged",
     });
   });
 

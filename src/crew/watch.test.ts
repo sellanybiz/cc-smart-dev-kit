@@ -2033,6 +2033,29 @@ describe("crew watch", () => {
     expect(bg?.slice(0, 4)).toEqual(["--bg", "-w", "crew-B6b-portal-live", "--name"]);
   });
 
+  test("D70: a hand-off's queued next crew session takes the one free place before a queued new phase", async () => {
+    const world = await leadWorld();
+    world.writeConfig({ max: 1 });
+    await queuedCrew(world);
+    // Recorded at the same time: the old order put the new phase first (its id sorts first).
+    await queuedCrew(world, {
+      branch: "crew/C1-x-2",
+      continues: "C1-x-0a1b2c",
+      id: "C1-x-2-3d4e5f",
+      name: "C my-app C1 x 2",
+      phase: "C1",
+      slug: "x-2",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-C1-x-2"),
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    const states = Object.fromEntries(
+      listCrew(world.paths.stateDir, world.repo).records.map((one) => [one.id, one.state]),
+    );
+    expect(states).toEqual({ [QUEUED_ID]: "queued", "C1-x-2-3d4e5f": "starting" });
+    const bg = world.claudeCalls().filter((call) => call[0] === "--bg");
+    expect(bg.map((call) => call[2])).toEqual(["crew-C1-x-2"]);
+  });
+
   test("D37: a queued crew session stays queued, and silent, while the cap is full", async () => {
     const world = await leadWorld();
     world.writeConfig({ max: 1 });

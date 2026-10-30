@@ -356,11 +356,16 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
    The one reader is `src/machine/load.ts`, handed to the commands as `CrewContext.load`; native
    Windows has no load average, so no hold applies there and `crew list` says so once. The load is
-   read, like the memory, only when nothing else holds. The queued line
+   read, like the memory, only when nothing else holds. **A hand-off's next crew session is not
+   held by the load** (D70, `PlaceInput.continuation`): it takes the place the session that
+   handed off left, so it adds no session. Every other hold still applies to it. Before D70 a
+   machine kept at a load of 72–88 by full test suites held every successor for hours, and the
+   half-done work never reached its lead. The queued line
    names what holds it. The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones, oldest first, so no lead starves another. The start itself is a compare-and-set
+   queued ones, a hand-off's next crew session first (D70), then oldest first, so no lead starves
+   another. The start itself is a compare-and-set
    under the places lock (`startQueued`): it re-reads the record there and goes on only while the
    store still says `queued`, so two starters of one record after a watch takeover (the lease, WF1)
    start it once, and it starts on the model, effort and start commit the store holds at that

@@ -428,6 +428,27 @@ describe("crew list", () => {
     expect(world.out).toContain("  held: a place is free; its lead's watch starts it");
   });
 
+  test("D70: a hand-off's queued next crew session never says the load holds it", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ shortId: null, state: "queued", worktree: false });
+    await world.addCrew({
+      continues: "A1-handed-off-0a1b2c",
+      phase: "B2",
+      shortId: null,
+      slug: "api",
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx({ load: () => ({ cores: 8, oneMinute: 50 }) }))).toBe(
+      0,
+    );
+    const held = world.out.filter((line) => line.startsWith("  held: "));
+    expect(held).toEqual([
+      "  held: a place is free; its lead's watch starts it",
+      "  held: the load is 50 on 8 cores, past 24 (3 for each core); it starts when the load falls",
+    ]);
+  });
+
   test("another repository's crew sessions are left out, and `--all` brings them in with their folder", async () => {
     const world = await boardWorld();
     await world.addCrew();

@@ -2425,8 +2425,9 @@ when removing it can lose nothing and disturb no one:
 - git has not touched it for an hour (a worktree made a minute ago is not finished: its
   session has not moved into it yet);
 - nothing in it is changed or untracked, and it holds no ignored file that cannot come back
-  (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches and
-  a file the main checkout still holds byte for byte do not block.
+  (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches,
+  logs (an ignored `logs/` folder or `.log` file, at any depth) and a file the main checkout
+  still holds byte for byte do not block, nor does an ignored folder that holds only those.
 
 **The verdict is taken again right before anything is removed**, on the folder as it is then:
 a worktree that was finished when the list was printed and has a new commit a minute later is
@@ -2648,7 +2649,7 @@ merge.
 | `crew.max` | `24` | The machine's safety ceiling: at most this many crew sessions run on this machine at once, across every lead. A lead's own `crew.perLead` is what usually holds a new crew session; the ceiling protects the machine. A crew session past it waits in the queue (`crew start` still returns at once). A value you set keeps binding — keep it above the sum of your leads' caps, or the ceiling fills and the leads queue as they did before the per-lead caps. |
 | `crew.maxOpus` | not set | An optional machine-wide ceiling on the opus tier: the opus kinds (`architecture`, `ui`), or a crew session moved onto opus with `--model`. Not set, there is no machine-wide count: each lead's `crew.perLeadOpus` alone bounds the opus tier. |
 | `crew.memoryGb` | `2` | The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. |
-| `crew.loadPerCore` | `3` | A new crew session waits in the queue while the 1-minute load average is above this many for each core (a number above 0). Memory alone missed a machine at a load of 85 on 16 cores. Where the platform gives no load average (native Windows), the hold does not apply, and `crew list` says so once. |
+| `crew.loadPerCore` | `3` | A new crew session waits in the queue while the 1-minute load average is above this many for each core (a number above 0). Memory alone missed a machine at a load of 85 on 16 cores. A hand-off's next crew session is not held by the load: it takes the place the one that handed off left, and the lead's watch starts it before any other queued crew session. Where the platform gives no load average (native Windows), the hold does not apply, and `crew list` says so once. |
 | `crew.perLead` | `4` | At most this many crew sessions run for one lead at once, in every repository on this machine. One lead can then never take every place and starve the others. A crew session past it waits in the queue, and its lead's watch starts it when a place frees. |
 | `crew.perLeadOpus` | `2` | At most this many of one lead's crew sessions on the opus tier. An opus crew session past it waits; the lead's sonnet crew sessions still start. |
 | `crew.usagePercent` | `85` | Past this share of the plan's 5-hour usage window, a new **opus-tier** crew session waits — unless the gateway's opus slot has a chain with its fallback on, which answers past the window. The window is the one Claude Code's status line reads: cc-smart-dev-kit's status line records it (`cc-smart-dev-kit setup --statusline`), and with no reading stored the guard does not hold, and `crew start` and `crew list` say so once. |

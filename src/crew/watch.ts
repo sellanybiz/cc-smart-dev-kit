@@ -1526,11 +1526,16 @@ async function runPass(
     }
   }
 
-  // Crew sessions that wait for a place: start them, oldest first. Each start is state events.
+  // Crew sessions that wait for a place: start them, a hand-off's next crew session first (it
+  // takes the place the one that handed off left, D70), then oldest first. Each start is state events.
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here
     .filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued")
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    .sort(
+      (a, b) =>
+        Number(b.continues != null) - Number(a.continues != null) ||
+        a.createdAt.localeCompare(b.createdAt),
+    );
   for (const record of queued) {
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.
