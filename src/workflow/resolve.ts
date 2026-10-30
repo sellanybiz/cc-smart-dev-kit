@@ -46,6 +46,7 @@ import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
   type AlertEvent,
+  MACHINE_CREW_KEYS,
   type PersonalWorkflow,
   personalWorkflowSchema,
   type Workflow,
@@ -183,7 +184,14 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (alerts !== undefined) merged.alerts = alerts;
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
-  const crew = mergedGroup(personal.crew, project.crew);
+  // The crew limits are the machine's (D71): a project's value never reaches the merge.
+  const projectCrew = project.crew === undefined ? undefined : { ...project.crew };
+  for (const key of MACHINE_CREW_KEYS) {
+    if (projectCrew !== undefined) {
+      delete projectCrew[key.slice("crew.".length) as keyof typeof projectCrew];
+    }
+  }
+  const crew = mergedGroup(personal.crew, projectCrew);
   if (crew !== undefined) merged.crew = crew;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined) merged.issues = issues;
@@ -192,7 +200,11 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
 
 /** Where the merged value of one key came from. */
 function sourceOf(personal: Workflow, project: Workflow, key: WorkflowKey): WorkflowSource {
-  if (workflowValue(project, key) !== undefined) return "project";
+  if (
+    !(MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(key) &&
+    workflowValue(project, key) !== undefined
+  )
+    return "project";
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
 

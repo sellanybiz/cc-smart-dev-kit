@@ -329,6 +329,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
   test("a switch that lives in the person's own file is refused first: no fetch, no gh, no branch", async () => {
     const w = world();
     for (const argv of [
+      ["propose", "crew.max", "4"],
       ["propose", "switches.statusLine", "true"],
       ["propose", "switches.updateHold", "--unset"],
     ]) {
@@ -361,6 +362,13 @@ It counts once this pull request is merged into main: the merge guard reads the 
       expect(refused).toBe(!isProjectKey(key));
     }
     expect(WORKFLOW_KEYS.filter((one) => !isProjectKey(one))).toEqual([
+      "crew.max",
+      "crew.maxOpus",
+      "crew.memoryGb",
+      "crew.loadPerCore",
+      "crew.perLead",
+      "crew.perLeadOpus",
+      "crew.usagePercent",
       "switches.statusLine",
       "switches.updateHold",
     ]);
@@ -431,11 +439,11 @@ It counts once this pull request is merged into main: the merge guard reads the 
 
   test("a key that needs a newer plugin raises requires in the same commit", async () => {
     const w = world();
-    const run = await w.run(["propose", "crew.perLead", "5"]);
+    const run = await w.run(["propose", "crew.handoffTokens", "500000"]);
     expect(run.status).toBe(0);
-    const file = fileOn(w.repo, "worktree-workflow-crew-perLead-20261023");
-    expect(file.requires).toBe(">=1.1");
-    expect(file.workflow).toEqual({ crew: { perLead: 5 } });
+    const file = fileOn(w.repo, "worktree-workflow-crew-handoffTokens-20261023");
+    expect(file.requires).toBe(">=1.2");
+    expect(file.workflow).toEqual({ crew: { handoffTokens: 500000 } });
   });
 
   test("a branch name already taken: the next free name is used", async () => {
