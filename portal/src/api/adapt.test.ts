@@ -1022,7 +1022,9 @@ describe("the B6d facts", () => {
 
   test("the heavy jobs: the CPU and I/O weights travel, or why one is not set", () => {
     const answer: JobsAnswer = {
+      admission: { freeGb: 20, startFreeGb: 4 },
       ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
+      lightJobs: { slots: 2, used: 0 },
       memoryGb: 32,
       route: { on: false, project: null, source: "default" },
       stores: [],
@@ -1045,7 +1047,9 @@ describe("the B6d facts", () => {
       user: "host-a",
     };
     const answer: JobsAnswer = {
+      admission: { freeGb: null, startFreeGb: 4 },
       ceiling: { gb: null, why: "Windows has no memory group" },
+      lightJobs: { slots: 2, used: 0 },
       memoryGb: 32,
       route: { on: true, project: null, source: "personal" },
       stores: [
