@@ -1609,7 +1609,7 @@ describe("crew resume", () => {
       slug: "api",
     });
     expect(await runCrew(["resume", done.id], world.ctx())).toBe(0);
-    expect(await runCrew(["resume", working.id], world.ctx())).toBe(0);
+    expect(await runCrew(["resume", working.id], world.ctx({ now: () => NOW + MINUTE }))).toBe(0);
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
       resumeCall(world, done.id, "a1b2c3d4"),
@@ -1708,7 +1708,21 @@ describe("D42: crew resume --paused", () => {
       slug: "y",
       ...pausedChange(3),
     });
-    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(0);
+    let clock = NOW;
+    const real = world.ctx().runProgram;
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({
+          now: () => clock,
+          runProgram: (argv, options) => {
+            const result = real(argv, options);
+            if (argv.includes("--resume")) clock += MINUTE;
+            return result;
+          },
+        }),
+      ),
+    ).toBe(0);
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
       resumeCall(

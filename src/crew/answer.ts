@@ -556,6 +556,7 @@ export async function resumeSession(
   ctx: CrewContext,
   record: CrewRecord,
   text: null | string,
+  options: { replacesItself?: boolean } = {},
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
@@ -583,6 +584,7 @@ export async function resumeSession(
   const { stateDir } = ctx.paths;
   const token = randomUUID();
   let claimed: boolean;
+  let previousLaunch = record.launchedAt;
   try {
     const checkout = locateCheckout(record.repo, { env: ctx.env });
     const crew = resolveWorkflow(
@@ -592,6 +594,9 @@ export async function resumeSession(
     const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
     const decision = await withPlacesLock(stateDir, async () => {
       const all = listAllCrew(stateDir).records;
+      previousLaunch = all.find(
+        (one) => one.repo === record.repo && one.id === record.id,
+      )?.launchedAt;
       const input = placeInputOf(all, record.leadSessionId, crew, usage, {
         continuation: false,
         exclude: record,
@@ -599,10 +604,13 @@ export async function resumeSession(
         unmet: [],
         nowMs: ctx.now(),
       });
-      const first = placeFor(input);
-      const place = first.start
-        ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
-        : first;
+      // A model change replaces the process already stopped by its caller. It adds no
+      // session, and refusing it here would leave that process unable to come back.
+      const first = options.replacesItself ? { start: true as const } : placeFor(input);
+      const place =
+        first.start && !options.replacesItself
+          ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+          : first;
       if (!place.start) return { claimed: false, waits: place.why };
       const claimed = await claimResume(
         stateDir,
@@ -644,13 +652,13 @@ export async function resumeSession(
   // the restore holds, never takes a conversation away again while it is being resumed.
   const conversation = await restoreConversation(ctx.paths, record);
   if (!conversation.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
     return { ok: false, unnamed: false, why: conversation.why };
   }
   if (conversation.note !== undefined) ctx.print(conversation.note);
   const restored = await restoreReleasedWorktree(record, ctx);
   if (!restored.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
     return { ok: false, unnamed: false, why: restored.why };
   }
   const prompt = restored.remade
@@ -665,7 +673,7 @@ export async function resumeSession(
   });
   if (result.ok || result.unnamed) return result;
   try {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
   } catch (error) {
     // The claim then ends by itself: a later resume waits that long, and the line says so.
     return {

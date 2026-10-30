@@ -961,7 +961,12 @@ export function crewSettings(id: string, off: readonly string[]): Record<string,
 }
 
 /** Step 6: the worktree, the session, and the session id it records. */
-async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): Promise<number> {
+async function launch(
+  spec: LaunchSpec,
+  record: CrewRecord,
+  ctx: CrewContext,
+  previousLaunch?: string,
+): Promise<number> {
   const { worktree } = spec;
   // The session's own settings and the MCP servers it loads: the two files that make it lean.
   // Both are written here, by the one function both the start and the queued start run, so a
@@ -974,7 +979,9 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
     writeJsonFile(settingsFile, crewSettings(record.id, spec.lean.off));
     writeStoreFile(mcpFile, mcpConfigText(spec.lean.servers));
   } catch (error) {
-    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx);
+    return await failed(record, `its settings could not be written: ${reasonOf(error)}`, ctx, {
+      launchedAt: previousLaunch,
+    });
   }
   const added = runGit(
     spec.repo,
@@ -983,7 +990,9 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
     WORKTREE_ADD_TIMEOUT_MS,
   );
   if (!added.ok)
-    return await failed(record, `git worktree add failed: ${lastLine(added.err)}`, ctx);
+    return await failed(record, `git worktree add failed: ${lastLine(added.err)}`, ctx, {
+      launchedAt: previousLaunch,
+    });
   try {
     copyWorktreeInclude(spec.repo, worktree, ctx.env);
   } catch (error) {
@@ -1004,7 +1013,9 @@ async function launch(spec: LaunchSpec, record: CrewRecord, ctx: CrewContext): P
   });
   const nothingStarted = async (reason: string): Promise<number> => {
     const left = takeBack(spec, ctx.env);
-    return await failed(record, left === null ? reason : `${reason}; ${left}`, ctx);
+    return await failed(record, left === null ? reason : `${reason}; ${left}`, ctx, {
+      launchedAt: previousLaunch,
+    });
   };
   const started = callClaude(deps, spec.claude, args, spec.repo);
   if (!started.ok) return await nothingStarted(started.why);
@@ -1508,7 +1519,9 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
       }),
     );
   } catch (error) {
-    return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx);
+    return await failed(record, `its brief could not be written: ${reasonOf(error)}`, ctx, {
+      launchedAt: undefined,
+    });
   }
   if (planned.briefLine !== null) ctx.print(planned.briefLine);
   if (why !== null) {
@@ -1635,7 +1648,9 @@ export async function startQueued(
   if (sha === null) return;
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
-    await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet);
+    await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet, {
+      launchedAt: record.launchedAt,
+    });
     return;
   }
   let lean: LeanLaunch;
@@ -1654,6 +1669,7 @@ export async function startQueued(
       record,
       error instanceof Refusal ? error.lines.join("; ") : reasonOf(error),
       quiet,
+      { launchedAt: record.launchedAt },
     );
     return;
   }
@@ -1672,5 +1688,6 @@ export async function startQueued(
     },
     record,
     quiet,
+    record.launchedAt,
   );
 }

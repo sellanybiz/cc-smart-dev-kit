@@ -1676,12 +1676,14 @@ export async function releaseResume(
   repo: string,
   id: string,
   token: string,
+  launch?: { previous: string | undefined },
 ): Promise<void> {
   const file = crewFile(stateDir, repo, id);
   await underStoreLock(stateDir, repo, () => {
     const before = readRecord(crewRecordSchema, file);
     if (before?.resumeClaim?.token !== token) return;
     const { resumeClaim: _ended, ...after } = before;
+    if (launch !== undefined) after.launchedAt = launch.previous;
     writeJsonFile(file, checked(crewRecordSchema, after, file));
   });
 }
