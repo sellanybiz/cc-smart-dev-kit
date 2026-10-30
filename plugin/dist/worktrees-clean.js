@@ -9614,12 +9614,15 @@ function validMergeProof(record, ctx) {
   const existing = runGit(record.repo, ["rev-parse", "--verify", proofRef], ctx.env, GIT_TIMEOUT_MS);
   return existing.ok && existing.out === record.mergeProof.leadCommit;
 }
+function rowsOfLead(rows, lead) {
+  return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
+}
 async function observeLeadPresence(stateDir, leads, rows, now) {
   if (rows === null)
     return [...leads];
   const observed = [];
   for (const lead of leads) {
-    const known = rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
+    const known = rowsOfLead(rows, lead).length > 0;
     observed.push(await setLeadPresence(stateDir, lead.repo, lead.sessionId, known, now) ?? lead);
   }
   return observed;
@@ -9629,7 +9632,7 @@ function leadGone(lead, rows, now) {
     return false;
   if (lead.endedAt != null)
     return true;
-  if (rows === null || rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8)))
+  if (rows === null || rowsOfLead(rows, lead).length > 0)
     return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;

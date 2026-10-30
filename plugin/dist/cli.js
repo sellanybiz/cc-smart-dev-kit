@@ -31627,12 +31627,15 @@ function mergeProof(record, ctx) {
   }
   return { head: head.out, leadRef: lead.label, leadCommit: lead.sha };
 }
+function rowsOfLead(rows, lead) {
+  return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
+}
 async function observeLeadPresence(stateDir, leads, rows, now) {
   if (rows === null)
     return [...leads];
   const observed = [];
   for (const lead of leads) {
-    const known = rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
+    const known = rowsOfLead(rows, lead).length > 0;
     observed.push(await setLeadPresence(stateDir, lead.repo, lead.sessionId, known, now) ?? lead);
   }
   return observed;
@@ -31642,10 +31645,18 @@ function leadGone(lead, rows, now) {
     return false;
   if (lead.endedAt != null)
     return true;
-  if (rows === null || rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8)))
+  if (rows === null || rowsOfLead(rows, lead).length > 0)
     return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
+}
+function leadWatchless(lead, rows, now) {
+  if (leadGone(lead, rows, now))
+    return true;
+  if (lead === null || rows === null)
+    return false;
+  const listed = rowsOfLead(rows, lead);
+  return listed.length > 0 && !listed.some(isLiveRow);
 }
 
 // src/crew/archive.ts
@@ -49210,7 +49221,7 @@ async function releasableCrewSessions(ctx) {
   if (rows === null)
     return [];
   const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
-  return crew.records.filter((record) => (record.released === undefined || listsAnySession(rows, record)) && RELEASE_STATES.includes(record.state) && leadGone(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now()));
+  return crew.records.filter((record) => (record.released === undefined || listsAnySession(rows, record)) && RELEASE_STATES.includes(record.state) && leadWatchless(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now()));
 }
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -49514,7 +49525,7 @@ async function runFinishedSessions(paths, options, deps, cwd) {
     };
     const records = await releasableCrewSessions(ctx);
     if (records.length > 0) {
-      out.heading("Finished crew sessions whose lead is gone");
+      out.heading("Finished crew sessions whose lead is stopped or gone");
       for (const record of records)
         out.line("info", `${record.name} \u2014 release worktree and agent-view rows; keep branch ${record.branch}`);
       if (options.remove && (options.yes || (deps.confirm ?? ((question) => terminalPrompts(term)?.confirm(question) ?? false))("Release these crew worktrees and agent-view rows? Their branches and conversations stay."))) {

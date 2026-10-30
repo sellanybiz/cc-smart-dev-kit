@@ -9,13 +9,14 @@ import type { CliPaths } from "../cli/paths";
 import { agentRows, listsAnySession } from "../crew/agents";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
-import { leadGone, observeLeadPresence, RELEASE_STATES } from "../crew/lifecycle";
+import { leadWatchless, observeLeadPresence, RELEASE_STATES } from "../crew/lifecycle";
 import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
 import { type CrewRecord, crewSessions, listAllCrew, listAllLeads } from "../crew/store";
 
 /**
- * Finished crew records whose registered lead is provably gone; unknown presence keeps them. One
- * released already is listed again while agent view still lists a row of it: its `claude rm` failed.
+ * Finished crew records whose registered lead runs no watch: provably gone, or listed with no
+ * process (stopped or failed); unknown presence keeps them. One released already is listed again
+ * while agent view still lists a row of it: its `claude rm` failed.
  */
 export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewRecord[]> {
   const crew = listAllCrew(ctx.paths.stateDir);
@@ -28,7 +29,7 @@ export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewReco
     (record) =>
       (record.released === undefined || listsAnySession(rows, record)) &&
       RELEASE_STATES.includes(record.state) &&
-      leadGone(
+      leadWatchless(
         observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null,
         rows,
         ctx.now(),
