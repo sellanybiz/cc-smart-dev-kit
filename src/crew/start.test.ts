@@ -1009,7 +1009,7 @@ describe("RV3: a crew session runs on the PROJECT's gateway, not the user's file
 describe("D25: the queue — still one line, at once", () => {
   test("D54: the machine's ceiling reached across repositories: queued, no worktree, no session", async () => {
     const world = await ledWorld();
-    world.writeConfig({ max: 6 });
+    world.writePersonal({ max: 6 });
     for (const n of [1, 2, 3, 4, 5, 6]) await otherCrew(world.paths.stateDir, n, "working");
     await otherCrew(world.paths.stateDir, 7, "done");
     await otherCrew(world.paths.stateDir, 8, "queued");
@@ -1028,7 +1028,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("D54: a lead's cap holds its next crew session; another lead's do not count", async () => {
     const world = await ledWorld();
-    world.writeConfig({ perLead: 2 });
+    world.writePersonal({ perLead: 2 });
     await otherCrew(world.paths.stateDir, 1, "working", "P1", null, LEAD_SESSION);
     await otherCrew(world.paths.stateDir, 2, "blocked", "P2", null, LEAD_SESSION);
     await otherCrew(world.paths.stateDir, 3, "working");
@@ -1078,7 +1078,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("D54: workflow.crew.maxOpus, when a person sets it, caps the opus tier across leads", async () => {
     const world = await ledWorld();
-    world.writeConfig({ maxOpus: 2 });
+    world.writePersonal({ maxOpus: 2 });
     await otherCrew(world.paths.stateDir, 1, "working", "P1", "opus");
     await otherCrew(world.paths.stateDir, 2, "working", "P2", "opus");
     const opusArgs = [
@@ -1096,7 +1096,7 @@ describe("D25: the queue — still one line, at once", () => {
       "queued C my-app master-plan W1a launcher: 2 of 2 opus crew sessions running on this machine; it starts when one of them finishes",
     ]);
     // With no machine-wide count set, the same two crew sessions hold nothing back.
-    world.writeConfig({});
+    world.writePersonal({});
     const second = [
       "start",
       "W1b",
@@ -1115,9 +1115,14 @@ describe("D25: the queue — still one line, at once", () => {
     expect(started?.model).toEqual({ named: "opus", resolved: "opus", slot: null, tier: "opus" });
   });
 
-  test("workflow.crew.max of the project sets the ceiling", async () => {
+  test("D71: the person's workflow.crew.max sets the ceiling; a project's own value is ignored", async () => {
     const world = await ledWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
+    // A project file written before 1.8.0 may still set the limit: it parses, and changes nothing.
+    writeFileSync(
+      join(world.repo, ".claude", "cc-smart-dev-kit.json"),
+      JSON.stringify({ workflow: { crew: { enabled: true, max: 5 } } }),
+    );
     await otherCrew(world.paths.stateDir, 1, "blocked");
     expect(await runCrew(startArgs(world.brief), world.ctx())).toBe(0);
     expect(world.out).toEqual([
@@ -1127,7 +1132,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("D54: past 85% of the 5-hour window, a new opus crew session is queued with that reason", async () => {
     const world = await ledWorld();
-    world.writeConfig({ usagePercent: 85 });
+    world.writePersonal({ usagePercent: 85 });
     recordUsageWindow(
       world.paths,
       { rate_limits: { five_hour: { resets_at: T0 / 1000 + 3600, used_percentage: 90 } } },
@@ -1250,7 +1255,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("less free memory than workflow.crew.memoryGb: queued", async () => {
     const world = await ledWorld();
-    world.writeConfig({ memoryGb: 3 });
+    world.writePersonal({ memoryGb: 3 });
     const ctx = world.ctx({ freeMemoryGb: () => Promise.resolve(2.04) });
     expect(await runCrew(startArgs(world.brief), ctx)).toBe(0);
     expect(world.out).toEqual([
@@ -1260,7 +1265,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("a load past workflow.crew.loadPerCore for each core: queued, with the load and the limit", async () => {
     const world = await ledWorld();
-    world.writeConfig({ loadPerCore: 2 });
+    world.writePersonal({ loadPerCore: 2 });
     const busy = world.ctx({ load: () => ({ cores: 16, oneMinute: 85 }) });
     expect(await runCrew(startArgs(world.brief), busy)).toBe(0);
     expect(world.out).toEqual([
@@ -1271,7 +1276,7 @@ describe("D25: the queue — still one line, at once", () => {
 
   test("a load under the limit starts, and no load average does not hold", async () => {
     const world = await ledWorld();
-    world.writeConfig({ loadPerCore: 2 });
+    world.writePersonal({ loadPerCore: 2 });
     const calm = world.ctx({ load: () => ({ cores: 16, oneMinute: 31 }) });
     expect(await runCrew(startArgs(world.brief), calm)).toBe(0);
     expect(world.out[0]).toStartWith("started C my-app master-plan B6b portal-live (");

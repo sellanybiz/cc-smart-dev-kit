@@ -7,7 +7,7 @@ step, push the branch, open a pull request, merge it, and how. It is one module
 whatever runs a command asks them first.
 
 **Resolution, field by field** (`resolve.ts`), the project over the person over the built-in
-default:
+default, except the machine-only crew limits below:
 
 | Where | What holds it |
 |---|---|
@@ -24,6 +24,17 @@ object, so a field can never mean two things in the two files. A broken personal
 `WorkflowConfigError`, which names the file and the field: the person must hear it. A field
 with a wrong kind can never be written (`write.ts` validates the whole file before the
 write), and a file it may not change is left alone rather than half-written.
+
+**D71: crew limits belong to the machine (1.8.0).** The limits protect one machine; a
+project is shared by many machines. `MACHINE_CREW_KEYS` in `schema.ts` names the seven
+limits: `crew.max`, `crew.maxOpus`, `crew.perLead`, `crew.perLeadOpus`, `crew.memoryGb`,
+`crew.loadPerCore` and `crew.usagePercent`. Resolution ignores the project's values and
+reports `personal` or `default`, never `project`. The defaults for `max`, `memoryGb` and
+`loadPerCore` are 12, 6 GB and 1.5 per core. Project choices such as `enabled` and `tag`
+still win. To avoid a breaking schema change, old project limits still parse; doctor
+names them in one informational line and asks to remove them. The shared `isProjectKey`
+policy refuses project set/unset and propose, and removes them from the portal's project
+settings list. Set machine limits without `--project`.
 
 **A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
 write the whole object again with `JSON.stringify`: that laid every line out anew, and a

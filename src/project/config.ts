@@ -232,7 +232,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
   /**
    * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
    * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field
-   * (`src/workflow/`).
+   * except the machine's crew limits (`src/workflow/`).
    */
   workflow: workflowSchema.optional(),
   /**

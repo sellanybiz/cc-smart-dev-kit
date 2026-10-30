@@ -2153,7 +2153,7 @@ describe("crew watch", () => {
 
   test("D62: a phase that waits for a stopped crew session starts once the lead merged it", async () => {
     const world = await leadWorld();
-    world.writeConfig({ max: 4 });
+    world.writePersonal({ max: 4 });
     await addCrew(world, "stopped");
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
@@ -2184,7 +2184,7 @@ describe("crew watch", () => {
 
   test("D25: a queued crew session starts when a place frees, and its start is one line", async () => {
     const world = await leadWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await queuedCrew(world);
     const code = await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.err).toEqual([]);
@@ -2203,7 +2203,7 @@ describe("crew watch", () => {
 
   test("D70: a hand-off's queued next crew session takes the one free place before a queued new phase", async () => {
     const world = await leadWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await queuedCrew(world);
     // Recorded at the same time: the old order put the new phase first (its id sorts first).
     await queuedCrew(world, {
@@ -2226,7 +2226,7 @@ describe("crew watch", () => {
 
   test("D37: a queued crew session stays queued, and silent, while the cap is full", async () => {
     const world = await leadWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await addCrew(world, "working", {
       branch: "crew/B6a-x",
       id: "B6a-x-111111",
@@ -2288,7 +2288,7 @@ describe("crew watch", () => {
 
   test("D54: the watch keeps a queued crew session back at its lead's cap", async () => {
     const world = await leadWorld();
-    world.writeConfig({ perLead: 1 });
+    world.writePersonal({ perLead: 1 });
     await addCrew(world, "working", {
       branch: "crew/B6a-x",
       id: "B6a-x-111111",
@@ -2361,14 +2361,14 @@ describe("crew watch", () => {
     // watch went on starting queued phases up to the old 24. A cap is the person's answer to
     // what the machine can take, so each pass reads it again.
     const world = await leadWorld();
-    world.writeConfig({ max: 2 });
+    world.writePersonal({ max: 2 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
     const ctx = world.ctx({
       sleep: async () => {
         // Between two passes the wait clears and the cap drops to what already runs: the
         // second pass must start nothing. On the value read once, it would start on max 2.
-        world.writeConfig({ max: 1 });
+        world.writePersonal({ max: 1 });
         await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
         await stepEvent(world);
       },
@@ -2385,12 +2385,12 @@ describe("crew watch", () => {
     // The other way round, and the same rule: a value that was read is never kept past a
     // successful read — the second pass starts the queued crew session on the new cap.
     const world = await leadWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
     const ctx = world.ctx({
       sleep: async () => {
-        world.writeConfig({ max: 2 });
+        world.writePersonal({ max: 2 });
         await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
         // A line for the second pass to say either way, so the `--once` ends on it: what is
         // asserted is the start itself, not the line.
@@ -2408,7 +2408,7 @@ describe("crew watch", () => {
     // quietly widen the caps either: the last good value stands for that pass, one line says
     // what happened, and a later pass that fails the same way says nothing more.
     const world = await leadWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
     let passes = 0;
@@ -2437,7 +2437,7 @@ describe("crew watch", () => {
     // itself on every pass, and a file that reads again clears the mark — a later failure is
     // news again, not something the watch has already said.
     const world = await leadWorld();
-    world.writeConfig({ max: 2 });
+    world.writePersonal({ max: 2 });
     await holderCrew(world);
     await queuedCrew(world, { waitsFor: ["B6a"] });
     const configFile = join(world.repo, ".claude", "cc-smart-dev-kit.json");
@@ -2451,7 +2451,7 @@ describe("crew watch", () => {
         }
         if (passes === 2) {
           // The person fixed it: the next pass reads the workflow again and says nothing more.
-          world.writeConfig({ max: 2 });
+          world.writeConfig({});
           return;
         }
         writeFileSync(configFile, "{ not json");
@@ -2611,7 +2611,7 @@ describe("crew watch", () => {
     // owns (`crew.enabled` off; a session in bypass mode). Neither is a reason to start a crew
     // session on a cap nobody could read: the pass says what happened, once, and holds the queue.
     const world = await leadWorld();
-    world.writeConfig({ max: 2 });
+    world.writePersonal({ max: 2 });
     await holderCrew(world);
     const queued = await queuedCrew(world, { waitsFor: ["B6a"] });
     let passes = 0;
@@ -2623,7 +2623,7 @@ describe("crew watch", () => {
           return;
         }
         // Crew sessions are turned off, and the wait clears: only the switch holds it back now.
-        world.writeConfig({ enabled: false, max: 2 });
+        world.writeConfig({ enabled: false });
         await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
       },
     });

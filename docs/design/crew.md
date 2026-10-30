@@ -72,7 +72,8 @@ the kinds come from `crew kinds` (or `crew --help`), the caps from `workflow sho
 
 **The switch** (D34) is `workflow.crew.enabled`, off by default, in the person's
 `workflow.json` (every project's default) and in a project's `.claude/cc-smart-dev-kit.json`,
-which wins field by field like every workflow setting (§ The workflow). Beside it in the same
+which wins for project choices, but never for the machine's crew limits (D71, § The workflow).
+The caps, free-memory threshold and CPU-load threshold come only from the person's file or defaults. Beside it in the same
 group sit one lead's caps — how many of its crew sessions run at once and how many of those on
 the opus tier (`perLead`, `perLeadOpus`) — the machine's guards (the safety ceiling `max`, an
 optional machine-wide `maxOpus`, and the 5-hour `usagePercent` past which a new opus crew
@@ -339,7 +340,7 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    `workflow.crew.perLeadOpus` (2): the tier the model's name stands for, recorded at launch
    (`model.tier`), so the opus kinds (`architecture`, `ui`) and an override onto opus both
    count — so one lead can never take every place and starve the others (the owner runs about
-   a dozen leads at once); **the machine's guards** — `workflow.crew.max` (24) is a safety
+   a dozen leads at once); **the machine's guards** — `workflow.crew.max` (12) is a safety
    ceiling no lead reaches alone, and `workflow.crew.maxOpus` an optional machine-wide opus
    ceiling, unset by default (a person who sets one keeps it); **the 5-hour usage window**
    (D54) — past `workflow.crew.usagePercent` (85) a new opus-tier crew session waits, unless
@@ -352,7 +353,7 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    now (the job queue's own reading of the machine, cgroup ceilings included; heavy jobs reserve
    nothing, so what they use is already gone from it) is at least
    `workflow.crew.memoryGb` (no check where free memory cannot be read: macOS); **the CPU** — a
-   start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (3) times the
+   start waits while the 1-minute load average is above `workflow.crew.loadPerCore` (1.5) times the
    cores (the memory check alone let 24 crew sessions drive a 16-core machine to a load of 85).
    The one reader is `src/machine/load.ts`, handed to the commands as `CrewContext.load`; native
    Windows has no load average, so no hold applies there and `crew list` says so once. The load is
