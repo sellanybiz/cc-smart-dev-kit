@@ -468,6 +468,31 @@ test("an unknown lead is kept until absence has been observed for a day", async 
   ).toEqual([record.id]);
 });
 
+test("D69: a stopped lead's finished crew session is listed at once: no watch of it runs", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "done" });
+  const lead = (state: string, pid: null | number) => ({
+    FAKE_AGENTS_JSON: JSON.stringify([
+      {
+        id: LEAD_SESSION.slice(0, 8),
+        sessionId: LEAD_SESSION,
+        cwd: world.repo,
+        kind: "background",
+        state,
+        status: "idle",
+        pid,
+      },
+    ]),
+  });
+  // Its lead still works: its own watch releases it.
+  expect(await releasableCrewSessions(world.ctx({}, lead("working", 4242)))).toEqual([]);
+  // Its lead is stopped (or failed): nothing else would, so it is listed without the day's wait.
+  for (const state of ["stopped", "failed"]) {
+    const listed = await releasableCrewSessions(world.ctx({}, lead(state, null)));
+    expect(listed.map((one) => one.id)).toEqual([record.id]);
+  }
+});
+
 test("D69: a gone lead's merged crew session that waits for its crew rm is listed too", async () => {
   // No watch of a gone lead releases it, and nothing else would take its row away.
   const world = await boardWorld();
@@ -538,7 +563,7 @@ test("D69: sessions --finished --remove releases a gone lead's finished crew ses
   expect(await run(NOW)).toBe(0);
   expect(existsSync(record.worktree)).toBe(true);
   expect(await run(NOW + day)).toBe(0);
-  expect(out.join("\n")).toContain("Finished crew sessions whose lead is gone");
+  expect(out.join("\n")).toContain("Finished crew sessions whose lead is stopped or gone");
   expect(out.join("\n")).toContain(
     `${record.name} — release worktree and agent-view rows; keep branch ${record.branch}`,
   );

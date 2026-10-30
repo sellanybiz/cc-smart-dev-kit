@@ -50,6 +50,9 @@ What changed:
   stopped by the watch, then released. A merged crew session whose removal is held (left for
   your `crew rm`, or for its chain) is released too, by the watch or, for a lead that is gone,
   by `sessions --finished --remove`; so is one whose worktree went before its `claude rm`.
+  `sessions --finished --remove` also releases the finished crew sessions of a lead that agent
+  view shows stopped or failed, at once, since such a lead runs no watch; a lead agent view no
+  longer lists waits a full day.
   `crew rm --discard` of a released crew session makes its worktree again on the kept branch
   first, then discards as before.
 - **A hand-off goes first (D70).** The next crew session of a hand-off takes the place the
