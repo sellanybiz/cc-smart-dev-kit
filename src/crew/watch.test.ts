@@ -2782,6 +2782,57 @@ describe("crew watch", () => {
   });
 });
 
+describe("D72: queued resumes", () => {
+  test("an unreadable view keeps a resume wait and launches nothing", async () => {
+    const world = await leadWorld();
+    const wait = { at: new Date(T0).toISOString(), answer: null };
+    const record = await addCrew(world, "working", { resumeWaits: wait });
+    mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, record.id), '{"mcpServers":{}}\n');
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("missing checkout");
+    await watchPass(
+      { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+      world.ctx({ now: () => T0 + 120_000 }, { FAKE_AGENTS_JSON: "not json" }),
+      {
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+      },
+    );
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.resumeWaits).toEqual(wait);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
+
+  test("a live session clears its resume wait without launching a copy", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "working", {
+      sessionId: "a1b2c3d4-0000-1111-2222-333333333333",
+      shortId: "a1b2c3d4",
+      resumeWaits: { at: new Date(T0).toISOString(), answer: null },
+    });
+    mkdirSync(record.worktree, { recursive: true });
+    writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
+    writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, record.id), '{"mcpServers":{}}\n');
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("missing checkout");
+    await watchPass(
+      { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+      world.ctx({ now: () => T0 + 120_000 }),
+      {
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+      },
+    );
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.resumeWaits).toBeUndefined();
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
+});
+
 describe("D42: the watch resumes a paused crew session", () => {
   const MINUTE = 60_000;
   const WORKER = "cc-smart-dev-kit-worker";

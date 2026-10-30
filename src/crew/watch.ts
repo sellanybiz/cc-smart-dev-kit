@@ -81,6 +81,7 @@ import {
   resumeSession,
   sendMessageHint,
   sendMessageLine,
+  sessionLiveness,
   UNREADABLE_VIEW_WHY,
 } from "./answer";
 import { sweepCrewConversations } from "./archive";
@@ -1760,6 +1761,20 @@ async function runPass(
   for (const record of drain) {
     if (record.resumeWaits !== undefined) {
       if (scope.mayStart === false || (await scope.goesOn?.()) === false) continue;
+      if (said[resumeHoldKey(record.id)] !== undefined) continue;
+      const liveness = sessionLiveness(ctx, record);
+      if (liveness === "unknown") continue;
+      if (liveness === "live") {
+        await updateCrewIfState(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          [record.state],
+          { resumeWaits: undefined },
+          ctx.now(),
+        );
+        continue;
+      }
       const index = record.resumeWaits.answer;
       const question = index === null ? undefined : record.questions[index];
       const prompt =
@@ -1768,12 +1783,16 @@ async function runPass(
           : deliveryText(question.question, question.answer, lastHeardAnswer(question, true));
       const resumed = await resumeSession(ctx, record, prompt);
       if (resumed.ok) {
-        await markResumed(record, resumed.session, ctx);
-        if (index !== null)
+        const stored = await markResumed(record, resumed.session, ctx);
+        if (!stored) said[resumeHoldKey(record.id)] = "resume was not stored";
+        if (stored && index !== null)
           await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
-      } else if (said[`${record.id}:resume-wait`] !== resumed.why) {
-        say(`${record.name}: waits to come back — ${resumed.why}`);
-        said[`${record.id}:resume-wait`] = resumed.why;
+      } else {
+        if (resumed.unnamed) said[resumeHoldKey(record.id)] = resumed.why;
+        if (said[`${record.id}:resume-wait`] !== resumed.why) {
+          say(`${record.name}: waits to come back — ${resumed.why}`);
+          said[`${record.id}:resume-wait`] = resumed.why;
+        }
       }
       continue;
     }
@@ -1814,7 +1833,14 @@ async function runPass(
   const paused = own.filter((one) => one.state === "paused");
   // A hold lasts while its record stays paused: once the lead brought it back, it goes.
   for (const key of Object.keys(said)) {
-    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+    if (
+      key.startsWith(resumeHoldKey("")) &&
+      !own.some(
+        (one) =>
+          (one.state === "paused" || one.resumeWaits !== undefined) &&
+          resumeHoldKey(one.id) === key,
+      )
+    ) {
       delete said[key];
     }
     // A refusal's mark (`holdRefusedSession`) lasts while its record stays stopped: the state
