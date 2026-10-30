@@ -104,7 +104,7 @@ place (`auto-merge.ts`).
 | `crew.handoffTokens`, `crew.handoffPercent`, `crew.softHours`, `crew.maxHours` | `crew self-watch` (`src/crew/self-watch.ts`, `docs/design/crew.md` § The crew session's steps, its report, and the lead's watch): the crew session's own hand-off line and its time lines. |
 | `crew.keep` | `crew start` (`src/crew/claude.ts` › `leanLaunch`): the plugins and servers a crew session keeps beside the kit's own. |
 | `crew.idleStopMinutes`, `crew.quietMinutes` | the lead's watch (`src/crew/watch.ts`): the idle time past which it ends a blocked crew session, and the time without movement after which it calls one quiet. |
-| `crew.archiveDays` | `archiveDaysOf` (`src/crew/archive.ts`): the days a removed crew session's conversation stays in the kit's archive, for `crew rm`, the watch's removal and `sessions --finished`. |
+| `crew.archiveDays`, `crew.deleteDays` | The conversation timeline (`src/crew/archive.ts`): days from session end until the conversation leaves `/resume` (default 7), and until its archive is deleted (default 30). The watch and `sessions --finished --remove` run it; deletion cannot precede archiving. |
 
 Every `crew.*` key has a reader now, so no row says "nothing yet"; a new key needs its row here
 in the same change as its reader.

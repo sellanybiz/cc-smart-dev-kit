@@ -113,6 +113,7 @@ export interface ResolvedWorkflow {
     maxHours: ResolvedValue<number>;
     /** Days a removed crew session's conversation stays in the kit's archive. */
     archiveDays: ResolvedValue<number>;
+    deleteDays: ResolvedValue<number>;
     /** Null: no tag is set, and the main checkout's folder name stands in. */
     tag: ResolvedValue<null | string>;
   };
@@ -423,6 +424,7 @@ const RESOLVED: {
   "crew.softHours": (r) => r.crew.softHours,
   "crew.maxHours": (r) => r.crew.maxHours,
   "crew.archiveDays": (r) => r.crew.archiveDays,
+  "crew.deleteDays": (r) => r.crew.deleteDays,
   "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
@@ -458,6 +460,12 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const crew = merged.crew ?? {};
+  if (
+    (crew.deleteDays ?? workflowDefaults.crew.deleteDays) <
+    (crew.archiveDays ?? workflowDefaults.crew.archiveDays)
+  ) {
+    throw new Error("crew.deleteDays must be at least crew.archiveDays");
+  }
   const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
@@ -533,6 +541,7 @@ export function resolveWorkflow(
       softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
       maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
       archiveDays: of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays),
+      deleteDays: of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays),
       tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
     },
     switches: {

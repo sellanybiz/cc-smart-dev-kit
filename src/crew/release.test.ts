@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runSessions, type SessionsDeps } from "../sessions/command";
 import { releasableCrewSessions } from "../sessions/finished";
@@ -9,6 +9,7 @@ import { LEAD_SESSION, SHORT_ID } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { resolveWorkflow } from "../workflow/resolve";
 import { resumeSession } from "./answer";
+import { crewArchiveDir, DAY_MS, sweepCrewConversations } from "./archive";
 import { boardLines } from "./board";
 import { releaseCrewSession, restoreReleasedWorktree } from "./release";
 import { crewRemovalLockDir, runCrewRm } from "./remove";
@@ -20,6 +21,7 @@ import {
   updateCrew,
   type WatchState,
 } from "./store";
+import { transcriptFile } from "./transcript";
 import { watchPass } from "./watch";
 
 /** The record as the store holds it now; a test fails here when it is gone. */
@@ -348,4 +350,27 @@ test("D69: sessions --finished --remove releases a gone lead's finished crew ses
   expect(stored(world, record).released).toBeDefined();
   expect(git(world.repo, "show", `${record.branch}:result`).trim()).toBe("kept");
   expect(world.claudeCalls()).toContainEqual(["rm", SHORT_ID]);
+});
+
+test("D69: released, archived eight days later, then resumed: the conversation and worktree come back", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "stopped" });
+  commitIn(record, "result");
+  const sessionId = `${SHORT_ID}-0000-1111-2222-333333333333`;
+  const transcript = transcriptFile(world.paths.projectsDir, record.worktree, sessionId);
+  mkdirSync(dirname(transcript), { recursive: true });
+  writeFileSync(transcript, '{"type":"user"}\n');
+  utimesSync(transcript, (NOW - 60_000) / 1000, (NOW - 60_000) / 1000);
+  await releaseCrewSession(record, world.ctx());
+  // Seven days in /resume, then the archive.
+  await sweepCrewConversations(world.paths, {}, NOW + 6 * DAY_MS);
+  expect(existsSync(transcript)).toBe(true);
+  await sweepCrewConversations(world.paths, {}, NOW + 8 * DAY_MS);
+  expect(existsSync(transcript)).toBe(false);
+  expect(await resumeSession(world.ctx(), stored(world, record), "continue")).toMatchObject({
+    ok: true,
+  });
+  expect(readFileSync(transcript, "utf8")).toBe('{"type":"user"}\n');
+  expect(existsSync(join(record.worktree, "result"))).toBe(true);
+  expect(existsSync(crewArchiveDir(world.paths.stateDir, world.repo, record.id))).toBe(false);
 });

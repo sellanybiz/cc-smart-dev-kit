@@ -220,8 +220,9 @@ A refusal is reported, later eligible rows are attempted, and any failure return
 
 --finished also lists what removed crew sessions left in /resume: their conversations still in
 Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
-past crew.archiveDays (${workflowDefaults.crew.archiveDays} by default). --remove asks once more, then moves each conversation into
-the kit's archive (gzipped, deleted after crew.archiveDays), removes each empty folder and deletes
+past crew.deleteDays (${workflowDefaults.crew.deleteDays} by default). Conversations stay in /resume for crew.archiveDays
+(${workflowDefaults.crew.archiveDays} by default) after the session ended, then move to the gzipped archive. Both ages count
+from session end. --remove asks once more, moves due conversations, removes empty folders and deletes
 each expired archive. A lead's session, a crew session still on the board, one a running Claude
 holds and one written after its removal are never taken. --id leaves this part out.
 Use --finished separately from --open and --dry-run.`;

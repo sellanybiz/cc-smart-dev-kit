@@ -1,5 +1,5 @@
 /**
- * A removed crew session's conversation leaves Claude Code's `/resume` list (AR1).
+ * A crew session's conversation leaves Claude Code's `/resume` list on a timeline (AR1, D69).
  *
  * `claude rm <short id>` deletes a background session's job and its worktree, never its
  * conversation: `<config>/projects/<project folder>/<session id>.jsonl` and the `<session id>/`
@@ -7,9 +7,9 @@
  * for ever. Claude Code's own `cleanupPeriodDays` cannot help: it deletes every conversation older
  * than its days, the person's own too.
  *
- * So when the kit removes a crew session — `crew rm`, and the watch's removal after a merge, which
- * runs the same steps (`runCrewRm`) — and only after `claude rm` succeeded, its conversation moves
- * into the kit's own state:
+ * So once a crew session's session has ended — the kit released it (D69) or removed it, and
+ * `claude rm` succeeded — the record carries `sessionEndedAt`, and **`workflow.crew.archiveDays`
+ * (7 by default) after that end** its conversation moves into the kit's own state:
  *
  *   <stateDir>/crew-archive/<repo key>/<crew id>/archive.json  who it was, from where, and when
  *   <stateDir>/crew-archive/<repo key>/<crew id>/report.json   a copy of its hand-back report
@@ -21,25 +21,28 @@
  * projects folder (`archive-read.ts`). The project folder goes too once it holds nothing. Why not
  * delete at once: the conversation is the only record of why a crew session did what it did.
  *
- * **After `workflow.crew.archiveDays`** (7 by default) an archive is deleted: whenever the kit
- * archives, and when `sessions --finished --remove` runs. No timer, no service.
+ * **`workflow.crew.deleteDays` (30 by default) after the same end** the archive is deleted.
+ * One sweep does both (`sweepCrewConversations`): the lead's watch, at most once an hour, and
+ * `sessions --finished --remove`. No timer, no service. A resume puts an archived conversation
+ * back first (`restoreConversation`), and a record that works again starts a new timeline.
  *
  * **Never taken** (`.claude/rules/setup-and-managed-files.md`: never take what is not ours): a
- * lead's session (any lead record's, any crew record's lead), a session a crew record that is not
- * removed names, a session a running Claude process holds, and every file the store does not
+ * lead's session (any lead record's, any crew record's lead), a session of a crew record whose
+ * session has not ended (`sessionsNeverTaken`), a session a running Claude process holds, a file
+ * written after that end, and every file the store does not
  * name — another session in the same project folder keeps that folder. Only regular files move;
  * a link or anything else stays, and so does the folder around it; a session folder that is
  * itself a link is not followed. A file written while it is archived stays where it is.
  *
  * **One run at a time.** Every move and every prune holds one lock on the archive folder
  * (`withArchiveLock`), and a move reads the conversation again once it holds it: two runs on the
- * same record (the watch's removal and a `crew rm`, the background clean and a sweep) take turns,
+ * same record (two watches' sweeps, a sweep and a resume's restore) take turns,
  * and the second finds nothing left.
  *
  * **Nothing is lost on the way.** Each file is written to a temporary name, synced and renamed into
  * place before its original is deleted: a move that stops halfway leaves every file in one place
- * or the other (or, for a moment, both: the readers count it once), and the next removal or sweep
- * finishes it. An archived copy is never overwritten: a file whose archived copy has other bytes (a
+ * or the other (or, for a moment, both: the readers count it once), and the next sweep finishes
+ * it. An archived copy is never overwritten: a file whose archived copy has other bytes (a
  * job that kept running wrote it again, seen live) stays where it is, nothing of that conversation
  * moves, and the reason is said. A copy is deleted only when its source is still there and has
  * changed: a source that is gone keeps its copy.
@@ -51,6 +54,7 @@ import {
   createWriteStream,
   existsSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -62,12 +66,14 @@ import {
   type Stats,
   unlinkSync,
   utimesSync,
+  writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createGzip, gunzipSync } from "node:zlib";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
+import { liveSessions } from "../hooks/sessions";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { isSessionId } from "../sessions/saved-sessions";
 import { withLock } from "../setup/lock";
@@ -75,8 +81,172 @@ import { resolveWorkflow } from "../workflow/resolve";
 import { repoKey } from "../workflow/reviews";
 import { ARCHIVE_PROJECTS, crewArchiveRoot } from "./archive-read";
 import type { Env } from "./context";
-import { type CrewRecord, crewSessions, listAllCrew, listAllLeads, writeStoreFile } from "./store";
+import { RELEASE_STATES } from "./lifecycle";
+import {
+  type CrewRecord,
+  crewSessions,
+  listAllCrew,
+  listAllLeads,
+  readCrewEvents,
+  writeStoreFile,
+} from "./store";
 import { transcriptFile } from "./transcript";
+
+/** A crew session's conversation still in Claude Code's projects folder, due for the archive. */
+export interface LeftConversation {
+  record: CrewRecord;
+  /** Its files there: the transcript, its subagents' and its tool results. */
+  files: number;
+  projectDir: string;
+  /** The sessions of the record that passed every check; the move takes these and no others. */
+  sessionIds: string[];
+}
+
+/**
+ * What the timeline finds (D69): the conversations due for the archive, the empty project folders
+ * of crew worktrees, the conversations that stay and why (one not yet due names its date), the
+ * archives past their delete date, and the delete date of every other archive. What
+ * `sessions --finished` lists and `--remove` sweeps; machine-wide, like the finished sessions.
+ */
+export interface CrewLeftovers {
+  conversations: LeftConversation[];
+  emptyFolders: string[];
+  kept: Array<{ record: CrewRecord; why: string }>;
+  expired: PrunedArchive[];
+  scheduled?: Array<{ name: string; deleteAt: string }>;
+  error: string | null;
+}
+
+/**
+ * When each record's session ended: its `sessionEndedAt`; a record from before the field falls
+ * back to the event that removed it (the store's own log, read once per repository when first
+ * asked), then to its last write.
+ */
+export function removalTimes(stateDir: string): { at: (record: CrewRecord) => number } {
+  const cache = new Map<string, Map<string, number>>();
+  return {
+    at(record) {
+      if (record.sessionEndedAt !== undefined) return Date.parse(record.sessionEndedAt);
+      let times = cache.get(record.repo);
+      if (times === undefined) {
+        times = new Map();
+        for (const event of readCrewEvents(stateDir, record.repo).events) {
+          if (event.type !== "state" || !ARCHIVED_STATES.includes(event.state)) continue;
+          const at = Date.parse(event.at);
+          if (Number.isFinite(at))
+            times.set(event.crew, Math.min(times.get(event.crew) ?? Infinity, at));
+        }
+        cache.set(record.repo, times);
+      }
+      return times.get(record.id) ?? Date.parse(record.updatedAt);
+    },
+  };
+}
+
+/**
+ * Reads the timeline, read only: only records whose session ended (removed, discarded, or an
+ * over record with `sessionEndedAt`), never a lead's session, one a record still at work names,
+ * or one a running Claude holds; a conversation written after that end was resumed since, and
+ * stays. A store or a session record it cannot read fails closed: nothing is listed, so nothing
+ * moves.
+ */
+export function readCrewLeftovers(paths: CliPaths, deps: { env: Env; now: number }): CrewLeftovers {
+  const out: CrewLeftovers = {
+    conversations: [],
+    emptyFolders: [],
+    kept: [],
+    expired: [],
+    error: null,
+  };
+  try {
+    const crew = listAllCrew(paths.stateDir);
+    if (crew.broken.length)
+      throw new Error(
+        "Could not read every crew record; repair the crew store before moving them.",
+      );
+    const never = sessionsNeverTaken(paths.stateDir, null);
+    const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+    const times = removalTimes(paths.stateDir);
+    const daysOf = archiveDaysOf(paths, deps.env);
+    for (const record of crew.records) {
+      if (!ARCHIVED_STATES.includes(record.state) && record.sessionEndedAt === undefined) continue;
+      const keep = (why: string) => {
+        if (!out.kept.some((one) => one.record.id === record.id && one.why === why))
+          out.kept.push({ record, why });
+      };
+      for (const { sessionId } of crewSessions(record)) {
+        if (sessionId === null || !isSessionId(sessionId) || never.has(sessionId)) continue;
+        const found = conversationOf(paths.projectsDir, record.worktree, sessionId);
+        if (!found.files.length) {
+          if (holdsNothing(found.projectDir) && !out.emptyFolders.includes(found.projectDir))
+            out.emptyFolders.push(found.projectDir);
+          continue;
+        }
+        if (running.has(sessionId)) {
+          keep("a running Claude session holds it");
+          continue;
+        }
+        const differing = differingArchivedCopy(paths, record, found);
+        if (differing !== null) {
+          keep(`${differing} differs from its archived copy, so neither is overwritten`);
+          continue;
+        }
+        const at = times.at(record);
+        if (found.files.some((file) => lstatSync(join(found.projectDir, file)).mtimeMs > at)) {
+          keep("it was written after its crew session was removed");
+          continue;
+        }
+        const days = daysOf(record.repo);
+        if (days === null || deps.now < at + days * DAY_MS) {
+          keep(
+            days === null
+              ? "its archive days cannot be read"
+              : `moves to the archive ${new Date(at + days * DAY_MS).toISOString()}`,
+          );
+          continue;
+        }
+        const listed = out.conversations.find(
+          (one) => one.record.id === record.id && one.record.repo === record.repo,
+        );
+        if (listed) {
+          listed.files += found.files.length;
+          listed.sessionIds.push(sessionId);
+        } else
+          out.conversations.push({
+            record,
+            files: found.files.length,
+            projectDir: found.projectDir,
+            sessionIds: [sessionId],
+          });
+      }
+    }
+    const deleteOf = deleteDaysOf(paths, deps.env);
+    out.expired = expiredArchives(paths.stateDir, deleteOf, deps.now).pruned;
+    out.scheduled = [];
+    for (const repo of foldersUnder(crewArchiveRoot(paths.stateDir))) {
+      for (const dir of foldersUnder(repo)) {
+        const manifest = readArchiveManifest(dir);
+        if (manifest === null || out.expired.some((one) => one.dir === dir)) continue;
+        const record = crew.records.find(
+          (one) => one.id === manifest.crew && one.repo === manifest.repo,
+        );
+        const days = deleteOf(manifest.repo);
+        if (days === null) continue;
+        const at =
+          record === undefined
+            ? Date.parse(manifest.sessionEndedAt ?? manifest.archivedAt)
+            : times.at(record);
+        out.scheduled.push({
+          name: manifest.name,
+          deleteAt: new Date(at + days * DAY_MS).toISOString(),
+        });
+      }
+    }
+  } catch (error) {
+    return { conversations: [], emptyFolders: [], kept: [], expired: [], error: reasonOf(error) };
+  }
+  return out;
+}
 
 /** The schema version of `archive.json`. */
 export const CREW_ARCHIVE_VERSION = 1;
@@ -129,6 +299,7 @@ const manifestSchema = () =>
     /** The project folder's name under `projects/`, as Claude Code named it. */
     projectFolder: z.string().min(1),
     archivedAt: z.iso.datetime(),
+    sessionEndedAt: z.iso.datetime().optional(),
   });
 export type ArchiveManifest = z.infer<ReturnType<typeof manifestSchema>>;
 
@@ -198,8 +369,9 @@ export function conversationOf(
 /**
  * The sessions the archive never takes: every lead's (each lead record's, and each crew record's
  * lead), and every session (`crewSessions`: the current and the earlier ones) of each crew record
- * that is not removed — but `exceptCrew`'s, the one being removed. Throws when a record of the store cannot be read: then nobody can say whose a
- * session is, and nothing is taken.
+ * whose session has not ended — not removed or discarded, and no `sessionEndedAt` on an over
+ * record (D69) — but `exceptCrew`'s. Throws when a record of the store cannot be read: then
+ * nobody can say whose a session is, and nothing is taken.
  */
 export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string): Set<string> {
   const crew = listAllCrew(stateDir);
@@ -211,7 +383,10 @@ export function sessionsNeverTaken(stateDir: string, exceptCrew: null | string):
   for (const lead of leads.records) kept.add(lead.sessionId);
   for (const record of crew.records) {
     kept.add(record.leadSessionId);
-    const archived = ARCHIVED_STATES.includes(record.state) || record.id === exceptCrew;
+    const archived =
+      ARCHIVED_STATES.includes(record.state) ||
+      (record.sessionEndedAt !== undefined && RELEASE_STATES.includes(record.state)) ||
+      record.id === exceptCrew;
     if (!archived) {
       for (const one of crewSessions(record)) if (one.sessionId !== null) kept.add(one.sessionId);
     }
@@ -484,6 +659,7 @@ async function moveConversation(input: ArchiveInput, sessionId: string): Promise
     if (readArchiveManifest(dir) === null) {
       const manifest: ArchiveManifest = {
         archivedAt: new Date(input.nowMs).toISOString(),
+        sessionEndedAt: new Date(removalTimes(paths.stateDir).at(record)).toISOString(),
         crew: record.id,
         name: record.name,
         projectFolder: basename(found.projectDir),
@@ -586,7 +762,24 @@ export function expiredArchives(
       }
       // A folder another run deleted meanwhile has nothing left to expire.
       const changed = lstatSync(dir, { throwIfNoEntry: false })?.mtimeMs;
-      const at = manifest === null ? changed : Date.parse(manifest.archivedAt);
+      const record =
+        manifest === null
+          ? undefined
+          : listAllCrew(stateDir).records.find(
+              (one) => one.id === manifest.crew && one.repo === manifest.repo,
+            );
+      if (
+        record !== undefined &&
+        record.sessionEndedAt === undefined &&
+        !ARCHIVED_STATES.includes(record.state)
+      )
+        continue;
+      const at =
+        record !== undefined
+          ? removalTimes(stateDir).at(record)
+          : manifest === null
+            ? changed
+            : Date.parse(manifest.sessionEndedAt ?? manifest.archivedAt);
       if (at === undefined) continue;
       const ageMs = nowMs - at;
       if (ageMs > days * DAY_MS)
@@ -636,6 +829,167 @@ export async function pruneCrewArchives(
  * only for a settings file that is there and cannot be read: that archive stays until it can.
  */
 export function archiveDaysOf(paths: CliPaths, env: Env): (repo: null | string) => null | number {
+  return timelineDaysOf(paths, env, "archiveDays");
+}
+
+export function deleteDaysOf(paths: CliPaths, env: Env): (repo: null | string) => null | number {
+  return timelineDaysOf(paths, env, "deleteDays");
+}
+
+/**
+ * The timeline's one sweep (D69): every conversation due for the archive goes through the same
+ * reader `sessions --finished` lists from, then every archive past its delete date goes.
+ * `outcomes` holds one entry per conversation it tried (moved, kept or failed); `kept` the ones
+ * the reader kept before trying, with why.
+ */
+export async function sweepCrewConversations(
+  paths: CliPaths,
+  env: Env,
+  now: number,
+): Promise<{
+  outcomes: Array<{ record: CrewRecord; outcome: ArchiveOutcome }>;
+  kept: CrewLeftovers["kept"];
+  deleted: PrunedArchive[];
+}> {
+  const left = readCrewLeftovers(paths, { env, now });
+  if (left.error !== null) throw new Error(left.error);
+  const neverTaken = sessionsNeverTaken(paths.stateDir, null);
+  const running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+  const outcomes: Array<{ record: CrewRecord; outcome: ArchiveOutcome }> = [];
+  for (const one of left.conversations) {
+    const outcome = await archiveConversation({
+      paths,
+      record: one.record,
+      nowMs: now,
+      neverTaken,
+      running,
+      only: new Set(one.sessionIds),
+    });
+    outcomes.push({ record: one.record, outcome });
+  }
+  for (const folder of left.emptyFolders) removeEmptyFolder(folder);
+  const pruned = await pruneCrewArchives(paths.stateDir, deleteDaysOf(paths, env), now);
+  return { outcomes, kept: left.kept, deleted: pruned.pruned };
+}
+
+/** Restores only this record's archived files, refusing conflicts before writing anything. */
+export async function restoreConversation(
+  paths: Pick<CliPaths, "stateDir" | "projectsDir">,
+  record: CrewRecord,
+): Promise<{ ok: true; note?: string } | { ok: false; why: string }> {
+  const dir = crewArchiveDir(paths.stateDir, record.repo, record.id);
+  if (!existsSync(dir)) return { ok: true };
+  try {
+    return await withArchiveLock(paths.stateDir, () => {
+      const manifest = readArchiveManifest(dir);
+      if (manifest === null || manifest.crew !== record.id || manifest.repo !== record.repo)
+        throw new Error("the conversation archive has no matching manifest");
+      const root = join(dir, ARCHIVE_PROJECTS);
+      const ids = new Set(crewSessions(record).map((one) => one.sessionId));
+      const inspect = (folder: string): void => {
+        if (!lstatSync(folder).isDirectory())
+          throw new Error("the archive contains a link or non-regular entry");
+        for (const name of readdirSync(folder)) {
+          const path = join(folder, name);
+          const stat = lstatSync(path);
+          if (stat.isDirectory()) inspect(path);
+          else if (!stat.isFile())
+            throw new Error("the archive contains a link or non-regular entry");
+        }
+      };
+      inspect(dir);
+      const prepared = regularFiles(root).map((file) => {
+        const parts = file.split(/[\\/]/);
+        const folder = parts[0];
+        const session = parts[1];
+        if (
+          folder !== manifest.projectFolder ||
+          session === undefined ||
+          (!ids.has(session) && !ids.has(session.replace(/\.jsonl\.gz$/, "")))
+        ) {
+          throw new Error("the archive holds a conversation this record does not own");
+        }
+        if (!file.endsWith(".gz")) throw new Error("the archive holds a file that is not gzipped");
+        const target = join(paths.projectsDir, file.slice(0, -3));
+        // Check every parent: a symlink must never redirect a restore outside projects/.
+        let parent = dirname(target);
+        while (parent !== paths.projectsDir) {
+          const stat = lstatSync(parent, { throwIfNoEntry: false });
+          if (stat !== undefined && !stat.isDirectory())
+            throw new Error(`${parent} is not a regular folder`);
+          const next = dirname(parent);
+          if (next === parent) throw new Error("the archive path is outside projects");
+          parent = next;
+        }
+        const bytes = gunzipSync(readFileSync(join(root, file)));
+        const stat = lstatSync(target, { throwIfNoEntry: false });
+        if (stat !== undefined && (!stat.isFile() || !readFileSync(target).equals(bytes)))
+          throw new Error(`${target} differs from its archived copy`);
+        return { target, bytes, source: join(root, file), exists: stat !== undefined };
+      });
+      const created: string[] = [];
+      const folders: string[] = [];
+      const staged: Array<{ temporary: string; target: string }> = [];
+      const makeFolder = (folder: string): void => {
+        if (existsSync(folder)) return;
+        makeFolder(dirname(folder));
+        mkdirSync(folder, { mode: 0o700 });
+        folders.push(folder);
+      };
+      try {
+        for (const file of prepared) {
+          if (file.exists) continue;
+          makeFolder(dirname(file.target));
+          const temporary = `${file.target}.${process.pid}.restore`;
+          const fd = openSync(temporary, "wx", 0o600);
+          staged.push({ temporary, target: file.target });
+          try {
+            writeFileSync(fd, file.bytes);
+            fsyncSync(fd);
+          } finally {
+            closeSync(fd);
+          }
+          const stat = lstatSync(file.source);
+          utimesSync(temporary, stat.atime, stat.mtime);
+        }
+        for (const file of staged) {
+          // A hard link never replaces a file that appeared since the check above (EEXIST).
+          try {
+            linkSync(file.temporary, file.target);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST")
+              throw new Error(`${file.target} appeared during restore`);
+            throw error;
+          }
+          created.push(file.target);
+          removeFile(file.temporary);
+        }
+      } catch (error) {
+        for (const file of staged) removeFile(file.temporary);
+        for (const target of created) removeFile(target);
+        for (const folder of folders.reverse()) rmdirSync(folder);
+        throw error;
+      }
+      try {
+        rmSync(dir, { recursive: true });
+      } catch (error) {
+        return {
+          ok: true as const,
+          note: `restored; the archive copy is left: ${reasonOf(error)}`,
+        };
+      }
+      return { ok: true as const };
+    });
+  } catch (error) {
+    return { ok: false, why: reasonOf(error) };
+  }
+}
+
+function timelineDaysOf(
+  paths: CliPaths,
+  env: Env,
+  key: "archiveDays" | "deleteDays",
+): (repo: null | string) => null | number {
   const known = new Map<null | string, null | number>();
   return (repo) => {
     const had = known.get(repo);
@@ -644,7 +998,7 @@ export function archiveDaysOf(paths: CliPaths, env: Env): (repo: null | string) 
     try {
       const checkout = repo === null || !existsSync(repo) ? null : locateCheckout(repo, { env });
       const config = checkout === null ? null : loadProjectConfig(checkout).config;
-      days = resolveWorkflow(paths, config).crew.archiveDays.value;
+      days = resolveWorkflow(paths, config).crew[key].value;
     } catch {
       // A settings file that cannot be read: the archive stays until it can.
       days = null;

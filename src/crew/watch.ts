@@ -81,6 +81,7 @@ import {
   sendMessageLine,
   UNREADABLE_VIEW_WHY,
 } from "./answer";
+import { sweepCrewConversations } from "./archive";
 import { LEAD_WATCH_ARGS } from "./brief";
 import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
@@ -238,6 +239,9 @@ export const PARKED_PASS_MS = 5 * 60_000;
 
 /** The key under which the watch remembers it said a look for moved-aside folders failed. */
 const PARKED_SAID_KEY = "watch:parked";
+
+/** The key under which the watch remembers it said the conversation timeline's sweep failed. */
+const SWEEP_SAID_KEY = "watch:timeline";
 
 /** The longest piece of a crew session's own words a line carries. */
 const CLIP_CHARS = 120;
@@ -1191,6 +1195,10 @@ export async function watchPass(
   return { lines: draft.lines, state: stateAfter(state, draft) };
 }
 
+/** How often a watch runs the conversation timeline's sweep (D69): its dates are days apart. */
+const CONVERSATION_SWEEP_MS = 60 * 60 * 1000;
+const conversationSweepAt = new Map<string, number>();
+
 /** The body of `watchPass`: it writes what it did into `draft` as it goes. */
 async function runPass(
   state: WatchState,
@@ -1204,6 +1212,24 @@ async function runPass(
     ctx.print(line);
     draft.lines += 1;
   };
+
+  if (
+    ctx.now() - (conversationSweepAt.get(ctx.paths.stateDir) ?? -Infinity) >=
+    CONVERSATION_SWEEP_MS
+  ) {
+    conversationSweepAt.set(ctx.paths.stateDir, ctx.now());
+    // A sweep that fails is said once while the reason stays the same, not every hour.
+    try {
+      await sweepCrewConversations(ctx.paths, ctx.env, ctx.now());
+      delete said[SWEEP_SAID_KEY];
+    } catch (error) {
+      const line = `crew watch: the conversation timeline could not run: ${reasonOf(error)}`;
+      if (said[SWEEP_SAID_KEY] !== line) {
+        say(line);
+        said[SWEEP_SAID_KEY] = line;
+      }
+    }
+  }
 
   // What happened since the last pass.
   draft.offset = sayEvents(draft.offset, scope, ctx, say);

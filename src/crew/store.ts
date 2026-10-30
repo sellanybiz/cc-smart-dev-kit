@@ -461,6 +461,11 @@ const crewFields = z.object({
    * replacement, and on a record an older kit wrote.
    */
   earlierSessions: z.array(z.looseObject({ sessionId: text, shortId: text })).optional(),
+  /**
+   * When this record's last Claude session ended (ISO 8601): written when the kit releases or
+   * removes it, and cleared when it works again; the conversation's timeline counts from it (D69).
+   */
+  sessionEndedAt: z.iso.datetime().optional(),
   /** The lead that started it: its session id and its name. */
   leadSessionId: text,
   leadName: text,
@@ -490,10 +495,8 @@ const crewFields = z.object({
   permissionMode: text,
   /** Its worktree's folder and branch. */
   worktree: text,
-  /** The worktree was released, but its branch and conversation stay available. */
+  /** The kit released its worktree and agent-view rows (D69); its branch and conversation stay. */
   released: z.object({ at: text }).optional(),
-  /** When this record's last Claude session ended (ISO 8601): written when the kit releases or removes it; the conversation timeline (D69) counts from it. */
-  sessionEndedAt: text.optional(),
   branch: text,
   /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
   baseRef: text,
@@ -1398,7 +1401,10 @@ async function changeCrew(
     if (merged.state !== "paused") delete merged.waitingFor;
     // The error that ended a turn explains the failure that follows it, and nothing later: a
     // session that is working again (an answer, a resume, the watch's own resume) starts clean.
-    if (merged.state === "working" && before.state !== "working") delete merged.lastApiError;
+    if (merged.state === "working" && before.state !== "working") {
+      delete merged.lastApiError;
+      delete merged.sessionEndedAt;
+    }
     // A resume's claim (`claimResume`) lasts while the record stays in the state it was claimed
     // in: the write that makes the resumed session `working` ends it.
     if (merged.state !== before.state) delete merged.resumeClaim;

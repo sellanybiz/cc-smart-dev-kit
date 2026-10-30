@@ -49,13 +49,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
 import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
-import {
-  archiveConversation,
-  archiveDaysOf,
-  pruneCrewArchives,
-  removeEmptyFolder,
-  sessionsNeverTaken,
-} from "../crew/archive";
+import { readCrewLeftovers, sweepCrewConversations } from "../crew/archive";
 import { callClaude, findClaude } from "../crew/claude";
 import { type CrewContext, realCrewContext } from "../crew/context";
 import { releaseCrewSession } from "../crew/release";
@@ -66,7 +60,6 @@ import { atomicWrite } from "../setup/write";
 import { repoKey } from "../workflow/reviews";
 import {
   FINISHED_SESSION_AGE_MS,
-  readCrewLeftovers,
   readFinishedSessions,
   readSessionAgents,
   releasableCrewSessions,
@@ -502,10 +495,12 @@ async function crewLeftoversPart(
     for (const folder of left.emptyFolders) out.line("info", tildify(folder, home));
   }
   if (left.expired.length > 0) {
-    out.heading("Archived crew conversations past crew.archiveDays");
+    out.heading("Archived crew conversations past crew.deleteDays");
     for (const one of left.expired)
       out.line("info", `${one.name} — archived ${finishedAge(one.ageMs)}`);
   }
+  for (const one of left.scheduled ?? [])
+    out.line("info", `${one.name} — archive deleted ${one.deleteAt}`);
   const plan = [
     left.conversations.length === 0
       ? ""
@@ -515,7 +510,7 @@ async function crewLeftoversPart(
       : `remove ${counted(left.emptyFolders.length, "empty project folder", "empty project folders")}`,
     left.expired.length === 0
       ? ""
-      : `delete ${counted(left.expired.length, "archive", "archives")} past crew.archiveDays`,
+      : `delete ${counted(left.expired.length, "archive", "archives")} past crew.deleteDays`,
   ].filter((part) => part !== "");
   if (plan.length === 0) {
     if (left.kept.length === 0)
@@ -542,73 +537,48 @@ async function crewLeftoversPart(
     out.line("fail", now.error);
     return 1;
   }
-  let failed = false;
-  let neverTaken: Set<string>;
-  let running: Set<string>;
   try {
-    neverTaken = sessionsNeverTaken(paths.stateDir, null);
-    running = new Set(liveSessions(paths.claudeConfigDir).map((one) => one.sessionId));
+    const result = await sweepCrewConversations(paths, process.env, deps.now);
+    let failed = false;
+    for (const one of left.conversations) {
+      const moved = result.outcomes.find(
+        (two) => two.record.id === one.record.id && two.record.repo === one.record.repo,
+      );
+      if (moved === undefined) {
+        out.line("info", `Kept ${one.record.name}: its conversation is no longer one to move.`);
+        continue;
+      }
+      const outcome = moved.outcome;
+      if (outcome.kind === "archived") {
+        out.line(
+          "removed",
+          `Moved the conversation of ${one.record.name} (${counted(outcome.files, "file", "files")}) into ${tildify(outcome.dir, home)}.`,
+        );
+        for (const why of outcome.stayed ?? [])
+          out.line("info", `Kept another conversation of ${one.record.name}: ${why}.`);
+      } else if (outcome.kind === "kept")
+        out.line("info", `Kept ${one.record.name}: ${outcome.why}.`);
+      else if (outcome.kind === "failed") {
+        failed = true;
+        out.line("fail", `Could not move the conversation of ${one.record.name}: ${outcome.why}`, {
+          fix: `Clear what the line says, then run ${deps.command} sessions --finished --remove again; what moved stays in the archive.`,
+        });
+      }
+    }
+    for (const folder of left.emptyFolders)
+      if (now.emptyFolders.includes(folder) && !existsSync(folder))
+        out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
+    for (const one of result.deleted)
+      out.line("removed", `Deleted the archived conversation of ${one.name}.`);
+    return failed ? 1 : 0;
   } catch (error) {
     out.line(
       "fail",
-      `Could not read whose sessions these are: ${error instanceof Error ? error.message : String(error)}`,
+      `Could not run the conversation timeline: ${error instanceof Error ? error.message : String(error)}`,
+      { fix: `Run ${deps.command} sessions --finished --remove again in a moment.` },
     );
     return 1;
   }
-  for (const one of left.conversations) {
-    const current = now.conversations.find(
-      (two) => two.record.id === one.record.id && two.record.repo === one.record.repo,
-    );
-    if (current === undefined) {
-      out.line("info", `Kept ${one.record.name}: its conversation is no longer one to move.`);
-      continue;
-    }
-    const outcome = await archiveConversation({
-      neverTaken,
-      nowMs: deps.now,
-      only: new Set(current.sessionIds),
-      paths,
-      record: current.record,
-      running,
-    });
-    if (outcome.kind === "archived") {
-      out.line(
-        "removed",
-        `Moved the conversation of ${one.record.name} (${counted(outcome.files, "file", "files")}) into ${tildify(outcome.dir, home)}.`,
-      );
-      for (const why of outcome.stayed ?? [])
-        out.line("info", `Kept another conversation of ${one.record.name}: ${why}.`);
-    } else if (outcome.kind === "kept") {
-      out.line("info", `Kept ${one.record.name}: ${outcome.why}.`);
-    } else if (outcome.kind === "failed") {
-      failed = true;
-      out.line("fail", `Could not move the conversation of ${one.record.name}: ${outcome.why}`, {
-        fix: `Clear what the line says, then run ${deps.command} sessions --finished --remove again; what moved stays in the archive.`,
-      });
-    }
-  }
-  for (const folder of left.emptyFolders) {
-    if (now.emptyFolders.includes(folder) && removeEmptyFolder(folder))
-      out.line("removed", `Removed the empty folder ${tildify(folder, home)}.`);
-  }
-  try {
-    const pruned = await pruneCrewArchives(
-      paths.stateDir,
-      archiveDaysOf(paths, process.env),
-      deps.now,
-    );
-    for (const one of pruned.pruned)
-      out.line("removed", `Deleted the archived conversation of ${one.name}.`);
-    for (const one of pruned.kept) out.line("info", `Kept ${tildify(one.dir, home)}: ${one.why}.`);
-  } catch (error) {
-    failed = true;
-    out.line(
-      "fail",
-      `Could not delete the old crew archives: ${error instanceof Error ? error.message : String(error)}`,
-      { fix: `Run ${deps.command} sessions --finished --remove again in a moment.` },
-    );
-  }
-  return failed ? 1 : 0;
 }
 
 /** The finished background sessions: listed, and with `--remove` removed by `claude rm`. The exit code. */

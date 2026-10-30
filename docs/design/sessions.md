@@ -45,17 +45,26 @@ project's finished-worktree clean removes it first. One refusal does not block l
 the final exit is nonzero if any failed. The portal child runs from the existing home folder, not
 from a possibly removed session folder. Nothing runs this removal by itself.
 
-The same command sweeps what removed **crew** sessions left in `/resume` (AR1,
-`readCrewLeftovers` in `finished.ts`): the conversations of crew records the store marks
-`removed` or `discarded` that are still under Claude Code's projects folder, the empty project
-folders of their worktrees, and the crew archives past `workflow.crew.archiveDays`. `--remove`
-asks once more (or takes `--yes`), reads the lists again, then moves each conversation into the
-crew archive with the code `crew rm` uses (`archive.ts`), removes each folder that holds nothing
-and deletes each expired archive. Listing moves nothing. Never listed or taken: a lead's session,
-a session any crew record still on the board names, one a running Claude holds, one written after
-its removal event (the person resumed it; the event's time counts, not the record's last write),
-one whose archived copy has other bytes, and any file the store does not name. A crew
-store or lead record it cannot read fails closed. `--id` names finished background sessions
+Before that list, `sessions --finished` names the finished crew records (`done`, `handoff`,
+`failed`, `stopped`) of a lead seen gone for more than a day (`releasableCrewSessions`, D69):
+no watch of theirs will release them, so `--remove` releases them after its own question — the
+worktree and the agent-view rows go, the branch and the conversation stay. An agent view it
+cannot read, or a lead not yet seen gone, releases nothing.
+
+The same command runs the **conversation timeline** of crew sessions whose session ended (AR1,
+D69, `readCrewLeftovers` and `sweepCrewConversations` in `archive.ts`): the conversations past
+`workflow.crew.archiveDays` (default 7) since the record's `sessionEndedAt` that are still under
+Claude Code's projects folder, with the date each younger one moves, the empty project folders of
+their worktrees, and the crew archives past `workflow.crew.deleteDays` (default 30) since that
+same end — not since the move — with the date each other archive goes. A record from before the
+field counts from its removal event, then its last write. The lead's watch runs the same sweep at
+most hourly. `--remove` asks once more (or takes `--yes`), reads the lists again, then moves each
+due conversation into the crew archive, removes each folder that holds nothing and deletes each
+expired archive. Listing moves nothing. Never listed or taken: a lead's session, a session of a
+crew record whose session has not ended, one a running Claude holds, one written after its
+session ended (the person resumed it), one whose archived copy has other bytes, and any file the
+store does not name. A crew store or lead record it cannot read fails closed. `--id` names
+finished background sessions
 only, so it leaves this part out. How the archive works: `docs/design/crew.md` § A removed crew
 session's conversation.
 

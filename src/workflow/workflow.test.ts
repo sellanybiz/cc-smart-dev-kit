@@ -41,6 +41,14 @@ function writeSettings(env: Record<string, string>, value: unknown): string {
 }
 
 describe("the workflow schema", () => {
+  test("D69: deleteDays is accepted and cannot precede archiveDays", () => {
+    expect(workflowSchema.safeParse({ crew: { archiveDays: 7, deleteDays: 30 } }).success).toBe(
+      true,
+    );
+    expect(workflowSchema.safeParse({ crew: { archiveDays: 8, deleteDays: 7 } }).success).toBe(
+      false,
+    );
+  });
   test("an empty object is every field left out", () => {
     expect(workflowSchema.parse({})).toEqual({});
   });
@@ -452,6 +460,7 @@ describe("resolveWorkflow: the order", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
     expect(resolved.crew).toEqual({
       archiveDays: { value: 7, source: "default" },
+      deleteDays: { value: 30, source: "default" },
       enabled: { value: false, source: "default" },
       handoffPercent: { value: 70, source: "default" },
       handoffTokens: { value: 400000, source: "default" },

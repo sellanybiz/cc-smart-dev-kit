@@ -3,6 +3,51 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.7.0
+
+Finished crew sessions leave agent view at once, so a lead session is easy to find again. A
+crew session's conversation now follows a timeline: 7 days in `/resume`, then the kit's
+archive, deleted 30 days after the session ended. A hand-off's next crew session no longer waits
+for the CPU load.
+
+**What to run** after the update:
+
+- In each lead session that is running, end its crew watch and start it again (the
+  `cc-smart-dev-kit crew watch` command, with Claude Code's `Monitor` tool): a watch keeps the
+  code it started with, and only the new one releases finished crew sessions.
+- `cc-smart-dev-kit sessions --finished --remove`. It releases the finished crew sessions of
+  leads that are gone (no watch of theirs runs any more), after one question, and runs the
+  conversation timeline once.
+
+What changed:
+
+- **A finished crew session leaves agent view at once (D69).** Claude Code's `claude rm` keeps
+  a background session's row while its worktree holds commits that are on no remote, and a crew
+  session never pushes. So every finished crew session stayed in agent view until the lead
+  merged its branch, and the rows piled up. Now the lead's watch *releases* a `done`, `handoff`,
+  `failed` or `stopped` crew session as soon as agent view shows no process for it: the
+  worktree goes and `claude rm` removes its rows, while **its branch, its record and its
+  conversation stay**. The lead merges from the branch as before. `crew resume`, or an answer
+  that resumes it, makes the worktree again first. Uncommitted work, or a local file git does not
+  keep, holds the worktree and its row; the watch says so once, with the fix. A `blocked` crew
+  session stays until its idle stop. Both Claude Code behaviours this rests on are proved live
+  on 2.1.314 (`docs/claude-code-contract.md`).
+- **The conversation timeline (D69).** A crew session's conversation stays in `/resume` for
+  `crew.archiveDays` (7) after its session ended, then moves to the kit's gzipped archive; the
+  archive is deleted `crew.deleteDays` (30) after the same end. Before, the conversation moved
+  at the removal and the archive went 7 days later. A resume puts an archived conversation back
+  first. The lead's watch runs the timeline at most once an hour, and `sessions --finished`
+  lists the date each conversation moves and each archive goes.
+- **New setting `workflow.crew.deleteDays`** (default 30, at least `crew.archiveDays`). A
+  project that sets it needs `"requires": ">=1.7"`.
+- **A hand-off goes first (D70).** The next crew session of a hand-off takes the place the
+  session that handed off left, so the CPU load no longer holds it, and it starts before any
+  queued new phase. Memory, the session caps and the usage window still hold it. New phases
+  still wait for the load.
+- **Logs are safe to lose.** An ignored `logs/` folder and ignored `*.log` files no longer keep
+  a finished worktree (and its agent-view row): they come back by themselves. A folder of
+  ignored files is now judged file by file, so a log beside a file of yours still keeps it.
+
 ## 1.6.0
 
 claude-mem's to-do list is back. Each session starts with claude-mem's work state again: its

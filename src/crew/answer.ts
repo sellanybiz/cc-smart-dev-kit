@@ -41,6 +41,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
+import { restoreConversation } from "./archive";
 import { findCrew } from "./board";
 import { deliveryHead, withCrewCommand } from "./brief";
 import { readCaller, reasonOf } from "./caller";
@@ -493,6 +494,10 @@ export async function resumeSession(
   if (record.sessionId === null) {
     return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
   }
+  // Its conversation first, when the timeline moved it to the archive (D69).
+  const conversation = await restoreConversation(ctx.paths, record);
+  if (!conversation.ok) return { ok: false, unnamed: false, why: conversation.why };
+  if (conversation.note !== undefined) ctx.print(conversation.note);
   const place = resumePlace(record);
   if (!place.ok) return { ok: false, unnamed: false, why: place.why };
   // Its own settings: without them the session comes back as a plain one, not as this crew session.
