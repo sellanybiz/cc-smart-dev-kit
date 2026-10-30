@@ -28467,6 +28467,7 @@ async function removeCrewSession(ref, ctx, options) {
   const release = options.release === true;
   const then = release ? "; the watch then releases it by itself" : ", then run crew rm again";
   const releasedBefore = record.released !== undefined;
+  const hadWorktree = existsSync32(record.worktree);
   if (release) {
     if (!RELEASE_STATES.includes(record.state))
       return refuse4(failure2(`crew rm: ${record.name} is not over or stopped`), ctx);
@@ -28569,7 +28570,7 @@ async function removeCrewSession(ref, ctx, options) {
       return refuse4(blocker !== null || local === null ? failure2(`crew rm: ${blocker ?? "git could not list the files it does not keep"}`, `Fix: clear that${then}`) : failure2(`crew rm: local files git does not keep: ${local.join(", ")}`, `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`), ctx);
     }
   }
-  if (record.shortId !== null && (record.state !== "stopped" || release)) {
+  if (record.shortId !== null && record.state !== "stopped" && !(release && options.notLive)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
@@ -28717,7 +28718,7 @@ async function removeCrewSession(ref, ctx, options) {
     if (rm !== null && !goneAlready) {
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
-      ctx.error(release ? `Fix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)` : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
+      ctx.error(release ? `Fix: nothing to do; the worktree is gone${branchGone ? "" : `, ${record.branch} is kept`}, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)` : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
       if (!(release && releasedBefore)) {
         try {
           await appendCrewEvent(ctx.paths.stateDir, repo, {
@@ -28746,7 +28747,7 @@ async function removeCrewSession(ref, ctx, options) {
         lead: record.leadSessionId,
         name: record.name,
         state: record.state,
-        text: releasedBefore ? `released: its agent-view rows are removed now; branch ${record.branch} kept` : `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+        text: `released: ${releasedBefore ? "its agent-view rows are removed now" : hadWorktree ? "worktree and agent-view rows removed" : "agent-view rows removed"}${branchLeft() ? `; branch ${record.branch} kept` : ""}`,
         type: "step",
         crew: record.id
       }, ctx.now());
@@ -28835,7 +28836,7 @@ async function restoreReleasedWorktree(record, ctx) {
     return { ok: false, why: reasonOf2(error) };
   }
 }
-async function releaseCrewSession(record, ctx) {
+async function releaseCrewSession(record, ctx, options = { live: true }) {
   if (!RELEASE_STATES.includes(record.state))
     return { ok: false, why: `${record.name} is not over or stopped`, fix: null };
   const lines = [];
@@ -28848,6 +28849,7 @@ async function releaseCrewSession(record, ctx) {
       error: (line) => lines.push(line)
     }, {
       release: true,
+      notLive: !options.live,
       skipParked: true,
       against: { label: record.branch, ref: `refs/heads/${record.branch}` }
     });
@@ -29288,6 +29290,28 @@ function releaseKeptLine(record, why, fix) {
   return `${record.name}: not released yet \u2014 ${why}
 ${fix ?? "Fix: clear that; the watch then releases it by itself"}`;
 }
+function releasable(record, agents) {
+  if (agents === null)
+    return false;
+  return record.released === undefined && existsSync33(record.worktree) || listsAnySession(agents, record);
+}
+async function releaseOnce(record, ctx, draft, say, live) {
+  const { removals, said } = draft;
+  const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+  const status = existsSync33(record.worktree) ? runGit(record.worktree, ["status", "--porcelain"], ctx.env) : null;
+  const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
+  const key = `${record.id}:release`;
+  const previous = removals[key];
+  if (previous !== undefined && previous.signature === signature && ctx.now() - previous.at < PARKED_PASS_MS)
+    return;
+  removals[key] = { at: ctx.now(), signature };
+  const result = await releaseCrewSession(record, ctx, { live });
+  const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
+  if (line !== null && said[key] !== line) {
+    say(line);
+    said[key] = line;
+  }
+}
 async function stopCrew(record, state, reason, ctx) {
   const why = await stopSession2(record, ctx);
   if (why !== null)
@@ -29520,10 +29544,14 @@ async function runPass(state, ctx, scope, draft) {
         }
         await updateCrew(ctx.paths.stateDir, record.repo, record.id, { state: "merged", mergeProof: proof }, ctx.now(), wasStopped ? "the lead merged its branch; it was stopped, so `crew rm` removes it" : "the lead merged its branch; the watch removes it");
       }
-      if (wasStopped || record.mergedWhileStopped === true)
-        continue;
-      if (record.state === "merged" && record.mergedWhileStopped === undefined && historicallyMergedWhileStopped(record, events())) {
+      let heldForLead = wasStopped || record.mergedWhileStopped === true;
+      if (!heldForLead && record.state === "merged" && record.mergedWhileStopped === undefined && historicallyMergedWhileStopped(record, events())) {
         await updateCrew(ctx.paths.stateDir, record.repo, record.id, { mergedWhileStopped: true }, ctx.now());
+        heldForLead = true;
+      }
+      if (heldForLead) {
+        if (releasable(record, agents))
+          await releaseOnce(record, ctx, draft, say, listed);
         continue;
       }
       const descendants = new Set([record.id]);
@@ -29544,6 +29572,8 @@ async function runPass(state, ctx, scope, draft) {
           say(line);
           said[stopKey] = line;
         }
+        if (releasable(record, agents))
+          await releaseOnce(record, ctx, draft, say, listed);
         continue;
       }
       const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
@@ -29589,21 +29619,8 @@ async function runPass(state, ctx, scope, draft) {
         say(stopped);
         said[stopKey] = stopped;
       }
-    } else if (RELEASE_STATES.includes(record.state) && agents !== null && !listed && (record.released === undefined ? existsSync33(record.worktree) : listsAnySession(agents, record))) {
-      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
-      const status = existsSync33(record.worktree) ? runGit(record.worktree, ["status", "--porcelain"], ctx.env) : null;
-      const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
-      const key = `${record.id}:release`;
-      const previous = removals[key];
-      if (previous === undefined || previous.signature !== signature || ctx.now() - previous.at >= PARKED_PASS_MS) {
-        removals[key] = { at: ctx.now(), signature };
-        const result = await releaseCrewSession(record, ctx);
-        const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
-        if (line !== null && said[key] !== line) {
-          say(line);
-          said[key] = line;
-        }
-      }
+    } else if (RELEASE_STATES.includes(record.state) && !listed && releasable(record, agents)) {
+      await releaseOnce(record, ctx, draft, say, false);
     } else if (record.state === "failed" && listed) {
       const line = failedStopLine(record);
       if (said[stopKey] !== line) {
@@ -31544,7 +31561,7 @@ function pruneWorktrees(repo, env) {
 }
 
 // src/crew/lifecycle.ts
-var RELEASE_STATES = ["done", "handoff", "failed", "stopped"];
+var RELEASE_STATES = ["done", "handoff", "failed", "stopped", "merged"];
 var STOPPED_REMINDER_MS = 24 * 60 * 60000;
 function holdsItsPredecessor(continuation) {
   return !["failed", "removed", "discarded"].includes(continuation.state);

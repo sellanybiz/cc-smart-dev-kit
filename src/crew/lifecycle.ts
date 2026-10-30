@@ -8,9 +8,11 @@ import { type CrewEvent, type CrewRecord, type LeadRecord, setLeadPresence } fro
 
 /**
  * The states whose session is over, so the kit releases its worktree and agent-view rows while
- * its branch stays (D69). `blocked` is not one: its question is live until an idle stop (D35).
+ * its branch stays (D69). `merged` is released only while its removal is held (for the lead, D62,
+ * or for a chain): otherwise the watch removes it whole. `blocked` is not one: its question is
+ * live until an idle stop (D35).
  */
-export const RELEASE_STATES: readonly string[] = ["done", "handoff", "failed", "stopped"];
+export const RELEASE_STATES: readonly string[] = ["done", "handoff", "failed", "stopped", "merged"];
 
 /** A stopped-session reminder's spacing, and the grace period for an unknown lead session. */
 export const STOPPED_REMINDER_MS = 24 * 60 * 60_000;

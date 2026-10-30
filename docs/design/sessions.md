@@ -46,7 +46,8 @@ the final exit is nonzero if any failed. The portal child runs from the existing
 from a possibly removed session folder. Nothing runs this removal by itself.
 
 Before that list, `sessions --finished` names the finished crew records (`done`, `handoff`,
-`failed`, `stopped`) of a lead seen gone for more than a day (`releasableCrewSessions`, D69):
+`failed`, `stopped`, and a `merged` one still waiting for its removal) of a lead seen gone for
+more than a day (`releasableCrewSessions`, D69):
 no watch of theirs will release them, so `--remove` releases them after its own question — the
 worktree and the agent-view rows go, the branch and the conversation stay. An agent view it
 cannot read, or a lead not yet seen gone, releases nothing. To judge a lead gone it notes, in each

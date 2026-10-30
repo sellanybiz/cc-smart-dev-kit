@@ -159,6 +159,8 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
 interface CrewRmOptions {
   /** Internal release: judge against its own branch, keep that branch and the conversation. */
   release?: boolean;
+  /** A release whose caller saw agent view show no process for the session: nothing to stop. */
+  notLive?: boolean;
   skipParked?: boolean;
   against?: { label: string; ref: string };
   discard?: boolean;
@@ -295,6 +297,8 @@ async function removeCrewSession(
   // Released already (its worktree went, a `claude rm` after it did not): the steps below find no
   // worktree and go straight to `claude rm` again.
   const releasedBefore = record.released !== undefined;
+  // What a release can say it removed: a worktree gone before it was not its doing.
+  const hadWorktree = existsSync(record.worktree);
   if (release) {
     if (!RELEASE_STATES.includes(record.state))
       return refuse(failure(`crew rm: ${record.name} is not over or stopped`), ctx);
@@ -503,7 +507,7 @@ async function removeCrewSession(
   }
 
   // 4. Its session goes first, so nothing writes into the worktree while it is judged.
-  if (record.shortId !== null && (record.state !== "stopped" || release)) {
+  if (record.shortId !== null && record.state !== "stopped" && !(release && options.notLive)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(
@@ -783,7 +787,7 @@ async function removeCrewSession(
       ctx.error(`crew rm: ${rm}`);
       ctx.error(
         release
-          ? `Fix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)`
+          ? `Fix: nothing to do; the worktree is gone${branchGone ? "" : `, ${record.branch} is kept`}, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)`
           : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`,
       );
       // A release's retry says nothing new: the record holds its first failure already.
@@ -833,9 +837,13 @@ async function removeCrewSession(
           lead: record.leadSessionId,
           name: record.name,
           state: record.state,
-          text: releasedBefore
-            ? `released: its agent-view rows are removed now; branch ${record.branch} kept`
-            : `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+          text: `released: ${
+            releasedBefore
+              ? "its agent-view rows are removed now"
+              : hadWorktree
+                ? "worktree and agent-view rows removed"
+                : "agent-view rows removed"
+          }${branchLeft() ? `; branch ${record.branch} kept` : ""}`,
           type: "step",
           crew: record.id,
         },
