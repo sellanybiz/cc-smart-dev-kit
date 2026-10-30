@@ -58,10 +58,12 @@ export async function restoreReleasedWorktree(
  * checks, its D62 move-aside — judged against the session's own branch, so no merge is needed,
  * and that branch and the conversation stay. A record released already runs them again: its
  * worktree is gone, so they go straight to the `claude rm` an earlier release could not finish.
+ * `live` false: the caller saw agent view show no process for its session, so none is stopped.
  */
 export async function releaseCrewSession(
   record: CrewRecord,
   ctx: CrewContext,
+  options: { live: boolean } = { live: true },
 ): Promise<ReleaseResult> {
   if (!RELEASE_STATES.includes(record.state))
     return { ok: false, why: `${record.name} is not over or stopped`, fix: null };
@@ -78,6 +80,7 @@ export async function releaseCrewSession(
       },
       {
         release: true,
+        notLive: !options.live,
         skipParked: true,
         against: { label: record.branch, ref: `refs/heads/${record.branch}` },
       },

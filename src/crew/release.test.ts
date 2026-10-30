@@ -376,6 +376,59 @@ test("D69: a sweep never takes back a conversation a resume holds a claim on", a
   expect(existsSync(transcript)).toBe(false);
 });
 
+test("D69: a merged record left for the lead's crew rm is released; that crew rm still ends it", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "stopped" });
+  commitIn(record, "result");
+  git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", record.branch);
+  const { scope, state } = watchOf(world);
+  const first = await watchPass(state, world.ctx({}, agentsWith("stopped")), scope);
+  const after = stored(world, record);
+  expect(after.state).toBe("merged");
+  expect(after.mergedWhileStopped).toBe(true);
+  expect(after.released).toBeDefined();
+  expect(existsSync(record.worktree)).toBe(false);
+  expect(git(world.repo, "branch", "--list", record.branch).trim()).not.toBe("");
+  expect(world.out).toEqual([
+    "C my-app B1 help: merged — the lead merged its branch; it was stopped, so `crew rm` removes it",
+    `C my-app B1 help: released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+  ]);
+  // Later passes say nothing more; the lead's own crew rm deletes the branch and ends it.
+  await watchPass(first.state, world.ctx(), scope);
+  expect(world.out).toHaveLength(2);
+  expect(await runCrewRm(record.id, world.ctx())).toBe(0);
+  expect(stored(world, record).state).toBe("removed");
+  expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe("");
+});
+
+test("D69: a merged record its chain holds is released while it waits", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "handoff" });
+  commitIn(record, "result");
+  git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", record.branch);
+  await world.addCrew({ state: "working", slug: "help-2", continues: record.id, shortId: null });
+  const { scope, state } = watchOf(world);
+  await watchPass(state, world.ctx(), scope);
+  expect(stored(world, record).state).toBe("merged");
+  expect(stored(world, record).released).toBeDefined();
+  expect(existsSync(record.worktree)).toBe(false);
+  expect(git(world.repo, "branch", "--list", record.branch).trim()).not.toBe("");
+});
+
+test("D69: a record whose worktree went before its claude rm is released while agent view keeps its row", async () => {
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "failed" });
+  git(world.repo, "worktree", "remove", "--force", record.worktree);
+  const { scope, state } = watchOf(world);
+  // No row, no worktree: nothing to do, so nothing runs.
+  await watchPass(state, world.ctx(), scope);
+  expect(world.claudeVerbs()).toEqual(["agents"]);
+  await watchPass(state, world.ctx({}, agentsWith("stopped")), scope);
+  expect(world.claudeVerbs()).toContain("rm");
+  expect(stored(world, record).released).toBeDefined();
+  expect(stored(world, record).sessionEndedAt).toBeDefined();
+});
+
 test("D69: an agent view that cannot be read releases nothing", async () => {
   const world = await boardWorld();
   const record = await world.addCrew({ state: "done" });
@@ -408,6 +461,20 @@ test("an unknown lead is kept until absence has been observed for a day", async 
   const record = await world.addCrew({ state: "done" });
   const ctx = world.ctx();
   expect(await releasableCrewSessions(ctx)).toEqual([]);
+  expect(
+    (await releasableCrewSessions({ ...ctx, now: () => ctx.now() + 86_400_001 })).map(
+      (one) => one.id,
+    ),
+  ).toEqual([record.id]);
+});
+
+test("D69: a gone lead's merged crew session that waits for its crew rm is listed too", async () => {
+  // No watch of a gone lead releases it, and nothing else would take its row away.
+  const world = await boardWorld();
+  const record = await world.addCrew({ state: "merged" });
+  await updateCrew(world.paths.stateDir, world.repo, record.id, { mergedWhileStopped: true }, NOW);
+  const ctx = world.ctx();
+  await releasableCrewSessions(ctx);
   expect(
     (await releasableCrewSessions({ ...ctx, now: () => ctx.now() + 86_400_001 })).map(
       (one) => one.id,

@@ -569,9 +569,14 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "failed" })]) }),
     );
-    // One line, from the state event: the session is dead, so nothing is stopped.
-    expect(world.out).toEqual(["C my-app B6b portal-live: failed — its session failed"]);
+    // One line from the state event (the session is dead, so nothing is stopped), and the release.
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: failed — its session failed",
+      "C my-app B6b portal-live: released: agent-view rows removed",
+    ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    // D69: its row leaves agent view at once.
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("failed");
   });
@@ -583,8 +588,12 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "stopped" })]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: stopped — its session was stopped"]);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: stopped — its session was stopped",
+      "C my-app B6b portal-live: released: agent-view rows removed",
+    ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("stopped");
   });
@@ -874,8 +883,13 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "failed" })]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: failed — its session failed"]);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: failed — its session failed",
+      "C my-app B6b portal-live: released: agent-view rows removed",
+    ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    // D69: its row leaves agent view at once.
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("failed");
   });
@@ -1423,12 +1437,20 @@ describe("crew watch", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.mergedWhileStopped).toBe(true);
-    expect(existsSync(record.worktree)).toBe(true);
-    expect(world.claudeCalls().some((call) => call[0] === "stop" || call[0] === "rm")).toBe(false);
+    // Its record and branch stay for the lead's `crew rm`; its worktree and row leave at once (D69).
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: merged — the lead merged its branch; it was stopped",
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    ]);
+    expect(existsSync(record.worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe(record.branch);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toEqual([]);
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([]);
-    expect(existsSync(record.worktree)).toBe(true);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
+    expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe(record.branch);
   });
 
   test("L12: a historical stop followed by a resume does not block merged removal", async () => {
@@ -1539,7 +1561,19 @@ describe("crew watch", () => {
       (one) => one.id === original.id,
     );
     expect(kept?.state).toBe("merged");
-    expect(existsSync(worktree)).toBe(true);
+    // Held for its chain, it leaves agent view all the same (D69): its live session is stopped, its
+    // worktree and row go, and its branch stays for the chain's removal.
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "stop" || call[0] === "rm")).toEqual([
+      ["stop", "aaaa1111"],
+      ["rm", "aaaa1111"],
+    ]);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live").trim()).toBe(
+      "crew/B6b-portal-live",
+    );
     // The waiting line is said once.
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
@@ -1556,7 +1590,9 @@ describe("crew watch", () => {
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
-    expect(existsSync(worktree)).toBe(true);
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live").trim()).toBe(
+      "crew/B6b-portal-live",
+    );
     await updateCrew(
       world.paths.stateDir,
       world.repo,
@@ -1567,6 +1603,8 @@ describe("crew watch", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("removed");
     expect(existsSync(worktree)).toBe(false);
+    // The removal of the released record takes its merged branch too.
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live")).toBe("");
   });
 
   test.each(["removed", "discarded", "failed"])(
@@ -1619,10 +1657,15 @@ describe("crew watch", () => {
     });
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
-    expect(existsSync(worktree)).toBe(true);
     expect(world.out).toContain(
       "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b next to merge",
     );
+    // Its record and branch stay for the chain; its worktree and row go (D69).
+    expect(world.out).toContain(
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    );
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", original.branch).trim()).toBe(original.branch);
   });
 
   test("D62: a handoff is removed once its continuation's work is merged", async () => {
@@ -1730,10 +1773,15 @@ describe("crew watch", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     for (const record of chain.slice(0, 2)) {
       expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
-      expect(existsSync(record.worktree)).toBe(true);
       expect(world.out).toContain(
         `${record.name}: merged — waiting for its continuation C my-app chain 2 to merge`,
       );
+      // Released while the chain waits (D69): the branch stays, the worktree goes.
+      expect(world.out).toContain(
+        `${record.name}: released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+      );
+      expect(existsSync(record.worktree)).toBe(false);
+      expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe(record.branch);
     }
     expect(readCrew(world.paths.stateDir, world.repo, chain[2]?.id ?? "")?.state).toBe("done");
     git(world.repo, "merge", "--no-ff", "-m", "last part", "crew/chain-2");
@@ -1975,8 +2023,10 @@ describe("crew watch", () => {
     const ctx = world.ctx();
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     // The mark is said, with who removes it: stopping it was the lead's call, and so is this.
+    // It still leaves agent view (D69): released, so its branch and its record stay.
     expect(world.out).toEqual([
       "C my-app B6b portal-live: merged — the lead merged its branch; it was stopped, so `crew rm` removes it",
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     ]);
     // Later passes remove nothing, however often they look, and say nothing more.
     world.out.length = 0;
@@ -1986,11 +2036,13 @@ describe("crew watch", () => {
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
     expect(record?.mergedWhileStopped).toBe(true);
-    expect(existsSync(worktree)).toBe(true);
-    // The lead's own `crew rm` still removes it.
+    expect(record?.released).toBeDefined();
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live")).not.toBe("");
+    // The lead's own `crew rm` still removes it, and its branch.
     expect(await runCrew(["rm", record?.id ?? ""], ctx)).toBe(0);
     expect(listCrew(world.paths.stateDir, world.repo).records[0]?.state).toBe("removed");
-    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "branch", "--list", "crew/B6b-portal-live")).toBe("");
   });
 
   test("D62: a phase that waits for a stopped crew session starts once the lead merged it", async () => {
@@ -4270,7 +4322,7 @@ function withView(
     runProgram: (argv) => {
       calls.push(argv.slice(1));
       if (argv[1] === "agents") return ran(JSON.stringify(rows));
-      if (argv[1] === "stop") return ran("");
+      if (argv[1] === "stop" || argv[1] === "rm") return ran("");
       return ran("", 4);
     },
     which: () => "/fake/claude",
@@ -4551,6 +4603,8 @@ describe("a backend's refusal is not a final failure", () => {
   const REASON = `its backend refused its turn (unknown: ${TEXT})`;
   const QUESTION = `${NAME}: question · ${REASON} · answer it: crew answer "${NAME}" "<text>"`;
   const STOPPED = `${NAME}: stopped — its backend refused the turn; your answer to its question resumes it`;
+  /** D69: a session with no process leaves agent view at once; its record and conversation stay. */
+  const RELEASED = `${NAME}: released: agent-view rows removed`;
 
   /** A working crew session whose last turn ended on `lastApiError`, and the row agent view shows for it. */
   async function refused(
@@ -4581,7 +4635,8 @@ describe("a backend's refusal is not a final failure", () => {
     const world = await leadWorld();
     const { calls, ctx } = await refused(world, { class: "unknown" });
     expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
-    expect(world.out).toEqual([QUESTION, STOPPED]);
+    expect(world.out).toEqual([QUESTION, STOPPED, RELEASED]);
+    expect(calls.filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const after = record(world);
     expect(after?.state).toBe("stopped");
     expect(after?.stoppedByWatch).toBe(true);
@@ -4639,7 +4694,7 @@ describe("a backend's refusal is not a final failure", () => {
       const world = await leadWorld();
       const { ctx } = await refused(world, { class: errorClass });
       await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-      expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+      expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
       expect(record(world)?.state).toBe("failed");
       expect(record(world)?.questions).toEqual([]);
     }
@@ -4652,7 +4707,7 @@ describe("a backend's refusal is not a final failure", () => {
       agentRowOf({ pid: null, state: "failed", status: "idle", waitingFor: "API error" }),
     ]);
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
     expect(record(world)?.state).toBe("failed");
   });
 
@@ -4660,7 +4715,7 @@ describe("a backend's refusal is not a final failure", () => {
     const world = await leadWorld();
     const { ctx } = await refused(world, { class: "unknown" }, { waitingFor: "crashed" });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
     expect(record(world)?.state).toBe("failed");
   });
 
@@ -4678,6 +4733,7 @@ describe("a backend's refusal is not a final failure", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([
       `${NAME}: stopped — its backend refused the turn (unknown: ${TEXT}); your answer to its open question resumes it`,
+      RELEASED,
     ]);
     expect(record(world)?.questions).toEqual([open]);
   });

@@ -47,8 +47,11 @@ What changed:
 - **A release that `claude rm` could not finish is finished later.** The record says released
   once its worktree is gone, so a resume still works, and the watch runs `claude rm` again while
   agent view lists its row. A hand-off whose session its next crew session could not stop is
-  stopped by the watch, then released. `crew rm --discard` of a released crew session makes its
-  worktree again on the kept branch first, then discards as before.
+  stopped by the watch, then released. A merged crew session whose removal is held (left for
+  your `crew rm`, or for its chain) is released too, by the watch or, for a lead that is gone,
+  by `sessions --finished --remove`; so is one whose worktree went before its `claude rm`.
+  `crew rm --discard` of a released crew session makes its worktree again on the kept branch
+  first, then discards as before.
 - **A hand-off goes first (D70).** The next crew session of a hand-off takes the place the
   session that handed off left, so the CPU load no longer holds it, and it starts before any
   queued new phase. Memory, the session caps and the usage window still hold it. New phases

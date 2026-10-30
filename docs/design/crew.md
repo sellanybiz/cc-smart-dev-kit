@@ -607,8 +607,12 @@ worktree away itself, and the row can go. The watch releases a `done`, `handoff`
 `stopped` record (`RELEASE_STATES`, `lifecycle.ts`) on the first pass where agent view could be
 read and shows no process for it — a `done` or `failed` session the watch stops first (D35), and
 releases on the pass after; so is a `handoff` whose session the next crew session's start could not
-stop (`stopContinued`). `blocked` is never released: its question is live until its idle stop
-makes it `stopped`. The release (`release.ts`) is `crew rm`'s own steps (`runCrewRm` with
+stop (`stopContinued`). A `merged` record whose removal is held — left for the lead's `crew rm`
+(D62) or kept for its chain — is released too, so it leaves agent view while it waits: its work is
+merged, so a session of it that still runs is stopped by the release itself, and the removal it
+waits for still deletes its branch. A record whose worktree went before its `claude rm` is
+released while agent view still lists a row of it. `blocked` is never released: its question is
+live until its idle stop makes it `stopped`. The release (`release.ts`) is `crew rm`'s own steps (`runCrewRm` with
 `release`: its lock, its dirty-work check, the machine verdict, the leftovers it may stop, the D62
 move-aside), judged against the record's own branch, so no merge is needed: the worktree goes, and
 `claude rm` runs on every session id of the record, earlier ones too (RX1). **The branch, the

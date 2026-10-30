@@ -9596,7 +9596,7 @@ function realCrewContext(paths) {
 }
 
 // src/crew/lifecycle.ts
-var RELEASE_STATES = ["done", "handoff", "failed", "stopped"];
+var RELEASE_STATES = ["done", "handoff", "failed", "stopped", "merged"];
 var STOPPED_REMINDER_MS = 24 * 60 * 60000;
 function validMergeProof(record, ctx) {
   if (record.mergeProof === undefined)
@@ -10160,6 +10160,7 @@ async function removeCrewSession(ref, ctx, options) {
   const release = options.release === true;
   const then = release ? "; the watch then releases it by itself" : ", then run crew rm again";
   const releasedBefore = record.released !== undefined;
+  const hadWorktree = existsSync10(record.worktree);
   if (release) {
     if (!RELEASE_STATES.includes(record.state))
       return refuse(failure2(`crew rm: ${record.name} is not over or stopped`), ctx);
@@ -10262,7 +10263,7 @@ async function removeCrewSession(ref, ctx, options) {
       return refuse(blocker !== null || local === null ? failure2(`crew rm: ${blocker ?? "git could not list the files it does not keep"}`, `Fix: clear that${then}`) : failure2(`crew rm: local files git does not keep: ${local.join(", ")}`, `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`), ctx);
     }
   }
-  if (record.shortId !== null && (record.state !== "stopped" || release)) {
+  if (record.shortId !== null && record.state !== "stopped" && !(release && options.notLive)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(stopped.gone ? `session ${record.shortId} was gone already` : `stopped session ${record.shortId}`);
@@ -10410,7 +10411,7 @@ async function removeCrewSession(ref, ctx, options) {
     if (rm !== null && !goneAlready) {
       const branchGone = !branchLeft();
       ctx.error(`crew rm: ${rm}`);
-      ctx.error(release ? `Fix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)` : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
+      ctx.error(release ? `Fix: nothing to do; the worktree is gone${branchGone ? "" : `, ${record.branch} is kept`}, and the watch tries claude rm ${one.shortId} again by itself (or run it by hand)` : `  the worktree is gone already${branchGone ? ", and so is the branch" : ""}; run claude rm ${one.shortId} by hand, then crew rm again`);
       if (!(release && releasedBefore)) {
         try {
           await appendCrewEvent(ctx.paths.stateDir, repo, {
@@ -10439,7 +10440,7 @@ async function removeCrewSession(ref, ctx, options) {
         lead: record.leadSessionId,
         name: record.name,
         state: record.state,
-        text: releasedBefore ? `released: its agent-view rows are removed now; branch ${record.branch} kept` : `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+        text: `released: ${releasedBefore ? "its agent-view rows are removed now" : hadWorktree ? "worktree and agent-view rows removed" : "agent-view rows removed"}${branchLeft() ? `; branch ${record.branch} kept` : ""}`,
         type: "step",
         crew: record.id
       }, ctx.now());
