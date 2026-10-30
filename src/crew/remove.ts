@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { hasChanges, isInside, listWorktrees, runGit, samePath } from "../hooks/git";
+import { localFiles } from "../hooks/local-files";
 import { liveSessions } from "../hooks/sessions";
 import { LockBusyError, withLock } from "../setup/lock";
 import { holdCleanLock } from "../worktrees/clean";
@@ -93,8 +94,15 @@ import {
   stopOwnLeftovers,
   stopSession,
 } from "./end";
-import { validMergeProof } from "./lifecycle";
-import { appendCrewEvent, type CrewRecord, crewFilesDir, crewSessions, listCrew } from "./store";
+import { RELEASE_STATES, validMergeProof } from "./lifecycle";
+import {
+  appendCrewEvent,
+  type CrewRecord,
+  crewFilesDir,
+  crewSessions,
+  listCrew,
+  updateCrew,
+} from "./store";
 
 /** The line a person reads about a commit count: `1 commit`, `3 commits`. */
 function commits(count: number): string {
@@ -151,6 +159,8 @@ function discardBlocker(record: CrewRecord, ctx: CrewContext): string | null {
 
 /** What `crew rm` may be given besides the crew session. */
 interface CrewRmOptions {
+  /** Internal release: judge against its own branch, keep that branch and the conversation. */
+  release?: boolean;
   skipParked?: boolean;
   against?: { label: string; ref: string };
   discard?: boolean;
@@ -219,6 +229,18 @@ async function removeCrewSession(
   const found = actOn(ref, "rm", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   let { record } = found;
+  if (options.release === true) {
+    if (record.released !== undefined) return 0;
+    if (
+      !RELEASE_STATES.includes(record.state) ||
+      record.discardPending !== undefined ||
+      record.resumeClaim !== undefined
+    )
+      return refuse(
+        failure("crew rm: release needs an over or stopped record with no pending discard"),
+        ctx,
+      );
+  }
   if (record.discardPending !== undefined) {
     try {
       record = await rollbackCrewDiscard(record, ctx);
@@ -385,8 +407,21 @@ async function removeCrewSession(
     }
   }
 
+  if (options.release === true && existsSync(record.worktree)) {
+    const blocker = discardBlocker(record, ctx);
+    const local = localFiles(record.worktree, record.repo, ctx.env);
+    if (blocker !== null || local === null || local.length > 0) {
+      return refuse(
+        failure(
+          `crew rm: ${blocker ?? (local === null ? "git could not list local files" : `local files git does not keep: ${local.join(", ")}`)}`,
+        ),
+        ctx,
+      );
+    }
+  }
+
   // 4. Its session goes first, so nothing writes into the worktree while it is judged.
-  if (record.shortId !== null && record.state !== "stopped") {
+  if (record.shortId !== null && (record.state !== "stopped" || options.release === true)) {
     const stopped = await stopSession(record, ctx);
     if (stopped.ok) {
       ctx.print(
@@ -590,7 +625,9 @@ async function removeCrewSession(
         base: lead.label,
         claudeConfigDir: ctx.paths.claudeConfigDir,
         deleteBranch: (_repo, branch) =>
-          deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
+          options.release === true
+            ? `kept branch ${branch}`
+            : deleteBranchOnRef(repo, removalBase.ref, removalBase.label, branch, ctx.env),
         env: ctx.env,
         ...(facts === undefined ? {} : { facts }),
         idleLimit: 0,
@@ -624,7 +661,7 @@ async function removeCrewSession(
       ctx.env,
       GIT_TIMEOUT_MS,
     ).ok;
-  if (branchLeft()) {
+  if (branchLeft() && options.release !== true) {
     ctx.print(deleteBranchOnRef(repo, removalBase.ref, removalBase.label, record.branch, ctx.env));
   }
   if (discard && record.discardPending !== undefined && !branchLeft())
@@ -669,6 +706,34 @@ async function removeCrewSession(
     ctx.print(
       goneAlready ? `session ${one.shortId} was gone already` : `removed session ${one.shortId}`,
     );
+  }
+  const endedAt = new Date(ctx.now()).toISOString();
+  await updateCrew(
+    ctx.paths.stateDir,
+    repo,
+    record.id,
+    {
+      // The first end counts (D69): a release, then the removal after its merge, keep one date.
+      sessionEndedAt: record.sessionEndedAt ?? endedAt,
+      ...(options.release === true ? { released: { at: endedAt } } : {}),
+    },
+    ctx.now(),
+  );
+  if (options.release === true) {
+    await appendCrewEvent(
+      ctx.paths.stateDir,
+      repo,
+      {
+        lead: record.leadSessionId,
+        name: record.name,
+        state: record.state,
+        text: `released: worktree and agent-view rows removed; branch ${record.branch} kept`,
+        type: "step",
+        crew: record.id,
+      },
+      ctx.now(),
+    );
+    return 0;
   }
   // 9. Its conversations leave `/resume` (AR1): only now that Claude Code has let the sessions go.
   if (sessions.length > 0) await archiveAfterRemoval(record, ctx);

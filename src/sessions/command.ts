@@ -57,6 +57,8 @@ import {
   sessionsNeverTaken,
 } from "../crew/archive";
 import { callClaude, findClaude } from "../crew/claude";
+import { type CrewContext, realCrewContext } from "../crew/context";
+import { releaseCrewSession } from "../crew/release";
 import { liveSessions } from "../hooks/sessions";
 import { openUrlCandidates } from "../machine/open-url";
 import { locateCheckout } from "../project/resolve";
@@ -67,6 +69,7 @@ import {
   readCrewLeftovers,
   readFinishedSessions,
   readSessionAgents,
+  releasableCrewSessions,
   type SessionAgentRow,
   sessionsClaudeDeps,
 } from "./finished";
@@ -328,6 +331,11 @@ export function markOpened(stateDir: string, id: string, now: number): void {
 
 export interface SessionsDeps {
   agents?: () => null | SessionAgentRow[];
+  /**
+   * The context the release of a gone lead's finished crew sessions runs in (D69); default: the
+   * real one, with this command's `which`, `platform` and `now`.
+   */
+  crew?: CrewContext;
   confirm?: (question: string) => boolean;
   runClaude?: (args: string[]) => number;
   /** Runs a command and says whether it worked; the opener never reads a terminal. */
@@ -403,7 +411,46 @@ async function runFinishedSessions(
 ): Promise<number> {
   const term = currentTerminal(process.env);
   const out = createOut(term);
-  const finished = finishedPart(paths, options, deps, cwd, out, term);
+  let releasedCode = 0;
+  if ((options.ids?.length ?? 0) === 0) {
+    const ctx = deps.crew ?? {
+      ...realCrewContext(paths),
+      cwd,
+      which: deps.which,
+      platform: deps.platform,
+      now: () => deps.now,
+    };
+    const records = await releasableCrewSessions(ctx);
+    if (records.length > 0) {
+      out.heading("Finished crew sessions whose lead is gone");
+      for (const record of records)
+        out.line(
+          "info",
+          `${record.name} — release worktree and agent-view rows; keep branch ${record.branch}`,
+        );
+      if (
+        options.remove &&
+        (options.yes ||
+          (
+            deps.confirm ??
+            ((question: string) => terminalPrompts(term)?.confirm(question) ?? false)
+          )(
+            "Release these crew worktrees and agent-view rows? Their branches and conversations stay.",
+          ))
+      ) {
+        const eligible = new Set((await releasableCrewSessions(ctx)).map((record) => record.id));
+        for (const record of records) {
+          if (!eligible.has(record.id)) continue;
+          const result = await releaseCrewSession(record, ctx);
+          if (!result.ok) {
+            out.line("info", `Kept ${record.name}: ${result.why}`);
+            releasedCode = 1;
+          }
+        }
+      }
+    }
+  }
+  const finished = Math.max(releasedCode, finishedPart(paths, options, deps, cwd, out, term));
   if ((options.ids?.length ?? 0) > 0) return finished;
   const crew = await crewLeftoversPart(paths, options, deps, out, term);
   return Math.max(finished, crew);

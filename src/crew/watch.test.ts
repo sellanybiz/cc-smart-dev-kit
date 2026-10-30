@@ -1659,13 +1659,17 @@ describe("crew watch", () => {
     git(nextWorktree, "add", ".");
     git(nextWorktree, "commit", "-q", "-m", "part two");
     const ctx = world.ctx();
-    // Nothing is merged yet: the hand-off stays, and so does its branch.
+    // Nothing is merged yet: the hand-off's record and branch stay; only its worktree and its
+    // agent-view row go (D69).
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([]);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    ]);
     const stateOf = (id: string) =>
       listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === id)?.state;
     expect(stateOf(original.id)).toBe("handoff");
-    expect(existsSync(worktree)).toBe(true);
+    expect(existsSync(worktree)).toBe(false);
+    expect(git(world.repo, "rev-parse", "crew/B6b-portal-live").trim()).toBe(originalHead);
     // The lead merges the continuation: the hand-off's own commits are on the base through it.
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live-2");
     world.out.length = 0;
@@ -1756,7 +1760,10 @@ describe("crew watch", () => {
     git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
     await addCrew(world, "failed");
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toEqual([]);
+    // Released (D69), never reported merged.
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("failed");
   });
@@ -1786,8 +1793,11 @@ describe("crew watch", () => {
       T0,
     );
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    // The base is main, which does not hold the branch: the lead's folder is not the judge.
-    expect(world.out).toEqual([]);
+    // The base is main, which does not hold the branch: the lead's folder is not the judge. It is
+    // released (D69), never reported merged.
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
+    ]);
     expect(git(world.repo, "branch", "--merged", "main")).not.toContain("crew/B6b-portal-live");
   });
 
@@ -2299,7 +2309,7 @@ describe("crew watch", () => {
     expect(world.out).toEqual([`${NAME}: committed`]);
   });
 
-  test("reminds once a day about stopped unmerged sessions without removing them", async () => {
+  test("D69: a stopped unmerged session is released at once and still reminded once a day", async () => {
     const world = await leadWorld();
     const stopped = await addCrew(world, "working");
     git(world.repo, "worktree", "add", "-b", stopped.branch, stopped.worktree);
@@ -2326,14 +2336,21 @@ describe("crew watch", () => {
     );
     expect(world.out).toEqual([
       `${NAME}: stopped 2 days ago; 1 unmerged commit — crew resume "${NAME}", crew start B6b --continue "${NAME}", or crew rm "${NAME}"`,
+      `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
     ]);
     expect(first.state.stoppedRemindedAt?.[stopped.id]).toBe(T0);
     world.out.length = 0;
     const second = await watchPass(first.state, world.ctx({ now: () => T0 + 60_000 }), scope);
     expect(world.out).toEqual([]);
+    // The record and its branch stay for the lead; its worktree and its row are gone.
     expect(readCrew(world.paths.stateDir, world.repo, stopped.id)?.state).toBe("stopped");
-    expect(existsSync(stopped.worktree)).toBe(true);
-    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([]);
+    expect(existsSync(stopped.worktree)).toBe(false);
+    expect(git(world.repo, "log", "--format=%s", "-1", stopped.branch).trim()).toBe(
+      "unmerged work",
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([
+      ["rm", stopped.shortId ?? ""],
+    ]);
     await watchPass(second.state, world.ctx({ now: () => T0 + 86_400_000 }), scope);
     expect(world.out.join("\n")).toContain("crew resume");
   });
@@ -2371,7 +2388,10 @@ describe("crew watch", () => {
           resolved: resolveWorkflow(world.paths, null),
         },
       );
-      expect(world.out).toEqual([]);
+      expect(world.out).toEqual([
+        `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
+      ]);
+      expect(existsSync(original.worktree)).toBe(false);
       expect(pass.state.stoppedRemindedAt?.[original.id]).toBeUndefined();
       expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe(state);
     },
@@ -2416,9 +2436,12 @@ describe("crew watch", () => {
       stoppedRemindedAt: { [stopped.id]: T0 - 60_000 },
     };
     const throttled = await watchPass(state, ctx, scope);
-    // The ordinary merge detection still runs once; no second replay for the hidden reminder.
+    // The ordinary merge detection still runs once; no second replay for the hidden reminder,
+    // and none for the release (D69) either.
     expect(readFileSync(log, "utf8")).toBe("replay\n");
-    expect(world.out).toEqual([]);
+    expect(world.out).toEqual([
+      `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
+    ]);
     writeFileSync(log, "");
     await watchPass(throttled.state, { ...ctx, now: () => T0 + 86_400_000 }, scope);
     expect(readFileSync(log, "utf8")).toBe("replay\nreplay\n");

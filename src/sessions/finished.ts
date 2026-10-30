@@ -6,6 +6,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
+import { agentRows } from "../crew/agents";
 import {
   ARCHIVED_STATES,
   archiveDaysOf,
@@ -17,7 +18,8 @@ import {
   sessionsNeverTaken,
 } from "../crew/archive";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
-import type { Env } from "../crew/context";
+import type { CrewContext, Env } from "../crew/context";
+import { leadGone, observeLeadPresence, RELEASE_STATES } from "../crew/lifecycle";
 import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
 import {
   type CrewRecord,
@@ -28,6 +30,26 @@ import {
 } from "../crew/store";
 import { liveSessions } from "../hooks/sessions";
 import { isSessionId } from "./saved-sessions";
+
+/** Finished crew records whose registered lead is provably gone; unknown presence keeps them. */
+export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewRecord[]> {
+  const crew = listAllCrew(ctx.paths.stateDir);
+  const leads = listAllLeads(ctx.paths.stateDir);
+  if (crew.broken.length > 0 || leads.broken.length > 0 || crew.records.length === 0) return [];
+  const rows = agentRows(ctx);
+  if (rows === null) return [];
+  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
+  return crew.records.filter(
+    (record) =>
+      record.released === undefined &&
+      RELEASE_STATES.includes(record.state) &&
+      leadGone(
+        observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null,
+        rows,
+        ctx.now(),
+      ),
+  );
+}
 
 /** A finished session is offered only after a full day in a terminal state. */
 export const FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;

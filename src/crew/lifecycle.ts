@@ -6,6 +6,12 @@ import type { CrewContext } from "./context";
 import { commitsNotOn, GIT_TIMEOUT_MS, leadRef, mergedIntoBase } from "./end";
 import { type CrewEvent, type CrewRecord, type LeadRecord, setLeadPresence } from "./store";
 
+/**
+ * The states whose session is over, so the kit releases its worktree and agent-view rows while
+ * its branch stays (D69). `blocked` is not one: its question is live until an idle stop (D35).
+ */
+export const RELEASE_STATES: readonly string[] = ["done", "handoff", "failed", "stopped"];
+
 /** A stopped-session reminder's spacing, and the grace period for an unknown lead session. */
 export const STOPPED_REMINDER_MS = 24 * 60 * 60_000;
 

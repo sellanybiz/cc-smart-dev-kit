@@ -1076,8 +1076,9 @@ export async function runCrewStart(args: StartArgs, ctx: CrewContext): Promise<n
 /**
  * Stops the session of the crew session a continuation took over from. Its work is done (it handed
  * off), and a session holds memory (D35). **Its record stays `handoff`** — the store's own word
- * for "handed off to a next crew session, and ended" — and so do its branch and its worktree, so the
- * lead can read what it did and `crew rm` can clean it up once the lead has merged.
+ * for "handed off to a next crew session, and ended" — and so does its branch, so the lead can
+ * read what it did and `crew rm` can clean it up once the lead has merged; the watch's next pass
+ * releases its worktree and its agent-view row (D69).
  */
 async function stopContinued(planned: Plan, ctx: CrewContext): Promise<void> {
   const records = listCrew(ctx.paths.stateDir, planned.caller.repo).records;

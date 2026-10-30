@@ -325,7 +325,12 @@ export type NewCrewQuestion = Pick<CrewQuestion, "options" | "question" | "recom
 export function crewOfWorktree(records: readonly CrewRecord[], path: string): CrewRecord | null {
   let found: CrewRecord | null = null;
   for (const one of records) {
-    if (["removed", "discarded"].includes(one.state) || !samePath(one.worktree, path)) continue;
+    if (
+      one.released !== undefined ||
+      ["removed", "discarded"].includes(one.state) ||
+      !samePath(one.worktree, path)
+    )
+      continue;
     // `records` are oldest first: the last match is the newest.
     found = one;
   }
@@ -485,6 +490,10 @@ const crewFields = z.object({
   permissionMode: text,
   /** Its worktree's folder and branch. */
   worktree: text,
+  /** The worktree was released, but its branch and conversation stay available. */
+  released: z.object({ at: text }).optional(),
+  /** When this record's last Claude session ended (ISO 8601): written when the kit releases or removes it; the conversation timeline (D69) counts from it. */
+  sessionEndedAt: text.optional(),
   branch: text,
   /** The ref it starts from: `--base`, or the branch the lead was on (its commit, when detached). */
   baseRef: text,

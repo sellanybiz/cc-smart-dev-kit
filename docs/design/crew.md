@@ -600,6 +600,36 @@ the crew:
 
 ### The board and the end of a crew session
 
+**Release (D69).** A crew session leaves agent view when its session is over, not when its
+branch merges. Claude Code's `claude rm` keeps a row while its worktree holds commits that are on
+no remote and not on the default branch, and a crew session never pushes; so the kit takes the
+worktree away itself, and the row can go. The watch releases a `done`, `handoff`, `failed` or
+`stopped` record (`RELEASE_STATES`, `lifecycle.ts`) on the first pass where agent view could be
+read and shows no process for it — a `done` or `failed` session the watch stops first (D35), and
+releases on the pass after. `blocked` is never released: its question is live until its idle stop
+makes it `stopped`. The release (`release.ts`) is `crew rm`'s own steps (`runCrewRm` with
+`release`: its lock, its dirty-work check, the machine verdict, the leftovers it may stop, the D62
+move-aside), judged against the record's own branch, so no merge is needed: the worktree goes, and
+`claude rm` runs on every session id of the record, earlier ones too (RX1). **The branch, the
+record, its state and the conversation stay**; the record carries `released.at`, and
+`sessionEndedAt` — the first end, which a later removal keeps — starts the conversation's timeline
+(§ A removed crew session's conversation). Uncommitted work, a local file git does not keep, a
+person's lock, program or container, or machine facts nobody could read keep the worktree and the
+row: one line says why, with its fix, and the watch tries again when the branch or the folder
+changes, or after `PARKED_PASS_MS`.
+
+A released record stays on the board (`released — branch … kept`), its reminder still comes once
+a day, and the lead merges from its branch; after the merge the watch's removal (or `crew rm`)
+deletes the branch as for any record. `crew resume` and an answer that resumes a record make the
+worktree again first (`restoreReleasedWorktree`): at its own path, on its kept branch, with its
+`.worktreeinclude` files, under the record's removal lock and from the record read again inside
+it, so a resume and a release never cross. All or nothing: a copy or store write that fails takes
+the new folder back, and a folder already at that path is never replaced. The resumed session is
+told its folder is new and to install dependencies first. A lead that is gone runs no watch, so
+`sessions --finished` lists the finished records of a lead seen gone for a day first, and
+`--remove` releases them after its own question; an unreadable agent view or a lead not yet seen
+gone releases nothing.
+
 `crew list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
 `end.ts`, `remove.ts`; their help is one table, `usage.ts`, which the help table's rows
 (`src/cli/help.ts`) and `crew --help` read too). All of them look a crew session up **in this
@@ -1067,6 +1097,9 @@ the store records — a session the kit does not know is the person's own:
   `failed` one **keep their outcome** — the board must show how it ended, and `stopped` means
   something else (D62: a phase something stopped before it was over) — and each line says so.
   A stop that fails is said once, not on every pass;
+- it **releases** a crew session whose session is over and holds no process (D69): the worktree
+  and the agent-view rows go, the branch and the record stay (§ The board and the end of a crew
+  session);
 - it **marks a crew session `merged`** when its branch is merged into the branch it was cut from,
   and then **removes it with `crew rm`'s own steps** (D62, `runCrewRm`, never a second copy; its
   conversation leaves `/resume` for the kit's archive, § A removed crew session's conversation). A
@@ -1329,8 +1362,9 @@ the one before it; its id keeps the one scheme (`<phase>-<slug>-<6 hex>`). It is
 it goes through the same launch policy a fresh start does (`chooseLaunch`): the old crew session's model
 and effort are asked for again, and the Agent guard judges them now. **The old crew session's Claude session
 is stopped; its record stays `handoff`** — the store's word for "handed off to a next crew session, and
-ended" — and so do its branch and its worktree, so the lead can read what it did and `crew rm`
-can clean it up. Only a crew session that handed off can be continued, **once**: a second `--continue`
+ended" — and so does its branch, so the lead can read what it did and `crew rm` can clean it up;
+its worktree and its agent-view row go at the watch's next pass (D69, § The board and the end of a
+crew session). Only a crew session that handed off can be continued, **once**: a second `--continue`
 of the same crew session is refused while its next crew session is not failed or removed, and a report that
 cannot be read is a refusal (a hand-off without it would lose what the next crew session must know).
 **The chain is recorded, never worked out**: the next crew session's record holds the old crew session's id

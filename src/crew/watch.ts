@@ -60,7 +60,7 @@
  * failures last, and only `WATCH_FAILED_PASSES_MAX` in a row end the watch (`PassFailed`).
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
@@ -90,12 +90,14 @@ import {
   holdsItsPredecessor,
   mergeProof,
   observeLeadPresence,
+  RELEASE_STATES,
   STOPPED_REMINDER_MS,
   stoppedCrewNeed,
 } from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
 import { runningCrew, unmetWaits } from "./places";
+import { releaseCrewSession } from "./release";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { startQueued } from "./start";
 import {
@@ -871,6 +873,14 @@ export function doneStopLine(record: CrewRecord): string {
 }
 
 /**
+ * The line the watch says, once, when a finished crew session must keep its worktree and its
+ * agent-view row (D69): what holds it, and the way on. The release is tried again by itself.
+ */
+export function releaseKeptLine(record: CrewRecord, why: string): string {
+  return `${record.name}: its worktree stays — ${why}\nFix: commit what it names on ${record.branch}, or move it out of ${record.worktree}; the watch then releases it by itself`;
+}
+
+/**
  * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
  * Null when done; else why not, for an alert.
  */
@@ -1405,8 +1415,11 @@ async function runPass(
         continue;
       }
       // Retry refusals only when the folder changes, or after the parked-folder interval.
-      const head = runGit(record.worktree, ["rev-parse", "HEAD"], ctx.env);
-      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
+      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+      const status =
+        record.released === undefined
+          ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
+          : { ok: true, out: "released" };
       const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
       const previous = removals[record.id];
       if (
@@ -1460,6 +1473,35 @@ async function runPass(
       if (code === 0 && stopped !== undefined && said[stopKey] !== stopped) {
         say(stopped);
         said[stopKey] = stopped;
+      }
+    } else if (
+      RELEASE_STATES.includes(record.state) &&
+      record.released === undefined &&
+      agents !== null &&
+      !listed &&
+      existsSync(record.worktree)
+    ) {
+      // D69: its session is over and holds no process (a `done` or `failed` one is stopped by
+      // the branches below first), so it leaves agent view now; its branch stays for the merge.
+      // Its own event says the release; a refusal is said once, and tried again when the folder
+      // changes or after the parked-folder interval.
+      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+      const status = runGit(record.worktree, ["status", "--porcelain"], ctx.env);
+      const signature = JSON.stringify([head.ok, head.out, status.ok, status.out]);
+      const key = `${record.id}:release`;
+      const previous = removals[key];
+      if (
+        previous === undefined ||
+        previous.signature !== signature ||
+        ctx.now() - previous.at >= PARKED_PASS_MS
+      ) {
+        removals[key] = { at: ctx.now(), signature };
+        const result = await releaseCrewSession(record, ctx);
+        const line = result.ok ? null : releaseKeptLine(record, result.why);
+        if (line !== null && said[key] !== line) {
+          say(line);
+          said[key] = line;
+        }
       }
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a
