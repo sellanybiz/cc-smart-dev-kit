@@ -7,7 +7,6 @@ import { git } from "../testing/temp";
 import { runCrew } from "./command";
 import {
   leadGone,
-  leadWatchless,
   mergeProof,
   observeLeadPresence,
   stoppedCrewNeed,
@@ -118,34 +117,6 @@ describe("crew lifecycle", () => {
     expect(returned?.sessionUnknownSince).toBeNull();
     expect(leadGone(returned ?? null, [], NOW + 3 * DAY)).toBe(false);
     expect(readLead(ctx.paths.stateDir, world.repo, LEAD_SESSION)?.updatedAt).toBe(lead.updatedAt);
-  });
-
-  test("D69: a lead listed with no process runs no watch at once; a live or unknown one still may", async () => {
-    const world = await boardWorld();
-    const lead = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
-    if (lead === null) throw new Error("missing fixture lead");
-    const row = (state: string, pid: null | number) => ({
-      cwd: world.repo,
-      id: LEAD_SESSION.slice(0, 8),
-      sessionId: LEAD_SESSION,
-      pid,
-      state,
-      status: null,
-      waitingFor: null,
-    });
-    // Stopped or failed: its monitors ended with it, so no watch of it releases anything.
-    expect(leadWatchless(lead, [row("stopped", null)], NOW)).toBe(true);
-    expect(leadWatchless(lead, [row("failed", null)], NOW)).toBe(true);
-    // A row with no process, whatever its state, holds no monitor either.
-    expect(leadWatchless(lead, [row("done", null)], NOW)).toBe(true);
-    // A live session may run its watch: it releases its own crew sessions.
-    expect(leadWatchless(lead, [row("working", 42)], NOW)).toBe(false);
-    expect(leadWatchless(lead, [row("blocked", 42)], NOW)).toBe(false);
-    expect(leadWatchless(lead, [row("stopped", null), row("working", 42)], NOW)).toBe(false);
-    // Not listed at all: the day of absence still applies; an unreadable view proves nothing.
-    expect(leadWatchless(lead, [], NOW)).toBe(false);
-    expect(leadWatchless(lead, null, NOW)).toBe(false);
-    expect(leadWatchless(null, [row("stopped", null)], NOW)).toBe(false);
   });
 
   test("an explicitly ended lead is gone even when agent view is unreadable", async () => {

@@ -414,6 +414,13 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    file turns it off for the crew session alone (read from the 2.1.310 binary; a session that
    shows no Remote Control is still owed, `docs/claude-code-contract.md`). A crew session started
    before the key keeps its old file until its next start.
+   **The same file keeps the session's name** (`NO_AI_TITLE_ENV`, `start.ts`):
+   `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which Claude Code's docs (env vars) say skips the
+   background small-model request that writes a session title. That `ai-title` replaced the
+   `--name` a crew session starts with in agent view — 40 of 248 crew sessions of one project,
+   read on 2026-10-31, often with the words of a hook's error — so neither the lead nor the person
+   could tell its phase. A crew session started before 1.7.2 keeps its old file on a resume, as
+   above; a live proof is owed (`docs/claude-code-contract.md`).
    **The same file makes the session lean**: `enabledPlugins` turns off every plugin the machine
    enabled except this one, what `workflow.crew.keep` names, and every plugin those depend on,
    `disableClaudeAiConnectors: true`
@@ -605,9 +612,12 @@ branch merges. Claude Code's `claude rm` keeps a row while its worktree holds co
 no remote and not on the default branch, and a crew session never pushes; so the kit takes the
 worktree away itself, and the row can go. The watch releases a `done`, `handoff`, `failed` or
 `stopped` record (`RELEASE_STATES`, `lifecycle.ts`) on the first pass where agent view could be
-read and shows no process for it — a `done` or `failed` session the watch stops first (D35), and
-releases on the pass after; so is a `handoff` whose session the next crew session's start could not
-stop (`stopContinued`). A `merged` record whose removal is held — left for the lead's `crew rm`
+read and shows no process for it (`isLiveRow`, the one rule the answer's own liveness check reads
+too) — a `done` or `failed` session the watch stops first (D35), and releases on the pass after;
+so is a `handoff` whose session the next crew session's start could not stop (`stopContinued`).
+**A row with no process is no session to stop, whatever its state:** `claude stop` leaves a row
+`done` with no pid (2.1.314), and a watch that read that row as live never released it — the
+finished crew sessions that stayed in agent view for good, fixed in 1.7.2. A `merged` record whose removal is held — left for the lead's `crew rm`
 (D62) or kept for its chain — is released too, so it leaves agent view while it waits: its work is
 merged, so a session of it that still runs is stopped by the release itself, and the removal it
 waits for still deletes its branch. A record whose worktree went before its `claude rm` is
@@ -1126,7 +1136,13 @@ the store records — a session the kit does not know is the person's own:
   has idled past `workflow.crew.idleStopMinutes` (an answer brings it back). A `done` record and a
   `failed` one **keep their outcome** — the board must show how it ended, and `stopped` means
   something else (D62: a phase something stopped before it was over) — and each line says so.
-  A stop that fails is said once, not on every pass;
+  A stop that fails is said once, not on every pass. A session that still holds a process
+  `STOP_SETTLE_MS` (a minute) after its stop is stopped again, saying nothing new: its process
+  came back or the stop did not take, and a session with a process is never released. The stop's
+  mark stays while the record keeps `done`, `handoff` or `failed` (`STOP_MARK_STATES`), so a
+  process that comes back after a pass that saw none is not announced again. A `blocked` session
+  stopped from outside keeps its row with no process: it is recorded `stopped` at its idle stop
+  all the same, with nothing to stop;
 - it **releases** a crew session whose session is over and holds no process (D69): the worktree
   and the agent-view rows go, the branch and the record stay (§ The board and the end of a crew
   session);

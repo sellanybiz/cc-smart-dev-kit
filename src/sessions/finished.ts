@@ -9,31 +9,32 @@ import type { CliPaths } from "../cli/paths";
 import { agentRows, listsAnySession } from "../crew/agents";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
-import { leadWatchless, observeLeadPresence, RELEASE_STATES } from "../crew/lifecycle";
+import { RELEASE_STATES } from "../crew/lifecycle";
 import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
-import { type CrewRecord, crewSessions, listAllCrew, listAllLeads } from "../crew/store";
+import {
+  type CrewRecord,
+  crewSessions,
+  listAllCrew,
+  listAllLeads,
+  watchIsAlive,
+} from "../crew/store";
 
 /**
- * Finished crew records whose registered lead runs no watch: provably gone, or listed with no
- * process (stopped or failed); unknown presence keeps them. One released already is listed again
- * while agent view still lists a row of it: its `claude rm` failed.
+ * Finished crew records no watch releases (D69): no live watch of their lead holds its lease
+ * (`watchIsAlive`) — the lead is stopped or gone, or alive with no watch running. A live watch
+ * releases its own, and a lease no one can read holds nothing. One released already is listed
+ * again while agent view still lists a row of it: its `claude rm` failed.
  */
 export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewRecord[]> {
   const crew = listAllCrew(ctx.paths.stateDir);
-  const leads = listAllLeads(ctx.paths.stateDir);
-  if (crew.broken.length > 0 || leads.broken.length > 0 || crew.records.length === 0) return [];
+  if (crew.broken.length > 0 || crew.records.length === 0) return [];
   const rows = agentRows(ctx);
   if (rows === null) return [];
-  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
   return crew.records.filter(
     (record) =>
       (record.released === undefined || listsAnySession(rows, record)) &&
       RELEASE_STATES.includes(record.state) &&
-      leadWatchless(
-        observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null,
-        rows,
-        ctx.now(),
-      ),
+      !watchIsAlive(ctx.paths.stateDir, record.repo, record.leadSessionId),
   );
 }
 

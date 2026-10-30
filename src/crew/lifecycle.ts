@@ -1,7 +1,6 @@
 /** Shared stopped-session needs, lead presence and the watch's durable merge proof. */
 import { runGit } from "../hooks/git";
 import { workOnRef } from "../worktrees/scan";
-import { isLiveRow } from "./agents";
 import type { AgentRow } from "./claude";
 import type { CrewContext } from "./context";
 import { commitsNotOn, GIT_TIMEOUT_MS, leadRef, mergedIntoBase } from "./end";
@@ -186,20 +185,4 @@ export function leadGone(
   if (rows === null || rowsOfLead(rows, lead).length > 0) return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
-}
-
-/**
- * True when no watch of `lead` runs, so only `sessions --finished --remove` releases its crew
- * sessions (D69): it is gone (`leadGone`), or agent view lists its session with no process — a
- * stopped or failed lead, whose monitors ended with it. An unreadable agent view proves nothing.
- */
-export function leadWatchless(
-  lead: LeadRecord | null,
-  rows: readonly AgentRow[] | null,
-  now: number,
-): boolean {
-  if (leadGone(lead, rows, now)) return true;
-  if (lead === null || rows === null) return false;
-  const listed = rowsOfLead(rows, lead);
-  return listed.length > 0 && !listed.some(isLiveRow);
 }

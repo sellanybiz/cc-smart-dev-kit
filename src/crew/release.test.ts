@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSy
 import { dirname, join } from "node:path";
 import { runSessions, type SessionsDeps } from "../sessions/command";
 import { releasableCrewSessions } from "../sessions/finished";
-import { withLock } from "../setup/lock";
+import { currentHolder, withLock } from "../setup/lock";
 import { type BoardWorld, boardWorld, NOW } from "../testing/board-world";
 import { LEAD_SESSION, SHORT_ID } from "../testing/crew-world";
 import { git } from "../testing/temp";
@@ -20,6 +20,7 @@ import {
   eventsEndOffset,
   RESUME_CLAIM_MS,
   readCrew,
+  takeWatchLease,
   updateCrew,
   type WatchState,
 } from "./store";
@@ -456,76 +457,82 @@ test("D69: a refusal is said once with its fix, and tried again when the folder 
   expect(existsSync(record.worktree)).toBe(false);
 });
 
-test("an unknown lead is kept until absence has been observed for a day", async () => {
-  const world = await boardWorld();
-  const record = await world.addCrew({ state: "done" });
-  const ctx = world.ctx();
-  expect(await releasableCrewSessions(ctx)).toEqual([]);
-  expect(
-    (await releasableCrewSessions({ ...ctx, now: () => ctx.now() + 86_400_001 })).map(
-      (one) => one.id,
-    ),
-  ).toEqual([record.id]);
-});
+/** A watch lease of the world's lead held by this test's own process: a live watch. */
+async function liveWatch(world: BoardWorld, once?: true): Promise<void> {
+  await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, {
+    ...currentHolder(),
+    at: NOW,
+    token: once ? "a-look" : "the-watch",
+    ...(once ? { once } : {}),
+  });
+}
 
-test("D69: a stopped lead's finished crew session is listed at once: no watch of it runs", async () => {
+test("D69: a finished crew session is listed at once while no watch of its lead runs", async () => {
   const world = await boardWorld();
   const record = await world.addCrew({ state: "done" });
-  const lead = (state: string, pid: null | number) => ({
+  const ids = async (env: Record<string, string> = {}) =>
+    (await releasableCrewSessions(world.ctx({}, env))).map((one) => one.id);
+  // Its lead's session is alive in agent view but runs no watch: nothing else would release it.
+  const liveLead = {
     FAKE_AGENTS_JSON: JSON.stringify([
       {
         id: LEAD_SESSION.slice(0, 8),
         sessionId: LEAD_SESSION,
         cwd: world.repo,
         kind: "background",
-        state,
+        state: "working",
         status: "idle",
-        pid,
+        pid: 4242,
       },
     ]),
+  };
+  expect(await ids(liveLead)).toEqual([record.id]);
+  // Not listed at all, and no watch: the same, without a day's wait.
+  expect(await ids()).toEqual([record.id]);
+  // A watch whose process ended holds nothing.
+  const ended = Bun.spawnSync(["true"]);
+  await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, {
+    ...currentHolder(),
+    at: NOW,
+    pid: ended.pid,
+    token: "a-watch-that-died",
   });
-  // Its lead still works: its own watch releases it.
-  expect(await releasableCrewSessions(world.ctx({}, lead("working", 4242)))).toEqual([]);
-  // Its lead is stopped (or failed): nothing else would, so it is listed without the day's wait.
-  for (const state of ["stopped", "failed"]) {
-    const listed = await releasableCrewSessions(world.ctx({}, lead(state, null)));
-    expect(listed.map((one) => one.id)).toEqual([record.id]);
-  }
+  expect(await ids(liveLead)).toEqual([record.id]);
+  // A live watch of its lead releases it itself; so does a `--once` look while it runs.
+  await liveWatch(world);
+  expect(await ids(liveLead)).toEqual([]);
+  await liveWatch(world, true);
+  expect(await ids(liveLead)).toEqual([]);
 });
 
-test("D69: a gone lead's merged crew session that waits for its crew rm is listed too", async () => {
-  // No watch of a gone lead releases it, and nothing else would take its row away.
+test("D69: a session that is not over is never listed, with or without a watch", async () => {
+  const world = await boardWorld();
+  await world.addCrew({ state: "working" });
+  expect(await releasableCrewSessions(world.ctx())).toEqual([]);
+});
+
+test("D69: a watchless lead's merged crew session that waits for its crew rm is listed too", async () => {
+  // No watch of its lead releases it, and nothing else would take its row away.
   const world = await boardWorld();
   const record = await world.addCrew({ state: "merged" });
   await updateCrew(world.paths.stateDir, world.repo, record.id, { mergedWhileStopped: true }, NOW);
-  const ctx = world.ctx();
-  await releasableCrewSessions(ctx);
-  expect(
-    (await releasableCrewSessions({ ...ctx, now: () => ctx.now() + 86_400_001 })).map(
-      (one) => one.id,
-    ),
-  ).toEqual([record.id]);
+  expect((await releasableCrewSessions(world.ctx())).map((one) => one.id)).toEqual([record.id]);
 });
 
-test("D69: a gone lead's released record is listed again only while agent view keeps its row", async () => {
+test("D69: a watchless lead's released record is listed again only while agent view keeps its row", async () => {
   const world = await boardWorld();
   const record = await world.addCrew({ state: "done" });
   await updateCrew(world.paths.stateDir, world.repo, record.id, { released: { at: "x" } }, NOW);
-  const listed = async (env: Record<string, string>) => {
-    const ctx = world.ctx({}, env);
-    await releasableCrewSessions(ctx);
-    const later = { ...ctx, now: () => ctx.now() + 86_400_001 };
-    return (await releasableCrewSessions(later)).map((one) => one.id);
-  };
+  const listed = async (env: Record<string, string>) =>
+    (await releasableCrewSessions(world.ctx({}, env))).map((one) => one.id);
   expect(await listed({})).toEqual([]);
   expect(await listed(agentsWith("stopped"))).toEqual([record.id]);
 });
 
-test("D69: sessions --finished --remove releases a gone lead's finished crew session", async () => {
+test("D69: sessions --finished --remove releases a finished crew session no watch releases", async () => {
   const world = await boardWorld();
   const record = await world.addCrew({ state: "done" });
   commitIn(record, "result");
-  const day = 86_400_001;
   const out: string[] = [];
   const deps = (at: number): SessionsDeps => ({
     agents: () => [],
@@ -559,11 +566,20 @@ test("D69: sessions --finished --remove releases a gone lead's finished crew ses
       stdout.mockRestore();
     }
   };
-  // The first look only notes that the lead is gone: a lead away for less than a day is kept.
+  // A live watch of its lead releases it itself: the command leaves it alone.
+  await liveWatch(world);
   expect(await run(NOW)).toBe(0);
   expect(existsSync(record.worktree)).toBe(true);
-  expect(await run(NOW + day)).toBe(0);
-  expect(out.join("\n")).toContain("Finished crew sessions whose lead is stopped or gone");
+  expect(out.join("\n")).not.toContain(record.name);
+  // No watch runs any more: the command releases it at once.
+  await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, {
+    ...currentHolder(),
+    at: NOW,
+    pid: Bun.spawnSync(["true"]).pid,
+    token: "a-watch-that-died",
+  });
+  expect(await run(NOW)).toBe(0);
+  expect(out.join("\n")).toContain("Finished crew sessions no watch releases");
   expect(out.join("\n")).toContain(
     `${record.name} — release worktree and agent-view rows; keep branch ${record.branch}`,
   );
