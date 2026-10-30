@@ -16,6 +16,8 @@ import {
   type HolderRecord,
   holderLines,
   holderText,
+  type JobLane,
+  laneOf,
   type ParsedEntry,
   type ParsedHeld,
   parseHolder,
@@ -52,6 +54,18 @@ describe("parseHolder", () => {
     v: 1,
     what: "bun run build",
   };
+
+  test("reads old boolean leases and lane records", () => {
+    expect(parseHolder(JSON.stringify(record))).toEqual(record);
+    expect(parseHolder(JSON.stringify({ ...record, lane: "light" }))).toEqual({
+      ...record,
+      lane: "light",
+    });
+    expect(parseHolder(holderText({ ...record, lane: "light" }))).toEqual({
+      ...record,
+      lane: "light",
+    });
+  });
 
   test("reads back what holderText wrote", () => {
     expect(parseHolder(holderText(record))).toEqual(record);
@@ -186,6 +200,59 @@ const base: DecideInput = {
 };
 
 describe("decide", () => {
+  test("light slots ignore heavy holders and older heavy tickets", () => {
+    expect(
+      decide({
+        ...base,
+        lane: "light",
+        lightCapacity: 2,
+        capacity: 1,
+        held: heldBy("host-a", 1),
+        line: [entry("old", 0, "host-b"), { ...entry("mine", 1, "host-a", true), lane: "light" }],
+      }),
+    ).toEqual({ take: true });
+  });
+  test("light runs wait for their own slots, and for an older light ticket", () => {
+    const held = heldBy("host-a", 2).map((unit) => ({ ...unit, lane: "light" as const }));
+    expect(decide({ ...base, lane: "light", lightCapacity: 2, held })).toEqual({
+      wait: { capacity: 2, kind: "no-room" },
+    });
+    const olderLight = { ...entry("old", 0, "host-b"), lane: "light" as const };
+    const mine = { ...entry("mine", 1, "host-a", true), lane: "light" as const };
+    expect(decide({ ...base, lane: "light", line: [olderLight, mine] })).toEqual({
+      wait: { kind: "behind" },
+    });
+  });
+
+  test("low free memory holds a run while another job runs, and never with none running", () => {
+    const running = heldBy("host-b", 1);
+    for (const lane of ["heavy", "light"] as const) {
+      expect(decide({ ...base, freeGb: 3, held: running, lane, startFreeGb: 4 })).toEqual({
+        wait: { freeGb: 3, kind: "memory", startFreeGb: 4 },
+      });
+      // Nothing of the queue runs: waiting could last for ever, so the job starts.
+      expect(decide({ ...base, freeGb: 3, lane, startFreeGb: 4 })).toEqual({ take: true });
+    }
+    // A lease that holds a name only is no running job.
+    const nameOnly: ParsedHeld[] = heldBy("host-b", 1).map((unit) => ({
+      ...unit,
+      lane: "none",
+      slot: false,
+    }));
+    expect(decide({ ...base, freeGb: 3, held: nameOnly, startFreeGb: 4 })).toEqual({
+      take: true,
+    });
+    expect(decide({ ...base, freeGb: 5, held: running, startFreeGb: 4 })).toEqual({ take: true });
+    expect(decide({ ...base, freeGb: null, held: running, startFreeGb: 4 })).toEqual({
+      take: true,
+    });
+    expect(
+      decide({ ...base, freeGb: 0, held: running, lane: "none", slot: false, startFreeGb: 4 }),
+    ).toEqual({
+      take: true,
+    });
+  });
+
   test("takes a slot when the job is first and one is free", () => {
     expect(decide({ ...base, held: heldBy("host-a", 2) })).toEqual({ take: true });
     expect(decide(base)).toEqual({ take: true });
@@ -331,10 +398,12 @@ class FakeStore implements Store {
   readonly label: string;
   readonly shared: boolean;
   slots: number;
+  lightSlots: number;
   maxHeld = 0;
+  maxLight = 0;
   /** The most leases with one exclusive name at once. */
   maxSameName = 0;
-  private readonly units = new Map<number, StoreHeld & { exclusive?: string }>();
+  private readonly units = new Map<number, StoreHeld & { exclusive?: string; lane: JobLane }>();
   private readonly tickets = new Map<string, string>();
   private readonly names: ReadonlySet<string> | null;
   private next = 0;
@@ -343,10 +412,13 @@ class FakeStore implements Store {
     label: string;
     shared?: boolean;
     slots: number;
+    /** Light slots; default 2. */
+    lightSlots?: number;
     /** The exclusive names it keeps; default (this machine): every name. */
     names?: readonly string[];
   }) {
     this.slots = options.slots;
+    this.lightSlots = options.lightSlots ?? 2;
     this.label = options.label;
     this.shared = options.shared ?? false;
     this.names = options.names === undefined ? null : new Set(options.names);
@@ -356,9 +428,14 @@ class FakeStore implements Store {
     return Promise.resolve(this.names === null || this.names.has(name));
   }
 
-  /** How many slots are in use now. */
+  /** How many slots are in use now, of either lane. */
   slotsHeld(): number {
     return [...this.units.values()].filter((unit) => unit.slot).length;
+  }
+
+  /** How many slots of one lane are in use now. */
+  laneHeld(lane: JobLane): number {
+    return [...this.units.values()].filter((unit) => unit.lane === lane).length;
   }
 
   /** How many leases, slots and names alike. */
@@ -372,6 +449,10 @@ class FakeStore implements Store {
 
   capacity(): Promise<number> {
     return Promise.resolve(this.slots);
+  }
+
+  lightCapacity(): Promise<number> {
+    return Promise.resolve(this.lightSlots);
   }
 
   private tie(): string {
@@ -406,18 +487,25 @@ class FakeStore implements Store {
   /** A holder outside the engine: another program, or a record nobody can read. */
   hold(text: string, slot = true): () => void {
     const id = this.next++;
-    this.units.set(id, { slot, text });
+    this.units.set(id, { lane: laneOf(parseHolder(text) ?? { slot }), slot, text });
     return () => this.units.delete(id);
   }
 
-  tryTake(slot: boolean, recordText: string, exclusive?: string): Promise<StoreUnits | null> {
+  tryTake(lane: JobLane, recordText: string, exclusive?: string): Promise<StoreUnits | null> {
     const sameName = () =>
       [...this.units.values()].filter((unit) => unit.exclusive === exclusive).length;
     if (exclusive !== undefined && sameName() > 0) return Promise.resolve(null);
-    if (slot && this.slotsHeld() >= this.slots) return Promise.resolve(null);
+    const capacity = lane === "light" ? this.lightSlots : this.slots;
+    if (lane !== "none" && this.laneHeld(lane) >= capacity) return Promise.resolve(null);
     const id = this.next++;
-    this.units.set(id, { slot, text: recordText, ...(exclusive !== undefined && { exclusive }) });
-    this.maxHeld = Math.max(this.maxHeld, this.slotsHeld());
+    this.units.set(id, {
+      lane,
+      slot: lane !== "none",
+      text: recordText,
+      ...(exclusive !== undefined && { exclusive }),
+    });
+    this.maxHeld = Math.max(this.maxHeld, this.laneHeld("heavy"));
+    this.maxLight = Math.max(this.maxLight, this.laneHeld("light"));
     if (exclusive !== undefined) this.maxSameName = Math.max(this.maxSameName, sameName());
     return Promise.resolve({
       release: () => {
@@ -489,6 +577,43 @@ describe("acquireFrom: the slots", () => {
     await settle(100);
     expect(fourth.reservation).not.toBeNull();
     expect(store.slotsHeld()).toBe(3);
+  });
+
+  test("a light run waits only for a light slot, and its line counts the light slots", async () => {
+    const time = fakeTime();
+    const store = new FakeStore({ label: "this machine", lightSlots: 1, slots: 1 });
+    const heavy = start([store], job("tsc", 1), time);
+    const light = (what: string, pid: number): QueuedJob => ({ ...job(what, pid), lane: "light" });
+    const first = start([store], light("bun install", 2), time);
+    await settle();
+    // The full heavy lane holds no light run.
+    expect(heavy.reservation).not.toBeNull();
+    expect(first.reservation).not.toBeNull();
+    const lines: string[] = [];
+    const second = start([store], light("bun add zod", 3), time, "host-a", lines);
+    await settle(100);
+    expect(second.reservation).toBeNull();
+    expect(lines[0]).toBe(
+      "Light job waits for a free light slot: bun add zod. this machine: 0 of 1 light free. Why: this machine's only light slot is taken.",
+    );
+    must(first.reservation, "a reservation").release();
+    await settle(100);
+    expect(second.reservation).not.toBeNull();
+    expect(store.maxLight).toBe(1);
+    expect(store.laneHeld("heavy")).toBe(1);
+  });
+
+  test("a light run takes this machine's light slot, never a shared folder's", async () => {
+    const time = fakeTime();
+    const machine = new FakeStore({ label: "this machine", slots: 1 });
+    const host = new FakeStore({ label: "/srv/heavy-jobs", shared: true, slots: 1 });
+    host.hold(""); // the shared folder is full
+    const light = start([machine, host], { ...job("bun install", 2), lane: "light" }, time);
+    await settle(50);
+    expect(light.reservation).not.toBeNull();
+    expect(machine.laneHeld("light")).toBe(1);
+    expect(host.slotsHeld()).toBe(1);
+    expect(host.liveTickets()).toBe(0);
   });
 
   test("with one slot, jobs run one at a time", async () => {

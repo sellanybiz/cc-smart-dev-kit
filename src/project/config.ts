@@ -130,6 +130,7 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
  */
 export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string>>> = {
   noSlotForFiles: "1.5.0",
+  light: "1.8.0",
 };
 
 /**

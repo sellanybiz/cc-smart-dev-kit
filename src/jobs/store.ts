@@ -54,7 +54,11 @@ import {
   type StartTimeReader,
   withLock,
 } from "../setup/lock";
+import { DEFAULT_LIGHT_JOBS } from "./config";
 import {
+  type JobLane,
+  laneUsed,
+  type MemoryAdmission,
   parseHolder,
   type Store,
   type StoreHeld,
@@ -62,7 +66,6 @@ import {
   type StoreTicket,
   type StoreUnits,
   slotOfWire,
-  slotsUsed,
   wireOfSlot,
 } from "./queue";
 import { leaseHolder, startTimeReader } from "./windows";
@@ -212,8 +215,12 @@ export interface LeaseStoreOptions {
   /** How waiting lines name it: "this machine", or the shared folder. */
   label: string;
   shared: boolean;
-  /** The slots this store gives out, read again for every decision. May throw. */
+  /** The heavy slots this store gives out, read again for every decision. May throw. */
   capacity: () => number;
+  /** The light slots it gives out. Default: `DEFAULT_LIGHT_JOBS`. May throw. */
+  lightCapacity?: () => number;
+  /** This machine's free memory and what a job needs to start. Shared folders: none. */
+  memoryAdmission?: () => MemoryAdmission;
   /** Does this store keep an `--exclusive` name to one job? Default: every name. May throw. */
   keepsExclusive?: (name: string) => boolean;
   /** A remark about one file (one this user may not read). Each file is named once. */
@@ -403,6 +410,9 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
     label: options.label,
     shared: options.shared,
     capacity: () => Promise.resolve().then(options.capacity),
+    lightCapacity: () =>
+      Promise.resolve().then(() => options.lightCapacity?.() ?? DEFAULT_LIGHT_JOBS),
+    ...(options.memoryAdmission === undefined ? {} : { memoryAdmission: options.memoryAdmission }),
     keepsExclusive: (name) => Promise.resolve().then(() => options.keepsExclusive?.(name) ?? true),
 
     held: () =>
@@ -434,7 +444,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
         };
       }),
 
-    tryTake: async (slot, recordText, exclusive) => {
+    tryTake: async (lane: JobLane, recordText, exclusive) => {
       try {
         return await withLock(
           options.dir,
@@ -443,8 +453,18 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
             if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
               return null;
             }
-            if (slot && slotsUsed(held.map(({ file }) => file)) >= options.capacity()) return null;
-            const { path } = write(leases, slot, recordText, exclusive);
+            if (lane !== "none") {
+              const capacity =
+                lane === "light"
+                  ? (options.lightCapacity?.() ?? DEFAULT_LIGHT_JOBS)
+                  : options.capacity();
+              const units = held.map(({ file }) => ({
+                holder: parseHolder(file.record),
+                slot: file.slot,
+              }));
+              if (laneUsed(units, lane) >= capacity) return null;
+            }
+            const { path } = write(leases, lane !== "none", recordText, exclusive);
             return { release: () => letGo(path) };
           },
           { waitMs: LOCK_WAIT_MS, fallbackStaleMs: LOCK_STALE_MS, mode: LOCK_MODE },

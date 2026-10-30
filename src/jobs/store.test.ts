@@ -90,22 +90,95 @@ function windowsReader(ticks: string | null): StartTimeReader {
   return startTimeReader("win32", { powershell: () => ticks, taskkill: () => 0 });
 }
 
+/** A record that waits in or holds a lane. */
+function laneRecord(person: string, lane: "heavy" | "light" | "none", pid = process.pid): string {
+  return holderText({
+    checkout: "/home/user/app",
+    kind: "install",
+    lane,
+    person,
+    pid,
+    since: Date.now(),
+    slot: lane !== "none",
+    v: 1,
+    what: "bun install",
+  });
+}
+
+describe("leaseStore: lanes, taken under the lock", () => {
+  function laned(dir: string) {
+    return leaseStore({
+      dir,
+      label: "this machine",
+      shared: false,
+      capacity: () => 1,
+      lightCapacity: () => 2,
+    });
+  }
+
+  test("a full heavy lane never holds a light run, and light has its own two slots", async () => {
+    const machine = laned(tempDir("store"));
+    expect(await machine.tryTake("heavy", laneRecord("host-a", "heavy"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", laneRecord("host-a", "heavy"))).toBeNull();
+    expect(await machine.tryTake("light", laneRecord("host-a", "light"))).not.toBeNull();
+    expect(await machine.tryTake("light", laneRecord("host-a", "light"))).not.toBeNull();
+    expect(await machine.tryTake("light", laneRecord("host-a", "light"))).toBeNull();
+  });
+
+  test("full light slots never hold a heavy run", async () => {
+    const machine = laned(tempDir("store"));
+    await machine.tryTake("light", laneRecord("host-a", "light"));
+    await machine.tryTake("light", laneRecord("host-a", "light"));
+    expect(await machine.tryTake("heavy", laneRecord("host-a", "heavy"))).not.toBeNull();
+  });
+
+  test("a name-only take needs no slot of either lane", async () => {
+    const machine = laned(tempDir("store"));
+    await machine.tryTake("heavy", laneRecord("host-a", "heavy"));
+    await machine.tryTake("light", laneRecord("host-a", "light"));
+    await machine.tryTake("light", laneRecord("host-a", "light"));
+    expect(await machine.tryTake("none", laneRecord("host-a", "none"), "image")).not.toBeNull();
+  });
+
+  // A lease an older plugin wrote has a `gb` number and no lane: a slot is heavy, a name is none.
+  test("an old lease with a slot counts as heavy; one holding a name only counts as none", async () => {
+    const dir = tempDir("store");
+    plantLease(dir, currentFileHolder(), 8);
+    const machine = laned(dir);
+    expect(await machine.tryTake("heavy", laneRecord("host-a", "heavy"))).toBeNull();
+    expect(await machine.tryTake("light", laneRecord("host-a", "light"))).not.toBeNull();
+    const held = await machine.held();
+    expect(held.map((unit) => unit.slot)).toEqual([true, true]);
+  });
+
+  test("a light run's lease file says it holds a slot, so an older plugin counts it", async () => {
+    const dir = tempDir("store");
+    const machine = laned(dir);
+    await machine.tryTake("light", laneRecord("host-a", "light"));
+    const leases = readdirSync(join(dir, "leases"));
+    expect(leases).toHaveLength(1);
+    const file = JSON.parse(readFileSync(join(dir, "leases", leases[0] ?? ""), "utf8"));
+    expect(file.gb).toBe(1);
+    expect(JSON.parse(file.record).lane).toBe("light");
+  });
+});
+
 describe("leaseStore: taking slots", () => {
   test("takes a slot while one is free, and gives it back", async () => {
     const dir = tempDir("store");
     const machine = store(dir, 2);
-    const first = await machine.tryTake(true, record("host-a"));
-    const second = await machine.tryTake(true, record("host-a"));
+    const first = await machine.tryTake("heavy", record("host-a"));
+    const second = await machine.tryTake("heavy", record("host-a"));
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
-    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).toBeNull();
     expect(leaseFiles(dir)).toHaveLength(2);
     expect((await machine.held()).map((unit) => unit.slot)).toEqual([true, true]);
     first?.release();
     first?.release();
     expect(leaseFiles(dir)).toHaveLength(1);
     // The slot is free again.
-    const third = await machine.tryTake(true, record("host-a"));
+    const third = await machine.tryTake("heavy", record("host-a"));
     expect(third).not.toBeNull();
     second?.release();
     third?.release();
@@ -115,11 +188,11 @@ describe("leaseStore: taking slots", () => {
 
   test("one slot means one job at a time", async () => {
     const machine = store(tempDir("store"), 1);
-    const only = await machine.tryTake(true, record("host-a"));
+    const only = await machine.tryTake("heavy", record("host-a"));
     expect(only).not.toBeNull();
-    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).toBeNull();
     only?.release();
-    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).not.toBeNull();
   });
 
   // Mixed versions: an older `job run` wrote the GB it reserved in a lease's `gb`. This
@@ -131,9 +204,9 @@ describe("leaseStore: taking slots", () => {
     const machine = store(dir, 3);
     expect((await machine.held()).map((unit) => unit.slot)).toEqual([true, true]);
     // Two slots in use of three: one more fits, and then the machine is full.
-    const third = await machine.tryTake(true, record("host-a"));
+    const third = await machine.tryTake("heavy", record("host-a"));
     expect(third).not.toBeNull();
-    expect(await machine.tryTake(true, record("host-a"))).toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).toBeNull();
   });
 
   test("a lease that holds a name alone (0) uses no slot", async () => {
@@ -141,15 +214,15 @@ describe("leaseStore: taking slots", () => {
     plantLease(dir, currentFileHolder(), 0);
     const machine = store(dir, 1);
     expect((await machine.held()).map((unit) => unit.slot)).toEqual([false]);
-    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).not.toBeNull();
   });
 
   // An older `job run` reads `gb` as the GB a lease reserves: 1 for a slot, 0 for a name.
   test("writes 1 in a lease's old gb field for a slot and 0 for a name, and no other new field", async () => {
     const dir = tempDir("store");
     const machine = store(dir, 3);
-    const slot = await machine.tryTake(true, record("host-a"));
-    const name = await machine.tryTake(false, record("host-a", false), "image");
+    const slot = await machine.tryTake("heavy", record("host-a"));
+    const name = await machine.tryTake("none", record("host-a", false), "image");
     const written = leaseFiles(dir).map(
       (file) =>
         JSON.parse(readFileSync(join(dir, "leases", file), "utf8")) as Record<string, unknown>,
@@ -189,7 +262,7 @@ describe("leaseStore: stale holders are cleaned up", () => {
     expect(await machine.held()).toEqual([]);
     expect(existsSync(file)).toBe(false);
     // And its slot is free again.
-    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).not.toBeNull();
   });
 
   test("a lease whose pid was reused (alive, another start time) is removed", async () => {
@@ -243,7 +316,7 @@ describe("leaseStore: a Windows holder", () => {
     expect(await machine.held()).toEqual([]);
     expect(existsSync(file)).toBe(false);
     // And its slot is free again.
-    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).not.toBeNull();
   });
 
   test("a lease of a live process stays, however old its file is", async () => {
@@ -285,7 +358,7 @@ describe("leaseStore: the heartbeat", () => {
       capacity: () => 3,
       heartbeatMs: 20,
     });
-    const units = await machine.tryTake(true, record("host-a"));
+    const units = await machine.tryTake("heavy", record("host-a"));
     const [name] = leaseFiles(dir);
     const file = join(dir, "leases", name ?? "");
     const old = (Date.now() - 60_000) / 1000;
@@ -362,7 +435,7 @@ describe("leaseStore: other users' files", () => {
     const before = process.umask(0o077);
     try {
       const machine = store(dir);
-      const units = await machine.tryTake(true, record("host-a"));
+      const units = await machine.tryTake("heavy", record("host-a"));
       const ticket = await machine.enqueue(record("host-a"));
       const [lease] = leaseFiles(dir);
       const [waiting] = readdirSync(join(dir, "tickets"));
@@ -390,7 +463,7 @@ describe("leaseStore: other users' files", () => {
           return 3;
         },
       });
-      (await machine.tryTake(true, record("host-a")))?.release();
+      (await machine.tryTake("heavy", record("host-a")))?.release();
     } finally {
       process.umask(before);
     }
@@ -404,7 +477,7 @@ describe("leaseStore: other users' files", () => {
       const lock = join(dir, "lock");
       writeFileSync(lock, "{}");
       chmodSync(lock, 0o000);
-      expect(await store(dir).tryTake(true, record("host-a"))).toBeNull();
+      expect(await store(dir).tryTake("heavy", record("host-a"))).toBeNull();
       expect(leaseFiles(dir)).toEqual([]);
     },
   );
@@ -499,13 +572,13 @@ describe("leaseStore: exclusive names", () => {
   test("takes a name only while no lease holds it, with or without a slot", async () => {
     const dir = tempDir("store");
     const machine = store(dir, 3);
-    const first = await machine.tryTake(false, record("host-a", false), "image");
+    const first = await machine.tryTake("none", record("host-a", false), "image");
     expect(first).not.toBeNull();
-    expect(await machine.tryTake(true, record("host-a"), "image")).toBeNull();
-    const other = await machine.tryTake(true, record("host-a"), "deploy");
+    expect(await machine.tryTake("heavy", record("host-a"), "image")).toBeNull();
+    const other = await machine.tryTake("heavy", record("host-a"), "deploy");
     expect(other).not.toBeNull();
     first?.release();
-    const second = await machine.tryTake(true, record("host-a"), "image");
+    const second = await machine.tryTake("heavy", record("host-a"), "image");
     expect(second).not.toBeNull();
     other?.release();
     second?.release();
@@ -513,9 +586,9 @@ describe("leaseStore: exclusive names", () => {
 
   test("a name held alone leaves the slots free", async () => {
     const machine = store(tempDir("store"), 1);
-    const name = await machine.tryTake(false, record("host-a", false), "image");
+    const name = await machine.tryTake("none", record("host-a", false), "image");
     expect(name).not.toBeNull();
-    expect(await machine.tryTake(true, record("host-a"))).not.toBeNull();
+    expect(await machine.tryTake("heavy", record("host-a"))).not.toBeNull();
     expect((await machine.held()).map((unit) => unit.slot).sort()).toEqual([false, true]);
   });
 
@@ -652,7 +725,7 @@ describe("openSharedStore", () => {
     const opened = openSharedStore(dir);
     if (!("store" in opened)) throw new Error(opened.note);
     rmSync(join(dir, "leases"), { recursive: true });
-    await expect(opened.store.tryTake(true, record("host-a"))).rejects.toThrow("ENOENT");
+    await expect(opened.store.tryTake("heavy", record("host-a"))).rejects.toThrow("ENOENT");
     expect(existsSync(join(dir, "leases"))).toBe(false);
   });
 
