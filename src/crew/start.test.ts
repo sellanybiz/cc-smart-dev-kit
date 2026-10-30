@@ -285,7 +285,7 @@ describe("D25: crew start returns at once", () => {
     // Control off; with no plugin list read, it turns no plugin off. The `--mcp-config` file
     // passes no server, because this world has no Tavily key. All three files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
     expect(readFileSync(mcpFile, "utf8")).toBe(`{\n  "mcpServers": {}\n}\n`);
@@ -406,7 +406,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
+      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     // The registration is the kit's own, with Claude Code's placeholder, never a key.
     expect(readFileSync(mcpFile, "utf8")).toBe(
@@ -1865,6 +1865,7 @@ describe("Remote Control: off in every crew session", () => {
       disableClaudeAiConnectors: true,
       env: {
         CC_SMART_DEV_KIT_CREW: "c1",
+        CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1",
         CLAUDE_CODE_RETRY_WATCHDOG: "1",
         CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS: "300000",
       },

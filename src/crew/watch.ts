@@ -237,6 +237,38 @@ const OVER_STATES: readonly string[] = ["done", "failed", "handoff", "merged", "
  */
 export const PARKED_PASS_MS = 5 * 60_000;
 
+/**
+ * How long a session the watch stopped may still show a process before the watch stops it again.
+ * Agent view shows a stop within a pass; a row that still holds a process a minute later was not
+ * stopped, or its process came back (seen live on 2.1.314), and a session that keeps a process is
+ * never released (D69).
+ */
+export const STOP_SETTLE_MS = 60_000;
+
+/** The states whose session the watch ends (D35) and whose stop mark it keeps while they last. */
+const STOP_MARK_STATES: readonly string[] = ["done", "failed", "handoff"];
+
+/** The key under which the watch remembers the line it said about a crew session's stop. */
+function stopMarkKey(id: string): string {
+  return `${id}:stop`;
+}
+
+/** The key under which the watch remembers when it last stopped a crew session's session. */
+function stoppedAtKey(id: string): string {
+  return `${id}:stopped-at`;
+}
+
+/**
+ * True when the watch stops `id`'s session now: it never said `line` (its stop), or the session
+ * still holds a process `STOP_SETTLE_MS` after that stop. A mark an older watch wrote has no time,
+ * so its stop is due at once.
+ */
+function stopDue(said: Record<string, string>, id: string, line: string, now: number): boolean {
+  if (said[stopMarkKey(id)] !== line) return true;
+  const at = Number(said[stoppedAtKey(id)]);
+  return !Number.isFinite(at) || now - at >= STOP_SETTLE_MS;
+}
+
 /** The key under which the watch remembers it said a look for moved-aside folders failed. */
 const PARKED_SAID_KEY = "watch:parked";
 
@@ -935,16 +967,20 @@ async function releaseOnce(
 
 /**
  * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
- * Null when done; else why not, for an alert.
+ * `live`: agent view shows a process for it; a session with none has nothing to stop, so only the
+ * record is written. Null when done; else why not, for an alert.
  */
 async function stopCrew(
   record: CrewRecord,
   state: "merged" | "stopped",
   reason: string,
   ctx: CrewContext,
+  live: boolean,
 ): Promise<null | string> {
-  const why = await stopSession(record, ctx);
-  if (why !== null) return why;
+  if (live) {
+    const why = await stopSession(record, ctx);
+    if (why !== null) return why;
+  }
   // The record was read a pass ago: a record that moved on while the session stopped (the lead's
   // answer brought it back as a copy) is not written over. The next pass reads it again.
   await updateCrewIfState(
@@ -1399,10 +1435,11 @@ async function runPass(
       }
     }
     const row = agents === null ? null : rowOf(agents, record);
-    // Its session is in agent view and is neither stopped nor dead: it may still hold a process
-    // (a session whose turn ended keeps one, D35). A session that crashed has nothing to stop.
-    const listed = row !== null && row.state !== "stopped" && row.state !== "failed";
-    const stopKey = `${record.id}:stop`;
+    // Its session holds a process in agent view (a session whose turn ended keeps one, D35), the
+    // one rule `isLiveRow` keeps. A row with no process — `claude stop` leaves `done` with no pid
+    // (2.1.314) — and a session that crashed have nothing to stop: they are released below.
+    const listed = isLiveRow(row);
+    const stopKey = stopMarkKey(record.id);
     let refusal: null | string = null;
     /** What the watch did about it, when the act is news of its own (a failed record's stop). */
     let news: null | string = null;
@@ -1566,27 +1603,37 @@ async function runPass(
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a
       // stop that hides it. Its session is ended all the same (D35), once (a pass while agent
-      // view catches up does not stop it a second time), and one line says so.
+      // view catches up does not stop it a second time, `STOP_SETTLE_MS`), and one line says so.
       const line = failedStopLine(record);
-      if (said[stopKey] !== line) {
+      if (stopDue(said, record.id, line, ctx.now())) {
         refusal = await stopSession(record, ctx);
-        if (refusal === null) news = line;
+        if (refusal === null) {
+          news = line;
+          said[stoppedAtKey(record.id)] = String(ctx.now());
+        }
       } else {
         news = line;
       }
     } else if ((record.state === "done" || record.state === "handoff") && listed) {
       // Its session ends; its record keeps `done` (D62: `stopped` is for a phase something
       // stopped before it ended, and its removal is the lead's call). Stopped once: the mark
-      // in `said` remembers it while agent view catches up. A hand-off's session is stopped when
-      // its next crew session starts (`stopContinued`); one that stop missed is stopped here.
+      // in `said` remembers it while agent view catches up, and a process still there
+      // `STOP_SETTLE_MS` later is stopped again. A hand-off's session is stopped when its next
+      // crew session starts (`stopContinued`); one that stop missed is stopped here.
       const line = record.state === "done" ? doneStopLine(record) : handoffStopLine(record.name);
-      if (said[stopKey] !== line) {
+      if (stopDue(said, record.id, line, ctx.now())) {
         refusal = await stopSession(record, ctx);
-        if (refusal === null) news = line;
+        if (refusal === null) {
+          news = line;
+          said[stoppedAtKey(record.id)] = String(ctx.now());
+        }
       } else {
         news = line;
       }
-    } else if (record.state === "blocked" && listed) {
+    } else if (record.state === "blocked" && row !== null) {
+      // Its question is live until the idle stop makes it `stopped`, and an answer brings it back.
+      // A session stopped from outside keeps its row with no process (`done`, 2.1.314): it is
+      // recorded `stopped` at the same point, with nothing to stop, so it frees its place.
       const idle = ctx.now() - Date.parse(record.updatedAt);
       if (Number.isFinite(idle) && idle > resolved.crew.idleStopMinutes.value * 60_000) {
         const minutes = Math.round(idle / 60_000);
@@ -1595,18 +1642,22 @@ async function runPass(
           "stopped",
           `it has been blocked for ${minutes} minutes; an answer brings it back`,
           ctx,
+          listed,
         );
       }
     }
-    // A stop that fails is said once, not on every pass; a failed crew session's stop is said once
-    // and is also the mark that its session was ended (its record stays `failed`, so nothing else
-    // would remember it).
+    // A stop that fails is said once, not on every pass. The stop of a session whose work is over
+    // (`STOP_MARK_STATES`) is said once and stays its mark while the record keeps that state: a
+    // failed record stays `failed`, so nothing else would remember it, and a process that comes
+    // back after a pass that saw none is stopped again on the `STOP_SETTLE_MS` clock, not
+    // announced again.
     const saidLine = refusal ?? news;
     if (saidLine !== null && said[stopKey] !== saidLine) {
       say(saidLine);
       said[stopKey] = saidLine;
-    } else if (saidLine === null && record.state !== "failed") {
+    } else if (saidLine === null && !STOP_MARK_STATES.includes(record.state)) {
       delete said[stopKey];
+      delete said[stoppedAtKey(record.id)];
     }
   }
 

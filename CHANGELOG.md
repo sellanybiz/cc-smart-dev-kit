@@ -3,6 +3,40 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.7.2
+
+Finished crew sessions whose process had already stopped stayed in agent view for good. They
+leave it now, and a crew session keeps the name its lead gave it.
+
+**What to run** after the update:
+
+- In each lead session that is running, end its crew watch and start it again (the
+  `cc-smart-dev-kit crew watch` command, with Claude Code's `Monitor` tool): a watch keeps the
+  code it started with. Its next passes release the finished crew sessions that stayed.
+- `cc-smart-dev-kit sessions --finished --remove` releases, after one question, the finished
+  crew sessions that no running watch looks after.
+
+What changed:
+
+- **A stopped crew session leaves agent view.** `claude stop` leaves a row `done` with no
+  process. The watch read such a row as a running session, so it never released it, and
+  Claude Code's own ctrl+x refused it because its worktree held commits on no remote. The watch
+  now judges a row by its process, as a resume does, and releases it: the worktree goes, the
+  branch stays, and the row goes.
+- **A stop that did not hold is made again.** A session that still has a process a minute after
+  the watch stopped it is stopped again, without a second line, so it can be released.
+- **`sessions --finished` asks whether a watch really runs.** It lists a finished crew session
+  when no live watch of its lead holds the lead's watch lease: a stopped or gone lead, or a live
+  lead whose watch is not running. Before, a live lead with no watch kept its crew sessions in
+  agent view, and a lead agent view no longer listed waited a full day. The heading now says
+  "no watch releases".
+- **A crew session should keep its name.** Its settings set `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`,
+  which Claude Code's docs say skips the title it writes for a session — the title that replaced
+  some crew sessions' names in agent view. A live proof is still owed. Crew sessions started
+  before this version keep their old settings when resumed.
+- **A blocked crew session stopped from outside frees its place.** One stopped with `claude stop`
+  or from agent view is recorded `stopped` at its idle stop, as before, with nothing left to stop.
+
 ## 1.7.1
 
 Two kinds of finished crew session still stayed in agent view after 1.7.0. Both leave it now.

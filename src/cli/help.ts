@@ -210,9 +210,9 @@ it would open and opens nothing.
 
 --finished lists this machine's background sessions done or stopped for more than one day,
 with their name, folder and age. Crew sessions and leads stay out of that list, even when renamed.
-Finished crew records whose registered lead is provably gone are listed first, separately.
---remove confirms releasing their worktrees and agent-view rows; branches and conversations stay.
-Unknown lead presence keeps them. --id leaves this crew release out.
+Finished crew records no watch releases (no live watch of their lead holds its lease) are listed
+first, separately. --remove confirms releasing their worktrees and agent-view rows; branches and
+conversations stay. --id leaves this crew release out.
 Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
 A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
 A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.

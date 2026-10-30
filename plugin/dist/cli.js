@@ -52,7 +52,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.7.1",
+  version: "1.7.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -27292,10 +27292,12 @@ async function failed(record, reason, ctx, change = {}) {
   ctx.print(`failed ${record.name}: ${reason}`);
   return 1;
 }
+var NO_AI_TITLE_ENV = "CLAUDE_CODE_DISABLE_TERMINAL_TITLE";
 function crewSettings(id, off) {
   const settings = {
     env: {
       [CREW_ENV]: id,
+      [NO_AI_TITLE_ENV]: "1",
       [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
       [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS)
     }
@@ -28980,6 +28982,20 @@ class PassFailed extends Error {
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var OVER_STATES = ["done", "failed", "handoff", "merged", "stopped"];
 var PARKED_PASS_MS = 5 * 60000;
+var STOP_SETTLE_MS = 60000;
+var STOP_MARK_STATES = ["done", "failed", "handoff"];
+function stopMarkKey(id) {
+  return `${id}:stop`;
+}
+function stoppedAtKey(id) {
+  return `${id}:stopped-at`;
+}
+function stopDue(said, id, line, now) {
+  if (said[stopMarkKey(id)] !== line)
+    return true;
+  const at = Number(said[stoppedAtKey(id)]);
+  return !Number.isFinite(at) || now - at >= STOP_SETTLE_MS;
+}
 var PARKED_SAID_KEY = "watch:parked";
 var SWEEP_SAID_KEY = "watch:timeline";
 var CLIP_CHARS = 120;
@@ -29312,10 +29328,12 @@ async function releaseOnce(record, ctx, draft, say, live) {
     said[key] = line;
   }
 }
-async function stopCrew(record, state, reason, ctx) {
-  const why = await stopSession2(record, ctx);
-  if (why !== null)
-    return why;
+async function stopCrew(record, state, reason, ctx, live) {
+  if (live) {
+    const why = await stopSession2(record, ctx);
+    if (why !== null)
+      return why;
+  }
   await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, [record.state], { state, ...state === "stopped" ? { stoppedByWatch: true } : {} }, ctx.now(), reason);
   return null;
 }
@@ -29525,8 +29543,8 @@ async function runPass(state, ctx, scope, draft) {
       }
     }
     const row = agents === null ? null : rowOf(agents, record);
-    const listed = row !== null && row.state !== "stopped" && row.state !== "failed";
-    const stopKey = `${record.id}:stop`;
+    const listed = isLiveRow(row);
+    const stopKey = stopMarkKey(record.id);
     let refusal = null;
     let news = null;
     if (OVER_STATES.includes(record.state) && (record.state === "merged" || branchMerged(record, ctx))) {
@@ -29623,35 +29641,40 @@ async function runPass(state, ctx, scope, draft) {
       await releaseOnce(record, ctx, draft, say, false);
     } else if (record.state === "failed" && listed) {
       const line = failedStopLine(record);
-      if (said[stopKey] !== line) {
+      if (stopDue(said, record.id, line, ctx.now())) {
         refusal = await stopSession2(record, ctx);
-        if (refusal === null)
+        if (refusal === null) {
           news = line;
+          said[stoppedAtKey(record.id)] = String(ctx.now());
+        }
       } else {
         news = line;
       }
     } else if ((record.state === "done" || record.state === "handoff") && listed) {
       const line = record.state === "done" ? doneStopLine(record) : handoffStopLine(record.name);
-      if (said[stopKey] !== line) {
+      if (stopDue(said, record.id, line, ctx.now())) {
         refusal = await stopSession2(record, ctx);
-        if (refusal === null)
+        if (refusal === null) {
           news = line;
+          said[stoppedAtKey(record.id)] = String(ctx.now());
+        }
       } else {
         news = line;
       }
-    } else if (record.state === "blocked" && listed) {
+    } else if (record.state === "blocked" && row !== null) {
       const idle = ctx.now() - Date.parse(record.updatedAt);
       if (Number.isFinite(idle) && idle > resolved.crew.idleStopMinutes.value * 60000) {
         const minutes = Math.round(idle / 60000);
-        refusal = await stopCrew(record, "stopped", `it has been blocked for ${minutes} minutes; an answer brings it back`, ctx);
+        refusal = await stopCrew(record, "stopped", `it has been blocked for ${minutes} minutes; an answer brings it back`, ctx, listed);
       }
     }
     const saidLine = refusal ?? news;
     if (saidLine !== null && said[stopKey] !== saidLine) {
       say(saidLine);
       said[stopKey] = saidLine;
-    } else if (saidLine === null && record.state !== "failed") {
+    } else if (saidLine === null && !STOP_MARK_STATES.includes(record.state)) {
       delete said[stopKey];
+      delete said[stoppedAtKey(record.id)];
     }
   }
   if (draft.parkedAt === undefined || ctx.now() - draft.parkedAt >= PARKED_PASS_MS) {
@@ -31649,14 +31672,6 @@ function leadGone(lead, rows, now) {
     return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
-}
-function leadWatchless(lead, rows, now) {
-  if (leadGone(lead, rows, now))
-    return true;
-  if (lead === null || rows === null)
-    return false;
-  const listed = rowsOfLead(rows, lead);
-  return listed.length > 0 && !listed.some(isLiveRow);
 }
 
 // src/crew/archive.ts
@@ -49214,14 +49229,12 @@ import { readFileSync as readFileSync72 } from "fs";
 import { join as join75 } from "path";
 async function releasableCrewSessions(ctx) {
   const crew = listAllCrew(ctx.paths.stateDir);
-  const leads = listAllLeads(ctx.paths.stateDir);
-  if (crew.broken.length > 0 || leads.broken.length > 0 || crew.records.length === 0)
+  if (crew.broken.length > 0 || crew.records.length === 0)
     return [];
   const rows = agentRows(ctx);
   if (rows === null)
     return [];
-  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
-  return crew.records.filter((record) => (record.released === undefined || listsAnySession(rows, record)) && RELEASE_STATES.includes(record.state) && leadWatchless(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now()));
+  return crew.records.filter((record) => (record.released === undefined || listsAnySession(rows, record)) && RELEASE_STATES.includes(record.state) && !watchIsAlive(ctx.paths.stateDir, record.repo, record.leadSessionId));
 }
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 var agentSchema = object({
@@ -49525,7 +49538,7 @@ async function runFinishedSessions(paths, options, deps, cwd) {
     };
     const records = await releasableCrewSessions(ctx);
     if (records.length > 0) {
-      out.heading("Finished crew sessions whose lead is stopped or gone");
+      out.heading("Finished crew sessions no watch releases");
       for (const record of records)
         out.line("info", `${record.name} \u2014 release worktree and agent-view rows; keep branch ${record.branch}`);
       if (options.remove && (options.yes || (deps.confirm ?? ((question) => terminalPrompts(term)?.confirm(question) ?? false))("Release these crew worktrees and agent-view rows? Their branches and conversations stay."))) {
@@ -50207,9 +50220,9 @@ it would open and opens nothing.
 
 --finished lists this machine's background sessions done or stopped for more than one day,
 with their name, folder and age. Crew sessions and leads stay out of that list, even when renamed.
-Finished crew records whose registered lead is provably gone are listed first, separately.
---remove confirms releasing their worktrees and agent-view rows; branches and conversations stay.
-Unknown lead presence keeps them. --id leaves this crew release out.
+Finished crew records no watch releases (no live watch of their lead holds its lease) are listed
+first, separately. --remove confirms releasing their worktrees and agent-view rows; branches and
+conversations stay. --id leaves this crew release out.
 Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
 A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
 A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.

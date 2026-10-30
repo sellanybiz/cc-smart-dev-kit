@@ -73,6 +73,7 @@ import {
   issueMarksFile,
   PARKED_PASS_MS,
   PassFailed,
+  STOP_SETTLE_MS,
   WATCH_MONITOR_COMMAND,
   WatchEnd,
   type WatchScope,
@@ -822,6 +823,92 @@ describe("crew watch", () => {
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(1);
   });
 
+  test("D35: a session that still holds a process a minute after its stop is stopped again", async () => {
+    // Its process came back, or the stop did not take (seen live on 2.1.314): a session that
+    // keeps a process is never released, so the watch stops it again, and says nothing new.
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const agents = { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) };
+    await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ now: () => T0 }, agents));
+    world.out.length = 0;
+    const stops = () => world.claudeCalls().filter((call) => call[0] === "stop");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({ now: () => T0 + STOP_SETTLE_MS - 1 }, agents),
+    );
+    expect(stops()).toHaveLength(1);
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({ now: () => T0 + STOP_SETTLE_MS }, agents),
+    );
+    expect(stops()).toEqual([
+      ["stop", "aaaa1111"],
+      ["stop", "aaaa1111"],
+    ]);
+    expect(world.out).toEqual([]);
+  });
+
+  test("D35: a process that comes back after a pass that saw none is stopped on the same clock, not announced again", async () => {
+    // A pass between the stop and the comeback saw no process but could not release it (here:
+    // agent view could not be read): the stop's mark stays while the record keeps `done`.
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const live = { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) };
+    const at = (ms: number, env: Record<string, string>) =>
+      runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ now: () => T0 + ms }, env));
+    await at(0, live);
+    world.out.length = 0;
+    await at(20_000, { FAKE_AGENTS: "broken" });
+    await at(40_000, live);
+    const stops = () => world.claudeCalls().filter((call) => call[0] === "stop");
+    expect(stops()).toHaveLength(1);
+    await at(STOP_SETTLE_MS, live);
+    expect(stops()).toHaveLength(2);
+    expect(world.out).toEqual([]);
+  });
+
+  test("D35: a stop mark an older watch wrote, with no time, makes the stop due at once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    await watchPass(
+      {
+        offset: eventsEndOffset(world.paths.stateDir, world.repo),
+        said: {
+          [`${ID}:stop`]: `${NAME}: its session stopped — its turn ended; the record stays done`,
+        },
+        noted: true,
+      },
+      world.ctx({ now: () => T0 }, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+      scope,
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toEqual([
+      ["stop", "aaaa1111"],
+    ]);
+    expect(world.out).toEqual([]);
+  });
+
+  test("D69: a stopped session whose row keeps done with no process is released, not stopped", async () => {
+    // `claude stop` leaves the row `done` with no pid (2.1.314): nothing runs, so the watch
+    // releases it at once — the case that left finished crew sessions in agent view for good.
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "done", pid: null })]) }),
+    );
+    expect(world.out).toEqual(["C my-app B6b portal-live: released: agent-view rows removed"]);
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.state).toBe("done");
+  });
+
   test("H101: a failed crew session's session is stopped once, and the record stays failed", async () => {
     // The crew session's own SessionStart hook marked it failed (its folder was not its
     // worktree, src/hooks/crew-role.ts): the watch is what ends its session (D35), and the
@@ -926,6 +1013,25 @@ describe("crew watch", () => {
     expect(world.out[0]).toContain("blocked for 30 minutes");
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("stopped");
+  });
+
+  test("D35: a blocked crew session stopped from outside is recorded stopped at its idle stop, with nothing to stop", async () => {
+    // `claude stop` (or agent view's own stop) leaves its row `done` with no process (2.1.314):
+    // nothing runs to stop, but its place must be freed and an answer must resume it.
+    const world = await leadWorld();
+    await addCrew(world, "blocked");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, ID, {}, T0 - 30 * 60_000, "asked");
+    await runCrew(
+      ["watch", "--once", "--timeout", "0"],
+      world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "done", pid: null })]) }),
+    );
+    expect(world.out[0]).toContain("blocked for 30 minutes");
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]).toMatchObject({
+      state: "stopped",
+      stoppedByWatch: true,
+    });
+    expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
   });
 
   test("RX1: a stop the watch made for an idle blocked session is not the lead's call: the merge removes it", async () => {

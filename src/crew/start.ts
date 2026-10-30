@@ -913,8 +913,19 @@ async function failed(
 }
 
 /**
- * The settings file a crew session's launch passes: who it is, Claude Code's retry watchdog
- * (D42), the claude.ai connectors off, and the plugins this session turns off — the lean start.
+ * The variable that keeps a crew session's name its own: Claude Code's background small-model
+ * request that writes a session title (`ai-title`) is skipped (its docs, env-vars). That title
+ * replaced the `--name` a crew session starts with in agent view — 40 of 248 crew sessions of
+ * one project read on 2026-10-31 — often with words from a hook's error, so the lead and the
+ * person could not tell its phase. It also stops the terminal title, which a background session
+ * has no use for.
+ */
+export const NO_AI_TITLE_ENV = "CLAUDE_CODE_DISABLE_TERMINAL_TITLE";
+
+/**
+ * The settings file a crew session's launch passes: who it is, no AI title (`NO_AI_TITLE_ENV`),
+ * Claude Code's retry watchdog (D42), the claude.ai connectors off, and the plugins this session
+ * turns off — the lean start.
  * The watchdog keys and their values are CC1's (`src/setup/retry-watchdog.ts`). This file sets
  * no wait limit on purpose (D42: the owner chose "keep waiting"), so no `…_MAX_WAIT_MS`.
  * Claude Code merges `env` per variable across settings sources, so when setup wrote the
@@ -936,6 +947,7 @@ export function crewSettings(id: string, off: readonly string[]): Record<string,
   const settings: Record<string, unknown> = {
     env: {
       [CREW_ENV]: id,
+      [NO_AI_TITLE_ENV]: "1",
       [RETRY_WATCHDOG_ENV]: RETRY_WATCHDOG_VALUE,
       [RETRY_WATCHDOG_RECHECK_ENV]: String(RETRY_WATCHDOG_RECHECK_MS),
     },

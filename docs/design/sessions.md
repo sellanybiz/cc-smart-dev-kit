@@ -46,15 +46,15 @@ the final exit is nonzero if any failed. The portal child runs from the existing
 from a possibly removed session folder. Nothing runs this removal by itself.
 
 Before that list, `sessions --finished` names the finished crew records (`done`, `handoff`,
-`failed`, `stopped`, and a `merged` one still waiting for its removal) of a lead that runs no
-watch (`releasableCrewSessions`, `leadWatchless`, D69): one agent view lists with no process
-(stopped or failed: its monitors ended with it), at once, or one seen gone for more than a day.
-No watch of theirs will release them, so `--remove` releases them after its own question — the
-worktree and the agent-view rows go, the branch and the conversation stay. An agent view it
-cannot read, a lead with a live session, or a lead not yet seen gone, releases nothing. To judge
-a lead gone it notes, in each lead record, whether agent view lists that lead now
-(`observeLeadPresence`, the note the clean keeps too), so even a plain listing writes that note;
-it writes nothing else.
+`failed`, `stopped`, and a `merged` one still waiting for its removal) that no watch releases
+(`releasableCrewSessions`, D69): no live watch of their lead holds its lease (`watchIsAlive`,
+`store.ts`) — the lead is stopped or gone, or its session is alive and runs no watch. A watch that
+runs releases its own crew sessions, a `--once` look as well while it runs; a lease whose process
+ended, or that no one can read, holds nothing. So they are listed at once, with no day's wait, and
+`--remove` releases them after its own question — the worktree and the agent-view rows go, the
+branch and the conversation stay. An agent view it cannot read, or a crew store with a broken
+record, releases nothing. Two releases of one crew session never run at once (the removal's own
+lock), so a watch that starts meanwhile and this command cannot both act on it.
 
 The same command runs the **conversation timeline** of crew sessions whose session ended (AR1,
 D69, `readCrewLeftovers` and `sweepCrewConversations` in `archive.ts`): the conversations past

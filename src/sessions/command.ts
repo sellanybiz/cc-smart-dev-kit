@@ -415,7 +415,7 @@ async function runFinishedSessions(
     };
     const records = await releasableCrewSessions(ctx);
     if (records.length > 0) {
-      out.heading("Finished crew sessions whose lead is stopped or gone");
+      out.heading("Finished crew sessions no watch releases");
       for (const record of records)
         out.line(
           "info",
