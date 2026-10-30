@@ -40,6 +40,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { resolveWorkflow } from "../workflow/resolve";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { restoreConversation } from "./archive";
 import { findCrew } from "./board";
@@ -56,6 +58,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
+import { placeFor, placeInputOf, withPlacesLock } from "./places";
 import { restoreReleasedWorktree } from "./release";
 import { actorOfCaller } from "./runs-actor";
 import {
@@ -67,6 +70,7 @@ import {
   crewSettingsFile,
   isQuestionOpen,
   lastHeardAnswer,
+  listAllCrew,
   listCrew,
   openQuestionIndex,
   questionClosed,
@@ -75,7 +79,10 @@ import {
   readCrew,
   readReport,
   releaseResume,
+  updateCrew,
+  updateCrewIfState,
 } from "./store";
+import { usageFacts } from "./usage-guard";
 
 /** What `crew answer` was asked, already checked to be well formed. */
 export interface AnswerArgs {
@@ -253,6 +260,31 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   if (way === "resume") {
     const resumed = await resumeSession(ctx, record, text);
     if (!resumed.ok) {
+      if (resumed.waits !== undefined) {
+        await answerCrewQuestion(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          index,
+          args.text,
+          ctx.now(),
+          null,
+          null,
+          { correction: correcting, delivered: false },
+          actorOfCaller(ctx, repo),
+        );
+        await updateCrew(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: index } },
+          ctx.now(),
+        );
+        ctx.print(
+          `${record.name}: the answer waits: ${resumed.waits}; it is delivered when the session comes back`,
+        );
+        return 0;
+      }
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
     }
@@ -353,6 +385,40 @@ async function deliveryReport(
       ];
 }
 
+/** One writer for a resumed session's identity and working state (D72). */
+export async function markResumed(
+  record: CrewRecord,
+  session: ResumedSession,
+  ctx: CrewContext,
+): Promise<boolean> {
+  try {
+    const result = await updateCrewIfState(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      [record.state],
+      {
+        state: "working",
+        sessionId: session.sessionId,
+        shortId: session.shortId,
+        resumeWaits: undefined,
+      },
+      ctx.now(),
+      "resumed by the lead",
+    );
+    if (!result.changed) {
+      ctx.error(
+        `${record.name}: resumed as session ${session.shortId}, but its record changed to ${result.record.state}; its state was not overwritten`,
+      );
+    }
+    return result.changed;
+  } catch (error) {
+    ctx.error(
+      `${record.name}: resumed as session ${session.shortId}, but the store could not record it: ${reasonOf(error)}`,
+    );
+    return false;
+  }
+}
 /** The session a resume brought back: the same one, or the copy Claude Code started instead. */
 export interface ResumedSession {
   sessionId: string;
@@ -367,7 +433,7 @@ export interface ResumedSession {
  */
 export type ResumeResult =
   | { ok: true; session: ResumedSession }
-  | { ok: false; unnamed: boolean; why: string };
+  | { ok: false; unnamed: boolean; why: string; waits?: string };
 
 /**
  * The words a line adds when a resume came back as another session: ` as session <new> (a copy of
@@ -518,7 +584,47 @@ export async function resumeSession(
   const token = randomUUID();
   let claimed: boolean;
   try {
-    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+    const checkout = locateCheckout(record.repo, { env: ctx.env });
+    const crew = resolveWorkflow(
+      ctx.paths,
+      checkout === null ? null : loadProjectConfig(checkout).config,
+    ).crew;
+    const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+    const decision = await withPlacesLock(stateDir, async () => {
+      const all = listAllCrew(stateDir).records;
+      const input = placeInputOf(all, record.leadSessionId, crew, usage, {
+        continuation: false,
+        exclude: record,
+        opus: record.model.tier === "opus",
+        unmet: [],
+        nowMs: ctx.now(),
+      });
+      const first = placeFor(input);
+      const place = first.start
+        ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+        : first;
+      if (!place.start) return { claimed: false, waits: place.why };
+      const claimed = await claimResume(
+        stateDir,
+        record.repo,
+        record.id,
+        [record.state],
+        token,
+        ctx.now(),
+      );
+      if (claimed)
+        await updateCrew(
+          stateDir,
+          record.repo,
+          record.id,
+          { launchedAt: new Date(ctx.now()).toISOString() },
+          ctx.now(),
+        );
+      return { claimed, waits: null };
+    });
+    if (decision.waits !== null)
+      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
+    claimed = decision.claimed;
   } catch (error) {
     return {
       ok: false,

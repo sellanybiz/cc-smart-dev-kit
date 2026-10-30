@@ -103,6 +103,7 @@ export interface ResolvedWorkflow {
     maxOpus: ResolvedValue<null | number>;
     memoryGb: ResolvedValue<number>;
     loadPerCore: ResolvedValue<number>;
+    startGapSeconds: ResolvedValue<number>;
     perLead: ResolvedValue<number>;
     perLeadOpus: ResolvedValue<number>;
     usagePercent: ResolvedValue<number>;
@@ -415,6 +416,7 @@ const RESOLVED: {
   "crew.maxOpus": (r) => r.crew.maxOpus,
   "crew.memoryGb": (r) => r.crew.memoryGb,
   "crew.loadPerCore": (r) => r.crew.loadPerCore,
+  "crew.startGapSeconds": (r) => r.crew.startGapSeconds,
   "crew.perLead": (r) => r.crew.perLead,
   "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
   "crew.usagePercent": (r) => r.crew.usagePercent,
@@ -520,6 +522,10 @@ export function resolveWorkflow(
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
       loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
+      startGapSeconds: of(
+        "crew.startGapSeconds",
+        crew.startGapSeconds ?? workflowDefaults.crew.startGapSeconds,
+      ),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of(

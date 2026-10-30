@@ -67,6 +67,7 @@ export function defaultResolved(): ResolvedWorkflow {
       idleStopMinutes: at(10),
       keep: at<string[]>([]),
       loadPerCore: at(3),
+      startGapSeconds: at(60),
       max: at(24),
       maxOpus: at<null | number>(null),
       maxHours: at(4),

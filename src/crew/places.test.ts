@@ -152,6 +152,17 @@ describe("D25: start now, or queued with the reason", () => {
     usagePercent: null,
   };
 
+  test("D72: launches, including continuations, wait for the machine's gap", () => {
+    const recent = { ...free, nowMs: 72_000, lastLaunchMs: 60_000, startGapSeconds: 60 };
+    const held = {
+      start: false,
+      why: "the last crew launch on this machine was 12 s ago; launches are 60 s apart; it starts in 48 s",
+    };
+    expect(placeFor(recent)).toEqual(held);
+    expect(placeFor({ ...recent, continuation: true })).toEqual(held);
+    expect(placeFor({ ...recent, nowMs: 120_000 })).toEqual({ start: true });
+  });
+
   test("a free place and enough memory: start", () => {
     expect(placeFor(free)).toEqual({ start: true });
     expect(placeFor({ ...free, freeGb: null })).toEqual({ start: true });

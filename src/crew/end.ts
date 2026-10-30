@@ -37,6 +37,7 @@ import {
 import { type WorkOnRef, workOnRef } from "../worktrees/scan";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import {
+  markResumed,
   resumedAs,
   resumePlace,
   resumeSession,
@@ -514,6 +515,19 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
   // where `claude respawn` brings a `--bg -w` session back (the bug of 2026-10-23).
   const resumed = await resumeSession(ctx, record, null);
   if (!resumed.ok) {
+    if (resumed.waits !== undefined) {
+      await updateCrew(
+        ctx.paths.stateDir,
+        record.repo,
+        record.id,
+        { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: null } },
+        ctx.now(),
+      );
+      ctx.print(
+        `${record.name} waits to come back: ${resumed.waits}; its lead's watch resumes it when the machine has room`,
+      );
+      return 0;
+    }
     return refuse(
       failure(
         `crew resume: ${resumed.why}`,
@@ -525,10 +539,7 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
   // The session the resume brought back comes in the write that makes it working (WF1): a
   // record that kept the old id would read that session's stopped row as its own.
   const { session } = resumed;
-  const stored = await markState(record, "working", "resumed by the lead", ctx, {
-    sessionId: session.sessionId,
-    shortId: session.shortId,
-  });
+  const stored = await markResumed(record, session, ctx);
   ctx.print(resumedLine(record, session.shortId));
   return stored ? 0 : 1;
 }
@@ -602,6 +613,7 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     // worktree for one that has none (`resumeOne`). It prints the message line or why it could
     // not; a resume the store could not record is its line too, and the exit code says so.
     const one = await resumeOne(record, ctx, ctx.now(), agents, (line) => ctx.print(line));
+    if (one.waits === true) continue;
     if (!one.ok || !one.stored) {
       code = 1;
       continue;

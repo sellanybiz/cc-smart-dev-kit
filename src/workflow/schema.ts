@@ -75,6 +75,7 @@ const NUMBER_RULES = {
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
   "crew.loadPerCore": ABOVE_ZERO,
+  "crew.startGapSeconds": AT_LEAST_ONE,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -315,6 +316,8 @@ export const workflowSchema = z.strictObject({
        * Windows), the hold does not apply. Default: 3.
        */
       loadPerCore: numberField("crew.loadPerCore"),
+      /** Whole seconds between launches on this machine, including resumes and continuations (D72). Default: 60. */
+      startGapSeconds: numberField("crew.startGapSeconds"),
       /** At most this many crew sessions run for one lead at once, in every repository (D54). Default: 4. */
       perLead: numberField("crew.perLead"),
       /** At most this many of one lead's crew sessions on the opus tier (D54). Default: 2. */
@@ -429,6 +432,7 @@ export const workflowDefaults = {
     memoryGb: 2,
     /** A start waits past a 1-minute load of 3 per core: busy but not drowning, queued work still finishes (seen: load 85 on 16 cores, 5 per core, with 24 sessions). */
     loadPerCore: 3,
+    startGapSeconds: 60,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -488,6 +492,7 @@ export type WorkflowKey =
   | "crew.maxOpus"
   | "crew.memoryGb"
   | "crew.loadPerCore"
+  | "crew.startGapSeconds"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"
@@ -532,6 +537,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.maxOpus",
   "crew.memoryGb",
   "crew.loadPerCore",
+  "crew.startGapSeconds",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",

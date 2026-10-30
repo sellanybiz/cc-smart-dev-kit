@@ -1423,6 +1423,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
       );
       const input = placeInputOf(all, lead.sessionId, crew, usage, {
         continuation: planned.continues != null,
+        nowMs: ctx.now(),
         opus: chosen.real.tier === OPUS_TIER,
         unmet,
       });
@@ -1468,6 +1469,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
           shortId: null,
           slug: planned.slug,
           state: place.start ? "starting" : "queued",
+          ...(place.start ? { launchedAt: new Date(ctx.now()).toISOString() } : {}),
           waitsFor: planned.waitsFor,
           worktree: planned.worktree,
         },
@@ -1601,6 +1603,7 @@ export async function startQueued(
     const here = all.filter((one) => one.repo === record.repo);
     const input = placeInputOf(all, record.leadSessionId, crew, usage, {
       continuation: record.continues != null,
+      nowMs: ctx.now(),
       opus: record.model.tier === OPUS_TIER,
       unmet: unmetWaits(record.waitsFor, here),
     });
@@ -1619,7 +1622,11 @@ export async function startQueued(
       ctx.paths.stateDir,
       record.repo,
       record.id,
-      { base: { ref: record.baseRef, sha: base }, state: "starting" },
+      {
+        base: { ref: record.baseRef, sha: base },
+        state: "starting",
+        launchedAt: new Date(ctx.now()).toISOString(),
+      },
       ctx.now(),
       "started from the queue",
     );
