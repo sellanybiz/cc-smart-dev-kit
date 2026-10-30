@@ -120,7 +120,7 @@ import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.7.0",
+  version: "1.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

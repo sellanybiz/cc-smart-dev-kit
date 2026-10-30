@@ -886,6 +886,54 @@ export function releaseKeptLine(record: CrewRecord, why: string, fix: null | str
 }
 
 /**
+ * True when a release has something to do (D69): a worktree not released yet, or a row agent view
+ * still lists — a worktree gone before its `claude rm`, or a release whose `claude rm` failed.
+ * An agent view that cannot be read releases nothing.
+ */
+function releasable(record: CrewRecord, agents: null | readonly AgentRow[]): boolean {
+  if (agents === null) return false;
+  return (
+    (record.released === undefined && existsSync(record.worktree)) ||
+    listsAnySession(agents, record)
+  );
+}
+
+/**
+ * Releases `record` (`releaseCrewSession`, D69); `live`: agent view shows a process for its session,
+ * which the release then stops. Its own event says the release; a refusal is said once, and tried
+ * again when the branch or the folder changes, or after `PARKED_PASS_MS`.
+ */
+async function releaseOnce(
+  record: CrewRecord,
+  ctx: CrewContext,
+  draft: Pick<PassDraft, "removals" | "said">,
+  say: (line: string) => void,
+  live: boolean,
+): Promise<void> {
+  const { removals, said } = draft;
+  const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
+  const status = existsSync(record.worktree)
+    ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
+    : null;
+  const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
+  const key = `${record.id}:release`;
+  const previous = removals[key];
+  if (
+    previous !== undefined &&
+    previous.signature === signature &&
+    ctx.now() - previous.at < PARKED_PASS_MS
+  )
+    return;
+  removals[key] = { at: ctx.now(), signature };
+  const result = await releaseCrewSession(record, ctx, { live });
+  const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
+  if (line !== null && said[key] !== line) {
+    say(line);
+    said[key] = line;
+  }
+}
+
+/**
  * Stops the session of `record` (`stopSession`) and records the state it ends in with `reason`.
  * Null when done; else why not, for an alert.
  */
@@ -1397,8 +1445,10 @@ async function runPass(
       // D62: stopping a crew session was the lead's call, and so is removing it. It is marked
       // merged all the same — what waits for its phase starts on the merge — and left for
       // `crew rm`. The store keeps the fact (`mergedWhileStopped`), so a later pass sees it too.
-      if (wasStopped || record.mergedWhileStopped === true) continue;
+      // A record an older writer marked has only the event: the fact is written now.
+      let heldForLead = wasStopped || record.mergedWhileStopped === true;
       if (
+        !heldForLead &&
         record.state === "merged" &&
         record.mergedWhileStopped === undefined &&
         historicallyMergedWhileStopped(record, events())
@@ -1410,6 +1460,12 @@ async function runPass(
           { mergedWhileStopped: true },
           ctx.now(),
         );
+        heldForLead = true;
+      }
+      // Held for the lead or for a chain, it still leaves agent view (D69): it is released, so its
+      // branch and its record stay for that removal.
+      if (heldForLead) {
+        if (releasable(record, agents)) await releaseOnce(record, ctx, draft, say, listed);
         continue;
       }
       // Keep the chain's records until every later continuation's work is on its first base.
@@ -1439,6 +1495,7 @@ async function runPass(
           say(line);
           said[stopKey] = line;
         }
+        if (releasable(record, agents)) await releaseOnce(record, ctx, draft, say, listed);
         continue;
       }
       // Retry refusals only when the folder changes, or after the parked-folder interval.
@@ -1501,39 +1558,11 @@ async function runPass(
         say(stopped);
         said[stopKey] = stopped;
       }
-    } else if (
-      RELEASE_STATES.includes(record.state) &&
-      agents !== null &&
-      !listed &&
-      (record.released === undefined
-        ? existsSync(record.worktree)
-        : listsAnySession(agents, record))
-    ) {
+    } else if (RELEASE_STATES.includes(record.state) && !listed && releasable(record, agents)) {
       // D69: its session is over and holds no process (a `done`, `handoff` or `failed` one is
       // stopped by the branches below first), so it leaves agent view now; its branch stays for
-      // the merge. A record released already whose rows agent view still lists had a `claude rm`
-      // that failed: the release runs it again. Its own event says the release; a refusal is said
-      // once, and tried again when the folder changes or after the parked-folder interval.
-      const head = runGit(record.repo, ["rev-parse", record.branch], ctx.env);
-      const status = existsSync(record.worktree)
-        ? runGit(record.worktree, ["status", "--porcelain"], ctx.env)
-        : null;
-      const signature = JSON.stringify([head.ok, head.out, status?.ok, status?.out]);
-      const key = `${record.id}:release`;
-      const previous = removals[key];
-      if (
-        previous === undefined ||
-        previous.signature !== signature ||
-        ctx.now() - previous.at >= PARKED_PASS_MS
-      ) {
-        removals[key] = { at: ctx.now(), signature };
-        const result = await releaseCrewSession(record, ctx);
-        const line = result.ok ? null : releaseKeptLine(record, result.why, result.fix);
-        if (line !== null && said[key] !== line) {
-          say(line);
-          said[key] = line;
-        }
-      }
+      // the merge.
+      await releaseOnce(record, ctx, draft, say, false);
     } else if (record.state === "failed" && listed) {
       // Its record says failed and **stays failed**: the board must show why it ended, not a
       // stop that hides it. Its session is ended all the same (D35), once (a pass while agent

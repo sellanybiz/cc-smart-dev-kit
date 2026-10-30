@@ -46,12 +46,15 @@ the final exit is nonzero if any failed. The portal child runs from the existing
 from a possibly removed session folder. Nothing runs this removal by itself.
 
 Before that list, `sessions --finished` names the finished crew records (`done`, `handoff`,
-`failed`, `stopped`) of a lead seen gone for more than a day (`releasableCrewSessions`, D69):
-no watch of theirs will release them, so `--remove` releases them after its own question — the
+`failed`, `stopped`, and a `merged` one still waiting for its removal) of a lead that runs no
+watch (`releasableCrewSessions`, `leadWatchless`, D69): one agent view lists with no process
+(stopped or failed: its monitors ended with it), at once, or one seen gone for more than a day.
+No watch of theirs will release them, so `--remove` releases them after its own question — the
 worktree and the agent-view rows go, the branch and the conversation stay. An agent view it
-cannot read, or a lead not yet seen gone, releases nothing. To judge a lead gone it notes, in each
-lead record, whether agent view lists that lead now (`observeLeadPresence`, the note the clean
-keeps too), so even a plain listing writes that note; it writes nothing else.
+cannot read, a lead with a live session, or a lead not yet seen gone, releases nothing. To judge
+a lead gone it notes, in each lead record, whether agent view lists that lead now
+(`observeLeadPresence`, the note the clean keeps too), so even a plain listing writes that note;
+it writes nothing else.
 
 The same command runs the **conversation timeline** of crew sessions whose session ended (AR1,
 D69, `readCrewLeftovers` and `sweepCrewConversations` in `archive.ts`): the conversations past

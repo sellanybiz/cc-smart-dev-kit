@@ -3,6 +3,34 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.7.1
+
+Two kinds of finished crew session still stayed in agent view after 1.7.0. Both leave it now.
+
+**What to run** after the update:
+
+- In each lead session that is running, end its crew watch and start it again (the
+  `cc-smart-dev-kit crew watch` command, with Claude Code's `Monitor` tool): a watch keeps the
+  code it started with.
+- `cc-smart-dev-kit sessions --finished --remove`. It releases the finished crew sessions of
+  leads that are stopped, failed or gone, after one question.
+
+What changed:
+
+- **A merged crew session that waits leaves agent view too.** A merged crew session whose
+  removal is held — one you stopped before its merge, left for your `crew rm`, or one kept until
+  its chain's later parts merge — is released while it waits: its worktree and rows go, its
+  record and branch stay, and the removal it waits for still deletes the branch. The watch does
+  it; for a lead that runs no watch, `sessions --finished --remove` does.
+- **A row left without its worktree goes.** A crew session whose worktree went before its
+  `claude rm` is released while agent view still lists its row.
+- **A stopped or failed lead's crew sessions are released at once.** Such a lead runs no watch,
+  so `sessions --finished --remove` now releases its finished crew sessions without waiting; a
+  lead agent view no longer lists still waits a full day. The heading says "whose lead is
+  stopped or gone".
+- **A release stops only a session that runs.** One that agent view shows with no process is not
+  stopped again, and the release's line says only what it removed.
+
 ## 1.7.0
 
 Finished crew sessions leave agent view at once, so a lead session is easy to find again. A

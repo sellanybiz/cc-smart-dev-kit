@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.7.0",
+  version: "1.7.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21126,12 +21126,15 @@ function worktreeLeftovers(context) {
 
 // src/crew/lifecycle.ts
 var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+function rowsOfLead(rows, lead) {
+  return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
+}
 function leadGone(lead, rows, now) {
   if (lead === null)
     return false;
   if (lead.endedAt != null)
     return true;
-  if (rows === null || rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8)))
+  if (rows === null || rowsOfLead(rows, lead).length > 0)
     return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;

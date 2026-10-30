@@ -1,6 +1,7 @@
 /** Shared stopped-session needs, lead presence and the watch's durable merge proof. */
 import { runGit } from "../hooks/git";
 import { workOnRef } from "../worktrees/scan";
+import { isLiveRow } from "./agents";
 import type { AgentRow } from "./claude";
 import type { CrewContext } from "./context";
 import { commitsNotOn, GIT_TIMEOUT_MS, leadRef, mergedIntoBase } from "./end";
@@ -8,9 +9,11 @@ import { type CrewEvent, type CrewRecord, type LeadRecord, setLeadPresence } fro
 
 /**
  * The states whose session is over, so the kit releases its worktree and agent-view rows while
- * its branch stays (D69). `blocked` is not one: its question is live until an idle stop (D35).
+ * its branch stays (D69). `merged` is released only while its removal is held (for the lead, D62,
+ * or for a chain): otherwise the watch removes it whole. `blocked` is not one: its question is
+ * live until an idle stop (D35).
  */
-export const RELEASE_STATES: readonly string[] = ["done", "handoff", "failed", "stopped"];
+export const RELEASE_STATES: readonly string[] = ["done", "handoff", "failed", "stopped", "merged"];
 
 /** A stopped-session reminder's spacing, and the grace period for an unknown lead session. */
 export const STOPPED_REMINDER_MS = 24 * 60 * 60_000;
@@ -149,6 +152,13 @@ export function mergeProof(record: CrewRecord, ctx: CrewContext): CrewRecord["me
   return { head: head.out, leadRef: lead.label, leadCommit: lead.sha };
 }
 
+/** The rows agent view lists for the session of `lead`. */
+function rowsOfLead(rows: readonly AgentRow[], lead: LeadRecord): AgentRow[] {
+  return rows.filter(
+    (row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8),
+  );
+}
+
 /** Observe all leads in one agent-view read; callers share the same persisted absence clock. */
 export async function observeLeadPresence(
   stateDir: string,
@@ -159,9 +169,7 @@ export async function observeLeadPresence(
   if (rows === null) return [...leads];
   const observed: LeadRecord[] = [];
   for (const lead of leads) {
-    const known = rows.some(
-      (row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8),
-    );
+    const known = rowsOfLead(rows, lead).length > 0;
     observed.push((await setLeadPresence(stateDir, lead.repo, lead.sessionId, known, now)) ?? lead);
   }
   return observed;
@@ -175,11 +183,23 @@ export function leadGone(
 ): boolean {
   if (lead === null) return false;
   if (lead.endedAt != null) return true;
-  if (
-    rows === null ||
-    rows.some((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8))
-  )
-    return false;
+  if (rows === null || rowsOfLead(rows, lead).length > 0) return false;
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
+}
+
+/**
+ * True when no watch of `lead` runs, so only `sessions --finished --remove` releases its crew
+ * sessions (D69): it is gone (`leadGone`), or agent view lists its session with no process — a
+ * stopped or failed lead, whose monitors ended with it. An unreadable agent view proves nothing.
+ */
+export function leadWatchless(
+  lead: LeadRecord | null,
+  rows: readonly AgentRow[] | null,
+  now: number,
+): boolean {
+  if (leadGone(lead, rows, now)) return true;
+  if (lead === null || rows === null) return false;
+  const listed = rowsOfLead(rows, lead);
+  return listed.length > 0 && !listed.some(isLiveRow);
 }
