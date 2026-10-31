@@ -12,9 +12,11 @@ shared folders, the launch on Linux — is `jobs.md`.
 
 - The total is `os.totalmem()` and the free memory is `os.freemem()`: Windows reads both
   itself, and there is no cgroup to lower them. (`machineMemory`, `src/jobs/memory.ts`.)
-- **The queue does not read the free memory.** It counts slots, so Windows' habit of counting
-  its standby cache as used costs nothing here: it can no longer make a job wait longer than it
-  must. (The crew's start gate still reads the free memory, and so it is a little cautious on
+- **The queue reads the free memory for one rule:** while another job runs, a new one waits
+  until `startFreeGb` is free (`jobs.md` § Waiting). Where Windows counts its standby cache as
+  used, that wait may last longer than it must; lower it on such a machine
+  (`cc-smart-dev-kit job set start-free-gb 2`). With no other job running, nothing waits for
+  memory. (The crew's start gate reads the free memory too, so it is a little cautious on
   Windows for the same reason.)
 - **There is no ceiling.** On Linux all heavy jobs together run under one memory ceiling of
   their systemd slice. Windows has no memory group, so nothing caps the memory of a job or of
@@ -30,6 +32,8 @@ shared folders, the launch on Linux — is `jobs.md`.
   This machine (~.localsharecc-smart-dev-kitjobs): 0 of 3 slots in use
     nothing held, nobody waits
   Heavy jobs at once on this machine: 3 (the default). Change it with: cc-smart-dev-kit job set max-jobs <n>
+  Light jobs at once on this machine: 2, 0 in use. Change it with: cc-smart-dev-kit job set light-jobs <n>
+  A job starts with 4 GB of memory free, or when no other job runs; 14.2 GB is free now. Change it with: cc-smart-dev-kit job set start-free-gb <n>
   ```
 
   A weight is a Linux slice setting, and Windows never has one (`jobs.md` § The launch).

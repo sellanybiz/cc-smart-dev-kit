@@ -6,12 +6,14 @@ import type { MemoryFacts } from "../jobs/memory";
 import type { LoadFacts } from "../machine/load";
 import { locateCheckout } from "../project/resolve";
 import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   freeForCrewGb,
   onOpusTier,
   placeFor,
   placeForLeadStart,
+  placeInputOf,
   RUNNING_STATES,
   runningCrew,
   runningForLead,
@@ -54,6 +56,117 @@ function crew(phase: string, state: string, minute = 0): CrewRecord {
     worktree: `/home/user/my-app/.claude/worktrees/crew-${phase}-x`,
   };
 }
+
+describe("D72: the shared place input", () => {
+  test("a resume excludes itself once, while another live claim holds a place", () => {
+    const paused = crew("A1", "paused");
+    const stopped = crew("B2", "stopped");
+    const claimed = {
+      ...crew("C3", "stopped"),
+      resumeClaim: { at: "2026-10-21T10:00:00.000Z", token: "resume-token" },
+    };
+    const input = (exclude: CrewRecord) =>
+      placeInputOf(
+        [paused, stopped, claimed],
+        "lead",
+        defaultResolved().crew,
+        { opusFallback: false, percent: null },
+        {
+          continuation: false,
+          opus: false,
+          unmet: [],
+          nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+          exclude,
+        },
+      );
+    expect(input(paused).running).toBe(1);
+    expect(input(paused).leadRunning).toBe(1);
+    expect(input(stopped).running).toBe(2);
+    expect(placeFor({ ...input(paused), max: 2 })).toEqual({ start: true });
+    expect(placeFor({ ...input(stopped), max: 2 })).toEqual({
+      start: false,
+      why: "2 of 2 crew sessions running on this machine; it starts when one finishes",
+    });
+  });
+
+  test("another repository's latest launch holds the gap, but the lead guard's input ignores it", () => {
+    const other = {
+      ...crew("A1", "stopped"),
+      repo: "/home/user/other-app",
+      launchedAt: "2026-10-21T10:00:00.000Z",
+    };
+    const input = placeInputOf(
+      [other],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(placeFor(input)).toEqual({
+      start: false,
+      why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    });
+    const guard = placeInputOf(
+      [other],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+        ignoreGap: true,
+      },
+    );
+    expect(placeFor(guard)).toEqual({ start: true });
+  });
+
+  test("a launch time later than now (the clock was set back) is left out of the gap", () => {
+    const ahead = { ...crew("A1", "stopped"), launchedAt: "2026-10-21T11:00:00.000Z" };
+    const earlier = { ...crew("B2", "stopped"), launchedAt: "2026-10-21T09:58:00.000Z" };
+    const input = placeInputOf(
+      [ahead, earlier],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(input.lastLaunchMs).toBe(Date.parse("2026-10-21T09:58:00.000Z"));
+    expect(placeFor(input)).toEqual({ start: true });
+  });
+
+  test("a failed start without launchedAt still contributes its startedAt to the gap", () => {
+    const failed = { ...crew("A1", "failed"), startedAt: "2026-10-21T10:00:00.000Z" };
+    const input = placeInputOf(
+      [failed],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(input.lastLaunchMs).toBe(1792576800000);
+    expect(placeFor(input)).toEqual({
+      start: false,
+      why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    });
+  });
+});
 
 describe("the crew that hold a place", () => {
   test("starting, working, blocked, paused and quiet; never queued or finished", () => {
@@ -151,6 +264,17 @@ describe("D25: start now, or queued with the reason", () => {
     usageHoldPercent: 85,
     usagePercent: null,
   };
+
+  test("D72: launches, including continuations, wait for the machine's gap", () => {
+    const recent = { ...free, nowMs: 72_000, lastLaunchMs: 60_000, startGapSeconds: 60 };
+    const held = {
+      start: false,
+      why: "the last crew launch on this machine was 12 s ago; launches are 60 s apart; it starts in 48 s",
+    };
+    expect(placeFor(recent)).toEqual(held);
+    expect(placeFor({ ...recent, continuation: true })).toEqual(held);
+    expect(placeFor({ ...recent, nowMs: 120_000 })).toEqual({ start: true });
+  });
 
   test("a free place and enough memory: start", () => {
     expect(placeFor(free)).toEqual({ start: true });
@@ -407,7 +531,10 @@ describe("D59: would a crew start from this lead queue now", () => {
   /** A real project with a recorded lead, its crew caps as the test's file sets them. */
   async function leadWorld(crew: Record<string, unknown> = {}) {
     const world = crewWorld();
-    world.writeConfig({ memoryGb: 1, ...crew });
+    // The switch is the project's, the limits are the person's own (D71).
+    const { enabled, ...limits } = crew;
+    if (enabled !== undefined) world.writeConfig({ enabled });
+    world.writePersonal({ memoryGb: 1, ...limits });
     const checkout = locateCheckout(world.repo, { env: cleanGitEnv() });
     if (checkout === null) throw new Error("the test repository has no checkout");
     await writeLead(

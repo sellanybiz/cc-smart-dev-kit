@@ -118,6 +118,7 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
   loadPerCore: "1.3.0",
   archiveDays: "1.3.0",
   deleteDays: "1.7.0",
+  startGapSeconds: "1.8.0",
 };
 
 /**
@@ -130,6 +131,7 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
  */
 export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string>>> = {
   noSlotForFiles: "1.5.0",
+  light: "1.8.0",
 };
 
 /**
@@ -232,7 +234,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
   /**
    * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
    * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field
-   * (`src/workflow/`).
+   * except the machine's crew limits (`src/workflow/`).
    */
   workflow: workflowSchema.optional(),
   /**

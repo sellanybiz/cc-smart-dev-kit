@@ -63,7 +63,7 @@ describe("workflow show", () => {
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.errors).toEqual([]);
     expect(run.lines).toEqual([
-      "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field",
+      "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field, except the machine's crew limits",
       "autoCommit = false (default)",
       "autoPush = false (default)",
       "openPr = off (default)",
@@ -89,10 +89,11 @@ describe("workflow show", () => {
       "crew.enabled = false (default)",
       "crew.keep = (nothing) (default)",
       "crew.idleStopMinutes = 10 (default)",
-      "crew.max = 24 (default)",
+      "crew.max = 12 (default)",
       "crew.maxOpus = (no machine-wide opus count) (default)",
-      "crew.memoryGb = 2 (default)",
-      "crew.loadPerCore = 3 (default)",
+      "crew.memoryGb = 6 (default)",
+      "crew.loadPerCore = 1.5 (default)",
+      "crew.startGapSeconds = 60 (default)",
       "crew.perLead = 4 (default)",
       "crew.perLeadOpus = 2 (default)",
       "crew.usagePercent = 85 (default)",
@@ -274,7 +275,7 @@ describe("workflow set and unset", () => {
   });
 
   test("--project with a key a newer plugin brought raises the file's requires, and only then", async () => {
-    // `crew.perLead` came with 1.1.0: a 1.0.x plugin would refuse the file as an unknown field,
+    // `crew.handoffTokens` came with 1.2.0: an older plugin would refuse the unknown field,
     // so every guard of a teammate still on it would ask on every call instead of saying "update".
     const env = hookEnv();
     const repo = makeRepo();
@@ -284,10 +285,12 @@ describe("workflow set and unset", () => {
       `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { crew: { enabled: true } } }, null, 2)}\n`,
     );
     const run = context(repo, env);
-    expect(await runWorkflow(["set", "crew.perLead", "2", "--project"], run.context)).toBe(0);
+    expect(
+      await runWorkflow(["set", "crew.handoffTokens", "500000", "--project"], run.context),
+    ).toBe(0);
     const written = JSON.parse(readFileSync(file, "utf8"));
-    expect(written.requires).toBe(">=1.1");
-    expect(written.workflow.crew).toEqual({ enabled: true, perLead: 2 });
+    expect(written.requires).toBe(">=1.2");
+    expect(written.workflow.crew).toEqual({ enabled: true, handoffTokens: 500000 });
     // A key the old floor already covers leaves `requires` as it was.
     const plain = context(repo, env);
     writeFileSync(

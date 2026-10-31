@@ -38,6 +38,12 @@ const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
 const SHELL = "/bin/bash";
 
 describe("which commands are routed", () => {
+  it("routes dependency installs through the install kind", () => {
+    expect(routeHeavyCommand("bun install --frozen-lockfile", KINDS, SHELL)).toEqual({
+      command: `${LAUNCHER} job run --kind install -- bun install --frozen-lockfile`,
+      kind: "install",
+    });
+  });
   it("a heavy command of a default kind is routed; a light one is not", () => {
     expect(routeHeavyCommand("bunx vitest run src/a.test.ts", KINDS, SHELL)).toEqual({
       command: `${LAUNCHER} job run --kind test:run -- bunx vitest run src/a.test.ts`,

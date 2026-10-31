@@ -261,6 +261,19 @@ function scriptOrTool(word: string, args: string[]): ToolCall {
 export function toolOf(program: string, args: string[], depth = 0): ToolCall | undefined {
   if (depth > 4) return undefined;
   const at = (valued: readonly string[], from = 0) => firstWord(args, from, valued);
+  if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
+    const index = at(
+      program === "bun" ? BUN_VALUED : program === "pnpm" || program === "yarn" ? PNPM_VALUED : [],
+    );
+    const sub = args[index];
+    if (
+      (program === "yarn" && sub === undefined) ||
+      (sub !== undefined &&
+        ["install", "i", "add", ...(program === "npm" ? ["ci"] : [])].includes(sub))
+    ) {
+      return { name: program, args: sub === undefined ? ["install", ...args] : args.slice(index) };
+    }
+  }
   switch (program) {
     case "bunx":
     case "npx": {
@@ -418,8 +431,10 @@ function inspect(
 
 /**
  * The heavy-job kind a shell command runs, or null. When it runs several (`tsc && next
- * build`), the first one the line runs: the queue counts jobs and a kind has no size, so the
- * kind only names the job. `source` says where the line runs and how to read a folder's
+ * build`), the first one the line runs that is not `light`: the queue counts jobs and the
+ * kind picks the job's lane, so a line that installs and then builds (`bun install && next
+ * build`) takes a heavy slot, as its build needs; only a line of light kinds alone takes a light
+ * one. `source` says where the line runs and how to read a folder's
  * `package.json`; without it, a package manager's word is the tool, as before. `dialect` is the
  * shell that reads the line: Bash, or the PowerShell tool's (`job-route` refuses a heavy
  * PowerShell line and names the Bash tool instead).
@@ -430,7 +445,8 @@ export function classifyHeavyCommand(
   source?: ScriptSource,
   dialect: Dialect = "bash",
 ): string | null {
-  return inspect(command, kinds, dialect, 0, runOf(source))[0] ?? null;
+  const found = inspect(command, kinds, dialect, 0, runOf(source));
+  return found.find((kind) => kinds[kind]?.light !== true) ?? found[0] ?? null;
 }
 
 /**

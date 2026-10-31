@@ -85,13 +85,16 @@ export type Launch =
 
 /**
  * A scope when systemd can make one here (tried with `OOMPolicy=kill` first; an older
- * systemd that refuses it on a scope gets a scope without it), else choom, else plain.
+ * systemd that refuses it on a scope gets a scope without it), else choom, else plain. A
+ * light run gets choom alone: it never runs in the heavy slice, whose ceiling is for heavy
+ * runs (`queue.ts` › TWO LANES).
  */
-export function chooseLaunch(facts: LaunchFacts): Launch {
+export function chooseLaunch(facts: LaunchFacts, light = false): Launch {
   if (facts.platform !== "linux") return { mode: "plain" };
   if (!facts.hasChoom) {
     return { mode: "plain", note: "no `choom` here: the job runs without its kill mark" };
   }
+  if (light) return { mode: "choom" };
   if (!facts.hasSystemdRun) {
     return {
       mode: "choom",

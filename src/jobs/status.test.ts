@@ -96,12 +96,14 @@ describe("the jobs reader", () => {
     const world1 = world();
     // The store's own writer makes the files, so the fixture is exactly what `job run` leaves.
     const store = machineStore(world1.dir);
-    await store.tryTake(true, record("bunx tsc --noEmit"));
+    await store.tryTake("heavy", record("bunx tsc --noEmit"));
     await store.enqueue(record("next build"));
     const read = await readJobs(world1.ctx);
     expect(jobsAnswer(read)).toEqual({
       ceiling: { gb: 10, why: "set in jobs.json" },
       memoryGb: 32,
+      lightJobs: { slots: 2, used: 0 },
+      admission: { freeGb: 16, startFreeGb: 4 },
       route: { on: false, project: null, source: "default" },
       stores: [
         {
@@ -165,6 +167,8 @@ describe("the jobs reader", () => {
       expect.stringContaining(": 0 of 3 slots in use"),
       "  nothing held, nobody waits",
       `Heavy jobs at once on this machine: 3 (the default). Change it with: ${COMMAND} job set max-jobs <n>`,
+      `Light jobs at once on this machine: 2, 0 in use. Change it with: ${COMMAND} job set light-jobs <n>`,
+      `A job starts with 4 GB of memory free, or when no other job runs; 16 GB is free now. Change it with: ${COMMAND} job set start-free-gb <n>`,
       `Job route for a project that sets none: off: a heavy command runs raw, outside the queue (the default). Turn it on for every project with: ${COMMAND} workflow set switches.jobRoute true`,
     ]);
     expect(jobsAnswer(read).stores[0]).toEqual({
@@ -179,7 +183,7 @@ describe("the jobs reader", () => {
   test("statusLines: the command's own words, from the same read", async () => {
     const world1 = world();
     const store = machineStore(world1.dir);
-    await store.tryTake(true, record("bunx tsc --noEmit"));
+    await store.tryTake("heavy", record("bunx tsc --noEmit"));
     await store.enqueue(record("next build"));
     const read = await readJobs(world1.ctx);
     const lines = statusLines(read, world1.home, Date.UTC(2026, 9, 22, 12, 0, 0));
@@ -201,14 +205,14 @@ describe("the jobs reader", () => {
     expect(lines[7]).toBe(
       `Heavy jobs at once on this machine: 3 (the default). Change it with: ${COMMAND} job set max-jobs <n>`,
     );
-    expect(lines).toHaveLength(9);
+    expect(lines).toHaveLength(11);
   });
 
   test("a full machine: every slot in use, two jobs waiting in line order", async () => {
     const world1 = world();
     const store = machineStore(world1.dir);
-    for (const what of ["tsc a", "tsc b", "tsc c"]) await store.tryTake(true, record(what));
-    expect(await store.tryTake(true, record("tsc d"))).toBeNull();
+    for (const what of ["tsc a", "tsc b", "tsc c"]) await store.tryTake("heavy", record(what));
+    expect(await store.tryTake("heavy", record("tsc d"))).toBeNull();
     await store.enqueue(record("tsc d"));
     await store.enqueue(record("tsc e"));
     const read = await readJobs(world1.ctx);
@@ -231,7 +235,7 @@ describe("the jobs reader", () => {
       ["a", 9],
       ["b", 10],
     ] as const) {
-      await store.tryTake(true, record(what, true, undefined, at(hour)));
+      await store.tryTake("heavy", record(what, true, undefined, at(hour)));
     }
     for (const [what, hour] of [
       ["y", 13],
@@ -247,7 +251,7 @@ describe("the jobs reader", () => {
   test("a name held alone is listed, and uses no slot", async () => {
     const world1 = world();
     const store = machineStore(world1.dir);
-    await store.tryTake(false, record("docker build .", false, "image"), "image");
+    await store.tryTake("none", record("docker build .", false, "image"), "image");
     const read = await readJobs(world1.ctx);
     const lines = statusLines(read, world1.home, Date.now());
     expect(lines[4]).toContain(": 0 of 3 slots in use");
@@ -261,11 +265,11 @@ describe("the jobs reader", () => {
   test("maxJobs in jobs.json sets the slots, and the last line says where it comes from", async () => {
     const world1 = world({ maxJobs: 1 });
     const store = machineStore(world1.dir, 1);
-    await store.tryTake(true, record("bunx tsc --noEmit"));
+    await store.tryTake("heavy", record("bunx tsc --noEmit"));
     const read = await readJobs(world1.ctx);
     const lines = statusLines(read, world1.home, Date.now());
     expect(lines[4]).toContain(": 1 of 1 slot in use");
-    expect(lines.at(-2)).toBe(
+    expect(lines.at(-4)).toBe(
       `Heavy jobs at once on this machine: 1 (set in jobs.json). Change it with: ${COMMAND} job set max-jobs <n>`,
     );
     expect(jobsAnswer(read).stores[0]?.slots).toBe(1);

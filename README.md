@@ -376,6 +376,11 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, th
 
 ### The crew
 
+Starts and resumes wait for the machine's limits and the gap between launches
+([`crew.startGapSeconds`](#the-workflow)). A held `crew resume` prints why and exits 0;
+its lead's watch brings it back later. An answer to a dead session stays saved until that
+resume delivers it. Continuations go first, then waiting resumes, then other queued starts.
+
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>] [--end]` | Records the Claude Code session that runs it (from its own Bash tool) as the lead of a plan in this repository (`--end` marks that existing plan ended; another normal `crew lead` reopens it), named `LEAD <tag> <plan>`. The tag is `--tag`, else [`crew.tag`](#the-workflow), else the main checkout's folder name; the plan is `--plan`, else the plan this session already leads, else the branch. `--plan-file` names the plan's file (it must exist and end in `.md`): the folder beside it, named as the file without `.md`, holds the plan's `briefs/` and the record of each crew run, `runs/` ([The plan's folder](#the-plans-folder-and-the-record-of-each-crew-run)). Without it the file is the one this session recorded before, the one an earlier lead of the same plan recorded (a hand-over), or the one `<plans dir>/*-<plan>.md` in the repository's `.claude/plans` and the person's plans folder (and the `archive/` of each); none or several leave it off, and the first line says so. The session takes that name at its next prompt by itself (no setting), replacing the name it had; a name you give it with `/rename` after that stays. Only a session id no name record can be made for, or a project running its own `lead-notes` hook, gets a `/rename` line to type. Refused outside a Claude Code session, in a crew session, in a session in bypass mode, and while crew sessions are off ([`crew.enabled`](#the-workflow)). |
@@ -1825,8 +1830,10 @@ the kinds, the config and the limits: [docs/jobs.md](docs/jobs.md).
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits until this machine (and any shared folder) has a free slot, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone). `--gb <n>` is accepted and ignored: the queue counts jobs now. |
-| `cc-smart-dev-kit job status` | How many slots are in use (`2 of 3 slots in use`), who holds them and who waits, here and on each shared folder; the memory ceiling; the CPU and I/O weights (or why one is not set); the line that changes how many run at once; and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
-| `cc-smart-dev-kit job kinds` | The kinds (`tsc`, `lint:typed`, `test:run`, `test:coverage`, `build`, `image:build`, and the project's own). |
+| `cc-smart-dev-kit job status` | How many slots are in use (`2 of 3 slots in use`), who holds them and who waits, here and on each shared folder; the light slots in use; the free memory a job needs to start; the memory ceiling; the CPU and I/O weights (or why one is not set); the line that changes how many run at once; and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
+| `cc-smart-dev-kit job kinds` | The kinds, including the light `install` kind for package-manager installs, and the project's own. |
+| `cc-smart-dev-kit job set light-jobs <n>` | Light runs at once, a whole number from 1. Default 2. |
+| `cc-smart-dev-kit job set start-free-gb <n>` | The free memory a heavy or light run needs to start while another job runs, a number from 0. Default 4 GB. |
 | `cc-smart-dev-kit job set max-jobs <n>` | How many heavy jobs run at once on this machine (default 3, at least 1). Also `cpu-weight <n or off>` and `io-weight <n or off>`. Written to `jobs.json` with a backup, like every change setup makes to your files. |
 
 The state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. A machine sets its limits in
@@ -1835,6 +1842,8 @@ The state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. A machine set
 | Field | What it does |
 |---|---|
 | `maxJobs` | How many heavy jobs run at once. Default 3. Yours and machine-wide: a project's file cannot set it. |
+| `lightJobs` | Light runs at once on this machine, at least 1. Default 2. Installs, and test runs on at most 10 named files, take a light slot; larger runs take a heavy one. |
+| `startFreeGb` | The free GB a run needs to start while another job runs; with none running, it starts. Default 4; at least 0. A machine that cannot read its free memory never holds a run. |
 | `reserveGb`, `budgetGb` | The memory ceiling of all heavy jobs together on Linux: the machine's memory less `reserveGb` (8 by default, at least 14 GB), or `budgetGb` itself. |
 | `launch`, `slice` | `auto` or `plain`, and the systemd slice the jobs run in. |
 | `cpuWeight`, `ioWeight` | Off by default: a heavy job runs at normal CPU and disk priority. A number from 1 to 10000 (systemd's own is 100) makes the heavy jobs give way under load. |
@@ -2568,7 +2577,7 @@ not end with `/`, a key no version knows) is an error before anything is written
 
 The workflow is what cc-smart-dev-kit may do **by itself** after a step is finished — commit
 it, push the branch, open a pull request, merge it — and how. Two files hold the policy, and
-the project's wins field by field:
+the project's wins field by field, except the machine's crew limits:
 
 1. **the project's** `workflow` object in `.claude/cc-smart-dev-kit.json`, committed with the
    code, so a team shares one policy;
@@ -2576,10 +2585,17 @@ the project's wins field by field:
 3. **the built-in default** under both — the safe one: nothing is committed, pushed or
    merged without you, and every alert is on.
 
+Crew limits (`crew.max`, `crew.maxOpus`, `crew.perLead`, `crew.perLeadOpus`,
+`crew.memoryGb`, `crew.loadPerCore`, `crew.usagePercent`, `crew.startGapSeconds`) protect
+this machine, so only your own file or the default sets them. A project's old values are
+ignored, and `doctor` names them once. Change a limit without `--project`; `workflow set
+--project` and `workflow propose` refuse these keys. `workflow unset --project <key>` takes an
+old value out of the project file.
+
 `cc-smart-dev-kit workflow show` prints every value and where it came from:
 
 ```
-your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field
+your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field, except the machine's crew limits
 autoCommit = false (default)
 openPr = draft (project)
 alerts.events = needs-you, question, finished, failed (default)
@@ -2646,10 +2662,11 @@ merge.
 | `crew.enabled` | `false` | Lead and crew sessions may run here: a lead starts background crew sessions for its plan's phases. Off: a lead uses subagents only. Set it in your own file for every project, or in a project's file for that one. |
 | `crew.keep` | not set | What a crew session keeps beside this plugin, for projects whose phases need more: a Claude Code plugin by its id (`plugin:name@marketplace`), or an MCP server this plugin registers (`server:name` — `playwright`, `sequential-thinking`, `tavily-websearch`). A crew session turns every other plugin off for itself, except what this plugin and a kept plugin depend on (a plugin whose dependency is off does not load), and loads no other MCP server (`crew start` passes `--strict-mcp-config` with only what its kind needs: Tavily, and the browser for a `ui` kind). A plugin named here must be enabled on the machine, or `crew start` refuses with the line to fix. |
 | `crew.idleStopMinutes` | `10` | Minutes a blocked crew session waits before its session is stopped; an answer brings it back. |
-| `crew.max` | `24` | The machine's safety ceiling: at most this many crew sessions run on this machine at once, across every lead. A lead's own `crew.perLead` is what usually holds a new crew session; the ceiling protects the machine. A crew session past it waits in the queue (`crew start` still returns at once). A value you set keeps binding — keep it above the sum of your leads' caps, or the ceiling fills and the leads queue as they did before the per-lead caps. |
+| `crew.max` | `12` | The machine's safety ceiling: at most this many crew sessions run on this machine at once, across every lead. A lead's own `crew.perLead` is what usually holds a new crew session; the ceiling protects the machine. A crew session past it waits in the queue (`crew start` still returns at once). A value you set keeps binding — keep it above the sum of your leads' caps, or the ceiling fills and the leads queue as they did before the per-lead caps. |
 | `crew.maxOpus` | not set | An optional machine-wide ceiling on the opus tier: the opus kinds (`architecture`, `ui`), or a crew session moved onto opus with `--model`. Not set, there is no machine-wide count: each lead's `crew.perLeadOpus` alone bounds the opus tier. |
-| `crew.memoryGb` | `2` | The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. |
-| `crew.loadPerCore` | `3` | A new crew session waits in the queue while the 1-minute load average is above this many for each core (a number above 0). Memory alone missed a machine at a load of 85 on 16 cores. A hand-off's next crew session is not held by the load: it takes the place the one that handed off left, and the lead's watch starts it before any other queued crew session. Where the platform gives no load average (native Windows), the hold does not apply, and `crew list` says so once. |
+| `crew.memoryGb` | `6` | The free memory, in GB, a new crew session needs; below it, the crew session waits in the queue. |
+| `crew.startGapSeconds` | `60` | Seconds between crew launches across all repositories (at least 1). Machine-only: read from your workflow file, never a project override. Starts, continuations and resumes wait for this gap; the lead's Agent guard ignores it. A model change replaces its running process and is not held by the gap. |
+| `crew.loadPerCore` | `1.5` | A new crew session waits in the queue while the 1-minute load average is above this many for each core (a number above 0). Memory alone missed a machine at a load of 85 on 16 cores. A hand-off's next crew session is not held by the load: it takes the place the one that handed off left, and the lead's watch starts it before any other queued crew session. Where the platform gives no load average (native Windows), the hold does not apply, and `crew list` says so once. |
 | `crew.perLead` | `4` | At most this many crew sessions run for one lead at once, in every repository on this machine. One lead can then never take every place and starve the others. A crew session past it waits in the queue, and its lead's watch starts it when a place frees. |
 | `crew.perLeadOpus` | `2` | At most this many of one lead's crew sessions on the opus tier. An opus crew session past it waits; the lead's sonnet crew sessions still start. |
 | `crew.usagePercent` | `85` | Past this share of the plan's 5-hour usage window, a new **opus-tier** crew session waits — unless the gateway's opus slot has a chain with its fallback on, which answers past the window. The window is the one Claude Code's status line reads: cc-smart-dev-kit's status line records it (`cc-smart-dev-kit setup --statusline`), and with no reading stored the guard does not hold, and `crew start` and `crew list` say so once. |
@@ -2795,7 +2812,7 @@ request with `gh`:
 ```sh
 cc-smart-dev-kit workflow propose autoCommit true
 cc-smart-dev-kit workflow propose autoMerge --unset
-cc-smart-dev-kit workflow propose crew.perLead 6 --folder ~/code/my-app --json
+cc-smart-dev-kit workflow propose crew.tag my-app --folder ~/code/my-app --json
 ```
 
 A value the base already commits is said and nothing is made (an uncommitted edit in your
@@ -2847,7 +2864,7 @@ every question it holds.
     },
     "route": true
   },
-  "workflow": { "openPr": "draft", "autoMerge": true }
+  "workflow": { "openPr": "draft", "autoMerge": true, "crew": { "enabled": true, "tag": "my-app" } }
 }
 ```
 
@@ -2868,11 +2885,11 @@ every question it holds.
 | `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root`, 0.6.0) is still accepted and silences nothing. `session-escape-guard` cannot be listed: no project can switch it off. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
-| `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). A kind says which commands are heavy (`match`, `printOnly`, `about`) and has no size. `noSlotForFiles: true` lets a run on named files only (`bun run test:unit src/a.test.ts`) start at once, with no slot; a run with no operand, or one that is not a file, still waits for a slot. `skipWords` (a subcommand word such as `run`) and `valuedFlags` (an option whose value is the next word) help it find the operands. `noSlotForFiles` is a field of 1.5.0: a project that sets it needs `"requires": ">=1.5"`. A file written for an older plugin may still set `gb`, `filesGb`, `maxFiles` or `workers`: it still loads, the queue ignores them, and `doctor` says once that they can go. |
+| `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § Kinds). A kind says which commands are heavy (`match`, `printOnly`, `about`) and has no size. `noSlotForFiles: true` lets a run on named files only (`bun run test:unit src/a.test.ts`) use a light slot up to 10 files, and a heavy slot above that; `light: true` puts every non-printing run in the light lane (1.8.0, needs `requires: >=1.8`). A run with no operand, or one that is not a file, still waits for a slot. `skipWords` (a subcommand word such as `run`) and `valuedFlags` (an option whose value is the next word) help it find the operands. `noSlotForFiles` is a field of 1.5.0: a project that sets it needs `"requires": ">=1.5"`. A file written for an older plugin may still set `gb`, `filesGb`, `maxFiles` or `workers`: it still loads, the queue ignores them, and `doctor` says once that they can go. |
 | `jobs.route` | `true` or `false`: whether the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). When left out, your own default decides (`switches.jobRoute` in your `workflow.json`), and without one it is off. The project's value wins over yours. That hook's other part — the launch judge, and a lead's background moves — reads neither this field nor any other: it runs machine-wide. |
-| `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
+| `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field except the machine's crew limits. |
 | `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
-| `workflow.crew` | Lead and crew sessions here: `enabled` (off by default), the limits a lead keeps its crew to, and the `tag` in their names (§ [The workflow](#the-workflow)). It wins over the same fields in your own file. |
+| `workflow.crew` | Project choices such as `enabled` (off by default), `keep`, and the `tag` in crew names (§ [The workflow](#the-workflow)) override your defaults. Since 1.8.0, `max`, `maxOpus`, `perLead`, `perLeadOpus`, `memoryGb`, `loadPerCore`, `usagePercent` and `startGapSeconds` come only from your own file or the built-in defaults. Old project values still parse but are ignored; `doctor` says once to remove them (`cc-smart-dev-kit workflow unset --project <key>`). Set your machine's limits without `--project`, for example `cc-smart-dev-kit workflow set crew.max 12`. |
 | `workflow.issues` | GitHub Issues (1.4.0): `enabled`, `allowPublic` and `watch` (all off by default), `watchMinutes` (5, at least 2) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (three different words) (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the

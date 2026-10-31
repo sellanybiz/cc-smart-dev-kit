@@ -40,12 +40,15 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { resolveWorkflow } from "../workflow/resolve";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { restoreConversation } from "./archive";
 import { findCrew } from "./board";
 import { deliveryHead, withCrewCommand } from "./brief";
 import { readCaller, reasonOf } from "./caller";
 import {
+  type AgentRow,
   type ClaudeDeps,
   callClaude,
   findClaude,
@@ -56,6 +59,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
+import { OPUS_TIER, placeFor, placeInputOf, withPlacesLock } from "./places";
 import { restoreReleasedWorktree } from "./release";
 import { actorOfCaller } from "./runs-actor";
 import {
@@ -67,6 +71,7 @@ import {
   crewSettingsFile,
   isQuestionOpen,
   lastHeardAnswer,
+  listAllCrew,
   listCrew,
   openQuestionIndex,
   questionClosed,
@@ -75,7 +80,11 @@ import {
   readCrew,
   readReport,
   releaseResume,
+  resumeWaitOf,
+  updateCrew,
+  updateCrewIfState,
 } from "./store";
+import { usageFacts } from "./usage-guard";
 
 /** What `crew answer` was asked, already checked to be well formed. */
 export interface AnswerArgs {
@@ -253,6 +262,31 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
   if (way === "resume") {
     const resumed = await resumeSession(ctx, record, text);
     if (!resumed.ok) {
+      if (resumed.waits !== undefined) {
+        await answerCrewQuestion(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          index,
+          args.text,
+          ctx.now(),
+          null,
+          null,
+          { correction: correcting, delivered: false },
+          actorOfCaller(ctx, repo),
+        );
+        await updateCrew(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          { resumeWaits: resumeWaitOf(record, ctx.now(), index) },
+          ctx.now(),
+        );
+        ctx.print(
+          `${record.name}: the answer waits: ${resumed.waits}; it is delivered when the session comes back`,
+        );
+        return 0;
+      }
       ctx.error(`crew answer: ${resumed.why}`);
       return 1;
     }
@@ -353,6 +387,40 @@ async function deliveryReport(
       ];
 }
 
+/** One writer for a resumed session's identity and working state (D72). */
+export async function markResumed(
+  record: CrewRecord,
+  session: ResumedSession,
+  ctx: CrewContext,
+): Promise<boolean> {
+  try {
+    const result = await updateCrewIfState(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      [record.state],
+      {
+        state: "working",
+        sessionId: session.sessionId,
+        shortId: session.shortId,
+        resumeWaits: undefined,
+      },
+      ctx.now(),
+      "resumed by the lead",
+    );
+    if (!result.changed) {
+      ctx.error(
+        `${record.name}: resumed as session ${session.shortId}, but its record changed to ${result.record.state}; its state was not overwritten`,
+      );
+    }
+    return result.changed;
+  } catch (error) {
+    ctx.error(
+      `${record.name}: resumed as session ${session.shortId}, but the store could not record it: ${reasonOf(error)}`,
+    );
+    return false;
+  }
+}
 /** The session a resume brought back: the same one, or the copy Claude Code started instead. */
 export interface ResumedSession {
   sessionId: string;
@@ -367,7 +435,7 @@ export interface ResumedSession {
  */
 export type ResumeResult =
   | { ok: true; session: ResumedSession }
-  | { ok: false; unnamed: boolean; why: string };
+  | { ok: false; unnamed: boolean; why: string; waits?: string };
 
 /**
  * The words a line adds when a resume came back as another session: ` as session <new> (a copy of
@@ -409,10 +477,14 @@ export type Liveness = "dead" | "live" | "unknown";
  * must never be resumed (`--bg --resume` starts a copy beside it), and **a view that cannot be
  * read must not be read as dead** — that would start the very copy the guard exists to prevent.
  * A missing `claude` is the resume's own refusal (`resumeSession`), not this one, so it counts as
- * dead and the refusal that names it is the one said.
+ * dead and the refusal that names it is the one said. `rows` is a read the caller already made
+ * (the watch's pass); left out, agent view is read here.
  */
-export function sessionLiveness(ctx: CrewContext, record: CrewRecord): Liveness {
-  const rows = agentRows(ctx);
+export function sessionLiveness(
+  ctx: CrewContext,
+  record: CrewRecord,
+  rows: null | AgentRow[] = agentRows(ctx),
+): Liveness {
   if (rows === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     return claude === null ? "dead" : "unknown";
@@ -490,6 +562,7 @@ export async function resumeSession(
   ctx: CrewContext,
   record: CrewRecord,
   text: null | string,
+  options: { replacesItself?: boolean } = {},
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
@@ -517,8 +590,55 @@ export async function resumeSession(
   const { stateDir } = ctx.paths;
   const token = randomUUID();
   let claimed: boolean;
+  let previousLaunch = record.launchedAt;
   try {
-    claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+    const checkout = locateCheckout(record.repo, { env: ctx.env });
+    const crew = resolveWorkflow(
+      ctx.paths,
+      checkout === null ? null : loadProjectConfig(checkout).config,
+    ).crew;
+    const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+    const decision = await withPlacesLock(stateDir, async () => {
+      const all = listAllCrew(stateDir).records;
+      previousLaunch = all.find(
+        (one) => one.repo === record.repo && one.id === record.id,
+      )?.launchedAt;
+      const input = placeInputOf(all, record.leadSessionId, crew, usage, {
+        continuation: false,
+        exclude: record,
+        opus: record.model.tier === OPUS_TIER,
+        unmet: [],
+        nowMs: ctx.now(),
+      });
+      // A model change replaces the process already stopped by its caller. It adds no
+      // session, and refusing it here would leave that process unable to come back.
+      const first = options.replacesItself ? { start: true as const } : placeFor(input);
+      const place =
+        first.start && !options.replacesItself
+          ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
+          : first;
+      if (!place.start) return { claimed: false, waits: place.why };
+      const claimed = await claimResume(
+        stateDir,
+        record.repo,
+        record.id,
+        [record.state],
+        token,
+        ctx.now(),
+      );
+      if (claimed)
+        await updateCrew(
+          stateDir,
+          record.repo,
+          record.id,
+          { launchedAt: new Date(ctx.now()).toISOString() },
+          ctx.now(),
+        );
+      return { claimed, waits: null };
+    });
+    if (decision.waits !== null)
+      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
+    claimed = decision.claimed;
   } catch (error) {
     return {
       ok: false,
@@ -538,13 +658,13 @@ export async function resumeSession(
   // the restore holds, never takes a conversation away again while it is being resumed.
   const conversation = await restoreConversation(ctx.paths, record);
   if (!conversation.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
     return { ok: false, unnamed: false, why: conversation.why };
   }
   if (conversation.note !== undefined) ctx.print(conversation.note);
   const restored = await restoreReleasedWorktree(record, ctx);
   if (!restored.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
     return { ok: false, unnamed: false, why: restored.why };
   }
   const prompt = restored.remade
@@ -559,7 +679,7 @@ export async function resumeSession(
   });
   if (result.ok || result.unnamed) return result;
   try {
-    await releaseResume(stateDir, record.repo, record.id, token);
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
   } catch (error) {
     // The claim then ends by itself: a later resume waits that long, and the line says so.
     return {

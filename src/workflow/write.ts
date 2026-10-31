@@ -35,7 +35,9 @@ import { describeIssues } from "../zod-issues";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
   isPersonalFileSwitch,
+  isProjectKey,
   isSwitchKey,
+  MACHINE_CREW_KEYS,
   personalWorkflowSchema,
   type SwitchName,
   switchOf,
@@ -147,6 +149,20 @@ export function writeProjectSetting(
   env: Env = process.env,
 ): string {
   const wanted = requireKey(key);
+  // A crew limit a project file still carries (D71) is ignored, so it may be taken out, never set.
+  const removesCrewLimit =
+    value === undefined && (MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(wanted);
+  if (!isProjectKey(wanted) && !removesCrewLimit) {
+    const reason =
+      wanted === "switches.statusLine"
+        ? "the status line is"
+        : wanted === "switches.updateHold"
+          ? "the update hold is"
+          : "crew limits are";
+    throw new Error(
+      `${wanted} is your own setting, not the project's: run it without --project (${reason} per person, per machine)`,
+    );
+  }
   if (isSwitchKey(wanted)) return writeProjectSwitch(cwd, wanted, value, env);
   return writeProjectFile(cwd, ["workflow", ...wanted.split(".")], wanted, value, env);
 }
@@ -264,9 +280,7 @@ function writeProjectSwitch(
   if (name === "jobRoute") {
     return writeProjectFile(cwd, ["jobs", "route"], "switches.jobRoute", value, env);
   }
-  throw new Error(
-    `${key} is your own setting, not the project's: run it without --project (the ${name === "statusLine" ? "status line" : "update hold"} is per person, per machine)`,
-  );
+  throw new Error(`Unexpected project switch: ${key}`);
 }
 
 /** Claude Code's own `statusLine` key, through the one writer for a user's settings file. */

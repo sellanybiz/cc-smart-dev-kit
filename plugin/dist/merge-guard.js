@@ -6122,7 +6122,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.7.2",
+  version: "1.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6157,6 +6157,7 @@ var matchRuleSchema = union([
   })
 ]);
 var kindSpecSchema = strictObject({
+  light: boolean2().optional(),
   printOnly: array(string2().min(1)).optional(),
   noSlotForFiles: boolean2().optional(),
   skipWords: array(string2().min(1)).optional(),
@@ -6243,6 +6244,15 @@ var DEFAULT_KINDS = {
   build: {
     about: "A framework production build (next build).",
     match: [{ tool: "next", sub: ["build"] }]
+  },
+  install: {
+    about: "Install dependencies in the light lane.",
+    light: true,
+    printOnly: TEST_PRINT_ONLY,
+    match: ["bun", "npm", "pnpm", "yarn"].flatMap((tool) => ["install", "i", "add", ...tool === "npm" ? ["ci"] : []].map((sub) => ({
+      tool,
+      sub: [sub]
+    })))
   },
   "image:build": {
     about: "A container image build (docker, podman, compose).",
@@ -6342,6 +6352,7 @@ var NUMBER_RULES = {
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
   "crew.loadPerCore": ABOVE_ZERO,
+  "crew.startGapSeconds": AT_LEAST_ONE,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -6437,6 +6448,7 @@ var workflowSchema = strictObject({
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
     loadPerCore: numberField("crew.loadPerCore"),
+    startGapSeconds: numberField("crew.startGapSeconds"),
     perLead: numberField("crew.perLead"),
     perLeadOpus: numberField("crew.perLeadOpus"),
     usagePercent: numberField("crew.usagePercent"),
@@ -6486,10 +6498,11 @@ var workflowDefaults = {
     enabled: false,
     keep: [],
     idleStopMinutes: 10,
-    max: 24,
+    max: 12,
     maxOpus: null,
-    memoryGb: 2,
-    loadPerCore: 3,
+    memoryGb: 6,
+    loadPerCore: 1.5,
+    startGapSeconds: 60,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -6534,6 +6547,7 @@ var POLICY_KEYS = [
   "crew.maxOpus",
   "crew.memoryGb",
   "crew.loadPerCore",
+  "crew.startGapSeconds",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -6548,6 +6562,16 @@ var POLICY_KEYS = [
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+var MACHINE_CREW_KEYS = [
+  "crew.max",
+  "crew.maxOpus",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.memoryGb",
+  "crew.loadPerCore",
+  "crew.usagePercent",
+  "crew.startGapSeconds"
+];
 function workflowValue(workflow, key) {
   const [head, tail] = key.split(".");
   if (head === undefined || tail === undefined)
@@ -10284,6 +10308,7 @@ function linkContinuation(planFile, oldId, newId, at) {
 // src/crew/store.ts
 var CREW_STORE_VERSION = 1;
 var STORE_LOCK_WAIT_MS = 3000;
+var NO_RESUME_STATES = ["merged", "removed", "discarded"];
 var ISSUE_DATA_NOTE = "data";
 class CrewStoreError extends Error {
   name = "CrewStoreError";
@@ -10447,6 +10472,9 @@ var crewFields = object({
   lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
   lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
   startedAt: text2.nullable().optional(),
+  launchedAt: text2.optional(),
+  resumeWaits: looseObject({ at: text2, answer: count.nullable() }).optional(),
+  sweptFrom: text2.optional(),
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
@@ -10684,6 +10712,14 @@ function eventOf(crew, at, type, text, memoryMb = null) {
     crew: crew.id
   };
 }
+function dropStateFacts(record2) {
+  if (record2.state !== "stopped") {
+    delete record2.stoppedByWatch;
+    delete record2.sweptFrom;
+  }
+  if (NO_RESUME_STATES.includes(record2.state))
+    delete record2.resumeWaits;
+}
 async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -10719,8 +10755,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "merged" && before.state === "stopped") {
       merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
-    if (merged.state !== "stopped")
-      delete merged.stoppedByWatch;
+    dropStateFacts(merged);
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];
       if (!kept.some((one) => one.sessionId === before.sessionId)) {
@@ -10793,10 +10828,17 @@ function readCrewEvents(stateDir, repo, offset = 0) {
   }
 }
 var RESUME_CLAIM_MS = 2 * 60000;
+function resumeClaimHeld(claim, atMs) {
+  if (claim === undefined)
+    return false;
+  const since = Date.parse(claim.at);
+  return Number.isFinite(since) && atMs - since < RESUME_CLAIM_MS;
+}
 function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
   noted: boolean2().optional(),
@@ -12851,6 +12893,29 @@ function machineMemory(facts) {
   };
 }
 
+// src/jobs/config.ts
+import { isAbsolute as isAbsolute2, join as join19 } from "path";
+var absolutePath = string2().min(1).refine((path) => isAbsolute2(path), "must be an absolute path");
+var MAX_WEIGHT = 1e4;
+var weightSchema = union([
+  literal(0),
+  literal("off"),
+  number2().int().min(1).max(MAX_WEIGHT)
+]);
+var jobsMachineConfigSchema = strictObject({
+  stateDir: absolutePath.optional(),
+  maxJobs: number2().int().min(1).optional(),
+  lightJobs: number2().int().min(1).optional(),
+  startFreeGb: number2().min(0).optional(),
+  budgetGb: number2().int().min(1).optional(),
+  reserveGb: number2().int().min(0).optional(),
+  sharedDirs: array(absolutePath).optional(),
+  launch: _enum(["auto", "plain"]).optional(),
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
+});
+
 // src/jobs/queue.ts
 function oneDecimal(gb) {
   return String(Math.round(gb * 10) / 10);
@@ -12878,9 +12943,9 @@ function loadLimit(reading, loadPerCore) {
 import { existsSync as existsSync10, readFileSync as readFileSync15 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join19(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join20(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/workflow/resolve.ts
@@ -12928,7 +12993,13 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
-  const crew = mergedGroup(personal.crew, project.crew);
+  const projectCrew = project.crew === undefined ? undefined : { ...project.crew };
+  for (const key of MACHINE_CREW_KEYS) {
+    if (projectCrew !== undefined) {
+      delete projectCrew[key.slice("crew.".length)];
+    }
+  }
+  const crew = mergedGroup(personal.crew, projectCrew);
   if (crew !== undefined)
     merged.crew = crew;
   const issues = mergedGroup(personal.issues, project.issues);
@@ -12937,7 +13008,7 @@ function mergeWorkflows(personal, project) {
   return merged;
 }
 function sourceOf(personal, project, key) {
-  if (workflowValue(project, key) !== undefined)
+  if (!MACHINE_CREW_KEYS.includes(key) && workflowValue(project, key) !== undefined)
     return "project";
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
@@ -13060,6 +13131,7 @@ function resolveWorkflow(paths, projectConfig) {
       maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
       memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
       loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
+      startGapSeconds: of("crew.startGapSeconds", crew.startGapSeconds ?? workflowDefaults.crew.startGapSeconds),
       perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
       perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
       usagePercent: of("crew.usagePercent", crew.usagePercent ?? workflowDefaults.crew.usagePercent),
@@ -13083,10 +13155,10 @@ function resolveWorkflow(paths, projectConfig) {
 
 // src/cli/usage-window.ts
 import { existsSync as existsSync11, readFileSync as readFileSync16 } from "fs";
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
 function usageWindowFile(paths) {
-  return join20(paths.stateDir, "usage-window.json");
+  return join21(paths.stateDir, "usage-window.json");
 }
 var storedSchema = looseObject({
   fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
@@ -13549,7 +13621,7 @@ ${parsed.error}`);
 
 // src/gateway/project-state.ts
 import { existsSync as existsSync13, realpathSync as realpathSync4, statSync as statSync9 } from "fs";
-import { join as join21, resolve as resolve5 } from "path";
+import { join as join22, resolve as resolve5 } from "path";
 
 // src/gateway/settings.ts
 import { existsSync as existsSync12, readFileSync as readFileSync18 } from "fs";
@@ -13656,10 +13728,10 @@ function personalTracked(mainCheckout) {
 var PERSONAL_FILE = "settings.local.json";
 var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
-  return join21(checkout.mainCheckout, ".claude", PERSONAL_FILE);
+  return join22(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
 function ownPersonalFileOf(folder) {
-  return join21(folder, ".claude", PERSONAL_FILE);
+  return join22(folder, ".claude", PERSONAL_FILE);
 }
 function linkedWorktreePaths(listing, mainCheckout) {
   const main = realFolder(mainCheckout);
@@ -13694,7 +13766,7 @@ function linkedWorktreeFilesOf(mainCheckout) {
   }
 }
 function teamFileOf(folder) {
-  return join21(folder, ".claude", "settings.json");
+  return join22(folder, ".claude", "settings.json");
 }
 function profileUrlOf(routerUrl, name) {
   return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
@@ -13868,14 +13940,6 @@ var RUNNING_STATES = [
   "paused",
   "quiet"
 ];
-function runningCrew(records) {
-  return records.filter((one) => RUNNING_STATES.includes(one.state));
-}
-function runningForLead(records, leadSessionId) {
-  if (leadSessionId === "")
-    return [];
-  return runningCrew(records).filter((one) => typeof one.leadSessionId === "string" && one.leadSessionId === leadSessionId);
-}
 var OPUS_TIER = "opus";
 function onOpusTier(records) {
   return records.filter((one) => one.model.tier === OPUS_TIER);
@@ -13909,6 +13973,16 @@ function placeFor(input) {
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`
     };
   }
+  if (input.lastLaunchMs != null && input.nowMs !== undefined && input.startGapSeconds !== undefined) {
+    const age = Math.max(0, input.nowMs - input.lastLaunchMs);
+    const gap = input.startGapSeconds * 1000;
+    if (age < gap) {
+      return {
+        start: false,
+        why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`
+      };
+    }
+  }
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
@@ -13933,10 +14007,17 @@ function placeFor(input) {
   return { start: true };
 }
 function placeInputOf(records, leadSessionId, crew, usage, more) {
-  const running = runningCrew(records);
-  const mine = runningForLead(records, leadSessionId);
+  const nowMs = more.nowMs ?? Date.now();
+  const running = records.filter((one) => !(more.exclude?.id === one.id && more.exclude.repo === one.repo) && (RUNNING_STATES.includes(one.state) || resumeClaimHeld(one.resumeClaim, nowMs)));
+  const mine = running.filter((one) => leadSessionId !== "" && one.leadSessionId === leadSessionId);
   return {
     continuation: more.continuation,
+    nowMs: more.nowMs,
+    startGapSeconds: crew.startGapSeconds.value,
+    lastLaunchMs: more.ignoreGap === true ? null : records.reduce((last, one) => {
+      const at = Date.parse(one.launchedAt ?? one.startedAt ?? "");
+      return Number.isFinite(at) && at <= nowMs && (last === null || at > last) ? at : last;
+    }, null),
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
@@ -13976,7 +14057,8 @@ async function placeForLeadStart(input) {
   const held = placeInputOf(records, input.leadSessionId, crew, usage, {
     continuation: false,
     opus: input.opus,
-    unmet: []
+    unmet: [],
+    ignoreGap: true
   });
   const first = placeFor(held);
   if (!first.start)
@@ -14177,7 +14259,7 @@ var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
 import { existsSync as existsSync15, readdirSync as readdirSync6, readFileSync as readFileSync20, statSync as statSync10 } from "fs";
-import { dirname as dirname8, isAbsolute as isAbsolute2, join as join22, resolve as resolve6, sep as sep2 } from "path";
+import { dirname as dirname8, isAbsolute as isAbsolute3, join as join23, resolve as resolve6, sep as sep2 } from "path";
 
 // src/setup/installed-plugins.ts
 import { existsSync as existsSync14, readFileSync as readFileSync19 } from "fs";
@@ -14381,7 +14463,7 @@ function normalized(text) {
 `);
 }
 function scriptAtPath(path, cwd) {
-  if (cwd === "" && !isAbsolute2(path)) {
+  if (cwd === "" && !isAbsolute3(path)) {
     return {
       unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
     };
@@ -14414,7 +14496,7 @@ function workflowFiles(folder) {
   } catch {
     return [];
   }
-  return names.sort().map((name) => join22(folder, name));
+  return names.sort().map((name) => join23(folder, name));
 }
 function claiming(files, name) {
   const found = [];
@@ -14446,15 +14528,15 @@ function savedFolders(place) {
   let at = resolve6(place.cwd);
   const home = resolve6(place.home);
   while (place.cwd !== "" && at !== home) {
-    folders.push(join22(at, ".claude", "workflows"));
-    if (existsSync15(join22(at, ".git")))
+    folders.push(join23(at, ".claude", "workflows"));
+    if (existsSync15(join23(at, ".git")))
       break;
     const up = dirname8(at);
     if (up === at)
       break;
     at = up;
   }
-  folders.push(join22(place.claudeConfigDir, "workflows"));
+  folders.push(join23(place.claudeConfigDir, "workflows"));
   return folders;
 }
 function noFile(name) {
@@ -14478,14 +14560,14 @@ function pluginFolder(plugin, place) {
 function pluginWorkflowFiles(root) {
   let listed;
   try {
-    const manifest = JSON.parse(readFileSync20(join22(root, ".claude-plugin", "plugin.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync20(join23(root, ".claude-plugin", "plugin.json"), "utf8"));
     listed = manifest?.workflows ?? manifest?.experimental?.workflows;
   } catch {
     listed = undefined;
   }
   const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : null;
   if (paths === null)
-    return workflowFiles(join22(root, "workflows"));
+    return workflowFiles(join23(root, "workflows"));
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
     const path = resolve6(root, one);
     try {
@@ -14530,7 +14612,7 @@ import {
   readFileSync as readFileSync21,
   readSync as readSync2
 } from "fs";
-import { dirname as dirname9, join as join23 } from "path";
+import { dirname as dirname9, join as join24 } from "path";
 var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 function reasonParts(reason) {
@@ -14544,7 +14626,7 @@ function reasonParts(reason) {
   return { effort: null, word: word === "" ? null : word };
 }
 function agentLaunchesFile(stateDir) {
-  return join23(stateDir, "agent-launches.jsonl");
+  return join24(stateDir, "agent-launches.jsonl");
 }
 var RECORD_TAIL_BYTES = 64 * 1024;
 function tailLines(file) {
@@ -15654,7 +15736,7 @@ function crewAgentAnswer(input, env, paths, cwd) {
 
 // src/hooks/agent-usage.ts
 import { readFileSync as readFileSync22 } from "fs";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 
 // src/gateway/prices.ts
 var CLAUDE_PRICES = [
@@ -15798,7 +15880,7 @@ function claudeCost(model, tokens) {
 // src/hooks/agent-usage.ts
 var AGENT_USAGE_FILE = "agent-usage.jsonl";
 function agentUsageFile(stateDir) {
-  return join24(stateDir, AGENT_USAGE_FILE);
+  return join25(stateDir, AGENT_USAGE_FILE);
 }
 function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -16011,10 +16093,10 @@ function deliveryHead(question, earlier) {
 
 // src/crew/tasks.ts
 import { readdirSync as readdirSync7, readFileSync as readFileSync23 } from "fs";
-import { join as join25 } from "path";
+import { join as join26 } from "path";
 var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
 function sessionTasksDir(claudeConfigDir, listId) {
-  return join25(claudeConfigDir, "tasks", listId);
+  return join26(claudeConfigDir, "tasks", listId);
 }
 function taskListId(env, sessionId) {
   const named = env[TASK_LIST_ENV]?.trim() ?? "";
@@ -16060,14 +16142,14 @@ function readSessionTasks(claudeConfigDir, listId) {
   }
   const tasks = [];
   for (const name of names) {
-    const task = taskOf(join25(folder, name), name);
+    const task = taskOf(join26(folder, name), name);
     if (task !== null)
       tasks.push(task);
   }
   return { files: names.length, state: "read", tasks: tasks.sort(byNumber) };
 }
 function taskGateFile(stateDir, repo, id) {
-  return join25(crewFilesDir(stateDir, repo, id), "task-gate.json");
+  return join26(crewFilesDir(stateDir, repo, id), "task-gate.json");
 }
 function readTaskGate(stateDir, repo, id) {
   let text;
@@ -16737,7 +16819,7 @@ async function stopFailureAnswer(input, id, repo, paths, env, options) {
 
 // src/hooks/fable-session.ts
 import { existsSync as existsSync16, mkdirSync as mkdirSync14, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname10, join as join26 } from "path";
+import { dirname as dirname10, join as join27 } from "path";
 function fableSessionMessage(named) {
   return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
 }
@@ -16745,7 +16827,7 @@ function fableSessionModelName(real) {
   return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
 }
 function fableSessionMark(env, sessionId) {
-  return join26(namesDir(env), `${sessionId}.fable`);
+  return join27(namesDir(env), `${sessionId}.fable`);
 }
 function firstTime(mark) {
   try {
@@ -17035,7 +17117,7 @@ function findGitBash(env, facts) {
 }
 
 // src/jobs/classify.ts
-import { isAbsolute as isAbsolute3, join as join27, normalize } from "path";
+import { isAbsolute as isAbsolute4, join as join28, normalize } from "path";
 function runOf(source) {
   return { source, folder: source?.folder ?? null, cache: new Map };
 }
@@ -17076,7 +17158,7 @@ function folderAfter(program, args, folder) {
   const target = folderWord(args);
   if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
     return null;
-  return isAbsolute3(target) ? normalize(target) : normalize(join27(folder, target));
+  return isAbsolute4(target) ? normalize(target) : normalize(join28(folder, target));
 }
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
@@ -17172,6 +17254,13 @@ function toolOf(program, args, depth = 0) {
   if (depth > 4)
     return;
   const at = (valued, from = 0) => firstWord2(args, from, valued);
+  if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
+    const index = at(program === "bun" ? BUN_VALUED : program === "pnpm" || program === "yarn" ? PNPM_VALUED : []);
+    const sub = args[index];
+    if (program === "yarn" && sub === undefined || sub !== undefined && ["install", "i", "add", ...program === "npm" ? ["ci"] : []].includes(sub)) {
+      return { name: program, args: sub === undefined ? ["install", ...args] : args.slice(index) };
+    }
+  }
   switch (program) {
     case "bunx":
     case "npx": {
@@ -17308,7 +17397,8 @@ function inspect2(command, kinds, dialect, depth, run) {
   return found;
 }
 function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
-  return inspect2(command, kinds, dialect, 0, runOf(source))[0] ?? null;
+  const found = inspect2(command, kinds, dialect, 0, runOf(source));
+  return found.find((kind) => kinds[kind]?.light !== true) ?? found[0] ?? null;
 }
 var READS_ONLY = () => true;
 var isOption = (arg) => arg.startsWith("-") && arg !== "-";
@@ -17636,11 +17726,11 @@ function routableLine(bashCommand, kinds, source) {
 
 // src/jobs/package-scripts.ts
 import { readFileSync as readFileSync26 } from "fs";
-import { join as join28 } from "path";
+import { join as join29 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync26(join28(folder, "package.json"), "utf8");
+    text = readFileSync26(join29(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -17661,7 +17751,7 @@ function packageScripts(folder) {
 }
 
 // src/hooks/bash-judge.ts
-import { isAbsolute as isAbsolute4, resolve as resolve7 } from "path";
+import { isAbsolute as isAbsolute5, resolve as resolve7 } from "path";
 
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
@@ -17864,7 +17954,7 @@ function proposalOf(step, moved) {
   if (folder !== null && (folder === "" || isComputedWord(folder))) {
     return { unread: "its --folder is worked out when the line runs" };
   }
-  if (moved && (folder === null || !isAbsolute4(folder))) {
+  if (moved && (folder === null || !isAbsolute5(folder))) {
     return { unread: "the line changes its folder before it" };
   }
   return { folder };
@@ -18474,7 +18564,7 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 // src/workflow/review-cover.ts
 import { mkdtempSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join29 } from "path";
+import { join as join30 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -18575,7 +18665,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join29(tmpdir3(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join30(tmpdir3(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -18595,7 +18685,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join29(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join30(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -19116,7 +19206,7 @@ var COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
 
 // src/hooks/local-files.ts
 import { lstatSync as lstatSync2, readdirSync as readdirSync8, readFileSync as readFileSync27, readlinkSync as readlinkSync3 } from "fs";
-import { join as join30 } from "path";
+import { join as join31 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -19138,8 +19228,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join30(worktree, relative);
-    const there = join30(mainCheckout, relative);
+    const here = join31(worktree, relative);
+    const there = join31(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -19147,7 +19237,7 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync3(here) === readlinkSync3(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync8(here).every((entry) => same(join30(relative, entry)));
+        return b.isDirectory() && readdirSync8(here).every((entry) => same(join31(relative, entry)));
       }
       return a.isFile() && b.isFile() && a.size === b.size && readFileSync27(here).equals(readFileSync27(there));
     } catch {
@@ -19161,7 +19251,7 @@ function safeIgnoredEntry(worktree, mainCheckout, entry) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync2(join30(worktree, entry)).isFile())
+      if (lstatSync2(join31(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -19189,10 +19279,10 @@ function localFiles(worktree, mainCheckout, env) {
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync2(join30(worktree, path)).isDirectory())
+        if (!lstatSync2(join31(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync8(join30(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync8(join31(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -19204,21 +19294,21 @@ function localFiles(worktree, mainCheckout, env) {
 
 // src/hooks/worktree-leftovers.ts
 import { existsSync as existsSync18, readFileSync as readFileSync28, statSync as statSync11 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute5, join as join31, resolve as resolve8 } from "path";
+import { basename as basename6, isAbsolute as isAbsolute6, join as join32, resolve as resolve8 } from "path";
 var IDLE_MINUTES = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync28(join31(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync28(join32(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
-  if (!isAbsolute5(admin))
+  if (!isAbsolute6(admin))
     admin = resolve8(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join31("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join32("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync11(join31(admin, file)).mtimeMs);
+      last = Math.max(last, statSync11(join32(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -19643,13 +19733,13 @@ function leadNotesAnswer(input, event, paths, repo, env) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute6, resolve as resolve9 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute6(path) ? resolve9(path) : resolve9(cwd, path));
+  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -20222,7 +20312,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname11, isAbsolute as isAbsolute7, posix, relative as relative2, resolve as resolve10, win32 as win322 } from "path";
+import { dirname as dirname11, isAbsolute as isAbsolute8, posix, relative as relative2, resolve as resolve10, win32 as win322 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -20438,7 +20528,7 @@ function protectedNeedles(paths) {
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative2(paths.home, folder);
-    if (!underHome.startsWith("..") && !isAbsolute7(underHome))
+    if (!underHome.startsWith("..") && !isAbsolute8(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
   }
@@ -20614,7 +20704,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute7(path) ? resolve10(path) : resolve10(cwd ?? "/", path);
+  const written = isAbsolute8(path) ? resolve10(path) : resolve10(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths, crew) {
@@ -20750,7 +20840,7 @@ function subagentBackground(context) {
 
 // src/hooks/tier-view.ts
 import { existsSync as existsSync19, mkdirSync as mkdirSync15, readFileSync as readFileSync30, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname12, join as join32 } from "path";
+import { dirname as dirname12, join as join33 } from "path";
 
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
@@ -20787,7 +20877,7 @@ function tierNoteUnknown() {
   return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
 }
 function tierViewMark(env, sessionId) {
-  return join32(namesDir(env), `${sessionId}.tiers`);
+  return join33(namesDir(env), `${sessionId}.tiers`);
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);

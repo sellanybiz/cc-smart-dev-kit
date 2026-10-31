@@ -23,6 +23,37 @@ function expectKind(kind: string, commands: string[]): void {
   }
 }
 
+test("dependency installs use the install kind, not script names", () => {
+  expectKind("install", [
+    "bun install",
+    "bun i",
+    "bun add zod",
+    "npm install",
+    "npm i",
+    "npm ci",
+    "npm add zod",
+    "pnpm install",
+    "pnpm i",
+    "pnpm add zod",
+    "yarn install",
+    "yarn add zod",
+    "yarn",
+    "bun install --frozen-lockfile",
+    "pnpm install --frozen-lockfile",
+  ]);
+  expect(kindOf("bun run install-hooks")).toBeNull();
+  expect(kindOf("echo bun install")).toBeNull();
+});
+
+test("a line that installs and then runs a heavy job is named by the heavy one, so it takes a heavy slot", () => {
+  expect(kindOf("bun install && bunx vitest run")).toBe("test:run");
+  expect(kindOf("npm ci && npx tsc --noEmit")).toBe("tsc");
+  expect(kindOf("pnpm i && pnpm exec next build")).toBe("build");
+  expect(kindOf("bunx tsc && bun install")).toBe("tsc");
+  // Light kinds alone keep the light one.
+  expect(kindOf("bun install && bun add zod")).toBe("install");
+});
+
 describe("classifyHeavyCommand: type checks", () => {
   test("finds tsc, tsgo and vue-tsc behind every runner", () => {
     expectKind("tsc", [
@@ -111,8 +142,6 @@ describe("classifyHeavyCommand: tests", () => {
       "bun test",
       "bun test src/x.test.ts",
       "bunx playwright test",
-      "bun add -d vitest",
-      "npm install vitest",
       "node scripts/other.js run",
       'node -e "console.log(1)"',
       "node --version",

@@ -17,7 +17,13 @@ import {
   unitName,
 } from "./launch";
 import { sliceChain } from "./memory";
-import { durationText, ENDED_LINE_LEAD, type QueuedJob, type Reservation } from "./queue";
+import {
+  durationText,
+  ENDED_LINE_LEAD,
+  type JobLane,
+  type QueuedJob,
+  type Reservation,
+} from "./queue";
 
 export interface JobRequest {
   /** The kind, or "" for a job with a name only (`--exclusive` without `--kind`). */
@@ -25,6 +31,8 @@ export interface JobRequest {
   command: [string, ...string[]];
   /** `--exclusive <name>`: at most one job with this name at a time. */
   exclusive?: string | undefined;
+  /** Which slots it takes (`queue.ts` › TWO LANES). Left out: `slot` says (`laneOf`). */
+  lane?: JobLane;
   /**
    * Does the job take a slot? False for a job with a name only, and for a print-only run
    * (`tsc --version`): neither waits for a slot, and neither runs in the heavy slice.
@@ -131,7 +139,9 @@ function sayEnded(running: Running, ran: Ran, deps: JobDeps): void {
 }
 
 /**
- * A job inside another heavy job: its slot is the parent's, so it runs directly. Only an
+ * A job inside another job: its slot is the parent's, so it runs directly, whatever its lane.
+ * (A heavy job inside a light one runs in the light slot. Only a `job run` written inside a
+ * script nests: the route rewrites the session's own commands, never what a script runs.) Only an
  * `--exclusive` name its ancestors do not hold yet is taken first, with no slot and no place
  * in the line (QueuedJob.nested).
  */
@@ -218,6 +228,7 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
       kind,
       pid,
       slot,
+      ...(request.lane === undefined ? {} : { lane: request.lane }),
       what: describeCommand(command),
     },
     deps.say,
@@ -226,9 +237,10 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
     if (deps.stopped?.() === true) return 1;
     // A run with no slot (a print-only run like `tsc --version`, or a name alone) does not
     // run in the heavy slice: it is not a heavy job, and the slice's ceiling must not move
-    // under the jobs that run.
+    // under the jobs that run. A light run gets the kill mark alone, for the same reason.
     const facts = slot ? deps.launchFacts() : null;
-    const launch: Launch = facts === null ? { mode: "plain" } : chooseLaunch(facts);
+    const launch: Launch =
+      facts === null ? { mode: "plain" } : chooseLaunch(facts, request.lane === "light");
     if ("note" in launch && launch.note !== undefined) deps.say(launch.note);
 
     let eventsPath: string | null = null;

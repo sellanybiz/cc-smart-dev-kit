@@ -173,13 +173,17 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   const now = ctx.now ?? Date.now;
   const slice = config.slice ?? DEFAULT_SLICE;
   const call = toolCallOfArgv(parsed.command);
-  // A job takes a slot when it has a kind, unless it only prints (`tsc --version`) or, for a
-  // kind with `noSlotForFiles`, names only existing files (`vitest run src/a.test.ts`). A job
-  // with a name alone takes none: it holds its name, and nothing else.
-  const slot =
-    spec !== null &&
-    !isPrintOnly(spec, call.args) &&
-    !namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word));
+  // A job with a kind takes a heavy slot. It takes none when it only prints (`tsc
+  // --version`), and a light one when its kind is `light` (an install) or, for a kind with
+  // `noSlotForFiles`, when it names only a few existing files (`vitest run src/a.test.ts`).
+  // A job with a name alone takes none: it holds its name, and nothing else.
+  const lane =
+    spec === null || isPrintOnly(spec, call.args)
+      ? "none"
+      : spec.light === true || namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word))
+        ? "light"
+        : "heavy";
+  const slot = lane !== "none";
   const exclusive = parsed.exclusive ?? undefined;
   if (parsed.gb !== null) {
     say(`--gb is ignored: the queue counts jobs now, not gigabytes (see "${COMMAND} job status")`);
@@ -215,6 +219,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         command: parsed.command,
         exclusive,
         slot,
+        lane,
         pid: process.pid,
         checkout: ctx.cwd,
         memoryMax: sliceMemoryMax(opened.ceilingGb),

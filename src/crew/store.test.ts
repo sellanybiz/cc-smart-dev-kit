@@ -16,6 +16,7 @@ import {
   appendCrewEvent,
   CREW_STATES,
   CREW_STORE_VERSION,
+  type CrewRecord,
   CrewStoreError,
   createCrew,
   crewBriefFile,
@@ -43,7 +44,9 @@ import {
   readLead,
   readReport,
   recordCrewReport,
+  resumeWaitOf,
   setLeadPresence,
+  sweepCrew,
   updateCrew,
   updateCrewIfState,
   writeLead,
@@ -1508,5 +1511,81 @@ describe("lastApiError: the error that ended the session's last turn", () => {
     expect(readCrew(state, REPO, id)?.lastApiError).toEqual(ERROR);
     await updateCrew(state, REPO, id, { state: "working" }, T1 + 2000);
     expect(readCrew(state, REPO, id)?.lastApiError).toBeUndefined();
+  });
+});
+
+describe("D72/D73: the facts that hold only in some states", () => {
+  const WAIT = { at: "2026-10-21T09:00:00.000Z", answer: 0 };
+
+  /** A crew session the sweep stopped, with a resume waiting for room. */
+  async function swept(state: string): Promise<CrewRecord> {
+    await createCrew(state, { ...queued(), sessionId: SESSION, shortId: "66666666" }, T0);
+    return await updateCrew(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { resumeWaits: WAIT, state: "stopped", stoppedByWatch: true, sweptFrom: "working" },
+      T0,
+    );
+  }
+
+  test("leaving stopped drops who stopped it and the sweep's state; a waiting resume stays", async () => {
+    const state = tempDir();
+    await swept(state);
+    const after = await updateCrew(state, REPO, "crew-K-contracts", { state: "paused" }, T1);
+    expect(after.stoppedByWatch).toBeUndefined();
+    expect(after.sweptFrom).toBeUndefined();
+    expect(after.resumeWaits).toEqual(WAIT);
+  });
+
+  test.each(["merged", "removed", "discarded"])(
+    "a record that becomes %s drops its waiting resume",
+    async (end) => {
+      const state = tempDir();
+      await swept(state);
+      const after = await updateCrew(state, REPO, "crew-K-contracts", { state: end }, T1);
+      expect(after.resumeWaits).toBeUndefined();
+    },
+  );
+
+  test("a hand-back report drops them too: it does not go through the same writer", async () => {
+    const state = tempDir();
+    await swept(state);
+    const { record } = await recordCrewReport(state, REPO, "crew-K-contracts", report(), T1);
+    expect(record.state).toBe("done");
+    expect(record.stoppedByWatch).toBeUndefined();
+    expect(record.sweptFrom).toBeUndefined();
+  });
+
+  test("the sweep stops a running record as the watch's own stop, only in the state it read and never under a resume's claim", async () => {
+    const state = tempDir();
+    await createCrew(state, { ...queued(), sessionId: SESSION, shortId: "66666666" }, T0);
+    await updateCrew(state, REPO, "crew-K-contracts", { state: "working" }, T0);
+    expect(await sweepCrew(state, REPO, "crew-K-contracts", "blocked", T1)).toBe(false);
+    await updateCrew(
+      state,
+      REPO,
+      "crew-K-contracts",
+      { resumeClaim: { at: "2026-10-21T10:04:30.000Z", token: "resume-1" } },
+      T1,
+    );
+    expect(await sweepCrew(state, REPO, "crew-K-contracts", "working", T1)).toBe(false);
+    expect(readCrew(state, REPO, "crew-K-contracts")?.state).toBe("working");
+    // The claim is over two minutes later.
+    expect(await sweepCrew(state, REPO, "crew-K-contracts", "working", T1 + 2 * 60_000)).toBe(true);
+    expect(readCrew(state, REPO, "crew-K-contracts")).toMatchObject({
+      state: "stopped",
+      stoppedByWatch: true,
+      sweptFrom: "working",
+    });
+  });
+
+  test("a resume asked again keeps the first wait's time, and the answer unless a new one comes", async () => {
+    const state = tempDir();
+    const record = await swept(state);
+    expect(resumeWaitOf(record, T1)).toEqual(WAIT);
+    expect(resumeWaitOf(record, T1, 2)).toEqual({ at: WAIT.at, answer: 2 });
+    const fresh = await updateCrew(state, REPO, "crew-K-contracts", { resumeWaits: undefined }, T1);
+    expect(resumeWaitOf(fresh, T1)).toEqual({ at: "2026-10-21T10:05:00.000Z", answer: null });
   });
 });

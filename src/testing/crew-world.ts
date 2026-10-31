@@ -25,6 +25,7 @@ import { realRunProgram } from "../crew/claude";
 import type { CrewContext } from "../crew/context";
 import { sessionRecordFile } from "../crew/session";
 import { locateCheckout } from "../project/resolve";
+import { MACHINE_CREW_KEYS } from "../workflow/schema";
 import type { CleanLock } from "../worktrees/clean";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
@@ -128,8 +129,13 @@ export interface CrewWorld {
   err: string[];
   /** A context for a command, with `change` over the world's defaults. */
   ctx: (change?: Partial<CrewContext>, env?: Record<string, string>) => CrewContext;
-  /** The kit config the repo gets (`workflow.crew` over `enabled: true`). */
+  /**
+   * The kit config the repo gets (`workflow.crew` over `enabled: true`). A crew limit is refused:
+   * the project's value is ignored (D71), so it belongs in `writePersonal`.
+   */
   writeConfig: (crew: Record<string, unknown>) => void;
+  /** The person's own `workflow.json`, where the crew limits live (D71): `{ crew }`. */
+  writePersonal: (crew: Record<string, unknown>) => void;
 }
 
 /** A Claude Code session record for `pid`, as Claude Code writes it. */
@@ -186,6 +192,12 @@ export function crewWorld(): CrewWorld {
   };
   writeSessionRecord(paths, SESSION_PID, LEAD_SESSION, repo);
   const writeConfig = (crew: Record<string, unknown>): void => {
+    const limits = MACHINE_CREW_KEYS.filter((key) => key.slice("crew.".length) in crew);
+    if (limits.length > 0) {
+      throw new Error(
+        `writeConfig: ${limits.join(", ")} is the machine's (D71); a project's value is ignored — use writePersonal`,
+      );
+    }
     mkdirSync(join(repo, ".claude"), { recursive: true });
     writeFileSync(
       join(repo, ".claude", "cc-smart-dev-kit.json"),
@@ -193,6 +205,10 @@ export function crewWorld(): CrewWorld {
     );
   };
   writeConfig({});
+  const writePersonal = (crew: Record<string, unknown>): void => {
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, JSON.stringify({ crew }));
+  };
   const ctx = (change: Partial<CrewContext> = {}, env: Record<string, string> = {}) => {
     const fullEnv = {
       ...cleanGitEnv(),
@@ -242,5 +258,18 @@ export function crewWorld(): CrewWorld {
     readFileSync(cwdLog, "utf8")
       .split("\n")
       .filter((line) => line !== "");
-  return { bin, claudeCalls, cleanLock, ctx, cwdCalls, err, home, out, paths, repo, writeConfig };
+  return {
+    bin,
+    claudeCalls,
+    cleanLock,
+    ctx,
+    cwdCalls,
+    err,
+    home,
+    out,
+    paths,
+    repo,
+    writeConfig,
+    writePersonal,
+  };
 }

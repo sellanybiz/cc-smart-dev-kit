@@ -27,13 +27,13 @@ import { tildify } from "../cli/paths";
 import { type LoadReading, loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
-import { resolveWorkflow } from "../workflow/resolve";
+import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import { agentRows } from "./agents";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
 import { leadGone, observeLeadPresence } from "./lifecycle";
 import { withoutListRef } from "./names";
-import { OPUS_TIER, PLACE_FREE, placeFor, runningCrew, runningForLead, unmetWaits } from "./places";
+import { OPUS_TIER, PLACE_FREE, placeFor, placeInputOf, unmetWaits } from "./places";
 import {
   type CrewEvent,
   type CrewRecord,
@@ -263,14 +263,9 @@ export interface Caps {
   freeGb: null | number;
   /** The CPU load now; null where the platform gives no load average. */
   load: LoadReading | null;
-  loadPerCore: number;
-  max: number;
-  maxOpus: null | number;
-  needGb: number;
+  crew: ResolvedWorkflow["crew"];
+  nowMs: number;
   opusFallback: boolean;
-  perLead: number;
-  perLeadOpus: number;
-  usageHoldPercent: number;
   /** The 5-hour window now, in percent; null when it cannot be read (D54). */
   usagePercent: null | number;
 }
@@ -293,14 +288,9 @@ export async function capsOf(
     return {
       freeGb: await ctx.freeMemoryGb(),
       load: ctx.load(),
-      loadPerCore: crew.loadPerCore.value,
-      max: crew.max.value,
-      maxOpus: crew.maxOpus.value,
-      needGb: crew.memoryGb.value,
+      crew,
+      nowMs: ctx.now(),
       opusFallback: usage.opusFallback,
-      perLead: crew.perLead.value,
-      perLeadOpus: crew.perLeadOpus.value,
-      usageHoldPercent: crew.usagePercent.value,
       usagePercent: usage.percent,
     };
   } catch {
@@ -321,28 +311,18 @@ export function heldBy(
     record.waitsFor,
     machine.filter((one) => one.repo === record.repo),
   );
-  const running = runningCrew(machine);
-  const mine = runningForLead(machine, record.leadSessionId);
-  const input = {
-    continuation: record.continues != null,
-    freeGb: null,
-    leadRunning: mine.length,
-    leadRunningOpus: mine.filter((one) => one.model.tier === OPUS_TIER).length,
-    load: null,
-    loadPerCore: caps.loadPerCore,
-    max: caps.max,
-    maxOpus: caps.maxOpus,
-    needGb: caps.needGb,
-    opus: record.model.tier === OPUS_TIER,
-    opusFallback: caps.opusFallback,
-    perLead: caps.perLead,
-    perLeadOpus: caps.perLeadOpus,
-    running: running.length,
-    runningOpus: running.filter((one) => one.model.tier === OPUS_TIER).length,
-    unmet,
-    usageHoldPercent: caps.usageHoldPercent,
-    usagePercent: caps.usagePercent,
-  };
+  const input = placeInputOf(
+    machine,
+    record.leadSessionId,
+    caps.crew,
+    { opusFallback: caps.opusFallback, percent: caps.usagePercent },
+    {
+      continuation: record.continues != null,
+      nowMs: caps.nowMs,
+      opus: record.model.tier === OPUS_TIER,
+      unmet,
+    },
+  );
   const first = placeFor(input);
   if (!first.start) return first.why;
   const withMemory = placeFor({ ...input, freeGb: caps.freeGb, load: caps.load });

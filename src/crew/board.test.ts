@@ -243,7 +243,7 @@ describe("crew list", () => {
 
   test("a queued crew session says what holds it: the phases it waits for first, then the cap", async () => {
     const world = await boardWorld();
-    world.writeConfig({ max: 1 });
+    world.writePersonal({ max: 1 });
     await world.addCrew();
     await world.addCrew({
       atMs: NOW - 5 * MINUTE,
@@ -319,7 +319,7 @@ describe("crew list", () => {
 
   test("D54: a lead's cap holds its next crew session; another lead's crew sessions do not count", async () => {
     const world = await boardWorld();
-    world.writeConfig({ perLead: 1 });
+    world.writePersonal({ perLead: 1 });
     await world.addCrew();
     await world.addCrew({
       atMs: NOW - 5 * MINUTE,
@@ -397,12 +397,37 @@ describe("crew list", () => {
       0,
     );
     expect(world.out[3]).toBe(
-      "  held: 1.5 GB free, a crew session needs 2 GB; it starts when memory frees",
+      "  held: 1.5 GB free, a crew session needs 6 GB; it starts when memory frees",
     );
 
     world.out.length = 0;
     expect(await runCrew(["list"], world.ctx())).toBe(0);
     expect(world.out[3]).toBe("  held: a place is free; its lead's watch starts it");
+  });
+
+  test("D72: the board names the machine's launch gap", async () => {
+    const world = await boardWorld();
+    const launched = await world.addCrew({ state: "stopped" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      launched.id,
+      {
+        launchedAt: new Date(NOW - 10_000).toISOString(),
+      },
+      NOW,
+    );
+    await world.addCrew({
+      phase: "B2",
+      slug: "api",
+      shortId: null,
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toContain(
+      "  held: the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    );
   });
 
   test("a load that is held says so, and no load average says so once", async () => {
@@ -418,7 +443,7 @@ describe("crew list", () => {
     const busy = world.ctx({ load: () => ({ cores: 8, oneMinute: 50 }) });
     expect(await runCrew(["list"], busy)).toBe(0);
     expect(world.out).toContain(
-      "  held: the load is 50 on 8 cores, past 24 (3 for each core); it starts when the load falls",
+      "  held: the load is 50 on 8 cores, past 12 (1.5 for each core); it starts when the load falls",
     );
     expect(world.out).not.toContain(loadUnreadLine());
 
@@ -445,7 +470,7 @@ describe("crew list", () => {
     const held = world.out.filter((line) => line.startsWith("  held: "));
     expect(held).toEqual([
       "  held: a place is free; its lead's watch starts it",
-      "  held: the load is 50 on 8 cores, past 24 (3 for each core); it starts when the load falls",
+      "  held: the load is 50 on 8 cores, past 12 (1.5 for each core); it starts when the load falls",
     ]);
   });
 

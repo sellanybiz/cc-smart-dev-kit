@@ -102,6 +102,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.crew.loadPerCore": "1.3.0",
   "workflow.crew.archiveDays": "1.3.0",
   "workflow.crew.deleteDays": "1.7.0",
+  "workflow.crew.startGapSeconds": "1.8.0",
   "workflow.issues": "1.4.0",
   "workflow.issues.enabled": "1.4.0",
   "workflow.issues.allowPublic": "1.4.0",
@@ -111,6 +112,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues.fixedLabel": "1.4.0",
   "workflow.issues.readyLabel": "1.4.0",
   "jobs.kinds.*.noSlotForFiles": "1.5.0",
+  "jobs.kinds.*.light": "1.8.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */

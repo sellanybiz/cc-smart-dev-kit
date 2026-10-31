@@ -16,6 +16,18 @@
  *
  * WHERE A RESERVATION LIVES: a "store" (`store.ts`): a folder of lease files.
  *
+ * TWO LANES: heavy and light (D74)
+ *   A heavy run (a full type check, a full test run, a build) takes one of `maxJobs` slots. A
+ *   light run (an install, a test run on up to `LIGHT_FILE_LIMIT` named files) takes one of
+ *   `lightJobs` slots (`config.ts`) instead, this machine's only: a shared folder counts heavy
+ *   runs alone. The lanes never wait for each other, so a small run never sits behind a full
+ *   one, and a burst of installs never takes the heavy slots.
+ *
+ * FREE MEMORY: a job waits while this machine has less than `startFreeGb` free (`config.ts`),
+ *   but only while another job of the queue runs here: its end frees memory. With no job
+ *   running, waiting could last for ever (the memory belongs to what never queues), so the
+ *   job starts, under its kill mark and the heavy slice (`launch.ts`).
+ *
  * WHO GOES NEXT: oldest first
  *   A waiting job holds a ticket with its start time. Only the oldest live ticket may take a
  *   slot, so no job is starved by a stream of newer ones.
@@ -45,10 +57,24 @@
  * its records. This plugin counts every live lease as one slot, whatever its record says
  * (`slotOfWire`), and writes 1 in that field for a job that holds a slot and 0 for one that
  * holds a name only (`wireOfSlot`), so an older `job run` still reads the record, as a 1 GB
- * holder.
+ * holder. A plugin from 1.8.0 also writes the job's `lane`. A record without one (an older
+ * plugin's) is read from its `gb`: a heavy slot or a name (`laneOf`). An older plugin reads a
+ * light run's record as a heavy slot: it waits more, never less.
  */
 
 import { oneLine } from "../gateway/plain-text";
+import { DEFAULT_LIGHT_JOBS } from "./config";
+
+/** Which slots a job takes: a heavy one, a light one, or none (a name only). */
+export type JobLane = "heavy" | "light" | "none";
+
+/**
+ * The lane of a job, a record, a lease or a ticket: its own `lane`, or, for a record an older
+ * plugin wrote (no lane), `slot`: a heavy slot or a name. The one reader of both fields.
+ */
+export function laneOf(value: { lane?: JobLane; slot: boolean }): JobLane {
+  return value.lane ?? (value.slot ? "heavy" : "none");
+}
 
 /** A job, as the queue sees it. */
 export interface QueuedJob {
@@ -66,7 +92,9 @@ export interface QueuedJob {
   nested?: boolean;
   /** The process that holds the reservation (the `job run` process). */
   pid: number;
-  /** Does it take a slot? False for a job that holds a name only. */
+  /** Which slots it takes. Left out: `slot` says, a heavy slot or a name (`laneOf`). */
+  lane?: JobLane;
+  /** Does it take a slot of either lane? False for a job that holds a name only. */
   slot: boolean;
   /** The command as a person reads it: `bunx tsc --noEmit`. */
   what: string;
@@ -108,7 +136,9 @@ export interface HolderRecord {
   pid: number;
   /** Milliseconds since 1970: when the job joined the line, or took its slot. */
   since: number;
-  /** Does the holder hold (or a ticket wait for) a slot? False: a name only. */
+  /** Which slots it holds or waits for. Left out in an older plugin's record (`laneOf`). */
+  lane?: JobLane;
+  /** Does the holder hold (or a ticket wait for) a slot of either lane? False: a name only. */
   slot: boolean;
   /** The record's version: a later plugin may write another shape. */
   v: 1;
@@ -133,7 +163,10 @@ export function parseHolder(text: string): HolderRecord | null {
     return null; // not JSON: an unknown holder
   }
   if (!isObject(value) || value.v !== 1) return null;
-  const { checkout, exclusive, gb, kind, person, pid, since, what } = value;
+  const { checkout, exclusive, kind, person, pid, since, what } = value;
+  const gb = typeof value.slot === "boolean" ? wireOfSlot(value.slot) : value.gb;
+  const lane = value.lane;
+  if (lane !== undefined && lane !== "heavy" && lane !== "light" && lane !== "none") return null;
   if (
     (exclusive !== undefined && typeof exclusive !== "string") ||
     typeof checkout !== "string" ||
@@ -156,7 +189,8 @@ export function parseHolder(text: string): HolderRecord | null {
     person,
     pid,
     since,
-    slot: slotOfWire(gb),
+    ...(lane === undefined ? {} : { lane }),
+    slot: lane === undefined ? slotOfWire(gb) : lane !== "none",
     v: 1,
     what,
   };
@@ -213,8 +247,12 @@ export interface StoreUnits {
 }
 
 export interface Store {
-  /** How many slots this store gives out, read again for every decision. */
+  /** How many heavy slots this store gives out, read again for every decision. */
   capacity(): Promise<number>;
+  /** How many light slots this store gives out. A shared folder gives none (`laneIn`). */
+  lightCapacity(): Promise<number>;
+  /** This machine's free memory now, and what a job needs to start. Shared folders: none. */
+  memoryAdmission?(): MemoryAdmission;
   /** Joins the line. Null when that cannot happen right now (try again next round). */
   enqueue(recordText: string): Promise<StoreTicket | null>;
   /** Leases held right now. */
@@ -226,10 +264,26 @@ export interface Store {
   /** Used by several machines or users: fair share applies, and its pids may be foreign. */
   readonly shared: boolean;
   /**
-   * A slot (when `slot`) or nothing but a name, and with `exclusive`, only while no lease
-   * holds that name. Null when that is not so right now.
+   * A slot of `lane` (or nothing but a name, for "none"), and with `exclusive`, only while no
+   * lease holds that name. Null when that is not so right now. Checked under the store's
+   * lock: the counts the decision read may be stale by now. The rest of the decision (the
+   * line, fair share, free memory) is not checked again.
    */
-  tryTake(slot: boolean, recordText: string, exclusive?: string): Promise<StoreUnits | null>;
+  tryTake(lane: JobLane, recordText: string, exclusive?: string): Promise<StoreUnits | null>;
+}
+
+/** Free memory, for the admission rule: `freeGb` is null where it cannot be read. */
+export interface MemoryAdmission {
+  freeGb: number | null;
+  startFreeGb: number;
+}
+
+/**
+ * The lane a job takes in one store: its own, except that a light run takes no slot in a
+ * shared folder. Light slots are this machine's only; a shared folder counts heavy runs.
+ */
+export function laneIn(store: { shared: boolean }, lane: JobLane): JobLane {
+  return store.shared && lane === "light" ? "none" : lane;
 }
 
 // ── The decision: pure, so every rule above is tested without a store ─────────
@@ -237,7 +291,19 @@ export interface Store {
 export interface ParsedHeld {
   /** A lease whose text does not parse is "unknown" and still holds its slot. */
   holder: HolderRecord | null;
+  /** Its lane. Left out: `laneOf` reads the holder's, or `slot`. */
+  lane?: JobLane;
   slot: boolean;
+}
+
+/** The lane a held lease counts in: its own, its holder's, or a heavy slot (an unknown one). */
+export function heldLane(unit: ParsedHeld): JobLane {
+  return unit.lane ?? laneOf(unit.holder ?? unit);
+}
+
+/** How many of `held` hold a slot of `lane`. */
+export function laneUsed(held: readonly ParsedHeld[], lane: JobLane): number {
+  return held.filter((unit) => heldLane(unit) === lane).length;
 }
 
 export interface ParsedEntry {
@@ -245,7 +311,8 @@ export interface ParsedEntry {
   exclusive: string | null;
   mine: boolean;
   person: string | null;
-  /** Does it wait for a slot? A ticket whose text does not parse needs nothing. */
+  /** Which slots it waits for. A ticket whose text does not parse needs nothing. */
+  lane?: JobLane;
   slot: boolean;
   /** A ticket whose text does not parse sorts last: it never holds anyone up. */
   since: number;
@@ -258,6 +325,7 @@ export function parseEntry(entry: StoreLineEntry): ParsedEntry {
     exclusive: record?.exclusive ?? null,
     mine: entry.mine,
     person: record?.person ?? null,
+    lane: record === null ? "none" : laneOf(record),
     slot: record?.slot ?? false,
     since: record?.since ?? Number.POSITIVE_INFINITY,
     tie: entry.tie,
@@ -277,14 +345,20 @@ export type WaitReason =
   | { capacity: number; held: number; kind: "fair-share" }
   | { capacity: number; kind: "no-room" }
   | { kind: "exclusive"; name: string }
+  | { freeGb: number; kind: "memory"; startFreeGb: number }
   | { kind: "behind" }
   | { kind: "no-ticket" };
 
 export type Decision = { take: true } | { wait: WaitReason };
 
 export interface DecideInput {
-  /** How many slots the store gives out. */
+  /** How many heavy slots the store gives out. */
   capacity: number;
+  /** How many light slots it gives out. Default: `DEFAULT_LIGHT_JOBS`. */
+  lightCapacity?: number;
+  /** Free memory, and what a job needs to start. Left out or unreadable: no memory rule. */
+  freeGb?: number | null;
+  startFreeGb?: number;
   /** The exclusive name this job needs in this store, or null. */
   exclusive: string | null;
   held: readonly ParsedHeld[];
@@ -292,6 +366,8 @@ export interface DecideInput {
   /** The person waiting: this machine's host name. */
   person: string;
   shared: boolean;
+  /** Which slots this job needs in this store (`laneIn`). Left out: `slot` says (`laneOf`). */
+  lane?: JobLane;
   /** Does this job need a slot? False: a name only. */
   slot: boolean;
 }
@@ -302,24 +378,29 @@ function slotsHeldBy(held: readonly ParsedHeld[], person: string): number {
 
 /** May this job take its slot (or its name) now? Every rule of the header, in one place. */
 export function decide(input: DecideInput): Decision {
+  const lane = laneOf(input);
+  const capacity = lane === "light" ? (input.lightCapacity ?? DEFAULT_LIGHT_JOBS) : input.capacity;
+  const laneHeld = input.held.filter((unit) => heldLane(unit) === lane);
   const heldNames = new Set(input.held.map((unit) => unit.holder?.exclusive));
   const { line } = input;
   // Fair share: a person at half the slots or more steps aside while someone else waits.
   const steppedAside = (person: string | null): boolean =>
     input.shared &&
     person !== null &&
-    slotsHeldBy(input.held, person) * 2 >= input.capacity &&
-    line.some((entry) => entry.person !== null && entry.person !== person);
+    slotsHeldBy(laneHeld, person) * 2 >= capacity &&
+    line.some(
+      (entry) => laneOf(entry) === lane && entry.person !== null && entry.person !== person,
+    );
   const me = line.find((entry) => entry.mine);
   if (me === undefined) return { wait: { kind: "no-ticket" } };
   if (input.exclusive !== null && heldNames.has(input.exclusive)) {
     return { wait: { kind: "exclusive", name: input.exclusive } };
   }
-  if (input.slot && steppedAside(input.person)) {
+  if (lane !== "none" && steppedAside(input.person)) {
     return {
       wait: {
-        capacity: input.capacity,
-        held: slotsHeldBy(input.held, input.person),
+        capacity,
+        held: slotsHeldBy(laneHeld, input.person),
         kind: "fair-share",
       },
     };
@@ -331,16 +412,21 @@ export function decide(input: DecideInput): Decision {
     if (entry.mine || !isBefore(entry, me)) return false;
     if (entry.exclusive !== null && entry.exclusive === input.exclusive) return true;
     return (
-      input.slot &&
-      entry.slot &&
+      lane !== "none" &&
+      laneOf(entry) === lane &&
       !steppedAside(entry.person) &&
       !(entry.exclusive !== null && heldNames.has(entry.exclusive))
     );
   });
   if (ahead) return { wait: { kind: "behind" } };
-  if (!input.slot) return { take: true };
-  if (slotsUsed(input.held) >= input.capacity) {
-    return { wait: { capacity: input.capacity, kind: "no-room" } };
+  if (lane === "none") return { take: true };
+  if (laneHeld.length >= capacity) {
+    return { wait: { capacity, kind: "no-room" } };
+  }
+  // Free memory holds a job only while another one runs here: its end frees memory.
+  const { freeGb, startFreeGb = 0 } = input;
+  if (freeGb != null && freeGb < startFreeGb && slotsUsed(input.held) > 0) {
+    return { wait: { freeGb, kind: "memory", startFreeGb } };
   }
   return { take: true };
 }
@@ -385,8 +471,11 @@ export function slotsText(count: number): string {
   return `${String(count)} ${count === 1 ? "slot" : "slots"}`;
 }
 
-function reasonText(reason: WaitReason, store: string): string {
+function reasonText(reason: WaitReason, store: string, lane: JobLane): string {
+  const slot = lane === "light" ? "light slot" : "slot";
   switch (reason.kind) {
+    case "memory":
+      return `${store} has ${oneDecimal(reason.freeGb)} GB of memory free, and a job starts at ${oneDecimal(reason.startFreeGb)} GB while another one runs`;
     case "behind":
       return `an older job is first in ${store}'s line`;
     case "exclusive":
@@ -395,17 +484,18 @@ function reasonText(reason: WaitReason, store: string): string {
       return `this machine already holds ${slotsText(reason.held)} of ${store}'s ${reason.capacity} while another person waits`;
     case "no-room":
       return reason.capacity === 1
-        ? `${store}'s only slot is taken`
-        : `all ${String(reason.capacity)} of ${store}'s slots are taken`;
+        ? `${store}'s only ${slot} is taken`
+        : `all ${String(reason.capacity)} of ${store}'s ${slot}s are taken`;
     case "no-ticket":
       return `${store}'s line cannot be joined right now`;
   }
 }
 
-/** One line per lease: who holds it, and whether it is a slot or only a name. */
+/** One line per lease: who holds it, and whether it is a slot, a light slot or only a name. */
 export function holderLines(held: readonly ParsedHeld[], store: string, now: number): string[] {
-  return held.map(({ holder, slot }) => {
-    const what = slot ? "a slot" : "a name";
+  return held.map((unit) => {
+    const { holder } = unit;
+    const what = { heavy: "a slot", light: "a light slot", none: "a name" }[heldLane(unit)];
     return holder === null
       ? `  ${store}: ${what} is held by an unknown holder`
       : `  ${store}: ${what} is held by ${shownHolder(holder)}, since ${formatSince(holder.since, now)} (pid ${holder.pid})`;
@@ -471,12 +561,13 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** What a job waits for, as the first words of its waiting line say it. */
-function needsText(job: QueuedJob): string {
-  if (!job.slot) return `its turn for --exclusive ${job.exclusive ?? ""}`;
+/** What a job waits for in one store, as the first words of its waiting line say it. */
+function needsText(job: QueuedJob, lane: JobLane): string {
+  if (lane === "none") return `its turn for --exclusive ${job.exclusive ?? ""}`;
+  const slot = lane === "light" ? "a free light slot" : "a free slot";
   return job.exclusive === undefined
-    ? "a free slot"
-    : `a free slot and the turn for --exclusive ${job.exclusive}`;
+    ? slot
+    : `${slot} and the turn for --exclusive ${job.exclusive}`;
 }
 
 /**
@@ -494,15 +585,16 @@ export async function acquireFrom(
   const pollMs = options.pollMs ?? POLL_MS;
   const lineEveryMs = options.waitingLineEveryMs ?? WAITING_LINE_EVERY_MS;
   const note = options.onNote ?? options.onWaiting;
-  const recordText = (since: number, exclusive: string | null) =>
+  const recordText = (since: number, exclusive: string | null, lane: JobLane) =>
     holderText({
       checkout: job.checkout,
       ...(exclusive !== null && { exclusive }),
       kind: job.kind,
+      lane,
       person: options.person,
       pid: job.pid,
       since,
-      slot: job.slot,
+      slot: lane !== "none",
       v: 1,
       what: job.what,
     });
@@ -514,7 +606,7 @@ export async function acquireFrom(
   let waitStartedAt: number | null = null;
   let lastLineAt = Number.NEGATIVE_INFINITY;
 
-  const report = async (store: Store, reason: WaitReason) => {
+  const report = async (store: Store, lane: JobLane, reason: WaitReason) => {
     const at = now();
     if (at - lastLineAt < lineEveryMs) return;
     // The job's first line: the hint rides with it, and never again.
@@ -529,20 +621,25 @@ export async function acquireFrom(
     // wait: a throw here would leave the store being waited on, this machine's too.
     for (const each of stores) {
       try {
-        const capacity = await each.capacity();
+        // The counts of the lane the job waits in: a light run reads the light slots.
+        const light = laneIn(each, laneOf(job)) === "light";
+        const capacity = await (light ? each.lightCapacity() : each.capacity());
         const held = (await each.held()).map((unit) => ({
           holder: parseHolder(unit.text),
           slot: unit.slot,
         }));
-        const free = Math.max(0, capacity - slotsUsed(held));
-        counts.push(`${each.label}: ${free} of ${slotsText(capacity)} free`);
+        const free = Math.max(0, capacity - laneUsed(held, light ? "light" : "heavy"));
+        counts.push(
+          `${each.label}: ${free} of ${light ? `${capacity} light` : slotsText(capacity)} free`,
+        );
         holders.push(...holderLines(held, each.label, at));
       } catch {
         counts.push(`${each.label}: cannot be read`);
       }
     }
+    const title = laneOf(job) === "light" ? "Light job" : "Heavy job";
     options.onWaiting(
-      `Heavy job waits for ${needsText(job)}: ${job.what}${waited}. ${counts.join("; ")}. Why: ${reasonText(reason, store.label)}.`,
+      `${title} waits for ${needsText(job, lane)}: ${job.what}${waited}. ${counts.join("; ")}. Why: ${reasonText(reason, store.label, lane)}.`,
     );
     if (first) options.onWaiting(pipeHint());
     for (const line of holders) options.onWaiting(line);
@@ -559,13 +656,16 @@ export async function acquireFrom(
         job.exclusive !== undefined && (await store.keepsExclusive(job.exclusive))
           ? job.exclusive
           : null;
+      const lane = laneIn(store, laneOf(job));
       // Nothing to take here: no slot, and no name this store keeps.
-      if (!job.slot && exclusive === null) return NOTHING_HELD;
+      if (lane === "none" && exclusive === null) return NOTHING_HELD;
       for (;;) {
         stopIfAsked();
         let reason: WaitReason;
         // A nested job holds no place in the line (QueuedJob.nested): only itself.
-        if (job.nested !== true) ticket ??= await store.enqueue(recordText(now(), exclusive));
+        if (job.nested !== true) {
+          ticket ??= await store.enqueue(recordText(now(), exclusive, lane));
+        }
         if (ticket === null && job.nested !== true) {
           reason = { kind: "no-ticket" };
         } else {
@@ -574,24 +674,28 @@ export async function acquireFrom(
               ? [
                   {
                     exclusive,
+                    lane,
                     mine: true,
                     person: options.person,
                     since: 0,
-                    slot: job.slot,
+                    slot: lane !== "none",
                     tie: "",
                   },
                 ]
               : (await ticket.line()).map(parseEntry);
           const me = line.find((entry) => entry.mine);
-          // An older ticket that needs only a slot, as this job does, and no fair share to
+          // An older ticket that needs only a slot of this job's lane, and no fair share to
           // skip anyone: the store need not be read.
           const plainlyBehind =
             !store.shared &&
             me !== undefined &&
-            job.slot &&
+            lane !== "none" &&
             line.some(
               (entry) =>
-                !entry.mine && isBefore(entry, me) && entry.slot && entry.exclusive === null,
+                !entry.mine &&
+                isBefore(entry, me) &&
+                laneOf(entry) === lane &&
+                entry.exclusive === null,
             );
           let decision: Decision;
           let capacity = 0;
@@ -602,21 +706,26 @@ export async function acquireFrom(
               holder: parseHolder(unit.text),
               slot: unit.slot,
             }));
-            capacity = await store.capacity();
+            const heavyCapacity = await store.capacity();
+            const lightCapacity = await store.lightCapacity();
+            capacity = lane === "light" ? lightCapacity : heavyCapacity;
             decision = decide({
-              capacity,
+              capacity: heavyCapacity,
               exclusive,
               held,
+              lane,
+              lightCapacity,
               line,
               person: options.person,
               shared: store.shared,
-              slot: job.slot,
+              slot: lane !== "none",
+              ...store.memoryAdmission?.(),
             });
           }
           if ("take" in decision) {
             const units = await store.tryTake(
-              job.slot,
-              recordText(now(), exclusive),
+              lane,
+              recordText(now(), exclusive, lane),
               exclusive ?? undefined,
             );
             if (units !== null) return units;
@@ -626,7 +735,7 @@ export async function acquireFrom(
             reason = decision.wait;
           }
         }
-        await report(store, reason);
+        await report(store, lane, reason);
         await sleep(pollMs);
       }
     } catch (error) {

@@ -468,6 +468,7 @@ export type WorkflowKey =
   | "crew.maxOpus"
   | "crew.memoryGb"
   | "crew.loadPerCore"
+  | "crew.startGapSeconds"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"
@@ -988,7 +989,9 @@ export interface JobRouteState {
 }
 
 export interface JobsAnswer {
+  admission: { freeGb: null | number; startFreeGb: number };
   ceiling: JobCeilingState;
+  lightJobs: { slots: number; used: number };
   memoryGb: number;
   route: JobRouteState;
   stores: {

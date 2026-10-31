@@ -74,11 +74,14 @@ import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { baseBranch } from "../worktrees/command";
 import { agentRows, claudeDeps, isLiveRow, listsAnySession, rowOf } from "./agents";
 import {
+  deliveryText,
+  markResumed,
   type ResumedSession,
   resumedAs,
   resumeSession,
   sendMessageHint,
   sendMessageLine,
+  sessionLiveness,
   UNREADABLE_VIEW_WHY,
 } from "./answer";
 import { sweepCrewConversations } from "./archive";
@@ -113,13 +116,19 @@ import {
   ISSUE_EVENT_CREW,
   isQuestionOpen,
   keepWatchLease,
+  lastHeardAnswer,
+  listAllCrew,
   listCrew,
   listLeads,
+  markAnswerDelivered,
+  NO_RESUME_STATES,
   readAnswerWatchBeat,
   readCrewEvents,
   readReport,
   readWatchState,
+  resumeClaimHeld,
   setCrewMemory,
+  sweepCrew,
   takeWatchLease,
   takeWatchLeaseUnlessLive,
   updateCrew,
@@ -1085,7 +1094,20 @@ async function resumePaused(
   // Only the watch that holds its lead's lease resumes (WF1): two would start two sessions.
   if (!(await goesOn())) return null;
   const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
-  const one = await resumeOne(next, ctx, now, agents, say, held);
+  const one = await resumeOne(
+    next,
+    ctx,
+    now,
+    agents,
+    (line) => {
+      const key = `${next.id}:paused-resume`;
+      if (said[key] !== line) {
+        say(line);
+        said[key] = line;
+      }
+    },
+    held,
+  );
   // A resume the store could not record leaves the record `paused`, naming the session it had:
   // once the claim is over (`RESUME_CLAIM_MS`) a second try would wake or start it again, a
   // second copy. It is held back like an unnamed one, until the record leaves `paused`.
@@ -1097,6 +1119,8 @@ async function resumePaused(
 
 /** What a resume of a paused crew session came to: whether it happened, whether the store has it, and how. */
 export interface OneResume {
+  /** Why the launch gate held the resume (D72): no place, no memory, the load or the gap. */
+  waits?: string;
   ok: boolean;
   /** False when the store could not write the state: the record stays `paused`. */
   stored: boolean;
@@ -1159,7 +1183,11 @@ export async function resumeOne(
   if (!resumed.ok) {
     const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
     say(`${record.name}: not resumed — ${resumed.why}${note}`);
-    return { ...failed, unnamed: resumed.unnamed };
+    return {
+      ...failed,
+      ...(resumed.waits === undefined ? {} : { waits: resumed.waits }),
+      unnamed: resumed.unnamed,
+    };
   }
   const { session } = resumed;
   const stored = await sayResumed(
@@ -1242,6 +1270,7 @@ function stateAfter(before: WatchState, draft: PassDraft): WatchState {
   const routerRequests =
     draft.resumed === null ? before.routerRequests : draft.resumed.routerRequests;
   return {
+    missingSince: before.missingSince,
     removals: draft.removals,
     stoppedRemindedAt: draft.stoppedRemindedAt,
     offset: draft.offset,
@@ -1321,6 +1350,45 @@ async function runPass(
 
   // What the sessions are doing now.
   const agents = agentRows(ctx);
+  if (agents !== null) {
+    state.missingSince ??= {};
+    const missing = state.missingSince;
+    const seen = new Set<string>();
+    for (const record of listAllCrew(ctx.paths.stateDir).records) {
+      // Keyed by its session too: a resume brings it back as a new session, whose own misses
+      // start from nothing.
+      const key = `${record.repo}:${record.id}:${record.sessionId}`;
+      seen.add(key);
+      const row = rowOf(agents, record);
+      if (resumeClaimHeld(record.resumeClaim, ctx.now())) {
+        delete missing[key];
+        continue;
+      }
+      if (record.sweptFrom !== undefined && record.state === "stopped" && isLiveRow(row)) {
+        await updateCrewIfState(
+          ctx.paths.stateDir,
+          record.repo,
+          record.id,
+          ["stopped"],
+          { state: record.sweptFrom, sweptFrom: undefined },
+          ctx.now(),
+          "its session is back in agent view",
+        );
+      }
+      if (record.sessionId === null || !isRunning(record) || row !== null) {
+        delete missing[key];
+        continue;
+      }
+      const first = missing[key];
+      if (first === undefined) missing[key] = ctx.now();
+      else if (ctx.now() - first >= 60_000) {
+        await sweepCrew(ctx.paths.stateDir, record.repo, record.id, record.state, ctx.now());
+        delete missing[key];
+      }
+    }
+    // A record that left the store, or a session a resume replaced, has no first miss to keep.
+    for (const key of Object.keys(missing)) if (!seen.has(key)) delete missing[key];
+  }
   await observeLeadPresence(
     ctx.paths.stateDir,
     listLeads(ctx.paths.stateDir, repo).records,
@@ -1690,7 +1758,59 @@ async function runPass(
         Number(b.continues != null) - Number(a.continues != null) ||
         a.createdAt.localeCompare(b.createdAt),
     );
-  for (const record of queued) {
+  // A record with nothing to bring back never resumes, even with a wait an older kit left on it.
+  const waiting = here
+    .filter(
+      (one) =>
+        one.leadSessionId === scope.leadSessionId &&
+        one.resumeWaits !== undefined &&
+        !(NO_RESUME_STATES as readonly string[]).includes(one.state),
+    )
+    .sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
+  const drain = [
+    ...queued.filter((one) => one.continues != null),
+    ...waiting,
+    ...queued.filter((one) => one.continues == null),
+  ];
+  for (const record of drain) {
+    if (record.resumeWaits !== undefined) {
+      if (scope.mayStart === false || (await scope.goesOn?.()) === false) continue;
+      if (said[resumeHoldKey(record.id)] !== undefined) continue;
+      // The pass's own read of agent view: one `claude agents` per pass, not one per waiting resume.
+      const liveness = sessionLiveness(ctx, record, agents);
+      if (liveness === "unknown") continue;
+      if (liveness === "live") {
+        await updateCrewIfState(
+          ctx.paths.stateDir,
+          repo,
+          record.id,
+          [record.state],
+          { resumeWaits: undefined },
+          ctx.now(),
+        );
+        continue;
+      }
+      const index = record.resumeWaits.answer;
+      const question = index === null ? undefined : record.questions[index];
+      const prompt =
+        question?.answer == null
+          ? "Continue your phase."
+          : deliveryText(question.question, question.answer, lastHeardAnswer(question, true));
+      const resumed = await resumeSession(ctx, record, prompt);
+      if (resumed.ok) {
+        const stored = await markResumed(record, resumed.session, ctx);
+        if (!stored) said[resumeHoldKey(record.id)] = "resume was not stored";
+        if (stored && index !== null)
+          await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+      } else {
+        if (resumed.unnamed) said[resumeHoldKey(record.id)] = resumed.why;
+        if (said[`${record.id}:resume-wait`] !== resumed.why) {
+          say(`${record.name}: waits to come back — ${resumed.why}`);
+          said[`${record.id}:resume-wait`] = resumed.why;
+        }
+      }
+      continue;
+    }
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.
     if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
@@ -1728,7 +1848,14 @@ async function runPass(
   const paused = own.filter((one) => one.state === "paused");
   // A hold lasts while its record stays paused: once the lead brought it back, it goes.
   for (const key of Object.keys(said)) {
-    if (key.startsWith(resumeHoldKey("")) && !paused.some((one) => resumeHoldKey(one.id) === key)) {
+    if (
+      key.startsWith(resumeHoldKey("")) &&
+      !own.some(
+        (one) =>
+          (one.state === "paused" || one.resumeWaits !== undefined) &&
+          resumeHoldKey(one.id) === key,
+      )
+    ) {
       delete said[key];
     }
     // A refusal's mark (`holdRefusedSession`) lasts while its record stays stopped: the state
