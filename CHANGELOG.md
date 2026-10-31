@@ -3,6 +3,58 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.8.0
+
+Many crew sessions, installs and test runs could start at once and freeze the machine: after a
+restart, resumes skipped the start gate, the load reading lagged behind a burst, and small test
+runs and installs took no slot. Every launch now goes through one gate, a minute apart, and every
+run takes a slot. The crew limits are now the machine's alone.
+
+**What to run** after the update:
+
+- In each lead session that is running, end its crew watch and start it again (the
+  `cc-smart-dev-kit crew watch` command, with Claude Code's `Monitor` tool): a watch keeps the
+  code it started with.
+- `cc-smart-dev-kit doctor` in each project. When the project's `.claude/cc-smart-dev-kit.json`
+  still sets a crew limit, doctor says which one: the value is ignored now. Set it for your
+  machine instead, for example `cc-smart-dev-kit workflow set crew.max 12`, and take it out of
+  the project file.
+- Only if a default below is wrong for your machine: `cc-smart-dev-kit workflow set
+  crew.startGapSeconds <n>`, `cc-smart-dev-kit job set light-jobs <n>`, `cc-smart-dev-kit job set
+  start-free-gb <n>`.
+
+What changed:
+
+- **The crew limits are the machine's (D71).** `crew.max`, `maxOpus`, `perLead`, `perLeadOpus`,
+  `memoryGb`, `loadPerCore`, `usagePercent` and the new `startGapSeconds` are read from your own
+  `workflow.json` only. A project file that sets one still loads; the value is ignored, and
+  `doctor` says so once. `workflow set --project` and `workflow propose` refuse them, with the
+  command to run instead.
+- **Safer defaults.** `crew.max` 24 → 12, `crew.memoryGb` 2 → 6, `crew.loadPerCore` 3 → 1.5. A
+  value you set yourself stays.
+- **One gate for every launch, a minute apart (D72).** A start, a queued start, a hand-off's
+  next crew session and every resume (`crew resume`, `crew resume --paused`, `crew answer` to a
+  stopped session, the watch's paused recovery) ask the same gate under the same lock. A launch
+  waits until the machine's last one is `crew.startGapSeconds` old (60 by default), across every
+  repository, so the load reading catches up. A resume the gate refuses waits, and `crew resume`
+  says why and exits 0; an answer to a stopped session is kept and delivered when it resumes.
+  `crew model` replaces its own process and is not held. A launch that started nothing gives its
+  time back.
+- **A crew session closed in agent view frees its place (D73).** The lead's watch marks a running
+  record whose session is missing from agent view in two passes a minute apart as `stopped`. A
+  row that comes back restores it. An agent view it cannot read changes nothing.
+- **Small runs take a slot of their own (D74).** An install (`bun install`, `npm ci`, `pnpm add`,
+  a bare `yarn` and the like: the new `install` kind) and a test run on at most 10 named files
+  take one of `lightJobs` light slots (2 by default) instead of running at once. Light and heavy
+  runs never wait for each other. More than 10 files take a heavy slot. A light run gets the kill
+  mark, never the heavy slice.
+- **A job waits for free memory while another one runs (D74).** Below `startFreeGb` (4 by
+  default) a new heavy or light run waits until the running job ends or memory frees up. With
+  no job running it starts, so a small machine never waits for ever.
+- `job status` and the portal's `/api/jobs` show the light slots and the free-memory rule. A job
+  kind's new `light` field comes with 1.8.0: a project that sets it raises `requires` to `>=1.8`;
+  so does a project that sets `crew.startGapSeconds`.
+
 ## 1.7.2
 
 Finished crew sessions whose process had already stopped stayed in agent view for good. They
