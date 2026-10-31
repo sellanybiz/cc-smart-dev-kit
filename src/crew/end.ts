@@ -516,16 +516,8 @@ export async function runCrewResume(ref: string, ctx: CrewContext): Promise<numb
   const resumed = await resumeSession(ctx, record, null);
   if (!resumed.ok) {
     if (resumed.waits !== undefined) {
-      await updateCrew(
-        ctx.paths.stateDir,
-        record.repo,
-        record.id,
-        { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: null } },
-        ctx.now(),
-      );
-      ctx.print(
-        `${record.name} waits to come back: ${resumed.waits}; its lead's watch resumes it when the machine has room`,
-      );
+      await waitToComeBack(record, ctx);
+      ctx.print(`${record.name} waits to come back: ${resumed.waits}; ${WATCH_RESUMES_IT}`);
       return 0;
     }
     return refuse(
@@ -613,7 +605,13 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     // worktree for one that has none (`resumeOne`). It prints the message line or why it could
     // not; a resume the store could not record is its line too, and the exit code says so.
     const one = await resumeOne(record, ctx, ctx.now(), agents, (line) => ctx.print(line));
-    if (one.waits === true) continue;
+    if (one.waits !== undefined) {
+      // Its "not resumed" line said why. The wait makes the watch bring it back at the next room,
+      // as `crew resume <name>` does, not only once its limit's own wait is over.
+      await waitToComeBack(record, ctx);
+      ctx.print(`${record.name} waits to come back; ${WATCH_RESUMES_IT}`);
+      continue;
+    }
     if (!one.ok || !one.stored) {
       code = 1;
       continue;
@@ -625,6 +623,23 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
     );
   }
   return code;
+}
+
+const WATCH_RESUMES_IT = "its lead's watch resumes it when the machine has room";
+
+/**
+ * A resume the launch gate held (D72): the record keeps a `resumeWaits`, and its lead's watch
+ * resumes it when the machine has room (`watch.ts`, the drain). One home for both ways a person
+ * asks: `crew resume <name>` and `crew resume --paused`.
+ */
+async function waitToComeBack(record: CrewRecord, ctx: CrewContext): Promise<void> {
+  await updateCrew(
+    ctx.paths.stateDir,
+    record.repo,
+    record.id,
+    { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: null } },
+    ctx.now(),
+  );
 }
 
 /** Where the lead merges: the checked-out folder when known, and the target commit. */

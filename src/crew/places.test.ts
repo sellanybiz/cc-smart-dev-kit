@@ -6,12 +6,14 @@ import type { MemoryFacts } from "../jobs/memory";
 import type { LoadFacts } from "../machine/load";
 import { locateCheckout } from "../project/resolve";
 import { type CrewWorld, crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   freeForCrewGb,
   onOpusTier,
   placeFor,
   placeForLeadStart,
+  placeInputOf,
   RUNNING_STATES,
   runningCrew,
   runningForLead,
@@ -54,6 +56,98 @@ function crew(phase: string, state: string, minute = 0): CrewRecord {
     worktree: `/home/user/my-app/.claude/worktrees/crew-${phase}-x`,
   };
 }
+
+describe("D72: the shared place input", () => {
+  test("a resume excludes itself once, while another live claim holds a place", () => {
+    const paused = crew("A1", "paused");
+    const stopped = crew("B2", "stopped");
+    const claimed = {
+      ...crew("C3", "stopped"),
+      resumeClaim: { at: "2026-10-21T10:00:00.000Z", token: "resume-token" },
+    };
+    const input = (exclude: CrewRecord) =>
+      placeInputOf(
+        [paused, stopped, claimed],
+        "lead",
+        defaultResolved().crew,
+        { opusFallback: false, percent: null },
+        {
+          continuation: false,
+          opus: false,
+          unmet: [],
+          nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+          exclude,
+        },
+      );
+    expect(input(paused).running).toBe(1);
+    expect(input(paused).leadRunning).toBe(1);
+    expect(input(stopped).running).toBe(2);
+    expect(placeFor({ ...input(paused), max: 2 })).toEqual({ start: true });
+    expect(placeFor({ ...input(stopped), max: 2 })).toEqual({
+      start: false,
+      why: "2 of 2 crew sessions running on this machine; it starts when one finishes",
+    });
+  });
+
+  test("another repository's latest launch holds the gap, but the lead guard's input ignores it", () => {
+    const other = {
+      ...crew("A1", "stopped"),
+      repo: "/home/user/other-app",
+      launchedAt: "2026-10-21T10:00:00.000Z",
+    };
+    const input = placeInputOf(
+      [other],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(placeFor(input)).toEqual({
+      start: false,
+      why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    });
+    const guard = placeInputOf(
+      [other],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+        ignoreGap: true,
+      },
+    );
+    expect(placeFor(guard)).toEqual({ start: true });
+  });
+
+  test("a failed start without launchedAt still contributes its startedAt to the gap", () => {
+    const failed = { ...crew("A1", "failed"), startedAt: "2026-10-21T10:00:00.000Z" };
+    const input = placeInputOf(
+      [failed],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(input.lastLaunchMs).toBe(1792576800000);
+    expect(placeFor(input)).toEqual({
+      start: false,
+      why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    });
+  });
+});
 
 describe("the crew that hold a place", () => {
   test("starting, working, blocked, paused and quiet; never queued or finished", () => {

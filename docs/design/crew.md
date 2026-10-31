@@ -323,7 +323,8 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    guard refuse only what they always refused (a `ui` session below `high`, a value the guard
    asks about). `--model` still changes only when the person asks (`plugin/skills/lead/SKILL.md`
    § 2).
-3. **Start now, or queued** (`places.ts`), decided under one machine-wide lock
+3. **Start now, or queued** (`places.ts`). Starts, queued starts, continuations and every
+   resume share one gate (`placeFor`, D72), decided under one machine-wide lock
    (`<stateDir>/crew/lock`) so two starts never both take the last place, and recorded
    (`starting` or `queued`) under the same hold. First the name must be free: no crew session of this
    repository holds the branch (`holdsName`: every record but a `removed` one, and a `failed` one
@@ -362,11 +363,20 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    handed off left, so it adds no session. Every other hold still applies to it. Before D70 a
    machine kept at a load of 72–88 by full test suites held every successor for hours, and the
    half-done work never reached its lead. The queued line
-   names what holds it. The store alone
+   names what holds it. **The start gap** (D72) also holds continuations: launches wait until
+   the last machine-wide launch is `crew.startGapSeconds` old (default 60 seconds in
+   `workflowDefaults`). This machine-only setting comes from the person's workflow file.
+   `placeInputOf` reads `launchedAt` (or an older record's `startedAt`) across every repository.
+   Admission and the launch timestamp share the lock; the external launch runs after it.
+   A launch that starts nothing restores its previous timestamp; an uncertain launch keeps it.
+   A resume leaves its own record out of the counts, so a paused session never counts twice.
+   A model replacement is the exception described below in the model-change rules.
+   The store alone
    decides, so a start never waits on agent view; the watch keeps the states true. A start that
    finds a free place takes it, also while older crew sessions wait: each lead's watch starts its own
-   queued ones, a hand-off's next crew session first (D70), then oldest first, so no lead starves
-   another. The start itself is a compare-and-set
+   waiting work in this order: queued continuations, waiting resumes by their wait time,
+   then other queued starts by creation time. Pending model changes and paused-limit recovery
+   follow that drain. Only its lead's watch starts its waiting work, so no lead starves another. The start itself is a compare-and-set
    under the places lock (`startQueued`): it re-reads the record there and goes on only while the
    store still says `queued`, so two starters of one record after a watch takeover (the lease, WF1)
    start it once, and it starts on the model, effort and start commit the store holds at that
@@ -375,7 +385,8 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    `baseRef` when it starts, so a phase that waited for another starts from the merged result.
    **The same decision is what a lead's Agent guard asks** (D59): `placeForLeadStart` builds that
    input for the lead a session id names, with no phases waited for and the memory read only when
-   nothing else holds, so the guard refuses a subagent that can change files exactly while a
+   nothing else holds. It ignores the start gap: a pause between launches does not mean the
+   machine is full. For the other holds, the guard refuses a subagent that can change files exactly while a
    `crew start` would queue, and keeps no second copy of a cap. A project with crew sessions off
    has no queue to hold a phase: the reader answers nothing there.
    **A file clash is said, and never blocks** (D55): once the record exists, the phase's `--files`
@@ -804,8 +815,8 @@ and the record kept naming the old model, so the caps and `crew list` were wrong
   resume path, so the session Claude Code opens is followed — with a prompt that says what
   changed and to go on from where it stopped. A **stopped** or **paused** one keeps its state
   and its wait: the record holds the values, and its next resume reads them (`resumeArgs`, from
-  the record) — the opus caps are judged once, when the values are stored, and `crew resume`
-  judges none. A **queued** one starts on them (`startQueued` re-reads the record under the places lock, so a
+  the record) — the opus caps are judged when the values are stored; a later `crew resume`
+  still passes the launch gate (§ The lead and the launch). A **queued** one starts on them (`startQueued` re-reads the record under the places lock, so a
   change made after the watch listed it, or while it waited for the lock, is used). A session that ended its phase, a removed or
   discarded one, one still `starting` and a `blocked` one (it waits for the lead's answer, and a
   resume that says "go on" would tell it to continue without it) take no change.
@@ -814,6 +825,9 @@ and the record kept naming the old model, so the caps and `crew list` were wrong
   and a resume that fails leaves the values stored for the next one. The resumed session's id
   comes in the write that makes it `working`, as everywhere (§ The session a resume brings
   back).
+- **The replacement.** After `crew model` stops the old process, `resumeSession` uses
+  `replacesItself` under the places lock. It bypasses admission holds, including the gap: it
+  replaces a running session and adds none. Otherwise a hold would strand the stopped process.
 - **The caps.** A move onto the opus tier is judged as a new opus session by `placeFor` (the
   per-lead and machine opus caps, the usage window), with the session itself left out of the
   counts and the total caps, the memory and the CPU load (`crew.loadPerCore`) left out too, since
@@ -1293,6 +1307,22 @@ resumed five sessions at once), and each writing the same state file over the ot
   are bounded by 30 s each) is over.
 
 #### Waiting out a limit
+
+A resume held by the launch gate stays on the record as `resumeWaits` (D72): the wait
+time and an optional question index. `crew resume` prints the reason and exits 0; it has
+queued the resume, not failed it. `crew answer` to a dead session saves the answer and its
+index there, still undelivered. The watch delivers it as the resume prompt when admission
+allows. An unreadable agent view leaves the wait alone; a session already live clears it
+without starting a copy. Paused-limit recovery that meets a hold skips that pass and says
+why once while the reason stays the same. The launch gate and drain order live in
+§ The lead and the launch.
+
+**A session gone from agent view frees its place** (D73). Each lead's watch checks running
+records across the machine. Two readable passes at least a minute apart with no matching row
+mark a record `stopped`, keeping its prior state in `sweptFrom`. Unreadable view changes
+nothing. The sweep skips a live resume claim, records without a session id (including a
+start not yet named), and non-running records. A matching row clears the missing mark; a
+live row that returns for a swept, still-stopped record restores its prior state.
 
 A model limit ends a turn the retry watchdog did not outlast — the plan's usage limit, an
 overloaded model, a server error. The kit waits it out, with no time limit (D42: the owner chose

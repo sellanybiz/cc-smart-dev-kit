@@ -93,6 +93,7 @@ describe("workflow show", () => {
       "crew.maxOpus = (no machine-wide opus count) (default)",
       "crew.memoryGb = 6 (default)",
       "crew.loadPerCore = 1.5 (default)",
+      "crew.startGapSeconds = 60 (default)",
       "crew.perLead = 4 (default)",
       "crew.perLeadOpus = 2 (default)",
       "crew.usagePercent = 85 (default)",

@@ -1117,7 +1117,8 @@ async function resumePaused(
 
 /** What a resume of a paused crew session came to: whether it happened, whether the store has it, and how. */
 export interface OneResume {
-  waits?: boolean;
+  /** Why the launch gate held the resume (D72): no place, no memory, the load or the gap. */
+  waits?: string;
   ok: boolean;
   /** False when the store could not write the state: the record stays `paused`. */
   stored: boolean;
@@ -1180,7 +1181,11 @@ export async function resumeOne(
   if (!resumed.ok) {
     const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
     say(`${record.name}: not resumed — ${resumed.why}${note}`);
-    return { ...failed, waits: resumed.waits !== undefined, unnamed: resumed.unnamed };
+    return {
+      ...failed,
+      ...(resumed.waits === undefined ? {} : { waits: resumed.waits }),
+      unnamed: resumed.unnamed,
+    };
   }
   const { session } = resumed;
   const stored = await sayResumed(

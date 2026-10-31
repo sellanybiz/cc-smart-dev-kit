@@ -366,6 +366,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
       "crew.maxOpus",
       "crew.memoryGb",
       "crew.loadPerCore",
+      "crew.startGapSeconds",
       "crew.perLead",
       "crew.perLeadOpus",
       "crew.usagePercent",
