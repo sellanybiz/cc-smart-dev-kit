@@ -8,7 +8,7 @@
  * and says what it could not know. It never changes a record that exists.
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
@@ -22,6 +22,7 @@ import {
   planFolderOf,
   planStemOf,
   plansDirs,
+  plansFolderGone,
   type RunEvent,
   type RunRecord,
   readRunFile,
@@ -232,6 +233,11 @@ function rebuilt(record: CrewRecord, events: readonly CrewEvent[], planFile: str
  * plan with no run file yet), and says how many and what they could not know.
  */
 export function backfillRuns(planFile: string, repo: string, ctx: CrewContext): string[] {
+  if (plansFolderGone(planFile)) {
+    return [
+      `backfill: nothing written for ${planStemOf(planFile)}: its plans folder ${tildify(dirname(planFile), ctx.paths.home)} is gone`,
+    ];
+  }
   const { records } = listCrew(ctx.paths.stateDir, repo);
   const events = readCrewEvents(ctx.paths.stateDir, repo).events;
   const written: string[] = [];

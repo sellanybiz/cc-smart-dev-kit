@@ -46,6 +46,13 @@ function useNow(everyMs: number): number {
 
 const gb = (value: number) => `${value.toLocaleString("en", { maximumFractionDigits: 1 })} GB`;
 
+/** What a job holds, by its lane: the words of the table's Holds column. */
+const HOLDS: Record<JobEntry["lane"], string> = {
+  heavy: "a heavy slot",
+  light: "a light slot",
+  none: "a name",
+};
+
 const slotsOf = (count: number) => `${count} ${count === 1 ? "slot" : "slots"}`;
 
 /** Slots in use against the slots there are, as a bar: an SVG whose widths are attributes, never styles. */
@@ -99,7 +106,7 @@ function JobRows({
               {job.exclusive === true && <TonePill tone="info">alone</TonePill>}
             </span>
           </TableCell>
-          <TableCell>{job.slot ? "a slot" : "a name"}</TableCell>
+          <TableCell>{HOLDS[job.lane]}</TableCell>
           <TableCell className="min-w-40 font-mono text-xs whitespace-normal wrap-anywhere">
             {job.command}
           </TableCell>

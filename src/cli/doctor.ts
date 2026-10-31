@@ -702,9 +702,11 @@ async function checkOldPlugin(
 
 /**
  * The instructions: installed, this plugin version's, and imported by the cc-smart-dev-kit block. The
- * copy is compared two ways: its version stamp (`instructionsNeedRefresh`, the same test the
- * refresh after an update uses) and its files against the plugin's. A stored
- * `--no-instructions` is information, never a failure.
+ * copy's files are compared with the plugin's; only a difference fails. A stamp that names
+ * another version (`instructionsNeedRefresh`, the same test the refresh after an update uses)
+ * while every file matches is state, not a fault: the line passes and says so, because `setup`
+ * then rewrites only the stamp, which it never prints. A stored `--no-instructions` is
+ * information, never a failure.
  */
 function checkInstructions(paths: CliPaths, source: string): Check {
   const where = instructionsPaths(paths, source);
@@ -725,10 +727,10 @@ function checkInstructions(paths: CliPaths, source: string): Check {
     };
   }
   const why = copyDifferences(where);
-  if (instructionsNeedRefresh(where, VERSION)) {
-    why.unshift(`written by ${readVersionStamp(paths.stateDir) ?? "an unknown version"}`);
-  }
+  const stamp = readVersionStamp(paths.stateDir);
+  const stampLags = instructionsNeedRefresh(where, VERSION);
   if (why.length > 0) {
+    if (stampLags) why.unshift(`written by ${stamp ?? "an unknown version"}`);
     return {
       ok: false,
       text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")})`,
@@ -743,9 +745,12 @@ function checkInstructions(paths: CliPaths, source: string): Check {
       fix: SETUP_FIX,
     };
   }
+  const lag = stampLags
+    ? ` (its stamp says ${stamp ?? "no version"} until the next session start or ${COMMAND} setup)`
+    : "";
   return {
     ok: true,
-    text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`,
+    text: `the instructions copy ${copy} is this version's${lag}, and ${claudeMd} imports it`,
   };
 }
 

@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.8.0",
+  version: "1.8.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -13570,6 +13570,9 @@ function livePlanFolder(planFile) {
   }
   return folder;
 }
+function plansFolderGone(planFile) {
+  return !existsSync12(dirname8(planFile));
+}
 function runFile(planFile, id) {
   return join14(livePlanFolder(planFile), RUNS_DIR, `${id}.json`);
 }
@@ -13884,6 +13887,8 @@ function recordRun(change) {
     return;
   const file = runFile(planFile, change.after.id);
   const previous = readRunFile(file);
+  if (previous === null && plansFolderGone(planFile))
+    return;
   if (previous !== null && eventsOf(change).length === 0 && change.contextTokens == null)
     return;
   writeRunFile(file, nextRun(previous, change));
@@ -17420,7 +17425,7 @@ function slotsText(count) {
 function holderLines(held, store, now) {
   return held.map((unit) => {
     const { holder } = unit;
-    const what = { heavy: "a slot", light: "a light slot", none: "a name" }[heldLane(unit)];
+    const what = { heavy: "a heavy slot", light: "a light slot", none: "a name" }[heldLane(unit)];
     return holder === null ? `  ${store}: ${what} is held by an unknown holder` : `  ${store}: ${what} is held by ${shownHolder(holder)}, since ${formatSince(holder.since, now)} (pid ${holder.pid})`;
   });
 }
@@ -38938,10 +38943,11 @@ function checkInstructions(paths, source) {
     };
   }
   const why = copyDifferences(where);
-  if (instructionsNeedRefresh(where, VERSION)) {
-    why.unshift(`written by ${readVersionStamp(paths.stateDir) ?? "an unknown version"}`);
-  }
+  const stamp = readVersionStamp(paths.stateDir);
+  const stampLags = instructionsNeedRefresh(where, VERSION);
   if (why.length > 0) {
+    if (stampLags)
+      why.unshift(`written by ${stamp ?? "an unknown version"}`);
     return {
       ok: false,
       text: `the instructions copy ${copy} is not this plugin version's (${why.join("; ")})`,
@@ -38956,9 +38962,10 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
+  const lag = stampLags ? ` (its stamp says ${stamp ?? "no version"} until the next session start or ${COMMAND} setup)` : "";
   return {
     ok: true,
-    text: `the instructions copy ${copy} is this version's, and ${claudeMd} imports it`
+    text: `the instructions copy ${copy} is this version's${lag}, and ${claudeMd} imports it`
   };
 }
 async function checkLiveRecord(paths, read) {
@@ -40073,6 +40080,7 @@ function itemOf(entry) {
       command: "",
       folder: "",
       kind: "",
+      lane: heldLane(entry),
       pid: 0,
       since: null,
       slot: entry.slot,
@@ -40085,6 +40093,7 @@ function itemOf(entry) {
     ...record.exclusive === undefined ? {} : { exclusive: record.exclusive },
     folder: record.checkout,
     kind: record.kind,
+    lane: heldLane(entry),
     pid: record.pid,
     since: new Date(record.since).toISOString(),
     slot: entry.slot,

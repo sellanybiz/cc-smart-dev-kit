@@ -78,6 +78,11 @@ export const GIT_TIMEOUT_MS = 30_000;
  */
 export const CLAUDE_LOCK_PREFIX = "claude session ";
 
+/** Is this worktree locked by someone other than Claude Code: a person's lock, or a bare one? */
+export function lockedByPerson(listed: { locked: boolean; lockReason?: string }): boolean {
+  return listed.locked && !(listed.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX);
+}
+
 /** Why anything thrown happened, in one line. */
 export function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

@@ -695,8 +695,8 @@ export interface JobEntry {
   /** Null for a record the queue could not read. */
   since: null | number;
   pid: number;
-  /** True: it holds (or waits for) a slot. False: it holds a name only (`--exclusive`). */
-  slot: boolean;
+  /** Which slots it holds or waits for: a heavy one, a light one, or none (a name only, `--exclusive`). */
+  lane: "heavy" | "light" | "none";
 }
 
 /** One store of slots the queue shares out: the machine, or a container (`where`). */

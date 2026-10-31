@@ -484,7 +484,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockCrewName("B6b", "live-stream"),
                 since: now - 2 * MINUTE - 10_000,
                 pid: 48211,
-                slot: true,
+                lane: "heavy",
               },
               {
                 kind: "build",
@@ -493,7 +493,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockCrewName("B6b", "live-stream"),
                 since: now - MINUTE,
                 pid: 48302,
-                slot: true,
+                lane: "heavy",
               },
               {
                 kind: "test",
@@ -502,7 +502,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockCrewName("D1", "docs"),
                 since: now - 30_000,
                 pid: 48350,
-                slot: true,
+                lane: "heavy",
               },
             ],
         waiting: empty
@@ -515,7 +515,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockCrewName("C2", "skills-agents"),
                 since: now - 20_000,
                 pid: 48390,
-                slot: true,
+                lane: "heavy",
               },
             ],
       },

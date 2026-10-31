@@ -959,6 +959,7 @@ export interface JobHolderItem {
   exclusive?: string;
   folder: string;
   kind: string;
+  lane: "heavy" | "light" | "none";
   pid: number;
   since: null | string;
   slot: boolean;

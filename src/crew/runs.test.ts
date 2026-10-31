@@ -33,6 +33,7 @@ import {
   readRuns,
   runFile,
 } from "./runs";
+import { backfillRuns } from "./runs-history";
 import {
   addCrewQuestion,
   answerCrewQuestion,
@@ -237,6 +238,16 @@ describe("the record of a run", () => {
     await createCrew(state, newCrew(repo, null), T0);
     await updateCrew(state, repo, "PL1-runs-aaaaaa", { state: "starting" }, T0 + MIN);
     expect(readdirSync(plans)).toEqual(["2026-10-21-master-plan.md"]);
+  });
+
+  test("a plans folder gone with its worktree is never made again by a later change", async () => {
+    // A lead kept its plan in its own worktree; the worktree was removed, then its crew records.
+    const { repo, state } = planWorld();
+    const worktree = join(tempDir("lead-worktree"), "tool-doors");
+    const planFile = join(worktree, ".claude", "plans", "2026-10-22-tool-doors.md");
+    await createCrew(state, newCrew(repo, planFile), T0);
+    await updateCrew(state, repo, "PL1-runs-aaaaaa", { state: "removed" }, T0 + MIN);
+    expect(existsSync(worktree)).toBe(false);
   });
 
   test("a resume under a second session id adds it; the same id twice adds nothing", async () => {
@@ -679,6 +690,18 @@ describe("crew history", () => {
     expect(past?.events.map((one) => one.kind)).toEqual(["created", "removed"]);
     const second = await run(world, ["history", "--backfill"]);
     expect(second.out[0]).toBe("backfill: nothing to write for 2026-10-21-master-plan");
+  });
+
+  test("--backfill writes nothing where the plans folder is gone, and makes no folder", async () => {
+    const world = await historyWorld();
+    const worktree = join(tempDir("lead-worktree"), "tool-doors");
+    const plans = join(worktree, ".claude", "plans");
+    const planFile = join(plans, "2026-10-22-tool-doors.md");
+    await createCrew(world.paths.stateDir, newCrew(world.repo, planFile, "OLD2-gone-dddddd"), T0);
+    expect(backfillRuns(planFile, world.repo, world.ctx())).toEqual([
+      `backfill: nothing written for 2026-10-22-tool-doors: its plans folder ${plans} is gone`,
+    ]);
+    expect(existsSync(worktree)).toBe(false);
   });
 
   test("a mistake: no plan known, an unknown option, a bad phase", async () => {

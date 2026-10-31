@@ -92,6 +92,33 @@ const WEIGHT_DEFAULT = (name: "cpu" | "io") =>
   `a job runs at systemd's own weight (100). ${COMMAND} job set ${name}-weight <1-10000> asks for another.`;
 
 describe("the jobs reader", () => {
+  test("a light run and a name only: each holder says its lane, as the portal shows it", async () => {
+    const world1 = world();
+    const store = machineStore(world1.dir);
+    const light = holderText({
+      checkout: "/home/user/my-app",
+      kind: "install",
+      lane: "light",
+      person: "my-host",
+      pid: 4242,
+      since: Date.UTC(2026, 9, 22, 10, 0, 0),
+      slot: true,
+      v: 1,
+      what: "bun install",
+    });
+    await store.tryTake("light", light);
+    await store.tryTake(
+      "none",
+      record("docker build", false, "image", Date.UTC(2026, 9, 22, 10, 5, 0)),
+      "image",
+    );
+    const held = jobsAnswer(await readJobs(world1.ctx)).stores[0]?.held ?? [];
+    expect(held.map((one) => [one.command, one.lane, one.slot])).toEqual([
+      ["bun install", "light", true],
+      ["docker build", "none", false],
+    ]);
+  });
+
   test("one held and one waiting, as the API's shape", async () => {
     const world1 = world();
     // The store's own writer makes the files, so the fixture is exactly what `job run` leaves.
@@ -112,6 +139,7 @@ describe("the jobs reader", () => {
               command: "bunx tsc --noEmit",
               folder: "/home/user/my-app",
               kind: "build",
+              lane: "heavy",
               pid: 4242,
               since: "2026-10-22T10:00:00.000Z",
               slot: true,
@@ -125,6 +153,7 @@ describe("the jobs reader", () => {
               command: "next build",
               folder: "/home/user/my-app",
               kind: "build",
+              lane: "heavy",
               pid: 4242,
               since: "2026-10-22T10:00:00.000Z",
               slot: true,
@@ -195,7 +224,7 @@ describe("the jobs reader", () => {
     expect(lines[3]).toBe(`Disk I/O priority: not set: ${WEIGHT_DEFAULT("io")}`);
     expect(lines[4]).toContain(": 1 of 3 slots in use");
     expect(lines[5]).toStartWith(
-      "  this machine: a slot is held by my-host: build, bunx tsc --noEmit in /home/user/my-app, since ",
+      "  this machine: a heavy slot is held by my-host: build, bunx tsc --noEmit in /home/user/my-app, since ",
     );
     expect(lines[5]).toEndWith("(pid 4242)");
     expect(lines[6]).toStartWith(
@@ -218,7 +247,7 @@ describe("the jobs reader", () => {
     const read = await readJobs(world1.ctx);
     const lines = statusLines(read, world1.home, Date.UTC(2026, 9, 22, 12, 0, 0));
     expect(lines[4]).toContain(": 3 of 3 slots in use");
-    expect(lines.filter((line) => line.includes("a slot is held by"))).toHaveLength(3);
+    expect(lines.filter((line) => line.includes("a heavy slot is held by"))).toHaveLength(3);
     expect(lines.filter((line) => line.includes("waits for a slot"))).toHaveLength(2);
     const answer = jobsAnswer(read).stores[0];
     expect([answer?.slots, answer?.used, answer?.held.length, answer?.waiting.length]).toEqual([

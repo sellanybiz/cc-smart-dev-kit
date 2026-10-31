@@ -126,7 +126,7 @@ describe("a holder's text, printed", () => {
   test("an ANSI escape, a line break and a bidi override print as one clean line", () => {
     const lines = holderLines([{ holder: record, slot: true }], "this machine", since);
     expect(lines).toEqual([
-      `  this machine: a slot is held by host-b ]52;c;ZXZpbA==: build, bun run build [2J fake: line in /home/user/app, since ${formatSince(since, since)} (pid 4242)`,
+      `  this machine: a heavy slot is held by host-b ]52;c;ZXZpbA==: build, bun run build [2J fake: line in /home/user/app, since ${formatSince(since, since)} (pid 4242)`,
     ]);
     expect(lines.join("")).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   });
@@ -145,7 +145,7 @@ describe("a holder's text, printed", () => {
       "this machine: a name is held by host-b",
     );
     expect(holderLines([{ holder: null, slot: true }], "/srv/heavy-jobs", since)).toEqual([
-      "  /srv/heavy-jobs: a slot is held by an unknown holder",
+      "  /srv/heavy-jobs: a heavy slot is held by an unknown holder",
     ]);
   });
 });
@@ -911,9 +911,9 @@ describe("acquireFrom: waiting lines", () => {
     );
     // The fake clock starts at 12:00 the same day: the holder's start reads as a time.
     expect(lines.slice(2, 5)).toEqual([
-      "  this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 77)",
-      "  this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 78)",
-      "  this machine: a slot is held by an unknown holder",
+      "  this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 77)",
+      "  this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 78)",
+      "  this machine: a heavy slot is held by an unknown holder",
     ]);
     // About 20 polls of half a second so far: still one report.
     expect(reportedAt).toHaveLength(1);

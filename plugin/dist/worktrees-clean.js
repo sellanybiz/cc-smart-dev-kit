@@ -875,7 +875,7 @@ import { join as join20 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.8.0",
+  version: "1.8.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6976,6 +6976,9 @@ function livePlanFolder(planFile) {
   }
   return folder;
 }
+function plansFolderGone(planFile) {
+  return !existsSync3(dirname3(planFile));
+}
 function runFile(planFile, id) {
   return join8(livePlanFolder(planFile), RUNS_DIR, `${id}.json`);
 }
@@ -7290,6 +7293,8 @@ function recordRun(change) {
     return;
   const file = runFile(planFile, change.after.id);
   const previous = readRunFile(file);
+  if (previous === null && plansFolderGone(planFile))
+    return;
   if (previous !== null && eventsOf(change).length === 0 && change.contextTokens == null)
     return;
   writeRunFile(file, nextRun(previous, change));
@@ -10225,7 +10230,7 @@ function discardBlocker(record, ctx) {
       return "its worktree is not one git lists apart from the main checkout";
     if (all.some((one) => !samePath(one.path, record.worktree) && isInside(one.path, record.worktree)))
       return "another worktree lives inside it";
-    if (listed.locked && !(listed.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX))
+    if (lockedByPerson(listed))
       return "the worktree has a person's lock";
     const machine = machineFactsOf({
       base: "",
@@ -10260,15 +10265,42 @@ function crewRemovalLockDir(stateDir, repo, id) {
 async function remakeReleasedWorktree(record, ctx, options) {
   if (record.released === undefined)
     return { ok: true, remade: false, record };
+  return await remakeWorktree(record, ctx, options);
+}
+async function remakeWorktree(record, ctx, options) {
   if (existsSync10(record.worktree))
     return { ok: false, why: `${record.worktree} exists already; inspect it first` };
+  if (record.released === undefined) {
+    let all;
+    try {
+      all = listWorktrees(record.repo, ctx.env);
+    } catch (error) {
+      return { ok: false, why: reasonOf2(error) };
+    }
+    const listed = all.find((one) => samePath(one.path, record.worktree));
+    const elsewhere = all.find((one) => one.branch === record.branch && !samePath(one.path, record.worktree));
+    if (elsewhere !== undefined)
+      return {
+        fix: "Fix: switch that worktree to another branch, or remove it, then run crew rm --discard again",
+        ok: false,
+        why: `${record.branch} is checked out in ${relative2(record.repo, elsewhere.path)}, so its worktree cannot be made again`
+      };
+    if (listed !== undefined && lockedByPerson(listed))
+      return { ok: false, ...personLock(record, listed) };
+    if (listed?.locked === true) {
+      const unlock = runGit(record.repo, ["worktree", "unlock", listed.path], ctx.env, GIT_TIMEOUT_MS);
+      if (!unlock.ok)
+        return { ok: false, why: `${record.worktree} could not be unlocked: ${unlock.err}` };
+    }
+    pruneWorktrees(record.repo, ctx.env);
+  }
   const added = runGit(record.repo, ["worktree", "add", record.worktree, record.branch], ctx.env, GIT_TIMEOUT_MS);
   if (!added.ok)
     return { ok: false, why: `worktree could not be made again: ${added.err}` };
   try {
     if (options.include)
       copyWorktreeInclude(record.repo, record.worktree, ctx.env);
-    const stored = await updateCrew(ctx.paths.stateDir, record.repo, record.id, { released: undefined }, ctx.now());
+    const stored = record.released === undefined ? record : await updateCrew(ctx.paths.stateDir, record.repo, record.id, { released: undefined }, ctx.now());
     return { ok: true, remade: true, record: stored };
   } catch (error) {
     const undone = runGit(record.repo, ["worktree", "remove", "--force", record.worktree], ctx.env, GIT_TIMEOUT_MS);
@@ -10277,6 +10309,13 @@ async function remakeReleasedWorktree(record, ctx, options) {
       why: `the worktree's files or the store could not be written (${reasonOf2(error)}); ${undone.ok ? "the worktree was taken back" : `remove ${record.worktree} by hand: ${undone.err.trim()}`}`
     };
   }
+}
+function personLock(record, listed) {
+  const reason = listed.lockReason === undefined ? "" : ` (${listed.lockReason})`;
+  return {
+    fix: `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`,
+    why: `${relative2(record.repo, record.worktree)} is locked${reason}, and not by Claude Code`
+  };
 }
 async function runCrewRm(ref, ctx, options = {}) {
   const first = actOn(ref, "rm", ctx);
@@ -10333,12 +10372,19 @@ async function removeCrewSession(ref, ctx, options) {
     ctx.print(`removed ${record.name}; it had not started, so nothing else went`);
     return stored ? 0 : 1;
   }
-  if (discard && record.released !== undefined) {
-    const remade = await remakeReleasedWorktree(record, ctx, { include: false });
+  const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS).ok;
+  const folderGone = discard && record.released === undefined && record.archive === undefined && !existsSync10(record.worktree);
+  if (folderGone && !branchThere) {
+    return refuse(failure2(`crew rm: ${record.name} has no worktree and no branch ${record.branch}, so there is nothing to archive`, `Fix: crew rm ${record.id}, without --discard, removes the record`), ctx);
+  }
+  let remadeForDiscard = false;
+  if (discard && (record.released !== undefined || folderGone)) {
+    const remade = record.released !== undefined ? await remakeReleasedWorktree(record, ctx, { include: false }) : await remakeWorktree(record, ctx, { include: false });
     if (!remade.ok)
-      return refuse(failure2(`crew rm: ${remade.why}`), ctx);
+      return refuse(failure2(`crew rm: ${remade.why}`, ...remade.fix === undefined ? [] : [remade.fix]), ctx);
     record = remade.record;
-    ctx.print(`made ${relative2(repo, record.worktree)} again on ${record.branch}, to discard it`);
+    remadeForDiscard = true;
+    ctx.print(`made ${relative2(repo, record.worktree)} again on ${record.branch}, to discard it${folderGone ? " (its folder was gone)" : ""}`);
   }
   const proof = options.against === undefined && !discard && validMergeProof(record, ctx) ? record.mergeProof : undefined;
   const lead = options.against !== undefined ? { folder: null, label: options.against.label, sha: options.against.ref } : discard ? { folder: null, label: "discard archive", sha: record.archive?.head ?? "HEAD" } : proof === undefined ? leadRef(record, ctx) : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
@@ -10347,7 +10393,6 @@ async function removeCrewSession(ref, ctx, options) {
   let removalBase = { label: lead.label, ref: lead.sha };
   const discardRollbackBase = removalBase;
   const mergeStep = lead.folder === null ? `merge ${record.branch} into ${lead.label}` : `git merge ${record.branch}, in ${lead.folder}`;
-  const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS).ok;
   if (branchThere && proof === undefined && !discard) {
     const merged = options.against === undefined ? mergedIntoBase(record, ctx) : workOnRef(repo, removalBase.ref, `refs/heads/${record.branch}`, ctx.env);
     const legacy = record.state === "merged" && record.mergeProof === undefined ? "merged earlier, but no exact-head proof was recorded; its lead's branch may have been rewritten since. Confirm the work with the lead and merge it again, or use explicit recoverable crew rm --discard" : null;
@@ -10373,9 +10418,9 @@ async function removeCrewSession(ref, ctx, options) {
   }
   const shown = relative2(repo, record.worktree);
   const locked = listed?.locked === true;
-  if (locked && !(listed?.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX)) {
-    const why = listed?.lockReason === undefined ? "" : ` (${listed.lockReason})`;
-    return refuse(failure2(`crew rm: ${shown} is locked${why}, and not by Claude Code`, `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock${release ? then : ""}`), ctx);
+  if (listed !== undefined && lockedByPerson(listed)) {
+    const held = personLock(record, listed);
+    return refuse(failure2(`crew rm: ${held.why}`, `${held.fix}${release ? then : ""}`), ctx);
   }
   if (discard && existsSync10(record.worktree)) {
     if (listed === undefined)
@@ -10392,7 +10437,7 @@ async function removeCrewSession(ref, ctx, options) {
       if (options.expectedDiscardToken !== undefined && options.expectedDiscardToken !== preview.token)
         return refuse(failure2("crew rm: the work changed since the discard preview; preview and confirm it again"), ctx);
       if (!options.yes && (options.confirm === undefined || !options.confirm(preview.question))) {
-        ctx.print("Nothing removed. Use crew rm <name|id> --discard --yes to confirm without a terminal.");
+        ctx.print(`Nothing removed${remadeForDiscard ? `; ${shown} stays made again for this preview` : ""}. Use crew rm <name|id> --discard --yes to confirm without a terminal.`);
         return 1;
       }
       if (buildCrewDiscardFacts(record, ctx).token !== preview.token)
@@ -11393,6 +11438,9 @@ var conversationSweepAt = new Map;
 var CLAUDE_END_TIMEOUT_MS = 30000;
 var GIT_TIMEOUT_MS = 30000;
 var CLAUDE_LOCK_PREFIX = "claude session ";
+function lockedByPerson(listed) {
+  return listed.locked && !(listed.lockReason ?? "").startsWith(CLAUDE_LOCK_PREFIX);
+}
 function reasonOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }

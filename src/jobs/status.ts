@@ -44,7 +44,9 @@ import {
 } from "./memory";
 import {
   formatSince,
+  heldLane,
   holderLines,
+  type JobLane,
   laneUsed,
   type MemoryAdmission,
   oneDecimal,
@@ -83,6 +85,8 @@ export interface JobHolderItem {
   pid: number;
   /** When it took its slot or joined the line (ISO 8601); null for an unreadable record. */
   since: null | string;
+  /** Which slots it holds or waits for (D74): a heavy one, a light one, or none (a name only). */
+  lane: JobLane;
   /** Does it hold (or wait for) a slot? False: a name only (`--exclusive` without a kind). */
   slot: boolean;
   /** The host name of the person or machine that holds it. */
@@ -365,6 +369,7 @@ function itemOf(entry: ParsedHeld): JobHolderItem {
       command: "",
       folder: "",
       kind: "",
+      lane: heldLane(entry),
       pid: 0,
       since: null,
       slot: entry.slot,
@@ -377,6 +382,7 @@ function itemOf(entry: ParsedHeld): JobHolderItem {
     ...(record.exclusive === undefined ? {} : { exclusive: record.exclusive }),
     folder: record.checkout,
     kind: record.kind,
+    lane: heldLane(entry),
     pid: record.pid,
     since: new Date(record.since).toISOString(),
     slot: entry.slot,

@@ -389,8 +389,10 @@ review rather than skipping it.
 **The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
 `statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
 shape (`{ ceiling: { gb, why }, memoryGb, stores: [{ where, slots, used, held, waiting,
-note? }], weights }`: slots in use of the slots there are, and the memory ceiling), the Machine page shows the same lines, and the `jobs` event carries the
-same shape. There is no parser of printed lines anywhere.
+note? }], weights }`: slots in use of the slots there are, and the memory ceiling; each held or
+waiting job names its `lane`, `heavy`, `light` or `none`, which the Machine page's Holds column
+shows as a heavy slot, a light slot or a name), the Machine page shows the same lines, and the
+`jobs` event carries the same shape. There is no parser of printed lines anywhere.
 
 **The Next.js export ships inside the plugin** (D49, `plugin/portal-ui/`): built from
 `portal/` by `scripts/portal-export.ts` (`bun run build:portal`) and committed like the

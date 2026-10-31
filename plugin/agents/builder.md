@@ -27,8 +27,11 @@ your caller. You do not commit, push, start agents, message other sessions or as
 ## How to build
 
 1. **Read first** — the files, their callers, the tests beside them, the pattern the brief names.
-2. **A brief of several steps gets a task list first** — one `TaskCreate` per step, kept true as
-   you go. In a crew session its hook holds your first edit until the session's list has a task.
+2. **A brief of several steps gets a task list first** — the task tools are deferred, so load
+   them with `ToolSearch` (`select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per
+   step, kept true as you go. The lookup finds none: build without a list and say so in the
+   hand-back. In a crew session its hook holds every edit, yours too, until the session's list
+   has a task; an edit refused for that is a blocker to report, not a guard to get around.
 3. **The failing test first**, where the project tests this kind of code: it proves the bug or the
    missing behaviour before the fix, and it is the test that stays. A project with no test for
    this kind of code gets none invented for it.

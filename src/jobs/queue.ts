@@ -491,11 +491,11 @@ function reasonText(reason: WaitReason, store: string, lane: JobLane): string {
   }
 }
 
-/** One line per lease: who holds it, and whether it is a slot, a light slot or only a name. */
+/** One line per lease: who holds it, and whether it is a heavy slot, a light slot or only a name. */
 export function holderLines(held: readonly ParsedHeld[], store: string, now: number): string[] {
   return held.map((unit) => {
     const { holder } = unit;
-    const what = { heavy: "a slot", light: "a light slot", none: "a name" }[heldLane(unit)];
+    const what = { heavy: "a heavy slot", light: "a light slot", none: "a name" }[heldLane(unit)];
     return holder === null
       ? `  ${store}: ${what} is held by an unknown holder`
       : `  ${store}: ${what} is held by ${shownHolder(holder)}, since ${formatSince(holder.since, now)} (pid ${holder.pid})`;
