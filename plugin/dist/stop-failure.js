@@ -225,7 +225,7 @@ function startDetached(platform, argv, options) {
 
 // src/hooks/stop-failure.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
-import { join as join8 } from "path";
+import { join as join9 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6800,7 +6800,7 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.7.2",
+  version: "1.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6982,6 +6982,7 @@ var matchRuleSchema = union([
   })
 ]);
 var kindSpecSchema = strictObject({
+  light: boolean2().optional(),
   printOnly: array(string2().min(1)).optional(),
   noSlotForFiles: boolean2().optional(),
   skipWords: array(string2().min(1)).optional(),
@@ -6999,6 +7000,108 @@ var kindSpecSchema = strictObject({
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
+var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
+var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
+var TEST_VALUED_FLAGS = [
+  "--bail",
+  "--config",
+  "--coverageDirectory",
+  "--dir",
+  "--environment",
+  "--env",
+  "--exclude",
+  "--hookTimeout",
+  "--maxWorkers",
+  "--minWorkers",
+  "--mode",
+  "--outputFile",
+  "--pool",
+  "--project",
+  "--reporter",
+  "--reporters",
+  "--retry",
+  "--root",
+  "--rootDir",
+  "--roots",
+  "--selectProjects",
+  "--shard",
+  "--testEnvironment",
+  "--testNamePattern",
+  "--testPathIgnorePatterns",
+  "--testPathPattern",
+  "--testTimeout",
+  "-c",
+  "-r",
+  "-t",
+  "-w"
+];
+var DEFAULT_KINDS = {
+  tsc: {
+    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
+    printOnly: TSC_PRINT_ONLY,
+    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
+  },
+  "lint:typed": {
+    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
+    printOnly: TEST_PRINT_ONLY,
+    match: [
+      { tool: "eslint", argIncludes: "typed" },
+      { tool: "eslint", argIncludes: "type-checked" },
+      { tool: "oxlint", flags: ["--type-aware"] }
+    ]
+  },
+  "test:coverage": {
+    about: "A test run with coverage (vitest or jest with --coverage).",
+    printOnly: TEST_PRINT_ONLY,
+    match: [
+      { tool: "vitest", argIncludes: "--coverage" },
+      { tool: "jest", argIncludes: "--coverage" }
+    ]
+  },
+  "test:run": {
+    about: "A test run (vitest, jest). A run on named test files runs at once, with no slot.",
+    printOnly: TEST_PRINT_ONLY,
+    noSlotForFiles: true,
+    skipWords: ["run"],
+    valuedFlags: TEST_VALUED_FLAGS,
+    match: [{ tool: "vitest" }, { tool: "jest" }]
+  },
+  build: {
+    about: "A framework production build (next build).",
+    match: [{ tool: "next", sub: ["build"] }]
+  },
+  install: {
+    about: "Install dependencies in the light lane.",
+    light: true,
+    printOnly: TEST_PRINT_ONLY,
+    match: ["bun", "npm", "pnpm", "yarn"].flatMap((tool) => ["install", "i", "add", ...tool === "npm" ? ["ci"] : []].map((sub) => ({
+      tool,
+      sub: [sub]
+    })))
+  },
+  "image:build": {
+    about: "A container image build (docker, podman, compose).",
+    match: [
+      { tool: "docker", sub: ["build"] },
+      { tool: "docker", sub: ["image", "build"] },
+      { tool: "docker", sub: ["builder", "build"] },
+      { tool: "docker", sub: ["buildx", "build"] },
+      { tool: "docker", sub: ["buildx", "b"] },
+      { tool: "docker", sub: ["buildx", "bake"] },
+      { tool: "docker", sub: ["compose", "build"] },
+      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
+      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["build"] },
+      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
+      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
+      { tool: "podman", sub: ["build"] },
+      { tool: "podman", sub: ["image", "build"] },
+      { tool: "buildah", sub: ["build"] }
+    ]
+  }
+};
 
 // src/crew/names.ts
 var MAX_TAG = 12;
@@ -7047,6 +7150,7 @@ var NUMBER_RULES = {
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
   "crew.loadPerCore": ABOVE_ZERO,
+  "crew.startGapSeconds": AT_LEAST_ONE,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -7142,6 +7246,7 @@ var workflowSchema = strictObject({
     maxOpus: numberField("crew.maxOpus"),
     memoryGb: numberField("crew.memoryGb"),
     loadPerCore: numberField("crew.loadPerCore"),
+    startGapSeconds: numberField("crew.startGapSeconds"),
     perLead: numberField("crew.perLead"),
     perLeadOpus: numberField("crew.perLeadOpus"),
     usagePercent: numberField("crew.usagePercent"),
@@ -7191,10 +7296,11 @@ var workflowDefaults = {
     enabled: false,
     keep: [],
     idleStopMinutes: 10,
-    max: 24,
+    max: 12,
     maxOpus: null,
-    memoryGb: 2,
-    loadPerCore: 3,
+    memoryGb: 6,
+    loadPerCore: 1.5,
+    startGapSeconds: 60,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -7239,6 +7345,7 @@ var POLICY_KEYS = [
   "crew.maxOpus",
   "crew.memoryGb",
   "crew.loadPerCore",
+  "crew.startGapSeconds",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -7253,6 +7360,16 @@ var POLICY_KEYS = [
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+var MACHINE_CREW_KEYS = [
+  "crew.max",
+  "crew.maxOpus",
+  "crew.perLead",
+  "crew.perLeadOpus",
+  "crew.memoryGb",
+  "crew.loadPerCore",
+  "crew.usagePercent",
+  "crew.startGapSeconds"
+];
 function workflowValue(workflow, key) {
   const [head, tail] = key.split(".");
   if (head === undefined || tail === undefined)
@@ -7641,7 +7758,13 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
-  const crew = mergedGroup(personal.crew, project.crew);
+  const projectCrew = project.crew === undefined ? undefined : { ...project.crew };
+  for (const key of MACHINE_CREW_KEYS) {
+    if (projectCrew !== undefined) {
+      delete projectCrew[key.slice("crew.".length)];
+    }
+  }
+  const crew = mergedGroup(personal.crew, projectCrew);
   if (crew !== undefined)
     merged.crew = crew;
   const issues = mergedGroup(personal.issues, project.issues);
@@ -7650,7 +7773,7 @@ function mergeWorkflows(personal, project) {
   return merged;
 }
 function sourceOf(personal, project, key) {
-  if (workflowValue(project, key) !== undefined)
+  if (!MACHINE_CREW_KEYS.includes(key) && workflowValue(project, key) !== undefined)
     return "project";
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
@@ -7703,6 +7826,29 @@ function alertsAt(paths, cwd, env) {
 
 // src/jobs/memory.ts
 var GIB = 1024 ** 3;
+
+// src/jobs/config.ts
+import { isAbsolute, join as join7 } from "path";
+var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
+var MAX_WEIGHT = 1e4;
+var weightSchema = union([
+  literal(0),
+  literal("off"),
+  number2().int().min(1).max(MAX_WEIGHT)
+]);
+var jobsMachineConfigSchema = strictObject({
+  stateDir: absolutePath.optional(),
+  maxJobs: number2().int().min(1).optional(),
+  lightJobs: number2().int().min(1).optional(),
+  startFreeGb: number2().min(0).optional(),
+  budgetGb: number2().int().min(1).optional(),
+  reserveGb: number2().int().min(0).optional(),
+  sharedDirs: array(absolutePath).optional(),
+  launch: _enum(["auto", "plain"]).optional(),
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: weightSchema.optional(),
+  ioWeight: weightSchema.optional()
+});
 
 // src/path-compare.ts
 var IGNORE_CASE = process.platform === "win32";
@@ -7891,6 +8037,9 @@ var crewFields = object({
   lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
   lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
   startedAt: text2.nullable().optional(),
+  launchedAt: text2.optional(),
+  resumeWaits: looseObject({ at: text2, answer: count.nullable() }).optional(),
+  sweptFrom: text2.optional(),
   continues: text2.nullable().optional(),
   mergedBeforeRemoval: boolean2().optional(),
   mergedWhileStopped: boolean2().optional(),
@@ -7986,6 +8135,7 @@ var handBackReportSchema = reportFields.loose().superRefine((report, context) =>
 });
 var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
+  missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
   noted: boolean2().optional(),
@@ -8366,8 +8516,8 @@ function windowsToastArgvFor(title, body, critical = false) {
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/update/major.ts
-import { join as join7 } from "path";
-var MAJOR_NOTES_PATH = join7("src", "update", "major-notes.json");
+import { join as join8 } from "path";
+var MAJOR_NOTES_PATH = join8("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
@@ -8445,7 +8595,7 @@ function breakerAlert(input, ctx) {
 function rememberBreakerAlert(paths, alerted, opening) {
   try {
     mkdirSync3(paths.stateDir, { recursive: true, mode: 448 });
-    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
+    writeFileSync2(join9(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
 `, { mode: 384 });
   } catch {}
 }
@@ -8517,7 +8667,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync6(join8(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync6(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
