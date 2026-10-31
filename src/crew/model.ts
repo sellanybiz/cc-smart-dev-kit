@@ -285,6 +285,7 @@ async function moveSession(
       { effort: record.effort, model: record.model.named },
       { effort, model: to.named },
     ),
+    { replacesItself: true },
   );
   if (!resumed.ok) return { line: `${head} · ${resumed.why}; ${kept}`, ok: false };
   const { session } = resumed;

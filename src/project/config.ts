@@ -118,6 +118,7 @@ export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
   loadPerCore: "1.3.0",
   archiveDays: "1.3.0",
   deleteDays: "1.7.0",
+  startGapSeconds: "1.8.0",
 };
 
 /**

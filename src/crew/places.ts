@@ -52,7 +52,13 @@ import { type Checkout, loadProjectConfig } from "../project/resolve";
 import { withLock } from "../setup/lock";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { resolveWorkflow } from "../workflow/resolve";
-import { type CrewRecord, type CrewState, crewRootDir, listAllCrew } from "./store";
+import {
+  type CrewRecord,
+  type CrewState,
+  crewRootDir,
+  listAllCrew,
+  resumeClaimHeld,
+} from "./store";
 import { crewSettingsFolder, usageFacts } from "./usage-guard";
 
 /** The states in which a crew session holds a place on the machine: its session lives, its phase is open. */
@@ -163,6 +169,10 @@ export function onOpusTier(records: readonly CrewRecord[]): CrewRecord[] {
 
 /** What the decision reads. */
 export interface PlaceInput {
+  /** The last launch on this machine, and the clock and gap used to judge it (D72). */
+  lastLaunchMs?: null | number;
+  nowMs?: number | undefined;
+  startGapSeconds?: number;
   /** The crew sessions that hold a place on this machine now (`runningCrew`). */
   running: number;
   /** How many of them run on the opus tier (`onOpusTier`). */
@@ -240,6 +250,20 @@ export function placeFor(input: PlaceInput): Place {
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`,
     };
   }
+  if (
+    input.lastLaunchMs != null &&
+    input.nowMs !== undefined &&
+    input.startGapSeconds !== undefined
+  ) {
+    const age = Math.max(0, input.nowMs - input.lastLaunchMs);
+    const gap = input.startGapSeconds * 1000;
+    if (age < gap) {
+      return {
+        start: false,
+        why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`,
+      };
+    }
+  }
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
@@ -280,12 +304,33 @@ export function placeInputOf(
   leadSessionId: string,
   crew: ResolvedWorkflow["crew"],
   usage: ReturnType<typeof usageFacts>,
-  more: { continuation: boolean; opus: boolean; unmet: readonly Wait[] },
+  more: {
+    continuation: boolean;
+    opus: boolean;
+    unmet: readonly Wait[];
+    nowMs?: number | undefined;
+    ignoreGap?: boolean;
+    exclude?: CrewRecord;
+  },
 ): PlaceInput {
-  const running = runningCrew(records);
-  const mine = runningForLead(records, leadSessionId);
+  const running = records.filter(
+    (one) =>
+      !(more.exclude?.id === one.id && more.exclude.repo === one.repo) &&
+      ((RUNNING_STATES as readonly string[]).includes(one.state) ||
+        resumeClaimHeld(one.resumeClaim, more.nowMs ?? Date.now())),
+  );
+  const mine = running.filter((one) => leadSessionId !== "" && one.leadSessionId === leadSessionId);
   return {
     continuation: more.continuation,
+    nowMs: more.nowMs,
+    startGapSeconds: crew.startGapSeconds.value,
+    lastLaunchMs:
+      more.ignoreGap === true
+        ? null
+        : records.reduce<null | number>((last, one) => {
+            const at = Date.parse(one.launchedAt ?? one.startedAt ?? "");
+            return Number.isFinite(at) && (last === null || at > last) ? at : last;
+          }, null),
     freeGb: null,
     leadRunning: mine.length,
     leadRunningOpus: onOpusTier(mine).length,
@@ -333,7 +378,7 @@ export function freeForCrewGb(memory: MemoryFacts): null | number {
 
 /** What one lead's `crew start` would do now, as its guard asks it (D59). */
 export interface LeadStartInput {
-  /** The project the lead works in: its `cc-smart-dev-kit.json` holds the caps. */
+  /** The project the lead works in; the person's workflow file holds the machine's caps. */
   checkout: Checkout;
   /** The lead's Claude Code session id. */
   leadSessionId: string;
@@ -381,6 +426,7 @@ export async function placeForLeadStart(input: LeadStartInput): Promise<null | P
     continuation: false,
     opus: input.opus,
     unmet: [],
+    ignoreGap: true,
   });
   const first = placeFor(held);
   if (!first.start) return first;

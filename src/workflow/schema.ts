@@ -75,6 +75,7 @@ const NUMBER_RULES = {
   "crew.maxOpus": AT_LEAST_ONE,
   "crew.memoryGb": ABOVE_ZERO,
   "crew.loadPerCore": ABOVE_ZERO,
+  "crew.startGapSeconds": AT_LEAST_ONE,
   "crew.perLead": AT_LEAST_ONE,
   "crew.perLeadOpus": AT_LEAST_ONE,
   "crew.usagePercent": PERCENT,
@@ -315,6 +316,8 @@ export const workflowSchema = z.strictObject({
        * Windows), the hold does not apply. Read from the person's file only. Default: 1.5.
        */
       loadPerCore: numberField("crew.loadPerCore"),
+      /** Whole seconds between launches on this machine, including resumes and continuations (D72), read from the person's file only. Default: 60. */
+      startGapSeconds: numberField("crew.startGapSeconds"),
       /** One lead's cap across repositories (D54), read from the person's file only. Default: 4. */
       perLead: numberField("crew.perLead"),
       /** One lead's opus-tier cap (D54), read from the person's file only. Default: 2. */
@@ -433,6 +436,7 @@ export const workflowDefaults = {
      * with 24 sessions, and load 34–76 on 12 cores after a reboot started 15 at once).
      */
     loadPerCore: 1.5,
+    startGapSeconds: 60,
     perLead: 4,
     perLeadOpus: 2,
     usagePercent: 85,
@@ -492,6 +496,7 @@ export type WorkflowKey =
   | "crew.maxOpus"
   | "crew.memoryGb"
   | "crew.loadPerCore"
+  | "crew.startGapSeconds"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"
@@ -536,6 +541,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "crew.maxOpus",
   "crew.memoryGb",
   "crew.loadPerCore",
+  "crew.startGapSeconds",
   "crew.perLead",
   "crew.perLeadOpus",
   "crew.usagePercent",
@@ -616,6 +622,7 @@ export const MACHINE_CREW_KEYS = [
   "crew.memoryGb",
   "crew.loadPerCore",
   "crew.usagePercent",
+  "crew.startGapSeconds",
 ] as const satisfies readonly WorkflowKey[];
 
 /**

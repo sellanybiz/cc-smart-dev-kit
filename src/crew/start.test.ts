@@ -242,6 +242,7 @@ describe("D25: crew start returns at once", () => {
       id: ID,
       kind: "build",
       lastLine: null,
+      launchedAt: "2026-10-21T10:00:00.000Z",
       leadName: "LEAD my-app master-plan",
       leadSessionId: LEAD_SESSION,
       memoryMb: null,
@@ -1333,7 +1334,9 @@ describe("D25: the queue — still one line, at once", () => {
       "--brief",
       world.brief,
     ];
-    expect(await runCrew([...args, "--waits-for", "B6b"], world.ctx())).toBe(0);
+    expect(
+      await runCrew([...args, "--waits-for", "B6b"], world.ctx({ now: () => T0 + 60_000 })),
+    ).toBe(0);
     expect(world.out[1]).toStartWith("started C my-app master-plan B7 always-on (");
   });
 });

@@ -468,6 +468,7 @@ export type WorkflowKey =
   | "crew.maxOpus"
   | "crew.memoryGb"
   | "crew.loadPerCore"
+  | "crew.startGapSeconds"
   | "crew.perLead"
   | "crew.perLeadOpus"
   | "crew.usagePercent"

@@ -467,6 +467,7 @@ describe("resolveWorkflow: the order", () => {
       idleStopMinutes: { value: 10, source: "default" },
       keep: { value: [], source: "default" },
       loadPerCore: { value: 1.5, source: "default" },
+      startGapSeconds: { value: 60, source: "default" },
       max: { value: 12, source: "default" },
       maxOpus: { value: null, source: "default" },
       maxHours: { value: 4, source: "default" },

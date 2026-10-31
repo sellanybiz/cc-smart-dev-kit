@@ -405,6 +405,31 @@ describe("crew list", () => {
     expect(world.out[3]).toBe("  held: a place is free; its lead's watch starts it");
   });
 
+  test("D72: the board names the machine's launch gap", async () => {
+    const world = await boardWorld();
+    const launched = await world.addCrew({ state: "stopped" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      launched.id,
+      {
+        launchedAt: new Date(NOW - 10_000).toISOString(),
+      },
+      NOW,
+    );
+    await world.addCrew({
+      phase: "B2",
+      slug: "api",
+      shortId: null,
+      state: "queued",
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out).toContain(
+      "  held: the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    );
+  });
+
   test("a load that is held says so, and no load average says so once", async () => {
     const world = await boardWorld();
     await world.addCrew({ shortId: null, state: "queued", worktree: false });

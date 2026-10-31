@@ -1464,6 +1464,68 @@ describe("crew rm: the lead must have merged the branch (D24)", () => {
 });
 
 describe("crew resume", () => {
+  test.each([
+    ["fail", "2026-10-21T09:00:00.123Z"],
+    ["noline", "2026-10-21T10:00:00.000Z"],
+  ])("D72: a %s resume preserves the right launch time", async (mode, expected) => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { launchedAt: "2026-10-21T09:00:00.123Z" },
+      NOW,
+    );
+
+    expect(await runCrew(["resume", record.id], world.ctx({}, { FAKE_BG: mode }))).toBe(1);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.launchedAt).toBe(expected);
+  });
+
+  test.each([
+    ["cap", "1 of 1 crew sessions running on this machine; it starts when one finishes"],
+    ["memory", "1 GB free, a crew session needs 6 GB; it starts when memory frees"],
+    [
+      "load",
+      "the load is 50 on 8 cores, past 12 (1.5 for each core); it starts when the load falls",
+    ],
+    [
+      "gap",
+      "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
+    ],
+  ])("D72: a resume held by %s records a wait and exits zero", async (hold, reason) => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    if (hold === "cap") {
+      world.writePersonal({ max: 1 });
+      await world.addCrew({ phase: "B2", slug: "api", state: "working", shortId: "b2c3d4e5" });
+    }
+    if (hold === "gap") {
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        record.id,
+        {
+          launchedAt: new Date(NOW - 10_000).toISOString(),
+        },
+        NOW,
+      );
+    }
+    const ctx = world.ctx({
+      freeMemoryGb: async () => (hold === "memory" ? 1 : 20),
+      load: () => ({ cores: 8, oneMinute: hold === "load" ? 50 : 1 }),
+    });
+    expect(await runCrew(["resume", record.id], ctx)).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.resumeWaits).toEqual({
+      at: "2026-10-21T10:00:00.000Z",
+      answer: null,
+    });
+    expect(world.out).toEqual([
+      `C my-app B1 help waits to come back: ${reason}; its lead's watch resumes it when the machine has room`,
+    ]);
+  });
+
   test("resumes that ONE session in its worktree, with its own files, never a respawn", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
@@ -1609,7 +1671,7 @@ describe("crew resume", () => {
       slug: "api",
     });
     expect(await runCrew(["resume", done.id], world.ctx())).toBe(0);
-    expect(await runCrew(["resume", working.id], world.ctx())).toBe(0);
+    expect(await runCrew(["resume", working.id], world.ctx({ now: () => NOW + MINUTE }))).toBe(0);
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
       resumeCall(world, done.id, "a1b2c3d4"),
@@ -1708,7 +1770,21 @@ describe("D42: crew resume --paused", () => {
       slug: "y",
       ...pausedChange(3),
     });
-    expect(await runCrew(["resume", "--paused"], world.ctx())).toBe(0);
+    let clock = NOW;
+    const real = world.ctx().runProgram;
+    expect(
+      await runCrew(
+        ["resume", "--paused"],
+        world.ctx({
+          now: () => clock,
+          runProgram: (argv, options) => {
+            const result = real(argv, options);
+            if (argv.includes("--resume")) clock += MINUTE;
+            return result;
+          },
+        }),
+      ),
+    ).toBe(0);
     expect(world.claudeCalls()).toEqual([
       ["agents", "--json", "--all"],
       resumeCall(
@@ -1744,6 +1820,22 @@ describe("D42: crew resume --paused", () => {
       state: "working",
       text: "the wait is over; it was resumed",
     });
+  });
+
+  test("D72: a paused one the gate holds waits to come back, and the command exits zero", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ ...pausedChange(5) });
+    const ctx = world.ctx({ freeMemoryGb: async () => 1 });
+    expect(await runCrew(["resume", "--paused"], ctx)).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.resumeWaits).toEqual({
+      at: "2026-10-21T10:00:00.000Z",
+      answer: null,
+    });
+    expect(world.out).toEqual([
+      "C my-app B1 help: not resumed — 1 GB free, a crew session needs 6 GB; it starts when memory frees",
+      "C my-app B1 help waits to come back; its lead's watch resumes it when the machine has room",
+    ]);
   });
 
   test("--lead names the lead whose paused crew sessions to resume", async () => {

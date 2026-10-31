@@ -583,6 +583,12 @@ const crewFields = z.object({
    * a record an older kit wrote, and null before the session starts.
    */
   startedAt: text.nullable().optional(),
+  /** When a launch took its machine-wide place (D72); absent on older records. */
+  launchedAt: text.optional(),
+  /** A resume waiting for room; answer names the stored question to deliver (D72). */
+  resumeWaits: z.looseObject({ at: text, answer: count.nullable() }).optional(),
+  /** The running state remembered when agent view lost the session (D73). */
+  sweptFrom: text.optional(),
   /**
    * The id of the crew session whose hand-off this one carries on (`crew start --continue`); null or
    * absent for a first crew session. The chain is recorded, never worked out from names and branches:
@@ -1670,12 +1676,14 @@ export async function releaseResume(
   repo: string,
   id: string,
   token: string,
+  launch?: { previous: string | undefined },
 ): Promise<void> {
   const file = crewFile(stateDir, repo, id);
   await underStoreLock(stateDir, repo, () => {
     const before = readRecord(crewRecordSchema, file);
     if (before?.resumeClaim?.token !== token) return;
     const { resumeClaim: _ended, ...after } = before;
+    if (launch !== undefined) after.launchedAt = launch.previous;
     writeJsonFile(file, checked(crewRecordSchema, after, file));
   });
 }
@@ -1831,6 +1839,8 @@ export function watchStateFile(stateDir: string, repo: string, leadSessionId: st
 export interface WatchState {
   /** The byte after the last whole line the watch read. */
   offset: number;
+  /** First missing agent-view observation by repository and record id (D73). */
+  missingSince?: Record<string, number> | undefined;
   /** What the watch last said about each crew session, by its id. */
   said: Record<string, string>;
   /**
@@ -1858,6 +1868,7 @@ export interface WatchState {
 }
 
 const watchStateFields = z.object({
+  missingSince: z.record(z.string(), z.number()).optional(),
   removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
   parkedAt: z.number().int().min(0).optional(),
   noted: z.boolean().optional(),
