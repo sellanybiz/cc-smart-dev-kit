@@ -313,23 +313,26 @@ export function placeInputOf(
     exclude?: CrewRecord;
   },
 ): PlaceInput {
+  const nowMs = more.nowMs ?? Date.now();
   const running = records.filter(
     (one) =>
       !(more.exclude?.id === one.id && more.exclude.repo === one.repo) &&
       ((RUNNING_STATES as readonly string[]).includes(one.state) ||
-        resumeClaimHeld(one.resumeClaim, more.nowMs ?? Date.now())),
+        resumeClaimHeld(one.resumeClaim, nowMs)),
   );
   const mine = running.filter((one) => leadSessionId !== "" && one.leadSessionId === leadSessionId);
   return {
     continuation: more.continuation,
     nowMs: more.nowMs,
     startGapSeconds: crew.startGapSeconds.value,
+    // A launch time later than now (the clock was set back) is left out: it would hold every
+    // launch until the clock caught up with it.
     lastLaunchMs:
       more.ignoreGap === true
         ? null
         : records.reduce<null | number>((last, one) => {
             const at = Date.parse(one.launchedAt ?? one.startedAt ?? "");
-            return Number.isFinite(at) && (last === null || at > last) ? at : last;
+            return Number.isFinite(at) && at <= nowMs && (last === null || at > last) ? at : last;
           }, null),
     freeGb: null,
     leadRunning: mine.length,

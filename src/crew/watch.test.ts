@@ -2855,8 +2855,11 @@ describe("D72: queued resumes", () => {
   }
 
   /** A stopped crew session with its worktree and its own files, so a resume can run. */
-  async function resumable(world: Awaited<ReturnType<typeof leadWorld>>): Promise<CrewRecord> {
-    const record = await addCrew(world, "stopped");
+  async function resumable(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    change: Partial<CrewRecord> = {},
+  ): Promise<CrewRecord> {
+    const record = await addCrew(world, "stopped", change);
     mkdirSync(record.worktree, { recursive: true });
     writeStoreFile(crewSettingsFile(world.paths.stateDir, world.repo, record.id), "{}\n");
     writeStoreFile(crewMcpFile(world.paths.stateDir, world.repo, record.id), '{"mcpServers":{}}\n');
@@ -2931,6 +2934,58 @@ describe("D72: queued resumes", () => {
     expect(readCrew(world.paths.stateDir, world.repo, waiting.id)?.state).toBe("working");
     expect(readCrew(world.paths.stateDir, world.repo, queued.id)?.state).toBe("queued");
   });
+
+  test.each(["removed", "discarded"])(
+    "a %s record never resumes, even with a wait an older kit left on it",
+    async (state) => {
+      const world = await leadWorld();
+      await resumable(world, {
+        resumeWaits: { at: new Date(T0).toISOString(), answer: null },
+        state,
+      });
+      await drainPass(
+        world,
+        { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+        T0 + 2 * 60_000,
+      );
+      expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    },
+  );
+
+  test("the drain reads agent view once a pass, not once for each waiting resume", async () => {
+    const world = await leadWorld();
+    const wait = { at: new Date(T0).toISOString(), answer: null };
+    await resumable(world, { resumeWaits: wait });
+    await resumable(world, {
+      branch: "crew/B7-api",
+      id: "B7-api-9f8e7d",
+      name: "C my-app B7 api",
+      phase: "B7",
+      resumeWaits: wait,
+      sessionId: "b7b7b7b7-0000-1111-2222-333333333333",
+      shortId: "b7b7b7b7",
+      slug: "api",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B7-api"),
+    });
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("missing checkout");
+    // No memory: the gate holds both, so nothing else reads agent view.
+    await watchPass(
+      { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+      world.ctx(
+        { freeMemoryGb: async () => 1, now: () => T0 + 2 * 60_000 },
+        { FAKE_AGENTS: "missing" },
+      ),
+      {
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+      },
+    );
+    expect(world.claudeCalls().filter((call) => call[0] === "agents")).toHaveLength(1);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+  });
 });
 
 describe("D73: a session gone from agent view frees its place", () => {
@@ -2974,6 +3029,25 @@ describe("D73: a session gone from agent view frees its place", () => {
     const after = readCrew(world.paths.stateDir, world.repo, record.id);
     expect(after?.state).toBe("stopped");
     expect(after?.sweptFrom).toBe("working");
+    // The watch's own stop, not the lead's (D62): a merge after it is the watch's to clear.
+    expect(after?.stoppedByWatch).toBe(true);
+  });
+
+  test("a resume's new session starts its own minute, and the replaced session's first miss goes", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "working");
+    let state = await sweep(world, fresh(world), T0 + 2 * MINUTE, "[]");
+    const copy = "b7b7b7b7-0000-1111-2222-333333333333";
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { sessionId: copy, shortId: "b7b7b7b7" },
+      T0 + 2.5 * MINUTE,
+    );
+    state = await sweep(world, state, T0 + 3.5 * MINUTE, "[]");
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
+    expect(Object.keys(state.missingSince ?? {})).toEqual([`${world.repo}:${record.id}:${copy}`]);
   });
 
   test("an agent view it cannot read changes nothing", async () => {

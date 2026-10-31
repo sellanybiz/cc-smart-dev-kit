@@ -272,6 +272,23 @@ describe("crew stop", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
+  test("D73: the lead's stop of a swept crew session makes the stop the lead's, never restored", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { stoppedByWatch: true, sweptFrom: "working" },
+      NOW,
+    );
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+    const after = readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("stopped");
+    expect(after?.stoppedByWatch).toBeUndefined();
+    expect(after?.sweptFrom).toBeUndefined();
+  });
+
   test("a crew session with no session, one already removed, a name nobody has", async () => {
     const world = await boardWorld();
     await world.addCrew({
@@ -1524,6 +1541,19 @@ describe("crew resume", () => {
     expect(world.out).toEqual([
       `C my-app B1 help waits to come back: ${reason}; its lead's watch resumes it when the machine has room`,
     ]);
+  });
+
+  test("D72: a second resume keeps the first wait's place in line and the answer waiting with it", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    const wait = { at: "2026-10-21T09:00:00.000Z", answer: 0 };
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { resumeWaits: wait }, NOW);
+    const ctx = world.ctx({
+      freeMemoryGb: async () => 1,
+      load: () => ({ cores: 8, oneMinute: 1 }),
+    });
+    expect(await runCrew(["resume", record.id], ctx)).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.resumeWaits).toEqual(wait);
   });
 
   test("resumes that ONE session in its worktree, with its own files, never a respawn", async () => {

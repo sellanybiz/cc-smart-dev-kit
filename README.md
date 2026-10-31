@@ -2586,9 +2586,11 @@ the project's wins field by field, except the machine's crew limits:
    merged without you, and every alert is on.
 
 Crew limits (`crew.max`, `crew.maxOpus`, `crew.perLead`, `crew.perLeadOpus`,
-`crew.memoryGb`, `crew.loadPerCore`, `crew.usagePercent`) protect this machine, so only your
-own file or the default sets them. A project's old values are ignored, and `doctor` names
-them once. Change a limit without `--project`; `workflow propose` refuses these keys too.
+`crew.memoryGb`, `crew.loadPerCore`, `crew.usagePercent`, `crew.startGapSeconds`) protect
+this machine, so only your own file or the default sets them. A project's old values are
+ignored, and `doctor` names them once. Change a limit without `--project`; `workflow set
+--project` and `workflow propose` refuse these keys. `workflow unset --project <key>` takes an
+old value out of the project file.
 
 `cc-smart-dev-kit workflow show` prints every value and where it came from:
 
@@ -2887,7 +2889,7 @@ every question it holds.
 | `jobs.route` | `true` or `false`: whether the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). When left out, your own default decides (`switches.jobRoute` in your `workflow.json`), and without one it is off. The project's value wins over yours. That hook's other part — the launch judge, and a lead's background moves — reads neither this field nor any other: it runs machine-wide. |
 | `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field except the machine's crew limits. |
 | `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
-| `workflow.crew` | Project choices such as `enabled` (off by default), `keep`, and the `tag` in crew names (§ [The workflow](#the-workflow)) override your defaults. Since 1.8.0, `max`, `maxOpus`, `perLead`, `perLeadOpus`, `memoryGb`, `loadPerCore` and `usagePercent` come only from your own file or the built-in defaults. Old project values still parse but are ignored; `doctor` says once to remove them. Set your machine's limits without `--project`, for example `cc-smart-dev-kit workflow set crew.max 12`. |
+| `workflow.crew` | Project choices such as `enabled` (off by default), `keep`, and the `tag` in crew names (§ [The workflow](#the-workflow)) override your defaults. Since 1.8.0, `max`, `maxOpus`, `perLead`, `perLeadOpus`, `memoryGb`, `loadPerCore`, `usagePercent` and `startGapSeconds` come only from your own file or the built-in defaults. Old project values still parse but are ignored; `doctor` says once to remove them (`cc-smart-dev-kit workflow unset --project <key>`). Set your machine's limits without `--project`, for example `cc-smart-dev-kit workflow set crew.max 12`. |
 | `workflow.issues` | GitHub Issues (1.4.0): `enabled`, `allowPublic` and `watch` (all off by default), `watchMinutes` (5, at least 2) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (three different words) (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. |
 
 `requires` is a version range (npm syntax). When the installed plugin is outside it, the

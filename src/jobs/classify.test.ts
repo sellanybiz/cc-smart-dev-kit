@@ -45,6 +45,15 @@ test("dependency installs use the install kind, not script names", () => {
   expect(kindOf("echo bun install")).toBeNull();
 });
 
+test("a line that installs and then runs a heavy job is named by the heavy one, so it takes a heavy slot", () => {
+  expect(kindOf("bun install && bunx vitest run")).toBe("test:run");
+  expect(kindOf("npm ci && npx tsc --noEmit")).toBe("tsc");
+  expect(kindOf("pnpm i && pnpm exec next build")).toBe("build");
+  expect(kindOf("bunx tsc && bun install")).toBe("tsc");
+  // Light kinds alone keep the light one.
+  expect(kindOf("bun install && bun add zod")).toBe("install");
+});
+
 describe("classifyHeavyCommand: type checks", () => {
   test("finds tsc, tsgo and vue-tsc behind every runner", () => {
     expectKind("tsc", [

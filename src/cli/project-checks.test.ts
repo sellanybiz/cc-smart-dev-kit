@@ -586,7 +586,7 @@ describe("D71: project crew limits", () => {
     expect(lines[0]).toMatchObject({
       ok: true,
       info: true,
-      fix: "remove them from workflow.crew; set your own with cc-smart-dev-kit workflow set crew.max <n>",
+      fix: "remove each one with cc-smart-dev-kit workflow unset --project <key>; set your own with cc-smart-dev-kit workflow set crew.max <n>",
     });
     expect(lines[0]?.text).toEndWith(
       "sets workflow.crew machine limits (crew.max, crew.memoryGb) that are ignored because crew limits are per machine",

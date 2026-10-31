@@ -469,7 +469,7 @@ function crewLimitLines(
       ok: true,
       info: true,
       text: `project: ${shown(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
-      fix: `remove them from workflow.crew; set your own with ${COMMAND} workflow set crew.max <n>`,
+      fix: `remove each one with ${COMMAND} workflow unset --project <key>; set your own with ${COMMAND} workflow set crew.max <n>`,
     },
   ];
 }

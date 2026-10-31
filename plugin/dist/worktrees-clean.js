@@ -7309,6 +7309,7 @@ function linkContinuation(planFile, oldId, newId, at) {
 // src/crew/store.ts
 var CREW_STORE_VERSION = 1;
 var STORE_LOCK_WAIT_MS = 3000;
+var NO_RESUME_STATES = ["merged", "removed", "discarded"];
 class CrewStoreError extends Error {
   name = "CrewStoreError";
 }
@@ -7704,6 +7705,14 @@ function eventOf(crew, at, type, text, memoryMb = null) {
     crew: crew.id
   };
 }
+function dropStateFacts(record2) {
+  if (record2.state !== "stopped") {
+    delete record2.stoppedByWatch;
+    delete record2.sweptFrom;
+  }
+  if (NO_RESUME_STATES.includes(record2.state))
+    delete record2.resumeWaits;
+}
 async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -7739,8 +7748,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "merged" && before.state === "stopped") {
       merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
-    if (merged.state !== "stopped")
-      delete merged.stoppedByWatch;
+    dropStateFacts(merged);
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];
       if (!kept.some((one) => one.sessionId === before.sessionId)) {

@@ -1313,16 +1313,24 @@ time and an optional question index. `crew resume` prints the reason and exits 0
 queued the resume, not failed it. `crew answer` to a dead session saves the answer and its
 index there, still undelivered. The watch delivers it as the resume prompt when admission
 allows. An unreadable agent view leaves the wait alone; a session already live clears it
-without starting a copy. Paused-limit recovery that meets a hold skips that pass and says
+without starting a copy. The drain reads agent view once a pass, not once a waiting resume.
+A record that reaches `merged`, `removed` or `discarded` drops its wait (`NO_RESUME_STATES`,
+the states `crew resume` refuses), and the drain never resumes one. Asked again, a wait keeps
+its first time, its place in line, and its answer unless a new one comes (`resumeWaitOf`). Paused-limit recovery that meets a hold skips that pass and says
 why once while the reason stays the same. The launch gate and drain order live in
 § The lead and the launch.
 
 **A session gone from agent view frees its place** (D73). Each lead's watch checks running
 records across the machine. Two readable passes at least a minute apart with no matching row
-mark a record `stopped`, keeping its prior state in `sweptFrom`. Unreadable view changes
-nothing. The sweep skips a live resume claim, records without a session id (including a
-start not yet named), and non-running records. A matching row clears the missing mark; a
-live row that returns for a swept, still-stopped record restores its prior state.
+mark a record `stopped`, keeping its prior state in `sweptFrom`. The stop is the watch's own
+(`stoppedByWatch`), not the lead's (D62). Unreadable view changes nothing. The sweep skips a
+live resume claim, records without a session id (including a start not yet named), and
+non-running records; its write (`sweepCrew`) checks the state and the claim again under the
+store's lock. The missing mark is kept per session, so a resume's new session starts its own
+minute, and marks of records or sessions gone are dropped. A matching row clears the missing
+mark; a live row that returns for a swept, still-stopped record restores its prior state.
+`sweptFrom` is kept only while the record is `stopped`, and the lead's `crew stop` of a swept
+record drops it: the stop is the lead's then, and a row that returns does not undo it.
 
 A model limit ends a turn the retry watchdog did not outlast — the plan's usage limit, an
 overloaded model, a server error. The kit waits it out, with no time limit (D42: the owner chose

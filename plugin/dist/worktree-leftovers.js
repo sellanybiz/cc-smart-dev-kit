@@ -10308,6 +10308,7 @@ function linkContinuation(planFile, oldId, newId, at) {
 // src/crew/store.ts
 var CREW_STORE_VERSION = 1;
 var STORE_LOCK_WAIT_MS = 3000;
+var NO_RESUME_STATES = ["merged", "removed", "discarded"];
 var ISSUE_DATA_NOTE = "data";
 class CrewStoreError extends Error {
   name = "CrewStoreError";
@@ -10711,6 +10712,14 @@ function eventOf(crew, at, type, text, memoryMb = null) {
     crew: crew.id
   };
 }
+function dropStateFacts(record2) {
+  if (record2.state !== "stopped") {
+    delete record2.stoppedByWatch;
+    delete record2.sweptFrom;
+  }
+  if (NO_RESUME_STATES.includes(record2.state))
+    delete record2.resumeWaits;
+}
 async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -10746,8 +10755,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "merged" && before.state === "stopped") {
       merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
-    if (merged.state !== "stopped")
-      delete merged.stoppedByWatch;
+    dropStateFacts(merged);
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];
       if (!kept.some((one) => one.sessionId === before.sessionId)) {
@@ -13999,7 +14007,8 @@ function placeFor(input) {
   return { start: true };
 }
 function placeInputOf(records, leadSessionId, crew, usage, more) {
-  const running = records.filter((one) => !(more.exclude?.id === one.id && more.exclude.repo === one.repo) && (RUNNING_STATES.includes(one.state) || resumeClaimHeld(one.resumeClaim, more.nowMs ?? Date.now())));
+  const nowMs = more.nowMs ?? Date.now();
+  const running = records.filter((one) => !(more.exclude?.id === one.id && more.exclude.repo === one.repo) && (RUNNING_STATES.includes(one.state) || resumeClaimHeld(one.resumeClaim, nowMs)));
   const mine = running.filter((one) => leadSessionId !== "" && one.leadSessionId === leadSessionId);
   return {
     continuation: more.continuation,
@@ -14007,7 +14016,7 @@ function placeInputOf(records, leadSessionId, crew, usage, more) {
     startGapSeconds: crew.startGapSeconds.value,
     lastLaunchMs: more.ignoreGap === true ? null : records.reduce((last, one) => {
       const at = Date.parse(one.launchedAt ?? one.startedAt ?? "");
-      return Number.isFinite(at) && (last === null || at > last) ? at : last;
+      return Number.isFinite(at) && at <= nowMs && (last === null || at > last) ? at : last;
     }, null),
     freeGb: null,
     leadRunning: mine.length,
@@ -17388,7 +17397,8 @@ function inspect2(command, kinds, dialect, depth, run) {
   return found;
 }
 function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
-  return inspect2(command, kinds, dialect, 0, runOf(source))[0] ?? null;
+  const found = inspect2(command, kinds, dialect, 0, runOf(source));
+  return found.find((kind) => kinds[kind]?.light !== true) ?? found[0] ?? null;
 }
 var READS_ONLY = () => true;
 var isOption = (arg) => arg.startsWith("-") && arg !== "-";

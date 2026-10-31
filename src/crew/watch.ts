@@ -121,12 +121,14 @@ import {
   listCrew,
   listLeads,
   markAnswerDelivered,
+  NO_RESUME_STATES,
   readAnswerWatchBeat,
   readCrewEvents,
   readReport,
   readWatchState,
   resumeClaimHeld,
   setCrewMemory,
+  sweepCrew,
   takeWatchLease,
   takeWatchLeaseUnlessLive,
   updateCrew,
@@ -1351,10 +1353,17 @@ async function runPass(
   if (agents !== null) {
     state.missingSince ??= {};
     const missing = state.missingSince;
+    const seen = new Set<string>();
     for (const record of listAllCrew(ctx.paths.stateDir).records) {
-      const key = `${record.repo}:${record.id}`;
+      // Keyed by its session too: a resume brings it back as a new session, whose own misses
+      // start from nothing.
+      const key = `${record.repo}:${record.id}:${record.sessionId}`;
+      seen.add(key);
       const row = rowOf(agents, record);
-      if (resumeClaimHeld(record.resumeClaim, ctx.now())) continue;
+      if (resumeClaimHeld(record.resumeClaim, ctx.now())) {
+        delete missing[key];
+        continue;
+      }
       if (record.sweptFrom !== undefined && record.state === "stopped" && isLiveRow(row)) {
         await updateCrewIfState(
           ctx.paths.stateDir,
@@ -1373,18 +1382,12 @@ async function runPass(
       const first = missing[key];
       if (first === undefined) missing[key] = ctx.now();
       else if (ctx.now() - first >= 60_000) {
-        await updateCrewIfState(
-          ctx.paths.stateDir,
-          record.repo,
-          record.id,
-          [record.state],
-          { state: "stopped", sweptFrom: record.state },
-          ctx.now(),
-          "its session is gone from agent view",
-        );
+        await sweepCrew(ctx.paths.stateDir, record.repo, record.id, record.state, ctx.now());
         delete missing[key];
       }
     }
+    // A record that left the store, or a session a resume replaced, has no first miss to keep.
+    for (const key of Object.keys(missing)) if (!seen.has(key)) delete missing[key];
   }
   await observeLeadPresence(
     ctx.paths.stateDir,
@@ -1755,8 +1758,14 @@ async function runPass(
         Number(b.continues != null) - Number(a.continues != null) ||
         a.createdAt.localeCompare(b.createdAt),
     );
+  // A record with nothing to bring back never resumes, even with a wait an older kit left on it.
   const waiting = here
-    .filter((one) => one.leadSessionId === scope.leadSessionId && one.resumeWaits !== undefined)
+    .filter(
+      (one) =>
+        one.leadSessionId === scope.leadSessionId &&
+        one.resumeWaits !== undefined &&
+        !(NO_RESUME_STATES as readonly string[]).includes(one.state),
+    )
     .sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
   const drain = [
     ...queued.filter((one) => one.continues != null),
@@ -1767,7 +1776,8 @@ async function runPass(
     if (record.resumeWaits !== undefined) {
       if (scope.mayStart === false || (await scope.goesOn?.()) === false) continue;
       if (said[resumeHoldKey(record.id)] !== undefined) continue;
-      const liveness = sessionLiveness(ctx, record);
+      // The pass's own read of agent view: one `claude agents` per pass, not one per waiting resume.
+      const liveness = sessionLiveness(ctx, record, agents);
       if (liveness === "unknown") continue;
       if (liveness === "live") {
         await updateCrewIfState(

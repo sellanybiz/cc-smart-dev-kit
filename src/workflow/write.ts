@@ -37,6 +37,7 @@ import {
   isPersonalFileSwitch,
   isProjectKey,
   isSwitchKey,
+  MACHINE_CREW_KEYS,
   personalWorkflowSchema,
   type SwitchName,
   switchOf,
@@ -148,7 +149,10 @@ export function writeProjectSetting(
   env: Env = process.env,
 ): string {
   const wanted = requireKey(key);
-  if (!isProjectKey(wanted)) {
+  // A crew limit a project file still carries (D71) is ignored, so it may be taken out, never set.
+  const removesCrewLimit =
+    value === undefined && (MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(wanted);
+  if (!isProjectKey(wanted) && !removesCrewLimit) {
     const reason =
       wanted === "switches.statusLine"
         ? "the status line is"

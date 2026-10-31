@@ -16816,6 +16816,7 @@ function readRuns(planFile) {
 // src/crew/store.ts
 var CREW_STORE_VERSION = 1;
 var STORE_LOCK_WAIT_MS = 3000;
+var NO_RESUME_STATES = ["merged", "removed", "discarded"];
 var ISSUE_EVENT_CREW = "issues";
 var ISSUE_DATA_NOTE = "data";
 class CrewStoreError extends Error {
@@ -17253,6 +17254,23 @@ async function updateCrewIfState(stateDir, repo, id, states, change, atMs, text 
     };
   }, by);
 }
+function resumeWaitOf(record2, atMs, answer) {
+  return {
+    at: record2.resumeWaits?.at ?? iso(atMs),
+    answer: answer ?? record2.resumeWaits?.answer ?? null
+  };
+}
+async function sweepCrew(stateDir, repo, id, state, atMs) {
+  const { changed } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    if (before.state !== state || resumeClaimHeld(before.resumeClaim, atMs))
+      return null;
+    return {
+      change: { state: "stopped", stoppedByWatch: true, sweptFrom: before.state },
+      event: (after) => eventOf(after, at, "state", "its session is gone from agent view")
+    };
+  });
+  return changed;
+}
 async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
@@ -17360,6 +17378,14 @@ function eventOf(crew, at, type, text, memoryMb = null) {
     crew: crew.id
   };
 }
+function dropStateFacts(record2) {
+  if (record2.state !== "stopped") {
+    delete record2.stoppedByWatch;
+    delete record2.sweptFrom;
+  }
+  if (NO_RESUME_STATES.includes(record2.state))
+    delete record2.resumeWaits;
+}
 async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -17395,8 +17421,7 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     if (merged.state === "merged" && before.state === "stopped") {
       merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
-    if (merged.state !== "stopped")
-      delete merged.stoppedByWatch;
+    dropStateFacts(merged);
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];
       if (!kept.some((one) => one.sessionId === before.sessionId)) {
@@ -17615,8 +17640,7 @@ async function recordCrewReport(stateDir, repo, id, report, atMs, contextTokens 
       updatedAt: at,
       version: Math.max(before.version, CREW_STORE_VERSION)
     }, recordFile);
-    if (after.state !== "stopped")
-      delete after.stoppedByWatch;
+    dropStateFacts(after);
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);
     appendEvent(stateDir, repo, eventOf(after, at, "report", report.status));
@@ -21699,7 +21723,8 @@ function placeFor(input) {
   return { start: true };
 }
 function placeInputOf(records, leadSessionId, crew, usage, more) {
-  const running = records.filter((one) => !(more.exclude?.id === one.id && more.exclude.repo === one.repo) && (RUNNING_STATES.includes(one.state) || resumeClaimHeld(one.resumeClaim, more.nowMs ?? Date.now())));
+  const nowMs = more.nowMs ?? Date.now();
+  const running = records.filter((one) => !(more.exclude?.id === one.id && more.exclude.repo === one.repo) && (RUNNING_STATES.includes(one.state) || resumeClaimHeld(one.resumeClaim, nowMs)));
   const mine = running.filter((one) => leadSessionId !== "" && one.leadSessionId === leadSessionId);
   return {
     continuation: more.continuation,
@@ -21707,7 +21732,7 @@ function placeInputOf(records, leadSessionId, crew, usage, more) {
     startGapSeconds: crew.startGapSeconds.value,
     lastLaunchMs: more.ignoreGap === true ? null : records.reduce((last, one) => {
       const at = Date.parse(one.launchedAt ?? one.startedAt ?? "");
-      return Number.isFinite(at) && (last === null || at > last) ? at : last;
+      return Number.isFinite(at) && at <= nowMs && (last === null || at > last) ? at : last;
     }, null),
     freeGb: null,
     leadRunning: mine.length,
@@ -29656,11 +29681,15 @@ async function runPass(state, ctx, scope, draft) {
   if (agents !== null) {
     state.missingSince ??= {};
     const missing = state.missingSince;
+    const seen = new Set;
     for (const record of listAllCrew(ctx.paths.stateDir).records) {
-      const key = `${record.repo}:${record.id}`;
+      const key = `${record.repo}:${record.id}:${record.sessionId}`;
+      seen.add(key);
       const row = rowOf(agents, record);
-      if (resumeClaimHeld(record.resumeClaim, ctx.now()))
+      if (resumeClaimHeld(record.resumeClaim, ctx.now())) {
+        delete missing[key];
         continue;
+      }
       if (record.sweptFrom !== undefined && record.state === "stopped" && isLiveRow(row)) {
         await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, ["stopped"], { state: record.sweptFrom, sweptFrom: undefined }, ctx.now(), "its session is back in agent view");
       }
@@ -29672,10 +29701,13 @@ async function runPass(state, ctx, scope, draft) {
       if (first === undefined)
         missing[key] = ctx.now();
       else if (ctx.now() - first >= 60000) {
-        await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, [record.state], { state: "stopped", sweptFrom: record.state }, ctx.now(), "its session is gone from agent view");
+        await sweepCrew(ctx.paths.stateDir, record.repo, record.id, record.state, ctx.now());
         delete missing[key];
       }
     }
+    for (const key of Object.keys(missing))
+      if (!seen.has(key))
+        delete missing[key];
   }
   await observeLeadPresence(ctx.paths.stateDir, listLeads(ctx.paths.stateDir, repo).records, agents, ctx.now());
   const mine = listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === scope.leadSessionId);
@@ -29887,7 +29919,7 @@ async function runPass(state, ctx, scope, draft) {
   }
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => Number(b.continues != null) - Number(a.continues != null) || a.createdAt.localeCompare(b.createdAt));
-  const waiting = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.resumeWaits !== undefined).sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
+  const waiting = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.resumeWaits !== undefined && !NO_RESUME_STATES.includes(one.state)).sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
   const drain = [
     ...queued.filter((one) => one.continues != null),
     ...waiting,
@@ -29899,7 +29931,7 @@ async function runPass(state, ctx, scope, draft) {
         continue;
       if (said[resumeHoldKey(record.id)] !== undefined)
         continue;
-      const liveness = sessionLiveness(ctx, record);
+      const liveness = sessionLiveness(ctx, record, agents);
       if (liveness === "unknown")
         continue;
       if (liveness === "live") {
@@ -30337,8 +30369,8 @@ async function runCrewStop(ref, ctx) {
   }
   const id = record.shortId;
   if (record.state === "stopped") {
-    if (record.stoppedByWatch === true) {
-      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { stoppedByWatch: undefined }, ctx.now());
+    if (record.stoppedByWatch === true || record.sweptFrom !== undefined) {
+      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { stoppedByWatch: undefined, sweptFrom: undefined }, ctx.now());
     }
     ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
     return 0;
@@ -30450,7 +30482,7 @@ async function runCrewResumePaused(named, ctx) {
 }
 var WATCH_RESUMES_IT = "its lead's watch resumes it when the machine has room";
 async function waitToComeBack(record, ctx) {
-  await updateCrew(ctx.paths.stateDir, record.repo, record.id, { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: null } }, ctx.now());
+  await updateCrew(ctx.paths.stateDir, record.repo, record.id, { resumeWaits: resumeWaitOf(record, ctx.now()) }, ctx.now());
 }
 function chainBaseRef(record, ctx) {
   const seen = new Set;
@@ -32642,7 +32674,7 @@ async function runCrewAnswer(args, ctx) {
     if (!resumed.ok) {
       if (resumed.waits !== undefined) {
         await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), null, null, { correction: correcting, delivered: false }, actorOfCaller(ctx, repo));
-        await updateCrew(ctx.paths.stateDir, repo, record.id, { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: index } }, ctx.now());
+        await updateCrew(ctx.paths.stateDir, repo, record.id, { resumeWaits: resumeWaitOf(record, ctx.now(), index) }, ctx.now());
         ctx.print(`${record.name}: the answer waits: ${resumed.waits}; it is delivered when the session comes back`);
         return 0;
       }
@@ -32731,8 +32763,7 @@ function resumePlace(record) {
   }
   return { folder: record.worktree, ok: true };
 }
-function sessionLiveness(ctx, record) {
-  const rows = agentRows(ctx);
+function sessionLiveness(ctx, record, rows = agentRows(ctx)) {
   if (rows === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     return claude === null ? "dead" : "unknown";
@@ -32791,7 +32822,7 @@ async function resumeSession(ctx, record, text, options = {}) {
       const input = placeInputOf(all, record.leadSessionId, crew, usage, {
         continuation: false,
         exclude: record,
-        opus: record.model.tier === "opus",
+        opus: record.model.tier === OPUS_TIER,
         unmet: [],
         nowMs: ctx.now()
       });
@@ -41918,7 +41949,8 @@ function inspect(command, kinds, dialect, depth, run) {
   return found;
 }
 function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
-  return inspect(command, kinds, dialect, 0, runOf(source))[0] ?? null;
+  const found = inspect(command, kinds, dialect, 0, runOf(source));
+  return found.find((kind) => kinds[kind]?.light !== true) ?? found[0] ?? null;
 }
 function toolCallOfArgv(argv) {
   const invocation = invocationOf([...argv]);
@@ -45945,7 +45977,8 @@ function writePersonalSetting(paths, key, value) {
 }
 function writeProjectSetting(cwd, key, value, env = process.env) {
   const wanted = requireKey(key);
-  if (!isProjectKey(wanted)) {
+  const removesCrewLimit = value === undefined && MACHINE_CREW_KEYS.includes(wanted);
+  if (!isProjectKey(wanted) && !removesCrewLimit) {
     const reason = wanted === "switches.statusLine" ? "the status line is" : wanted === "switches.updateHold" ? "the update hold is" : "crew limits are";
     throw new Error(`${wanted} is your own setting, not the project's: run it without --project (${reason} per person, per machine)`);
   }
@@ -59143,7 +59176,7 @@ function crewLimitLines(config, configFile, projectDir, home) {
       ok: true,
       info: true,
       text: `project: ${shown(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
-      fix: `remove them from workflow.crew; set your own with ${COMMAND} workflow set crew.max <n>`
+      fix: `remove each one with ${COMMAND} workflow unset --project <key>; set your own with ${COMMAND} workflow set crew.max <n>`
     }
   ];
 }

@@ -59,6 +59,7 @@ import {
   listLeads,
   readCrew,
   readLead,
+  resumeWaitOf,
   updateCrew,
   updateCrewIfState,
 } from "./store";
@@ -423,13 +424,14 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   }
   const id = record.shortId;
   if (record.state === "stopped") {
-    // The lead's own stop makes it the lead's call to remove it, also when the watch stopped it first.
-    if (record.stoppedByWatch === true) {
+    // The lead's own stop makes it the lead's call to remove it, also when the watch stopped it
+    // first; and a session the sweep stopped (D73) is no longer brought back when its row returns.
+    if (record.stoppedByWatch === true || record.sweptFrom !== undefined) {
       await updateCrew(
         ctx.paths.stateDir,
         record.repo,
         record.id,
-        { stoppedByWatch: undefined },
+        { stoppedByWatch: undefined, sweptFrom: undefined },
         ctx.now(),
       );
     }
@@ -637,7 +639,7 @@ async function waitToComeBack(record: CrewRecord, ctx: CrewContext): Promise<voi
     ctx.paths.stateDir,
     record.repo,
     record.id,
-    { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: null } },
+    { resumeWaits: resumeWaitOf(record, ctx.now()) },
     ctx.now(),
   );
 }

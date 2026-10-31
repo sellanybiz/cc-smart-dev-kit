@@ -48,6 +48,7 @@ import { findCrew } from "./board";
 import { deliveryHead, withCrewCommand } from "./brief";
 import { readCaller, reasonOf } from "./caller";
 import {
+  type AgentRow,
   type ClaudeDeps,
   callClaude,
   findClaude,
@@ -58,7 +59,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
-import { placeFor, placeInputOf, withPlacesLock } from "./places";
+import { OPUS_TIER, placeFor, placeInputOf, withPlacesLock } from "./places";
 import { restoreReleasedWorktree } from "./release";
 import { actorOfCaller } from "./runs-actor";
 import {
@@ -79,6 +80,7 @@ import {
   readCrew,
   readReport,
   releaseResume,
+  resumeWaitOf,
   updateCrew,
   updateCrewIfState,
 } from "./store";
@@ -277,7 +279,7 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
           ctx.paths.stateDir,
           repo,
           record.id,
-          { resumeWaits: { at: new Date(ctx.now()).toISOString(), answer: index } },
+          { resumeWaits: resumeWaitOf(record, ctx.now(), index) },
           ctx.now(),
         );
         ctx.print(
@@ -475,10 +477,14 @@ export type Liveness = "dead" | "live" | "unknown";
  * must never be resumed (`--bg --resume` starts a copy beside it), and **a view that cannot be
  * read must not be read as dead** — that would start the very copy the guard exists to prevent.
  * A missing `claude` is the resume's own refusal (`resumeSession`), not this one, so it counts as
- * dead and the refusal that names it is the one said.
+ * dead and the refusal that names it is the one said. `rows` is a read the caller already made
+ * (the watch's pass); left out, agent view is read here.
  */
-export function sessionLiveness(ctx: CrewContext, record: CrewRecord): Liveness {
-  const rows = agentRows(ctx);
+export function sessionLiveness(
+  ctx: CrewContext,
+  record: CrewRecord,
+  rows: null | AgentRow[] = agentRows(ctx),
+): Liveness {
   if (rows === null) {
     const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
     return claude === null ? "dead" : "unknown";
@@ -600,7 +606,7 @@ export async function resumeSession(
       const input = placeInputOf(all, record.leadSessionId, crew, usage, {
         continuation: false,
         exclude: record,
-        opus: record.model.tier === "opus",
+        opus: record.model.tier === OPUS_TIER,
         unmet: [],
         nowMs: ctx.now(),
       });

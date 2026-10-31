@@ -26,15 +26,17 @@ with a wrong kind can never be written (`write.ts` validates the whole file befo
 write), and a file it may not change is left alone rather than half-written.
 
 **D71: crew limits belong to the machine (1.8.0).** The limits protect one machine; a
-project is shared by many machines. `MACHINE_CREW_KEYS` in `schema.ts` names the seven
+project is shared by many machines. `MACHINE_CREW_KEYS` in `schema.ts` names the eight
 limits: `crew.max`, `crew.maxOpus`, `crew.perLead`, `crew.perLeadOpus`, `crew.memoryGb`,
-`crew.loadPerCore` and `crew.usagePercent`. Resolution ignores the project's values and
+`crew.loadPerCore`, `crew.usagePercent` and `crew.startGapSeconds`. Resolution ignores the project's values and
 reports `personal` or `default`, never `project`. The defaults for `max`, `memoryGb` and
 `loadPerCore` are 12, 6 GB and 1.5 per core. Project choices such as `enabled` and `tag`
 still win. To avoid a breaking schema change, old project limits still parse; doctor
 names them in one informational line and asks to remove them. The shared `isProjectKey`
-policy refuses project set/unset and propose, and removes them from the portal's project
-settings list. Set machine limits without `--project`.
+policy refuses project set and propose, and removes them from the portal's project
+settings list. `workflow unset --project` is the one write it allows: it takes an ignored
+limit out of the project file, and doctor's line names it. Set machine limits without
+`--project`.
 
 **A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
 write the whole object again with `JSON.stringify`: that laid every line out anew, and a

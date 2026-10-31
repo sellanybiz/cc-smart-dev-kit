@@ -113,6 +113,13 @@ export const CREW_STATES = [
 
 export type CrewState = (typeof CREW_STATES)[number];
 
+/**
+ * The states a resume has nothing to bring back from: the work is merged, or the crew session is
+ * removed or discarded. `crew resume` refuses them, and a resume waiting for room (`resumeWaits`,
+ * D72) ends when its record reaches one.
+ */
+export const NO_RESUME_STATES: readonly CrewState[] = ["merged", "removed", "discarded"];
+
 /** One of `T`, or a word a newer kit wrote, read as itself. */
 export type KnownOr<T extends string> = T | (string & {});
 
@@ -585,9 +592,15 @@ const crewFields = z.object({
   startedAt: text.nullable().optional(),
   /** When a launch took its machine-wide place (D72); absent on older records. */
   launchedAt: text.optional(),
-  /** A resume waiting for room; answer names the stored question to deliver (D72). */
+  /**
+   * A resume waiting for room; answer names the stored question to deliver (D72). It ends with
+   * the resume, or when the record reaches a `NO_RESUME_STATES` state (`dropStateFacts`).
+   */
   resumeWaits: z.looseObject({ at: text, answer: count.nullable() }).optional(),
-  /** The running state remembered when agent view lost the session (D73). */
+  /**
+   * The running state remembered when agent view lost the session (D73). Kept only while the
+   * record is `stopped` (`dropStateFacts`).
+   */
   sweptFrom: text.optional(),
   /**
    * The id of the crew session whose hand-off this one carries on (`crew start --continue`); null or
@@ -1125,6 +1138,46 @@ export async function updateCrewIfState(
 }
 
 /**
+ * The resume wait (`resumeWaits`, D72) a held resume records: its place in line is the first
+ * wait's time, kept when it is asked again, and the answer to deliver is `answer` when there is
+ * a new one, else the one already waiting. One home for `crew resume` and `crew answer`.
+ */
+export function resumeWaitOf(
+  record: CrewRecord,
+  atMs: number,
+  answer?: number,
+): NonNullable<CrewRecord["resumeWaits"]> {
+  return {
+    at: record.resumeWaits?.at ?? iso(atMs),
+    answer: answer ?? record.resumeWaits?.answer ?? null,
+  };
+}
+
+/**
+ * Stops crew session `id` whose session is gone from agent view (D73), **only while it is still in
+ * `state` and no resume holds its claim**, both read under the store's own lock: a resume that
+ * claimed the record after the watch's read is launching it now, and its own write follows. The
+ * stop is the watch's own (`stoppedByWatch`), and `sweptFrom` keeps the state a row that comes
+ * back restores. True when it was stopped.
+ */
+export async function sweepCrew(
+  stateDir: string,
+  repo: string,
+  id: string,
+  state: string,
+  atMs: number,
+): Promise<boolean> {
+  const { changed } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    if (before.state !== state || resumeClaimHeld(before.resumeClaim, atMs)) return null;
+    return {
+      change: { state: "stopped", stoppedByWatch: true, sweptFrom: before.state },
+      event: (after) => eventOf(after, at, "state", "its session is gone from agent view"),
+    };
+  });
+  return changed;
+}
+
+/**
  * Records a question crew session `id` asks its lead (D36), and its `question` event, under one hold:
  * the question goes at the end of its `questions`, with no answer yet, and the event's line is
  * the question. **A question of its own that is still open is superseded** (RG1): it points at the
@@ -1367,6 +1420,22 @@ interface PlannedChange {
 }
 
 /**
+ * Drops the facts that hold only in some states from a record that left them: who stopped it
+ * (`stoppedByWatch`) and the state the sweep stopped it from (`sweptFrom`, D73) only while it is
+ * `stopped`, and a resume waiting for room (`resumeWaits`, D72) never once there is nothing to
+ * bring back (`NO_RESUME_STATES`). One home for both writers: `changeCrew` and the report's own.
+ */
+function dropStateFacts(
+  record: Pick<CrewRecord, "resumeWaits" | "stoppedByWatch" | "sweptFrom"> & { state: string },
+): void {
+  if (record.state !== "stopped") {
+    delete record.stoppedByWatch;
+    delete record.sweptFrom;
+  }
+  if ((NO_RESUME_STATES as readonly string[]).includes(record.state)) delete record.resumeWaits;
+}
+
+/**
  * The one read-modify-write of a crew record, under the store's lock: `plan` reads the record
  * as it is now and says what changes, or null to write nothing (the record moved since the
  * caller read it). Every field this kit does not know is kept, and so is a
@@ -1429,8 +1498,7 @@ async function changeCrew(
     if (merged.state === "merged" && before.state === "stopped") {
       merged.mergedWhileStopped = before.stoppedByWatch !== true;
     }
-    // Who stopped it is kept only while it is stopped.
-    if (merged.state !== "stopped") delete merged.stoppedByWatch;
+    dropStateFacts(merged);
     // A replaced session stays on the record (`earlierSessions`), whichever command replaced it.
     if (before.sessionId !== null && merged.sessionId !== before.sessionId) {
       const kept = before.earlierSessions ?? [];
@@ -1806,9 +1874,9 @@ export async function recordCrewReport(
       },
       recordFile,
     );
-    // This write does not go through `changeCrew`, so the fact that holds only while `stopped`
-    // goes here too.
-    if (after.state !== "stopped") delete after.stoppedByWatch;
+    // This write does not go through `changeCrew`, so the facts that hold only in some states
+    // are dropped here too.
+    dropStateFacts(after);
     // The report file first: a record that names a report the file lacks is the worse half-write.
     writeJsonFile(file, value);
     writeJsonFile(recordFile, after);

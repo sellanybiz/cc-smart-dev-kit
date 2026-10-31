@@ -127,6 +127,25 @@ describe("D72: the shared place input", () => {
     expect(placeFor(guard)).toEqual({ start: true });
   });
 
+  test("a launch time later than now (the clock was set back) is left out of the gap", () => {
+    const ahead = { ...crew("A1", "stopped"), launchedAt: "2026-10-21T11:00:00.000Z" };
+    const earlier = { ...crew("B2", "stopped"), launchedAt: "2026-10-21T09:58:00.000Z" };
+    const input = placeInputOf(
+      [ahead, earlier],
+      "lead",
+      defaultResolved().crew,
+      { opusFallback: false, percent: null },
+      {
+        continuation: false,
+        opus: false,
+        unmet: [],
+        nowMs: Date.parse("2026-10-21T10:00:10.000Z"),
+      },
+    );
+    expect(input.lastLaunchMs).toBe(Date.parse("2026-10-21T09:58:00.000Z"));
+    expect(placeFor(input)).toEqual({ start: true });
+  });
+
   test("a failed start without launchedAt still contributes its startedAt to the gap", () => {
     const failed = { ...crew("A1", "failed"), startedAt: "2026-10-21T10:00:00.000Z" };
     const input = placeInputOf(

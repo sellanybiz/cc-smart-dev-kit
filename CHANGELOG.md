@@ -18,18 +18,21 @@ run takes a slot. The crew limits are now the machine's alone.
 - `cc-smart-dev-kit doctor` in each project. When the project's `.claude/cc-smart-dev-kit.json`
   still sets a crew limit, doctor says which one: the value is ignored now. Set it for your
   machine instead, for example `cc-smart-dev-kit workflow set crew.max 12`, and take it out of
-  the project file.
+  the project file: `cc-smart-dev-kit workflow unset --project crew.max`.
 - Only if a default below is wrong for your machine: `cc-smart-dev-kit workflow set
   crew.startGapSeconds <n>`, `cc-smart-dev-kit job set light-jobs <n>`, `cc-smart-dev-kit job set
-  start-free-gb <n>`.
+  start-free-gb <n>`. Run these only once every open Claude Code session runs 1.8.0: restart the
+  older ones first. A session on an older version refuses a `jobs.json` or `workflow.json` that
+  holds a setting it does not know: its routed heavy commands fail, its kit commands stop with
+  an error, and its hooks fall back to the project's values and the defaults.
 
 What changed:
 
 - **The crew limits are the machine's (D71).** `crew.max`, `maxOpus`, `perLead`, `perLeadOpus`,
   `memoryGb`, `loadPerCore`, `usagePercent` and the new `startGapSeconds` are read from your own
   `workflow.json` only. A project file that sets one still loads; the value is ignored, and
-  `doctor` says so once. `workflow set --project` and `workflow propose` refuse them, with the
-  command to run instead.
+  `doctor` says so once, with the command that takes it out (`workflow unset --project`).
+  `workflow set --project` and `workflow propose` refuse them, with the command to run instead.
 - **Safer defaults.** `crew.max` 24 → 12, `crew.memoryGb` 2 → 6, `crew.loadPerCore` 3 → 1.5. A
   value you set yourself stays.
 - **One gate for every launch, a minute apart (D72).** A start, a queued start, a hand-off's
@@ -41,12 +44,14 @@ What changed:
   `crew model` replaces its own process and is not held. A launch that started nothing gives its
   time back.
 - **A crew session closed in agent view frees its place (D73).** The lead's watch marks a running
-  record whose session is missing from agent view in two passes a minute apart as `stopped`. A
-  row that comes back restores it. An agent view it cannot read changes nothing.
+  record whose session is missing from agent view in two passes a minute apart as `stopped`: the
+  watch's own stop, so a merge after it clears it as the watch's own. A row that comes back
+  restores it. An agent view it cannot read changes nothing.
 - **Small runs take a slot of their own (D74).** An install (`bun install`, `npm ci`, `pnpm add`,
   a bare `yarn` and the like: the new `install` kind) and a test run on at most 10 named files
   take one of `lightJobs` light slots (2 by default) instead of running at once. Light and heavy
-  runs never wait for each other. More than 10 files take a heavy slot. A light run gets the kill
+  runs never wait for each other. More than 10 files take a heavy slot, and so does a line that
+  installs and then runs a heavy job (`bun install && bunx next build`). A light run gets the kill
   mark, never the heavy slice.
 - **A job waits for free memory while another one runs (D74).** Below `startFreeGb` (4 by
   default) a new heavy or light run waits until the running job ends or memory frees up. With

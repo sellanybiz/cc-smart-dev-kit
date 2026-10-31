@@ -250,7 +250,9 @@ stays as written, and the person's rules see it. The route never rewrites a runn
 the job-route hook asks about `watch tsc` as it does about any heavy command, and `job run
 --kind <kind> -- watch …` takes a slot by its `--kind`. A line of heavy commands only — `cd app
 && bunx tsc --noEmit && bunx vitest run`, `FOO=1 bunx tsc --noEmit` — is still queued, as one
-job under the first kind it runs: one slot for the whole line.
+job under the first kind it runs that is not light: one slot for the whole line. A line that
+installs and then builds (`bun install && bunx next build`) takes a heavy slot, as its build
+needs; only a line of light kinds alone (`bun install && bun add zod`) takes a light one.
 
 **One heavy command piped into read-only filters is queued too** (`routableLine`): `bunx tsc
 --noEmit 2>&1 | tail -20` becomes `… job run --kind tsc -- <shell> -c 'bunx tsc --noEmit 2>&1'
