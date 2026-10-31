@@ -6122,7 +6122,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.8.0",
+  version: "1.8.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9975,6 +9975,9 @@ function livePlanFolder(planFile) {
   }
   return folder;
 }
+function plansFolderGone(planFile) {
+  return !existsSync6(dirname5(planFile));
+}
 function runFile(planFile, id) {
   return join12(livePlanFolder(planFile), RUNS_DIR, `${id}.json`);
 }
@@ -10289,6 +10292,8 @@ function recordRun(change) {
     return;
   const file = runFile(planFile, change.after.id);
   const previous = readRunFile(file);
+  if (previous === null && plansFolderGone(planFile))
+    return;
   if (previous !== null && eventsOf(change).length === 0 && change.contextTokens == null)
     return;
   writeRunFile(file, nextRun(previous, change));

@@ -707,7 +707,7 @@ export function jobsOf(answer: JobsAnswer): JobsData {
     kind: item.kind,
     pid: item.pid,
     since: item.since === null ? null : Date.parse(item.since),
-    slot: item.slot,
+    lane: item.lane,
     user: item.user,
   });
   return {

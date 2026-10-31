@@ -3,6 +3,41 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.8.1
+
+Fixes found while the 1.8.0 limits were put to work on a real machine.
+
+**What to run** after the update:
+
+- In each repository with crew sessions, look for a removed worktree's folder that came back:
+  `ls .claude/worktrees/`, then, for a folder `git worktree list` does not show, check that it
+  holds only `.claude/plans/<plan>/runs/*.json` (`find <folder> -type f`). If so, remove it. Until
+  then, the run records of that plan keep being written there.
+
+What changed:
+
+- `crew rm` (and every other change to a crew record) no longer makes a removed worktree's folder
+  again, and neither does `crew history --backfill`. A lead that kept its plan inside its own
+  worktree lost that folder when the worktree went; the next change to one of its crew records
+  wrote a first run record there, and the folder came back holding only
+  `.claude/plans/<plan>/runs/`. Now no first run record is written once the plans folder that held
+  the plan is gone.
+- `crew rm --discard` works when the crew session's worktree folder was deleted by hand. Its
+  branch is checked out again in a new worktree at the same path, then the usual preview, question
+  and archive follow. Before, it refused with "discard has no saved archive", and plain `crew rm`
+  refused the unmerged branch, so the record could not go. Claude Code's own lock on the gone
+  worktree is released first; a lock you took refuses, and so does a branch checked out in another
+  worktree. With neither a worktree nor a branch, the discard says to run plain `crew rm`. A
+  preview without `--yes` says that the folder it made again stays.
+- `doctor` no longer fails the instructions check when only the copy's version stamp is old and
+  every file matches. The line passes and names the old stamp; the next session start or
+  `cc-smart-dev-kit setup` brings it up to date (setup then says "Nothing to change", as before).
+- The portal's Machine page names what each job holds: a heavy slot, a light slot or a name.
+  It said "a slot" for a light run too. `/api/jobs` gives each job its `lane`, and
+  `cc-smart-dev-kit job status` says "a heavy slot" where it said "a slot".
+- The builder and rules-maintainer agents load the deferred task tools before they make a task
+  list, and go on without one when the tools are not there.
+
 ## 1.8.0
 
 Many crew sessions, installs and test runs could start at once and freeze the machine: after a

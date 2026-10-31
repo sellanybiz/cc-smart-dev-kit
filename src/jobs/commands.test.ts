@@ -607,7 +607,7 @@ describe("job status", () => {
     );
     expect(lines.slice(4).filter((_, index) => index !== 6)).toEqual([
       `This machine (${STATE_SHOWN}): 1 of 3 slots in use`,
-      `  this machine: a slot is held by ${hostname()}: build, next build in /home/user/app, since 2026-10-11 09:05 (pid ${holder.pid})`,
+      `  this machine: a heavy slot is held by ${hostname()}: build, next build in /home/user/app, since 2026-10-11 09:05 (pid ${holder.pid})`,
       `Shared folder ${shared}: 0 of 4 slots in use`,
       "  nothing held, nobody waits",
       MAX_JOBS_LINE(3, false),
@@ -632,7 +632,7 @@ describe("job status", () => {
     for (const one of holders) one.stop();
     const lines = result.stdout.split("\n");
     expect(lines[4]).toBe(`This machine (${STATE_SHOWN}): 2 of 2 slots in use`);
-    expect(lines.filter((line) => line.includes("a slot is held by"))).toHaveLength(2);
+    expect(lines.filter((line) => line.includes("a heavy slot is held by"))).toHaveLength(2);
     expect(lines.filter((line) => line.includes("waits for a slot: "))).toHaveLength(1);
     expect(lines.at(-5)).toBe(MAX_JOBS_LINE(2, true));
     expect(lines.at(-2)).toBe(ROUTE_OFF_LINE);

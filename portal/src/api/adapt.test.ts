@@ -1041,6 +1041,7 @@ describe("the B6d facts", () => {
       command: "tsc --noEmit",
       folder: "/home/user/my-app",
       kind: "tsc",
+      lane: "heavy" as const,
       pid: 41,
       since: "2026-10-26T10:00:00.000Z",
       slot: true,
@@ -1054,7 +1055,11 @@ describe("the B6d facts", () => {
       route: { on: true, project: null, source: "personal" },
       stores: [
         {
-          held: [held, { ...held, exclusive: "image", pid: 42, slot: false }],
+          held: [
+            held,
+            { ...held, exclusive: "image", lane: "none", pid: 42, slot: false },
+            { ...held, kind: "install", lane: "light", pid: 44 },
+          ],
           slots: 3,
           used: 1,
           waiting: [{ ...held, pid: 43, since: null }],
@@ -1068,9 +1073,10 @@ describe("the B6d facts", () => {
     expect(data.route).toEqual({ on: true, project: null, source: "personal" });
     const [store] = data.stores;
     expect([store?.slots, store?.used]).toEqual([3, 1]);
-    expect(store?.held.map((job) => [job.pid, job.slot, job.exclusive])).toEqual([
-      [41, true, undefined],
-      [42, false, true],
+    expect(store?.held.map((job) => [job.pid, job.lane, job.exclusive])).toEqual([
+      [41, "heavy", undefined],
+      [42, "none", true],
+      [44, "light", undefined],
     ]);
     expect(store?.held[0]?.since).toBe(Date.parse("2026-10-26T10:00:00.000Z"));
     expect(store?.waiting[0]?.since).toBe(null);

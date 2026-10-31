@@ -74,6 +74,15 @@ export function livePlanFolder(planFile: string): string {
   return folder;
 }
 
+/**
+ * Is the plans folder that held the plan gone? A lead that kept its plan in its own worktree
+ * loses it with the worktree. Then no first run record is written for it: one would make that
+ * folder, and the removed worktree's path, again. `recordRun` and the backfill both ask it.
+ */
+export function plansFolderGone(planFile: string): boolean {
+  return !existsSync(dirname(planFile));
+}
+
 /** A phase's brief inside the plan's folder: named as the crew branch, `<PHASE>-<slug>.md`. */
 export function planBriefFile(planFile: string, phase: string, slug: string): string {
   return join(livePlanFolder(planFile), BRIEFS_DIR, `${phase}-${slug}.md`);
@@ -575,13 +584,15 @@ export function writeRunFile(file: string, run: RunRecord): void {
  * Records one change of a crew record in its run record. The store calls it inside its own hold
  * of the lock, so two writers (the watch and the CLI) never read the same file at once. Nothing
  * happens for a crew record with no plan file: its run is not recorded. A change that makes no
- * event and no session adds nothing and writes nothing.
+ * event and no session adds nothing and writes nothing. A first record is never written once the
+ * plans folder that held the plan is gone (`plansFolderGone`).
  */
 export function recordRun(change: RunChange): void {
   const planFile = change.after.planFile;
   if (typeof planFile !== "string" || planFile === "") return;
   const file = runFile(planFile, change.after.id);
   const previous = readRunFile(file);
+  if (previous === null && plansFolderGone(planFile)) return;
   if (previous !== null && eventsOf(change).length === 0 && change.contextTokens == null) return;
   writeRunFile(file, nextRun(previous, change));
   const continues = change.after.continues;

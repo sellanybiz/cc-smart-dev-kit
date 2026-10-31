@@ -87,9 +87,9 @@ A job that waited says three things, around its own output:
 ```text
 [cc-smart-dev-kit job] Heavy job waits for a free slot: bunx tsc --noEmit. this machine: 0 of 3 slots free. Why: all 3 of this machine's slots are taken.
 [cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
-[cc-smart-dev-kit job]   this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
-[cc-smart-dev-kit job]   this machine: a slot is held by host-a: test:run, bunx vitest run in /home/user/app, since 11:51 (pid 4301)
-[cc-smart-dev-kit job]   this machine: a slot is held by host-b: tsc, bunx tsc --noEmit in /home/user/web, since 11:52 (pid 4377)
+[cc-smart-dev-kit job]   this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
+[cc-smart-dev-kit job]   this machine: a heavy slot is held by host-a: test:run, bunx vitest run in /home/user/app, since 11:51 (pid 4301)
+[cc-smart-dev-kit job]   this machine: a heavy slot is held by host-b: tsc, bunx tsc --noEmit in /home/user/web, since 11:52 (pid 4377)
    … 18 minutes of waiting, a line a minute …
 [cc-smart-dev-kit job] Heavy job starts after 18 min: bunx tsc --noEmit
    … the job's own output, on stdout and stderr, while it runs …
@@ -352,7 +352,7 @@ How a waiting job decides, every half second:
 ```text
 [cc-smart-dev-kit job] Heavy job waits for a free slot: bunx tsc --noEmit. this machine: 0 of 3 slots free; /srv/heavy-jobs: 1 of 4 slots free. Why: all 3 of this machine's slots are taken.
 [cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
-[cc-smart-dev-kit job]   this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
+[cc-smart-dev-kit job]   this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
 ```
 
 A holder that holds only a name (`--exclusive` without a kind) is listed as `a name is held by`
@@ -627,9 +627,9 @@ Job route in ~/app: off: a heavy command runs raw, outside the queue (the defaul
 
 ```text
 This machine (~/.local/share/cc-smart-dev-kit/jobs): 3 of 3 slots in use
-  this machine: a slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
-  this machine: a slot is held by host-a: test:run, bunx vitest run in /home/user/app, since 11:51 (pid 4301)
-  this machine: a slot is held by host-b: tsc, bunx tsc --noEmit in /home/user/web, since 11:52 (pid 4377)
+  this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
+  this machine: a heavy slot is held by host-a: test:run, bunx vitest run in /home/user/app, since 11:51 (pid 4301)
+  this machine: a heavy slot is held by host-b: tsc, bunx tsc --noEmit in /home/user/web, since 11:52 (pid 4377)
   this machine: a light slot is held by host-a: install, bun install in /home/user/app, since 11:52 (pid 4390)
   this machine: waits for a slot: host-a: tsc, bunx tsc --noEmit in /home/user/app, since 11:53 (pid 4420)
 Heavy jobs at once on this machine: 3 (the default). Change it with: cc-smart-dev-kit job set max-jobs <n>

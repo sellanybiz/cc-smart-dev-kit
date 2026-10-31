@@ -50,7 +50,13 @@ symlinks and unreadable files refuse, rather than disappear. The create-only ref
 `refs/crew-discarded/<crew-id>` (with an attempt suffix when needed) holds each archive, and
 `crew list --discarded` prints its recovery
 command and age. Manual and background cleans prune completed archives after the one shared
-30-day limit. A person's programs and containers still refuse; the watch never discards.
+30-day limit. A person's programs and containers still refuse; the watch never discards. A
+worktree whose folder was deleted by hand while its branch stayed is made again on that branch
+first, as a released one is (below). Git may still list it: Claude Code's own lock on it is
+released, a lock a person took refuses, a branch checked out in another worktree refuses, and git
+then forgets the worktrees whose folders are gone. A preview without a yes says the folder stays.
+Plain `crew rm` refuses the unmerged branch, so without this the record could not go. With neither a
+worktree nor a branch nothing is left to archive: the discard refuses and names plain `crew rm`.
 
 The Needs API reads old stopped work and discard previews through `crew cleanup --json` in a CLI
 child, keeping git off the server loop. Removal actions use the CLI child in the record's repo,
@@ -546,7 +552,11 @@ which `updateCrew`, `updateCrewIfState` and `answerCrewQuestion` use — and `re
 so there is no second log and no second code path deciding what happened; a change that makes no
 milestone writes nothing. It is an atomic write, 0644 (a plan file's mode, not the store's 0600:
 the lead commits it). A write that fails never undoes the change: one line on stderr says so, and
-the events log still holds the change. A crew session with no plan file is not recorded.
+the events log still holds the change. A crew session with no plan file is not recorded, and
+neither is a first record once the plans folder that held its plan is gone (`plansFolderGone`,
+which `crew history --backfill` asks too): a lead that kept its plan in its own worktree loses
+that folder with the worktree, and a later change (a `crew rm`) would make the removed worktree's
+path again.
 
 What it holds: the facts of the start (id, name, phase, slug, kind, model and effort, base ref
 and commit, branch, brief path and hash, the lead's session id and name); `sessions`, every Claude

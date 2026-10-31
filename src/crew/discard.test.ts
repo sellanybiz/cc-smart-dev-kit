@@ -9,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { boardWorld, NOW } from "../testing/board-world";
 import { git } from "../testing/temp";
 import { runCrew } from "./command";
@@ -117,6 +117,96 @@ describe("explicit recoverable crew discard", () => {
     expect(git(world.repo, "for-each-ref", "refs/crew-discarded/")).toBe("");
     renameSync(`${file}.saved`, file);
     expect(await runCrew(["rm", record.id, "--discard", "--yes"], world.ctx())).toBe(0);
+  });
+
+  test.each([
+    ["no lock", null],
+    ["Claude Code's lock", "claude session 1234"],
+  ])(
+    "a worktree folder deleted by hand (%s), its branch kept: made again, archived, discarded",
+    async (_label, lock) => {
+      const world = await boardWorld();
+      const record = await world.addCrew({ state: "stopped" });
+      writeFileSync(join(record.worktree, "result"), "kept\n");
+      git(record.worktree, "add", "result");
+      git(record.worktree, "commit", "-qm", "result");
+      if (lock !== null) git(world.repo, "worktree", "lock", "--reason", lock, record.worktree);
+      rmSync(record.worktree, { recursive: true, force: true });
+      // Plain removal still refuses the unmerged commit.
+      expect(await runCrewRm(record.id, world.ctx())).toBe(1);
+      expect(await runCrewRm(record.id, world.ctx(), { discard: true, yes: true })).toBe(0);
+      const after = readCrew(world.paths.stateDir, world.repo, record.id);
+      expect(after?.state).toBe("discarded");
+      expect(existsSync(record.worktree)).toBe(false);
+      expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe("");
+      expect(git(world.repo, "show", `${after?.archive?.ref}:result`).trim()).toBe("kept");
+      expect(world.out).toContain(
+        `made .claude/worktrees/${record.worktree.split("/").at(-1)} again on ${record.branch}, to discard it (its folder was gone)`,
+      );
+    },
+  );
+
+  test("a worktree folder deleted by hand under a person's lock: refused, nothing changed", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    git(world.repo, "worktree", "lock", "--reason", "mine", record.worktree);
+    rmSync(record.worktree, { recursive: true, force: true });
+    expect(await runCrewRm(record.id, world.ctx(), { discard: true, yes: true })).toBe(1);
+    expect(world.err).toEqual([
+      `crew rm: .claude/worktrees/${record.worktree.split("/").at(-1)} is locked (mine), and not by Claude Code`,
+      `Fix: release it yourself if you mean to remove the crew session: git worktree unlock ${record.worktree}; crew rm unlocks only Claude Code's own lock`,
+    ]);
+    expect(git(world.repo, "worktree", "list", "--porcelain")).toContain("locked mine");
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("stopped");
+  });
+
+  test("a worktree folder deleted by hand, its branch checked out in another worktree: refused with the fix", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    rmSync(record.worktree, { recursive: true, force: true });
+    git(world.repo, "worktree", "prune");
+    git(
+      world.repo,
+      "worktree",
+      "add",
+      "-q",
+      join(dirname(record.worktree), "other"),
+      record.branch,
+    );
+    expect(await runCrewRm(record.id, world.ctx(), { discard: true, yes: true })).toBe(1);
+    expect(world.err).toEqual([
+      `crew rm: ${record.branch} is checked out in .claude/worktrees/other, so its worktree cannot be made again`,
+      "Fix: switch that worktree to another branch, or remove it, then run crew rm --discard again",
+    ]);
+    expect(existsSync(record.worktree)).toBe(false);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("stopped");
+  });
+
+  test("a preview with no yes says the folder it made again stays", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    rmSync(record.worktree, { recursive: true, force: true });
+    expect(await runCrewRm(record.id, world.ctx(), { discard: true })).toBe(1);
+    expect(world.out.at(-1)).toBe(
+      `Nothing removed; .claude/worktrees/${record.worktree.split("/").at(-1)} stays made again for this preview. Use crew rm <name|id> --discard --yes to confirm without a terminal.`,
+    );
+    expect(existsSync(record.worktree)).toBe(true);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("stopped");
+  });
+
+  test("no worktree and no branch: discard refuses with the plain removal, which works", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    git(world.repo, "worktree", "remove", "--force", record.worktree);
+    git(world.repo, "branch", "-D", record.branch);
+    expect(await runCrewRm(record.id, world.ctx(), { discard: true, yes: true })).toBe(1);
+    expect(world.err).toEqual([
+      `crew rm: ${record.name} has no worktree and no branch ${record.branch}, so there is nothing to archive`,
+      `Fix: crew rm ${record.id}, without --discard, removes the record`,
+    ]);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("stopped");
+    expect(await runCrewRm(record.id, world.ctx())).toBe(0);
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("removed");
   });
 
   test("a terminal done session's own lingering PID does not block discard", async () => {

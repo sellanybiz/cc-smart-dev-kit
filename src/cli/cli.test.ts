@@ -1806,16 +1806,28 @@ describe("cc-smart-dev-kit doctor: the instructions", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  test("a copy another plugin version wrote: ✗ naming that version, exit 1", () => {
+  test("files that differ under another version's stamp: ✗ naming both, exit 1", () => {
     const { stateDir, run } = setup();
     run(["setup"]);
     writeFileSync(versionStampFile(stateDir), "0.0.1\n");
+    writeFileSync(join(stateDir, "instructions", "core.md"), "# Edited by hand\n");
     const result = run(["doctor", "--verbose"]);
     expect(instructionLines(result.stdout)).toEqual([
-      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (written by 0.0.1)",
+      "✗ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is not this plugin version's (written by 0.0.1; core.md differs)",
       "Fix: cc-smart-dev-kit setup",
     ]);
     expect(result.exitCode).toBe(1);
+  });
+
+  test("only the stamp names another version, every file matches: ✓ that says so", () => {
+    // After an update the files are often the same; setup then rewrites only the stamp, which
+    // it never prints ("Nothing to change"). A ✗ whose fix prints nothing misleads.
+    const { stateDir, run } = setup();
+    run(["setup"]);
+    writeFileSync(versionStampFile(stateDir), "0.0.1\n");
+    expect(instructionLines(run(["doctor", "--verbose"]).stdout)).toEqual([
+      "✓ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is this version's (its stamp says 0.0.1 until the next session start or cc-smart-dev-kit setup), and ~/.claude/CLAUDE.md imports it",
+    ]);
   });
 
   test("the block was taken out of CLAUDE.md by hand: ✗ with the setup command", () => {

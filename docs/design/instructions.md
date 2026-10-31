@@ -36,8 +36,9 @@ next `setup` rewrites the block, and `doctor` fails until it does.
   update) quietly undid would be no choice.
 - `instructions-version`: the plugin version that last wrote the copy.
   `instructionsNeedRefresh(paths, version)` is true for an installed copy, not opted out,
-  whose stamp names another version. `doctor` uses it (and compares each file with the
-  plugin's). `refreshInstructionsCopy(paths, version)` brings only the copy up to that
+  whose stamp names another version. `doctor` compares each file with the plugin's, and only a
+  difference fails: a stamp that lags while every file matches passes with a note, because
+  `setup` rewrites only the stamp and never prints it. `refreshInstructionsCopy(paths, version)` brings only the copy up to that
   version: no block, no other step, no question, nothing when opted out or never installed.
   `refreshDue` also stops a session of an older version from writing its files back over a
   newer copy (`refreshMayWrite`: the installed version writes, and with no record of it only
