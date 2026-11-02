@@ -4,11 +4,13 @@
  * its own steps).
  */
 import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
+import { crewWorld, LEAD_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
-import { createCrew, listCrew, readCrewEvents, writeLead } from "./store";
+import { sessionRecordFile } from "./session";
+import { createCrew, listCrew, readCrewEvents, updateCrew, writeLead } from "./store";
 
 const T0 = Date.parse("2026-10-21T10:00:00.000Z");
 const ID = "B6b-portal-live-1a2b3c";
@@ -64,6 +66,53 @@ async function crewWorld1(state: "working" | "blocked" = "working") {
 }
 
 describe("crew step", () => {
+  for (const command of ["step", "report"] as const) {
+    test(`C3: an earlier copy cannot ${command}, but the current copy can`, async () => {
+      const world = await crewWorld1();
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        ID,
+        {
+          earlierSessions: [{ sessionId: LEAD_SESSION, shortId: "c00f9bb5" }],
+        },
+        T0,
+      );
+      const before = listCrew(world.paths.stateDir, world.repo);
+      const events = readCrewEvents(world.paths.stateDir, world.repo);
+      const args =
+        command === "step"
+          ? ["step", "tests-green"]
+          : ["report", "--question", "which port?", "--option", "3210", "--option", "3211"];
+      expect(await runCrew(args, world.ctx({}, { CC_SMART_DEV_KIT_CREW: ID }))).toBe(1);
+      expect(world.err).toEqual([
+        `crew ${command}: this session is an earlier copy of C my-app B6b portal-live; its current session is aaaa1111. Change nothing and end your turn.`,
+      ]);
+      expect(listCrew(world.paths.stateDir, world.repo)).toEqual(before);
+      expect(readCrewEvents(world.paths.stateDir, world.repo)).toEqual(events);
+      world.err.length = 0;
+      writeSessionRecord(world.paths, 300, "aaaa1111-2222-3333-4444-555555555555", world.repo);
+      expect(await runCrew(args, world.ctx({}, { CC_SMART_DEV_KIT_CREW: ID }))).toBe(0);
+      expect(world.err).toEqual([]);
+    });
+  }
+
+  test("C3: a caller whose session record cannot be read is judged as before the copy check", async () => {
+    const world = await crewWorld1();
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { earlierSessions: [{ sessionId: LEAD_SESSION, shortId: "c00f9bb5" }] },
+      T0,
+    );
+    writeFileSync(sessionRecordFile(world.paths.claudeConfigDir, 300), "{ not a record");
+    expect(
+      await runCrew(["step", "tests-green"], world.ctx({}, { CC_SMART_DEV_KIT_CREW: ID })),
+    ).toBe(0);
+    expect(world.err).toEqual([]);
+  });
+
   test("D25: a step records its name, the time and HEAD's sha, and appends one event", async () => {
     const world = await crewWorld1();
     const head = git(world.repo, "rev-parse", "HEAD").trim();

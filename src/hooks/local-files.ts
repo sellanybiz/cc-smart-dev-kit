@@ -16,6 +16,8 @@
  */
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
+import { loadCcSmartDevKitConfig } from "../project/config";
+import { CONFIG_PATH } from "../project/resolve";
 import { runGit } from "./git";
 import type { Env } from "./run";
 
@@ -93,12 +95,39 @@ export function sameAsMain(worktree: string, mainCheckout: string, path: string)
   return same(path.replace(/\/$/, ""));
 }
 
+/**
+ * Project patterns only widen the disposable ignored-entry rule. A missing or unusable
+ * project file proves nothing safe, so keep the built-in policy in that case.
+ */
+export function projectRebuildable(mainCheckout: string | null): Bun.Glob[] {
+  if (mainCheckout === null) return [];
+  try {
+    const patterns =
+      loadCcSmartDevKitConfig(join(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
+    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
+  } catch {
+    // Invalid or too-new config grants no additional permission to lose local files.
+    return [];
+  }
+}
+
 /** The one disposable-entry policy, shared by removal and explicit archival. */
 export function safeIgnoredEntry(
   worktree: string,
   mainCheckout: string | null,
   entry: string,
 ): boolean {
+  return safeEntry(worktree, mainCheckout, entry, projectRebuildable(mainCheckout));
+}
+
+/** Judge an entry using the project patterns already read for this walk. */
+export function safeEntry(
+  worktree: string,
+  mainCheckout: string | null,
+  entry: string,
+  patterns: readonly Bun.Glob[],
+): boolean {
+  if (patterns.some((pattern) => pattern.match(entry))) return true;
   if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
     if (!entry.endsWith("/cli-latest")) return true;
     try {
@@ -119,6 +148,7 @@ export function localFiles(
   worktree: string,
   mainCheckout: string | null,
   env: Env,
+  patterns: readonly Bun.Glob[] = projectRebuildable(mainCheckout),
 ): string[] | null {
   // `--untracked-files=normal`: an ignored folder is one entry, not every file in it (and a
   // `status.showUntrackedFiles` setting does not change that).
@@ -136,7 +166,7 @@ export function localFiles(
     30_000,
   );
   if (!status.ok) return null;
-  const safe = (entry: string): boolean => safeIgnoredEntry(worktree, mainCheckout, entry);
+  const safe = (entry: string): boolean => safeEntry(worktree, mainCheckout, entry, patterns);
   // Git reports a folder that holds only ignored files as one entry (`server/` for a
   // `server/logs/` and a `server/vitest.log`). Such a folder is safe only when every entry
   // inside it is, judged one by one, so exempting one cache never exempts changed link state

@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { CliPaths } from "../cli/paths";
 import { realMemoryFacts } from "../jobs/memory";
 import { type LoadReading, machineLoad, realLoadFacts } from "../machine/load";
+import { findUserInstall } from "../setup/installed-plugins";
 import type { GhExec } from "../workflow/merge-check";
 import type { CleanLock } from "../worktrees/clean";
 import type { ScanOptions } from "../worktrees/scan";
@@ -26,6 +27,12 @@ export interface CrewContext {
   /** This process: the walk to the calling session starts here. */
   pid: number;
   processes: ProcessFacts;
+  /** Running session records; tests inject their own process identities. */
+  sessions?: () => readonly import("../hooks/sessions").SessionRecord[];
+  /** Watch presence, injectable without real pids. */
+  watchAlive?: (repo: string, sessionId: string) => boolean;
+  /** The installed kit version; absent or unknown means a watch keeps running. */
+  installedVersion?: () => string | null;
   now: () => number;
   /** Waits `ms` milliseconds: the polls of the watch and the self-watch (a test hands in its own). */
   sleep: (ms: number) => Promise<void>;
@@ -111,6 +118,7 @@ export function realCrewContext(paths: CliPaths): CrewContext {
     env,
     error: (line) => console.error(line),
     freeMemoryGb: () => Promise.resolve(freeForCrewGb(realMemoryFacts())),
+    installedVersion: () => findUserInstall(paths.installedPluginsFile)?.version ?? null,
     load: () => machineLoad(realLoadFacts()),
     now: () => Date.now(),
     outputClosed: stdout.closed,

@@ -49,6 +49,7 @@ import {
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
+  WORKTREE_REBUILDABLE_SINCE,
 } from "./config";
 
 /** One question's answer, as the flags and the terminal gave it. */
@@ -272,6 +273,7 @@ export function requiresFloor(file: Record<string, unknown>): {
     needs.push(WORKFLOW_CREW_SINCE);
   }
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);
   const jobs = isObject(file.jobs) ? file.jobs : {};
   const kinds = isObject(jobs.kinds) ? Object.values(jobs.kinds) : [];
   for (const [key, since] of Object.entries(JOB_KIND_KEYS_SINCE)) {

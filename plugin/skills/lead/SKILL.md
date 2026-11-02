@@ -51,7 +51,9 @@ the work) is an ordinary session's rule. A lead follows this section instead.
   with `/rename` after that stays), so there is nothing for the person to type. Only a session
   id no name record can be made for, or a project running its own `lead-notes` hook, gets a
   `/rename` line, which the person types once. `crew start` refuses until this session is a
-  lead.
+  lead. Moving this session to the background forks its id: run `crew lead` again in
+  the new session. It adopts this plan's crew only when their old lead no longer runs;
+  a live lead or unreadable presence refuses the hand-over.
 
 ## 2. Split the plan into phases
 
@@ -196,8 +198,10 @@ phase whose waits are met runs or is queued.
 **A monitor that ended does not come back.** Claude Code arms a plugin's monitor once for each
 Claude process, and running this skill again does not arm it a second time. So when the `lead-notes`
 line or `crew watch ended: …` says your watch is gone, start the watch yourself with Claude Code's
-`Monitor` tool: persistent, command `"$HOME/.local/bin/cc-smart-dev-kit" crew watch` (the
-`crew-events` line of the plugin's monitors). In a session that never ran this skill, run the skill
+`Monitor` tool: `description: "Crew news"`, `timeout_ms: 1800000`, command `"$HOME/.local/bin/cc-smart-dev-kit" crew watch` (the
+`crew-events` line of the plugin's monitors). There is no `persistent` input. On the expiry
+notice, start it again at once, in that same turn. The `lead-notes` line names a gone watch.
+In a session that never ran this skill, run the skill
 instead. One watch acts for a lead, the newest: a restarted watch ends the older one, and
 `crew watch: a newer watch of this lead runs (pid …); this one ends` needs nothing from you.
 `cc-smart-dev-kit crew watch --once` with `run_in_background: true` is one look: it ends on the
@@ -224,12 +228,17 @@ recommends, and the crew session goes on with what the question does not block.
   owner decision: ask with `AskUserQuestion`, with the crew session's options, its recommendation
   first, and which crew session asks. Several crew sessions' questions go in one call. Never answer one of
   these for the person.
-- **Send the answer:** `cc-smart-dev-kit crew answer <name> "<answer>"`. A running crew session
+- **Send the answer:** `cc-smart-dev-kit crew answer <name> --question <n> "<answer>"`. A running crew session
   gets it by itself, through its monitor, even when it sits blocked; the command says
   `delivered`, or `recorded, not delivered` and prints the one `SendMessage` line you then send
   yourself, after the line that says to load the deferred tool: run that `ToolSearch` first. A stopped one is resumed with it. **A wrong answer is corrected by answering the same
   question again**: the crew session hears that it replaces the first. A finished crew session takes
   neither.
+- Questions keep their numbers and stay open independently. Use the number to correct an answered
+  question too. For a decision without a question, use `cc-smart-dev-kit crew note <name> "<text>"`.
+  A queued phase reads it after its brief. For a long answer or note, write the text with the
+  Write tool, then send `crew answer <name> --question <n> --file <path>` or
+  `crew note <name> --file <path>`; never put long command-like text on the shell command line.
 - **A permission prompt in a crew session** only the person answers. Name the crew session and give the
   line `claude attach <name>`.
 
@@ -241,10 +250,17 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
    (a reviewer's `review`, or an `ownReview` with its reason where the brief asked for no second
    opinion; the watch and the portal show either as a review), each finding with its fix; no file outside the brief without a reason; nothing left open
    that the phase needed.
-2. **The merge check:** `cc-smart-dev-kit workflow merge-check --branch <branch> --base <your
-   branch>` says whether the recorded review covers the branch head. Where the installed kit has
-   no such command yet, check that the report's review commit is the head, or that the fixes
-   after it are small.
+2. **The merge check:** before the first one, push your lead branch once with
+   `git push -u origin <your-branch>`: the policy is trusted from origin, not your working file.
+   With `autoPush` off, get the person's yes for that first push. Then run
+   `cc-smart-dev-kit workflow merge-check --branch <branch> --base <your-branch>`.
+   If it says `asks` because the fixes exceed `fixesAfterReview`, read `crew log <name>` and
+   `git diff <reviewed-commit>..<head>`. Have `cc-smart-dev-kit:reviewer` review only those fixes
+   once, from a session whose checkout is on that crew head; keep HEAD unchanged until it returns.
+   The `review-record` hook records that head when the reviewer returns, as the review skill
+   describes. The manual command is `cc-smart-dev-kit workflow review-done --sha <head>`:
+   only the person runs it in their own terminal, never a Claude session. Run merge-check again
+   after the record lands. Never merge past that `asks` without the review and a fresh verdict.
 3. **Merge locally, one at a time, in the plan's order:** contracts first, then a branch that
    others build on. `git merge --no-ff <branch>` on your branch. A conflict is yours to resolve.
 4. **No full check per merge.** The crew session ran one on its branch; yours runs once, before
@@ -328,7 +344,10 @@ survives a restart, a new lead and `crew rm`**: `<plan folder>/runs/<crew id>.js
 session ids, the times and who answered, merged and removed; `cc-smart-dev-kit crew history`
 reads it. Commit the plan's folder with the plan. After a compaction: read
 the plan, then one `crew list`. After this session restarts: the same, and run this skill
-again (a restart is a new Claude process, so its monitor arms again). After the machine restarts:
+again (a restart is a new Claude process, so its monitor arms again). A move to the
+background gives this session a new id: run `cc-smart-dev-kit crew lead` again to adopt
+its crew, then start its watch. The name and folder carry over, not the old session id.
+After the machine restarts:
 `cc-smart-dev-kit crew resume <name>` for each stopped crew session — never `claude respawn
 --all`, never `claude daemon stop`.
 

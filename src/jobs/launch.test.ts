@@ -20,6 +20,8 @@ import {
   ceilingArgv,
   chooseLaunch,
   exitCodeOf,
+  idleMarkerState,
+  idleUnsupportedPath,
   type LaunchFacts,
   launchArgv,
   oomKiller,
@@ -572,7 +574,7 @@ describe("systemd probes never hang", () => {
       const started = Date.now();
       expect(realLaunchFacts(SLICE, 200).probeScope(true)).toBe(false);
       expect(realSliceControl(() => null, 200).setMemoryMax(SLICE, "8G")).toBe(false);
-      expect(realSliceControl(() => null, 200).setWeights(SLICE, { cpu: 20 })).toBe(false);
+      expect(realSliceControl(() => null, 200).setWeights(SLICE, { cpu: 20 })).toBe("timeout");
       // No weight to set: no call, and no failure.
       expect(realSliceControl(() => null, 200).setWeights(SLICE, {})).toBe(true);
       realScope(SLICE, "cc-smart-dev-kit-heavy-tsc-1-a.scope", () => null, 200)?.kill("SIGTERM");
@@ -1057,6 +1059,227 @@ describe("runJob", () => {
 // machine is busy, and every core of an idle one. systemd shares them between sibling
 // slices, so the whole chain carries the weight.
 describe("the heavy slices' CPU and I/O weights", () => {
+  test("real slice control persists idle refusal and reads CPUWeight through systemctl", () => {
+    const folder = tempDir("slice-control");
+    const log = join(folder, "calls");
+    writeFileSync(
+      join(folder, "systemctl"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nif [ "$1" = --version ]; then printf 'systemd 249\\n'; else printf 'CPUWeight=100\\n'; fi\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = folder;
+    try {
+      const first = realSliceControl(() => null, 200, folder);
+      expect(first.idleUnsupported?.()).toBe(false);
+      first.rememberIdleUnsupported?.();
+      const later = realSliceControl(() => null, 200, folder);
+      expect(later.idleUnsupported?.()).toBe(true);
+      expect(later.cpuWeight?.("app-heavy.slice")).toBe(100);
+      expect(readFileSync(log, "utf8")).toBe(
+        "--version\n--version\n--user show -p CPUWeight app-heavy.slice\n",
+      );
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  test.each(["timeout", false] as const)(
+    "an idle failure %s does not prove idle is unsupported",
+    async (failure) => {
+      const r = recorder();
+      const base = deps(r);
+      let remembered = false;
+      const calls: unknown[] = [];
+      await runJob(
+        { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "idle", ioWeight: 20 },
+        {
+          ...base,
+          slice: {
+            ...base.slice,
+            controllers: () => ["cpu", "io", "memory"],
+            setWeights: (_name, weights) => {
+              calls.push(weights);
+              return failure;
+            },
+            rememberIdleUnsupported: () => {
+              remembered = true;
+            },
+          },
+        },
+      );
+      expect(remembered).toBe(false);
+      expect(calls).toHaveLength(failure === "timeout" ? 1 : 2);
+      expect(r.said).toEqual([
+        "could not set the CPU and I/O weights on app-heavy.slice: the job runs without priority there",
+      ]);
+    },
+  );
+
+  test("the marker's read for job status only reports: a stale marker stays on disk", () => {
+    const folder = tempDir("idle-state");
+    const marker = idleUnsupportedPath(folder);
+    expect(idleMarkerState(marker, () => "systemd 250")).toBe("none");
+    writeFileSync(marker, "systemd 249\n");
+    expect(idleMarkerState(marker, () => "systemd 249")).toBe("valid");
+    expect(idleMarkerState(marker, () => undefined)).toBe("valid");
+    expect(idleMarkerState(marker, () => "systemd 250")).toBe("stale");
+    expect(existsSync(marker)).toBe(true);
+    writeFileSync(marker, "idle refused\n");
+    expect(idleMarkerState(marker, () => "systemd 250")).toBe("valid");
+  });
+
+  test("marker tracks the refusing systemd version and rechecks after an upgrade", () => {
+    const folder = tempDir("idle-version");
+    const binary = join(folder, "systemctl");
+    const marker = join(folder, "cpu-idle-unsupported");
+    writeFileSync(binary, "#!/bin/sh\nprintf 'systemd 249 (example)\\nother details\\n'\n", {
+      mode: 0o755,
+    });
+    const path = process.env.PATH;
+    process.env.PATH = folder;
+    try {
+      const control = realSliceControl(() => null, 200, folder);
+      control.rememberIdleUnsupported?.();
+      expect(readFileSync(marker, "utf8")).toBe("systemd 249 (example)\n");
+      expect(control.idleUnsupported?.()).toBe(true);
+      writeFileSync(binary, "#!/bin/sh\nprintf 'systemd 250\\n'\n");
+      expect(control.idleUnsupported?.()).toBe(false);
+      expect(existsSync(marker)).toBe(false);
+      writeFileSync(marker, "idle refused\n");
+      expect(control.idleUnsupported?.()).toBe(true);
+      writeFileSync(marker, "systemd 249\n");
+      writeFileSync(binary, "#!/bin/sh\nexit 1\n");
+      expect(control.idleUnsupported?.()).toBe(true);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  test.each([
+    ["systemd 249", "systemd 249", 10],
+    ["systemd 249", "systemd 250", "idle"],
+    ["idle refused", "systemd 250", 10],
+  ] as const)("marker %s with current %s launches at %s", async (recorded, current, expected) => {
+    const folder = tempDir("idle-launch-version");
+    const binary = join(folder, "systemctl");
+    const log = join(folder, "calls");
+    writeFileSync(join(folder, "cpu-idle-unsupported"), `${recorded}\n`);
+    writeFileSync(
+      binary,
+      `#!/bin/sh\nif [ "$1" = --version ]; then printf '${current}\\n'; else printf '%s\\n' "$*" >> '${log}'; fi\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = folder;
+    try {
+      const r = recorder();
+      const base = deps(r);
+      const real = realSliceControl(() => null, 200, folder);
+      await runJob(
+        { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "idle", ioWeight: 0 },
+        {
+          ...base,
+          slice: {
+            ...base.slice,
+            setWeights: real.setWeights,
+            idleUnsupported: real.idleUnsupported,
+          },
+        },
+      );
+      expect(readFileSync(log, "utf8")).toBe(
+        `--user set-property --runtime app-heavy.slice CPUWeight=${expected}\n`,
+      );
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  test("a proved refusal writes the running systemd version", async () => {
+    const folder = tempDir("idle-proved");
+    writeFileSync(
+      join(folder, "systemctl"),
+      '#!/bin/sh\nif [ "$1" = --version ]; then printf \'systemd 249\\n\'; elif [ "$5" = CPUWeight=idle ]; then exit 1; fi\n',
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = folder;
+    try {
+      const r = recorder();
+      const base = deps(r);
+      const real = realSliceControl(() => null, 200, folder);
+      await runJob(
+        { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "idle", ioWeight: 0 },
+        {
+          ...base,
+          slice: {
+            ...base.slice,
+            setWeights: real.setWeights,
+            rememberIdleUnsupported: real.rememberIdleUnsupported,
+          },
+        },
+      );
+      expect(readFileSync(join(folder, "cpu-idle-unsupported"), "utf8")).toBe("systemd 249\n");
+      expect(r.said).toEqual([
+        "CPU priority: this systemd could not set idle; using weight 10 instead.",
+      ]);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  test("custom slices never weight a foreign parent", async () => {
+    const r = recorder();
+    await runJob(
+      { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "idle", ioWeight: 0 },
+      deps(r),
+    );
+    expect(r.events.filter((event) => event.startsWith("weights "))).toEqual([
+      "weights app-heavy.slice CPUWeight=idle",
+    ]);
+  });
+
+  test("idle refusal is remembered across jobs and slices", async () => {
+    const r = recorder();
+    const base = deps(r);
+    let refused = false;
+    const calls: string[] = [];
+    const slice = {
+      ...base.slice,
+      idleUnsupported: () => refused,
+      rememberIdleUnsupported: () => {
+        refused = true;
+      },
+      setWeights: (name: string, weights: { cpu?: number | "idle" }) => {
+        calls.push(`${name}:${String(weights.cpu)}`);
+        return weights.cpu !== "idle";
+      },
+    };
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, { ...base, slice });
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, { ...base, slice });
+    expect(calls.filter((call) => call.endsWith(":idle"))).toEqual(["cc.slice:idle"]);
+    expect(calls.filter((call) => call.endsWith(":10"))).toHaveLength(10);
+    expect(r.said).toEqual([
+      "CPU priority: this systemd could not set idle; using weight 10 instead.",
+    ]);
+  });
+
+  test("off skips a normal or unset CPU weight but clears idle", async () => {
+    for (const current of [100, null, "idle"] as const) {
+      const r = recorder();
+      const base = deps(r);
+      await runJob(
+        { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "off", ioWeight: 0 },
+        {
+          ...base,
+          slice: { ...base.slice, cpuWeight: () => current },
+        },
+      );
+      expect(r.events.filter((event) => event.startsWith("weights "))).toEqual(
+        current === "idle" ? ["weights app-heavy.slice CPUWeight=100"] : [],
+      );
+    }
+  });
   test("one set-property call carries both weights, in systemd's own form", () => {
     expect(weightsArgv(SLICE, { cpu: 20, io: 20 })).toEqual([
       "systemctl",
@@ -1075,6 +1298,14 @@ describe("the heavy slices' CPU and I/O weights", () => {
       "cc-smart-dev-kit-heavy.slice",
       "IOWeight=7",
     ]);
+    expect(weightsArgv(SLICE, { cpu: "idle" })).toEqual([
+      "systemctl",
+      "--user",
+      "set-property",
+      "--runtime",
+      SLICE,
+      "CPUWeight=idle",
+    ]);
     expect(weightsArgv(SLICE, {})).toBeNull();
   });
 
@@ -1092,6 +1323,53 @@ describe("the heavy slices' CPU and I/O weights", () => {
       "weights cc-smart-dev-kit.slice CPUWeight=20 IOWeight=20",
       "weights cc-smart-dev-kit-heavy.slice CPUWeight=20 IOWeight=20",
     ]);
+  });
+
+  test("idle succeeds across the chain without a warning", async () => {
+    const r = recorder();
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, deps(r));
+    expect(
+      r.events
+        .filter((event) => event.startsWith("weights "))
+        .map((event) => event.split(" ").at(-1)),
+    ).toEqual([
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+    ]);
+    expect(r.said).toEqual([]);
+  });
+
+  test("idle fallback sets 10 across the chain and warns once", async () => {
+    const r = recorder();
+    const base = deps(r);
+    const calls: string[] = [];
+    await runJob(
+      { ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 },
+      {
+        ...base,
+        slice: {
+          ...base.slice,
+          setWeights: (slice, weights) => {
+            calls.push(`${slice}:${String(weights.cpu)}`);
+            return weights.cpu !== "idle";
+          },
+        },
+      },
+    );
+    expect(calls.filter((call) => call.endsWith(":10"))).toEqual([
+      "cc.slice:10",
+      "cc-smart.slice:10",
+      "cc-smart-dev.slice:10",
+      "cc-smart-dev-kit.slice:10",
+      `${SLICE}:10`,
+    ]);
+    expect(r.said).toEqual([
+      "CPU priority: this systemd could not set idle; using weight 10 instead.",
+    ]);
+    expect(r.runs).toHaveLength(1);
   });
 
   test("a controller the user manager was not given skips its weight, and the job still runs", async () => {
@@ -1145,18 +1423,20 @@ describe("the heavy slices' CPU and I/O weights", () => {
     const off = recorder();
     const offBase = deps(off);
     await runJob(
-      { ...request, ...tsc, cpuWeight: 0, ioWeight: 7 },
+      { ...request, ...tsc, cpuWeight: "off", ioWeight: 7 },
       {
         ...offBase,
         slice: { ...offBase.slice, controllers: () => ["cpu", "io", "memory", "pids"] },
       },
     );
     expect(off.events.filter((event) => event.startsWith("weights "))[0]).toBe(
-      "weights cc.slice IOWeight=7",
+      "weights cc.slice CPUWeight=100 IOWeight=7",
     );
     const bothOff = recorder();
-    await runJob({ ...request, ...tsc, cpuWeight: 0, ioWeight: 0 }, deps(bothOff));
-    expect(bothOff.events.some((event) => event.startsWith("weights "))).toBe(false);
+    await runJob({ ...request, ...tsc, cpuWeight: "off", ioWeight: 0 }, deps(bothOff));
+    expect(bothOff.events.filter((event) => event.startsWith("weights "))[0]).toBe(
+      "weights cc.slice CPUWeight=100",
+    );
   });
 
   test("a weight systemd refuses is one line, and the job runs without priority there", async () => {

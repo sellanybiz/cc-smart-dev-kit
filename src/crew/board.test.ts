@@ -10,7 +10,23 @@ import { COMMAND } from "../build-info/names";
 import { recordUsageWindow, usageWindowFile } from "../cli/usage-window";
 import { loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
-import { boardWorld, MINUTE, NOW } from "../testing/board-world";
+import { MINUTE, boardWorld as makeBoardWorld, NOW } from "../testing/board-world";
+
+/** Ordinary board examples have live crew; reboot cases explicitly supply an empty view. */
+async function boardWorld() {
+  const world = await makeBoardWorld();
+  const ctx = world.ctx;
+  world.ctx = (change, env) =>
+    ctx(
+      {
+        sessions: () => [{ pid: 300, sessionId: LEAD_SESSION, cwd: world.repo, name: "lead" }],
+        ...change,
+      },
+      { FAKE_AGENTS_JSON: '[{"id":"a1b2c3d4","pid":301,"state":"working"}]', ...env },
+    );
+  return world;
+}
+
 import { LEAD_SESSION } from "../testing/crew-world";
 import { git, tempDir } from "../testing/temp";
 import { repoKey } from "../workflow/reviews";
@@ -38,6 +54,55 @@ const OPUS_CHAIN = {
 };
 
 describe("crew list", () => {
+  test("after a reboot a dead crew is displayed as not running without a watch", async () => {
+    const world = await boardWorld();
+    await world.addCrew();
+    expect(
+      await runCrew(["list"], world.ctx({ sessions: () => [] }, { FAKE_AGENTS_JSON: "[]" })),
+    ).toBe(0);
+    expect(world.out).toContain(
+      'C my-app B1 help: not running (last: working, 12 min ago) — crew resume "C my-app B1 help"',
+    );
+    expect(world.out).toContain(
+      "lead LEAD my-app master-plan (c00f9bb5) is not running; run cc-smart-dev-kit crew lead --plan master-plan to take its crew",
+    );
+  });
+  test("old removals hide by removal time, with an opt-in and unfiltered JSON", async () => {
+    const world = await boardWorld();
+    const old = await world.addCrew({ state: "working", worktree: false });
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      old.id,
+      { state: "removed" },
+      NOW - 6 * 60 * MINUTE - 1,
+    );
+    await updateCrew(world.paths.stateDir, world.repo, old.id, { lastLine: "later note" }, NOW);
+    const recent = await world.addCrew({
+      slug: "recent",
+      state: "removed",
+      atMs: NOW - 6 * 60 * MINUTE,
+      worktree: false,
+    });
+    expect(await runCrew(["list"], world.ctx())).toBe(0);
+    expect(world.out.join("\n")).not.toContain(old.name);
+    expect(world.out.join("\n")).toContain(recent.name);
+    expect(world.out.at(-1)).toBe(
+      "1 older removed crew session hidden; crew list --removed shows them.",
+    );
+    world.out.length = 0;
+    expect(await runCrew(["list", "--removed"], world.ctx())).toBe(0);
+    expect(world.out.join("\n")).toContain(old.name);
+    world.out.length = 0;
+    expect(await runCrew(["list", "--json"], world.ctx())).toBe(0);
+    expect(JSON.parse(world.out[0] ?? "[]")).toHaveLength(2);
+    world.out.length = 0;
+    expect(await runCrew(["list"], world.ctx({ now: () => NOW + 1 }))).toBe(0);
+    expect(world.out).toEqual([
+      "2 older removed crew sessions hidden; crew list --removed shows them.",
+    ]);
+  });
+
   test("list --discarded names recovery and age and excludes pruned archives", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({
@@ -101,10 +166,13 @@ describe("crew list", () => {
   test("list --all marks a crew session after its lead has been unknown for more than a day", async () => {
     const world = await boardWorld();
     await world.addCrew({ state: "stopped" });
-    expect(await runCrew(["list", "--all"], world.ctx())).toBe(0);
+    const absent = { sessions: () => [], watchAlive: () => false };
+    expect(await runCrew(["list", "--all"], world.ctx(absent))).toBe(0);
     expect(world.out.join("\n")).not.toContain("its lead is gone");
     world.out.length = 0;
-    expect(await runCrew(["list", "--all"], world.ctx({ now: () => NOW + 86_400_001 }))).toBe(0);
+    expect(
+      await runCrew(["list", "--all"], world.ctx({ ...absent, now: () => NOW + 86_400_001 })),
+    ).toBe(0);
     expect(world.out.join("\n")).toContain("its lead is gone");
   });
 
@@ -158,12 +226,12 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B1 help — blocked, 5 min ago",
       "  B1 · build · sonnet → omniroute:glm-5.1 (slot cc-smart-dev-kit-worker) · max",
-      "  crew/B1-help · memory 640 MB · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory 640 MB · lead LEAD my-app master-plan (c00f9bb5)",
       "  last: tests green",
       "",
       "C my-app B2 api — done, 3 h ago",
       "  B2 · security · opus · xhigh",
-      "  crew/B2-api · memory - · lead LEAD my-app master-plan",
+      "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  last: Hand-back sent.",
     ]);
   });
@@ -214,7 +282,7 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
-      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  last: handed back",
     ]);
   });
@@ -232,11 +300,11 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B2 api — working, 5 min ago",
       "  B2 · build · sonnet · high",
-      "  crew/B2-api · memory - · lead LEAD my-app master-plan",
+      "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
-      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  files: src/lookup/index.ts, src/lookup/rank.ts",
     ]);
   });
@@ -266,17 +334,17 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B3 more — queued, 2 min ago",
       "  B3 · build · sonnet · high",
-      "  crew/B3-more · memory - · lead LEAD my-app master-plan",
+      "  crew/B3-more · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  held: waits for B1 (working); it starts when each is merged",
       "",
       "C my-app B2 api — queued, 5 min ago",
       "  B2 · build · sonnet · high",
-      "  crew/B2-api · memory - · lead LEAD my-app master-plan",
+      "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  held: 1 of 1 crew sessions running on this machine; it starts when one finishes",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
-      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
     ]);
   });
 
@@ -355,7 +423,7 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B1 help — queued, 12 min ago",
       "  B1 · ui · opus · xhigh",
-      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
       "  held: a place is free; its lead's watch starts it",
       UNREAD,
     ]);
@@ -488,7 +556,7 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
-      "  crew/B1-help · memory - · lead LEAD my-app master-plan",
+      "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
     ]);
 
     world.out.length = 0;
@@ -496,11 +564,11 @@ describe("crew list", () => {
     expect(world.out).toEqual([
       "C other P1 x — working, 5 min ago",
       "  P1 · build · sonnet · high",
-      "  crew/P1-x · memory - · lead LEAD my-app master-plan · /home/user/other-app",
+      "  crew/P1-x · memory - · lead LEAD my-app master-plan (c00f9bb5) · /home/user/other-app",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
-      `  crew/B1-help · memory - · lead LEAD my-app master-plan · ${world.repo}`,
+      `  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5) · ${world.repo}`,
     ]);
   });
 
@@ -683,15 +751,16 @@ describe("crew status", () => {
       `branch    crew/B1-help, cut from main at ${sha}`,
       `worktree  ${world.repo}/.claude/worktrees/crew-B1-help`,
       "session   a1b2c3d4 (a1b2c3d4-0000-1111-2222-333333333333)",
-      "lead      LEAD my-app master-plan",
+      "lead      LEAD my-app master-plan (c00f9bb5)",
       "pr        #12",
       "memory    512 MB",
       "last      running the full suite",
       `brief     ${files}/brief.md`,
       "report    /x/report.json",
-      "question  asked 3 min ago: Which cap should it use?",
+      "question 1 asked 3 min ago: Which cap should it use?",
       "          1) one",
       "          2) two (recommended)",
+      "answered  0",
       "recent events:",
       "  2026-10-21T09:48:00.000Z  created   working",
       "  2026-10-21T09:55:00.000Z  state     blocked  waiting for the lead",
@@ -720,11 +789,12 @@ describe("crew status", () => {
       "branch    crew/B2-api, to be cut from main",
       `worktree  ${world.repo}/.claude/worktrees/crew-B2-api`,
       "session   none yet",
-      "lead      LEAD my-app master-plan",
+      "lead      LEAD my-app master-plan (c00f9bb5)",
       "memory    -",
       `brief     ~/.claude/cc-smart-dev-kit/crew/${repoKey(world.repo)}/files/B2-api-1a2b3c/brief.md`,
       "report    none yet",
       "question  none open",
+      "answered  0",
       "recent events:",
       "  2026-10-21T09:55:00.000Z  created   queued",
     ]);

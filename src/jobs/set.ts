@@ -23,7 +23,7 @@ import { withLock } from "../setup/lock";
 import { applyManagedJson } from "../setup/managed-json";
 import { jobsPaths, loadJobsConfig, MAX_WEIGHT } from "./config";
 
-type Parsed = { ok: true; value: number | "off" } | { ok: false; why: string };
+type Parsed = { ok: true; value: number | "off" | "idle" } | { ok: false; why: string };
 
 interface SettingSpec {
   /** The field of `jobs.json` it writes. */
@@ -41,10 +41,14 @@ function parseMaxJobs(text: string): Parsed {
 /** A weight: `off`, `0` (the same), or a whole number up to `MAX_WEIGHT`. */
 function parseWeight(name: string): (text: string) => Parsed {
   return (text) => {
+    if (name === "cpu-weight" && text === "idle") return { ok: true, value: "idle" };
     if (text === "off" || text === "0") return { ok: true, value: "off" };
     return /^\d+$/.test(text) && Number(text) >= 1 && Number(text) <= MAX_WEIGHT
       ? { ok: true, value: Number(text) }
-      : { ok: false, why: `${name} is off, or a whole number 1-${MAX_WEIGHT}` };
+      : {
+          ok: false,
+          why: `${name} is ${name === "cpu-weight" ? "idle, " : ""}off, or a whole number 1-${MAX_WEIGHT}`,
+        };
   };
 }
 

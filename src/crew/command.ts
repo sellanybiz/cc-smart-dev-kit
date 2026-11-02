@@ -23,8 +23,10 @@ import type { CrewContext } from "./context";
 import { runCrewResume, runCrewResumePaused, runCrewStop } from "./end";
 import { type LeadArgs, runCrewLead } from "./lead";
 import { runLeadTell } from "./lead-tell";
+import { runCrewLog } from "./log";
 import { type ModelArgs, runCrewModel } from "./model";
 import { isNameTag, isPhase, isSlug, PHASE_RULE, SLUG_RULE, TAG_RULE } from "./names";
+import { runCrewNote } from "./note";
 import { runCrewRm } from "./remove";
 import { isReportStatus, REPORT_STATUS_NAMES, type ReportArgs, runCrewReport } from "./report";
 import { type HistoryArgs, runCrewHistory } from "./runs-history";
@@ -94,6 +96,8 @@ Commands:
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads: the session takes that name at its next prompt.
+                 After a background fork, run it again to adopt the old crew.
+                 A live lead of that plan refuses the hand-over.
                  --plan-file is the plan's file: the folder beside it holds the
                  plan's briefs and the record of each crew run (crew history).
                  --end records its plan ended; crew work stays unless on the base.
@@ -138,7 +142,11 @@ Commands:
           [--recommend <n>]
                  Records a question for the lead. The crew session goes on with
                  everything the question does not block.
-  answer <crew session> "<the answer>"
+  answer <crew session> [--question <n>] [--file <path|->] [--as-person] [<text>]
+  note <crew session> [--file <path|->] [--as-person] [<text>]
+                 A note from its own lead: queued phases read it after the brief;
+                 running ones hear it through self-watch; stopped ones resume with it.
+                 Give exactly one of text or --file. Several open questions need --question.
                  The lead's answer to a crew session's question. A running crew session
                  gets it from its own monitor, even when idle (the command says
                  delivered, or recorded and prints the line the lead sends by hand,
@@ -330,8 +338,8 @@ export function parseHistoryArgs(argv: readonly string[]): HistoryArgs | { error
 /** `crew list`'s arguments, checked; or the mistake. */
 export function parseListArgs(
   argv: readonly string[],
-): { all: boolean; json: boolean; discarded?: boolean } | { error: string } {
-  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded"]);
+): { all: boolean; json: boolean; discarded?: boolean; removed?: boolean } | { error: string } {
+  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded", "--removed"]);
   if ("error" in parsed) return parsed;
   if (parsed.positionals.length > 0) {
     return { error: `Unknown argument: ${parsed.positionals.join(" ")}` };
@@ -340,6 +348,7 @@ export function parseListArgs(
     all: parsed.flags.has("--all"),
     json: parsed.flags.has("--json"),
     ...(parsed.flags.has("--discarded") ? { discarded: true } : {}),
+    ...(parsed.flags.has("--removed") ? { removed: true } : {}),
   };
 }
 
@@ -518,7 +527,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       "all" in args ? runCrewResumePaused(args.lead, ctx) : runCrewResume(args.ref, ctx),
     );
   }
-  if (sub === "status" || sub === "attach" || sub === "stop") {
+  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "log") {
     const args = parseTargetArgs(sub, rest);
     if ("error" in args) {
       ctx.error(usageError(args.error, sub));
@@ -529,6 +538,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       attach: () => runCrewAttach(ref, ctx),
       rm: () => runCrewRm(ref, ctx),
       status: () => runCrewStatus(ref, ctx),
+      log: () => runCrewLog(ref, ctx),
       stop: () => runCrewStop(ref, ctx),
     }[sub];
     return await guarded(sub, ctx, run);
@@ -582,6 +592,18 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
       return 2;
     }
     return await runCrewReport(args, ctx);
+  }
+  if (sub === "note") {
+    const args = parseAnswerArgs(rest, "note");
+    if ("error" in args) {
+      ctx.error(usageError(args.error));
+      return 2;
+    }
+    if (args.question !== undefined) {
+      ctx.error(usageError("crew note takes no --question"));
+      return 2;
+    }
+    return runCrewNote(args, ctx);
   }
   if (sub === "answer") {
     const args = parseAnswerArgs(rest);
@@ -715,15 +737,29 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
  * has no session above it and may carry the crew environment of the session that started the
  * portal, so neither the "no session runs this command" refusal nor the crew one applies.
  */
-export function parseAnswerArgs(argv: readonly string[]): AnswerArgs | { error: string } {
-  const parsed = parseOptions(argv, [], ["--as-person"]);
+export function parseAnswerArgs(
+  argv: readonly string[],
+  command: "answer" | "note" = "answer",
+): AnswerArgs | { error: string } {
+  const parsed = parseOptions(argv, ["--question", "--file"], ["--as-person"]);
   if ("error" in parsed) return parsed;
   const [crew, text, ...extra] = parsed.positionals;
   if (crew === undefined)
-    return { error: 'Say which crew session: crew answer <crew session> "<text>"' };
-  if (text === undefined) return { error: 'Say the answer: crew answer <crew session> "<text>"' };
+    return { error: `Say which crew session: crew ${command} <crew session> "<text>"` };
+  const file = parsed.options.get("--file");
+  if ((text === undefined) === (file === undefined))
+    return { error: "Give exactly one answer: <text> or --file <path|->" };
   if (extra.length > 0) return { error: `Unknown argument: ${extra.join(" ")}` };
-  return { asPerson: parsed.flags.has("--as-person"), text, crew };
+  const raw = parsed.options.get("--question");
+  if (raw !== undefined && (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))))
+    return { error: "--question needs a positive whole number" };
+  return {
+    asPerson: parsed.flags.has("--as-person"),
+    text: text ?? "",
+    crew,
+    ...(file === undefined ? {} : { file }),
+    ...(raw === undefined ? {} : { question: Number(raw) }),
+  };
 }
 
 /**

@@ -28,6 +28,20 @@ to the release that brought it — which is what `project init` writes.
 which `project init` asks for (it offers a `package.json` script with its lockfile's package
 manager, and `none` skips the field). The `verify-gate` Stop hook reads it (§ The hooks).
 
+`worktrees.rebuildable` came with 1.9.0 (`WORKTREE_REBUILDABLE_SINCE`): an optional
+string array of the project's own ignored paths that come back by themselves. For example,
+`"rebuildable": [".tool-cache/", "*.cache"]` allows worktree removal to lose those entries.
+Patterns use `/` and match at any depth, not only at the checkout root: `.tool-cache/`
+matches both `.tool-cache/` and `pkg/.tool-cache/`, as the built-in `REBUILDABLE` rule does.
+Git names a folder with a trailing `/`. Empty or absolute paths, backslashes, `.` or `..`
+segments, and patterns with only glob characters and dots (`*`, `.*`) are refused; name a
+folder or file.
+Never list a file that holds settings or secrets, such as `.env.local`. `localFiles` reads the main checkout's project file through
+the project loader. A missing, broken or too-new file adds no exemptions. A folder is safe
+when every entry inside is safe. This only widens the "comes back by itself" rule for the
+project's own ignored paths: it does not exempt tracked changes or bypass other removal
+checks. A project that sets it raises `requires` to `>=1.9`.
+
 **The floor covers every field and hook name that came after 0.5.2.** An older plugin reads
 the file strictly: a field it does not know, or an `ownHooks` name outside its list, makes it
 refuse the whole file, and every guard in that project fails closed. `requiresFloor`

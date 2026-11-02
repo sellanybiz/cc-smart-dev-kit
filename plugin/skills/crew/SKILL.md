@@ -61,7 +61,9 @@ Each step's procedure is its skill; the brief's done-check decides when the phas
 4. **The docs** the change touches, in the same change (core § Keep the docs true).
 5. **The full check, once** (`/cc-smart-dev-kit:verify-change` § 4): the phase is complete, and
    this is the only whole-project run before your report. Until now, only § 2's checks on what
-   you changed. Step `suite-green`. Commit.
+   you changed. Include the project's type check when allowed. If its rules or add-on forbid a
+   whole type check here, report `type check: not run (project rule)` in `checks`; the lead runs
+   it after the merge. Step `suite-green`. Commit.
 6. **Your own pass** (`/cc-smart-dev-kit:review`), and its fixes. Commit.
 7. **One review:** the `cc-smart-dev-kit:reviewer` agent (model and effort: the core
    instructions), once, on the committed phase (`/cc-smart-dev-kit:review` § Second opinion).
@@ -90,6 +92,14 @@ below on stdin (`crew report --help` names the flags). The command adds the bran
 the diff counts, the files outside your brief and the review record. You give the rest, **as
 JSON fields**: a report with no JSON, or prose alone, leaves every field empty, and a `done`
 report with an empty field is refused.
+
+**A guard refuses the here-doc?** Claude Code's worktree guard refuses a command it cannot show
+stays inside the worktree. Then write the JSON with the Write tool to a file outside the
+repository, such as your job's temp folder. The Write tool takes a real path and expands no
+variable, so first run `echo "$CLAUDE_JOB_DIR"` and write to `<that folder>/tmp/report.json`. Then
+run `crew report --status <status> --file <that path>`. Never send a bare report instead: its fields
+reach the lead empty. Never write it inside the worktree either: git sees the file as a change,
+and `crew rm` refuses a worktree that holds one.
 
 ```json
 {
@@ -153,6 +163,12 @@ A decision you cannot make goes to the lead:
 cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" \
   --option "<choice>" --recommend <n>
 ```
+
+Each question has a stable number (its place in your question list, counted from 1) and stays
+open until answered. A second question does not close the first. Answers name their question
+number and opening words. Your lead can also send a note without a question; queued phases
+read those notes after the brief. For long answers or notes the lead writes a file with the
+Write tool and sends it with `--file`, so its text never appears on a shell command line.
 
 The lead answers, or asks the person. **An answer arrives as a `<task-notification>`** from your
 monitor: its event is your lead's words (`Your lead answers your question …`, or `Your lead

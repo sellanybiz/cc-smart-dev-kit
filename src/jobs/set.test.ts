@@ -129,6 +129,12 @@ describe("job set max-jobs", () => {
 });
 
 describe("job set cpu-weight and io-weight", () => {
+  test("write idle for CPU only", async () => {
+    const { file, paths } = home();
+    expect((await setJobsSetting(paths, "cpu-weight", "idle")).ok).toBe(true);
+    expect(readFile(file)).toEqual({ cpuWeight: "idle" });
+    expect((await setJobsSetting(paths, "io-weight", "idle")).ok).toBe(false);
+  });
   test("write a weight, or off", async () => {
     const { file, paths } = home();
     expect((await setJobsSetting(paths, "cpu-weight", "50")).ok).toBe(true);
@@ -147,7 +153,7 @@ describe("job set cpu-weight and io-weight", () => {
     for (const text of ["10001", "-5", "1.5", "low"]) {
       expect(await setJobsSetting(paths, "cpu-weight", text)).toEqual({
         code: 2,
-        error: "cpu-weight is off, or a whole number 1-10000",
+        error: "cpu-weight is idle, off, or a whole number 1-10000",
         ok: false,
       });
     }

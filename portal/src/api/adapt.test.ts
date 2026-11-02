@@ -148,6 +148,7 @@ const CREW: CrewSummary = {
   phase: "B6c",
   plan: "plan.md",
   pr: null,
+  questions: [],
   question: null,
   repo: "/home/user/my-app",
   shortId: "abc123",
@@ -415,6 +416,22 @@ describe("the adapters", () => {
       brief: null,
       crew: {
         ...CREW,
+        questions: [
+          {
+            number: 2,
+            text: "Ship?",
+            options: ["yes", "no"],
+            recommend: 1,
+            askedAt: "2026-10-22T10:07:00.000Z",
+          },
+          {
+            number: 4,
+            text: "When?",
+            options: [],
+            recommend: null,
+            askedAt: "2026-10-22T10:08:00.000Z",
+          },
+        ],
         question: {
           askedAt: "2026-10-22T10:07:00.000Z",
           options: ["yes", "no"],
@@ -488,7 +505,8 @@ describe("the adapters", () => {
     expect(data.reviews).toEqual([
       { at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" },
     ]);
-    expect(data.questions.map((one) => one.question)).toEqual(["Ship?"]);
+    expect(data.questions.map((one) => one.question)).toEqual(["Ship?", "When?"]);
+    expect(data.questions.map((one) => one.number)).toEqual([2, 4]);
     expect(crewOf({ ...answer, mergeCheck: { kind: "silent" } }).mergeCheck).toBe(null);
   });
 
@@ -546,6 +564,7 @@ describe("the adapters", () => {
           askedAt: "2026-10-22T10:05:00.000Z",
           crew: { id: "crew-1", name: "C my-app B6c slots", shortId: "abc123", state: "blocked" },
           options: ["a", "b"],
+          number: 3,
           question: "Which?",
           recommended: 2,
         },
@@ -584,7 +603,7 @@ describe("the adapters", () => {
     };
     const data = needsOf(answer, "1.1.0");
     expect(data.items.map((item) => item.id)).toEqual([
-      "question-crew-1-2026-10-22T10:05:00.000Z",
+      "question-crew-1-3",
       "permission-abc123-full-session-id-1792663440000",
       "breaker-cc-smart-dev-kit-fable",
       "permission-s9-1792663320000",

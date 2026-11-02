@@ -53,6 +53,7 @@ export function needsData(
         since: iso(now - 9 * MINUTE),
         crew: { id: "d9e2f7a4", name: mockCrewName("C2", "skills-agents"), shortId: "d9e2f7a4" },
         ask: {
+          number: 1,
           question:
             "The reviewer agent lists Bash, so Claude Code drops Grep and Glob from it. Keep Grep, or Bash only?",
           options: [

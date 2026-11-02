@@ -195,7 +195,124 @@ describe("a session that is not a crew session hears nothing", () => {
   });
 });
 
+describe("earlier copies stand down on every event", () => {
+  for (const event of ["Stop", "StopFailure", "UserPromptSubmit", "PreToolUse"]) {
+    test(`${event}: an earlier copy cannot change the current record`, async () => {
+      const world = await crewWorld({
+        sessionId: SESSION_UUID,
+        shortId: "9f1c2d3e",
+        lastLine: "current copy's line",
+        earlierSessions: [{ sessionId: "old-session", shortId: "old-sess" }],
+      });
+      await step(world.stateDir, world.repo);
+      const before = readCrew(world.stateDir, world.repo, CREW_ID);
+      const events = readCrewEvents(world.stateDir, world.repo);
+      const result = await crewRoleAnswer(
+        {
+          session_id: "old-session",
+          cwd: world.repo,
+          prompt: "change the plan",
+          session_title: "Other title",
+          last_assistant_message: "old copy's line",
+          error: "rate_limit",
+          tool_name: "Edit",
+          tool_input: {},
+        },
+        event,
+        world.env,
+        cliPaths(world.env),
+        world.repo,
+        { nowMs: T0 },
+      );
+      const sentence =
+        "You are an earlier copy of the crew session `C app W2 hooks`; its current session is `9f1c2d3e`. Do nothing — change no file, run no command — and end your turn now.";
+      expect(result).toEqual(
+        event === "UserPromptSubmit"
+          ? addContext(event, sentence)
+          : event === "PreToolUse"
+            ? toolDecision("deny", sentence)
+            : {},
+      );
+      expect(readCrew(world.stateDir, world.repo, CREW_ID)).toEqual(before);
+      expect(readCrewEvents(world.stateDir, world.repo)).toEqual(events);
+    });
+
+    test(`${event}: the current copy in earlierSessions behaves as before`, async () => {
+      const world = await crewWorld({ sessionId: SESSION_UUID, shortId: "9f1c2d3e" });
+      await step(world.stateDir, world.repo);
+      const input = {
+        session_id: SESSION_UUID,
+        cwd: world.repo,
+        prompt: "change the plan",
+        session_title: "C app W2 hooks",
+        last_assistant_message: "current line",
+        error: "rate_limit",
+        tool_name: "Edit",
+        tool_input: {},
+      };
+      const baseline = await crewRoleAnswer(
+        input,
+        event,
+        world.env,
+        cliPaths(world.env),
+        world.repo,
+        { nowMs: T0 },
+      );
+      await updateCrew(
+        world.stateDir,
+        world.repo,
+        CREW_ID,
+        { earlierSessions: [{ sessionId: SESSION_UUID, shortId: "9f1c2d3e" }] },
+        T0,
+      );
+      const result = await crewRoleAnswer(
+        input,
+        event,
+        world.env,
+        cliPaths(world.env),
+        world.repo,
+        { nowMs: T0 },
+      );
+      expect(result).toEqual(baseline);
+      expect(JSON.stringify(result)).not.toContain("earlier copy");
+    });
+  }
+});
+
 describe("SessionStart: the role card", () => {
+  test("C3: an earlier copy in the main folder leaves the record unchanged", async () => {
+    const world = await crewWorld({ sessionId: SESSION_UUID, shortId: "9f1c2d3e" });
+    await updateCrew(
+      world.stateDir,
+      world.repo,
+      CREW_ID,
+      {
+        earlierSessions: [{ sessionId: "old-session", shortId: "old-sess" }],
+      },
+      T0,
+    );
+    const before = readCrew(world.stateDir, world.repo, CREW_ID);
+    const events = readCrewEvents(world.stateDir, world.repo);
+    const result = await runHook(
+      crewRoleHook,
+      {
+        hook_event_name: "SessionStart",
+        session_id: "old-session",
+        cwd: world.repo,
+        source: "resume",
+      },
+      world.env,
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)).toEqual(before);
+    expect(readCrewEvents(world.stateDir, world.repo)).toEqual(events);
+    expect(result).toEqual(
+      addContext(
+        "SessionStart",
+        "You are an earlier copy of the crew session `C app W2 hooks`; its current session is `9f1c2d3e`. Do nothing — change no file, run no command — and end your turn now.",
+      ),
+    );
+  });
+
   test("the exact card, built from the record and the brief's path", async () => {
     const world = await crewWorld();
     // A crew session starts in its worktree: its SessionStart input's `cwd` is that folder.

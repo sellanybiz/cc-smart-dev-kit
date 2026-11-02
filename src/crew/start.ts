@@ -124,6 +124,7 @@ import {
   createCrew,
   crewBriefFile,
   crewMcpFile,
+  crewNotesFile,
   crewReportFile,
   crewSettingsFile,
   type HandBackReport,
@@ -132,6 +133,7 @@ import {
   listAllCrew,
   listCrew,
   listLeads,
+  markNoteDelivered,
   readCrew,
   readCrewEvents,
   readLead,
@@ -579,6 +581,12 @@ async function plan(args: StartArgs, ctx: CrewContext): Promise<Plan> {
       `run ${COMMAND} crew lead --plan <slug> in it first`,
     );
   }
+  if (lead.endedAt != null) {
+    throw refusal(
+      `this lead ended${lead.adoptedBy == null ? "" : `; adopted by ${lead.adoptedBy}`}`,
+      lead.adoptedBy == null ? "run crew lead to reopen it" : `continue in lead ${lead.adoptedBy}`,
+    );
+  }
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     throw refusal(
@@ -1005,7 +1013,14 @@ async function launch(
     mcpFile,
     model: spec.model,
     name: record.name,
-    prompt: firstPrompt(record.name, spec.leadName, briefFile),
+    prompt: firstPrompt(
+      record.name,
+      spec.leadName,
+      briefFile,
+      (record.notes?.length ?? 0) === 0
+        ? undefined
+        : crewNotesFile(ctx.paths.stateDir, spec.repo, record.id),
+    ),
     settingsFile,
     // The folder's own name: a hand-off's next crew session has a number in it (`crew-B6b-x-2`), and a
     // queued crew session is launched later from its record, so the record's path is the one source.
@@ -1074,6 +1089,9 @@ async function launch(
       { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() },
       ctx.now(),
     );
+    for (const [index] of (record.notes ?? []).entries()) {
+      await markNoteDelivered(ctx.paths.stateDir, spec.repo, record.id, index, ctx.now());
+    }
   } catch (error) {
     // The session runs; only its record is behind. The watch reads agent view and catches up.
     recorded = false;
@@ -1261,12 +1279,18 @@ const BROAD_GLOB_MIN_FILES = 20;
 function broadGlobLines(files: readonly string[], repo: string, env: Env): string[] {
   if (files.length === 0) return [];
   const tracked = trackedFiles(repo, env);
-  if (tracked.length < BROAD_GLOB_MIN_FILES) return [];
   const lines: string[] = [];
   for (const entry of files) {
     const { glob, pattern } = filePattern(entry);
     const matched = tracked.filter((path) => matchesFilePattern(path, pattern, glob)).length;
-    if (matched <= tracked.length * BROAD_GLOB_SHARE) continue;
+    if (matched === 0) {
+      lines.push(
+        `warning: --files "${pattern}" matches no file yet: fine for a file this phase creates; else check the path — not blocked`,
+      );
+      continue;
+    }
+    if (tracked.length < BROAD_GLOB_MIN_FILES || matched <= tracked.length * BROAD_GLOB_SHARE)
+      continue;
     lines.push(
       `warning: --files "${pattern}" matches ${matched} of ${tracked.length} tracked files (${Math.round((matched / tracked.length) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
     );

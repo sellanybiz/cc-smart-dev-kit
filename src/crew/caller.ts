@@ -23,7 +23,7 @@ import { bypassReason, settingsFilesOf } from "./bypass";
 import type { CrewContext } from "./context";
 import { runningCrew } from "./places";
 import { callingSession, crewIdOf } from "./session";
-import { type CrewRecord, listCrew, readCrew } from "./store";
+import { type CrewRecord, isEarlierCopy, listCrew, readCrew } from "./store";
 
 /** Who calls, once every check passed. */
 export interface Caller {
@@ -253,6 +253,21 @@ export function readCrewSelf(
     resolved = resolveWorkflow(ctx.paths, loadProjectConfig(checkout).config);
   } catch (error) {
     return refuse(reasonOf(error));
+  }
+  // An earlier copy of this crew session (one Claude Code brought back after the record moved
+  // to a resumed copy) must not write over the current copy's record. A caller that cannot be
+  // named is judged as before this check: refusing it would stop every crew session whose
+  // session records cannot be read, the current copy included.
+  let session: ReturnType<typeof callingSession> = null;
+  try {
+    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env);
+  } catch {
+    session = null;
+  }
+  if (isEarlierCopy(record, session?.sessionId ?? null)) {
+    return refuse(
+      `this session is an earlier copy of ${record.name}; its current session is ${record.shortId}. Change nothing and end your turn.`,
+    );
   }
   return { ok: true, self: { record, repo, resolved } };
 }

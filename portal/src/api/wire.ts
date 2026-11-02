@@ -675,6 +675,13 @@ export interface CrewSummary {
   phase: string;
   plan: string;
   pr: null | number;
+  questions: {
+    number: number;
+    text: string;
+    options: string[];
+    recommend: null | number;
+    askedAt: string;
+  }[];
   question: null | {
     askedAt: string;
     options: string[];
@@ -897,6 +904,7 @@ export interface PermissionWait {
 }
 
 export interface CrewNeed {
+  number: number;
   askedAt: string;
   crew: { id: string; name: string; shortId: null | string; state: string };
   options: string[];
@@ -973,7 +981,7 @@ export interface JobCeilingState {
 }
 
 export interface JobWeightState {
-  value: null | number;
+  value: null | number | "idle";
   why?: string;
 }
 
@@ -1264,6 +1272,7 @@ export interface CrewEvent {
   text: string | null;
   sha?: string | null | undefined;
   note?: string | null | undefined;
+  question?: number | undefined;
   memoryMb?: number | null | undefined;
   pair?: string | undefined;
   tell?: { [key: string]: unknown; kind: string; to: string[] } | null | undefined;

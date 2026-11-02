@@ -27,12 +27,16 @@ import { tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
 import { isSessionId, readAppliedName } from "../hooks/session-name";
 import { ownHooksOf } from "../project/resolve";
+import { agentRows } from "./agents";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
+import { isOpenCrewOfLead, leadRunningReason, sessionSnapshot } from "./lifecycle";
 import { crewTag, leadName } from "./names";
 import { findPlanFile, planFileOfLead, plansDirs } from "./runs";
 import {
+  adoptLead,
   eventsEndOffset,
+  listCrew,
   listLeads,
   readLead,
   readWatchState,
@@ -77,6 +81,13 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   } catch (error) {
     return refuse(reasonOf(error), "remove that record, then run this again", 1);
   }
+  if (before?.adoptedBy != null) {
+    return refuse(
+      `this lead was adopted by ${before.adoptedBy}`,
+      `continue in lead ${before.adoptedBy}`,
+      1,
+    );
+  }
   if (args.end) {
     if (before === null)
       return refuse("this session is not a recorded lead", "run crew lead first", 1);
@@ -101,7 +112,71 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
     ctx.env,
     GIT_TIMEOUT_MS,
   );
-  const plan = args.plan ?? before?.plan ?? (branch.ok ? branch.out : null);
+  const listed = listLeads(ctx.paths.stateDir, repo);
+  if (listed.broken.length > 0)
+    return refuse("a lead record cannot be read", "repair it and retry crew lead", 1);
+  const others = listed.records.filter(
+    (one) => one.sessionId !== session.sessionId && one.endedAt == null,
+  );
+  let presence: (lead: (typeof others)[number]) => ReturnType<typeof leadRunningReason>;
+  const running = (lead: (typeof others)[number]) => presence(lead) !== null;
+  let matched: (typeof others)[number] | undefined;
+  try {
+    const sessions = sessionSnapshot(ctx);
+    // Agent view is read once, and only when a lead needs judging: a first lead never needs it.
+    // An unreadable view throws inside `leadRunningReason`, only where it would decide.
+    let rows: undefined | null | ReturnType<typeof agentRows>;
+    presence = (lead) => {
+      if (rows === undefined) rows = agentRows(ctx);
+      return leadRunningReason(lead, rows, sessions, ctx);
+    };
+    if (args.plan === null && before === null) {
+      const crew = listCrew(ctx.paths.stateDir, repo);
+      if (crew.broken.length > 0)
+        throw new Error(
+          "a crew record cannot be read, so the plan cannot be found; repair it or pass --plan <plan>",
+        );
+      const withCrew = others.filter((lead) =>
+        crew.records.some((one) => isOpenCrewOfLead(one, lead)),
+      );
+      const named = withCrew.filter((one) => one.name === session.name && !running(one));
+      const candidates =
+        named.length > 0
+          ? named
+          : withCrew.filter((one) => one.cwd === checkout.root && !running(one));
+      if (new Set(candidates.map((one) => one.plan)).size > 1) {
+        ctx.error("crew lead: several plans match this session; nothing was adopted");
+        for (const one of candidates)
+          ctx.error(
+            `${one.name} (${one.sessionId.slice(0, 8)}): plan ${one.plan}, created ${one.createdAt}`,
+          );
+        ctx.error("Fix: run crew lead --plan <plan>");
+        return 1;
+      }
+      matched = candidates[0];
+    }
+  } catch (error) {
+    return refuse(
+      reasonOf(error),
+      "retry crew lead when the session records and agent view can be read",
+      1,
+    );
+  }
+  const plan = args.plan ?? before?.plan ?? matched?.plan ?? (branch.ok ? branch.out : null);
+  const adopting = others.filter((one) => one.plan === plan);
+  try {
+    for (const other of adopting) {
+      const reason = presence(other);
+      if (reason !== null)
+        return refuse(
+          `lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs: ${reason.line}; this session is ${session.sessionId.slice(0, 8)}`,
+          reason.fix,
+          1,
+        );
+    }
+  } catch (error) {
+    return refuse(reasonOf(error), "retry crew lead when the agent view can be read", 1);
+  }
   if (plan === null) {
     return refuse(
       "this checkout is on no branch, so the plan has no name",
@@ -158,6 +233,19 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
         ...(before?.endedAt == null ? {} : { endedAt: null }),
       },
       ctx.now(),
+      () => {
+        for (const other of listLeads(ctx.paths.stateDir, repo).records) {
+          if (
+            other.sessionId !== session.sessionId &&
+            other.endedAt == null &&
+            other.plan === plan &&
+            running(other)
+          )
+            throw new Error(
+              `lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs; end it before registering this session`,
+            );
+        }
+      },
     );
   } catch (error) {
     ctx.error(`crew lead: ${reasonOf(error)}`);
@@ -168,13 +256,30 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   // the watch says.
   if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
     try {
-      writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
+      await writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
         offset: eventsEndOffset(ctx.paths.stateDir, repo),
         said: {},
       });
     } catch {
       // The watch reads the log from its start then: the same lines, one more time.
     }
+  }
+  try {
+    for (const old of adopting) {
+      const count = await adoptLead(
+        ctx.paths.stateDir,
+        repo,
+        old.sessionId,
+        session.sessionId,
+        ctx.now(),
+        running,
+      );
+      ctx.print(
+        `adopted lead ${old.name} (${old.sessionId.slice(0, 8)}): ${count} crew sessions now report to this session`,
+      );
+    }
+  } catch (error) {
+    return refuse(reasonOf(error), "retry crew lead", 1);
   }
   ctx.print(planNote);
   const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;

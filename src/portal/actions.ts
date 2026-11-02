@@ -2074,6 +2074,14 @@ async function runActionByName(
     case "project.add":
       return projectAdd(action, body);
     case "crew.answer": {
+      if (
+        body.question !== undefined &&
+        (typeof body.question !== "number" ||
+          !Number.isSafeInteger(body.question) ||
+          body.question <= 0)
+      ) {
+        return { lines: ["The question number must be a whole number, 1 or more."], ok: false };
+      }
       const crew = crewRef(body);
       const answer = typeof body.answer === "string" ? body.answer.trim() : "";
       if (crew === "" || answer === "") {
@@ -2093,7 +2101,14 @@ async function runActionByName(
       return crewCliAction(
         action,
         "crew.answer",
-        ["answer", "--as-person", "--", found.record.id, answer],
+        [
+          "answer",
+          "--as-person",
+          ...(body.question === undefined ? [] : ["--question", String(body.question)]),
+          "--",
+          found.record.id,
+          answer,
+        ],
         found.record,
       );
     }

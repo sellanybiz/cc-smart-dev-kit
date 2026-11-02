@@ -28,6 +28,31 @@ describe("crew work whose lead is gone", () => {
       expect(read.gone.has(crew.id)).toBe(false);
     },
   );
+  test.each(["session", "watch"])("a live %s keeps orphan cleanup away", async (source) => {
+    const world = await boardWorld();
+    const crew = await world.addCrew({ state: "done" });
+    const lead = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
+    if (lead === null) throw new Error("missing test lead");
+    await writeLead(
+      world.paths.stateDir,
+      {
+        ...lead,
+        sessionUnknownSince: new Date(NOW - 2 * DAY).toISOString(),
+      },
+      NOW,
+    );
+    const ctx = world.ctx({
+      sessions: () =>
+        source === "session"
+          ? [{ pid: 42, sessionId: LEAD_SESSION, cwd: world.repo, name: lead.name }]
+          : [],
+      watchAlive: () => source === "watch",
+    });
+    expect((await orphanCrewOf(ctx)).gone.has(crew.id)).toBe(false);
+    expect(
+      readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.sessionUnknownSince,
+    ).toBeNull();
+  });
   test.each(["manual", "background"])(
     "%s clean removes merged orphan work and its agent record",
     async (mode) => {

@@ -8,8 +8,9 @@
  * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
  *
- * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
- *   session, and a folder outside git, is silence.
+ * - **A registered lead** (`readLead` by the input's `session_id`) hears its notes. An unregistered
+ *   continuation hears only an adoption hint when a matching absent lead still has crew.
+ *   A crew session, an unrelated ordinary session, and a folder outside git hear nothing.
  * - **Its name comes back with the first note** (LD1): a registered lead's `LEAD <tag> <plan>`
  *   goes out as `sessionTitle` in the same `UserPromptSubmit` answer, with no setting, so the
  *   person never types `/rename` (`crew lead` records it as data). The rule is `session-name.ts`'s
@@ -45,12 +46,18 @@
  * with or without one (`MACHINE_WIDE_HOOKS`). A project that adds a review agent hears its own
  * watch's line, which resolves the project's list.
  */
+
+import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { isOpenCrewOfLead } from "../crew/lifecycle";
+import { crewIdOf } from "../crew/session";
 import { LEAD_SKILL } from "../crew/skills";
 import {
   eventsEndOffset,
   type LeadRecord,
+  leadSessions,
   listCrew,
+  listLeads,
   readCrewEvents,
   readLead,
   readNotesState,
@@ -72,6 +79,7 @@ import {
 } from "./io";
 import type { Env } from "./run";
 import { isSessionId, titleToSetOrProblem } from "./session-name";
+import { liveSessions, type SessionRecord } from "./sessions";
 
 /** The one note: the newest line, and how many older ones this turn did not print. */
 export function notesLine(lines: readonly string[]): string | null {
@@ -207,11 +215,48 @@ export function leadNotesAnswer(
   paths: CliPaths,
   repo: null | string,
   env: Env,
+  deps: { sessions?: () => readonly SessionRecord[] } = {},
 ): HookResult {
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
-  if (lead === null) return SILENT;
+  if (lead === null) {
+    if (event !== "UserPromptSubmit" || crewIdOf(env) !== null) return SILENT;
+    const leads = listLeads(paths.stateDir, repo).records.filter((one) => one.endedAt == null);
+    if (leads.length === 0) return SILENT;
+    let sessions: readonly SessionRecord[];
+    try {
+      sessions = deps.sessions?.() ?? liveSessions(paths.claudeConfigDir);
+    } catch {
+      return {
+        ...SILENT,
+        stderr: `${COMMAND} lead-notes: the session records cannot be read`,
+      };
+    }
+    const sessionName = sessions.find((one) => one.sessionId === sessionId)?.name;
+    const candidates = leads.filter(
+      (one) =>
+        one.cwd === input.cwd || one.name === input.session_title || one.name === sessionName,
+    );
+    const crew = listCrew(paths.stateDir, repo).records;
+    for (const old of candidates) {
+      const count = crew.filter((one) => isOpenCrewOfLead(one, old)).length;
+      if (
+        count === 0 ||
+        old.sessionUnknownSince == null ||
+        sessions.some((one) => one.sessionId === old.sessionId) ||
+        watchIsAlive(paths.stateDir, repo, old.sessionId)
+      )
+        continue;
+      return addContext(
+        event,
+        `This session continues lead ${old.name} (${old.sessionId.slice(0, 8)})? Run \`${COMMAND} crew lead --plan ${old.plan}\` to take its ${count} crew sessions.`,
+      );
+    }
+    return SILENT;
+  }
+  if (lead.endedAt != null) return SILENT;
+  const ids = leadSessions(lead);
   // The rule comes first at a start; a prompt hears the reminder and the news instead.
   const startNote = event === "SessionStart" ? [leadStartNote()] : [];
   const reminder = reminderFor(paths, env, sessionId, event);
@@ -236,7 +281,8 @@ export function leadNotesAnswer(
   const lines: string[] = [];
   for (const crewEvent of read.events) {
     // Another lead's crew sessions are that lead's news, not this one's.
-    if (crewEvent.lead !== sessionId) continue;
+    if (crewEvent.lead === null || !ids.includes(crewEvent.lead) || crewEvent.type === "adopted")
+      continue;
     const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
     const reviewed =
       record !== null &&

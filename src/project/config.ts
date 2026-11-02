@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { posix, win32 } from "node:path";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema } from "../jobs/kinds";
@@ -83,6 +84,9 @@ export const WORKFLOW_CREW_SINCE = "1.0.0";
  * plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
  */
 export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
+
+/** The release that brought project-owned disposable ignored paths. */
+export const WORKTREE_REBUILDABLE_SINCE = "1.9.0";
 
 /**
  * The release that brought `checks` (MD-3): a project names the fast check a session runs
@@ -182,6 +186,32 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        * A minor change to the contract (1.0.0): a project that sets it raises `requires` to `>=1.0`.
        */
       autoClean: z.boolean().optional(),
+      /**
+       * Ignored paths safe to lose when removing a worktree. Patterns match at any depth;
+       * a folder ends in `/`. A project that sets this needs at least 1.9.0.
+       */
+      rebuildable: z
+        .array(
+          z
+            .string()
+            .min(1)
+            .refine(
+              (path) =>
+                !posix.isAbsolute(path) &&
+                !win32.isAbsolute(path) &&
+                !path.split(/[\\/]/).includes(".."),
+              "must be relative to the checkout root, without ..",
+            )
+            .refine((path) => !path.includes("\\"), "use / as the separator")
+            .refine((path) => !path.split("/").includes("."), "must not contain . segments")
+            .refine(
+              // A dot alone names nothing either: `.*` would match every ignored dotfile,
+              // `.env.local` included.
+              (path) => /[^*?/[\]{},!.]/.test(path),
+              "names nothing; list the folder or file name",
+            ),
+        )
+        .optional(),
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go

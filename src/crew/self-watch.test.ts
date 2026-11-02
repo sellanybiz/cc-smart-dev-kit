@@ -475,12 +475,22 @@ async function answeredWorld(answer = "the port is 3210") {
 describe("AN1: crew self-watch delivers the lead's answer", () => {
   const env = { CC_SMART_DEV_KIT_CREW: ID };
 
+  test("P4: a lead's note is delivered once", async () => {
+    const world = await crewWorldWith(20_000);
+    const { addCrewNote } = await import("./store");
+    await addCrewNote(world.paths.stateDir, world.repo, ID, "use the new contract", T0);
+    const ctx = world.ctx({ cwd: world.worktree }, env);
+    await runCrew(["self-watch", "--once"], ctx);
+    await runCrew(["self-watch", "--once"], ctx);
+    expect(world.out).toEqual(['Your lead\'s note: "use the new contract"']);
+  });
+
   test("an answer on record is printed as one line, once, and marked delivered", async () => {
     const world = await answeredWorld();
     const ctx = world.ctx({ cwd: world.worktree }, env);
     expect(await runCrew(["self-watch", "--once"], ctx)).toBe(0);
     expect(world.out).toEqual([
-      'Your lead answers your question "which port?": "the port is 3210"',
+      'Question 1 ("which port?"): Your lead answers your question "which port?": "the port is 3210"',
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.deliveredAt).toBe("2026-10-21T10:00:00.000Z");
@@ -494,7 +504,7 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     const world = await answeredWorld('use "3210"\nnot 3211');
     await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
     expect(world.out).toEqual([
-      'Your lead answers your question "which port?": "use \\"3210\\"\\nnot 3211"',
+      'Question 1 ("which port?"): Your lead answers your question "which port?": "use \\"3210\\"\\nnot 3211"',
     ]);
   });
 
@@ -517,7 +527,7 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     );
     await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
     expect(world.out).toEqual([
-      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead: "sorry, 3211"',
+      'Question 1 ("which port?"): Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("the port is 3210"). Follow this one instead: "sorry, 3211"',
     ]);
   });
 
@@ -570,8 +580,8 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     }
     await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
     expect(world.out).toEqual([
-      'Your lead answers your question "which port?": "3210"',
-      'Your lead answers your question "which host?": "localhost"',
+      'Question 1 ("which port?"): Your lead answers your question "which port?": "3210"',
+      'Question 2 ("which host?"): Your lead answers your question "which host?": "localhost"',
     ]);
   });
 
@@ -590,7 +600,7 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "3210", T0);
     await runCrew(["self-watch", "--once"], ctx);
     expect(world.out).toEqual([
-      'Your lead answers your question "which port, 3210 or 3211?": "3210"',
+      'Question 2 ("which port, 3210 or 3211?"): Your lead answers your question "which port, 3210 or 3211?": "3210"',
     ]);
     world.out.length = 0;
     // The correction is heard once, with the answer the session heard named; the old question is silent.
@@ -610,10 +620,11 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     await runCrew(["self-watch", "--once"], ctx);
     await runCrew(["self-watch", "--once"], ctx);
     expect(world.out).toEqual([
-      'Your lead CORRECTS its earlier answer to your question "which port, 3210 or 3211?": this REPLACES the earlier answer ("3210"). Follow this one instead: "3211"',
+      'Question 2 ("which port, 3210 or 3211?"): Your lead CORRECTS its earlier answer to your question "which port, 3210 or 3211?": this REPLACES the earlier answer ("3210"). Follow this one instead: "3211"',
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
-    expect(record?.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(record?.questions[0]).toMatchObject({ answer: null });
+    expect(record?.questions[0]?.supersededBy).toBeUndefined();
   });
 
   test("IN1: an answer found on a superseded question is never printed, and never marked delivered", async () => {
@@ -671,7 +682,9 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
       },
     );
     await runCrew(["self-watch", "--once"], world.ctx({ cwd: world.worktree }, env));
-    expect(world.out).toEqual(['Your lead answers your question "which port?": "sorry, 3211"']);
+    expect(world.out).toEqual([
+      'Question 1 ("which port?"): Your lead answers your question "which port?": "sorry, 3211"',
+    ]);
   });
 
   test("a correction names the last answer the session did hear, not one it missed", async () => {
@@ -687,7 +700,7 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
     await correct("A3", T0 + 2000);
     await runCrew(["self-watch", "--once"], ctx);
     expect(world.out).toEqual([
-      'Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("A1"). Follow this one instead: "A3"',
+      'Question 1 ("which port?"): Your lead CORRECTS its earlier answer to your question "which port?": this REPLACES the earlier answer ("A1"). Follow this one instead: "A3"',
     ]);
   });
 
@@ -742,7 +755,9 @@ describe("AN1: crew self-watch delivers the lead's answer", () => {
       env,
     );
     expect(await runCrew(["self-watch"], ctx)).toBe(0);
-    expect(world.out).toEqual(['Your lead answers your question "which port?": "3210"']);
+    expect(world.out).toEqual([
+      'Question 1 ("which port?"): Your lead answers your question "which port?": "3210"',
+    ]);
     // 40 ticks of 3 s: the heartbeat was written again every 15 s.
     expect(readAnswerWatchBeat(world.paths.stateDir, world.repo, ID)).toBe(T0 + 105_000);
   });

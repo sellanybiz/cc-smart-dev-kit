@@ -738,6 +738,7 @@ export interface CrewRef {
 
 /** `src/crew/store.ts` › `CrewQuestion`: one question a crew session asked its lead. */
 export interface CrewQuestion {
+  number: number;
   question: string;
   options: string[];
   /** The recommended option, counted from 1; null when none is. */

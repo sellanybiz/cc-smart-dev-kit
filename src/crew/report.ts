@@ -483,8 +483,8 @@ async function askQuestion(
 }
 
 /** What the crew session wrote for its report: the file, stdin, or nothing; or the refusal. */
-async function readPart(
-  args: ReportArgs,
+export async function readPart(
+  args: { file: string | null },
   ctx: CrewContext,
 ): Promise<{ raw: string } | { refused: ReportRefusal }> {
   if (args.file === null) return { raw: "" };

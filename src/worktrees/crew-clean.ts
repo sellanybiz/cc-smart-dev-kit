@@ -41,7 +41,13 @@ export async function orphanCrewOf(ctx: CrewContext): Promise<OrphanCrew> {
   const none = { records: crew.records, gone: new Set<string>() };
   if (crew.broken.length || leads.broken.length || leads.records.length === 0) return none;
   const rows = agentRows(ctx);
-  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
+  const observed = await observeLeadPresence(
+    ctx.paths.stateDir,
+    leads.records,
+    rows,
+    ctx.now(),
+    ctx,
+  );
   return {
     records: crew.records,
     gone: new Set(
@@ -51,6 +57,7 @@ export async function orphanCrewOf(ctx: CrewContext): Promise<OrphanCrew> {
             observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null,
             rows,
             ctx.now(),
+            ctx,
           ),
         )
         .map((record) => record.id),

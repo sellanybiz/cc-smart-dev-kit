@@ -6,6 +6,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
 import {
   markOpened,
@@ -384,7 +385,10 @@ describe("the sessions command", () => {
       const dir = join(paths.claudeConfigDir, "sessions");
       mkdirSync(dir, { recursive: true });
       for (const record of options.runningSessions) {
-        writeFileSync(join(dir, `${String(record.pid)}.json`), JSON.stringify(record));
+        writeFileSync(
+          join(dir, `${String(record.pid)}.json`),
+          JSON.stringify({ ...record, ...sessionProcessIdentity(record.pid) }),
+        );
       }
     }
     return { home, paths, project, folder };

@@ -57,7 +57,8 @@ Commands:
   set <setting> <value>
                  Your own settings, written to jobs.json: ${Object.keys(JOB_SETTINGS).join(", ")}.
                  max-jobs is how many heavy jobs run at once (default 3).
-                 The weights are off, or 1 to 10000 (off leaves systemd's 100).
+                 CPU weight is idle (the default), off, or 1 to 10000.
+                 I/O weight is off (the default), or 1 to 10000.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
@@ -248,7 +249,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         },
         launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
         now,
-        slice: realSliceControl(ctx.memory.read),
+        slice: realSliceControl(ctx.memory.read, undefined, jobsPaths(ctx.paths.home).stateDir),
         run: (argv, scopeUnit) => {
           started = true;
           const scope = scopeUnit === null ? null : realScope(slice, scopeUnit, ctx.memory.read);

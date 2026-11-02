@@ -435,7 +435,14 @@ export interface CrewSummary {
   phase: string;
   plan: string;
   pr: null | number;
-  /** The newest question with no answer: what it waits on you for (D36). */
+  questions: {
+    number: number;
+    text: string;
+    options: string[];
+    recommend: null | number;
+    askedAt: string;
+  }[];
+  /** The oldest open question, kept for clients using the original shape. */
   question: null | {
     askedAt: string;
     options: string[];
@@ -683,6 +690,7 @@ export interface PermissionWait {
 
 /** A crew session's open question, for "Needs you". */
 export interface CrewNeed {
+  number: number;
   askedAt: string;
   crew: { id: string; name: string; shortId: null | string; state: string };
   options: string[];

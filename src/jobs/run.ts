@@ -4,6 +4,7 @@
  * the tests run it with a fake queue and a fake launcher.
  */
 
+import { type CpuWeight, DEFAULT_SLICE, FALLBACK_CPU_WEIGHT } from "./config";
 import {
   chooseLaunch,
   type JobEnd,
@@ -46,7 +47,7 @@ export interface JobRequest {
   /** The systemd slice for a scope launch. */
   slice: string;
   /** The CPU weight for the slice chain; 0 leaves systemd's default in force. */
-  cpuWeight: number;
+  cpuWeight: CpuWeight;
   /** The I/O weight for the slice chain; 0 leaves systemd's default in force. */
   ioWeight: number;
   /** When `job run` started (ms): makes the unit name unique. */
@@ -180,23 +181,21 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
 }
 
 /**
- * Puts the CPU and I/O weights on every slice of the job's chain, before the job starts,
+ * Puts CPU and I/O weights on the owned slices of the job's chain, before the job starts,
  * the same way and at the same moment as the ceiling. A weight whose controller this
  * machine's user manager was not given is skipped: systemd would record the property and
  * write nothing to the cgroup, so the job would carry no priority at all.
  *
- * The whole chain carries the weight because systemd shares CPU and disk I/O between
- * slices that are siblings. The heavy slice alone competes only with what sits beside it
- * inside the kit's own slice; the outermost slice of the chain is the one that competes
- * with the desktop and the sessions, and an intermediate one would compete if a unit ever
- * sat beside it.
+ * The default chain carries the weight because systemd shares CPU and disk I/O between
+ * sibling slices. A configured slice also belongs to the kit, but its foreign parents do
+ * not: weighting app.slice, for example, would slow desktop apps too.
  */
 function setSliceWeights(request: JobRequest, deps: JobDeps): void {
-  if (request.cpuWeight <= 0 && request.ioWeight <= 0) return;
   const controllers = deps.slice.controllers();
   const weights: SliceWeights = {
-    ...(request.cpuWeight > 0 && controllers?.includes("cpu") === true
-      ? { cpu: request.cpuWeight }
+    // Runtime properties survive a job. Off must clear idle from the previous launch.
+    ...(controllers?.includes("cpu") === true
+      ? { cpu: request.cpuWeight === "off" || request.cpuWeight === 0 ? 100 : request.cpuWeight }
       : {}),
     ...(request.ioWeight > 0 && controllers?.includes("io") === true
       ? { io: request.ioWeight }
@@ -209,10 +208,41 @@ function setSliceWeights(request: JobRequest, deps: JobDeps): void {
       : weights.cpu !== undefined
         ? "CPU weight"
         : "I/O weight";
-  for (const slice of sliceChain(request.slice)) {
-    if (!deps.slice.setWeights(slice, weights)) {
-      deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
+  const owned = new Set([...sliceChain(DEFAULT_SLICE), request.slice]);
+  if (weights.cpu === "idle" && deps.slice.idleUnsupported?.()) weights.cpu = FALLBACK_CPU_WEIGHT;
+  for (const slice of sliceChain(request.slice).filter((name) => owned.has(name))) {
+    const current =
+      request.cpuWeight === "off" || request.cpuWeight === 0
+        ? deps.slice.cpuWeight?.(slice)
+        : undefined;
+    const perSlice = { ...weights };
+    if (
+      (request.cpuWeight === "off" || request.cpuWeight === 0) &&
+      (current === 100 || current === null)
+    )
+      delete perSlice.cpu;
+    if (perSlice.cpu === undefined && perSlice.io === undefined) continue;
+    const result = deps.slice.setWeights(slice, perSlice);
+    if (result === true) continue;
+    if (
+      perSlice.cpu === "idle" &&
+      result === false &&
+      deps.slice.setWeights(slice, { ...perSlice, cpu: FALLBACK_CPU_WEIGHT }) === true
+    ) {
+      deps.say(
+        `CPU priority: this systemd could not set idle; using weight ${FALLBACK_CPU_WEIGHT} instead.`,
+      );
+      try {
+        deps.slice.rememberIdleUnsupported?.();
+      } catch (error) {
+        deps.say(
+          `could not remember the idle refusal: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      weights.cpu = FALLBACK_CPU_WEIGHT;
+      continue;
     }
+    deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
   }
 }
 

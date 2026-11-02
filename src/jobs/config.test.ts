@@ -65,20 +65,25 @@ describe("maxJobs in jobs.json", () => {
 });
 
 describe("the weights in jobs.json", () => {
-  test("off by default: a heavy job runs at systemd's own weight", () => {
-    expect(cpuWeightOf({})).toBe(0);
+  test("CPU defaults to idle; I/O stays off", () => {
+    expect(cpuWeightOf({})).toBe("idle");
     expect(ioWeightOf({})).toBe(0);
-    expect(cpuWeightOf(loadJobsConfig(configFile({})))).toBe(0);
+    expect(cpuWeightOf(loadJobsConfig(configFile({})))).toBe("idle");
     expect(ioWeightOf(loadJobsConfig(configFile({})))).toBe(0);
+  });
+
+  test("idle is CPU only", () => {
+    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: "idle" })))).toBe("idle");
+    expect(() => loadJobsConfig(configFile({ ioWeight: "idle" }))).toThrow(JobsConfigError);
   });
 
   test("a value is the weight, and 0 or off leaves systemd's own", () => {
     expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 50 })))).toBe(50);
     expect(ioWeightOf(loadJobsConfig(configFile({ ioWeight: 1 })))).toBe(1);
     expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: MAX_WEIGHT })))).toBe(10_000);
-    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 0 })))).toBe(0);
+    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: 0 })))).toBe("off");
     expect(ioWeightOf(loadJobsConfig(configFile({ ioWeight: "off" })))).toBe(0);
-    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: "off" })))).toBe(0);
+    expect(cpuWeightOf(loadJobsConfig(configFile({ cpuWeight: "off" })))).toBe("off");
   });
 
   test("systemd's range only: 1 to 10000, or 0 / off", () => {

@@ -16,9 +16,9 @@
  *          never take the memory kept for everything else, and past it the kernel kills
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its
  *          processes is killed. Inside, `choom -n 900` marks the job to die first if the
- *          whole machine runs out. When `jobs.json` asks for a CPU or disk I/O weight, the
- *          slices carry it (`weightsArgv`); by default they carry none, so a job gets normal
- *          CPU and I/O.
+ *          whole machine runs out. CPU defaults to idle, yielding to other work. Disk I/O
+ *          stays at normal priority unless configured. Only owned slices carry the weights
+ *          (`weightsArgv`); there is no quota.
  *   choom  Linux with no user manager (cron, a container, CI, ssh after logout): the mark.
  *   plain  No `choom`, macOS, or `launch: plain`: the command as it is. The queue still
  *          applies.
@@ -53,8 +53,10 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { constants } from "node:os";
+import { join } from "node:path";
+import { atomicWrite } from "../setup/write";
 import { type ReadText, userManagerControllers, userSliceCgroup } from "./memory";
 import { endJobTree, processIsGone, realWindowsFacts, type WindowsFacts } from "./windows";
 
@@ -273,7 +275,7 @@ function setPropertyArgv(slice: string, ...properties: string[]): [string, ...st
  * (100): a controller this machine's user manager was not given cannot carry one.
  */
 export interface SliceWeights {
-  cpu?: number;
+  cpu?: number | "idle";
   io?: number;
 }
 
@@ -443,8 +445,13 @@ export function spawnAndWait(
 export interface SliceControl {
   /** `ceilingArgv`: the slice's `MemoryMax`, and `MemorySwapMax=0`; true on success. */
   setMemoryMax: (slice: string, value: string) => boolean;
-  /** `weightsArgv`: one slice's CPU and I/O weights; true on success, and for none. */
-  setWeights: (slice: string, weights: SliceWeights) => boolean;
+  /** `weightsArgv`: true on success (or none), false on refusal, timeout separately. */
+  setWeights: (slice: string, weights: SliceWeights) => boolean | "timeout";
+  /** Machine-local capability record; absent on controls without persistent state. */
+  idleUnsupported?: () => boolean;
+  rememberIdleUnsupported?: () => void;
+  /** null means not set; undefined means the read failed, so reset conservatively. */
+  cpuWeight?: (slice: string) => number | "idle" | null | undefined;
   /**
    * The controllers this machine's user manager was given (`userManagerControllers`), or
    * null when it cannot be read: no user manager, or not Linux.
@@ -479,12 +486,80 @@ export function realLaunchFacts(slice: string, timeoutMs = SYSTEMD_TIMEOUT_MS): 
   };
 }
 
-export function realSliceControl(read: ReadText, timeoutMs = SYSTEMD_TIMEOUT_MS): SliceControl {
+/** The capability marker's one path, shared by launch and status. */
+export function idleUnsupportedPath(stateDir: string): string {
+  return join(stateDir, "cpu-idle-unsupported");
+}
+
+/** The first line of `systemctl --version` (`systemd 249 (…)`), or undefined when it cannot be read. */
+export function readSystemdVersion(timeoutMs = SYSTEMD_TIMEOUT_MS): string | undefined {
+  const result = spawnSync("systemctl", ["--version"], { encoding: "utf8", timeout: timeoutMs });
+  if (result.status !== 0) return undefined;
+  return /^systemd \d+[^\r\n]*/.exec(result.stdout)?.[0];
+}
+
+/**
+ * What the idle-refusal marker says, read only: `none`, `valid`, or `stale` (another systemd
+ * version refused idle). It changes nothing, so `job status` and the portal can read it. An
+ * unreadable marker, an old one with no version, and a version that cannot be read stay valid.
+ */
+export function idleMarkerState(
+  file: string,
+  systemdVersion: () => string | undefined,
+): "none" | "stale" | "valid" {
+  if (!existsSync(file)) return "none";
+  let recorded: string;
+  try {
+    recorded = readFileSync(file, "utf8").trim();
+  } catch {
+    return "valid";
+  }
+  if (!/^systemd \d+/.test(recorded)) return "valid";
+  const current = systemdVersion();
+  return current === undefined || current === recorded ? "valid" : "stale";
+}
+
+export function realSliceControl(
+  read: ReadText,
+  timeoutMs = SYSTEMD_TIMEOUT_MS,
+  stateDir?: string,
+): Required<SliceControl> {
+  const refusalFile = stateDir === undefined ? undefined : idleUnsupportedPath(stateDir);
+  const systemdVersion = () => readSystemdVersion(timeoutMs);
   return {
+    idleUnsupported: () => {
+      if (refusalFile === undefined) return false;
+      const state = idleMarkerState(refusalFile, systemdVersion);
+      // Only a launch removes a stale marker: it tries idle now, and writes a new one if refused.
+      if (state === "stale") rmSync(refusalFile, { force: true });
+      return state === "valid";
+    },
+    rememberIdleUnsupported: () => {
+      if (stateDir === undefined || refusalFile === undefined) return;
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      atomicWrite(refusalFile, `${systemdVersion() ?? "idle refused"}\n`, 0o600);
+    },
+    cpuWeight: (slice) => {
+      const result = spawnSync("systemctl", ["--user", "show", "-p", "CPUWeight", slice], {
+        encoding: "utf8",
+        timeout: timeoutMs,
+      });
+      if (result.status !== 0) return undefined;
+      const value = /^CPUWeight=(.*)$/m.exec(result.stdout)?.[1]?.trim();
+      if (value === "" || value === "[not set]") return null;
+      if (value === "idle") return "idle";
+      return value !== undefined && /^\d+$/.test(value) ? Number(value) : undefined;
+    },
     setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
     setWeights: (slice, weights) => {
       const argv = weightsArgv(slice, weights);
-      return argv === null || exitsZero(argv, timeoutMs);
+      if (argv === null) return true;
+      const [program, ...args] = argv;
+      const result = spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs });
+      // Bun, like Node, ends a timed-out child with SIGTERM and an `ETIMEDOUT` error (probed).
+      const failure: NodeJS.ErrnoException | undefined = result.error;
+      if (failure?.code === "ETIMEDOUT") return "timeout";
+      return result.status === 0;
     },
     controllers: () => {
       const uid = process.getuid?.();

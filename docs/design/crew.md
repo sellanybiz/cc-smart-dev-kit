@@ -216,19 +216,13 @@ repository, under the state folder:
   (`openQuestionIndex`, one rule every reader shares): `done`, `failed`, `handoff`, `merged` and
   `removed` need no answer, so the Needs page, `crew list`, `crew status` and `crew answer` agree.
   A `stopped` crew session's question stays open — D35's answer resumes it with the question still
-  waiting. **A new question supersedes the crew session's own older open one** (RG1): the older
-  one is closed with `supersededBy`, the index of the newer, and stays on the record, never
-  deleted. `isQuestionOpen` is the one home for "is it open" (no answer, not superseded), and
-  `openQuestionIndex`, `crew answer`, the report's blocked question and the `crew-role` hook all
-  read it, so the lead, `crew list`, the Needs page and the watch see the newest open question
-  alone. `answerCrewQuestion` refuses an answer to a superseded question with the line that names
-  the newest (`question 0 … was superseded by question 1 ("…"): answer that one`): `crew answer`
-  always answers the open question, so the refusal guards a question that arrives while the lead
-  is answering. An answered question is never superseded: a question after it is a new one.
-  **A correction (AN1) goes to the newest question, once it has its answer** — never to a
-  superseded one: the store checks the pointer first, so a correction aimed at a superseded
-  question gets the same line that names the newest. The monitor's delivery skips a superseded
-  question too (`answerWaitsForDelivery`), whatever the record holds.
+  waiting. **Each question stays open until answered.** Its number is its place in the list,
+  counted from 1. Old records with `supersededBy` still count as closed. With several open
+  questions, `crew answer` refuses an unnumbered answer and lists their numbers and ages.
+  `--question <n>` chooses one, including an answered one to correct. The crew session stays
+  blocked while another question is open. Status and the portal list every open question;
+  the portal's original `question` field keeps the oldest for old clients. A watch replay of
+  an answered question says when it was answered, never asks for another answer.
 - **The hand-back report** is what a crew session gives the lead when its phase ends: its status (`done`,
   `blocked`, `failed`, `handoff`), the phase, the branch and base commits, the pull request, the
   diff counted, the files it changed outside its brief, the targeted tests and the whole suite,
@@ -249,6 +243,37 @@ repository, under the state folder:
   goes on.
 
 ### The lead and the launch
+
+**A forked lead adopts its crew.** Moving a session to the background gives it a new id,
+with its name and folder but no parent id. Run `crew lead` in the new session. Without
+`--plan`, it first matches a lead that is not running and has this session's name. Only when
+no name matches does it look for one in this folder, and folder matches that span more than one
+plan refuse, listing each with its plan, because dead leads pile up in one checkout and an
+adoption cannot be undone. Then it falls back to the branch.
+A session is running when a process-identity-checked session record, a live agent-view row,
+or a live watch lease names it. All three must prove absence; unreadable presence refuses
+with a retry line. **Absence needs proof:** a running pid whose record has no `procStart`, or
+whose `/proc` start cannot be read, counts as running ("identity unproved"); only a start
+that differs from the record's (a reused pid) does not. A row agent view lists as stopped is not
+running, so a lead whose session stopped is gone for adoption and for cleanup alike. A
+same-plan live lead refuses registration, never splits the crew.
+
+`adoptLead` holds one store lock and rechecks the old lead. It writes the new lead with
+`earlierSessions` and an increased `generation`, transfers every non-removed crew record
+with an `adopted` event and run record, then ends the old lead with `adoptedBy` last.
+Watch and notes cursors merge at the lowest offset; watch `said` and missing-session
+clocks are joined. Leases and issue-mark queues stay in place. The new watch settles
+marks for every earlier id; an adopted old watch ends without settling. Each pass reloads
+its cursor and id set when the generation changes. Adoption summarizes crew state and
+replays questions and unread reports instead of old progress lines, **once per adoption**:
+the watch state keeps the generation it summarized, so a watch re-armed every 30 minutes does
+not say it again, and the time of the adoption (`adoptedAt`, on the new lead record) bounds the
+replay, never the record's `updatedAt`, which a later `crew lead` moves. Ended, empty lead
+groups disappear from the portal, and ended leads do not receive merge news or tell messages.
+The board shows lead short ids and a resume command for missing crew after the shared
+one-minute grace. A prompt in an unregistered fork hints at adoption without calling agent view.
+A crew session never hears the hint, and session records that cannot be read are one stderr
+line, never a line in the session's context.
 
 **`crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
 that runs it as a lead of this repository. **Which session** is first the one Claude Code names in
@@ -674,7 +699,7 @@ is kept. A lead that is gone runs no watch, so
 `--remove` releases them after its own question; an unreadable agent view or a lead not yet seen
 gone releases nothing.
 
-`crew list`, `status`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
+`crew list`, `status`, `log`, `kinds` and `attach` read; `stop`, `resume` and `rm` act (`board.ts`,
 `end.ts`, `remove.ts`; their help is one table, `usage.ts`, which the help table's rows
 (`src/cli/help.ts`) and `crew --help` read too). All of them look a crew session up **in this
 repository's store only**, by its name (also the ` [ref]` form ListAgents prints), its id, its
@@ -686,8 +711,14 @@ its id" and the old queued record stayed, so two crew sessions started for one p
 `findNamed` (`board.ts`), answers for crew sessions and for leads (`crew lead tell`). A crew session's own
 session (`CC_SMART_DEV_KIT_CREW` set) never runs `stop`, `rm` or `resume`.
 
+- **`log <name>`** (`src/crew/log.ts`) prints `git log --oneline <pinned-base>..<branch>`
+  and the diff stat against their merge base. It reads shared refs from the current checkout,
+  never the crew worktree, and never writes the store. A queued session without a base, or a
+  deleted branch, gives an error rather than an empty history.
 - **`list`** shows the repository's crew sessions (`--all`: every repository), newest first, one block
-  each. The state's age is the newest `state` or `created` event about the crew session, not
+  each. Removals older than 6 hours are hidden by their removal state event, not their last write.
+  A footer counts them and names `crew list --removed`, which includes them. `--json` keeps
+  every stored record without that filter. The state's age is the newest `state` or `created` event about the crew session, not
   `updatedAt`: the watch writes a line or a memory reading every few seconds, and that changes
   the record without changing what the crew session does. Its last step or line is its newest event
   with a line, else `lastLine` — **never an event another session wrote about it**: a `clash` names
@@ -803,6 +834,36 @@ says it: `resumed C kit B6b portal-live as session d7a54fc8 (a copy of c7186986)
 is a stopped row with no process. The record keeps it (`earlierSessions`, RX1), so `crew rm`
 removes it with the rest (§ A removed crew session's conversation); `sessions --finished` never
 offers it, because it is the crew's own.
+
+**An earlier copy that comes back stands down.** Seen live on 2026-11-02 (2.1.316): after a
+Claude Code restart, the lead's `crew resume` made copy `361009ed` of `955c446a`. Eight seconds
+later, Claude Code restored `955c446a` itself. Its SessionStart hook was given the main checkout
+as `cwd`, while its transcript at the same moment names the worktree. So the wrong-folder rule
+failed a record that now belonged to the copy, the watch stopped the copy that was right, and
+the lead built the phase a second time. Its reviewer's findings went to the old copy, which
+could not send them on.
+
+Now a session whose id is in the record's `earlierSessions`, and is not its `sessionId`, is an
+earlier copy:
+- its role card says it is an earlier copy, names the current session, and says to do nothing
+  and end its turn;
+- `startCard` checks this before the folder, and changes nothing in the store;
+- every other answer of `crew-role` writes nothing for it either. A prompt gets the same
+  stand-down line as context, with no `person` event and no title change. Its Stop and
+  StopFailure are silent: no `lastLine`, no pause, and no "hand it back with `crew report`"
+  block, which would tell it to finish the phase. An edit tool is denied with the same line;
+- its own commands (`crew step`, `crew report`, the self-watch) are refused in `readCrewSelf`,
+  the one home for a crew session's own record;
+- the watch stops every live agent-view row of that earlier session once, with one line each.
+  It never stops the record's current session.
+
+One predicate decides all of this (`isEarlierCopy`, `src/crew/store.ts`), because one session
+id can be in both lists: after A → B → A, the current session A is also an earlier one.
+
+A session id the record does not know is judged as before, because a fresh copy may start
+before its resume is recorded. **Not proved:** whether Claude Code also gives a restored
+session that is the record's current one the main checkout as `cwd`. If it does, that session is
+still failed, and the lead's `crew resume` brings it back as a copy in its worktree.
 
 A resume that printed **no such line**, a note that names another id than the line, or a copy
 agent view cannot show is said with the reason, and the record keeps its state and its session —
@@ -1039,7 +1100,7 @@ has nothing left to do. A question needs two options at least, and a recommendat
 of them; `--option` and `--recommend` without a `--question`, and a `--file` with one, are
 mistakes (exit 2).
 
-**The answer** — `cc-smart-dev-kit crew answer <crew session> "<the answer>"` (`src/crew/answer.ts`)
+**The answer** — `cc-smart-dev-kit crew answer <crew session> [--question <n>] [--file <path|->] [<text>]` (`src/crew/answer.ts`)
 — comes back from the lead (an answer that starts with `--` is given after a bare `--`). A
 **running** crew session gets it **from its own monitor** (AN1): the CLI cannot send a message
 itself (Claude Code has no command that sends text into a running session, and `SendMessage` is a
@@ -1299,10 +1360,21 @@ resumed five sessions at once), and each writing the same state file over the ot
   that works ends the run, so a later failure is said again. Only `WATCH_FAILED_PASSES_MAX` (60
   passes, about twenty minutes) in a row end the watch, with exit 1 and one line on stdout:
   `crew watch ended: <n> passes in a row failed, the last with: <why> — start the watch again with
-  Claude Code's Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew
+  Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew
   watch`. Every other end that can still write says why on stdout too: a lease lost to a newer
   watch (its own line, above), a start that cannot name its lead or find crew sessions on, a
-  lease it cannot take — each as `crew watch ended: <why> — <the same restart>`. The ends that
+  lease it cannot take, and **a newer plugin installed under a running watch** — each as
+  `crew watch ended: <why> — <the same restart>`. Each pass of a watch that still holds its lease
+  compares the watch's own version with the one Claude Code records as installed
+  (`installedVersion` in `CrewContext`). A watch that lost its lease ends with its own line, and
+  `--once` never compares: it is one look, and a session started before an update runs the old
+  version folder's command on its PATH. When the
+  installed one is newer, the watch ends with both versions in its line, so the lead's next
+  watch runs the new code. An installed version that cannot be read, or is equal or older, goes
+  on. Seen on 2026-11-02: a lead session that never restarts keeps its watch, and six lead
+  watches on one machine had run for two and a half days on 1.7.1 while 1.8.1 was installed. They
+  missed every later fix and held their leads' leases. A watch started before 1.9.0 has no
+  such check, so after the update each lead starts its watch again once by hand. The ends that
   cannot write (the output closed, the parent gone) stay on stderr. The command in the line is
   the plugin's own `crew-events` monitor command (`WATCH_MONITOR_COMMAND`; a test keeps the two
   equal). The presence mark every pass writes for every lead (`setLeadPresence`) reads the
@@ -1782,3 +1854,18 @@ each is silent unless its own session is the one it is about, and neither reads
   monitors) — the line gives the `Monitor` tool's command, the same as `crew-events`
   (`WATCH_RESTART`). A lease or a store it cannot read says nothing: a wrong line is worse than
   none. **Never a block**: a lead is reminded, never held.
+
+### Additional lead notes and file input
+
+`crew note <name> [--file <path|->] [--as-person] [<text>]` records a decision without
+inventing a question. Only that crew session's lead can send it, or the person's portal child.
+A queued phase reads `lead-notes.md` beside its brief; its launch prompt names that file.
+A running phase hears the note through self-watch, claimed once under the store lock like an
+answer. The command confirms delivery or prints the not-delivered fallback. A stopped phase
+receives it in its resume prompt. A resume waiting for room carries every undelivered answer
+and note, not just the newest. Run files keep notes with the existing `note` event kind.
+
+For an answer or note, give exactly one of text and `--file`. The shared report reader reads a
+path or `-` for stdin. Write long text with the Write tool and pass its path, so the shell's
+worktree guard never sees the text as a command. The portal passes an optional question number
+through the same CLI answer path; without it, several open questions refuse.

@@ -149,6 +149,7 @@ export function isKnownState(state: string): state is CrewState {
  */
 export const CREW_EVENT_TYPES = [
   "created",
+  "adopted",
   "state",
   "step",
   "report",
@@ -522,6 +523,7 @@ const crewFields = z.object({
   files: z.array(text),
   /** The questions it asked its lead, oldest first (D36). */
   questions: z.array(crewQuestion),
+  notes: z.array(z.looseObject({ text, at: text, deliveredAt: text.nullable() })).optional(),
   /** Where it is now (`CREW_STATES`). */
   state: word<CrewState>(),
   /** The last line its session wrote at the end of a turn; null before the first. */
@@ -673,6 +675,15 @@ const crewFields = z.object({
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
 
+/** A replaced Claude session, never the current one even when its id was used before. */
+export function isEarlierCopy(record: CrewRecord, sessionId: string | null): boolean {
+  return (
+    sessionId !== null &&
+    sessionId !== record.sessionId &&
+    (record.earlierSessions?.some((one) => one.sessionId === sessionId) ?? false)
+  );
+}
+
 /**
  * One Claude session of a crew session: its id and the short id `claude agents` shows. A start
  * that could not read agent view records the short id alone, so the id may be null.
@@ -721,6 +732,11 @@ const leadFields = z.object({
    * briefs and the record of each crew run (PL1). Absent when none was known.
    */
   planFile: text.nullable().optional(),
+  earlierSessions: z.array(z.object({ sessionId: text, shortId: text })).optional(),
+  adoptedBy: text.optional(),
+  /** When this lead last adopted crew; later registration does not move this boundary. */
+  adoptedAt: text.optional(),
+  generation: count.optional(),
   /** The plan ended; absent on leads recorded before this field existed. */
   endedAt: text.nullable().optional(),
   /** First successful agent-view read that did not know this lead; cleared when it returns. */
@@ -766,6 +782,7 @@ const eventFields = z.object({
   sha: sha.nullable().optional(),
   /** What the crew session did at its step, in its own words; null when it said nothing. */
   note: z.string().nullable().optional(),
+  question: z.number().int().min(1).optional(),
   /** The memory the crew session's process held, in MB, when the event happened. */
   memoryMb: z.number().min(0).nullable().optional(),
   /**
@@ -1180,8 +1197,7 @@ export async function sweepCrew(
 /**
  * Records a question crew session `id` asks its lead (D36), and its `question` event, under one hold:
  * the question goes at the end of its `questions`, with no answer yet, and the event's line is
- * the question. **A question of its own that is still open is superseded** (RG1): it points at the
- * new one and is closed, so the lead and every reader see the newest open question alone. Throws
+ * the question. Each question stays open until answered. Legacy superseded questions stay closed. Throws
  * when the crew session is not recorded, or the question breaks the schema (fewer than two
  * options, a recommendation that is not one of them): then nothing is written.
  */
@@ -1194,16 +1210,62 @@ export async function addCrewQuestion(
 ): Promise<CrewRecord> {
   const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [
-        ...before.questions.map((one) =>
-          isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one,
-        ),
-        { ...asked, answer: null, answeredAt: null, askedAt: at },
-      ],
+      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }],
     },
-    event: (after) => eventOf(after, at, "question", asked.question),
+    event: (after) => ({
+      ...eventOf(after, at, "question", asked.question),
+      question: after.questions.length,
+    }),
   }));
   return record;
+}
+
+/** Notes live beside the brief, outside the crew session's worktree. */
+export function crewNotesFile(stateDir: string, repo: string, id: string): string {
+  return join(crewFilesDir(stateDir, repo, id), "lead-notes.md");
+}
+
+/** Record a lead's note under the same lock as answers. */
+export async function addCrewNote(
+  stateDir: string,
+  repo: string,
+  id: string,
+  text: string,
+  atMs: number,
+): Promise<CrewRecord> {
+  const { record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const notes = [...(before.notes ?? []), { text, at, deliveredAt: null }];
+    writeStoreFile(
+      crewNotesFile(stateDir, repo, id),
+      notes.map((one) => `${one.at}\n${one.text}`).join("\n\n"),
+    );
+    return { change: { notes }, event: () => null };
+  });
+  await noteCrewRun(stateDir, repo, id, atMs, { text, detail: { kind: "lead-note" } });
+  return record;
+}
+
+/** Claim a note once, just like an answer, before printing or resuming with it. */
+export async function markNoteDelivered(
+  stateDir: string,
+  repo: string,
+  id: string,
+  index: number,
+  atMs: number,
+): Promise<NonNullable<CrewRecord["notes"]>[number] | null> {
+  const { changed, record } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const note = before.notes?.[index];
+    if (note === undefined || note.deliveredAt !== null) return null;
+    return {
+      change: {
+        notes: before.notes?.map((one, which) =>
+          which === index ? { ...one, deliveredAt: at } : one,
+        ),
+      },
+      event: () => null,
+    };
+  });
+  return changed ? (record.notes?.[index] ?? null) : null;
 }
 
 /** How an answer is recorded (`answerCrewQuestion`). */
@@ -1303,7 +1365,14 @@ export async function answerCrewQuestion(
         };
       });
       const waiting = before.state === "blocked" || before.state === "stopped";
-      const state = resumes !== null && waiting ? resumes : null;
+      const state =
+        resumes !== null && waiting
+          ? questions.some(isQuestionOpen)
+            ? session === null
+              ? null
+              : "blocked"
+            : resumes
+          : null;
       return {
         change: {
           questions,
@@ -1558,9 +1627,11 @@ export async function writeLead(
   stateDir: string,
   lead: NewLead,
   atMs: number,
+  check?: () => void,
 ): Promise<LeadRecord> {
   const file = leadFile(stateDir, lead.repo, lead.sessionId);
   return await underStoreLock(stateDir, lead.repo, () => {
+    check?.();
     const before = readRecord(leadRecordSchema, file);
     const at = iso(atMs);
     const record = checked(
@@ -1576,6 +1647,139 @@ export async function writeLead(
     );
     writeJsonFile(file, record);
     return record;
+  });
+}
+
+/** Every session whose events and issue marks this lead owns. */
+export function leadSessions(lead: LeadRecord): string[] {
+  return [
+    ...new Set([lead.sessionId, ...(lead.earlierSessions ?? []).map((one) => one.sessionId)]),
+  ];
+}
+
+/**
+ * Transfer a lead under one lock. Recheck presence inside the hold; publish the ended old
+ * record last, so a crash cannot make the cleaner judge crew under an ended lead.
+ */
+export async function adoptLead(
+  stateDir: string,
+  repo: string,
+  oldSessionId: string,
+  newSessionId: string,
+  atMs: number,
+  running: (lead: LeadRecord) => boolean,
+): Promise<number> {
+  return await underStoreLock(stateDir, repo, () => {
+    const old = readLead(stateDir, repo, oldSessionId);
+    const next = readLead(stateDir, repo, newSessionId);
+    if (old === null || next === null || old.endedAt != null || old.adoptedBy != null)
+      throw new Error("the lead changed during adoption; run crew lead again");
+    const candidates = listLeads(stateDir, repo);
+    if (candidates.broken.length > 0)
+      throw new Error("a lead record cannot be read; retry crew lead");
+    for (const lead of candidates.records) {
+      if (
+        lead.sessionId !== newSessionId &&
+        lead.plan === next.plan &&
+        lead.endedAt == null &&
+        running(lead)
+      )
+        throw new Error(
+          `lead ${lead.name} (${lead.sessionId.slice(0, 8)}) still runs; end it before adopting`,
+        );
+    }
+    if (
+      old.plan !== next.plan ||
+      old.repo !== repo ||
+      next.repo !== repo ||
+      next.endedAt != null ||
+      oldSessionId === newSessionId
+    )
+      throw new Error("the leads no longer belong to the same active plan; retry crew lead");
+    const crew = listCrew(stateDir, repo);
+    if (crew.broken.length > 0) throw new Error("a crew record cannot be read; retry crew lead");
+    const at = iso(atMs);
+    const earlier = new Map(
+      [
+        ...(next.earlierSessions ?? []),
+        ...(old.earlierSessions ?? []),
+        { sessionId: old.sessionId, shortId: old.sessionId.slice(0, 8) },
+      ].map((one) => [one.sessionId, one]),
+    );
+    const nextFile = leadFile(stateDir, repo, newSessionId);
+    writeJsonFile(
+      nextFile,
+      checked(
+        leadRecordSchema,
+        {
+          ...next,
+          earlierSessions: [...earlier.values()],
+          generation: Math.max(next.generation ?? 0, old.generation ?? 0) + 1,
+          adoptedAt: at,
+          updatedAt: at,
+        },
+        nextFile,
+      ),
+    );
+    const fresh = readWatchState(stateDir, repo, newSessionId);
+    const previous = readWatchState(stateDir, repo, oldSessionId);
+    const missingSince = { ...previous?.missingSince, ...fresh?.missingSince };
+    for (const [key, since] of Object.entries(previous?.missingSince ?? {})) {
+      missingSince[key] = Math.min(since, missingSince[key] ?? since);
+    }
+    if (previous !== null)
+      writeJsonFile(watchStateFile(stateDir, repo, newSessionId), {
+        ...previous,
+        ...fresh,
+        offset: Math.min(previous.offset, fresh?.offset ?? previous.offset),
+        said: { ...previous.said, ...fresh?.said },
+        missingSince,
+      });
+    const notes = readNotesState(stateDir, repo, oldSessionId);
+    const newNotes = readNotesState(stateDir, repo, newSessionId);
+    if (notes !== null)
+      writeJsonFile(notesStateFile(stateDir, repo, newSessionId), {
+        offset: Math.min(notes.offset, newNotes?.offset ?? notes.offset),
+      });
+    let count = 0;
+    for (const before of crew.records) {
+      if (before.leadSessionId !== oldSessionId || before.state === "removed") continue;
+      const after = checked(
+        crewRecordSchema,
+        {
+          ...before,
+          leadSessionId: newSessionId,
+          leadName: next.name,
+          updatedAt: at,
+        },
+        crewFile(stateDir, repo, before.id),
+      );
+      writeJsonFile(crewFile(stateDir, repo, before.id), after);
+      const event = eventOf(
+        after,
+        at,
+        "adopted",
+        `now reports to ${next.name} (${newSessionId.slice(0, 8)})`,
+      );
+      appendEvent(stateDir, repo, event);
+      recordRunOf({ after, at, before, event });
+      count += 1;
+    }
+    const oldFile = leadFile(stateDir, repo, oldSessionId);
+    writeJsonFile(
+      oldFile,
+      checked(
+        leadRecordSchema,
+        {
+          ...old,
+          endedAt: at,
+          adoptedBy: newSessionId,
+          updatedAt: at,
+        },
+        oldFile,
+      ),
+    );
+    return count;
   });
 }
 
@@ -1905,6 +2109,8 @@ export function watchStateFile(stateDir: string, repo: string, leadSessionId: st
  * from, and the last thing it said about each crew session (so a line is said once, not every cycle).
  */
 export interface WatchState {
+  /** The latest adoption generation whose summary this lead has heard. */
+  summarizedGeneration?: number | undefined;
   /** The byte after the last whole line the watch read. */
   offset: number;
   /** First missing agent-view observation by repository and record id (D73). */
@@ -1936,6 +2142,7 @@ export interface WatchState {
 }
 
 const watchStateFields = z.object({
+  summarizedGeneration: count.optional(),
   missingSince: z.record(z.string(), z.number()).optional(),
   removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
   parkedAt: z.number().int().min(0).optional(),
@@ -1982,16 +2189,22 @@ export function eventsEndOffset(stateDir: string, repo: string): number {
 }
 
 /** Writes the lead's watch state. */
-export function writeWatchState(
+export async function writeWatchState(
   stateDir: string,
   repo: string,
   leadSessionId: string,
   state: WatchState,
-): void {
-  writeStoreFile(
-    watchStateFile(stateDir, repo, leadSessionId),
-    `${JSON.stringify(state, null, 2)}\n`,
-  );
+  generation?: number,
+): Promise<void> {
+  await underStoreLock(stateDir, repo, () => {
+    const lead = readLead(stateDir, repo, leadSessionId);
+    if (
+      lead?.adoptedBy != null ||
+      (generation !== undefined && (lead?.generation ?? 0) !== generation)
+    )
+      return;
+    writeJsonFile(watchStateFile(stateDir, repo, leadSessionId), state);
+  });
 }
 
 /**
