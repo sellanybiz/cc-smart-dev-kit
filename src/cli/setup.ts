@@ -22,8 +22,6 @@ import {
   claudeMemPlan,
   shownClaudeMemValue,
   TODO_TOOLS_KEY,
-  TODO_TOOLS_VALUE,
-  WORK_STATE_KEY,
 } from "../machine/claude-mem";
 import {
   type CompanionStep,
@@ -111,10 +109,12 @@ import {
   retryWatchdogState,
 } from "../setup/retry-watchdog";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
+import { applyTaskPermissions } from "../setup/task-tools";
 import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
 import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
+import { TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { retiredRepoLines } from "../update/retired-repos";
 import { groupTitle } from "./check";
 import { type CliPaths, tildify } from "./paths";
@@ -221,6 +221,7 @@ function hasStatusline(settingsFile: string): boolean {
 interface Managed {
   claudeMem: ClaudeMemPlan | null;
   autoMode: AutoModeSource | null;
+  taskAllow: boolean;
   /** The instructions: where they go, and `SetupOptions.instructions`. */
   instructions: { where: InstructionsPaths; choice: boolean | null };
   /** Set the status line (`--statusline`, or a "yes" to the question). */
@@ -380,10 +381,9 @@ function applySetup(
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
-  // D68: every machine needs task tools for leads and crew, and without claude-mem.
-  // A value the person set themselves stays, and is named below.
-  const todoTools = planTodoTools(paths);
-  if (todoTools?.kind === "set") set.push([todoTools.path, TODO_TOOLS_VALUE]);
+  // D75: the kit's own task list replaced Claude Code's, so setup's D68 opt-in goes (`withdraw`
+  // below). A value the person set themselves stays, and is named below.
+  const personalTodoTools = personalTodoToolsValue(paths);
   // The key's source moved: the environment has it now (or there is no key at all), so the
   // key cc-smart-dev-kit wrote into the settings goes — the person's environment must not be
   // shadowed by a stale copy. Only while the key still holds what cc-smart-dev-kit wrote:
@@ -416,6 +416,9 @@ function applySetup(
       // A key the person deleted or changed since setup wrote it: the claim goes, the key stays.
       ...(remoteControl === "drop" ? [REMOTE_CONTROL_KEY] : []),
     ],
+    withdraw: ownedKeys(paths.stateDir, realTarget(paths.settingsFile)).filter((path) =>
+      samePath(path, ["env", TODO_TOOLS_KEY]),
+    ),
     // An `env` setup created goes with its last key; one the person had stays.
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
@@ -456,12 +459,22 @@ function applySetup(
   ) {
     add("settings", "info", RETRY_WATCHDOG_DECLINED_NOTE);
   }
-  if (todoTools?.kind === "kept") {
+  if (personalTodoTools !== null) {
     add(
       "settings",
       "info",
-      `${short(settings.file)}: ${formatKeyPath(todoTools.path)} is ${JSON.stringify(todoTools.value)} (your choice); left alone`,
+      `${short(settings.file)}: ${formatKeyPath(personalTodoTools.path)} is ${JSON.stringify(personalTodoTools.value)} (your choice); left alone`,
     );
+  }
+
+  for (const result of applyTaskPermissions(paths, managed.taskAllow, dryRun)) {
+    for (const entry of result.added) {
+      add(
+        "settings",
+        "changed",
+        `${short(result.file)}: task permission added ${JSON.stringify(entry)}`,
+      );
+    }
   }
 
   if (managed.autoMode !== null) {
@@ -783,15 +796,6 @@ function decideRetryWatchdog(paths: CliPaths, managed: Managed): void {
   }
 }
 
-/** D68: explain only a work-state value that setup takes back. */
-function workStateRestored(paths: CliPaths): ReportLine {
-  return {
-    section: "companions",
-    mark: "info",
-    text: `claude-mem's work state is back on: its open to-do lists show at the start of each session again. To keep it off, set ${WORK_STATE_KEY} to "false" in ${tildify(paths.claudeMemSettingsFile, paths.home)}; setup leaves a value you set alone.`,
-  };
-}
-
 /**
  * The claude-mem keys this run writes, once the backend answered. Null: none. A dry run
  * reaches no network: it says which backend a real run would check.
@@ -813,11 +817,6 @@ async function decideClaudeMem(
   report.push(...reportLines("companions", plan.notes));
   // A dry run of the plan: what this run would change. No file is written.
   const changes = applyClaudeMem(paths, plan, true).changes;
-  if (
-    changes.some((change) => change.path.at(-1) === WORK_STATE_KEY && change.after === undefined)
-  ) {
-    report.push(workStateRestored(paths));
-  }
 
   // The backend is asked only when one of the provider keys changes: taking out a retired
   // key, or writing only the memory-use block, needs no answer from it.
@@ -852,23 +851,17 @@ async function decideClaudeMem(
 }
 
 /**
- * Claude Code's own task tools (D68): `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
- * settings, for leads and crew and sessions without claude-mem's work state. A value the
- * person set themselves is theirs: it stays, and setup names it.
+ * The retired task-tools opt-in (D68, withdrawn by D75): a value of the person's own, which
+ * stays and is named. Null when there is no key, or the key is still setup's own (it goes).
+ * The deny entries (`src/setup/task-tools.ts`) hide Claude Code's task tools either way.
  */
-function planTodoTools(
-  paths: CliPaths,
-): { kind: "set"; path: KeyPath } | { kind: "kept"; path: KeyPath; value: unknown } {
+function personalTodoToolsValue(paths: CliPaths): { path: KeyPath; value: unknown } | null {
   const path: KeyPath = ["env", TODO_TOOLS_KEY];
   const current = getKey(readJsonObject(paths.settingsFile).data, path);
-  if (!current.found || Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
-    return { kind: "set", path };
-  }
+  if (!current.found) return null;
   // A key setup wrote before, and the person changed since, is theirs too (`ownership`).
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-  return ownership(records, path, current) === "ours"
-    ? { kind: "set", path }
-    : { kind: "kept", path, value: current.value };
+  return ownership(records, path, current) === "ours" ? null : { path, value: current.value };
 }
 
 /** What `--warp`, `--remove-warp` or plain setup does about Warp. */
@@ -1069,6 +1062,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const managed: Managed = {
     claudeMem: claudeMem === "not-installed" ? null : claudeMem,
     autoMode: autoMode?.wanted ?? null,
+    taskAllow: machine.confirm !== null,
     instructions: {
       where: instructionsPaths(paths, options.instructionsSource),
       choice: options.instructions,
@@ -1160,6 +1154,16 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const tmuxNow = `tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`;
 
   if (options.dryRun) {
+    if (
+      machine.confirm === null &&
+      (applyTaskPermissions(paths, true, true)[1]?.added.length ?? 0) > 0
+    ) {
+      report.push({
+        section: "settings",
+        mark: "info",
+        text: "task tools allow rule left out: trust rules need a person at a terminal",
+      });
+    }
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
     report.push(
       ...warp.commands.map(
@@ -1213,6 +1217,23 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       screen,
       report,
     );
+  }
+  const taskTrustChanges = applyTaskPermissions(paths, true, true)[1]?.added ?? [];
+  if (taskTrustChanges.length > 0) {
+    screen.spoke = true;
+    out.say("Task tools: trust rule for permissions.allow:");
+    out.line("created", JSON.stringify(TASK_TOOLS_ALLOW_RULE), { indent: 2 });
+    managed.taskAllow =
+      asking.confirm !== null && (options.yes || asking.confirm("Allow the kit's task tools?"));
+    if (!managed.taskAllow)
+      report.push({
+        section: "settings",
+        mark: "info",
+        text:
+          asking.confirm === null
+            ? "task tools allow rule left out: trust rules need a person at a terminal"
+            : "task tools allow rule left out (you said no)",
+      });
   }
   const declined = askStatusline(paths, asking, managed, options.yes);
   // `--no-retry-watchdog` is a "no": remembered, so a later plain setup leaves the keys out.

@@ -25,7 +25,6 @@ import {
   START_BLOCK_KEYS,
   type StartBlockReading,
   TODO_TOOLS_KEY,
-  TODO_TOOLS_VALUE,
   WORK_STATE_KEY,
 } from "../machine/claude-mem";
 import { companionChecks, pluginEnabled } from "../machine/companions";
@@ -54,7 +53,7 @@ import {
   launcherCmdArgv,
   launcherCmdScript,
 } from "../setup/launcher-cmd";
-import { formatKeyPath, getKey, ownedRecords, ownership } from "../setup/managed-json";
+import { formatKeyPath, getKey } from "../setup/managed-json";
 import {
   canReadGitRemoteAsync,
   canReadHttp,
@@ -68,6 +67,7 @@ import {
   redactUrl,
 } from "../setup/marketplace-access";
 import { retryWatchdogLine, retryWatchdogState } from "../setup/retry-watchdog";
+import { TASK_ALLOW_PATH, TASK_DENY_PATH } from "../setup/task-tools";
 import {
   TMUX_LINE,
   TMUX_MIN_VERSION,
@@ -77,7 +77,8 @@ import {
 } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
 import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
-import { realTarget } from "../setup/write";
+import { RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
+import { openWorkDb, WORK_SCHEMA_VERSION, workDbFile } from "../tasks/work/db";
 import type { CommandRunner } from "../update/apply";
 import { isOlder } from "../update/check";
 import { isNewMajor, majorHeldDetail, readMajorNotes } from "../update/major";
@@ -880,8 +881,7 @@ function describeStartBlock(reading: StartBlockReading): string {
 }
 
 /**
- * D68: memory-use stays off, and work state returns to claude-mem's default. An older
- * setup's work-state value needs setup again. A person's contrary choice is information.
+ * D75: both start blocks stay off. A person's contrary choice is information.
  * An unreadable file is a warning: doctor cannot judge it.
  */
 function claudeMemStartBlocksCheck(
@@ -898,10 +898,8 @@ function claudeMemStartBlocksCheck(
       ". The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit",
     );
   }
-  if (work?.value === "false" && work.by === "setup") {
-    reasons.push(
-      ". Work state is off from an older setup, so sessions get no to-do list from claude-mem",
-    );
+  if (work && work.value !== "false" && work.by !== "person") {
+    reasons.push(". Work state must be off so the kit owns the task list");
   }
   if (reasons.length > 0) {
     return {
@@ -914,41 +912,98 @@ function claudeMemStartBlocksCheck(
   return {
     ok: true,
     ...(((memory?.by === "person" && memory.value !== "false") ||
-      (work?.by === "person" && work.value === "false")) && { info: true }),
+      (work?.by === "person" && work.value !== "false")) && { info: true }),
     text: base,
   };
 }
 
 /**
- * D68: task tools are the lead and crew list, and the list without claude-mem.
- * Check them on every machine, independently of claude-mem's settings.
+ * D75: the kit's tools are trusted and the two built-in lists are hidden.
+ * Check every machine, independently of claude-mem's settings.
  */
 export function taskToolsCheck(paths: CliPaths): Check {
+  const data = readSettings(paths.settingsFile) ?? {};
+  const allow = getKey(data, TASK_ALLOW_PATH).value;
+  const deny = getKey(data, TASK_DENY_PATH).value;
+  const missing = RETIRED_TASK_TOOLS.filter((tool) => !Array.isArray(deny) || !deny.includes(tool));
+  const reasons: string[] = [];
+  if (!Array.isArray(allow) || !allow.includes(TASK_TOOLS_ALLOW_RULE))
+    reasons.push(`missing allow rule ${TASK_TOOLS_ALLOW_RULE}`);
+  if (missing.length > 0) reasons.push(`missing deny rules ${missing.join(", ")}`);
+  return reasons.length > 0
+    ? { ok: false, text: `task tools: ${reasons.join("; ")}`, fix: SETUP_FIX }
+    : {
+        ok: true,
+        text: "task tools: the kit's tools are allowed and the built-in task lists are hidden",
+      };
+}
+
+/**
+ * D68's opt-in key, still in the settings after setup withdrew its own copy: the person's, so
+ * information only. The deny entries hide Claude Code's task tools whatever it says.
+ */
+export function oldTodoToolsKeyCheck(paths: CliPaths): Check | null {
   const path = ["env", TODO_TOOLS_KEY];
-  const current = getKey(readSettings(paths.settingsFile) ?? {}, path);
-  const key = formatKeyPath(path);
-  const file = tildify(paths.settingsFile, paths.home);
-  if (current.found && Bun.deepEquals(current.value, TODO_TOOLS_VALUE)) {
-    return {
-      ok: true,
-      text: `Claude Code's task tools are on for sessions: ${key} is ${JSON.stringify(TODO_TOOLS_VALUE)} in ${file}`,
-    };
-  }
-  if (!current.found) {
-    return {
-      ok: false,
-      text: `Claude Code's task tools are off for sessions: ${key} is not set in ${file}, so a lead, and a session without claude-mem's work state, has no task list`,
-      fix: SETUP_FIX,
-    };
-  }
-  // A value the person set is theirs: information, never a failure.
-  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-  const ours = ownership(records, path, current) === "ours";
+  if (!getKey(readSettings(paths.settingsFile) ?? {}, path).found) return null;
   return {
     ok: true,
     info: true,
-    text: `Claude Code's task tools are off for sessions: ${key} is ${JSON.stringify(current.value)} in ${file} (${ours ? `set by ${COMMAND} setup` : "your choice"}), so a lead, and a session without claude-mem's work state, has no task list`,
+    text: `${tildify(paths.settingsFile, paths.home)}: ${formatKeyPath(path)} is yours and no longer used; it can go, the kit's own task list replaced Claude Code's`,
   };
+}
+
+export function taskStoreChecks(paths: CliPaths): Check[] {
+  const file = workDbFile(paths);
+  if (!existsSync(file)) return [{ ok: true, info: true, text: "task work store: not made yet" }];
+  // No snapshots of the store exist (not in this release), so the one step that always works:
+  // set the file aside, and the next write makes a new, empty store.
+  const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)`;
+  try {
+    const db = openWorkDb(file, { mode: "hook" });
+    try {
+      const version =
+        db.sqlite.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ??
+        0;
+      const schema: Check =
+        version > WORK_SCHEMA_VERSION
+          ? {
+              ok: true,
+              warn: true,
+              text: `task work store: schema ${version} is newer than ${WORK_SCHEMA_VERSION}`,
+              fix: `${COMMAND} update`,
+            }
+          : version === WORK_SCHEMA_VERSION
+            ? { ok: true, text: `task work store: schema ${version} is current` }
+            : {
+                ok: false,
+                text: `task work store: schema ${version} needs migration`,
+                fix: `${COMMAND} task list`,
+              };
+      const integrity = db.sqlite
+        .query<{ integrity_check: string }, []>("PRAGMA integrity_check")
+        .all();
+      return [
+        schema,
+        integrity.length === 1 && integrity[0]?.integrity_check === "ok"
+          ? { ok: true, text: "task work store: integrity check is ok" }
+          : {
+              ok: false,
+              text: "task work store: integrity check failed",
+              fix: brokenFix,
+            },
+      ];
+    } finally {
+      db.close();
+    }
+  } catch (error) {
+    return [
+      {
+        ok: false,
+        text: `task work store cannot be read: ${messageOf(error)}`,
+        fix: brokenFix,
+      },
+    ];
+  }
 }
 
 /** D68's start-block reading, when claude-mem is installed. */
@@ -1266,6 +1321,8 @@ function doctorGroups(
           checkGitBash(machine.platform, env, machine),
           checkInstructions(paths, local.instructionsSource),
           taskToolsCheck(paths),
+          ...taskStoreChecks(paths),
+          oldTodoToolsKeyCheck(paths),
           checkNameClash(settings),
           await checkOldPlugin(settings, paths, readCommand),
         ]),

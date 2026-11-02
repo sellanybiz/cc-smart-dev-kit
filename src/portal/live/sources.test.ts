@@ -9,6 +9,8 @@ import { cliPaths } from "../../cli/paths";
 import { appendCrewEvent, createCrew, crewStoreDir, type NewCrew } from "../../crew/store";
 import { askLogFile } from "../../hooks/ask-log";
 import type { JobsAnswer } from "../../jobs/status";
+import { openWorkDb, workDbFile } from "../../tasks/work/db";
+import { createTask } from "../../tasks/work/store";
 import { tempDir } from "../../testing/temp";
 import { updateFiles, writeLastCheck } from "../../update/state";
 import { createLiveSources } from "./sources";
@@ -338,5 +340,32 @@ describe("the live stream's sources", () => {
     expect(world1.of("update")).toHaveLength(1);
     await world1.sources.pollOnce();
     expect(world1.of("update")).toHaveLength(1);
+  });
+
+  test("the work store: the first poll is a baseline, then one event per committed write", async () => {
+    let clock = 1_000;
+    const world1 = world({ now: () => clock, routerUp: false });
+    const who = { sessionId: "s", crewId: null, pid: null, procStart: null };
+    // No store yet: the baseline is "nothing there".
+    await world1.sources.pollOnce();
+    expect(world1.of("tasks")).toEqual([]);
+    const db = openWorkDb(workDbFile(world1.paths), { mode: "write" });
+    try {
+      const made = createTask(db, { project: "p", subject: "First" }, who, 1);
+      if (!made.ok) throw new Error(made.why);
+      clock = 2_000;
+      await world1.sources.pollOnce();
+      expect(world1.of("tasks")).toEqual([{ at: 2_000 }]);
+      // Nothing written since: nothing to say.
+      await world1.sources.pollOnce();
+      expect(world1.of("tasks")).toHaveLength(1);
+      const second = createTask(db, { project: "p", subject: "Second" }, who, 2);
+      if (!second.ok) throw new Error(second.why);
+      clock = 3_000;
+      await world1.sources.pollOnce();
+      expect(world1.of("tasks")).toEqual([{ at: 2_000 }, { at: 3_000 }]);
+    } finally {
+      db.close();
+    }
   });
 });

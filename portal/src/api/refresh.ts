@@ -82,11 +82,26 @@ export const WORKFLOW_CARD_REFRESH: RefreshOn = settingsChanged;
 export const GATEWAY_CARD_REFRESH: RefreshOn = (message) =>
   settingsChanged(message) || actionResult(message, "slot.") || actionResult(message, "switch");
 
+/**
+ * A project's Tasks card: the work store's own event (any session's task tool or `task`
+ * command wrote), a crew event or result (a phase task opens and closes with its crew session),
+ * and a project result (the task files are read from the project's checkout).
+ */
+export const TASKS_CARD_REFRESH: RefreshOn = (message) =>
+  message.name === "tasks" ||
+  message.name === "crew" ||
+  actionResult(message, "crew.") ||
+  settingsChanged(message);
+
 export const GUARDS_REFRESH: RefreshOn = ["guard-ask"];
 
-/** Work and a crew page: a crew event, and a crew action's result. */
+/** Work: a crew event, and a crew action's result. */
 export const CREW_REFRESH: RefreshOn = (message) =>
   message.name === "crew" || actionResult(message, "crew.");
+
+/** A crew page: what changes Work, and the work store's event (its phase's subtasks). */
+export const CREW_PAGE_REFRESH: RefreshOn = (message) =>
+  message.name === "tasks" || message.name === "crew" || actionResult(message, "crew.");
 
 /** The request history and its table: each routed request is a new row. */
 export const HISTORY_REFRESH: RefreshOn = ["recent"];

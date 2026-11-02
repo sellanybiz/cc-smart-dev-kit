@@ -55,9 +55,12 @@ and the merge order.
    with the person's explicit yes. A small fix is exempt: say so in one line.
 3. **The checks on what you changed ran?** `/cc-smart-dev-kit:verify-change` § 2. The full check
    (§ 4) runs once, not per commit. A commit hook that fails: fix the cause and commit again.
-4. **Stage by path** — never `git add -A` while subagents still write. Then read
-   `git diff --staged --stat`: an unexpected path is investigated before the commit, not
-   explained after it.
+4. **Include project tasks.** Run `cc-smart-dev-kit task list --branch --base <base>` for
+   the branch's real base. Commit task files with the change that needs them. Close tasks
+   completed by this change with `task_done` and evidence, in this same change. The output
+   fills the PR's Follow-up notes and Still owed headings (`/cc-smart-dev-kit:pull-request`).
+   **Stage by path** — never `git add -A` while subagents still write. Read
+   `git diff --staged --stat`; investigate any unexpected path before committing.
 5. **The message:** follow the style in `git log` (for example conventional commits:
    `feat`, `fix`, `refactor`, `docs`, `test`, `chore`). A title under 70 characters; a body
    about **why**, not what. Write it with a heredoc. End with the attribution lines the

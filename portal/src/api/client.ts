@@ -35,6 +35,7 @@ import type {
   ProjectData,
   ProjectGatewayData,
   ProjectList,
+  ProjectTasksData,
   ProjectWorkflowData,
   RequestPage,
   RequestQuery,
@@ -72,6 +73,8 @@ export interface PortalClient {
   projectGateway(id: string): Promise<ProjectGatewayData>;
   /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
   projectWorkflow(id: string): Promise<ProjectWorkflowData>;
+  /** A project's Tasks card (D75): its work tree on this machine and its task files. */
+  projectTasks(id: string): Promise<ProjectTasksData>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
@@ -194,6 +197,12 @@ export function mockClient(scenario: MockScenario): PortalClient {
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         return adapt.projectWorkflowOf(found, data.settings.rows);
       }),
+    projectTasks: (id) =>
+      answer(() => {
+        const found = data.tasksPages[id];
+        if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
+        return found;
+      }),
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
     onJobs: () => () => {},
@@ -310,6 +319,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
       ]);
       return adapt.projectWorkflowOf(answer, specs.rows);
     },
+    projectTasks: (id) =>
+      get<Wire.ProjectTasksAnswer>(`/api/projects/${encodeURIComponent(id)}/tasks`),
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");
       if ("error" in answer) throw new Error(answer.error);

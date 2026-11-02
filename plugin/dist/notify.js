@@ -28,8 +28,8 @@ __export(exports_iso, {
 });
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync8 } from "fs";
-import { join as join13 } from "path";
+import { existsSync as existsSync11 } from "fs";
+import { join as join16 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -123,7 +123,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.9.0",
+  version: "1.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -210,9 +210,9 @@ function shellQuote(value) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync7, readFileSync as readFileSync8, rmSync, statSync as statSync4, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync11, rmSync as rmSync2, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename2, join as join11 } from "path";
+import { basename as basename2, join as join14 } from "path";
 
 // src/crew/names.ts
 var MAX_SESSION_NAME = 60;
@@ -6392,7 +6392,7 @@ function readAway(stateDir) {
 }
 
 // src/project/config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
+import { existsSync as existsSync2, readFileSync as readFileSync4 } from "fs";
 import { posix, win32 } from "path";
 
 // src/jobs/kinds.ts
@@ -6531,12 +6531,16 @@ var DEFAULT_KINDS = {
 };
 
 // src/setup/user-json.ts
+import { readFileSync as readFileSync3 } from "fs";
 var BOM = "\uFEFF";
 function withoutBom(text) {
   return text.startsWith(BOM) ? text.slice(BOM.length) : text;
 }
 function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync3(file, "utf8"));
 }
 
 // src/workflow/schema.ts
@@ -6831,18 +6835,20 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "crew-role",
-  "lead-notes"
+  "lead-notes",
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
+    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -6857,6 +6863,12 @@ var ccSmartDevKitConfigSchema = strictObject({
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  tasks: strictObject({
+    dir: inCheckout.optional(),
+    staleDays: number2().int().min(1).optional(),
+    releaseBranch: string2().trim().min(1).optional(),
+    legacyFolders: array(inCheckout).optional()
+  }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
@@ -6906,10 +6918,23 @@ function checkRetiredFields(where, raw) {
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
 }
+function readOwnHooks(file) {
+  if (!existsSync2(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync2(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync3(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync4(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
@@ -7066,6 +7091,15 @@ function locateCheckout(cwd, options = {}) {
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
   };
 }
+function ownHooksOf(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = readOwnHooks(join6(root, ".claude", "cc-smart-dev-kit.json"));
+  if (own !== null)
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return [];
+  return readOwnHooks(join6(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
+}
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
   const own = join6(root, ".claude", "cc-smart-dev-kit.json");
@@ -7080,7 +7114,7 @@ function loadProjectConfig(checkout, pluginVersion) {
 }
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5 } from "fs";
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -7108,7 +7142,7 @@ function loadWorkflow(file) {
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync4(file, "utf8"));
+    raw = JSON.parse(readFileSync5(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -7369,121 +7403,689 @@ function stringField(value) {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+// src/mcp/task-server-name.ts
+var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
-// src/hooks/stop-failure.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync2 } from "fs";
-import { join as join10 } from "path";
-
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var CHECKS_DOWN_WHY = [
-  "untested",
-  "no-worker",
-  "off",
-  "failed",
-  "chain-untested",
-  "chain-failed"
-];
-var checksDownSchema = object({
-  claim: string2().nullable(),
-  lastAt: number2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  status: int(),
-  why: _enum(CHECKS_DOWN_WHY)
-});
-var stateSchema2 = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  checksDown: record(string2(), checksDownSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  seenClaude: record(string2(), number2()).optional(),
-  version: literal(1)
-});
-function stateKeyFor(slot, profile) {
-  return profile === null ? slot : `${profile}/${slot}`;
+// src/tasks/words.ts
+var TASK_TOOL = {
+  create: "task_create",
+  update: "task_update",
+  done: "task_done",
+  note: "task_note",
+  list: "task_list",
+  get: "task_get",
+  search: "task_search",
+  delete: "task_delete"
+};
+var RETIRED_TASK_CLOSER = "TaskUpdate";
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
+function taskCloseStep(ref) {
+  return ref.startsWith("#") ? `\`${TASK_TOOL.done}\` with task "${ref}", or \`${TASK_COMMAND} done ${ref}\`` : `\`${RETIRED_TASK_CLOSER}\` with status "completed"`;
 }
-function parseLimitState(text) {
+
+// src/crew/skills.ts
+var CREW_SKILL = `${PLUGIN}:crew`;
+var LEAD_SKILL = `${PLUGIN}:lead`;
+
+// src/crew/brief.ts
+var CREW_COMMAND = `/${CREW_SKILL}`;
+var SELF_WATCH_ARGS = "crew self-watch";
+var LEAD_WATCH_ARGS = "crew watch";
+function literal2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function monitorCommand(args) {
+  const launcher = literal2(COMMAND);
+  return new RegExp(`^\\s*(?:"(?:[^"]*[\\\\/])?${launcher}"|(?:[^\\s"]*[\\\\/])?${launcher})\\s+${literal2(args)}\\s*$`);
+}
+var SELF_WATCH_COMMAND = monitorCommand(SELF_WATCH_ARGS);
+var LEAD_WATCH_COMMAND = monitorCommand(LEAD_WATCH_ARGS);
+function taskCommand(task) {
+  if (typeof task !== "object" || task === null || Array.isArray(task))
+    return null;
+  const command = task.command;
+  return typeof command === "string" ? command : null;
+}
+function isLeadWatchTask(task) {
+  const command = taskCommand(task);
+  return command !== null && LEAD_WATCH_COMMAND.test(command);
+}
+var COMMAND_WRAPPER = new RegExp(`^<command-message>${CREW_SKILL}</command-message>\\r?\\n<command-name>/${CREW_SKILL}</command-name>(?:\\r?\\n<command-args>([\\s\\S]*)</command-args>)?$`);
+var REPORT_COMMAND = `${COMMAND} crew report`;
+var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
+var CREW_NEVER_DOES = {
+  answer: "answers its lead's questions",
+  note: "sends its lead's notes",
+  lead: "leads",
+  "lead tell": "tells another lead",
+  model: "changes a crew session's model or effort",
+  resume: "stops, removes or resumes crew sessions",
+  start: "starts crew sessions",
+  watch: "watches its lead's crew sessions"
+};
+var CREW_NEVER_RUNS = {
+  answer: CREW_NEVER_DOES.answer,
+  note: CREW_NEVER_DOES.note,
+  lead: CREW_NEVER_DOES.lead,
+  "lead tell": CREW_NEVER_DOES["lead tell"],
+  model: CREW_NEVER_DOES.model,
+  resume: CREW_NEVER_DOES.resume,
+  rm: CREW_NEVER_DOES.resume,
+  start: CREW_NEVER_DOES.start,
+  stop: CREW_NEVER_DOES.resume,
+  watch: CREW_NEVER_DOES.watch
+};
+
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+// src/crew/store.ts
+import {
+  appendFileSync,
+  closeSync as closeSync2,
+  existsSync as existsSync7,
+  fstatSync,
+  mkdirSync as mkdirSync4,
+  openSync as openSync2,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync6,
+  readSync,
+  rmSync,
+  statSync as statSync3
+} from "fs";
+import { dirname as dirname3, join as join9 } from "path";
+
+// src/workflow/reviews.ts
+import { createHash } from "crypto";
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+function repoKey(repo) {
+  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+}
+
+// src/tasks/project/format.ts
+var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
+var projectTaskSchema = object({
+  id: string2().regex(/^T-[a-z2-7]{6}$/),
+  title: string2().min(1).max(200),
+  kind: _enum(["production", "database", "teammate", "follow-up"]),
+  status: _enum(["open", "done", "dropped"]),
+  when: _enum(["now", "next-release", "any"]).optional(),
+  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
+  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
+  created: date3,
+  closed: date3.optional(),
+  from: string2().optional(),
+  refs: array(string2()).optional(),
+  evidence: string2().optional()
+}).passthrough();
+
+// src/tasks/context.ts
+function projectKey(repo) {
+  return repoKey(repo);
+}
+
+// src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
+import { dirname as dirname2, join as join8 } from "path";
+var WORK_SCHEMA_VERSION = 1;
+var WRITE_TIMEOUT_MS = 3000;
+var HOOK_TIMEOUT_MS = 200;
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+function workDbFile(paths) {
+  return join8(paths.stateDir, "tasks", "work.db");
+}
+var SCHEMA = `
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('min_compatible','1');
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
+ parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
+ subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
+ plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
+CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
+CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
+CREATE INDEX task_status ON tasks(project,status);
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE INDEX task_crew ON tasks(project,crew_id);
+CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
+CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
+CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
+ at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
+ changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
+CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
+`;
+function openWorkDb(file, options) {
+  const hook = options.mode === "hook";
+  const fresh = !existsSync5(file);
+  if (hook && fresh)
+    throw new Error("task store does not exist");
+  if (!hook)
+    mkdirSync3(dirname2(file), { recursive: true, mode: 448 });
+  const sqlite = new Database(file, { create: !hook, readwrite: true });
+  try {
+    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
+    sqlite.run("PRAGMA foreign_keys = ON");
+    if (!hook) {
+      chmodSync(dirname2(file), 448);
+      chmodSync(file, 384);
+      if (fresh)
+        sqlite.run("PRAGMA journal_mode = WAL");
+      sqlite.run("BEGIN IMMEDIATE");
+      try {
+        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
+        if (version < 1) {
+          sqlite.run(SCHEMA);
+          sqlite.run("PRAGMA user_version = 1");
+        }
+        sqlite.run("COMMIT");
+      } catch (error) {
+        sqlite.run("ROLLBACK");
+        throw error;
+      }
+    }
+    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
+    if (hook || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
+    return {
+      sqlite,
+      writable: !hook && minimum <= WORK_SCHEMA_VERSION,
+      close: () => sqlite.close()
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+
+// src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
+function crewIdOf(env) {
+  const id = env[CREW_ENV]?.trim() ?? "";
+  return id === "" ? null : id;
+}
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
+
+// src/tasks/work/identity.ts
+var cached2 = new Map;
+
+// src/tasks/work/queries.ts
+function allTasks(db, project) {
+  const dependencies = new Map;
+  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
+    const refs = dependencies.get(row.task_id) ?? [];
+    refs.push(row.waits_for);
+    dependencies.set(row.task_id, refs);
+  }
+  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
+    id: row.id,
+    number: row.number,
+    project: row.project,
+    parentId: row.parent_id,
+    kind: row.kind,
+    subject: row.subject,
+    description: row.description,
+    status: row.status,
+    plan: row.plan,
+    phase: row.phase,
+    crewId: row.crew_id,
+    createdBy: row.created_by,
+    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    waitsFor: dependencies.get(row.id) ?? []
+  }));
+}
+
+// src/tasks/work/read.ts
+import { existsSync as existsSync6 } from "fs";
+function readWorkStore(paths, body) {
+  let db;
+  try {
+    const file = workDbFile(paths);
+    if (!existsSync6(file))
+      return { state: "none" };
+    db = openWorkDb(file, { mode: "hook" });
+    return { state: "ready", value: body(db) };
+  } catch (error) {
+    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+  } finally {
+    db?.close();
+  }
+}
+function own2(db, project, sessionIds, plan) {
+  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
+}
+function leadOwnState(paths, project, plan, sessionIds) {
+  return readWorkStore(paths, (db) => {
+    const tasks = own2(db, project, sessionIds, plan);
+    return { inProgress: tasks.filter((t) => t.status === "in_progress"), total: tasks.length };
+  });
+}
+
+// src/crew/runs.ts
+var text = string2().min(1);
+var actor = looseObject({ name: text, sessionId: text });
+var runEventSchema = looseObject({
+  at: text,
+  kind: text,
+  by: actor.nullable(),
+  state: text,
+  text: string2().nullable(),
+  detail: record(string2(), unknown()).optional()
+});
+var runTimesSchema = looseObject({
+  createdAt: text,
+  startedAt: text.nullable(),
+  finishedAt: text.nullable(),
+  mergedAt: text.nullable(),
+  removedAt: text.nullable(),
+  wallMs: number2().nullable(),
+  workingMs: number2().nullable(),
+  queuedMs: number2().nullable(),
+  pausedMs: number2(),
+  pauses: array(looseObject({ from: text, to: text.nullable(), reason: text }))
+});
+var runRecordSchema = looseObject({
+  version: number2().int().min(1),
+  id: text,
+  name: text,
+  plan: text,
+  phase: text,
+  slug: text,
+  kind: text,
+  model: looseObject({
+    named: text,
+    resolved: text,
+    slot: string2().nullable()
+  }),
+  effort: text,
+  branch: text,
+  baseRef: text,
+  base: looseObject({ ref: text, sha: text }).nullable(),
+  brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
+  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
+  lead: actor,
+  continues: string2().nullable(),
+  continuedBy: string2().nullable(),
+  sessions: array(looseObject({
+    at: text,
+    by: actor.nullable(),
+    sessionId: text,
+    shortId: string2().nullable()
+  })),
+  state: text,
+  events: array(runEventSchema),
+  times: runTimesSchema,
+  contextTokens: number2().int().min(0).nullable().optional(),
+  backfilled: array(text).optional(),
+  createdAt: text,
+  updatedAt: text
+});
+
+// src/crew/store.ts
+class CrewStoreError extends Error {
+  name = "CrewStoreError";
+}
+var FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function fileId(id, what) {
+  if (!FILE_ID.test(id)) {
+    throw new CrewStoreError(`"${id}" is not a ${what} the store can name a file after`);
+  }
+  return id;
+}
+function crewRootDir(stateDir) {
+  return join9(stateDir, "crew");
+}
+function crewStoreDir(stateDir, repo) {
+  return join9(crewRootDir(stateDir), repoKey(repo));
+}
+function leadFile(stateDir, repo, sessionId) {
+  return join9(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
+}
+var text2 = string2().min(1);
+var version2 = number2().int().min(1);
+var sha = string2().regex(COMMIT_SHA, "a full commit sha");
+var count = number2().int().min(0);
+var word = () => text2.transform((value) => value);
+var supersededAnswer = looseObject({
+  answer: text2,
+  answeredAt: text2,
+  deliveredAt: text2.nullable().optional()
+});
+var crewQuestionFields = looseObject({
+  question: text2,
+  options: array(text2).min(2),
+  recommended: number2().int().min(1).nullable(),
+  askedAt: text2,
+  answeredAt: text2.nullable(),
+  answer: text2.nullable(),
+  supersededBy: number2().int().min(0).nullable().optional(),
+  deliveredAt: text2.nullable().optional(),
+  superseded: array(supersededAnswer).optional()
+});
+var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
+  if (asked.recommended !== null && asked.recommended > asked.options.length) {
+    context.addIssue({
+      code: "custom",
+      message: `recommends option ${asked.recommended} of ${asked.options.length}`,
+      path: ["recommended"]
+    });
+  }
+  if (asked.answer === null !== (asked.answeredAt === null)) {
+    context.addIssue({
+      code: "custom",
+      message: "an answer and its time are given together",
+      path: ["answeredAt"]
+    });
+  }
+});
+var waitingForSchema = discriminatedUnion("kind", [
+  looseObject({
+    kind: literal("slot"),
+    since: text2,
+    slot: text2
+  }),
+  looseObject({
+    kind: literal("claude-limit"),
+    model: text2,
+    resetsAt: text2.nullable()
+  }),
+  looseObject({
+    kind: literal("safety-checks"),
+    scope: text2,
+    since: text2
+  }),
+  looseObject({
+    kind: literal("unknown"),
+    since: text2,
+    slot: text2.exactOptional()
+  })
+]);
+var discardArchiveSchema = looseObject({
+  ref: text2,
+  head: sha,
+  at: text2,
+  prunedAt: text2.optional()
+});
+var crewFields = object({
+  version: version2,
+  id: string2().regex(FILE_ID, "a plain file name"),
+  name: text2,
+  sessionId: text2.nullable(),
+  shortId: text2.nullable(),
+  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
+  sessionEndedAt: exports_iso.datetime().optional(),
+  leadSessionId: text2,
+  leadName: text2,
+  repo: text2,
+  plan: text2,
+  phase: text2,
+  slug: text2,
+  kind: word(),
+  model: looseObject({
+    named: text2,
+    slot: text2.nullable(),
+    resolved: text2,
+    tier: text2.nullable()
+  }),
+  effort: text2,
+  permissionMode: text2,
+  worktree: text2,
+  released: object({ at: text2 }).optional(),
+  branch: text2,
+  baseRef: text2,
+  baseCommit: sha.optional(),
+  base: looseObject({ ref: text2, sha }).nullable(),
+  waitsFor: array(text2),
+  files: array(text2),
+  questions: array(crewQuestion),
+  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
+  state: word(),
+  lastLine: string2().nullable(),
+  reportPath: text2.nullable(),
+  pr: number2().int().positive().nullable(),
+  memoryMb: number2().min(0).nullable(),
+  waitingFor: waitingForSchema.optional(),
+  resumeClaim: looseObject({ at: text2, token: text2 }).optional(),
+  pendingLaunch: looseObject({
+    at: text2,
+    effort: text2,
+    model: looseObject({
+      named: text2,
+      slot: text2.nullable(),
+      resolved: text2,
+      tier: text2.nullable()
+    }),
+    why: text2
+  }).optional(),
+  lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
+  lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
+  startedAt: text2.nullable().optional(),
+  launchedAt: text2.optional(),
+  resumeWaits: looseObject({ at: text2, answer: count.nullable() }).optional(),
+  sweptFrom: text2.optional(),
+  continues: text2.nullable().optional(),
+  mergedBeforeRemoval: boolean2().optional(),
+  mergedWhileStopped: boolean2().optional(),
+  stoppedByWatch: boolean2().optional(),
+  mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
+  archive: discardArchiveSchema.optional(),
+  archiveHistory: array(discardArchiveSchema).optional(),
+  discardPending: looseObject({
+    head: sha,
+    archivedHead: sha,
+    indexPath: text2,
+    indexBackup: text2,
+    indexArchived: text2
+  }).optional(),
+  planFile: text2.nullable().optional(),
+  briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
+  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
+  createdAt: text2,
+  updatedAt: text2
+});
+var crewRecordSchema = crewFields.loose();
+var leadFields = object({
+  version: version2,
+  sessionId: string2().regex(FILE_ID, "a plain file name"),
+  name: text2,
+  repo: text2,
+  plan: text2,
+  tag: text2,
+  cwd: text2,
+  planFile: text2.nullable().optional(),
+  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
+  adoptedBy: text2.optional(),
+  adoptedAt: text2.optional(),
+  generation: count.optional(),
+  endedAt: text2.nullable().optional(),
+  sessionUnknownSince: text2.nullable().optional(),
+  pausedAgents: array(text2).optional(),
+  createdAt: text2,
+  updatedAt: text2
+});
+var leadRecordSchema = leadFields.loose();
+var eventFields = object({
+  version: version2,
+  at: text2,
+  type: word(),
+  crew: string2().regex(FILE_ID, "a plain file name"),
+  name: text2,
+  lead: text2.nullable(),
+  state: word(),
+  text: string2().nullable(),
+  sha: sha.nullable().optional(),
+  note: string2().nullable().optional(),
+  question: number2().int().min(1).optional(),
+  memoryMb: number2().min(0).nullable().optional(),
+  pair: text2.optional(),
+  tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
+});
+var crewEventSchema = eventFields.loose();
+var testRun = looseObject({ command: text2, passed: count, failed: count, ok: boolean2() });
+var reportFields = object({
+  version: version2,
+  status: word(),
+  phase: text2,
+  branch: looseObject({ name: text2, sha }),
+  base: looseObject({ ref: text2, sha }),
+  pr: number2().int().positive().nullable(),
+  changed: looseObject({ files: count, insertions: count, deletions: count }),
+  outsideBrief: array(text2),
+  tests: looseObject({ targeted: array(testRun), full: testRun.nullable() }),
+  checks: array(looseObject({ name: text2, ok: boolean2(), note: string2().nullable() })),
+  review: looseObject({
+    agent: text2,
+    model: text2,
+    effort: text2,
+    sha,
+    findings: array(looseObject({ finding: text2, fix: text2 }))
+  }).nullable(),
+  ownReview: looseObject({
+    reason: text2,
+    findings: array(looseObject({ finding: text2, fix: text2 }))
+  }).nullable().optional(),
+  docs: array(text2),
+  issues: array(number2().int().positive()).optional(),
+  needsLead: array(text2),
+  open: array(text2),
+  question: text2.nullable(),
+  summary: text2.nullable().optional(),
+  extra: record(string2(), unknown()).optional()
+});
+var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
+  if (report.status === "blocked" && report.question === null) {
+    context.addIssue({
+      code: "custom",
+      message: "a blocked report names the question it waits on",
+      path: ["question"]
+    });
+  }
+});
+function notThere(error) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+function reasonOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function checked(schema, value, file) {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new CrewStoreError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
+  }
+  return parsed.data;
+}
+function readRecord(schema, file) {
   let raw;
   try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
+    raw = readFileSync6(file, "utf8");
+  } catch (error) {
+    if (notThere(error))
+      return null;
+    throw new CrewStoreError(`Cannot read ${file}: ${reasonOf(error)}`);
   }
-  const parsed = stateSchema2.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    throw new CrewStoreError(`Invalid ${file}: not valid JSON (${reasonOf(error)})`);
+  }
+  return checked(schema, value, file);
 }
-var UNKNOWN_CLOCK = "an unknown time";
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  if (Number.isNaN(at.getTime()))
-    return UNKNOWN_CLOCK;
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
+function readLead(stateDir, repo, sessionId) {
+  return readRecord(leadRecordSchema, leadFile(stateDir, repo, sessionId));
 }
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
+function leadSessions(lead) {
+  return [
+    ...new Set([lead.sessionId, ...(lead.earlierSessions ?? []).map((one) => one.sessionId)])
+  ];
 }
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentBreakers(state, nowMs) {
-  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
+var RESUME_CLAIM_MS = 2 * 60000;
+var watchStateFields = object({
+  summarizedGeneration: count.optional(),
+  missingSince: record(string2(), number2()).optional(),
+  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
+  parkedAt: number2().int().min(0).optional(),
+  noted: boolean2().optional(),
+  offset: count,
+  said: record(string2(), string2()),
+  resumedAt: number2().int().min(0).optional(),
+  routerRequests: number2().int().min(0).nullable().optional(),
+  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
+});
+var watchLeaseFields = object({
+  at: number2().int().min(0),
+  host: string2(),
+  once: boolean2().optional(),
+  pid: number2().int().positive(),
+  pidns: string2().nullable().default(null),
+  startTime: string2().nullable(),
+  token: text2
+});
+var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
+var notesStateFields = object({ offset: count });
+var stopStateFields = object({
+  last: _enum(["report", "step"]).nullable(),
+  offset: count
+});
+var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
+var answerWatchFields = object({ at: number2().int().min(0) });
+var feedCursor = object({
+  etag: string2().nullable(),
+  top: count
+});
+var issueFeedFields = object({
+  comments: feedCursor.nullable(),
+  issues: feedCursor.nullable(),
+  nextAt: count,
+  problem: string2().nullable(),
+  source: string2().min(1),
+  version: literal(1)
+});
+
+// src/worktrees/auto-state.ts
+var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
+var removedSchema = object({
+  branch: string2().nullable(),
+  name: string2(),
+  path: string2(),
+  why: string2()
+});
+var keptSchema = object({ name: string2(), path: string2(), why: string2() });
+var recordSchema = object({
+  base: string2(),
+  kept: array(keptSchema),
+  lastRunAt: number2(),
+  removed: array(removedSchema),
+  repo: string2(),
+  seq: number2()
+});
+var toldSchema = object({ seq: number2() });
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/crew/transcript.ts
+var TAIL_BYTES = 256 * 1024;
+
+// src/crew/archive.ts
+var DAY_MS = 24 * 60 * 60 * 1000;
 
 // src/gateway/targets.ts
 var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -7564,11 +8166,99 @@ function targetsInUse(targets, fallback) {
 }
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 
-// src/gateway/breaker.ts
-var BREAKER_REMINDER_MS = 10 * 60000;
+// src/models/launch-policy.ts
+var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
+var UI_POLICY = {
+  minEffort: "high",
+  tiers: ["opus", "fable"]
+};
+function uiEffortAllowed(effort) {
+  if (effort === null)
+    return false;
+  const levels = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
+}
+var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
+var EFFORT_AUTO = "auto";
+var CREW_KINDS = {
+  build: { about: "routine building", effort: "high", model: "sonnet" },
+  docs: {
+    about: "docs and their updates",
+    effort: "high",
+    model: "sonnet"
+  },
+  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
+  security: {
+    about: "code that touches security",
+    effort: "high",
+    model: "sonnet"
+  },
+  money: {
+    about: "code that touches money",
+    effort: "high",
+    model: "sonnet"
+  },
+  permissions: {
+    about: "code that touches permissions",
+    effort: "high",
+    model: "sonnet"
+  },
+  schema: {
+    about: "a schema or a contract",
+    effort: "high",
+    model: "sonnet"
+  },
+  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
+  architecture: {
+    about: "architecture and design",
+    effort: "xhigh",
+    model: "opus"
+  },
+  ui: {
+    about: "UI and UX judgment",
+    effort: UI_POLICY.minEffort,
+    model: UI_POLICY.tiers[0]
+  }
+};
+var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
+
+// src/jobs/memory.ts
+var GIB = 1024 ** 3;
+
+// src/jobs/config.ts
+import { isAbsolute, join as join10 } from "path";
+var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
+var MAX_WEIGHT = 1e4;
+var weightSchema = union([
+  literal(0),
+  literal("off"),
+  number2().int().min(1).max(MAX_WEIGHT)
+]);
+var jobsMachineConfigSchema = strictObject({
+  stateDir: absolutePath.optional(),
+  maxJobs: number2().int().min(1).optional(),
+  lightJobs: number2().int().min(1).optional(),
+  startFreeGb: number2().min(0).optional(),
+  budgetGb: number2().int().min(1).optional(),
+  reserveGb: number2().int().min(0).optional(),
+  sharedDirs: array(absolutePath).optional(),
+  launch: _enum(["auto", "plain"]).optional(),
+  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
+  cpuWeight: union([weightSchema, literal("idle")]).optional(),
+  ioWeight: weightSchema.optional()
+});
+
+// src/cli/usage-window.ts
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var storedSchema = looseObject({
+  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
+  readAt: string2()
+});
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7, statSync as statSync4 } from "fs";
 
 // src/gateway/history.ts
 var HISTORY_MAX_RETENTION_DAYS = 3650;
@@ -7880,7 +8570,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync3(path).mode;
+    mode = statSync4(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -7889,7 +8579,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync5(path, "utf8"));
+    raw = JSON.parse(readFileSync7(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -7900,83 +8590,24 @@ ${parsed.error}`);
   return parsed.config;
 }
 
-// src/gateway/fallback-answer.ts
-var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
-
-// src/gateway/safety-checks.ts
-var countSchema = object({
-  cacheRead: number2(),
-  cacheWrite: number2(),
-  checks: number2(),
-  input: number2(),
-  output: number2()
-});
-var daySchema = object({
-  anthropic: countSchema,
-  checks: number2(),
-  fallback: countSchema
-});
-var stateSchema3 = object({
-  days: record(string2(), daySchema),
-  version: literal(1)
-});
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
-var EVENT_MAX_CHARS = 64 * 1024;
-
-// src/gateway/router.ts
-var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
-var HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade"
-]);
-var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
-var ABOVE_HIGH = new Set(["max", "xhigh"]);
-var encoder = new TextEncoder;
-
-// src/crew/wait.ts
-var FIRST_BACKOFF_MS = 5 * 60000;
-var MAX_BACKOFF_MS = 20 * 60000;
-var REPAUSE_WINDOW_MS = 15 * 60000;
-function targetsNow(config) {
-  const inUse = (view, profile) => Object.entries(view.slots).map(([slot, chain]) => [
-    stateKeyFor(slot, profile),
-    targetsInUse(chain, fallbackOn(view, slot))
-  ]);
-  return Object.fromEntries([
-    ...inUse(config, null),
-    ...profileNames(config).flatMap((name) => {
-      const view = profileView(config, name);
-      return view === null ? [] : inUse(view, name);
-    })
-  ]);
-}
-function claudeLimitHolds(key, model, inUse) {
-  const first = key === null ? undefined : inUse?.[key]?.[0];
-  return first === undefined || withoutContextSuffix(first) === model;
-}
-
 // src/setup/managed-json.ts
-import { createHash } from "crypto";
-import { existsSync as existsSync5, readFileSync as readFileSync6 } from "fs";
-import { join as join8 } from "path";
+import { createHash as createHash2 } from "crypto";
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "fs";
+import { join as join11 } from "path";
 var OWNED_FILE = "owned.json";
 function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function samePath(a, b) {
+function samePath2(a, b) {
   return a.length === b.length && a.every((segment, index) => segment === b[index]);
 }
 function detectIndent(text) {
   return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
 }
 function readJsonObject(file) {
-  if (!existsSync5(file))
+  if (!existsSync8(file))
     return { data: {}, indent: "  ", text: null };
-  const text = readFileSync6(file, "utf8");
+  const text = readFileSync8(file, "utf8");
   if (text.trim() === "")
     return { data: {}, indent: "  ", text };
   let parsed;
@@ -8011,10 +8642,10 @@ function toRecord(entry, file) {
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
 }
 function readOwned(stateDir) {
-  const file = join8(stateDir, OWNED_FILE);
-  if (!existsSync5(file))
+  const file = join11(stateDir, OWNED_FILE);
+  if (!existsSync8(file))
     return {};
-  const parsed = JSON.parse(readFileSync6(file, "utf8"));
+  const parsed = JSON.parse(readFileSync8(file, "utf8"));
   if (!isObject2(parsed))
     throw new Error(`Invalid ${file}: expected an object`);
   const owned = {};
@@ -8029,10 +8660,10 @@ function ownedRecords(stateDir, file) {
   return readOwned(stateDir)[file] ?? [];
 }
 function hashOf(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+  return createHash2("sha256").update(JSON.stringify(value)).digest("hex");
 }
 function ownership(records, path, current, unchosen) {
-  const record = records.find((entry) => samePath(entry.path, path));
+  const record = records.find((entry) => samePath2(entry.path, path));
   if (record === undefined)
     return "none";
   if (!current.found)
@@ -8056,406 +8687,6 @@ function getKey(data, path) {
   }
   return { found: true, value: node };
 }
-
-// src/setup/retry-watchdog.ts
-var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
-var RETRY_WATCHDOG_VALUE = "1";
-var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
-var RETRY_WATCHDOG_RECHECK_MS = 300000;
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
-var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
-var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
-var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
-  "env",
-  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
-];
-var RETRY_WATCHDOG_SETTINGS = [
-  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
-  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
-  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
-];
-var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
-var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
-var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
-var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
-function turnsOn(value) {
-  return ["1", "on", "true", "yes"].includes(String(value).trim().toLowerCase());
-}
-function retryWatchdogState(paths) {
-  const current = getKey(readJsonObject(paths.settingsFile).data, RETRY_WATCHDOG_KEY);
-  if (!current.found)
-    return "off";
-  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
-  if (ownership(records, RETRY_WATCHDOG_KEY, current) === "ours")
-    return "ours";
-  return turnsOn(current.value) ? "yours" : "disabled";
-}
-
-// src/jobs/memory.ts
-var GIB = 1024 ** 3;
-
-// src/jobs/config.ts
-import { isAbsolute, join as join9 } from "path";
-var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
-var MAX_WEIGHT = 1e4;
-var weightSchema = union([
-  literal(0),
-  literal("off"),
-  number2().int().min(1).max(MAX_WEIGHT)
-]);
-var jobsMachineConfigSchema = strictObject({
-  stateDir: absolutePath.optional(),
-  maxJobs: number2().int().min(1).optional(),
-  lightJobs: number2().int().min(1).optional(),
-  startFreeGb: number2().min(0).optional(),
-  budgetGb: number2().int().min(1).optional(),
-  reserveGb: number2().int().min(0).optional(),
-  sharedDirs: array(absolutePath).optional(),
-  launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: union([weightSchema, literal("idle")]).optional(),
-  ioWeight: weightSchema.optional()
-});
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
-
-// src/crew/runs.ts
-var text = string2().min(1);
-var actor = looseObject({ name: text, sessionId: text });
-var runEventSchema = looseObject({
-  at: text,
-  kind: text,
-  by: actor.nullable(),
-  state: text,
-  text: string2().nullable(),
-  detail: record(string2(), unknown()).optional()
-});
-var runTimesSchema = looseObject({
-  createdAt: text,
-  startedAt: text.nullable(),
-  finishedAt: text.nullable(),
-  mergedAt: text.nullable(),
-  removedAt: text.nullable(),
-  wallMs: number2().nullable(),
-  workingMs: number2().nullable(),
-  queuedMs: number2().nullable(),
-  pausedMs: number2(),
-  pauses: array(looseObject({ from: text, to: text.nullable(), reason: text }))
-});
-var runRecordSchema = looseObject({
-  version: number2().int().min(1),
-  id: text,
-  name: text,
-  plan: text,
-  phase: text,
-  slug: text,
-  kind: text,
-  model: looseObject({
-    named: text,
-    resolved: text,
-    slot: string2().nullable()
-  }),
-  effort: text,
-  branch: text,
-  baseRef: text,
-  base: looseObject({ ref: text, sha: text }).nullable(),
-  brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
-  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
-  lead: actor,
-  continues: string2().nullable(),
-  continuedBy: string2().nullable(),
-  sessions: array(looseObject({
-    at: text,
-    by: actor.nullable(),
-    sessionId: text,
-    shortId: string2().nullable()
-  })),
-  state: text,
-  events: array(runEventSchema),
-  times: runTimesSchema,
-  contextTokens: number2().int().min(0).nullable().optional(),
-  backfilled: array(text).optional(),
-  createdAt: text,
-  updatedAt: text
-});
-
-// src/crew/store.ts
-var FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-var text2 = string2().min(1);
-var version2 = number2().int().min(1);
-var sha = string2().regex(COMMIT_SHA, "a full commit sha");
-var count = number2().int().min(0);
-var word = () => text2.transform((value) => value);
-var supersededAnswer = looseObject({
-  answer: text2,
-  answeredAt: text2,
-  deliveredAt: text2.nullable().optional()
-});
-var crewQuestionFields = looseObject({
-  question: text2,
-  options: array(text2).min(2),
-  recommended: number2().int().min(1).nullable(),
-  askedAt: text2,
-  answeredAt: text2.nullable(),
-  answer: text2.nullable(),
-  supersededBy: number2().int().min(0).nullable().optional(),
-  deliveredAt: text2.nullable().optional(),
-  superseded: array(supersededAnswer).optional()
-});
-var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
-  if (asked.recommended !== null && asked.recommended > asked.options.length) {
-    context.addIssue({
-      code: "custom",
-      message: `recommends option ${asked.recommended} of ${asked.options.length}`,
-      path: ["recommended"]
-    });
-  }
-  if (asked.answer === null !== (asked.answeredAt === null)) {
-    context.addIssue({
-      code: "custom",
-      message: "an answer and its time are given together",
-      path: ["answeredAt"]
-    });
-  }
-});
-var waitingForSchema = discriminatedUnion("kind", [
-  looseObject({
-    kind: literal("slot"),
-    since: text2,
-    slot: text2
-  }),
-  looseObject({
-    kind: literal("claude-limit"),
-    model: text2,
-    resetsAt: text2.nullable()
-  }),
-  looseObject({
-    kind: literal("safety-checks"),
-    scope: text2,
-    since: text2
-  }),
-  looseObject({
-    kind: literal("unknown"),
-    since: text2,
-    slot: text2.exactOptional()
-  })
-]);
-var discardArchiveSchema = looseObject({
-  ref: text2,
-  head: sha,
-  at: text2,
-  prunedAt: text2.optional()
-});
-var crewFields = object({
-  version: version2,
-  id: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  sessionId: text2.nullable(),
-  shortId: text2.nullable(),
-  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
-  sessionEndedAt: exports_iso.datetime().optional(),
-  leadSessionId: text2,
-  leadName: text2,
-  repo: text2,
-  plan: text2,
-  phase: text2,
-  slug: text2,
-  kind: word(),
-  model: looseObject({
-    named: text2,
-    slot: text2.nullable(),
-    resolved: text2,
-    tier: text2.nullable()
-  }),
-  effort: text2,
-  permissionMode: text2,
-  worktree: text2,
-  released: object({ at: text2 }).optional(),
-  branch: text2,
-  baseRef: text2,
-  baseCommit: sha.optional(),
-  base: looseObject({ ref: text2, sha }).nullable(),
-  waitsFor: array(text2),
-  files: array(text2),
-  questions: array(crewQuestion),
-  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
-  state: word(),
-  lastLine: string2().nullable(),
-  reportPath: text2.nullable(),
-  pr: number2().int().positive().nullable(),
-  memoryMb: number2().min(0).nullable(),
-  waitingFor: waitingForSchema.optional(),
-  resumeClaim: looseObject({ at: text2, token: text2 }).optional(),
-  pendingLaunch: looseObject({
-    at: text2,
-    effort: text2,
-    model: looseObject({
-      named: text2,
-      slot: text2.nullable(),
-      resolved: text2,
-      tier: text2.nullable()
-    }),
-    why: text2
-  }).optional(),
-  lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
-  lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
-  startedAt: text2.nullable().optional(),
-  launchedAt: text2.optional(),
-  resumeWaits: looseObject({ at: text2, answer: count.nullable() }).optional(),
-  sweptFrom: text2.optional(),
-  continues: text2.nullable().optional(),
-  mergedBeforeRemoval: boolean2().optional(),
-  mergedWhileStopped: boolean2().optional(),
-  stoppedByWatch: boolean2().optional(),
-  mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
-  archive: discardArchiveSchema.optional(),
-  archiveHistory: array(discardArchiveSchema).optional(),
-  discardPending: looseObject({
-    head: sha,
-    archivedHead: sha,
-    indexPath: text2,
-    indexBackup: text2,
-    indexArchived: text2
-  }).optional(),
-  planFile: text2.nullable().optional(),
-  briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
-  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
-  createdAt: text2,
-  updatedAt: text2
-});
-var crewRecordSchema = crewFields.loose();
-var leadFields = object({
-  version: version2,
-  sessionId: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  repo: text2,
-  plan: text2,
-  tag: text2,
-  cwd: text2,
-  planFile: text2.nullable().optional(),
-  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
-  adoptedBy: text2.optional(),
-  adoptedAt: text2.optional(),
-  generation: count.optional(),
-  endedAt: text2.nullable().optional(),
-  sessionUnknownSince: text2.nullable().optional(),
-  pausedAgents: array(text2).optional(),
-  createdAt: text2,
-  updatedAt: text2
-});
-var leadRecordSchema = leadFields.loose();
-var eventFields = object({
-  version: version2,
-  at: text2,
-  type: word(),
-  crew: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  lead: text2.nullable(),
-  state: word(),
-  text: string2().nullable(),
-  sha: sha.nullable().optional(),
-  note: string2().nullable().optional(),
-  question: number2().int().min(1).optional(),
-  memoryMb: number2().min(0).nullable().optional(),
-  pair: text2.optional(),
-  tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
-});
-var crewEventSchema = eventFields.loose();
-var testRun = looseObject({ command: text2, passed: count, failed: count, ok: boolean2() });
-var reportFields = object({
-  version: version2,
-  status: word(),
-  phase: text2,
-  branch: looseObject({ name: text2, sha }),
-  base: looseObject({ ref: text2, sha }),
-  pr: number2().int().positive().nullable(),
-  changed: looseObject({ files: count, insertions: count, deletions: count }),
-  outsideBrief: array(text2),
-  tests: looseObject({ targeted: array(testRun), full: testRun.nullable() }),
-  checks: array(looseObject({ name: text2, ok: boolean2(), note: string2().nullable() })),
-  review: looseObject({
-    agent: text2,
-    model: text2,
-    effort: text2,
-    sha,
-    findings: array(looseObject({ finding: text2, fix: text2 }))
-  }).nullable(),
-  ownReview: looseObject({
-    reason: text2,
-    findings: array(looseObject({ finding: text2, fix: text2 }))
-  }).nullable().optional(),
-  docs: array(text2),
-  issues: array(number2().int().positive()).optional(),
-  needsLead: array(text2),
-  open: array(text2),
-  question: text2.nullable(),
-  summary: text2.nullable().optional(),
-  extra: record(string2(), unknown()).optional()
-});
-var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
-  if (report.status === "blocked" && report.question === null) {
-    context.addIssue({
-      code: "custom",
-      message: "a blocked report names the question it waits on",
-      path: ["question"]
-    });
-  }
-});
-var RESUME_CLAIM_MS = 2 * 60000;
-var watchStateFields = object({
-  summarizedGeneration: count.optional(),
-  missingSince: record(string2(), number2()).optional(),
-  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
-  parkedAt: number2().int().min(0).optional(),
-  noted: boolean2().optional(),
-  offset: count,
-  said: record(string2(), string2()),
-  resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional(),
-  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
-});
-var watchLeaseFields = object({
-  at: number2().int().min(0),
-  host: string2(),
-  once: boolean2().optional(),
-  pid: number2().int().positive(),
-  pidns: string2().nullable().default(null),
-  startTime: string2().nullable(),
-  token: text2
-});
-var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
-var notesStateFields = object({ offset: count });
-var stopStateFields = object({
-  last: _enum(["report", "step"]).nullable(),
-  offset: count
-});
-var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
-var answerWatchFields = object({ at: number2().int().min(0) });
-var feedCursor = object({
-  etag: string2().nullable(),
-  top: count
-});
-var issueFeedFields = object({
-  comments: feedCursor.nullable(),
-  issues: feedCursor.nullable(),
-  nextAt: count,
-  problem: string2().nullable(),
-  source: string2().min(1),
-  version: literal(1)
-});
-
-// src/cli/usage-window.ts
-var WINDOW_SPAN_MS = 5 * 60 * 60000;
-var storedSchema = looseObject({
-  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
-  readAt: string2()
-});
 
 // src/gateway/settings.ts
 function gatewayEnv(port) {
@@ -8507,75 +8738,6 @@ function urlMeaning(url, routerUrl) {
   }
   return { profile: null, state: "other" };
 }
-// src/worktrees/machine-facts.ts
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
-function crewIdOf(env) {
-  const id = env[CREW_ENV]?.trim() ?? "";
-  return id === "" ? null : id;
-}
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
-
-// src/models/launch-policy.ts
-var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
-var OPUS_ASK_EFFORT = "max";
-var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
-var UI_POLICY = {
-  minEffort: "high",
-  tiers: ["opus", "fable"]
-};
-function uiEffortAllowed(effort) {
-  if (effort === null)
-    return false;
-  const levels = ALLOWED_EFFORTS;
-  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
-}
-var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
-var EFFORT_AUTO = "auto";
-var CREW_KINDS = {
-  build: { about: "routine building", effort: "high", model: "sonnet" },
-  docs: {
-    about: "docs and their updates",
-    effort: "high",
-    model: "sonnet"
-  },
-  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
-  security: {
-    about: "code that touches security",
-    effort: "high",
-    model: "sonnet"
-  },
-  money: {
-    about: "code that touches money",
-    effort: "high",
-    model: "sonnet"
-  },
-  permissions: {
-    about: "code that touches permissions",
-    effort: "high",
-    model: "sonnet"
-  },
-  schema: {
-    about: "a schema or a contract",
-    effort: "high",
-    model: "sonnet"
-  },
-  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
-  architecture: {
-    about: "architecture and design",
-    effort: "xhigh",
-    model: "opus"
-  },
-  ui: {
-    about: "UI and UX judgment",
-    effort: UI_POLICY.minEffort,
-    model: UI_POLICY.tiers[0]
-  }
-};
-var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
 var FAIL = Symbol("not a pure literal");
@@ -8585,8 +8747,13 @@ var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 var RECORD_TAIL_BYTES = 64 * 1024;
 
+// src/hooks/session-name.ts
+function isSessionId2(value) {
+  return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+}
+
 // src/hooks/transcript.ts
-import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
+import { closeSync as closeSync3, fstatSync as fstatSync2, openSync as openSync3, readSync as readSync2 } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -8594,15 +8761,15 @@ function isJsonObject(value) {
 function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
-    const fd = openSync2(transcriptPath, "r");
+    const fd = openSync3(transcriptPath, "r");
     try {
-      const size = fstatSync(fd).size;
+      const size = fstatSync2(fd).size;
       const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
-      readSync(fd, buffer, 0, length, size - length);
+      readSync2(fd, buffer, 0, length, size - length);
       text = buffer.toString("utf8");
     } finally {
-      closeSync2(fd);
+      closeSync3(fd);
     }
   } catch {
     return null;
@@ -8779,7 +8946,518 @@ function sessionGatewayOf(paths, env) {
   };
 }
 
+// src/crew/places.ts
+var RUNNING_STATES = [
+  "starting",
+  "working",
+  "blocked",
+  "paused",
+  "quiet"
+];
+
+// src/crew/board.ts
+var REMOVED_VISIBLE_MS = 6 * 60 * 60 * 1000;
+var OTHER_WORDS = new Set(["clash", "lead-tell", "merge", "person"]);
+// src/workflow/merge-check.ts
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/phase-issues.ts
+var MAX_PHASE_ISSUES = 10;
+
+// src/crew/tasks.ts
+import { readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
+import { join as join12 } from "path";
+var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
+var OPEN_TASK_STATUSES = ["pending", "in_progress"];
+function sessionTasksDir(claudeConfigDir, listId) {
+  return join12(claudeConfigDir, "tasks", listId);
+}
+function taskListId(env, sessionId) {
+  const named = env[TASK_LIST_ENV]?.trim() ?? "";
+  return named === "" ? sessionId?.trim() ?? "" : named;
+}
+function byNumber(a, b) {
+  const one = Number(a.id);
+  const other = Number(b.id);
+  if (Number.isInteger(one) && Number.isInteger(other))
+    return one - other;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+function taskOf(file, name) {
+  let value;
+  try {
+    value = JSON.parse(readFileSync9(file, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
+  const fields = value;
+  const status = typeof fields.status === "string" ? fields.status : "";
+  if (status === "")
+    return null;
+  return {
+    id: typeof fields.id === "string" && fields.id !== "" ? fields.id : name.replace(/\.json$/, ""),
+    status,
+    subject: typeof fields.subject === "string" ? fields.subject : ""
+  };
+}
+function readSessionTasks(claudeConfigDir, listId) {
+  if (listId === "")
+    return { state: "none" };
+  const folder = sessionTasksDir(claudeConfigDir, listId);
+  let names;
+  try {
+    names = readdirSync3(folder, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { state: "none" };
+    return { state: "unreadable" };
+  }
+  const tasks = [];
+  for (const name of names) {
+    const task = taskOf(join12(folder, name), name);
+    if (task !== null)
+      tasks.push(task);
+  }
+  return { files: names.length, state: "read", tasks: tasks.sort(byNumber) };
+}
+function openTasks(tasks) {
+  return tasks.filter((task) => OPEN_TASK_STATUSES.includes(task.status));
+}
+
+// src/tasks/guard-view.ts
+function kitLine(task) {
+  return { ref: `#${task.number}`, subject: task.subject, status: task.status };
+}
+function claudeListClosable(settingsFile) {
+  let settings;
+  try {
+    settings = readUserJson(settingsFile);
+  } catch {
+    return true;
+  }
+  const permissions = typeof settings === "object" && settings !== null && "permissions" in settings ? settings.permissions : undefined;
+  const deny = typeof permissions === "object" && permissions !== null && "deny" in permissions ? permissions.deny : undefined;
+  return !(Array.isArray(deny) && deny.includes(RETIRED_TASK_CLOSER));
+}
+function claudeList(where) {
+  if (!claudeListClosable(where.settingsFile))
+    return { files: 0, open: [], unreadable: null };
+  const read = readSessionTasks(where.claudeConfigDir, where.listId);
+  if (read.state === "none")
+    return { files: 0, open: [], unreadable: null };
+  if (read.state === "unreadable") {
+    return {
+      files: 0,
+      open: [],
+      unreadable: `Claude Code's task list in ${sessionTasksDir(where.claudeConfigDir, where.listId)} cannot be read`
+    };
+  }
+  const open = openTasks(read.tasks).sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress"));
+  return {
+    files: read.files,
+    open: open.map((task) => ({
+      ref: `Claude Code task ${task.id}`,
+      subject: task.subject,
+      status: task.status
+    })),
+    unreadable: null
+  };
+}
+function storeProblem(why) {
+  return `the kit's task store cannot be read: ${why}`;
+}
+function leadTaskView(where) {
+  const kit = leadOwnState({ stateDir: where.stateDir }, where.project, where.plan, [
+    ...where.sessionIds
+  ]);
+  const legacy = claudeList(where);
+  const ready = kit.state === "ready" ? kit.value : null;
+  return {
+    hasOwn: (ready?.total ?? 0) > 0 || legacy.files > 0,
+    inProgress: [
+      ...(ready?.inProgress ?? []).map(kitLine),
+      ...legacy.open.filter((task) => task.status === "in_progress")
+    ],
+    unreadable: [
+      ...kit.state === "unreadable" ? [storeProblem(kit.why)] : [],
+      ...legacy.unreadable === null ? [] : [legacy.unreadable]
+    ]
+  };
+}
+
+// src/crew/report.ts
+var issueNumber = number2().int().positive();
+var testRunFields = looseObject({
+  command: string2().min(1),
+  passed: number2().int().min(0),
+  failed: number2().int().min(0),
+  ok: boolean2()
+});
+var checkFields = looseObject({
+  name: string2().min(1),
+  ok: boolean2(),
+  note: string2().nullable()
+});
+var modelReviewFields = looseObject({
+  agent: string2().min(1),
+  model: string2().min(1),
+  effort: string2().min(1),
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) }))
+});
+var ownReviewFields = looseObject({
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) })),
+  reason: string2().min(1)
+});
+var modelReportSchema = looseObject({
+  issues: array(issueNumber).max(MAX_PHASE_ISSUES, `a phase fixes at most ${MAX_PHASE_ISSUES} issues: split it`).default([]),
+  tests: looseObject({
+    targeted: array(testRunFields).default([]),
+    full: testRunFields.nullable().default(null)
+  }).default({ targeted: [], full: null }),
+  checks: array(checkFields).default([]),
+  review: modelReviewFields.nullable().default(null),
+  ownReview: ownReviewFields.nullable().default(null),
+  docs: array(string2().min(1)).default([]),
+  needsLead: array(string2().min(1)).default([]),
+  open: array(string2().min(1)).default([]),
+  question: string2().nullable().default(null),
+  summary: string2().nullable().default(null).transform((value) => value === null || value.trim() === "" ? null : value.trim())
+});
+
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
+});
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
+});
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
+var stateSchema2 = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
+  version: literal(1)
+});
+function stateKeyFor(slot, profile) {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema2.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+var UNKNOWN_CLOCK = "an unknown time";
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime()))
+    return UNKNOWN_CLOCK;
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+
+// src/gateway/breaker.ts
+var BREAKER_REMINDER_MS = 10 * 60000;
+
+// src/gateway/fallback-answer.ts
+var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
+
+// src/gateway/safety-checks.ts
+var countSchema = object({
+  cacheRead: number2(),
+  cacheWrite: number2(),
+  checks: number2(),
+  input: number2(),
+  output: number2()
+});
+var daySchema = object({
+  anthropic: countSchema,
+  checks: number2(),
+  fallback: countSchema
+});
+var stateSchema3 = object({
+  days: record(string2(), daySchema),
+  version: literal(1)
+});
+var CHECK_USAGE_MAX_BYTES = 256 * 1024;
+var EVENT_MAX_CHARS = 64 * 1024;
+
+// src/gateway/router.ts
+var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
+var HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
+var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
+var ABOVE_HIGH = new Set(["max", "xhigh"]);
+var encoder = new TextEncoder;
+
+// src/crew/wait.ts
+var FIRST_BACKOFF_MS = 5 * 60000;
+var MAX_BACKOFF_MS = 20 * 60000;
+var REPAUSE_WINDOW_MS = 15 * 60000;
+function targetsNow(config) {
+  const inUse = (view, profile) => Object.entries(view.slots).map(([slot, chain]) => [
+    stateKeyFor(slot, profile),
+    targetsInUse(chain, fallbackOn(view, slot))
+  ]);
+  return Object.fromEntries([
+    ...inUse(config, null),
+    ...profileNames(config).flatMap((name) => {
+      const view = profileView(config, name);
+      return view === null ? [] : inUse(view, name);
+    })
+  ]);
+}
+function claudeLimitHolds(key, model, inUse) {
+  const first = key === null ? undefined : inUse?.[key]?.[0];
+  return first === undefined || withoutContextSuffix(first) === model;
+}
+
+// src/issues/fixed.ts
+var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
+
+// src/issues/pending.ts
+var RETRY_MS = 5 * 60000;
+var sha2 = string2().regex(/^[0-9a-f]{40}$/);
+var pendingSchema = object({
+  marks: array(object({
+    base: string2().min(1),
+    branch: string2().min(1),
+    issue: number2().int().positive(),
+    merge: sha2.nullable(),
+    told: boolean2().default(false),
+    tip: sha2,
+    triedAt: number2().int().min(0).optional()
+  })),
+  version: literal(1)
+});
+
+// src/issues/feed.ts
+var FAR_AHEAD_MIN_MS = 60 * 60000;
+var PAGE = 100;
+var ISSUES_QUERY = `state=all&sort=created&direction=desc&per_page=${PAGE}`;
+var COMMENTS_QUERY = `sort=created&direction=desc&per_page=${PAGE}`;
+
+// src/issues/pickup.ts
+var STRIPPED_CONTENT_TAGS = [
+  "iframe",
+  "math",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+  "script",
+  "style",
+  "svg",
+  "template",
+  "xmp"
+];
+var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
+var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
+
+// src/setup/retry-watchdog.ts
+var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
+var RETRY_WATCHDOG_VALUE = "1";
+var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
+var RETRY_WATCHDOG_RECHECK_MS = 300000;
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS = 86400000;
+var RETRY_WATCHDOG_KEY = ["env", RETRY_WATCHDOG_ENV];
+var RETRY_WATCHDOG_RECHECK_KEY = ["env", RETRY_WATCHDOG_RECHECK_ENV];
+var RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY = [
+  "env",
+  RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_ENV
+];
+var RETRY_WATCHDOG_SETTINGS = [
+  [RETRY_WATCHDOG_KEY, RETRY_WATCHDOG_VALUE],
+  [RETRY_WATCHDOG_RECHECK_KEY, String(RETRY_WATCHDOG_RECHECK_MS)],
+  [RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_KEY, String(RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS)]
+];
+var RETRY_WATCHDOG_FLAG = "--retry-watchdog";
+var NO_RETRY_WATCHDOG_FLAG = "--no-retry-watchdog";
+var RETRY_WATCHDOG_ON_NOTE = `retry watchdog: on, so every Claude session on this machine waits and retries at a limit ` + 'instead of failing ("Retrying in \u2026"; Esc cancels); a limit that resets more than 24 hours ' + `away ends the wait; a \`claude -p\` script can wait until a model answers; to turn it off: ${COMMAND} setup ${NO_RETRY_WATCHDOG_FLAG}`;
+var RETRY_WATCHDOG_DECLINED_NOTE = `retry watchdog: off because you said no; ${COMMAND} setup ${RETRY_WATCHDOG_FLAG} turns it on`;
+function turnsOn(value) {
+  return ["1", "on", "true", "yes"].includes(String(value).trim().toLowerCase());
+}
+function retryWatchdogState(paths) {
+  const current = getKey(readJsonObject(paths.settingsFile).data, RETRY_WATCHDOG_KEY);
+  if (!current.found)
+    return "off";
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  if (ownership(records, RETRY_WATCHDOG_KEY, current) === "ours")
+    return "ours";
+  return turnsOn(current.value) ? "yours" : "disabled";
+}
+
+// src/crew/start.ts
+var CLASH_STATES = [...RUNNING_STATES, "queued"];
+
+// src/crew/watch.ts
+var SELF_WATCH_GRACE_MS = 5 * 60000;
+var WATCH_MONITOR_COMMAND = `"$HOME/.local/bin/${COMMAND}" ${LEAD_WATCH_ARGS}`;
+var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: ${WATCH_MONITOR_COMMAND}`;
+var WORKTREE_CONFIRM_MS = 3 * 60000;
+var PARKED_PASS_MS = 5 * 60000;
+var CONVERSATION_SWEEP_MS = 60 * 60 * 1000;
+var conversationSweepAt = new Map;
+
+// src/crew/discard.ts
+var CREW_DISCARD_RETENTION_MS = 30 * 24 * 60 * 60000;
+var DISCARD_IGNORED_FILE_MAX_BYTES = 65536;
+var DISCARD_IGNORED_TOTAL_MAX_BYTES = 1048576;
+var DISCARD_IGNORED_MAX_FILES = 256;
+var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_MAX_BYTES} bytes each, ${DISCARD_IGNORED_MAX_FILES} files and ${DISCARD_IGNORED_TOTAL_MAX_BYTES} bytes total; no symlinks or binary files)`;
+
+// src/crew/lifecycle.ts
+var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+
+// src/hooks/lead-notes.ts
+function continueTask(first, count) {
+  const more = count > 1 ? ` (and ${String(count - 1)} more)` : "";
+  return `Your task "${first.ref} ${first.subject}"${more} is still in progress. Continue it now, and mark it done the moment it is: ${taskCloseStep(first.ref)}. If it really waits for something \u2014 a crew session, the person, CI \u2014 end your turn with one line: Waiting for: <what>.`;
+}
+function leadStopReason(input, env, paths) {
+  if (crewIdOf(env) !== null || input.stop_hook_active === true)
+    return null;
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
+    return null;
+  }
+  const sessionId = input.session_id;
+  if (!isSessionId2(sessionId))
+    return null;
+  const said = stringField(input.last_assistant_message);
+  if (said === null)
+    return null;
+  if (said.split(/\r?\n/).some((line) => /^waiting for:/i.test(line.trim().replace(/^[*_>\- ]+/, ""))))
+    return null;
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return null;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null || ownHooksOf(checkout).includes("lead-notes"))
+    return null;
+  const project = loadProjectConfig(checkout);
+  const repo = project.mainCheckout ?? project.root;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null || lead.endedAt != null)
+    return null;
+  const list = leadTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    listId: taskListId(env, sessionId),
+    plan: lead.plan,
+    sessionIds: leadSessions(lead)
+  });
+  if (list.unreadable.length > 0)
+    return null;
+  const active = list.inProgress;
+  const first = active[0];
+  return first === undefined ? null : continueTask(first, active.length);
+}
+function leadStopWouldBlockAt(input, env) {
+  try {
+    return leadStopReason(input, env, cliPaths(env)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
 // src/hooks/stop-failure.ts
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync2 } from "fs";
+import { join as join13 } from "path";
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in profile (\\S+))? is limited or down since `);
@@ -8857,11 +9535,11 @@ function planAlert(input, ctx) {
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync6(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync9(paths.gatewayConfigFile);
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
-    state = parseLimitState(readFileSync7(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync10(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -8889,7 +9567,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync7(join10(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync10(join13(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
@@ -8927,59 +9605,6 @@ var spawnRunner = ({ argv, timeoutMs }) => {
   } catch {
     return { exitCode: null, stdout: "", timedOut: false };
   }
-};
-
-// src/crew/skills.ts
-var CREW_SKILL = `${PLUGIN}:crew`;
-var LEAD_SKILL = `${PLUGIN}:lead`;
-
-// src/crew/brief.ts
-var CREW_COMMAND = `/${CREW_SKILL}`;
-var SELF_WATCH_ARGS = "crew self-watch";
-var LEAD_WATCH_ARGS = "crew watch";
-function literal2(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function monitorCommand(args) {
-  const launcher = literal2(COMMAND);
-  return new RegExp(`^\\s*(?:"(?:[^"]*[\\\\/])?${launcher}"|(?:[^\\s"]*[\\\\/])?${launcher})\\s+${literal2(args)}\\s*$`);
-}
-var SELF_WATCH_COMMAND = monitorCommand(SELF_WATCH_ARGS);
-var LEAD_WATCH_COMMAND = monitorCommand(LEAD_WATCH_ARGS);
-function taskCommand(task) {
-  if (typeof task !== "object" || task === null || Array.isArray(task))
-    return null;
-  const command = task.command;
-  return typeof command === "string" ? command : null;
-}
-function isLeadWatchTask(task) {
-  const command = taskCommand(task);
-  return command !== null && LEAD_WATCH_COMMAND.test(command);
-}
-var COMMAND_WRAPPER = new RegExp(`^<command-message>${CREW_SKILL}</command-message>\\r?\\n<command-name>/${CREW_SKILL}</command-name>(?:\\r?\\n<command-args>([\\s\\S]*)</command-args>)?$`);
-var REPORT_COMMAND = `${COMMAND} crew report`;
-var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
-var CREW_NEVER_DOES = {
-  answer: "answers its lead's questions",
-  note: "sends its lead's notes",
-  lead: "leads",
-  "lead tell": "tells another lead",
-  model: "changes a crew session's model or effort",
-  resume: "stops, removes or resumes crew sessions",
-  start: "starts crew sessions",
-  watch: "watches its lead's crew sessions"
-};
-var CREW_NEVER_RUNS = {
-  answer: CREW_NEVER_DOES.answer,
-  note: CREW_NEVER_DOES.note,
-  lead: CREW_NEVER_DOES.lead,
-  "lead tell": CREW_NEVER_DOES["lead tell"],
-  model: CREW_NEVER_DOES.model,
-  resume: CREW_NEVER_DOES.resume,
-  rm: CREW_NEVER_DOES.resume,
-  start: CREW_NEVER_DOES.start,
-  stop: CREW_NEVER_DOES.resume,
-  watch: CREW_NEVER_DOES.watch
 };
 
 // src/shell/command.ts
@@ -9681,7 +10306,7 @@ function packageCommand(program, args) {
   }
   return null;
 }
-function programName(word) {
+function programName2(word) {
   return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
 function shortFlags(arg, valued) {
@@ -9768,7 +10393,7 @@ function invocationOf(words) {
       index += (redirection[2] ?? "") === "" ? 2 : 1;
       continue;
     }
-    const spec = WRAPPERS[programName(word)];
+    const spec = WRAPPERS[programName2(word)];
     if (spec === undefined)
       break;
     const after = afterWrapper(list, index + 1, spec);
@@ -9793,7 +10418,7 @@ function invocationOf(words) {
   const first = list[index];
   if (first === undefined)
     return;
-  const program = programName(first);
+  const program = programName2(first);
   const ran = packageCommand(program, list.slice(index + 1));
   const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
   const command = started ?? ran;
@@ -9809,7 +10434,7 @@ function isComputedWord(word) {
     return true;
   if (!word.startsWith("$") && !word.startsWith("`"))
     return false;
-  return /[$`(){}[\]\s]/.test(programName(word));
+  return /[$`(){}[\]\s]/.test(programName2(word));
 }
 var START_PROCESS_PARAMETERS = new Map([
   ["argumentlist", true],
@@ -9884,7 +10509,7 @@ function startProcess(args) {
   return {
     args: list,
     prefix: fresh === null ? [] : [START_PROCESS, fresh],
-    program: programName(file)
+    program: programName2(file)
   };
 }
 var START_PROCESS = "start-process";
@@ -10272,7 +10897,7 @@ function parallelLines(args) {
       continue;
     const quoted = given.map(shellQuote).join(" ");
     lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
-    const program = programName(command[0] ?? "");
+    const program = programName2(command[0] ?? "");
     if (SHELLS.has(program) || program === "eval")
       lines.push(...given);
   }
@@ -10529,12 +11154,12 @@ function runtimeDir(env) {
 }
 function forget(file) {
   try {
-    rmSync(file, { force: true });
+    rmSync2(file, { force: true });
   } catch {}
 }
 function markedWaiting(file, nowMs) {
   try {
-    return nowMs - statSync4(file).mtimeMs < ASK_MARK_MS;
+    return nowMs - statSync5(file).mtimeMs < ASK_MARK_MS;
   } catch {
     return false;
   }
@@ -10561,7 +11186,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync8(join11(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync11(join14(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject3(settings) || !isJsonObject3(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
@@ -10570,7 +11195,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync8(join11(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync11(join14(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject3(installed) || !isJsonObject3(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
@@ -10690,7 +11315,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync7(ctx.finished))
+      if (input.stop_hook_active === true && existsSync10(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -10747,7 +11372,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync8(file, "utf8").trim();
+    const text = readFileSync11(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -10799,7 +11424,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync8(file, "utf8"));
+    parsed = JSON.parse(readFileSync11(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -10864,9 +11489,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join11(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join11(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join11(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join14(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join14(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join14(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -10882,7 +11507,7 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
-  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || leadStopWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
     finished,
@@ -10951,8 +11576,8 @@ function withProblem(result, problem) {
 }
 
 // src/hooks/terminal.ts
-import { closeSync as closeSync3, constants, openSync as openSync3, readlinkSync as readlinkSync2, statSync as statSync5, writeSync } from "fs";
-import { join as join12 } from "path";
+import { closeSync as closeSync4, constants, openSync as openSync4, readlinkSync as readlinkSync2, statSync as statSync6, writeSync } from "fs";
+import { join as join15 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -10971,7 +11596,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join12(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join15(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -10982,11 +11607,11 @@ function sessionTerminalDevice(probe) {
 }
 function writeDevice(device, text) {
   try {
-    const fd = openSync3(device, constants.O_WRONLY);
+    const fd = openSync4(device, constants.O_WRONLY);
     try {
       writeSync(fd, text);
     } finally {
-      closeSync3(fd);
+      closeSync4(fd);
     }
     return true;
   } catch {
@@ -11008,7 +11633,7 @@ function realTerminalProbe(env, parentPid) {
     },
     owner: (path) => {
       try {
-        return statSync5(path).uid;
+        return statSync6(path).uid;
       } catch {
         return null;
       }
@@ -11034,11 +11659,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join13(paths.binDir, LAUNCHER_NAME);
+    const launcher = join16(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync8(launcher) ? launcher : null,
+      launcher: existsSync11(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,

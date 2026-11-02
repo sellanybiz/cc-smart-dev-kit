@@ -653,6 +653,66 @@ export interface ProjectGatewayAnswer {
   writable: boolean;
 }
 
+/** A work task's status in the kit's store. */
+export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
+
+/** One work task in the Tasks card's tree. */
+export interface WorkTaskNode {
+  children: WorkTaskNode[];
+  /** Its whole subtree: closed (done or dropped) of total. */
+  closed: number;
+  id: string;
+  kind: "phase" | "plan" | "task";
+  phase: null | string;
+  plan: null | string;
+  /** `#12`. */
+  ref: string;
+  status: WorkTaskStatus;
+  subject: string;
+  total: number;
+  /** ISO 8601. */
+  updatedAt: string;
+}
+
+/** One open project task file. */
+export interface ProjectTaskRow {
+  /** `YYYY-MM-DD`. */
+  created: string;
+  /** Relative to the main checkout. */
+  file: string;
+  flags: string[];
+  id: string;
+  kind: "database" | "follow-up" | "production" | "teammate";
+  stale: boolean;
+  title: string;
+  weight: "after-deploy" | "blocks-release" | "owner" | null;
+  when: "any" | "next-release" | "now" | null;
+}
+
+/** The kit's work store for one project. */
+export type ProjectWorkTasks =
+  | { more: number; recentDays: number; state: "ready"; tasks: WorkTaskNode[] }
+  | { state: "none" }
+  | { state: "unreadable"; why: string };
+
+/** The project's task files in its main checkout. */
+export type ProjectTaskFiles =
+  | {
+      broken: number;
+      closed: number;
+      dir: string;
+      staleDays: number;
+      state: "ready";
+      tasks: ProjectTaskRow[];
+    }
+  | { state: "unavailable"; why: string };
+
+/** `GET /api/projects/<id>/tasks` (D75): the project's work tasks and open task files. */
+export interface ProjectTasksAnswer {
+  files: ProjectTaskFiles;
+  work: ProjectWorkTasks;
+}
+
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────
 
 export interface CrewSummary {
@@ -866,7 +926,13 @@ export interface CrewAnswer {
   mergeCheck: MergeVerdict;
   report: CrewReport | null;
   reviews: CrewReview[];
+  tasks: CrewPhaseTasks;
 }
+
+export type CrewPhaseTasks =
+  | { more: number; phase: null | WorkTaskNode; state: "ready" }
+  | { state: "none" }
+  | { state: "unreadable"; why: string };
 
 export interface GuardAskItem {
   at: number;
@@ -1292,6 +1358,7 @@ export interface LiveEvents {
   recent: RecentEntry;
   reset: { boot: string };
   state: LiveState;
+  tasks: { at: number };
   update: { last: LastCheck | null };
 }
 

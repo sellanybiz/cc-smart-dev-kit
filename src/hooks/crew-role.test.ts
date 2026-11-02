@@ -30,6 +30,9 @@ import { readTaskGate, taskGateFile, writeTaskGate } from "../crew/tasks";
 import { resumeText } from "../crew/wait";
 import { emptyConfig, saveConfig } from "../gateway/config";
 import { formatLimitState, type LimitState } from "../gateway/limit-state";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask, ensurePhaseTask } from "../tasks/work/store";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
@@ -332,7 +335,7 @@ describe("SessionStart: the role card", () => {
       "You are the crew session `C app W2 hooks`, phase `W2` of `plan`, for the lead `LEAD app plan`.",
       `Your brief, which is your task: ${brief}`,
       "The files this phase owns: `src/hooks/a.ts`, `src/hooks/b.ts`. Say in your report why you changed any other file.",
-      "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done --file -` waits until no task is open.",
+      'Break your phase into subtasks first: one `task_create` per part of your brief, with its done-check in the description (they go under your phase task by themselves). A session without the task tools runs `cc-smart-dev-kit task add "<subject>" --description "<done-check>"`. Your first edit waits for it, and `cc-smart-dev-kit crew report --status done --file -` waits until no task is open.',
       "Hand the phase back with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review), or `--status failed` and why, then end the turn.",
       'Ask your lead, never the person: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`',
       'Tell another crew session only a contract change or a contract question: `cc-smart-dev-kit crew tell <name…> --kind contract|question "<text>"`',
@@ -585,13 +588,30 @@ describe("D23: a crew session's first edit waits for its task list", () => {
   const SESSION_ID = "9b4632f1-d3bd-43ce-bc1a-00349c5f30ac";
   /** The deny, written out: the why, the step, and the way out when there are no task tools. */
   const REFUSAL =
-    'A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. Write your task list first, in Claude Code\'s task tools (not claude-mem\'s work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check. If ToolSearch finds no task tools in this session, tell your lead: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`';
+    'Your phase has no subtasks yet, so this edit waits. Break your phase into subtasks first: one `task_create` per part of your brief, with its done-check in the description (they go under your phase task by themselves). A session without the task tools runs `cc-smart-dev-kit task add "<subject>" --description "<done-check>"`. If this session has no task tools, tell your lead: `cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>`';
 
   /** A project, the crew session's environment, and where its task list would be. */
   function gateWorld(extraEnv: Record<string, string> = {}) {
     const { repo } = makeClone();
     const env = { ...hookEnv(), [CREW_ENV]: CREW_ID, ...extraEnv };
     const paths = cliPaths(env);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const phase = ensurePhaseTask(
+      db,
+      {
+        project: projectKey(repo),
+        plan: "plan",
+        phase: "W2",
+        subject: "Phase",
+        description: "",
+        crewId: CREW_ID,
+        waitsForPhases: [],
+      },
+      { sessionId: SESSION_ID, crewId: CREW_ID, pid: null, procStart: null },
+      T0,
+    );
+    db.close();
+    if (!phase.ok) throw new Error(phase.why);
     return {
       env,
       listDir: (listId: string = SESSION_ID) => join(paths.claudeConfigDir, "tasks", listId),
@@ -631,6 +651,12 @@ describe("D23: a crew session's first edit waits for its task list", () => {
       ...change,
     };
   }
+
+  test("a crew from before phase tasks existed can edit without making a list", async () => {
+    const { repo } = makeClone();
+    const env = { ...hookEnv(), [CREW_ENV]: CREW_ID };
+    expect(await runHook(crewRoleHook, editInput(repo), env)).toEqual({});
+  });
 
   test.each(["Edit", "Write", "NotebookEdit"])(
     "%s is denied with the step while the session has no task file",
@@ -779,7 +805,7 @@ describe("D23: a crew session's first edit waits for its task list", () => {
     expect(result.stdout).toBeUndefined();
     expect(result.exitCode ?? 0).toBe(0);
     expect(result.stderr).toBe(
-      `cc-smart-dev-kit crew-role: the task folder ${world.listDir()} cannot be read, so the edit is not held for the task list`,
+      `cc-smart-dev-kit crew-role: Claude Code's task list in ${world.listDir()} cannot be read, so the edit is not held for the task list`,
     );
     expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toBeNull();
   });
@@ -819,12 +845,10 @@ describe("D23: a crew session's first edit waits for its task list", () => {
         toolDecision("deny", REFUSAL),
       );
     }
-    // Outside git: denied, then allowed with a list — and there is no store folder to remember in.
+    // Outside git there is no phase task to hang subtasks on.
     const world = gateWorld();
     const outside = tempDir("outside");
-    expect(await runHook(crewRoleHook, editInput(outside), world.env)).toEqual(
-      toolDecision("deny", REFUSAL),
-    );
+    expect(await runHook(crewRoleHook, editInput(outside), world.env)).toEqual({});
     writeTask(world.listDir(), 1);
     expect(await runHook(crewRoleHook, editInput(outside), world.env)).toEqual({});
     expect(readTaskGate(world.paths.stateDir, world.repo, CREW_ID)).toBeNull();
@@ -861,6 +885,68 @@ describe("Stop: the last line, one block, never context", () => {
     };
   }
 
+  test("kit subtasks end the edit gate, return on resume, and keep Stop working", async () => {
+    const world = await crewWorld();
+    const cwd = makeWorktree(world.repo);
+    const paths = cliPaths(world.env);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const who = { sessionId: "s", crewId: CREW_ID, pid: null, procStart: null };
+    const phase = ensurePhaseTask(
+      db,
+      {
+        project: projectKey(world.repo),
+        plan: "plan",
+        phase: "W2",
+        subject: "Phase",
+        description: "",
+        crewId: CREW_ID,
+        waitsForPhases: [],
+      },
+      who,
+      T0,
+    );
+    if (!phase.ok) throw new Error(phase.why);
+    const made = createTask(
+      db,
+      {
+        project: projectKey(world.repo),
+        parentId: phase.value.id,
+        subject: "Make it pass",
+        status: "in_progress",
+      },
+      who,
+      T0,
+    );
+    if (!made.ok) throw new Error(made.why);
+    db.close();
+    expect(
+      await runHook(
+        crewRoleHook,
+        { hook_event_name: "PreToolUse", session_id: "s", cwd, tool_name: "Write" },
+        world.env,
+      ),
+    ).toEqual({});
+    const resumed = await runHook(
+      crewRoleHook,
+      { hook_event_name: "SessionStart", session_id: "s", cwd, source: "resume" },
+      world.env,
+    );
+    expect(resumed).toEqual(
+      addContext(
+        "SessionStart",
+        `${roleCard(world.record, crewBriefFile(paths.stateDir, world.repo, CREW_ID))}\nOpen subtasks:\n#3 [in progress] Make it pass`,
+      ),
+    );
+    await step(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(cwd), world.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          'Your task "#3 Make it pass" is still open. Continue it now, and mark each task done the moment it is: `task_done` with task "#3", or `cc-smart-dev-kit task done #3`. Hand back only when every task is done, with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review). If the phase cannot be done, hand back `--status failed` and why. A question for your lead goes through `cc-smart-dev-kit crew report --question`.',
+      }),
+    });
+  });
+
   test("after a step: the turn is blocked once, with the report step, and the last line is kept", async () => {
     const world = await crewWorld();
     await step(world.stateDir, world.repo);
@@ -871,6 +957,39 @@ describe("Stop: the last line, one block, never context", () => {
     expect(readCrew(world.stateDir, world.repo, CREW_ID)?.lastLine).toBe(
       "Fixed the guard. It now denies the ask.",
     );
+  });
+
+  test("after a step with tasks still open: the block says to continue, not to hand back", async () => {
+    const world = await crewWorld();
+    await step(world.stateDir, world.repo);
+    const folder = join(cliPaths(world.env).claudeConfigDir, "tasks", "s");
+    mkdirSync(folder, { recursive: true });
+    const write = (n: number, status: string) =>
+      writeFileSync(
+        join(folder, `${String(n)}.json`),
+        JSON.stringify({
+          id: String(n),
+          subject: `Part ${String(n)}`,
+          description: "x",
+          status,
+          blocks: [],
+          blockedBy: [],
+        }),
+      );
+    write(1, "completed");
+    write(2, "pending");
+    write(3, "in_progress");
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          'Your task "Claude Code task 3 Part 3" (and 1 more) is still open. Continue it now, and mark each task done the moment it is: `TaskUpdate` with status "completed". Hand back only when every task is done, with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review). If the phase cannot be done, hand back `--status failed` and why. A question for your lead goes through `cc-smart-dev-kit crew report --question`.',
+      }),
+    });
+    // Every task done: the hand-back block, as before.
+    write(2, "completed");
+    write(3, "completed");
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
   });
 
   test("once: a stop that answers the block (stop_hook_active) is silent", async () => {

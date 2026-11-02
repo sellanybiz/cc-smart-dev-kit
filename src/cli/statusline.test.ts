@@ -8,9 +8,69 @@ import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { claudeWindowSaid } from "../crew/context-window";
 import type { LimitState } from "../gateway/limit-state";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask, ensurePhaseTask } from "../tasks/work/store";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
-import { runStatusline, statuslineText } from "./statusline";
+import { runStatusline, statuslineText, taskSegment } from "./statusline";
+
+it("shows the process's claimed task and completed subtasks", () => {
+  const paths = { stateDir: tempDir() };
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const who = { sessionId: "s", crewId: null, pid: 7, procStart: "70" };
+  const parent = createTask(
+    db,
+    { project: "p", subject: "Merge the wave", status: "in_progress" },
+    who,
+    1,
+  );
+  if (!parent.ok) throw new Error(parent.why);
+  createTask(
+    db,
+    { project: "p", parentId: parent.value.id, subject: "Done", status: "done" },
+    who,
+    2,
+  );
+  createTask(db, { project: "p", parentId: parent.value.id, subject: "Open" }, who, 3);
+  db.close();
+  expect(taskSegment(paths, "p", who)).toBe("#1 Merge the wave · 1/2");
+  expect(taskSegment(paths, "p", { ...who, procStart: "71" })).toBeNull();
+});
+
+it("a crew shows its phase progress; missing and unreadable stores stay silent", () => {
+  const paths = { stateDir: tempDir() };
+  const who = { sessionId: "s", crewId: "crew-a", pid: null, procStart: null };
+  expect(taskSegment(paths, "p", who)).toBeNull();
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const phase = ensurePhaseTask(
+    db,
+    {
+      project: "p",
+      plan: "plan",
+      phase: "a",
+      subject: "Build the phase",
+      description: "",
+      crewId: "crew-a",
+      waitsForPhases: [],
+    },
+    who,
+    1,
+  );
+  if (!phase.ok) throw new Error(phase.why);
+  createTask(
+    db,
+    { project: "p", parentId: phase.value.id, subject: "Done", status: "done" },
+    who,
+    2,
+  );
+  db.close();
+  expect(taskSegment(paths, "p", who)).toBe("#2 Build the phase · 1/1");
+  const broken = { stateDir: tempDir() };
+  mkdirSync(dirname(workDbFile(broken)), { recursive: true });
+  writeFileSync(workDbFile(broken), "not a database");
+  expect(taskSegment(broken, "p", who)).toBeNull();
+});
+
 import { readUsageWindow } from "./usage-window";
 
 /** 2026-10-15 10:00 UTC. */

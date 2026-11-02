@@ -27,11 +27,20 @@ import {
 } from "../crew/store";
 import { ISSUE_DATA_FRAME, WATCH_MONITOR_COMMAND } from "../crew/watch";
 import { currentHolder } from "../setup/lock";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask } from "../tasks/work/store";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { addContext } from "./io";
-import { leadNotesAnswer, notesLine, watchEndedNote, watchNeverStartedNote } from "./lead-notes";
+import {
+  leadNotesAnswer,
+  leadStopWouldBlockAt,
+  notesLine,
+  watchEndedNote,
+  watchNeverStartedNote,
+} from "./lead-notes";
 import { namesDir } from "./session-name";
 import { leadNotesHook } from "./specs";
 
@@ -143,14 +152,215 @@ async function leadWorld(
  * One task file in `list`'s folder, as Claude Code writes it: the lead's own list, or the one
  * `CLAUDE_CODE_TASK_LIST_ID` names.
  */
-function taskFile(env: Record<string, string>, list: string, n: number): void {
+function taskFile(env: Record<string, string>, list: string, n: number, status = "pending"): void {
   const folder = join(cliPaths(env).claudeConfigDir, "tasks", list);
   mkdirSync(folder, { recursive: true });
   writeFileSync(
     join(folder, `${String(n)}.json`),
-    `${JSON.stringify({ id: String(n), subject: `Part ${String(n)}`, description: "x", status: "pending", blocks: [], blockedBy: [] }, null, 2)}\n`,
+    `${JSON.stringify({ id: String(n), subject: `Part ${String(n)}`, description: "x", status, blocks: [], blockedBy: [] }, null, 2)}\n`,
   );
 }
+
+describe("lead Stop continuation", () => {
+  const stop = (repo: string, extra: Record<string, unknown> = {}) => ({
+    hook_event_name: "Stop",
+    session_id: LEAD_SESSION,
+    cwd: repo,
+    last_assistant_message: "Next I'll push the PRs.",
+    ...extra,
+  });
+  // A task on Claude Code's own list (no deny entries in this world's settings, as before setup).
+  const one = {
+    stdout: JSON.stringify({
+      decision: "block",
+      reason:
+        'Your task "Claude Code task 1 Part 1" is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+    }),
+  };
+  // A task on the kit's own list.
+  const kitOne = {
+    stdout: JSON.stringify({
+      decision: "block",
+      reason:
+        'Your task "#1 Part 1" is still in progress. Continue it now, and mark it done the moment it is: `task_done` with task "#1", or `cc-smart-dev-kit task done #1`. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+    }),
+  };
+
+  test("a kit task suppresses the reminder and blocks Stop through the notifier's one decision", async () => {
+    const w = await leadWorld({ list: false });
+    const db = openWorkDb(workDbFile(cliPaths(w.env)), { mode: "write" });
+    const task = createTask(
+      db,
+      { project: projectKey(w.repo), plan: "plan", subject: "Part 1", status: "in_progress" },
+      { sessionId: LEAD_SESSION, crewId: null, pid: null, procStart: null },
+      T0,
+    );
+    db.close();
+    if (!task.ok) throw new Error(task.why);
+    expect(await runHook(leadNotesHook, leadInput(w.repo), w.env)).toEqual({});
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual(kitOne);
+    expect(leadStopWouldBlockAt(stop(w.repo), w.env)).toBe(true);
+  });
+
+  test("the notifier decision matches the Stop and fails open", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    expect(leadStopWouldBlockAt(stop(w.repo), w.env)).toBe(true);
+    expect(leadStopWouldBlockAt(stop(w.repo, { stop_hook_active: true }), w.env)).toBe(false);
+    expect(leadStopWouldBlockAt(stop(w.repo, { session_id: OTHER_SESSION }), w.env)).toBe(false);
+    expect(leadStopWouldBlockAt(stop(tempDir("outside-notifier")), w.env)).toBe(false);
+    writeStoreFile(leadFile(w.stateDir, w.repo, LEAD_SESSION), "{ not json");
+    expect(leadStopWouldBlockAt(stop(w.repo), w.env)).toBe(false);
+  });
+
+  test("one in-progress task blocks with the exact instruction", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual(one);
+  });
+
+  test("two in-progress tasks name the first and count the rest", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    taskFile(w.env, LEAD_SESSION, 2, "in_progress");
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          'Your task "Claude Code task 1 Part 1" (and 1 more) is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+      }),
+    });
+  });
+
+  test.each([
+    [
+      "bold waiting line",
+      { last_assistant_message: "Done for now.\n**Waiting for:** C1's hand-back" },
+    ],
+    ["quoted mixed-case waiting line", { last_assistant_message: " > - _**wAiTiNg FoR:** CI" }],
+    ["follow-up stop", { stop_hook_active: true }],
+    ["missing last message", { last_assistant_message: undefined }],
+    ["non-string last message", { last_assistant_message: 7 }],
+  ])("%s is silent", async (_name, extra) => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    taskFile(w.env, LEAD_SESSION, 2, "in_progress");
+    expect(await runHook(leadNotesHook, stop(w.repo, extra), w.env)).toEqual({});
+  });
+
+  test("a turn that waits on background work is not over: silent", async () => {
+    // A lead that ended its turn while its subagent builds: Claude Code wakes it when the work
+    // lands, so a block would only cost a turn.
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    const builder = { id: "a1b2c3", status: "running", type: "agent" };
+    const watch = {
+      command: WATCH_MONITOR_COMMAND,
+      id: "bm4k2x9a1",
+      status: "running",
+      type: "shell",
+    };
+    expect(
+      await runHook(leadNotesHook, stop(w.repo, { background_tasks: [watch, builder] }), w.env),
+    ).toEqual({});
+    expect(leadStopWouldBlockAt(stop(w.repo, { background_tasks: [builder] }), w.env)).toBe(false);
+  });
+
+  test("the lead's own watch is no background work: it runs all session, and the block holds", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    const watch = {
+      command: WATCH_MONITOR_COMMAND,
+      id: "bm4k2x9a1",
+      status: "running",
+      type: "shell",
+    };
+    expect(
+      await runHook(leadNotesHook, stop(w.repo, { background_tasks: [watch] }), w.env),
+    ).toEqual(one);
+  });
+
+  test("pending and completed tasks do not hold the turn", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 2, "completed");
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("no task folder is silent", async () => {
+    const w = await leadWorld({ list: false });
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("an unreadable task folder is silent", async () => {
+    const w = await leadWorld({ list: false });
+    mkdirSync(join(cliPaths(w.env).claudeConfigDir, "tasks"), { recursive: true });
+    writeFileSync(join(cliPaths(w.env).claudeConfigDir, "tasks", LEAD_SESSION), "{}");
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("no lead record is silent even with an active task", async () => {
+    const { repo } = makeClone();
+    const env = hookEnv();
+    taskFile(env, LEAD_SESSION, 1, "in_progress");
+    expect(await runHook(leadNotesHook, stop(repo), env)).toEqual({});
+  });
+
+  test("an ended lead is silent", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    const file = leadFile(w.stateDir, w.repo, LEAD_SESSION);
+    const record = JSON.parse(readFileSync(file, "utf8"));
+    writeStoreFile(file, JSON.stringify({ ...record, endedAt: new Date(T0).toISOString() }));
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("a crew session is silent even with a lead record", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    expect(
+      await runHook(leadNotesHook, stop(w.repo), { ...w.env, CC_SMART_DEV_KIT_CREW: CREW_ID }),
+    ).toEqual({});
+  });
+
+  test("outside git is silent", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    expect(await runHook(leadNotesHook, stop(tempDir("outside-stop")), w.env)).toEqual({});
+  });
+
+  test("the named task list is read instead of the session list", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, "shared-list", 1, "in_progress");
+    expect(
+      await runHook(leadNotesHook, stop(w.repo), {
+        ...w.env,
+        CLAUDE_CODE_TASK_LIST_ID: "shared-list",
+      }),
+    ).toEqual(one);
+  });
+
+  test.each([{ worktree: {} }, { requires: ">=99" }])(
+    "a config problem never blocks: %j",
+    async (config) => {
+      const w = await leadWorld();
+      taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+      mkdirSync(join(w.repo, ".claude"), { recursive: true });
+      writeFileSync(join(w.repo, ".claude", "cc-smart-dev-kit.json"), JSON.stringify(config));
+      expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual({});
+    },
+  );
+
+  test("a broken store is stderr only, exit zero", async () => {
+    const w = await leadWorld();
+    taskFile(w.env, LEAD_SESSION, 1, "in_progress");
+    writeStoreFile(leadFile(w.stateDir, w.repo, LEAD_SESSION), "{ not json");
+    const result = await runHook(leadNotesHook, stop(w.repo), w.env);
+    expect(result.stdout).toBeUndefined();
+    expect(result.exitCode ?? 0).toBe(0);
+    expect(result.stderr).toStartWith("cc-smart-dev-kit lead-notes: Invalid ");
+    expect(result.stderr).not.toContain("\n");
+  });
+});
 
 /** One step of the crew session, as `crew step` appends it. */
 async function step(
@@ -553,10 +763,35 @@ describe("D61: a lead's start note, and never a prompt", () => {
   });
 });
 
+test("a lead hears stale project tasks only at startup and resume", async () => {
+  const w = await leadWorld();
+  const dir = join(w.repo, ".claude", "tasks");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "T-aaaaaa.md"),
+    "---\nid: T-aaaaaa\ntitle: Follow up\nkind: follow-up\nstatus: open\ncreated: 2000-01-01\n---\nCheck the result.\n",
+  );
+  for (const source of ["startup", "resume", "compact"]) {
+    const result = await runHook(
+      leadNotesHook,
+      { hook_event_name: "SessionStart", session_id: LEAD_SESSION, cwd: w.repo, source },
+      w.env,
+    );
+    expect(result).toEqual(
+      addContext(
+        "SessionStart",
+        source === "compact"
+          ? START_NOTE
+          : `${START_NOTE}\n1 project tasks are open past 30 days: run \`cc-smart-dev-kit task check\`.`,
+      ),
+    );
+  }
+});
+
 describe("D23: a lead with no to-do list is reminded, never blocked", () => {
   /** The reminder, written out. */
   const REMINDER =
-    "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
+    "You have no task of your own on the kit's task list: put the person's asks and your open work there (`task_create`, or `cc-smart-dev-kit task add`), and keep each one's status true as it moves.";
   const NAME = "LEAD app plan";
 
   test("a prompt while the lead has no list: the reminder, as the one line of context", async () => {

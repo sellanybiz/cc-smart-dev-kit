@@ -25,6 +25,9 @@ import {
 } from "../crew/store";
 import { PLUGIN_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import { locateCheckout } from "../project/resolve";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { ensurePhaseTask } from "../tasks/work/store";
 import {
   hookEnv,
   makeClone,
@@ -56,6 +59,7 @@ import {
   sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
+  taskStartHook,
   tierViewHook,
   userAwayHook,
   verifyGateHook,
@@ -187,6 +191,26 @@ const contextLine = (result: HookResult) => {
 };
 
 const CASES: Case[] = [
+  {
+    spec: taskStartHook,
+    own: { event: "SessionStart", matcher: "startup" },
+    machineWide: true,
+    setup: (config) => ({
+      input: { hook_event_name: "SessionStart", cwd: project(config), source: "startup" },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      expect(result.stdout).toBe(
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext:
+              "The kit's task list is not set up on this machine yet: run `cc-smart-dev-kit setup`.",
+          },
+        }),
+      );
+    },
+  },
   {
     spec: gitGuardHook,
     own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
@@ -682,6 +706,48 @@ const CASES: Case[] = [
   },
 ];
 
+describe("lead-notes Stop ownHooks", () => {
+  test.each([false, true])("listed = %s", async (listed) => {
+    const repo = project({ ...FULL_CONFIG, ownHooks: listed ? ["lead-notes"] : [] });
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    seedLeadNotes(paths.stateDir, repo, paths.claudeConfigDir);
+    writeFileSync(
+      join(paths.claudeConfigDir, "tasks", SESSION, "1.json"),
+      JSON.stringify({
+        id: "1",
+        subject: "the plan",
+        description: "x",
+        status: "in_progress",
+        blocks: [],
+        blockedBy: [],
+      }),
+    );
+    wireProjectHook(mainOf({ cwd: repo }), "Stop");
+    const result = await runHook(
+      leadNotesHook,
+      {
+        hook_event_name: "Stop",
+        session_id: SESSION,
+        cwd: repo,
+        last_assistant_message: "Next I'll push the PRs.",
+      },
+      env,
+    );
+    expect(result).toEqual(
+      listed
+        ? {}
+        : {
+            stdout: JSON.stringify({
+              decision: "block",
+              reason:
+                'Your task "Claude Code task 1 the plan" is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+            }),
+          },
+    );
+  });
+});
+
 test("the table covers every hook", () => {
   expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
@@ -872,11 +938,29 @@ describe("the crew-role edit gate, through the frame", () => {
 
   test("a crew session's first edit is denied with the step; listed in ownHooks, the plugin's copy is silent", async () => {
     const env = { ...hookEnv(), [CREW_ENV]: CREW_ID };
-    const denied = await runHook(crewRoleHook, edit(project(FULL_CONFIG)), env);
+    const repo = project(FULL_CONFIG);
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    const phase = ensurePhaseTask(
+      db,
+      {
+        project: projectKey(repo),
+        plan: "plan",
+        phase: "a",
+        subject: "Phase",
+        description: "",
+        crewId: CREW_ID,
+        waitsForPhases: [],
+      },
+      { sessionId: SESSION, crewId: CREW_ID, pid: null, procStart: null },
+      1,
+    );
+    db.close();
+    if (!phase.ok) throw new Error(phase.why);
+    const denied = await runHook(crewRoleHook, edit(repo), env);
     const output = JSON.parse(denied.stdout ?? "{}").hookSpecificOutput;
     expect(output.permissionDecision).toBe("deny");
     expect(output.permissionDecisionReason).toContain(
-      "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools",
+      "Your phase has no subtasks yet, so this edit waits.",
     );
     const listed = await runHook(
       crewRoleHook,

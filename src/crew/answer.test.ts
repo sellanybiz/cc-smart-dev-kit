@@ -539,6 +539,14 @@ describe("crew answer", () => {
         "/cc-smart-dev-kit:crew the port is 3210",
       ],
     ]);
+    expect(JSON.parse(readFileSync(mcp, "utf8")).mcpServers["cc-smart-dev-kit-tasks"]).toEqual({
+      command: join(world.paths.binDir, COMMAND),
+      args: ["task", "mcp"],
+      alwaysLoad: true,
+    });
+    expect(JSON.parse(readFileSync(settings, "utf8")).permissions).toEqual({
+      allow: ["mcp__cc-smart-dev-kit-tasks__*"],
+    });
     expect(world.cwdCalls()).toEqual([world.repo, worktreeOf(world)]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions[0]?.answer).toBe("the port is 3210");

@@ -408,6 +408,86 @@ export interface ProjectGatewayAnswer {
   writable: boolean;
 }
 
+/** A work task's status in the kit's store (`src/tasks/work/types.ts` › `WorkStatus`). */
+export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
+
+/** One work task in the Tasks card's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
+export interface WorkTaskNode {
+  children: WorkTaskNode[];
+  /** Its whole subtree: how many tasks are closed (done or dropped), of how many. */
+  closed: number;
+  id: string;
+  /** A plan's task, a phase's task (one per crew phase), or a task. */
+  kind: "phase" | "plan" | "task";
+  phase: null | string;
+  plan: null | string;
+  /** `#12`: the project's own number for it. */
+  ref: string;
+  status: WorkTaskStatus;
+  subject: string;
+  total: number;
+  /** When it last changed (ISO 8601). */
+  updatedAt: string;
+}
+
+/** One open project task file (`src/tasks/project/format.ts`), as the Tasks card lists it. */
+export interface ProjectTaskRow {
+  /** When it was written (`YYYY-MM-DD`). */
+  created: string;
+  /** Its file, relative to the main checkout. */
+  file: string;
+  /** What a person must take care with: `needs-yes`, `twice-safe`, `spends-money`, … */
+  flags: string[];
+  /** `T-` and six letters or digits. */
+  id: string;
+  kind: "database" | "follow-up" | "production" | "teammate";
+  /** Open past the project's `tasks.staleDays`. */
+  stale: boolean;
+  title: string;
+  weight: "after-deploy" | "blocks-release" | "owner" | null;
+  when: "any" | "next-release" | "now" | null;
+}
+
+/** The kit's work store for one project: its tasks as a tree, or why there are none to show. */
+export type ProjectWorkTasks =
+  | {
+      /** Tasks left out past the answer's cap. */
+      more: number;
+      /** A closed task stays in the tree this many days after its last change. */
+      recentDays: number;
+      state: "ready";
+      tasks: WorkTaskNode[];
+    }
+  | { state: "none" }
+  | { state: "unreadable"; why: string };
+
+/** The project's task files in its main checkout, or why they cannot be read. */
+export type ProjectTaskFiles =
+  | {
+      /** Files that do not read as a task: `task check` names each one. */
+      broken: number;
+      /** Closed tasks in `archive/`. */
+      closed: number;
+      /** The task folder, relative to the main checkout. */
+      dir: string;
+      /** The project's `tasks.staleDays`. */
+      staleDays: number;
+      state: "ready";
+      /** The open ones: what blocks a release first, then by when, then the oldest. */
+      tasks: ProjectTaskRow[];
+    }
+  | { state: "unavailable"; why: string };
+
+/**
+ * `GET /api/projects/<id>/tasks` (D75): the project's Tasks card. The kit's work store for the
+ * project (every worktree shares one list) and the project's own task files in its main
+ * checkout. Read-only: a task changes through the task tools or `cc-smart-dev-kit task`.
+ */
+export interface ProjectTasksAnswer {
+  files: ProjectTaskFiles;
+  work: ProjectWorkTasks;
+}
+
 /** A crew session, as the Work view and a crew page show it. */
 export interface CrewSummary {
   base: null | { ref: string; sha: string };
@@ -634,7 +714,18 @@ export interface CrewAnswer {
   report: CrewReport | null;
   /** Every review recorded on its branch, newest first. */
   reviews: CrewReview[];
+  /** Its phase task and every subtask, closed ones too (D75). */
+  tasks: CrewPhaseTasks;
 }
+
+/**
+ * A crew session's phase task from the kit's work store: `phase` is null for a session started
+ * before 1.10.0, which has none; `more` counts the subtasks past the answer's cap.
+ */
+export type CrewPhaseTasks =
+  | { more: number; phase: null | WorkTaskNode; state: "ready" }
+  | { state: "none" }
+  | { state: "unreadable"; why: string };
 
 /** One ask the guard log recorded (already masked when it was written). */
 export interface GuardAskItem {
@@ -863,6 +954,8 @@ export interface LiveEvents {
   recent: RecentEntry;
   reset: { boot: string };
   state: LiveState;
+  /** The kit's work store changed (`src/portal/live/sources.ts`): read the tasks again. */
+  tasks: { at: number };
   update: { last: LastCheck | null };
 }
 

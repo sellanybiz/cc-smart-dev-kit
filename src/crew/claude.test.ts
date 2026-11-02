@@ -336,6 +336,12 @@ const TAVILY_REGISTRATION = {
   url: TAVILY_MCP_URL,
 };
 
+const TASKS_REGISTRATION = {
+  alwaysLoad: true,
+  args: ["task", "mcp"],
+  command: "/home/user/.local/bin/cc-smart-dev-kit",
+};
+
 const PLAYWRIGHT_REGISTRATION = {
   args: ["browser", "mcp"],
   command: "/home/user/.local/bin/cc-smart-dev-kit",
@@ -508,6 +514,7 @@ describe("a lean start", () => {
     expect(lean.ok ? Object.keys(lean.lean.servers) : lean).toEqual([
       "sequential-thinking",
       "tavily-websearch",
+      "cc-smart-dev-kit-tasks",
     ]);
     expect(lean.ok ? lean.lean.servers["sequential-thinking"] : null).toEqual({
       args: [
@@ -530,13 +537,20 @@ describe("a lean start", () => {
       });
       return lean.ok ? lean.lean.servers : lean;
     };
-    expect(of("build")).toEqual({ "tavily-websearch": TAVILY_REGISTRATION });
+    expect(of("build")).toEqual({
+      "tavily-websearch": TAVILY_REGISTRATION,
+      "cc-smart-dev-kit-tasks": TASKS_REGISTRATION,
+    });
     expect(of("ui")).toEqual({
       playwright: PLAYWRIGHT_REGISTRATION,
       "tavily-websearch": TAVILY_REGISTRATION,
+      "cc-smart-dev-kit-tasks": TASKS_REGISTRATION,
     });
     // A kind a newer kit recorded is not one this kit knows: the search alone.
-    expect(of(null)).toEqual({ "tavily-websearch": TAVILY_REGISTRATION });
+    expect(of(null)).toEqual({
+      "tavily-websearch": TAVILY_REGISTRATION,
+      "cc-smart-dev-kit-tasks": TASKS_REGISTRATION,
+    });
   });
 
   test("a Tavily with no key is not passed: the server would fail at every connect", () => {
@@ -548,7 +562,10 @@ describe("a lean start", () => {
       keep: [],
       kind: "ui",
     });
-    expect(lean.ok ? lean.lean.servers : lean).toEqual({ playwright: PLAYWRIGHT_REGISTRATION });
+    expect(lean.ok ? lean.lean.servers : lean).toEqual({
+      playwright: PLAYWRIGHT_REGISTRATION,
+      "cc-smart-dev-kit-tasks": TASKS_REGISTRATION,
+    });
   });
 
   test("an entry naming a plugin this machine does not run is refused, with the reason", () => {
@@ -579,7 +596,7 @@ describe("a lean start", () => {
       }),
     ).toEqual({
       ok: false,
-      why: 'workflow.crew.keep names server "supabase"; a crew session can keep only the servers cc-smart-dev-kit registers (playwright, sequential-thinking, tavily-websearch)',
+      why: 'workflow.crew.keep names server "supabase"; a crew session can keep only the servers cc-smart-dev-kit registers (playwright, sequential-thinking, tavily-websearch, cc-smart-dev-kit-tasks)',
     });
   });
 
@@ -610,7 +627,11 @@ describe("a lean start", () => {
     });
     expect(lean.ok ? lean.lean : lean).toEqual({
       off: [],
-      servers: { playwright: PLAYWRIGHT_REGISTRATION, "tavily-websearch": TAVILY_REGISTRATION },
+      servers: {
+        playwright: PLAYWRIGHT_REGISTRATION,
+        "tavily-websearch": TAVILY_REGISTRATION,
+        "cc-smart-dev-kit-tasks": TASKS_REGISTRATION,
+      },
     });
   });
 

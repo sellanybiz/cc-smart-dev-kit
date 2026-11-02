@@ -17,6 +17,8 @@
  *     header carries `${TAVILY_API_KEY}`, which Claude Code fills in from its own
  *     environment when it connects, and the key itself lives in the person's environment or
  *     in a key file only they can read (`tavily.ts`). Without a key the server is skipped.
+ *   - `cc-smart-dev-kit-tasks` (`TASKS_SERVER_NAME`): the kit's own task list (D75,
+ *     `src/tasks/`), through the launcher like `playwright`, so it outlives version folders.
  *
  * WHAT IT NO LONGER REGISTERS
  *   `RETIRED_SERVER_NAMES`: a server an earlier version registered. The next setup takes back
@@ -25,10 +27,16 @@
  * A project's own servers are the project's: the plugin never knows them.
  */
 import { TAVILY_SERVER_NAME } from "./names";
+import { TASKS_SERVER_NAME } from "./task-server-name";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */
-export const SERVER_NAMES = ["playwright", "sequential-thinking", TAVILY_SERVER_NAME] as const;
+export const SERVER_NAMES = [
+  "playwright",
+  "sequential-thinking",
+  TAVILY_SERVER_NAME,
+  TASKS_SERVER_NAME,
+] as const;
 
 export type ServerName = (typeof SERVER_NAMES)[number];
 
@@ -112,5 +120,12 @@ export function mcpServers(context: McpContext): McpServer[] {
           json: "",
           skipped: context.tavily.reason,
         },
+    {
+      name: TASKS_SERVER_NAME,
+      // `alwaysLoad`: the task tools are in every request from the first turn, never deferred
+      // behind tool search, because the guards ask for them before a session could search
+      // (Claude Code's stdio config schema, `docs/claude-code-contract.md`).
+      json: json({ command, args: [...before, "task", "mcp"], alwaysLoad: true }),
+    },
   ];
 }

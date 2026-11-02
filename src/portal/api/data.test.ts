@@ -129,6 +129,7 @@ describe("the MCP servers", () => {
       { name: "playwright", runsWhat: null, state: "missing" },
       { name: "sequential-thinking", runsWhat: null, state: "missing" },
       { name: "tavily-websearch", runsWhat: null, state: "missing" },
+      { name: "cc-smart-dev-kit-tasks", runsWhat: null, state: "missing" },
     ]);
   });
 
@@ -136,6 +137,7 @@ describe("the MCP servers", () => {
     const { ctx, paths } = world();
     writeAt(paths.userConfigFile, "{ not json");
     expect(mcpRows(ctx).map((row) => row.state)).toEqual([
+      "unreadable",
       "unreadable",
       "unreadable",
       "unreadable",

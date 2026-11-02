@@ -23,7 +23,7 @@
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the first edit held until the task list exists, the report block, the pause at a limit (`crew-role.ts`) |
- * | lead-notes | SessionStart, UserPromptSubmit | machine-wide: the lead's missed crew news, once, its task-list reminder at each prompt, and the crew rule at a session start (`lead-notes.ts`) |
+ * | lead-notes | SessionStart, UserPromptSubmit, Stop | machine-wide: the lead's missed crew news, task-list reminder, start rule, and one Stop block for an in-progress task without a waiting line (`lead-notes.ts`) |
  * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change (`user-away.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -101,6 +101,7 @@ import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
+import { taskStart } from "./task-start";
 import { tierView } from "./tier-view";
 import { inAwayDomain, userAwayAnswer } from "./user-away";
 import { verifyGate } from "./verify-gate";
@@ -478,20 +479,23 @@ export const crewRoleHook: HookSpec = {
  * own task folder holds no task file (D23); never a block. At every start and prompt it adds one
  * line while the lead's watch is not running and a crew session of its open plan can still talk:
  * run the lead skill, or — when the watch ran and ended — start the same command with Claude
- * Code's `Monitor` tool (`watchNote`). A crash is one line on stderr and exit 0: a note never
- * stops a lead's turn.
+ * Code's `Monitor` tool (`watchNote`). On Stop it blocks once while a task is in progress,
+ * unless the last message has a `Waiting for:` line. Crew sessions, follow-up stops and config
+ * problems never block. A crash is one line on stderr and exit 0: a broken note never stops work.
  */
 export const leadNotesHook: HookSpec = {
   name: "lead-notes",
-  events: ["SessionStart", "UserPromptSubmit"],
+  events: ["SessionStart", "UserPromptSubmit", "Stop"],
   onConfigProblem: (_message, input, event, checkout, context) =>
-    leadNotesAnswer(
-      input,
-      event,
-      context.paths,
-      checkout.mainCheckout ?? checkout.root,
-      context.env,
-    ),
+    event === "Stop"
+      ? SILENT
+      : leadNotesAnswer(
+          input,
+          event,
+          context.paths,
+          checkout.mainCheckout ?? checkout.root,
+          context.env,
+        ),
   outsideGit: () => SILENT,
   run: ({ input, event, project, paths, env }) =>
     leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env),
@@ -684,7 +688,17 @@ function cwdOf(input: HookInput): string {
 }
 
 /** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
+export const taskStartHook: HookSpec = {
+  name: "task-start",
+  events: ["SessionStart"],
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    taskStart(input, context.paths, context.env),
+  outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
+  run: ({ input, paths, env }) => taskStart(input, paths, env),
+};
+
 export const HOOKS: readonly HookSpec[] = [
+  taskStartHook,
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
@@ -751,6 +765,7 @@ export const USER_HOOKS: readonly string[] = [
  */
 export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
+  "task-start",
   "agent-guard",
   "fable-session",
   "tier-view",

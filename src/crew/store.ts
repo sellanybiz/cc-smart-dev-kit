@@ -65,6 +65,7 @@ import {
 import { atomicWrite } from "../setup/write";
 import { COMMIT_SHA, repoKey } from "../workflow/reviews";
 import { describeIssues } from "../zod-issues";
+import { closePhaseTask } from "./phase-task";
 import { type RunActor, type RunChange, recordRun, recordRunNote } from "./runs";
 
 /** The schema version this kit writes. A record may carry a higher one: read it all the same. */
@@ -1582,6 +1583,27 @@ async function changeCrew(
     writeJsonFile(file, after);
     const line = event(after);
     if (line !== null) appendEvent(stateDir, repo, line);
+    if (after.state !== before.state) {
+      if (after.state === "merged") {
+        closePhaseTask(
+          stateDir,
+          after,
+          "done",
+          `merged into ${after.mergeProof?.leadRef ?? after.baseRef}`,
+          atMs,
+          reportRunFailure,
+        );
+      } else if (after.state === "removed" || after.state === "discarded") {
+        closePhaseTask(
+          stateDir,
+          after,
+          "dropped",
+          line?.text ?? after.state,
+          atMs,
+          reportRunFailure,
+        );
+      }
+    }
     recordRunOf({ after, at, before, by: by ?? undefined, event: line });
     return { changed: true, record: after };
   });

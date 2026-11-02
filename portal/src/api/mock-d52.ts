@@ -6,6 +6,7 @@
 import { rangeOf } from "@/lib/history";
 import { seeded } from "./mock-history";
 import { mockCrewName } from "./mock-names";
+import { phaseTasksFor } from "./mock-tasks";
 import type {
   CrewDetail,
   CrewEvent,
@@ -292,6 +293,7 @@ export function crewDetail(
           { at: iso(now - 30 * MINUTE), by: ["reviewer"], sha: "1c8e0b7" },
           { at: iso(now - 6 * MINUTE), by: ["reviewer", "lead"], sha: "4f2a9c1" },
         ],
+    tasks: phaseTasksFor(now, merged),
   };
 }
 

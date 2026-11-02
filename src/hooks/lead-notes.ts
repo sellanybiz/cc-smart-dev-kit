@@ -21,7 +21,11 @@
  *   it is seeded at the log's end the first time (the lines before it are history the lead already
  *   saw — it started those crew sessions itself). A restart reads the same cursor file, so a lead
  *   that comes back is not told the same news again.
- * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
+ * - **Stop continues an active task once**: a registered lead with an `in_progress` task and
+ *   no `Waiting for:` line in its last message gets a block. A follow-up Stop, a crew session,
+ *   a turn that waits on background work other than the lead's own watch, and a message or task
+ *   list it cannot read are silent.
+ * - **Notes never ask or block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
  * - **A lead whose watch is gone is told** (every turn, while it lasts): when no live watch holds
@@ -48,7 +52,8 @@
  */
 
 import { COMMAND } from "../build-info/names";
-import type { CliPaths } from "../cli/paths";
+import { type CliPaths, cliPaths } from "../cli/paths";
+import { isLeadWatchTask } from "../crew/brief";
 import { isOpenCrewOfLead } from "../crew/lifecycle";
 import { crewIdOf } from "../crew/session";
 import { LEAD_SKILL } from "../crew/skills";
@@ -65,8 +70,13 @@ import {
   watchIsAlive,
   writeNotesState,
 } from "../crew/store";
-import { readSessionTasks, taskListId } from "../crew/tasks";
+import { taskListId } from "../crew/tasks";
 import { eventLine, phasesWaitingFor, WATCH_RESTART } from "../crew/watch";
+import { loadProjectConfig, locateCheckout, ownHooksOf } from "../project/resolve";
+import { projectKey, taskContext } from "../tasks/context";
+import { leadTaskView, type OpenTaskLine } from "../tasks/guard-view";
+import { checkProjectTasks } from "../tasks/project/check";
+import { leadTaskReminder, TASK_COMMAND, taskCloseStep } from "../tasks/words";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -124,7 +134,7 @@ export function leadStartNote(): string {
  * start — belong on the list, not in a context a compaction takes away.
  */
 export function taskListReminder(): string {
-  return "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
+  return leadTaskReminder();
 }
 
 /**
@@ -132,13 +142,24 @@ export function taskListReminder(): string {
  * its own list holds no task file. A folder the hook cannot read says nothing either way, so it
  * says nothing: a wrong list is worse than no nudge.
  */
-function reminderFor(paths: CliPaths, env: Env, sessionId: string, event: string): null | string {
+function reminderFor(
+  paths: CliPaths,
+  env: Env,
+  lead: LeadRecord,
+  repo: string,
+  event: string,
+): null | string {
   if (event !== "UserPromptSubmit") return null;
-  const listId = taskListId(env, sessionId);
-  if (listId === "") return null;
-  const read = readSessionTasks(paths.claudeConfigDir, listId);
-  if (read.state === "unreadable") return null;
-  return read.state === "read" && read.files > 0 ? null : taskListReminder();
+  const view = leadTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    listId: taskListId(env, lead.sessionId),
+    plan: lead.plan,
+    sessionIds: leadSessions(lead),
+  });
+  return view.unreadable.length > 0 || view.hasOwn ? null : leadTaskReminder();
 }
 
 /**
@@ -205,6 +226,61 @@ function answered(
     : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 
+/** The one Stop instruction, naming the first task, how to close it, and counting the others. */
+function continueTask(first: OpenTaskLine, count: number): string {
+  const more = count > 1 ? ` (and ${String(count - 1)} more)` : "";
+  return `Your task "${first.ref} ${first.subject}"${more} is still in progress. Continue it now, and mark it done the moment it is: ${taskCloseStep(first.ref)}. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.`;
+}
+
+/** The read-only Stop decision, shared with the notifier. Throws only when a read fails. */
+export function leadStopReason(input: HookInput, env: Env, paths: CliPaths): string | null {
+  if (crewIdOf(env) !== null || input.stop_hook_active === true) return null;
+  // A turn that waits on background work (a subagent, a background command) is not over: Claude
+  // Code wakes the lead when it lands. The lead's own watch is no such work: it runs all session.
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
+    return null;
+  }
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId)) return null;
+  const said = stringField(input.last_assistant_message);
+  if (said === null) return null;
+  if (
+    said.split(/\r?\n/).some((line) => /^waiting for:/i.test(line.trim().replace(/^[*_>\- ]+/, "")))
+  )
+    return null;
+  const cwd = stringField(input.cwd);
+  if (cwd === null) return null;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null || ownHooksOf(checkout).includes("lead-notes")) return null;
+  // Match the frame: a broken or too-new project file must never yield a Stop block.
+  const project = loadProjectConfig(checkout);
+  const repo = project.mainCheckout ?? project.root;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null || lead.endedAt != null) return null;
+  const list = leadTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    listId: taskListId(env, sessionId),
+    plan: lead.plan,
+    sessionIds: leadSessions(lead),
+  });
+  if (list.unreadable.length > 0) return null;
+  const active = list.inProgress;
+  const first = active[0];
+  return first === undefined ? null : continueTask(first, active.length);
+}
+
+/** Whether this Stop will continue the lead: an unreadable store asks nothing of a sibling. */
+export function leadStopWouldBlockAt(input: HookInput, env: Env): boolean {
+  try {
+    return leadStopReason(input, env, cliPaths(env)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The note this turn adds, or SILENT. `repo` is null outside a git checkout: a lead record lives in
  * a repository's store, so there is nothing to read then.
@@ -217,6 +293,11 @@ export function leadNotesAnswer(
   env: Env,
   deps: { sessions?: () => readonly SessionRecord[] } = {},
 ): HookResult {
+  if (event === "Stop") {
+    if (repo === null) return SILENT;
+    const reason = leadStopReason(input, env, paths);
+    return reason === null ? SILENT : { stdout: JSON.stringify({ decision: "block", reason }) };
+  }
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
@@ -259,7 +340,32 @@ export function leadNotesAnswer(
   const ids = leadSessions(lead);
   // The rule comes first at a start; a prompt hears the reminder and the news instead.
   const startNote = event === "SessionStart" ? [leadStartNote()] : [];
-  const reminder = reminderFor(paths, env, sessionId, event);
+  if (event === "SessionStart" && (input.source === "startup" || input.source === "resume")) {
+    const cwd = stringField(input.cwd);
+    if (cwd !== null) {
+      try {
+        const context = taskContext(cwd, env);
+        if (context.ok && context.checkoutRoot !== null && context.projectTasks.ok) {
+          const settings = context.projectTasks;
+          const stale = checkProjectTasks({
+            checkoutRoot: context.checkoutRoot,
+            dir: settings.dir,
+            settings: { staleDays: settings.staleDays },
+            now: new Date(),
+            shippedIds: new Set(),
+            legacyFolders: settings.legacyFolders,
+          }).filter((finding) => finding.kind === "stale").length;
+          if (stale > 0)
+            startNote.push(
+              `${stale} project tasks are open past ${settings.staleDays} days: run \`${TASK_COMMAND} check\`.`,
+            );
+        }
+      } catch {
+        // Unavailable project tasks add no start note.
+      }
+    }
+  }
+  const reminder = reminderFor(paths, env, lead, repo, event);
   const watch = watchNote(paths, repo, lead);
   const cursor = readNotesState(paths.stateDir, repo, sessionId);
   if (cursor === null) {

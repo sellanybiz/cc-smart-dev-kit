@@ -3,6 +3,70 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.10.0
+
+The kit's own task list (D75), and leads and crew sessions that keep going. Work had too many
+homes: Claude Code's task tools (off on new models unless opted in, keyed by session id),
+claude-mem's work state, and the notes folders a project kept by hand, which went stale.
+Now one task list holds all of it, through one set of tools. And some models end a turn after
+each step and only say what they will do next: a lead could sit idle for hours that way.
+
+**What to run** after the update:
+
+- `cc-smart-dev-kit setup`. It registers the task server, asks in your terminal before it
+  allows the server's tools without a prompt, hides Claude Code's own task tools, and turns
+  claude-mem's work state off (a `"true"` you set after that stays). `restore` undoes each.
+- Restart Claude Code to load the new hooks and the server.
+- Move your open claude-mem lists once: `cc-smart-dev-kit task import claude-mem --dry-run`,
+  then the same without `--dry-run`.
+- A project that uses the new `tasks` field in `.claude/cc-smart-dev-kit.json` raises its
+  `requires` to `>=1.10.0` (`project init` does it).
+
+What changed:
+
+- **Two stores, one set of tools.** Work tasks (a session's steps, with subtasks and notes)
+  live in a local SQLite database that every worktree of a project shares. Project tasks
+  (what production, the database or a teammate still owes, and follow-ups) are Markdown files
+  in the repository, in `.claude/tasks/`, so they ship with their branch and pass review. The
+  task's kind picks the store.
+- **An MCP server** with eight tools: `task_create`, `task_update`, `task_done`, `task_note`,
+  `task_list`, `task_get`, `task_search`, `task_delete`. It loads with every session and every
+  crew session, with no ToolSearch. A task belongs to the Claude process, so `/clear` and a
+  background fork keep their tasks.
+- **Every task keeps its history.** Each change is recorded with its time, the values before
+  and after, and who made it: the session's name and id, its crew and process, or the kit's
+  own reason (a merge, a removal, an import). `task_get` and `task show` print it as a
+  timeline; `--history` adds every earlier description in full. A deleted task keeps its
+  history and its number: `task show #n` still prints it, and no new task gets that number.
+  A project task's history is its file's git log.
+- **`cc-smart-dev-kit task`** runs the same operations from a terminal, plus `check` (stale,
+  missed-release, broken and duplicate task files), `release` (what a release must do, by
+  weight), `list --branch` and `--branches` (task files on a branch, for a pull request's
+  notes), and `import notes` to move a project's old notes folders.
+- **Crew sessions work through phase tasks.** `crew start` makes one per phase (queued ones
+  too); a continuation keeps it and takes over its predecessor's subtasks; a merge closes it
+  done and a removal drops it. A phase started again after a removal or a merge opens again,
+  and the old crew session's closed subtasks stay as its record without counting for the new
+  one. A crew session breaks its phase into subtasks before its first edit, cannot hand back
+  done while one is open, and its board row shows `closed/total`.
+- **Session start** lists the project's open work (eight lines at most; stale work is counted,
+  not listed). The status line shows the task in hand and its progress.
+- **The portal** has a read-only Tasks card on each project's page and a phase card on each
+  crew page. Both update by themselves when a task changes.
+- A lead's turn that ends while one of its own tasks is in progress, and with no line that
+  starts with `Waiting for:`, is blocked once. The block names the task and says to go on with
+  it. A turn that really waits ends on one line, for example `Waiting for: C1's hand-back`. A
+  lead with no task in progress, or whose task list cannot be read, is never blocked.
+- A crew session's turn that ends on a step while a subtask is still open is told to go on
+  with it, not to hand back. With every subtask done, the block gives the report line.
+- The lead skill says it plainly: never end a turn on a promise of the next step.
+- For this one release the guards also read Claude Code's own task list, so a machine that
+  updated before running setup is never stuck. Once setup has run, that list no longer counts:
+  its tools are denied, so a task left open there could never be closed. Move anything still
+  open on it to the kit's list (`task_create`).
+- A Stop block and a refused done report name the exact call that closes the task (`task_done`
+  with the task's number, or `cc-smart-dev-kit task done #12`), so any model can follow it.
+
 ## 1.9.0
 
 Desktop and crew reliability: lazy browser startup, low-priority heavy jobs, and a lead that

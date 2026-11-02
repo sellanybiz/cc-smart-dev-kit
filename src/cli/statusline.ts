@@ -74,7 +74,38 @@ import { JUDGE_SLOT } from "../gateway/targets";
 import { type SessionGateway, sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
+import { taskContext } from "../tasks/context";
+import { callerOf } from "../tasks/work/identity";
+import { statusTask } from "../tasks/work/read";
+import type { Who } from "../tasks/work/types";
 import type { AlertsHere } from "../workflow/alerts";
+
+/** Keep long task titles from taking over the status bar. */
+const TASK_SUBJECT_MAX = 60;
+export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
+  const read = statusTask(paths, project, who);
+  if (read.state !== "ready" || read.value === null) return null;
+  const task = read.value;
+  const subject =
+    task.subject.length > TASK_SUBJECT_MAX
+      ? `${task.subject.slice(0, TASK_SUBJECT_MAX - 1)}…`
+      : task.subject;
+  return `#${task.number} ${subject}${task.total > 0 ? ` · ${task.closed}/${task.total}` : ""}`;
+}
+
+function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {
+  if (!isJsonObject(input) || typeof input.cwd !== "string") return null;
+  try {
+    const who = callerOf({ env, cwd: input.cwd, claudeConfigDir: paths.claudeConfigDir });
+    if (who === null) return null;
+    const context = taskContext(input.cwd, env);
+    return context.ok ? taskSegment(paths, context.project, who) : null;
+  } catch {
+    // The status bar must still work when the session or task store is unavailable.
+    return null;
+  }
+}
+
 import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
 import type { CliPaths } from "./paths";
@@ -282,16 +313,16 @@ export async function runStatusline(
     state = null;
   }
   const session = isJsonObject(input) ? sessionOf(paths, env) : null;
-  console.log(
-    statuslineText(
-      input,
-      state,
-      nowMs,
-      undefined,
-      alerts.alerts.usagePercent.value,
-      session,
-      contextFactsOf(paths, input, env, state, session, nowMs),
-    ),
+  const task = currentTask(paths, input, env);
+  const text = statuslineText(
+    input,
+    state,
+    nowMs,
+    undefined,
+    alerts.alerts.usagePercent.value,
+    session,
+    contextFactsOf(paths, input, env, state, session, nowMs),
   );
+  console.log([text, task].filter((part) => part !== null && part !== "").join(" · "));
   return 0;
 }

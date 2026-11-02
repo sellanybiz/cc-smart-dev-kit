@@ -227,11 +227,13 @@ describe("crew list", () => {
       "C my-app B1 help — blocked, 5 min ago",
       "  B1 · build · sonnet → omniroute:glm-5.1 (slot cc-smart-dev-kit-worker) · max",
       "  crew/B1-help · memory 640 MB · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  last: tests green",
       "",
       "C my-app B2 api — done, 3 h ago",
       "  B2 · security · opus · xhigh",
       "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  last: Hand-back sent.",
     ]);
   });
@@ -283,6 +285,7 @@ describe("crew list", () => {
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  last: handed back",
     ]);
   });
@@ -301,10 +304,12 @@ describe("crew list", () => {
       "C my-app B2 api — working, 5 min ago",
       "  B2 · build · sonnet · high",
       "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  files: src/lookup/index.ts, src/lookup/rank.ts",
     ]);
   });
@@ -335,16 +340,19 @@ describe("crew list", () => {
       "C my-app B3 more — queued, 2 min ago",
       "  B3 · build · sonnet · high",
       "  crew/B3-more · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  held: waits for B1 (working); it starts when each is merged",
       "",
       "C my-app B2 api — queued, 5 min ago",
       "  B2 · build · sonnet · high",
       "  crew/B2-api · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  held: 1 of 1 crew sessions running on this machine; it starts when one finishes",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
     ]);
   });
 
@@ -424,6 +432,7 @@ describe("crew list", () => {
       "C my-app B1 help — queued, 12 min ago",
       "  B1 · ui · opus · xhigh",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
       "  held: a place is free; its lead's watch starts it",
       UNREAD,
     ]);
@@ -464,13 +473,13 @@ describe("crew list", () => {
     expect(await runCrew(["list"], world.ctx({ freeMemoryGb: () => Promise.resolve(1.5) }))).toBe(
       0,
     );
-    expect(world.out[3]).toBe(
+    expect(world.out[4]).toBe(
       "  held: 1.5 GB free, a crew session needs 6 GB; it starts when memory frees",
     );
 
     world.out.length = 0;
     expect(await runCrew(["list"], world.ctx())).toBe(0);
-    expect(world.out[3]).toBe("  held: a place is free; its lead's watch starts it");
+    expect(world.out[4]).toBe("  held: a place is free; its lead's watch starts it");
   });
 
   test("D72: the board names the machine's launch gap", async () => {
@@ -557,6 +566,7 @@ describe("crew list", () => {
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
       "  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5)",
+      "  tasks: —",
     ]);
 
     world.out.length = 0;
@@ -565,10 +575,12 @@ describe("crew list", () => {
       "C other P1 x — working, 5 min ago",
       "  P1 · build · sonnet · high",
       "  crew/P1-x · memory - · lead LEAD my-app master-plan (c00f9bb5) · /home/user/other-app",
+      "  tasks: —",
       "",
       "C my-app B1 help — working, 12 min ago",
       "  B1 · build · sonnet · high",
       `  crew/B1-help · memory - · lead LEAD my-app master-plan (c00f9bb5) · ${world.repo}`,
+      "  tasks: —",
     ]);
   });
 
@@ -746,6 +758,7 @@ describe("crew status", () => {
       "model     sonnet → omniroute:glm-5.1 (slot cc-smart-dev-kit-worker)",
       "effort    max",
       "phase     B1 of master-plan",
+      "tasks     —",
       "waits for B0",
       "files     src/a.ts, src/b.ts",
       `branch    crew/B1-help, cut from main at ${sha}`,
@@ -786,6 +799,7 @@ describe("crew status", () => {
       "model     sonnet",
       "effort    high",
       "phase     B2 of master-plan",
+      "tasks     —",
       "branch    crew/B2-api, to be cut from main",
       `worktree  ${world.repo}/.claude/worktrees/crew-B2-api`,
       "session   none yet",

@@ -63,6 +63,9 @@ import {
 } from "../project/resolve";
 import { isObject } from "../setup/managed-json";
 import { readUserJson } from "../setup/user-json";
+import { taskContext } from "../tasks/context";
+import { checkProjectTasks } from "../tasks/project/check";
+import { shippedIdsOn } from "../tasks/project/release";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import { MACHINE_CREW_KEYS, workflowValue } from "../workflow/schema";
@@ -532,6 +535,7 @@ export async function projectChecks(
   }
   // GitHub Issues (D67): a line only while the switch is on, from the person's file or the base's.
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
+  lines.push(...(await projectTaskChecks(checkout.root, env)));
   return lines;
 }
 
@@ -540,6 +544,62 @@ export async function projectChecks(
  * (`MIN_COVER_GIT`, `src/workflow/review-cover.ts`): the review gate then counts a review of
  * the exact head only, so every fix needs a review of its own.
  */
+export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]> {
+  const context = taskContext(cwd, env);
+  if (!context.ok)
+    return [
+      { ok: false, text: `project tasks: ${context.why}`, fix: `run \`${COMMAND} task check\`` },
+    ];
+  if (context.checkoutRoot === null) return [];
+  const tasks = context.projectTasks;
+  if (!tasks.ok)
+    return [
+      { ok: false, text: `project tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` },
+    ];
+  if (!existsSync(tasks.dir) && tasks.legacyFolders.length === 0) return [];
+  const lines: Check[] = [];
+  try {
+    const branch = tasks.releaseBranch();
+    const present = (
+      await runGitAsync(
+        context.checkoutRoot,
+        ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`],
+        env,
+      )
+    ).ok;
+    if (!present)
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project tasks: release branch ${branch} is not available locally; missed releases were not checked`,
+      });
+    const findings = checkProjectTasks({
+      checkoutRoot: context.checkoutRoot,
+      dir: tasks.dir,
+      settings: { staleDays: tasks.staleDays },
+      now: new Date(),
+      shippedIds: present
+        ? shippedIdsOn(context.checkoutRoot, tasks.dir, branch)
+        : new Set<string>(),
+      legacyFolders: tasks.legacyFolders,
+    });
+    const counts = new Map<string, number>();
+    for (const finding of findings) counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
+    for (const [kind, count] of counts)
+      lines.push({
+        ok: false,
+        text: `project tasks: ${count} ${kind}`,
+        fix: `run \`${COMMAND} task check\``,
+      });
+    if (findings.length === 0) lines.push({ ok: true, text: "project tasks: no findings" });
+    return lines;
+  } catch (error) {
+    return [
+      { ok: false, text: `project tasks: ${message(error)}`, fix: `run \`${COMMAND} task check\`` },
+    ];
+  }
+}
+
 async function coverGitLines(checkout: Checkout, env: Env): Promise<ProjectLine[]> {
   const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version)) return [];

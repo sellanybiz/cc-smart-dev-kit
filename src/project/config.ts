@@ -30,6 +30,7 @@ export const PLUGIN_HOOK_NAMES = [
   "session-name",
   "crew-role",
   "lead-notes",
+  "task-start",
 ] as const;
 
 /** One name from `PLUGIN_HOOK_NAMES`. */
@@ -154,7 +155,26 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, strin
   "verify-gate": "1.1.0",
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
+  "task-start": "1.10.0",
 };
+
+/**
+ * The release that brought `tasks` (D75): the project's own task files. A project file that
+ * sets it needs that plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ */
+export const TASKS_SINCE = "1.10.0";
+
+/** A path inside the checkout, written with `/`: never absolute, never `.` or `..` segments. */
+const inCheckout = z
+  .string()
+  .min(1)
+  .refine(
+    (path) =>
+      !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."),
+    "must be relative to the checkout root, without ..",
+  )
+  .refine((path) => !path.includes("\\"), "use / as the separator")
+  .refine((path) => !path.split("/").includes("."), "must not contain . segments");
 
 /**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
@@ -192,24 +212,12 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
        */
       rebuildable: z
         .array(
-          z
-            .string()
-            .min(1)
-            .refine(
-              (path) =>
-                !posix.isAbsolute(path) &&
-                !win32.isAbsolute(path) &&
-                !path.split(/[\\/]/).includes(".."),
-              "must be relative to the checkout root, without ..",
-            )
-            .refine((path) => !path.includes("\\"), "use / as the separator")
-            .refine((path) => !path.split("/").includes("."), "must not contain . segments")
-            .refine(
-              // A dot alone names nothing either: `.*` would match every ignored dotfile,
-              // `.env.local` included.
-              (path) => /[^*?/[\]{},!.]/.test(path),
-              "names nothing; list the folder or file name",
-            ),
+          inCheckout.refine(
+            // A dot alone names nothing either: `.*` would match every ignored dotfile,
+            // `.env.local` included.
+            (path) => /[^*?/[\]{},!.]/.test(path),
+            "names nothing; list the folder or file name",
+          ),
         )
         .optional(),
       /**
@@ -261,6 +269,27 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * `cc-smart-dev-kit job run` instead of running raw.
    */
   jobs: z.strictObject({ kinds: kindsSchema.optional(), route: z.boolean().optional() }).optional(),
+  /**
+   * The project's task files (D75, `docs/design/tasks.md`): one Markdown file per obligation
+   * for production, the database, a teammate or later, kept in the repo so it ships with its
+   * branch. Every key is optional.
+   * - `dir`: the folder, inside the checkout (default `.claude/tasks`); closed ones go to its
+   *   `archive/`.
+   * - `staleDays`: when an open task counts as stale for `task check` (default 30).
+   * - `releaseBranch`: the branch a release ships from, so `task release` can tell a
+   *   `next-release` task that already missed one (default: the repo's default branch).
+   * - `legacyFolders`: the old hand-kept notes folders a project moved from; `task check`
+   *   flags a new file in one.
+   * A field of 1.10.0: a project that sets it raises `requires` to `>=1.10`.
+   */
+  tasks: z
+    .strictObject({
+      dir: inCheckout.optional(),
+      staleDays: z.number().int().min(1).optional(),
+      releaseBranch: z.string().trim().min(1).optional(),
+      legacyFolders: z.array(inCheckout).optional(),
+    })
+    .optional(),
   /**
    * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
    * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field

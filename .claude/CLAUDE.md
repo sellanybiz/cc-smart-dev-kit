@@ -47,8 +47,8 @@ the first time you use it.
 ## Bun only
 
 - `bun install`, `bun add <pkg>`, `bun run <script>`, `bunx <cmd>`. Never `npm` or `npx`.
-- One runtime dependency: `zod`. Ask the owner before you add another. Version ranges
-  use `Bun.semver`, which is built in.
+- Runtime dependencies: `zod` and the official MCP SDK; ask before adding another.
+  SDK versions, approval and bundle boundary: `.claude/rules/bundles-and-releases.md` § Dependencies.
 
 ## Layout
 
@@ -72,6 +72,7 @@ the first time you use it.
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/crew/` | The lead and its crew (`docs/design/crew.md` § Lead and the crew): the command and its arguments (`command.ts`, `args.ts`, `usage.ts`), the store (`store.ts`), the start with its brief, the caps and the queue (`start.ts`, `brief.ts`, `places.ts`), what a crew session says (`step.ts`, `report.ts`, `diff.ts`, `self-watch.ts`, `memory.ts`, `transcript.ts`, `telemetry.ts`), what the lead hears and answers (`watch.ts`, `answer.ts`), the board and the end of a crew session (`board.ts`, `end.ts`, `remove.ts`), and the view of Claude Code's own commands (`claude.ts`, `agents.ts`). |
 | `src/issues/` | GitHub Issues, opt-in (D67, `docs/design/issues.md`): `issue file` and the hidden marker (`file.ts`, `marker.ts`, `screen.ts`), the fixed mark and the release list (`fixed.ts`, `pending.ts`: the queue and the pass budget), a phase from an issue and its hand-back (`pickup.ts`, `handback.ts`), the lead's look at new issues (`feed.ts`), `issue <command>` and `doctor`'s lines (`command.ts`, `doctor.ts`), and the fake GitHubs the tests use (`fake-github.ts`, `fake-feed.ts`). |
+| `src/tasks/` | The kit's task system (D75, `docs/design/tasks.md`): `work/` the local store, `project/` the repo files, `context.ts` the resolver, `guard-view.ts` the guards' join, `words.ts` the shared tool names and steps, the MCP server and command. |
 | `src/user-away/` | The `cc-smart-dev-kit user` command (`unavailable`, `available`, `status`, `park`, `list`, `clear`): whether the person can answer, and the list of what waits for them (`state.ts`); the user-away hook reads the same state. |
 | `src/workflows/` | The test side of the workflow scripts in `plugin/workflows/`: the runner that executes a script with fakes for `agent`, `parallel` and the rest (`script-runner.ts`), and a test file for each script. The scripts themselves ship in `plugin/`. |
 | `src/models/` | The launch policy's one home (`launch-policy.ts`): which model and effort a subagent or a crew session runs on, the crew kinds, `UI_POLICY` (D50), the premium tiers the agent guard judges. |
@@ -151,6 +152,7 @@ Each rule loads itself when you touch a file it covers.
 - `docs/migrate.md` — moving a machine from the old `anymodel` names, and what a project
   still carries from them.
 - `docs/roadmap.md` — the phases, done and ahead.
+- `docs/design/tasks.md` — local work, project task files, guards and the move from older lists (D75).
 - `.claude/plans/` and `.claude/research/` — the plan being built and the research behind it; each moves to its `archive/` folder when it is decided or done.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
   version it was last proved on, and how.

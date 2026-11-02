@@ -22,6 +22,7 @@
  * still running (`SendMessage`) needs none: its monitor runs already.
  */
 import { COMMAND } from "../build-info/names";
+import { crewTaskStep } from "../tasks/words";
 import { CREW_SKILL } from "./skills";
 
 /** The slash command a crew session's prompt starts with: `/cc-smart-dev-kit:crew`. */
@@ -259,6 +260,7 @@ export function briefFrame(facts: BriefFacts): string {
     );
   }
   lines.push(
+    `- ${crewTaskStep()}`,
     `- Work by \`${CREW_COMMAND}\`: it says how to build the phase, how to mark each step, and how to hand it back. Your first message started it. If you cannot see its text, call the \`Skill\` tool with the name \`${CREW_SKILL}\` now: your own monitor starts only under the full name.`,
     "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
     "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",

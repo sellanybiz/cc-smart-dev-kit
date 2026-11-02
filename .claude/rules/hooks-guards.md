@@ -101,9 +101,10 @@ run instead, because the queue takes Bash lines only — only when the Bash tool
 never on a Windows machine without Git Bash),
 `fable-session` (the model the
 session itself runs on),
-`crew-role` (a crew session's own card, the person's own prompt, the ask and the report),
-`lead-notes` (a lead's missed crew news), `user-away` (whether the person can answer; § While the
-person is away) and `notify` (the alerts).
+`crew-role` (card, first-edit and Stop gates, done report), `lead-notes` (news, reminder and Stop),
+`task-start` (open tasks at SessionStart), `user-away` (availability) and `notify` (alerts).
+Task gates read the kit's list plus Claude Code's for one release, until setup denies `TaskUpdate`
+(`src/tasks/guard-view.ts`, D75).
 `playwright-output` is machine-wide too — it puts a file the
 CALLER names into the browser's own output folder (only while the live `playwright`
 registration is the one setup recorded; a server of the person's own is left alone entirely),
@@ -278,10 +279,12 @@ a command must never report success when it did not run.
 - No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
 - **A Stop hook blocks at most once per change, and never gives context.** A turn a block caused
   carries `stop_hook_active: true`, and the hook is silent there; a Stop answer's
-  `additionalContext` keeps the turn going. The two Stop hooks that block are `crew-role` (a
-  crew session's turn ended on a step with no report) and `verify-gate` (the project's
-  `checks.fast` did not run after the last change); `verify-gate` is silent in a crew session,
-  which has its own report gate. Its block's own feedback line in the transcript is its mark,
+  `additionalContext` keeps the turn going. The three Stop hooks that block are `crew-role` (a
+  crew session's turn ended on a step with no report, or with a task still open),
+  `lead-notes` (a lead's turn ended with a task in progress and no `Waiting for:` line) and
+  `verify-gate` (the project's `checks.fast` did not run after the last change); `lead-notes`
+  and `verify-gate` are silent in a crew session, which has its own report gate. The
+  `verify-gate` block's own feedback line in the transcript is its mark,
   so no change is reminded about twice, a change made after a reminder earns the next one, and a
   check that fails never traps a turn.
 - **`subagent-background` never blocks on a failure.** A broken input, a broken or too new

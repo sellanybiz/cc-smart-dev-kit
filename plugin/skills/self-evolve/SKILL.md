@@ -62,7 +62,7 @@ target: cut or move something. Over the cap: nothing goes in until as much comes
 | A procedure or workflow | a skill; its long detail in `references/` |
 | How something works today, and why | a doc page — never a rule |
 | What must happen every time, with no judgment | a hook |
-| A past decision, a dead end, a personal preference | memory |
+| Work notes or lasting knowledge | route with `/cc-smart-dev-kit:memory-routing` |
 | Current data (columns, rows, lists of things) | the live system — never frozen in markdown |
 
 `CLAUDE.md` is the index: something every task needs, a pointer to where a rule lives, a

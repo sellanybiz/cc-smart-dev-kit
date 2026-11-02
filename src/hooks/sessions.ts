@@ -63,7 +63,8 @@ export function sessionIdentityProved(
   return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
 }
 
-function isRunning(pid: number): boolean {
+/** Whether a process with this pid runs, ours or another user's. */
+export function isRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

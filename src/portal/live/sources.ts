@@ -15,6 +15,9 @@
  *   - **`update`** — the last background update check's record.
  *   - **`jobs`** — the heavy-job queue, built only when a lease or ticket file appears, changes
  *     or goes (`jobsFingerprint`), with a poll as the floor.
+ *   - **`tasks`** — the kit's work store changed (D75): its database file or its write-ahead log
+ *     changed size or time, which every committed write does. Only the time is sent; a page
+ *     reads its tasks again from `/api/…`.
  *
  * The doctor pass and an action's result are not polled: the server publishes them itself,
  * at the moment it has them (`server.ts`).
@@ -23,13 +26,14 @@
  * never a key, an address with a credential, a prompt or an answer.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import type { CliPaths } from "../../cli/paths";
 import { eventsEndOffset, listAllCrew, readCrewEvents } from "../../crew/store";
 import { type HealthFetch, routerHealth } from "../../gateway/health";
 import { parseLimitState } from "../../gateway/limit-state";
 import { askLogFile, type GuardAsk } from "../../hooks/ask-log";
 import { type JobsAnswer, jobsFingerprint } from "../../jobs/status";
+import { workDbFile } from "../../tasks/work/db";
 import { readLastCheck, updateFiles } from "../../update/state";
 import type { ApiError, LivePublish } from "../api/types";
 import { recentEntryOf } from "../facts";
@@ -105,6 +109,8 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
   let stateText: null | string = null;
   let updateText: null | string = null;
   let jobsText: null | string = null;
+  /** The work store's files as the last poll saw them; null until the first poll's baseline. */
+  let tasksText: null | string = null;
   /** The ask log's place, and whether the first poll has taken its baseline yet. */
   let guardOffset = 0;
   let guardSeeded = false;
@@ -264,6 +270,33 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
     }
   }
 
+  /** The store and its write-ahead log, as size and change time each ("-" for a missing one). */
+  function tasksFingerprint(): string {
+    const file = workDbFile(deps.paths);
+    return [file, `${file}-wal`]
+      .map((one) => {
+        try {
+          const stat = statSync(one);
+          return `${stat.size}:${stat.mtimeMs}`;
+        } catch {
+          return "-";
+        }
+      })
+      .join("|");
+  }
+
+  /** The first poll only records the files: a portal start is not a change to anyone's tasks. */
+  function pollTasks(): void {
+    const text = tasksFingerprint();
+    if (tasksText === null) {
+      tasksText = text;
+      return;
+    }
+    if (text === tasksText) return;
+    tasksText = text;
+    deps.publish("tasks", { at: deps.now() });
+  }
+
   async function pollOnce(): Promise<void> {
     if (running) return;
     running = true;
@@ -273,6 +306,7 @@ export function createLiveSources(deps: LiveSourcesDeps): LiveSources {
       pollCrew();
       pollGuard();
       pollUpdate();
+      pollTasks();
       await pollJobs();
     } finally {
       running = false;

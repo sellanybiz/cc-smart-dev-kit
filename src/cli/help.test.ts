@@ -167,9 +167,9 @@ describe("the top-level help", () => {
       `  ${COMMAND} setup --dry-run     show what setup would change`,
       `  ${COMMAND} doctor              the health check`,
       "",
-      "More commands: issue, workflow, update, restore, migrate, launch, sessions,",
-      "  worktrees, usage, report, portal, mcp, omniroute, job, crew, user, hook,",
-      "  statusline, version",
+      "More commands: task, issue, workflow, update, restore, migrate, launch,",
+      "  sessions, worktrees, usage, report, portal, mcp, omniroute, job, crew,",
+      "  user, hook, statusline, version",
       `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
     ].join("\n");
     expect(topLevelHelp()).toBe(expected);

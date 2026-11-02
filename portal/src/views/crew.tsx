@@ -4,7 +4,7 @@ import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
 import { useMemo } from "react";
 import { useResource } from "@/api/hooks";
 import { PortalRequestError } from "@/api/http";
-import { CREW_REFRESH } from "@/api/refresh";
+import { CREW_PAGE_REFRESH } from "@/api/refresh";
 import type { CrewDetail, CrewEvent, DiffFile, MergeCheck } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { CrewActions } from "@/components/crew-actions";
@@ -16,6 +16,7 @@ import { SectionCards, StatCard } from "@/components/section-cards";
 import { Sparkline } from "@/components/sparkline";
 import { EmptyState, LoadingState, PagePad, ResourceView } from "@/components/states";
 import { StatusMark, type Tone, TonePill } from "@/components/status";
+import { PhaseTasksCard } from "@/components/tasks-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -446,6 +447,9 @@ function CrewPage({ data }: { data: CrewDetail }) {
             <Timeline events={data.events} />
           </CardContent>
         </Card>
+        <div className="@4xl/main:col-span-2">
+          <PhaseTasksCard tasks={data.tasks} />
+        </div>
         <Card className="@4xl/main:col-span-2">
           <CardHeader>
             <CardTitle>Diff against {base}</CardTitle>
@@ -611,7 +615,7 @@ export function CrewView() {
           )
         : client.crew(id),
     `${ready}|${id ?? ""}`,
-    CREW_REFRESH,
+    CREW_PAGE_REFRESH,
   );
   if (!ready) return <LoadingState label="the crew session" />;
   return (

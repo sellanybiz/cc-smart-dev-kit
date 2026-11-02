@@ -39,8 +39,12 @@
  * crew session (D35); a name alone is not enough.
  */
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mcpServers } from "../mcp/servers";
+import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { launcherArgv } from "../setup/launcher-cmd";
+import { TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { resolveWorkflow } from "../workflow/resolve";
 import { agentRows, claudeDeps, isLiveRow, rowOf } from "./agents";
 import { restoreConversation } from "./archive";
@@ -84,6 +88,7 @@ import {
   resumeWaitOf,
   updateCrew,
   updateCrewIfState,
+  writeJsonFile,
 } from "./store";
 import { usageFacts } from "./usage-guard";
 
@@ -623,6 +628,32 @@ export async function resumeSession(
       ok: false,
       unnamed: false,
       why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed",
+    };
+  }
+  try {
+    const config = existsSync(mcpFile)
+      ? JSON.parse(readFileSync(mcpFile, "utf8"))
+      : { mcpServers: {} };
+    const server = mcpServers({
+      launcher: launcherArgv(ctx.paths.binDir, ctx.platform),
+      bunx: "bunx",
+      tavily: { key: false, reason: "not needed for tasks" },
+    }).find((one) => one.name === TASKS_SERVER_NAME);
+    if (!server) throw new Error("the task server registration is missing");
+    config.mcpServers ??= {};
+    config.mcpServers[TASKS_SERVER_NAME] = JSON.parse(server.json);
+    writeJsonFile(mcpFile, config);
+    const settings = JSON.parse(readFileSync(settingsFile, "utf8"));
+    settings.permissions ??= {};
+    settings.permissions.allow = [
+      ...new Set([...(settings.permissions.allow ?? []), TASK_TOOLS_ALLOW_RULE]),
+    ];
+    writeJsonFile(settingsFile, settings);
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the task server files could not be written: ${reasonOf(error)}`,
     };
   }
   const { stateDir } = ctx.paths;

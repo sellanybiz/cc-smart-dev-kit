@@ -291,8 +291,10 @@ holds it: `hub.ts` the streams and their format, `sources.ts` what changes. The 
 The sources are polled on one timer (`LIVE_POLL_MS`, 2 s): the router's `recent` list from its
 health answer (metadata only), the crew store's `events.jsonl` by byte offset per repository,
 `gateway-state.json` (limits, fallbacks, an open breaker, `seenClaude`), `guard-asks.jsonl` by
-byte offset, the last update-check record, and the heavy-job queue (its lease and ticket
-folders' fingerprint, with the queue read only when it changes). **The first poll after a
+byte offset, the last update-check record, the heavy-job queue (its lease and ticket
+folders' fingerprint, with the queue read only when it changes), and the kit's work store
+(D75: its `work.db` and write-ahead log by size and time; every committed write changes one, and
+the `tasks` event carries only the time). **The first poll after a
 start only records where each file ends** — the router's list, each crew log and the guard log
 — so a portal start says what happens from then on, never the whole history as a burst of live
 events. A log that did not exist at that baseline is news when it appears (its first line is
@@ -301,8 +303,8 @@ covers the store as the portal found it. The doctor pass and an action's lines a
 the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`, `work`,
-`crew/<id>`, `flow`, `needs`,
+`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`,
+`projects/<id>/tasks`, `work`, `crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
@@ -679,6 +681,23 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
   reaches every project whose address names that profile. A project that is no git project
   shows its state and no form.
+- **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`; the answer is
+  `projects/<id>/tasks`, `src/portal/api/project-tasks.ts`): read-only, on every project's page.
+  *Work on this machine* is the kit's work store for the project as one tree (`tree.ts`
+  › `projectTaskTree`): open work, and what closed in the last seven days
+  (`TASKS_CARD_RECENT_DAYS`), at most `TREE_TASK_LIMIT` tasks with the rest counted. Each task
+  shows its status as a glyph and its word (never colour alone), plan and phase badges, and its
+  subtree's progress as a meter drawn by an SVG `<rect>` with a native `<meter>` for screen
+  readers. *Owed by the project* lists the open task files of the main checkout by kind
+  (production, database, teammates, follow-ups), what blocks a release first, each with its
+  weight, its when, its flags in words and a mark when it is open past `tasks.staleDays`; a file
+  that does not read as a task is counted, with `task check` to name it. Each side has its own
+  empty and unreadable state in words. The card reads again on the `tasks` event, a crew event
+  or result, and a `project.*` result (`TASKS_CARD_REFRESH`).
+- **Crew, the phase card** (D75): a crew page's `tasks` (`crew/<id>`, `tree.ts` ›
+  `crewPhaseTree`) is its phase task with every subtask, closed ones too, drawn by the same tree.
+  A session started before 1.10.0 has no phase task, and the card says so. The page reads again
+  on the `tasks` event too (`CREW_PAGE_REFRESH`); Work does not.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the

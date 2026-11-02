@@ -16,6 +16,7 @@ import {
 } from "./mock-history";
 import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
 import { type ProjectMocks, projectMocks } from "./mock-projects";
+import { tasksPagesFor } from "./mock-tasks";
 import type {
   AskerCount,
   CrewDetail,
@@ -40,6 +41,7 @@ import type {
   PortalFacts,
   ProjectData,
   ProjectList,
+  ProjectTasksData,
   RecentRequest,
   RequestPage,
   RequestQuery,
@@ -690,6 +692,8 @@ export interface MockData {
   projectPages: Record<string, ProjectData>;
   gatewayPages: ProjectMocks["gatewayPages"];
   workflowPages: ProjectMocks["workflowPages"];
+  /** Each project's Tasks card (D75), by project id. */
+  tasksPages: Record<string, ProjectTasksData>;
   /** A `project.*` action's mock answer; null: the generic "sent nothing" line. */
   act: ProjectMocks["act"];
 }
@@ -1092,5 +1096,6 @@ export function mockData(empty: boolean): MockData {
     projectPages: projects.projectPages,
     gatewayPages: projects.gatewayPages,
     workflowPages: projects.workflowPages,
+    tasksPages: tasksPagesFor(projects.projects.rows, now),
   };
 }

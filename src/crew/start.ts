@@ -68,6 +68,7 @@ import {
   RETRY_WATCHDOG_RECHECK_MS,
   RETRY_WATCHDOG_VALUE,
 } from "../setup/retry-watchdog";
+import { TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { runGh } from "../workflow/merge-check";
 import {
   personalWorkflowFile,
@@ -100,6 +101,7 @@ import { pendingDiscardWhy } from "./discard";
 import { lastLine, modelText } from "./display";
 import { activeContinuationOf } from "./lifecycle";
 import { CREW_REF, crewName } from "./names";
+import { writePhaseTask } from "./phase-task";
 import {
   OPUS_TIER,
   placeFor,
@@ -953,6 +955,7 @@ export const NO_AI_TITLE_ENV = "CLAUDE_CODE_DISABLE_TERMINAL_TITLE";
  */
 export function crewSettings(id: string, off: readonly string[]): Record<string, unknown> {
   const settings: Record<string, unknown> = {
+    permissions: { allow: [TASK_TOOLS_ALLOW_RULE] },
     env: {
       [CREW_ENV]: id,
       [NO_AI_TITLE_ENV]: "1",
@@ -1521,6 +1524,7 @@ async function startPlanned(planned: Plan, ctx: CrewContext): Promise<number> {
     return 1;
   }
   const { already, record, why } = decided;
+  writePhaseTask(record, ctx);
   try {
     writeStoreFile(
       crewBriefFile(ctx.paths.stateDir, caller.repo, record.id),
@@ -1670,6 +1674,7 @@ export async function startQueued(
     return base;
   });
   if (sha === null) return;
+  writePhaseTask(record, ctx);
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     await failed(record, "claude is not on PATH, nor in ~/.local/bin", quiet, {

@@ -35,6 +35,7 @@ export const LIVE_EVENTS: readonly LiveEventName[] = [
   "recent",
   "reset",
   "state",
+  "tasks",
   "update",
 ];
 

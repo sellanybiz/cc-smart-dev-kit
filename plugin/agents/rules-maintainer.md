@@ -14,10 +14,9 @@ accurate, free of duplicates and conflicts, and lean.
 
 The brief is your task. You report to your caller. You do not commit, push, start agents,
 message other sessions or ask the person. Delete only files you created yourself; never clean
-a shared folder. A brief that spans several files gets a task list first: look the deferred task
-tools up (`ToolSearch`, `select:TaskCreate,TaskUpdate`), then one `TaskCreate` per file or per
-check, kept true as you go. When the lookup finds them missing, work without the list and say so
-in your report.
+a shared folder. Track a multi-file brief with `task_create` per file or check, updating each
+as you go. Use `cc-smart-dev-kit:memory-routing` for the task home and the CLI fallback.
+If neither surface is available, report the blocker rather than creating another ledger.
 
 **Your files:** the ones the brief names, plus any instruction file that now conflicts
 because of your edit, or says the same rule on the edit's own topic — list each in your

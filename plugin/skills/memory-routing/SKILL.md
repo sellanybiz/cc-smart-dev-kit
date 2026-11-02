@@ -20,9 +20,10 @@ person, or the whole team — and by **how fast it goes stale**.
 | **Skill** | a skill folder (in git) | whole team | a repeatable procedure |
 | **Doc** | the project's docs (in git) | whole team | how something works today, and why — never a rule |
 | **Hook** | the project's settings (in git) | whole team | what must happen every time, with no judgment |
-| **Memory** | the session's memory tool (claude-mem's, or Claude Code's auto memory), on this machine | this person, across sessions | knowledge: decisions and their reasons, surprises, dead ends, personal preferences |
-| **To-do list** | claude-mem's work state (work_state_write, work_state_read) when its tools are there: kept per project, its open items shown at each session start. A lead and a crew session use Claude Code's task tools instead (TaskCreate, TaskList, TaskUpdate; look them up first), because the kit's hooks read that list. Without claude-mem's tools, Claude Code's; with neither, the plan file | this person, across the project's sessions | each ask, and where it stands |
-| **Plan file** | the project's plans folder (`/cc-smart-dev-kit:plan-task`) | every session of the plan | durable state: phases, decisions, progress |
+| **Memory** | `save_memory` (claude-mem), or the project's memory tool | this person, across sessions | a fact or preference that outlives one task |
+| **Work task** | the kit's local task store; no `kind` | sessions working on this project | live asks, subtasks, progress and work notes |
+| **Project task** | one file in `.claude/tasks/` (or the project's `tasks.dir`); `kind` = `production`, `database`, `teammate` or `follow-up` | everyone who pulls the branch | an obligation that outlives the session |
+| **Plan file** | the project's plans folder (`/cc-smart-dev-kit:plan-task`) | every session of the plan | design: context, decisions, approach, phases and verification |
 | **Live system** | the database, the service, the config | whoever asks | current data — columns, rows, lists of things. Never copy it into markdown; it drifts. |
 
 ## Routing
@@ -32,16 +33,34 @@ person, or the whole team — and by **how fast it goes stale**.
 | A convention or coding standard | rule (with `paths:` when it covers certain files) |
 | A procedure or multi-step workflow | skill |
 | How a part of the system works now | doc — not memory, not a rule |
-| A decision and why; a dead end; a surprise | memory |
-| How this person likes to work | memory |
-| An ask, a to-do, where a task stands | to-do list — the moment it arrives |
-| Where a multi-session piece of work stands | plan file — never memory, never a to-do list |
-| Something production or a teammate must do by hand | the project's notes or tickets (the add-on file says where) |
+| A decision, surprise or dead end during work | `task_note` on the task; save a lasting lesson separately in memory |
+| How this person likes to work; a lasting fact about a tool | memory |
+| An ask, a to-do, where work stands across sessions | work task — record it when it arrives |
+| A design decision and its reason | plan file; work notes point to it |
+| Owed production or database work, teammate setup, a later follow-up | project task with the matching kind |
 | Tables, columns, current entities | the live system: query it |
 
 **The test before you write a rule:** "Is this an instruction to follow next time?" Current
 state, dated history or rollout status is not a rule. New rules, and where they fit:
 `/cc-smart-dev-kit:self-evolve`.
+
+## Using tasks
+
+Use server `cc-smart-dev-kit-tasks`: its tools are always loaded, with no lookup step.
+`task_create` takes a subject, a free-form description, an optional parent and kind. Put
+obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `after-deploy`,
+`owner`), safety flags and file refs on the project task, not in a separate ledger.
+
+- `task_update` keeps fields and status true: work is `pending`, `in_progress`, `done` or
+  `dropped`; project tasks are `open`, `done` or `dropped`. Use `task_done` with evidence to
+  finish; subtasks must be done or dropped first. Record work notes with `task_note`.
+- `task_list` reads `mine`, `plan`, `project` or `all` (open by default); `task_get` reads a task,
+  with an offset for long text; `task_search` finds text. IDs look like `#12` or `T-7k2m4q`.
+- A teammate task's `task_done` means done on this machine; `for_everyone` closes it for all.
+  `task_delete` removes only a mistake that has no notes or subtasks; otherwise drop it.
+- Without the tools, use `cc-smart-dev-kit task`:
+  `add|start|done|drop|note|list|show|search|check|release|import|delete`. Never fall back to
+  a plan log or a second to-do system. If the CLI is missing too, report the blocker.
 
 ## Saving to memory
 
@@ -60,8 +79,8 @@ you **write**, not what a tool returned, gets that line in your reply:
 
 **Do not save:** credentials, keys or tokens, or anything the person asked to keep out; code
 patterns, paths or structure (read the code); git history (`git log` is the truth); a fix
-recipe (the commit has it); anything already in a rule or doc; work in progress (that goes on
-the to-do list or in the plan file). Asked to save a summary of an activity? Ask what was
+recipe (the commit has it); anything already in a rule or doc; to-dos or work notes (use
+tasks). Asked to save a summary of an activity? Ask what was
 **surprising** about it — that part is worth keeping.
 
 ## Before you act on a memory
@@ -74,7 +93,5 @@ act on it or tell the person. "The memory says X exists" is not "X exists now".
 
 ## Keep the work outside the context
 
-A compaction keeps a summary, not the detail. So write state down as it changes: every ask
-goes on the to-do list when it arrives, and moves to doing, done or dropped (with why) the
-moment that changes. Multi-step work also keeps its plan file live (`/cc-smart-dev-kit:plan-task`).
-After a compaction or a resume, read both back before you act.
+A compaction keeps a summary, not the detail. Keep tasks current as you work. After a resume
+or compaction, read your tasks and notes before acting; read the plan for the design, not progress.

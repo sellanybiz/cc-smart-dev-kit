@@ -22,11 +22,13 @@
  * **`kinds` is built from `CREW_KINDS`**, the table the launcher and the Agent guard read, so
  * the three can never drift (`dynamic.md` § One source per value).
  */
+
 import { COMMAND } from "../build-info/names";
 import { tildify } from "../cli/paths";
 import { type LoadReading, loadUnreadLine } from "../machine/load";
 import { CREW_KIND_NAMES, CREW_KINDS } from "../models/launch-policy";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { projectKey } from "../tasks/context";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import { agentRows } from "./agents";
 import type { CrewContext } from "./context";
@@ -39,6 +41,7 @@ import {
   sessionSnapshot,
 } from "./lifecycle";
 import { withoutListRef } from "./names";
+import { phaseProgress } from "./phase-task";
 import { OPUS_TIER, PLACE_FREE, placeFor, placeInputOf, unmetWaits } from "./places";
 import {
   type CrewEvent,
@@ -353,6 +356,7 @@ export function boardLines(
     now: number;
     showRepo: boolean;
     leadGone?: boolean;
+    progress?: string;
   },
 ): string[] {
   const lines = [
@@ -362,6 +366,7 @@ export function boardLines(
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
+  if (options.progress !== undefined) lines.push(`  tasks: ${options.progress}`);
   if (record.released !== undefined) lines.push(`  released — branch ${record.branch} kept`);
   if (options.leadGone === true && !["removed", "discarded"].includes(record.state)) {
     lines.push(
@@ -380,7 +385,7 @@ export function boardLines(
 export function statusLines(
   record: CrewRecord,
   events: readonly CrewEvent[],
-  options: { home: string; now: number; stateDir: string },
+  options: { home: string; now: number; stateDir: string; progress?: string },
 ): string[] {
   const label = (name: string, value: string) => `${name.padEnd(LABEL_WIDTH)} ${value}`;
   const { named, resolved, slot } = record.model;
@@ -392,6 +397,7 @@ export function statusLines(
     label("effort", record.effort),
     label("phase", `${record.phase} of ${record.plan}`),
   ];
+  if (options.progress !== undefined) lines.push(label("tasks", options.progress));
   if (record.waitsFor.length > 0) lines.push(label("waits for", record.waitsFor.join(", ")));
   if (record.files.length > 0) lines.push(label("files", record.files.join(", ")));
   const from =
@@ -550,6 +556,7 @@ export async function runCrewList(
         ctx,
       )
     : [];
+  const progress = phaseProgress(ctx.paths.stateDir, visible);
   const blocks = visible.map((record) =>
     boardLines(record, eventsAbout(record), {
       leadGone: leadGone(
@@ -560,6 +567,7 @@ export async function runCrewList(
         ctx.now(),
         ctx,
       ),
+      progress: progress.get(`${projectKey(record.repo)}:${record.id}`) ?? "—",
       held: held.get(record.id) ?? null,
       home: ctx.paths.home,
       now: ctx.now(),
@@ -639,6 +647,9 @@ export function runCrewStatus(ref: string, ctx: CrewContext): number {
     );
   }
   for (const line of statusLines(record, events, {
+    progress:
+      phaseProgress(ctx.paths.stateDir, [record]).get(`${projectKey(record.repo)}:${record.id}`) ??
+      "—",
     home: ctx.paths.home,
     now: ctx.now(),
     stateDir: ctx.paths.stateDir,

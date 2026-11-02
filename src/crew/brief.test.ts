@@ -43,6 +43,7 @@ describe("the brief", () => {
         "- Your worktree is `/home/user/kit/.claude/worktrees/crew-B6b-portal-live`, on the branch `crew/B6b-portal-live`, cut from `release-1.0.0`. Work only there.",
         "- Setup, your first step, before anything else slow: install the project's dependencies in your own worktree, with the project's own install command. Never link or reuse another checkout's dependency folder (a symlink to it, say): undoing that asks the person, and nobody watches this session.",
         "- The files this phase owns: `src/portal/server.ts`, `src/portal/views.ts`. Say in your report why you changed any other file.",
+        '- Break your phase into subtasks first: one `task_create` per part of your brief, with its done-check in the description (they go under your phase task by themselves). A session without the task tools runs `cc-smart-dev-kit task add "<subject>" --description "<done-check>"`.',
         "- Work by `/cc-smart-dev-kit:crew`: it says how to build the phase, how to mark each step, and how to hand it back. Your first message started it. If you cannot see its text, call the `Skill` tool with the name `cc-smart-dev-kit:crew` now: your own monitor starts only under the full name.",
         "- Never ask the person to remove, unlock or force-remove a worktree; report leftovers to your lead, who uses `crew rm` or `worktrees --clean`.",
         "- Git: commit on your branch at each green step. Never push, never open a pull request, never merge: the lead handles git.",

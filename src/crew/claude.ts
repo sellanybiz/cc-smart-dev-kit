@@ -22,6 +22,7 @@ import { PLUGIN } from "../build-info/names";
 import { windowsRun } from "../hooks/detached";
 import { TAVILY_SERVER_NAME } from "../mcp/names";
 import { type McpContext, mcpServers, SERVER_NAMES, type ServerName } from "../mcp/servers";
+import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import type { CrewKind } from "../models/launch-policy";
 import { CREW_KEEP_RULE, parseCrewKeep } from "../workflow/schema";
 
@@ -354,7 +355,7 @@ export function neededByKept(
  * its tools never reach the session's context.
  */
 export function serversFor(kind: null | CrewKind): ServerName[] {
-  const names: ServerName[] = [TAVILY_SERVER_NAME];
+  const names: ServerName[] = [TAVILY_SERVER_NAME, TASKS_SERVER_NAME];
   if (kind === "ui") names.push("playwright");
   return names;
 }

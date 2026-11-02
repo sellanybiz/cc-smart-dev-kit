@@ -27,11 +27,10 @@ your caller. You do not commit, push, start agents, message other sessions or as
 ## How to build
 
 1. **Read first** — the files, their callers, the tests beside them, the pattern the brief names.
-2. **A brief of several steps gets a task list first** — the task tools are deferred, so load
-   them with `ToolSearch` (`select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per
-   step, kept true as you go. The lookup finds none: build without a list and say so in the
-   hand-back. In a crew session its hook holds every edit, yours too, until the session's list
-   has a task; an edit refused for that is a blocker to report, not a guard to get around.
+2. **Track a multi-step brief with the kit's tasks**: `task_create` per step, then keep each
+   current. Task routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
+   A crew's phase needs subtasks before edits (`cc-smart-dev-kit:crew` § 1).
+   A task gate you cannot satisfy is a blocker for your caller, never a guard to bypass.
 3. **The failing test first**, where the project tests this kind of code: it proves the bug or the
    missing behaviour before the fix, and it is the test that stays. A project with no test for
    this kind of code gets none invented for it.

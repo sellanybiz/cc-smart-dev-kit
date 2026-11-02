@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  createdObjects,
   deleteKey,
   ForeignKeyError,
   formatKeyPath,
   getKey,
   isObject,
-  type JsonObject,
   type KeyPath,
   readJsonObject,
   setKey,
@@ -123,16 +123,6 @@ export function ownedEntries(stateDir: string, file: string): Record<string, Own
   return readOwnedEntries(stateDir)[file] ?? {};
 }
 
-/** Removes the key, then each parent object that is left empty. */
-function deleteWithEmptyParents(data: JsonObject, path: KeyPath): void {
-  deleteKey(data, path);
-  for (let depth = path.length - 1; depth > 0; depth -= 1) {
-    const parent = getKey(data, path.slice(0, depth));
-    if (!parent.found || !isObject(parent.value) || Object.keys(parent.value).length > 0) return;
-    deleteKey(data, path.slice(0, depth));
-  }
-}
-
 type Plan =
   | { kind: "source"; source: string; entries: readonly string[]; anchor?: string }
   | { kind: "all" };
@@ -239,8 +229,22 @@ function applyOnce(
     return { file, added, removed, skipped, written: false, backup: null };
   }
 
-  if (dropList) deleteWithEmptyParents(data, path);
-  else setKey(data, path, list);
+  const created = createdObjects(options.stateDir, file);
+  if (dropList || (list.length === 0 && created(path))) {
+    deleteKey(data, path);
+    for (let depth = path.length - 1; depth > 0; depth -= 1) {
+      const parentPath = path.slice(0, depth);
+      const parent = getKey(data, parentPath);
+      if (
+        !created(parentPath) ||
+        !parent.found ||
+        !isObject(parent.value) ||
+        Object.keys(parent.value).length > 0
+      )
+        break;
+      deleteKey(data, parentPath);
+    }
+  } else setKey(data, path, list);
 
   // Claim first: if the process dies during the write, the next run still knows what is ours.
   const claimed = withRecords(snapshot, file, key, [

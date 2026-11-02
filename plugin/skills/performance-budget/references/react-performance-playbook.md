@@ -4225,8 +4225,8 @@ Ordered. Do not skip step 1 — it can invalidate everything after it.
 4. **Verify crawlers, not just browsers** (§9.7) on every route that carries search traffic.
 5. **Decide the cache store before caching anything hot.** With several replicas, the default
    in-memory store fragments (§9.6).
-6. **Write down what production needs by hand** — a cache key to clear, an environment
-   variable, a restart — in the project's notes, the moment you realize it.
+6. **Track manual production work** — a cache key to clear, an environment variable, a
+   restart — as a project task (`/cc-smart-dev-kit:memory-routing`) when you find it.
 
 ---
 

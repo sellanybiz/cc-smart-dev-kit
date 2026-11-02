@@ -21,6 +21,7 @@ import {
   updateAnswer,
 } from "./data";
 import { projectGatewayAnswerFor } from "./project-gateway";
+import { projectTasksAnswerFor } from "./project-tasks";
 import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
@@ -216,6 +217,7 @@ export const PROJECT_PARTS: Readonly<
   Record<string, (deps: PageDataDeps, id: string) => Promise<object | { error: string }>>
 > = {
   gateway: projectGatewayAnswerFor,
+  tasks: projectTasksAnswerFor,
   workflow: projectWorkflowAnswerFor,
 };
 
@@ -237,7 +239,8 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
     if (id === "" || id.includes("/")) {
       // `/api/projects/<id>/<part>`: one card's own read. `workflow` (D57): the project's
       // workflow settings, its base and whether gh can open a pull request; `gateway` (GP4b):
-      // its gateway state, the file that decides it, and its profile's chains.
+      // its gateway state, the file that decides it, and its profile's chains; `tasks` (D75):
+      // its work tasks and its open task files.
       const slash = id.indexOf("/");
       const named = slash < 0 ? "" : id.slice(0, slash);
       const part = slash < 0 ? "" : id.slice(slash + 1);

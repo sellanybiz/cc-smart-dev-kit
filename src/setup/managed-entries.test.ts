@@ -23,6 +23,19 @@ function setup(content: unknown = { model: "opus" }) {
 
 const read = (file: string) => JSON.parse(readFileSync(file, "utf8"));
 
+test("restore removes a list setup created without an anchor", () => {
+  const { file, stateDir } = setup({ permissions: { allow: ["Read"] } });
+  applyManagedEntries({
+    file,
+    stateDir,
+    path: ["permissions", "deny"],
+    source: "tasks",
+    entries: ["TodoWrite"],
+  });
+  restore(stateDir);
+  expect(read(file)).toEqual({ permissions: { allow: ["Read"] } });
+});
+
 describe("applyManagedEntries", () => {
   test("no list yet: creates it with the anchor first, then the entries, all owned", () => {
     const { file, stateDir, apply } = setup();
