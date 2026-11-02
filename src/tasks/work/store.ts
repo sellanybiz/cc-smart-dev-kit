@@ -5,10 +5,94 @@ import {
   NOTE_LIMIT,
   SUBJECT_LIMIT,
   type Who,
+  type WorkEventAction,
   type WorkKind,
   type WorkStatus,
   type WorkTask,
 } from "./types";
+
+/** How much of a note its history entry keeps: the note itself is in `task_notes`. */
+const NOTE_PREVIEW = 120;
+
+/** The fields a history entry compares, as a person reads them: other tasks by their number. */
+function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
+  const numberOf = (id: string) => `#${taskById(db, id).number}`;
+  return {
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    parent: task.parentId === null ? null : numberOf(task.parentId),
+    crew: task.crewId,
+    claim: task.claim === null ? null : (task.claim.sessionId ?? `process ${task.claim.pid}`),
+    waitsFor: task.waitsFor.map(numberOf).sort(),
+  };
+}
+
+/** Each field whose value differs, with its value before and after. */
+function diff(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, [unknown, unknown]> {
+  const changes: Record<string, [unknown, unknown]> = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Bun.deepEquals(before[key], after[key]))
+      changes[key] = [before[key] ?? null, after[key] ?? null];
+  }
+  return changes;
+}
+
+/** A value that says nothing on its own: left out of a created or deleted entry. */
+function empty(value: unknown): boolean {
+  return value === null || value === "" || (Array.isArray(value) && value.length === 0);
+}
+
+/**
+ * One history entry, in the caller's transaction (`writeWork`), so a change and its entry land
+ * together or not at all. Every write path in this file records one.
+ */
+function recordEvent(
+  db: WorkDb,
+  task: WorkTask,
+  action: WorkEventAction,
+  changes: Record<string, [unknown, unknown]>,
+  who: Who,
+  now: number,
+  reason: string | null,
+): void {
+  db.sqlite
+    .query(
+      "INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,crew_id,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    .run(
+      task.id,
+      task.project,
+      task.number,
+      now,
+      action,
+      JSON.stringify(changes),
+      who.sessionId,
+      who.name ?? null,
+      who.crewId,
+      who.pid,
+      reason,
+    );
+}
+
+/** A change's entry: "closed" when it moved the task to done or dropped, "changed" otherwise. */
+function recordChange(
+  db: WorkDb,
+  before: Record<string, unknown>,
+  task: WorkTask,
+  who: Who,
+  now: number,
+  reason: string | null,
+): void {
+  const changes = diff(before, shape(db, task));
+  if (Object.keys(changes).length === 0) return;
+  const closed =
+    changes.status !== undefined && (task.status === "done" || task.status === "dropped");
+  recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
+}
 export interface CreateTask {
   project: string;
   subject: string;
@@ -56,8 +140,17 @@ function doneValid(db: WorkDb, id: string): void {
   if (open.length)
     throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
 }
-/** Internal operations run only within writeWork, also used by the atomic importer. */
-export function insertTask(db: WorkDb, input: CreateTask, who: Who, now: number): WorkTask {
+/**
+ * Internal operations run only within writeWork, also used by the atomic importer. `reason`
+ * says why the kit made the task itself (an import), for its history.
+ */
+export function insertTask(
+  db: WorkDb,
+  input: CreateTask,
+  who: Who,
+  now: number,
+  reason: string | null = null,
+): WorkTask {
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   parentValid(db, input.project, null, input.parentId ?? null);
@@ -94,7 +187,18 @@ export function insertTask(db: WorkDb, input: CreateTask, who: Who, now: number)
       now,
       status === "done" || status === "dropped" ? now : null,
     );
-  return taskById(db, id);
+  const task = taskById(db, id);
+  const initial: Record<string, unknown> = {
+    kind: task.kind,
+    plan: task.plan,
+    phase: task.phase,
+    ...shape(db, task),
+  };
+  const changes: Record<string, [unknown, unknown]> = {};
+  for (const [key, value] of Object.entries(initial))
+    if (!empty(value)) changes[key] = [null, value];
+  recordEvent(db, task, "created", changes, who, now, reason);
+  return task;
 }
 export function createTask(db: WorkDb, input: CreateTask, who: Who, now: number) {
   return writeWork(db, () => insertTask(db, input, who, now));
@@ -126,6 +230,7 @@ function dependencies(
 export function updateTask(db: WorkDb, id: string, change: UpdateTask, who: Who, now: number) {
   return writeWork(db, () => {
     const task = taskById(db, id);
+    const before = shape(db, task);
     const status = change.status ?? task.status;
     if (status === "done") doneValid(db, id);
     const parent = change.parentId === undefined ? task.parentId : change.parentId;
@@ -157,11 +262,21 @@ export function updateTask(db: WorkDb, id: string, change: UpdateTask, who: Who,
         status === "done" || status === "dropped" ? (task.closedAt ?? now) : null,
         id,
       );
-    return taskById(db, id);
+    const changed = taskById(db, id);
+    recordChange(db, before, changed, who, now, null);
+    return changed;
   });
 }
-export function insertNote(db: WorkDb, id: string, text: string, who: Who, now: number) {
-  taskById(db, id);
+/** Saves a note. `reason` says why the kit wrote it itself (a system close), for the history. */
+export function insertNote(
+  db: WorkDb,
+  id: string,
+  text: string,
+  who: Who,
+  now: number,
+  reason: string | null = null,
+) {
+  const task = taskById(db, id);
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1–${NOTE_LIMIT} characters`);
   const row = db.sqlite
@@ -170,6 +285,8 @@ export function insertNote(db: WorkDb, id: string, text: string, who: Who, now: 
     )
     .get(id, text, who.sessionId, who.crewId, now);
   db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}…` : text;
+  recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
   return {
     id: row?.id ?? 0,
     taskId: id,
@@ -182,14 +299,19 @@ export function insertNote(db: WorkDb, id: string, text: string, who: Who, now: 
 export function addNote(db: WorkDb, id: string, text: string, who: Who, now: number) {
   return writeWork(db, () => insertNote(db, id, text, who, now));
 }
-export function deleteTask(db: WorkDb, id: string) {
+/** Deletes a mistaken task. Its history stays, and its last entry keeps the task as it was. */
+export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
   return writeWork(db, () => {
-    taskById(db, id);
+    const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has subtasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    const last: Record<string, [unknown, unknown]> = {};
+    for (const [key, value] of Object.entries(shape(db, task)))
+      if (!empty(value)) last[key] = [value, null];
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
+    recordEvent(db, task, "deleted", last, who, now, null);
     return true;
   });
 }
@@ -204,19 +326,23 @@ export function systemClose(
   return writeWork(db, () => {
     const task = taskById(db, id);
     for (const child of openSubtasks(db, id)) {
+      const before = shape(db, child);
       db.sqlite
         .query(
           "UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
         )
         .run(now, now, child.id);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now);
+      recordChange(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
     }
+    const before = shape(db, task);
     db.sqlite
       .query(
         "UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
       )
       .run(status, now, now, task.id);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now);
+    recordChange(db, before, taskById(db, id), who, now, reason);
+    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
     return taskById(db, id);
   });
 }
@@ -239,6 +365,8 @@ export interface PhaseTask extends PlanTask {
   description: string;
   crewId: string;
   waitsForPhases: string[];
+  /** Why the kit points the phase at this crew session (its start), for the history. */
+  reason?: string;
 }
 export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: number) {
   return writeWork(db, () => {
@@ -248,10 +376,13 @@ export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: num
       who,
       now,
     );
+    const reason = input.reason ?? "crew start";
+    const { reason: _reason, ...fields } = input;
     const task =
       allTasks(db, input.project).find(
         (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
-      ) ?? insertTask(db, { ...input, kind: "phase", parentId: parent.id }, who, now);
+      ) ?? insertTask(db, { ...fields, kind: "phase", parentId: parent.id }, who, now, reason);
+    const before = shape(db, task);
     db.sqlite
       .query("UPDATE tasks SET crew_id=?,updated_at=? WHERE id=?")
       .run(input.crewId, now, task.id);
@@ -263,7 +394,9 @@ export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: num
       return found.id;
     });
     dependencies(db, task, { add: refs });
-    return taskById(db, task.id);
+    const after = taskById(db, task.id);
+    recordChange(db, before, after, who, now, reason);
+    return after;
   });
 }
 export function ack(db: WorkDb, project: string, taskRef: string, now: number) {

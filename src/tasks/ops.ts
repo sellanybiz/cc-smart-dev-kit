@@ -17,11 +17,13 @@ import {
 } from "./project/files";
 import type { ProjectTask } from "./project/format";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
+import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
 import {
   allTasks,
   claimState,
   descendants,
+  eventsOf,
   getTask,
   isOpen,
   notesOf,
@@ -258,15 +260,54 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (operation === "get") {
         const input = taskSchemas.get.parse(raw);
         const text = input.task.startsWith("T-")
-          ? readFileSync(project(input.task).file, "utf8")
+          ? (() => {
+              // A project task's history is its file's git log: every commit that changed it,
+              // across its move into `archive/`. `--follow` loses the move with `--reverse`
+              // (seen on git 2.53), so the lines are put oldest first here.
+              const file = project(input.task).file;
+              const body = readFileSync(file, "utf8");
+              if (!ctx.checkoutRoot) return body;
+              // A branch with no commit yet has no log at all: git's own answer, not its message.
+              const head = runGit(
+                ctx.checkoutRoot,
+                ["rev-parse", "--verify", "--quiet", "HEAD"],
+                env,
+              );
+              if (!head.ok && head.code === 1)
+                return `${body.trimEnd()}\n\nHistory: not committed yet.`;
+              const log = runGit(
+                ctx.checkoutRoot,
+                [
+                  "log",
+                  "--follow",
+                  "--date=iso-strict",
+                  "--format=%ad %an %h %s",
+                  "--",
+                  relative(ctx.checkoutRoot, file),
+                ],
+                env,
+              );
+              const history = !log.ok
+                ? `History: git could not read it (${log.err})`
+                : log.out
+                  ? `History (git, oldest first):\n${log.out.split("\n").reverse().join("\n")}`
+                  : "History: not committed yet.";
+              return `${body.trimEnd()}\n\n${history}`;
+            })()
           : (() => {
               const task = work(input.task);
-              return `${label(task)} [${task.status.replaceAll("_", " ")}]\n\n${task.description}\n\n${notesOf(
-                store,
-                task,
-              )
+              const notes = notesOf(store, task)
                 .map((n) => `${new Date(n.at).toISOString()} ${n.text}`)
-                .join("\n")}`;
+                .join("\n");
+              // Only the parts that hold something, a blank line between them.
+              return [
+                `${label(task)} [${task.status.replaceAll("_", " ")}]`,
+                task.description,
+                notes,
+                historyText(eventsOf(store, task), { full: input.history }),
+              ]
+                .filter((part) => part !== "")
+                .join("\n\n");
             })();
         return { ok: true, text: page(text, input.offset) };
       }
@@ -293,7 +334,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
           rmSync(task.file);
         } else {
-          const result = deleteTask(store, work(input.task).id);
+          const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok) throw new Error(`${result.why}; drop it instead`);
         }
         return { ok: true, text: `${input.task} · deleted` };

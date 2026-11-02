@@ -16,7 +16,7 @@ const descriptions: Record<TaskOperation, string> = {
   done: "Finish or drop a task. Open subtasks must be finished or dropped first.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
-  get: "Read a task and its notes. Use offset to read the next part.",
+  get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work and project tasks.",
   delete: "Delete a mistaken task with no notes or subtasks, or an untracked project task file.",
 };

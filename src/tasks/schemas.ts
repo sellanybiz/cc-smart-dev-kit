@@ -54,7 +54,16 @@ export const taskSchemas = {
       open_only: z.boolean().default(true),
     })
     .strict(),
-  get: z.object({ task: ref, offset: z.number().int().nonnegative().default(0) }).strict(),
+  get: z
+    .object({
+      task: ref,
+      offset: z.number().int().nonnegative().default(0),
+      history: z
+        .boolean()
+        .default(false)
+        .describe("Also print every earlier description in full, under its history line."),
+    })
+    .strict(),
   search: z
     .object({ text: z.string().min(1), include_closed: z.boolean().default(false) })
     .strict(),

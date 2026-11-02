@@ -33,6 +33,8 @@ function description(fields: Fields): string {
     .join("\n");
 }
 const importer: Who = { sessionId: null, crewId: null, pid: null, procStart: null };
+/** What each imported task's history says made it. */
+const IMPORTED = "imported from claude-mem's work state";
 export function importClaudeMem(options: ImportOptions): Result<ImportedTask[]> {
   let source: Database | undefined;
   try {
@@ -90,6 +92,7 @@ export function importClaudeMem(options: ImportOptions): Result<ImportedTask[]> 
               { project: options.project, ...task },
               importer,
               options.now,
+              IMPORTED,
             );
         imported.push(task);
         for (const [subject, fields] of list.items) {
@@ -108,7 +111,7 @@ export function importClaudeMem(options: ImportOptions): Result<ImportedTask[]> 
               ...item,
               parentId: parent?.id ?? null,
             };
-            insertTask(options.workDb, input, importer, options.now);
+            insertTask(options.workDb, input, importer, options.now, IMPORTED);
           }
         }
         if (!options.dryRun)

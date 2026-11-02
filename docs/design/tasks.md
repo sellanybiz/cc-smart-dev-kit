@@ -34,6 +34,25 @@ The store enforces these rules, not the caller:
 - A system close on merge or removal drops open subtasks and leaves an automatic note.
 - Delete is for a mistake with no notes or subtasks, not for finished work.
 
+### A task's history
+
+Every write in `store.ts` adds one entry to `task_events`, in the same transaction as the
+change, so the two land together or not at all. An entry holds the time, what happened
+(`created`, `changed`, `noted`, `closed`, `deleted`), each field's value before and after
+(subject, description, status, parent, crew, claim, waits-for), and who made it: the session
+id and name (the name Claude Code shows, read from its session record by `callerOf`), the crew
+id and the Claude process. A change the kit makes itself (a merge or removal closing a phase,
+a crew session taking a phase, an import) carries its reason instead. A change that changes
+nothing adds no entry. Entries are never edited, and the table has no foreign key on purpose:
+a deleted task keeps its history, whose last entry holds the task as it was.
+
+`task_get` and `task show` print it as a timeline, oldest first, from `history.ts`. A
+description is long, so its line gives the length; `history: true` (`--history`) prints every
+earlier description in full. A project task's history is its file's git log (`git log
+--follow`, which tracks the move into `archive/`): who committed each change, and when. Old
+code that writes to the store records no entries; 1.10.0 is the first release with the store,
+so every store has the table from its first write.
+
 ### Who a call belongs to
 
 `src/tasks/context.ts` is the one resolver of project key, checkout and task settings.

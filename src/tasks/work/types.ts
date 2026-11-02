@@ -8,6 +8,28 @@ export interface Who {
   crewId: string | null;
   pid: number | null;
   procStart: string | null;
+  /** The session's name, as Claude Code shows it (`callerOf`); absent or null when unknown. */
+  name?: string | null;
+}
+/** What a change did to a task, as its history records it. */
+export type WorkEventAction = "created" | "changed" | "noted" | "closed" | "deleted";
+/**
+ * One entry in a task's history: written in the same transaction as the change, never edited,
+ * and kept after the task is deleted. `changes` holds each field's value before and after.
+ */
+export interface WorkEvent {
+  id: number;
+  taskId: string;
+  number: number;
+  at: number;
+  action: WorkEventAction;
+  changes: Record<string, [unknown, unknown]>;
+  sessionId: string | null;
+  sessionName: string | null;
+  crewId: string | null;
+  pid: number | null;
+  /** Why the kit itself made the change (a merge, a removal, an import); null for a session's own. */
+  reason: string | null;
 }
 export interface WorkClaim {
   pid: number;

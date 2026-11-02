@@ -15163,6 +15163,10 @@ CREATE INDEX task_crew ON tasks(project,crew_id);
 CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
 CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
 CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
+ at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
+ changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
+CREATE INDEX task_event_task ON task_events(task_id,id);
 `;
 var init_db = __esm(() => {
   init_names();
@@ -15807,6 +15811,21 @@ function searchTasks(db, project, text) {
 function notesOf(db, task) {
   return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,crew_id AS crewId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
 }
+function eventsOf(db, task) {
+  return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    number: row.number,
+    at: row.at,
+    action: row.action,
+    changes: JSON.parse(row.changes),
+    sessionId: row.session_id,
+    sessionName: row.session_name,
+    crewId: row.crew_id,
+    pid: row.pid,
+    reason: row.reason
+  }));
+}
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
     return "free";
@@ -15914,6 +15933,39 @@ var init_read = __esm(() => {
 var SUBJECT_LIMIT = 200, DESCRIPTION_LIMIT = 200000, NOTE_LIMIT = 64000;
 
 // src/tasks/work/store.ts
+function shape(db, task) {
+  const numberOf = (id) => `#${taskById(db, id).number}`;
+  return {
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    parent: task.parentId === null ? null : numberOf(task.parentId),
+    crew: task.crewId,
+    claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
+    waitsFor: task.waitsFor.map(numberOf).sort()
+  };
+}
+function diff(before, after) {
+  const changes = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Bun.deepEquals(before[key], after[key]))
+      changes[key] = [before[key] ?? null, after[key] ?? null];
+  }
+  return changes;
+}
+function empty(value) {
+  return value === null || value === "" || Array.isArray(value) && value.length === 0;
+}
+function recordEvent(db, task, action, changes, who, now, reason) {
+  db.sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,crew_id,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(task.id, task.project, task.number, now, action, JSON.stringify(changes), who.sessionId, who.name ?? null, who.crewId, who.pid, reason);
+}
+function recordChange2(db, before, task, who, now, reason) {
+  const changes = diff(before, shape(db, task));
+  if (Object.keys(changes).length === 0)
+    return;
+  const closed = changes.status !== undefined && (task.status === "done" || task.status === "dropped");
+  recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
+}
 function subjectOf(subject) {
   const text = subject.trim();
   if (!text || text.length > SUBJECT_LIMIT)
@@ -15945,7 +15997,7 @@ function doneValid(db, id) {
   if (open.length)
     throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
 }
-function insertTask(db, input, who, now) {
+function insertTask(db, input, who, now, reason = null) {
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   parentValid(db, input.project, null, input.parentId ?? null);
@@ -15954,7 +16006,19 @@ function insertTask(db, input, who, now) {
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, input.plan ?? null, input.phase ?? null, input.crewId ?? who.crewId, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null);
-  return taskById(db, id);
+  const task = taskById(db, id);
+  const initial = {
+    kind: task.kind,
+    plan: task.plan,
+    phase: task.phase,
+    ...shape(db, task)
+  };
+  const changes = {};
+  for (const [key, value] of Object.entries(initial))
+    if (!empty(value))
+      changes[key] = [null, value];
+  recordEvent(db, task, "created", changes, who, now, reason);
+  return task;
 }
 function dependencies(db, task, change) {
   for (const ref of change.remove ?? [])
@@ -15982,6 +16046,7 @@ function dependencies(db, task, change) {
 function updateTask(db, id, change, who, now) {
   return writeWork(db, () => {
     const task = taskById(db, id);
+    const before = shape(db, task);
     const status = change.status ?? task.status;
     if (status === "done")
       doneValid(db, id);
@@ -15992,15 +16057,19 @@ function updateTask(db, id, change, who, now) {
     const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
     const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
     db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, id);
-    return taskById(db, id);
+    const changed = taskById(db, id);
+    recordChange2(db, before, changed, who, now, null);
+    return changed;
   });
 }
-function insertNote(db, id, text, who, now) {
-  taskById(db, id);
+function insertNote(db, id, text, who, now, reason = null) {
+  const task = taskById(db, id);
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1\u2013${NOTE_LIMIT} characters`);
   const row = db.sqlite.query("INSERT INTO task_notes(task_id,text,session_id,crew_id,at) VALUES (?,?,?,?,?) RETURNING id").get(id, text, who.sessionId, who.crewId, now);
   db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}\u2026` : text;
+  recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
   return {
     id: row?.id ?? 0,
     taskId: id,
@@ -16010,14 +16079,19 @@ function insertNote(db, id, text, who, now) {
     at: now
   };
 }
-function deleteTask(db, id) {
+function deleteTask(db, id, who, now) {
   return writeWork(db, () => {
-    taskById(db, id);
+    const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has subtasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    const last = {};
+    for (const [key, value] of Object.entries(shape(db, task)))
+      if (!empty(value))
+        last[key] = [value, null];
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
+    recordEvent(db, task, "deleted", last, who, now, null);
     return true;
   });
 }
@@ -16025,11 +16099,15 @@ function systemClose(db, id, status, reason, who, now) {
   return writeWork(db, () => {
     const task = taskById(db, id);
     for (const child of openSubtasks(db, id)) {
+      const before = shape(db, child);
       db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now);
+      recordChange2(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
     }
+    const before = shape(db, task);
     db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now);
+    recordChange2(db, before, taskById(db, id), who, now, reason);
+    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
     return taskById(db, id);
   });
 }
@@ -16042,7 +16120,10 @@ function ensurePlanTask(db, input, who, now) {
 function ensurePhaseTask(db, input, who, now) {
   return writeWork(db, () => {
     const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
-    const task = allTasks(db, input.project).find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase) ?? insertTask(db, { ...input, kind: "phase", parentId: parent.id }, who, now);
+    const reason = input.reason ?? "crew start";
+    const { reason: _reason, ...fields } = input;
+    const task = allTasks(db, input.project).find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase) ?? insertTask(db, { ...fields, kind: "phase", parentId: parent.id }, who, now, reason);
+    const before = shape(db, task);
     db.sqlite.query("UPDATE tasks SET crew_id=?,updated_at=? WHERE id=?").run(input.crewId, now, task.id);
     const refs = input.waitsForPhases.map((phase) => {
       const found = allTasks(db, input.project).find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === phase);
@@ -16051,7 +16132,9 @@ function ensurePhaseTask(db, input, who, now) {
       return found.id;
     });
     dependencies(db, task, { add: refs });
-    return taskById(db, task.id);
+    const after = taskById(db, task.id);
+    recordChange2(db, before, after, who, now, reason);
+    return after;
   });
 }
 function ack(db, project, taskRef, now) {
@@ -16060,6 +16143,7 @@ function ack(db, project, taskRef, now) {
     return true;
   });
 }
+var NOTE_PREVIEW = 120;
 var init_store = __esm(() => {
   init_db();
 });
@@ -16104,7 +16188,8 @@ function writePhaseTask(record, ctx) {
       subject: title(record),
       description: record.briefSource?.path ?? "",
       crewId: record.id,
-      waitsForPhases: record.waitsFor.filter((phase) => phases.has(phase))
+      waitsForPhases: record.waitsFor.filter((phase) => phases.has(phase)),
+      reason: `crew session ${record.name} took the phase`
     }, who, ctx.now());
     if (!result.ok)
       throw new Error(result.why);
@@ -16218,7 +16303,7 @@ function oneLine2(value, max = 160) {
 `)[0]?.trim() ?? "";
   return line.length > max ? `${line.slice(0, max - 1)}\u2026` : line;
 }
-function eventsOf(change) {
+function eventsOf2(change) {
   const { after, at, before, report } = change;
   const lead = change.by === undefined ? leadOf(after) : change.by;
   const base = { at, state: after.state };
@@ -16402,7 +16487,7 @@ function startOf(after, at) {
 function nextRun(previous, change) {
   const { after, at } = change;
   const run = previous ?? startOf(after, change.before === null ? at : after.createdAt);
-  const events = eventsOf(change);
+  const events = eventsOf2(change);
   const sessions = [...run.sessions];
   for (const one of events) {
     if (one.kind !== "session")
@@ -16466,7 +16551,7 @@ function recordRun(change) {
   const previous = readRunFile(file);
   if (previous === null && plansFolderGone(planFile))
     return;
-  if (previous !== null && eventsOf(change).length === 0 && change.contextTokens == null)
+  if (previous !== null && eventsOf2(change).length === 0 && change.contextTokens == null)
     return;
   writeRunFile(file, nextRun(previous, change));
   const continues = change.after.continues;
@@ -21359,7 +21444,7 @@ function findCrew(records, ref, command) {
       };
   }
 }
-function eventsOf2(ctx, records) {
+function eventsOf3(ctx, records) {
   const byRepo = new Map;
   for (const repo of new Set(records.map((one) => one.repo))) {
     const grouped = new Map;
@@ -21523,7 +21608,7 @@ async function runCrewList(args, ctx) {
     ctx.print(args.all ? "No crew sessions on this machine." : `No crew sessions in ${read.repo ?? ""}.`);
     return 0;
   }
-  const eventsAbout = eventsOf2(ctx, read.records);
+  const eventsAbout = eventsOf3(ctx, read.records);
   const visible = read.records.filter((record) => args.removed || record.state !== "removed" || !(ctx.now() - Date.parse(stateSince(record, eventsAbout(record))) > REMOVED_VISIBLE_MS));
   const hidden = read.records.length - visible.length;
   const caps = read.records.some((one) => one.state === "queued") ? await capsOf(ctx, read.checkout) : null;
@@ -21592,7 +21677,7 @@ function runCrewStatus(ref, ctx) {
   const rows = agentRows(ctx);
   if (crewNotRunning(record, rows, ctx.now()))
     ctx.print(`${record.name}: not running (last: ${record.state}, ${agoText(record.updatedAt, ctx.now())}) \u2014 crew resume "${record.name}"`);
-  const events = eventsOf2(ctx, [record])(record);
+  const events = eventsOf3(ctx, [record])(record);
   try {
     const lead = listAllLeads(ctx.paths.stateDir).records.find((one) => one.repo === record.repo && one.sessionId === record.leadSessionId);
     if (lead != null && lead.endedAt == null && !leadRunning(lead, rows, sessionSnapshot(ctx), ctx))
@@ -46121,10 +46206,104 @@ var init_schemas3 = __esm(() => {
       scope: _enum(["mine", "plan", "project", "all"]).default("mine"),
       open_only: boolean2().default(true)
     }).strict(),
-    get: object({ task: ref2, offset: number2().int().nonnegative().default(0) }).strict(),
+    get: object({
+      task: ref2,
+      offset: number2().int().nonnegative().default(0),
+      history: boolean2().default(false).describe("Also print every earlier description in full, under its history line.")
+    }).strict(),
     search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
     delete: object({ task: ref2 }).strict()
   };
+});
+
+// src/tasks/work/history.ts
+function actor2(event) {
+  const parts = [];
+  if (event.sessionId !== null) {
+    const name = event.sessionName ? `"${event.sessionName}" ` : "";
+    parts.push(`session ${name}${event.sessionId}`);
+  }
+  if (event.crewId !== null)
+    parts.push(`crew ${event.crewId}`);
+  if (event.pid !== null)
+    parts.push(`process ${event.pid}`);
+  if (event.reason !== null)
+    parts.push(`the kit (${event.reason})`);
+  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
+}
+function shown(key, value) {
+  if (value === null || value === undefined || value === "")
+    return "none";
+  if (Array.isArray(value))
+    return value.length > 0 ? value.join(", ") : "none";
+  if (key === "subject" || key === "note")
+    return JSON.stringify(value);
+  return String(value);
+}
+function descriptionText(event, before, after) {
+  const length = (value) => typeof value === "string" ? value.length : 0;
+  if (event.action === "created")
+    return `description ${length(after)} characters`;
+  if (event.action === "deleted")
+    return `description ${length(before)} characters`;
+  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
+}
+function fieldText(event, key, label) {
+  const change = event.changes[key];
+  if (change === undefined)
+    return null;
+  const [before, after] = change;
+  if (key === "description")
+    return descriptionText(event, before, after);
+  if (event.action === "created" || event.action === "noted")
+    return `${label} ${shown(key, after)}`;
+  if (event.action === "deleted")
+    return `${label} ${shown(key, before)}`;
+  return `${label} ${shown(key, before)} \u2192 ${shown(key, after)}`;
+}
+function historyLine2(event) {
+  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
+  return `${new Date(event.at).toISOString()} by ${actor2(event)} \xB7 ${what} ${fields.join("; ")}`;
+}
+function historyText(events, options) {
+  if (events.length === 0)
+    return "History: none recorded.";
+  const lines = ["History (oldest first):"];
+  for (const event of events) {
+    lines.push(historyLine2(event));
+    const description = event.changes.description;
+    if (!options.full || description === undefined)
+      continue;
+    const [before, after] = description;
+    if (event.action !== "created" && typeof before === "string")
+      lines.push("  description before:", indent(before));
+    if (event.action !== "deleted" && typeof after === "string")
+      lines.push("  description after:", indent(after));
+  }
+  return lines.join(`
+`);
+}
+function indent(text) {
+  return text === "" ? "    (empty)" : text.split(`
+`).map((line) => `    ${line}`).join(`
+`);
+}
+var FIELDS;
+var init_history2 = __esm(() => {
+  FIELDS = [
+    ["kind", "kind"],
+    ["plan", "plan"],
+    ["phase", "phase"],
+    ["subject", "subject"],
+    ["status", "status"],
+    ["parent", "parent"],
+    ["crew", "crew"],
+    ["claim", "claimed by"],
+    ["waitsFor", "waits for"],
+    ["description", "description"],
+    ["note", "note"]
+  ];
 });
 
 // src/tasks/ops.ts
@@ -46295,14 +46474,43 @@ function createTaskOps(options = {}) {
       }
       if (operation === "get") {
         const input = taskSchemas.get.parse(raw);
-        const text = input.task.startsWith("T-") ? readFileSync71(project(input.task).file, "utf8") : (() => {
+        const text = input.task.startsWith("T-") ? (() => {
+          const file = project(input.task).file;
+          const body = readFileSync71(file, "utf8");
+          if (!ctx.checkoutRoot)
+            return body;
+          const head = runGit(ctx.checkoutRoot, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
+          if (!head.ok && head.code === 1)
+            return `${body.trimEnd()}
+
+History: not committed yet.`;
+          const log = runGit(ctx.checkoutRoot, [
+            "log",
+            "--follow",
+            "--date=iso-strict",
+            "--format=%ad %an %h %s",
+            "--",
+            relative8(ctx.checkoutRoot, file)
+          ], env);
+          const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
+${log.out.split(`
+`).reverse().join(`
+`)}` : "History: not committed yet.";
+          return `${body.trimEnd()}
+
+${history}`;
+        })() : (() => {
           const task = work(input.task);
-          return `${label(task)} [${task.status.replaceAll("_", " ")}]
+          const notes = notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
+`);
+          return [
+            `${label(task)} [${task.status.replaceAll("_", " ")}]`,
+            task.description,
+            notes,
+            historyText(eventsOf(store, task), { full: input.history })
+          ].filter((part) => part !== "").join(`
 
-${task.description}
-
-${notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
-`)}`;
+`);
         })();
         return { ok: true, text: page(text, input.offset) };
       }
@@ -46322,7 +46530,7 @@ ${notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).j
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
           rmSync18(task.file);
         } else {
-          const result = deleteTask(store, work(input.task).id);
+          const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok)
             throw new Error(`${result.why}; drop it instead`);
         }
@@ -46389,6 +46597,7 @@ var init_ops = __esm(() => {
   init_context();
   init_files();
   init_db();
+  init_history2();
   init_identity();
   init_store();
 });
@@ -46522,7 +46731,7 @@ function importClaudeMem(options) {
           list: name,
           parent: null
         };
-        const parent = options.dryRun ? null : insertTask(options.workDb, { project: options.project, ...task }, importer, options.now);
+        const parent = options.dryRun ? null : insertTask(options.workDb, { project: options.project, ...task }, importer, options.now, IMPORTED);
         imported.push(task);
         for (const [subject, fields] of list.items) {
           if (fields.status === "done" || fields.status === "dropped")
@@ -46541,7 +46750,7 @@ function importClaudeMem(options) {
               ...item,
               parentId: parent?.id ?? null
             };
-            insertTask(options.workDb, input, importer, options.now);
+            insertTask(options.workDb, input, importer, options.now, IMPORTED);
           }
         }
         if (!options.dryRun)
@@ -46556,7 +46765,7 @@ function importClaudeMem(options) {
     source?.close();
   }
 }
-var importer;
+var importer, IMPORTED = "imported from claude-mem's work state";
 var init_import_claude_mem = __esm(() => {
   init_db();
   init_store();
@@ -46761,7 +46970,11 @@ async function runTaskCommand(argv) {
         break;
       case "show":
         operation = "get";
-        input = { task, offset: get("offset") === undefined ? 0 : Number(get("offset")) };
+        input = {
+          task,
+          offset: get("offset") === undefined ? 0 : Number(get("offset")),
+          history: has("history")
+        };
         break;
       case "search":
         operation = "search";
@@ -46840,7 +47053,7 @@ note <ref> [<text> | --file <path|->]
 list [--scope mine|plan|project|all] [--json]
 list --branch [--base <branch>]
 list --branches
-show <ref> [--offset <n>]
+show <ref> [--offset <n>] [--history]
 search <text> [--all]
 check [--json]
 release [--json]
@@ -46876,7 +47089,7 @@ Work tasks stay on this machine. Project task files travel with your branch: com
       min: 0,
       max: 0
     },
-    show: { values: ["--offset"], min: 1, max: 1 },
+    show: { values: ["--offset"], flags: ["--history"], min: 1, max: 1 },
     search: { flags: ["--all"], min: 1 },
     check: { flags: ["--json"], min: 0, max: 0 },
     release: { flags: ["--json"], min: 0, max: 0 },
@@ -63568,7 +63781,7 @@ var GIT_FIX = `check that git works in this folder (git status), then run: ${COM
 function message(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function shown(file, projectDir, home) {
+function shown2(file, projectDir, home) {
   return file.startsWith(`${projectDir}/`) ? file.slice(projectDir.length + 1) : tildify(file, home);
 }
 var OLD_NAME = "anymodel";
@@ -63583,7 +63796,7 @@ function oldNameLines(projectDir, sources, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: ${shown(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
+      text: `project: ${shown2(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
     });
   }
   const addons = join97(projectDir, ".claude", OLD_NAME);
@@ -63591,7 +63804,7 @@ function oldNameLines(projectDir, sources, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: ${shown(addons, projectDir, home)}/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder`
+      text: `project: ${shown2(addons, projectDir, home)}/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder`
     });
   }
   for (const file of sources) {
@@ -63601,7 +63814,7 @@ function oldNameLines(projectDir, sources, home) {
       lines.push({
         ok: true,
         warn: true,
-        text: `project: the hook ${handler.command} (${shown(handler.file, projectDir, home)}) still runs the plugin's old "${OLD_NAME}" launcher: change it to ${renamedCommand(handler.command)}`
+        text: `project: the hook ${handler.command} (${shown2(handler.file, projectDir, home)}) still runs the plugin's old "${OLD_NAME}" launcher: change it to ${renamedCommand(handler.command)}`
       });
     }
   }
@@ -63618,7 +63831,7 @@ function engineLines(sources, projectDir, home) {
     const hooks = names.map((name) => `${COMMAND} hook ${name}`).join(", ");
     lines.push({
       ok: false,
-      text: `project: ${shown(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
+      text: `project: ${shown2(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
       fix: `${COMMAND} project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`
     });
   }
@@ -63754,7 +63967,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. ${advice}`
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown2(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. ${advice}`
     });
   }
   return lines;
@@ -63775,7 +63988,7 @@ function requiresLines(configFile, projectDir, home) {
     {
       ok: true,
       warn: true,
-      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      text: `project: ${shown2(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
       fix: `${COMMAND} project init (or any ${COMMAND} workflow set \u2026 --project) raises it to "${needed.floor}"`
     }
   ];
@@ -63791,7 +64004,7 @@ function jobKindLines(config, configFile, projectDir, home) {
     {
       ok: true,
       info: true,
-      text: `project: ${shown(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
+      text: `project: ${shown2(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
       fix: `remove them from jobs.kinds; how many heavy jobs run at once is your own setting: ${COMMAND} job set max-jobs <n>`
     }
   ];
@@ -63806,7 +64019,7 @@ function crewLimitLines(config, configFile, projectDir, home) {
     {
       ok: true,
       info: true,
-      text: `project: ${shown(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
+      text: `project: ${shown2(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
       fix: `remove each one with ${COMMAND} workflow unset --project <key>; set your own with ${COMMAND} workflow set crew.max <n>`
     }
   ];
@@ -67360,7 +67573,7 @@ var WARP_TERMINAL_NAME = "warpterminal";
 function isJsonObject22(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function shown2(text, fallback) {
+function shown3(text, fallback) {
   const line = oneLine(text, MAX_TEXT - 1, { mark: "\u2026" });
   return line === "" ? fallback : line;
 }
@@ -67507,7 +67720,7 @@ function askAlert(input, ctx) {
   const first = questions.find((question) => isJsonObject22(question) && question !== null);
   const asked = (isJsonObject22(first) && typeof first.question === "string" ? first.question : null) ?? (typeof toolInput.question === "string" ? toolInput.question : null) ?? "";
   return {
-    body: shown2(asked, "Claude has a question for you"),
+    body: shown3(asked, "Claude has a question for you"),
     critical: true,
     moment: "question",
     sound: "service-login",
@@ -67526,7 +67739,7 @@ function alertFor(input, event, ctx) {
       writeFailed(ctx.failed, key);
       const text = typeof input.last_assistant_message === "string" ? input.last_assistant_message : typeof input.message === "string" ? input.message : "";
       return {
-        body: shown2(text, "The turn ended with an error"),
+        body: shown3(text, "The turn ended with an error"),
         critical: true,
         moment: "failed",
         sound: "dialog-warning",
@@ -67545,7 +67758,7 @@ function alertFor(input, event, ctx) {
         return null;
       const answer = ctx.transcript === null ? null : waitThenLastAnswer(ctx.transcript);
       return {
-        body: shown2(answer ?? "", "Claude finished its turn."),
+        body: shown3(answer ?? "", "Claude finished its turn."),
         critical: false,
         moment: "finished",
         sound: "service-logout",
@@ -67570,7 +67783,7 @@ function alertFor(input, event, ctx) {
       if (type === "agent_completed") {
         const failed = message.endsWith(" failed");
         return {
-          body: shown2(message, failed ? AGENT_FAILED_BODY : AGENT_FINISHED_BODY),
+          body: shown3(message, failed ? AGENT_FAILED_BODY : AGENT_FINISHED_BODY),
           critical: failed,
           moment: failed ? "failed" : "finished",
           sound: failed ? "dialog-warning" : "service-logout",
@@ -67578,7 +67791,7 @@ function alertFor(input, event, ctx) {
         };
       }
       return {
-        body: shown2(message, TYPE_BODY[type] ?? "Claude needs you."),
+        body: shown3(message, TYPE_BODY[type] ?? "Claude needs you."),
         critical: true,
         moment: "needs-you",
         sound: "service-login",

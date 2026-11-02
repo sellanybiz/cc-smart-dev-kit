@@ -31,7 +31,7 @@ note <ref> [<text> | --file <path|->]
 list [--scope mine|plan|project|all] [--json]
 list --branch [--base <branch>]
 list --branches
-show <ref> [--offset <n>]
+show <ref> [--offset <n>] [--history]
 search <text> [--all]
 check [--json]
 release [--json]
@@ -70,7 +70,7 @@ const definitions: Record<
     min: 0,
     max: 0,
   },
-  show: { values: ["--offset"], min: 1, max: 1 },
+  show: { values: ["--offset"], flags: ["--history"], min: 1, max: 1 },
   search: { flags: ["--all"], min: 1 },
   check: { flags: ["--json"], min: 0, max: 0 },
   release: { flags: ["--json"], min: 0, max: 0 },
@@ -147,7 +147,11 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         break;
       case "show":
         operation = "get";
-        input = { task, offset: get("offset") === undefined ? 0 : Number(get("offset")) };
+        input = {
+          task,
+          offset: get("offset") === undefined ? 0 : Number(get("offset")),
+          history: has("history"),
+        };
         break;
       case "search":
         operation = "search";

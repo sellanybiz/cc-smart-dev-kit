@@ -53,8 +53,8 @@ test("all mutation limits, foreign projects, dependency removal and transaction 
   ok(updateTask(db, child.id, { waitsFor: { remove: [root.id] } }, who, 7));
   expect(getTask(db, "p", child.id)?.waitsFor).toEqual([]);
   expect(updateTask(db, child.id, { description: "x".repeat(200001) }, who, 8).ok).toBe(false);
-  expect(deleteTask(db, root.id).ok).toBe(false);
-  ok(deleteTask(db, child.id));
+  expect(deleteTask(db, root.id, who, 9).ok).toBe(false);
+  ok(deleteTask(db, child.id, who, 9));
   expect(getTask(db, "p", child.id)).toBeNull();
   ok(updateTask(db, root.id, { status: "done" }, who, 10));
   expect(getTask(db, "p", root.id)?.closedAt).toBe(10);

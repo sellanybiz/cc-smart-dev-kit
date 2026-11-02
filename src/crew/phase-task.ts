@@ -78,6 +78,7 @@ export function writePhaseTask(record: CrewRecord, ctx: CrewContext): void {
         description: record.briefSource?.path ?? "",
         crewId: record.id,
         waitsForPhases: record.waitsFor.filter((phase) => phases.has(phase)),
+        reason: `crew session ${record.name} took the phase`,
       },
       who,
       ctx.now(),

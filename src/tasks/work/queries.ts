@@ -1,5 +1,15 @@
 import type { WorkDb } from "./db";
-import type { Who, WorkClaim, WorkKind, WorkNote, WorkStatus, WorkTask, WorkTree } from "./types";
+import type {
+  Who,
+  WorkClaim,
+  WorkEvent,
+  WorkEventAction,
+  WorkKind,
+  WorkNote,
+  WorkStatus,
+  WorkTask,
+  WorkTree,
+} from "./types";
 
 interface TaskRow {
   id: string;
@@ -172,6 +182,38 @@ export function notesOf(db: WorkDb, task: string | WorkTask): WorkNote[] {
       "SELECT id, task_id AS taskId,text,session_id AS sessionId,crew_id AS crewId,at FROM task_notes WHERE task_id=? ORDER BY id",
     )
     .all(typeof task === "string" ? task : task.id);
+}
+interface EventRow {
+  id: number;
+  task_id: string;
+  number: number;
+  at: number;
+  action: WorkEventAction;
+  changes: string;
+  session_id: string | null;
+  session_name: string | null;
+  crew_id: string | null;
+  pid: number | null;
+  reason: string | null;
+}
+/** A task's history, oldest first: what each change did, when, and who made it. */
+export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
+  return db.sqlite
+    .query<EventRow, [string]>("SELECT * FROM task_events WHERE task_id=? ORDER BY id")
+    .all(typeof task === "string" ? task : task.id)
+    .map((row) => ({
+      id: row.id,
+      taskId: row.task_id,
+      number: row.number,
+      at: row.at,
+      action: row.action,
+      changes: JSON.parse(row.changes) as WorkEvent["changes"],
+      sessionId: row.session_id,
+      sessionName: row.session_name,
+      crewId: row.crew_id,
+      pid: row.pid,
+      reason: row.reason,
+    }));
 }
 export function claimState(
   task: WorkTask,

@@ -21692,7 +21692,11 @@ var taskSchemas = {
     scope: _enum(["mine", "plan", "project", "all"]).default("mine"),
     open_only: boolean2().default(true)
   }).strict(),
-  get: object({ task: ref, offset: number2().int().nonnegative().default(0) }).strict(),
+  get: object({
+    task: ref,
+    offset: number2().int().nonnegative().default(0),
+    history: boolean2().default(false).describe("Also print every earlier description in full, under its history line.")
+  }).strict(),
   search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
   delete: object({ task: ref }).strict()
 };
@@ -22881,6 +22885,10 @@ CREATE INDEX task_crew ON tasks(project,crew_id);
 CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
 CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
 CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
+ at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
+ changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
+CREATE INDEX task_event_task ON task_events(task_id,id);
 `;
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
@@ -23348,6 +23356,21 @@ function searchTasks(db, project, text) {
 function notesOf(db, task) {
   return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,crew_id AS crewId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
 }
+function eventsOf(db, task) {
+  return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    number: row.number,
+    at: row.at,
+    action: row.action,
+    changes: JSON.parse(row.changes),
+    sessionId: row.session_id,
+    sessionName: row.session_name,
+    crewId: row.crew_id,
+    pid: row.pid,
+    reason: row.reason
+  }));
+}
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
     return "free";
@@ -23355,6 +23378,40 @@ function claimState(task, isLive, who) {
 }
 
 // src/tasks/work/store.ts
+var NOTE_PREVIEW = 120;
+function shape(db, task) {
+  const numberOf = (id) => `#${taskById(db, id).number}`;
+  return {
+    subject: task.subject,
+    description: task.description,
+    status: task.status,
+    parent: task.parentId === null ? null : numberOf(task.parentId),
+    crew: task.crewId,
+    claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
+    waitsFor: task.waitsFor.map(numberOf).sort()
+  };
+}
+function diff(before, after) {
+  const changes = {};
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (!Bun.deepEquals(before[key], after[key]))
+      changes[key] = [before[key] ?? null, after[key] ?? null];
+  }
+  return changes;
+}
+function empty(value) {
+  return value === null || value === "" || Array.isArray(value) && value.length === 0;
+}
+function recordEvent(db, task, action, changes, who, now, reason) {
+  db.sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,crew_id,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(task.id, task.project, task.number, now, action, JSON.stringify(changes), who.sessionId, who.name ?? null, who.crewId, who.pid, reason);
+}
+function recordChange(db, before, task, who, now, reason) {
+  const changes = diff(before, shape(db, task));
+  if (Object.keys(changes).length === 0)
+    return;
+  const closed = changes.status !== undefined && (task.status === "done" || task.status === "dropped");
+  recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
+}
 function subjectOf(subject) {
   const text = subject.trim();
   if (!text || text.length > SUBJECT_LIMIT)
@@ -23386,7 +23443,7 @@ function doneValid(db, id) {
   if (open.length)
     throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
 }
-function insertTask(db, input, who, now) {
+function insertTask(db, input, who, now, reason = null) {
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   parentValid(db, input.project, null, input.parentId ?? null);
@@ -23395,7 +23452,19 @@ function insertTask(db, input, who, now) {
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, input.plan ?? null, input.phase ?? null, input.crewId ?? who.crewId, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null);
-  return taskById(db, id);
+  const task = taskById(db, id);
+  const initial = {
+    kind: task.kind,
+    plan: task.plan,
+    phase: task.phase,
+    ...shape(db, task)
+  };
+  const changes = {};
+  for (const [key, value] of Object.entries(initial))
+    if (!empty(value))
+      changes[key] = [null, value];
+  recordEvent(db, task, "created", changes, who, now, reason);
+  return task;
 }
 function dependencies(db, task, change) {
   for (const ref of change.remove ?? [])
@@ -23423,6 +23492,7 @@ function dependencies(db, task, change) {
 function updateTask(db, id, change, who, now) {
   return writeWork(db, () => {
     const task = taskById(db, id);
+    const before = shape(db, task);
     const status = change.status ?? task.status;
     if (status === "done")
       doneValid(db, id);
@@ -23433,15 +23503,19 @@ function updateTask(db, id, change, who, now) {
     const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
     const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
     db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, id);
-    return taskById(db, id);
+    const changed = taskById(db, id);
+    recordChange(db, before, changed, who, now, null);
+    return changed;
   });
 }
-function insertNote(db, id, text, who, now) {
-  taskById(db, id);
+function insertNote(db, id, text, who, now, reason = null) {
+  const task = taskById(db, id);
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1\u2013${NOTE_LIMIT} characters`);
   const row = db.sqlite.query("INSERT INTO task_notes(task_id,text,session_id,crew_id,at) VALUES (?,?,?,?,?) RETURNING id").get(id, text, who.sessionId, who.crewId, now);
   db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}\u2026` : text;
+  recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
   return {
     id: row?.id ?? 0,
     taskId: id,
@@ -23451,14 +23525,19 @@ function insertNote(db, id, text, who, now) {
     at: now
   };
 }
-function deleteTask(db, id) {
+function deleteTask(db, id, who, now) {
   return writeWork(db, () => {
-    taskById(db, id);
+    const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has subtasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    const last = {};
+    for (const [key, value] of Object.entries(shape(db, task)))
+      if (!empty(value))
+        last[key] = [value, null];
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
+    recordEvent(db, task, "deleted", last, who, now, null);
     return true;
   });
 }
@@ -23875,6 +23954,93 @@ var issueFeedFields = object({
   version: literal(1)
 });
 
+// src/tasks/work/history.ts
+var FIELDS = [
+  ["kind", "kind"],
+  ["plan", "plan"],
+  ["phase", "phase"],
+  ["subject", "subject"],
+  ["status", "status"],
+  ["parent", "parent"],
+  ["crew", "crew"],
+  ["claim", "claimed by"],
+  ["waitsFor", "waits for"],
+  ["description", "description"],
+  ["note", "note"]
+];
+function actor2(event) {
+  const parts = [];
+  if (event.sessionId !== null) {
+    const name = event.sessionName ? `"${event.sessionName}" ` : "";
+    parts.push(`session ${name}${event.sessionId}`);
+  }
+  if (event.crewId !== null)
+    parts.push(`crew ${event.crewId}`);
+  if (event.pid !== null)
+    parts.push(`process ${event.pid}`);
+  if (event.reason !== null)
+    parts.push(`the kit (${event.reason})`);
+  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
+}
+function shown(key, value) {
+  if (value === null || value === undefined || value === "")
+    return "none";
+  if (Array.isArray(value))
+    return value.length > 0 ? value.join(", ") : "none";
+  if (key === "subject" || key === "note")
+    return JSON.stringify(value);
+  return String(value);
+}
+function descriptionText(event, before, after) {
+  const length = (value) => typeof value === "string" ? value.length : 0;
+  if (event.action === "created")
+    return `description ${length(after)} characters`;
+  if (event.action === "deleted")
+    return `description ${length(before)} characters`;
+  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
+}
+function fieldText(event, key, label) {
+  const change = event.changes[key];
+  if (change === undefined)
+    return null;
+  const [before, after] = change;
+  if (key === "description")
+    return descriptionText(event, before, after);
+  if (event.action === "created" || event.action === "noted")
+    return `${label} ${shown(key, after)}`;
+  if (event.action === "deleted")
+    return `${label} ${shown(key, before)}`;
+  return `${label} ${shown(key, before)} \u2192 ${shown(key, after)}`;
+}
+function historyLine(event) {
+  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
+  return `${new Date(event.at).toISOString()} by ${actor2(event)} \xB7 ${what} ${fields.join("; ")}`;
+}
+function historyText(events, options) {
+  if (events.length === 0)
+    return "History: none recorded.";
+  const lines = ["History (oldest first):"];
+  for (const event of events) {
+    lines.push(historyLine(event));
+    const description = event.changes.description;
+    if (!options.full || description === undefined)
+      continue;
+    const [before, after] = description;
+    if (event.action !== "created" && typeof before === "string")
+      lines.push("  description before:", indent(before));
+    if (event.action !== "deleted" && typeof after === "string")
+      lines.push("  description after:", indent(after));
+  }
+  return lines.join(`
+`);
+}
+function indent(text) {
+  return text === "" ? "    (empty)" : text.split(`
+`).map((line) => `    ${line}`).join(`
+`);
+}
+
 // src/tasks/ops.ts
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
@@ -24043,14 +24209,43 @@ function createTaskOps(options = {}) {
       }
       if (operation === "get") {
         const input = taskSchemas.get.parse(raw);
-        const text = input.task.startsWith("T-") ? readFileSync9(project(input.task).file, "utf8") : (() => {
+        const text = input.task.startsWith("T-") ? (() => {
+          const file = project(input.task).file;
+          const body = readFileSync9(file, "utf8");
+          if (!ctx.checkoutRoot)
+            return body;
+          const head = runGit(ctx.checkoutRoot, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
+          if (!head.ok && head.code === 1)
+            return `${body.trimEnd()}
+
+History: not committed yet.`;
+          const log = runGit(ctx.checkoutRoot, [
+            "log",
+            "--follow",
+            "--date=iso-strict",
+            "--format=%ad %an %h %s",
+            "--",
+            relative2(ctx.checkoutRoot, file)
+          ], env);
+          const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
+${log.out.split(`
+`).reverse().join(`
+`)}` : "History: not committed yet.";
+          return `${body.trimEnd()}
+
+${history}`;
+        })() : (() => {
           const task = work(input.task);
-          return `${label(task)} [${task.status.replaceAll("_", " ")}]
+          const notes = notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
+`);
+          return [
+            `${label(task)} [${task.status.replaceAll("_", " ")}]`,
+            task.description,
+            notes,
+            historyText(eventsOf(store, task), { full: input.history })
+          ].filter((part) => part !== "").join(`
 
-${task.description}
-
-${notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
-`)}`;
+`);
         })();
         return { ok: true, text: page(text, input.offset) };
       }
@@ -24070,7 +24265,7 @@ ${notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).j
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
           rmSync3(task.file);
         } else {
-          const result = deleteTask(store, work(input.task).id);
+          const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok)
             throw new Error(`${result.why}; drop it instead`);
         }
@@ -24154,7 +24349,7 @@ var descriptions = {
   done: "Finish or drop a task. Open subtasks must be finished or dropped first.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
-  get: "Read a task and its notes. Use offset to read the next part.",
+  get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work and project tasks.",
   delete: "Delete a mistaken task with no notes or subtasks, or an untracked project task file."
 };

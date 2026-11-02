@@ -53,7 +53,7 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   value(addNote(db, child.id, "literal %_", who, 14));
   expect(searchTasks(db, "p", "%_").map((t) => t.id)).toEqual([child.id]);
   expect(searchTasks(db, "p", "no_match")).toEqual([]);
-  expect(deleteTask(db, child.id).ok).toBe(false);
+  expect(deleteTask(db, child.id, who, 15).ok).toBe(false);
   value(systemClose(db, root.id, "done", "merged", who, 20));
   expect(getTask(db, "p", "2")?.status).toBe("dropped");
   expect(notesOf(db, child.id)[1]?.text).toBe("Automatically dropped: merged");

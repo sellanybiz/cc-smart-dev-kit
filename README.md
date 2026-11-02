@@ -398,7 +398,7 @@ Every command below starts with `cc-smart-dev-kit`.
 | `task list [--scope mine\|plan\|project\|all] [--json]` | List tasks in the selected scope. |
 | `task list --branch [--base <branch>]` | Project task changes for the pull request body. |
 | `task list --branches` | Open project tasks on local unmerged branches. |
-| `task show <ref> [--offset <n>]` | Read a task, with capped output and an offset for more. |
+| `task show <ref> [--offset <n>] [--history]` | Read a task with its notes and its history: each change with its time, the values before and after, and the session (name and id), crew and process that made it, or the kit's reason (a merge, a removal, an import). A project task's history is its file's git log. `--history` also prints every earlier description in full. Output is capped; `--offset` reads more. |
 | `task search <text> [--all]` | Search tasks; include closed work with `--all`. |
 | `task check [--json]` | Find stale tasks, missed releases, broken refs or files, duplicate titles and new legacy notes. Exit 1 on findings. |
 | `task release [--json]` | List release obligations by weight, including missed ones. |

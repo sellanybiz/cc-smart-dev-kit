@@ -33,6 +33,11 @@ What changed:
   `task_list`, `task_get`, `task_search`, `task_delete`. It loads with every session and every
   crew session, with no ToolSearch. A task belongs to the Claude process, so `/clear` and a
   background fork keep their tasks.
+- **Every task keeps its history.** Each change is recorded with its time, the values before
+  and after, and who made it: the session's name and id, its crew and process, or the kit's
+  own reason (a merge, a removal, an import). `task_get` and `task show` print it as a
+  timeline; `--history` adds every earlier description in full. A deleted task keeps its
+  history. A project task's history is its file's git log.
 - **`cc-smart-dev-kit task`** runs the same operations from a terminal, plus `check` (stale,
   missed-release, broken and duplicate task files), `release` (what a release must do, by
   weight), `list --branch` and `--branches` (task files on a branch, for a pull request's
