@@ -4,20 +4,20 @@ import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { liveSessions, parseSessionRecord } from "./sessions";
 
-test("a running session without a start identity is unknown, not absent", () => {
+test("a running session without a start identity stays live", () => {
   const config = tempDir("session-identity");
   mkdirSync(join(config, "sessions"));
   writeFileSync(
     join(config, "sessions", "300.json"),
     JSON.stringify({ pid: 300, sessionId: "legacy-lead", cwd: "/home/user/my-app" }),
   );
-  expect(() =>
+  expect(
     liveSessions(config, {
       platform: "linux",
       running: () => true,
       readStat: () => "300 (session name) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 11 0",
     }),
-  ).toThrow("start identity");
+  ).toEqual([{ pid: 300, sessionId: "legacy-lead", cwd: "/home/user/my-app", name: "legacy-l" }]);
 });
 
 test("a reused pid with another procStart is not a live lead", () => {
@@ -44,4 +44,28 @@ test("a reused pid with another procStart is not a live lead", () => {
       readStat: () => "300 (session name) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 10 0",
     }),
   ).toHaveLength(1);
+});
+
+test.each([
+  null,
+  "300 (session) S",
+  "300 (session) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 invalid 0",
+])("a running session stays live when its stat start cannot be read or parsed: %s", (stat) => {
+  const config = tempDir("session-stat");
+  mkdirSync(join(config, "sessions"));
+  writeFileSync(
+    join(config, "sessions", "300.json"),
+    JSON.stringify({
+      pid: 300,
+      sessionId: "unproved-session",
+      cwd: "/project",
+      name: "lead",
+      procStart: "10",
+    }),
+  );
+  expect(
+    liveSessions(config, { platform: "linux", running: () => true, readStat: () => stat }),
+  ).toEqual([
+    { pid: 300, sessionId: "unproved-session", cwd: "/project", name: "lead", procStart: "10" },
+  ]);
 });

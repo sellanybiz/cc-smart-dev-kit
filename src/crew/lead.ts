@@ -123,9 +123,21 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
     sessionSnapshot(ctx);
     running = (lead) => leadRunning(lead, agentRows(ctx), sessionSnapshot(ctx), ctx);
     if (args.plan === null && before === null) {
-      matched = others.find(
-        (one) => (one.cwd === checkout.root || one.name === session.name) && !running(one),
-      );
+      const named = others.filter((one) => one.name === session.name && !running(one));
+      const candidates =
+        named.length > 0
+          ? named
+          : others.filter((one) => one.cwd === checkout.root && !running(one));
+      if (new Set(candidates.map((one) => one.plan)).size > 1) {
+        ctx.error("crew lead: several plans match this session; nothing was adopted");
+        for (const one of candidates)
+          ctx.error(
+            `${one.name} (${one.sessionId.slice(0, 8)}): plan ${one.plan}, created ${one.createdAt}`,
+          );
+        ctx.error("Fix: run crew lead --plan <plan>");
+        return 1;
+      }
+      matched = candidates[0];
     }
   } catch (error) {
     return refuse(

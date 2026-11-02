@@ -8,8 +8,9 @@
  * the same line
  * the watch prints (`eventLine`, one home), plus how many more there were.
  *
- * - **Only a registered lead** (`readLead` by the input's `session_id`) hears anything: any other
- *   session, and a folder outside git, is silence.
+ * - **A registered lead** (`readLead` by the input's `session_id`) hears its notes. An unregistered
+ *   continuation hears only an adoption hint when a matching absent lead still has crew.
+ *   A crew session, an unrelated ordinary session, and a folder outside git hear nothing.
  * - **Its name comes back with the first note** (LD1): a registered lead's `LEAD <tag> <plan>`
  *   goes out as `sessionTitle` in the same `UserPromptSubmit` answer, with no setting, so the
  *   person never types `/rename` (`crew lead` records it as data). The rule is `session-name.ts`'s
@@ -48,6 +49,7 @@
 
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { crewIdOf } from "../crew/session";
 import { LEAD_SKILL } from "../crew/skills";
 import {
   eventsEndOffset,
@@ -218,17 +220,17 @@ export function leadNotesAnswer(
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null) {
-    if (event !== "UserPromptSubmit") return SILENT;
+    if (event !== "UserPromptSubmit" || crewIdOf(env) !== null) return SILENT;
     const leads = listLeads(paths.stateDir, repo).records.filter((one) => one.endedAt == null);
     if (leads.length === 0) return SILENT;
     let sessions: readonly SessionRecord[];
     try {
       sessions = deps.sessions?.() ?? liveSessions(paths.claudeConfigDir);
     } catch {
-      return addContext(
-        event,
-        "The session records cannot be read; retry crew lead before starting more crew.",
-      );
+      return {
+        ...SILENT,
+        stderr: `${COMMAND} lead-notes: the session records cannot be read`,
+      };
     }
     const sessionName = sessions.find((one) => one.sessionId === sessionId)?.name;
     const candidates = leads.filter(

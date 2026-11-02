@@ -117,6 +117,37 @@ async function askedWorld(
 }
 
 describe("crew answer", () => {
+  test("C1: a note resume clears its wait and records the lead resume", async () => {
+    const world = await askedWorld("stopped");
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      {
+        resumeWaits: { at: "2026-10-21T09:00:00.000Z", answer: null },
+      },
+      T0,
+    );
+    expect(await runCrew(["note", NAME, "use the new contract"], world.ctx())).toBe(0);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.resumeWaits).toBeUndefined();
+    expect(record?.state).toBe("blocked");
+    expect(record?.notes?.[0]?.deliveredAt).toBe("2026-10-21T10:00:00.000Z");
+    expect(
+      readCrewEvents(world.paths.stateDir, world.repo).events.some(
+        (event) => event.text === "resumed by the lead",
+      ),
+    ).toBe(true);
+  });
+
+  test("C2: note's missing-session usage names crew note", async () => {
+    const world = crewWorld();
+    expect(await runCrew(["note"], world.ctx())).toBe(2);
+    expect(world.err).toEqual([
+      `Say which crew session: crew note <crew session> "<text>"\nSee: ${COMMAND} crew --help`,
+    ]);
+  });
+
   test("a different lead cannot add a note to this crew", async () => {
     const world = await askedWorld();
     await updateCrew(

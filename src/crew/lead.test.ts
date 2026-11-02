@@ -8,7 +8,7 @@ import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
 import { runCrewLead } from "./lead";
 import { CREW_STEPS } from "./step";
-import { listLeads, readLead } from "./store";
+import { listLeads, readLead, writeLead } from "./store";
 
 /** What `crew lead` says first when it finds no plan file for the plan (PL1). */
 const NO_PLAN_FILE =
@@ -51,6 +51,74 @@ describe("D26: crew lead", () => {
       "new-lead-session",
     );
     expect(world.out.some((line) => line.startsWith("adopted lead "))).toBe(true);
+  });
+  test("a bare fork prefers its same-name predecessor over an older cwd match", async () => {
+    const world = crewWorld();
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        repo: world.repo,
+        sessionId: "older-plan-a",
+        name: "LEAD app plan-a",
+        plan: "plan-a",
+        tag: "app",
+      },
+      Date.parse("2026-10-20T10:00:00.000Z"),
+    );
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        repo: world.repo,
+        sessionId: "previous-plan-b",
+        name: "lead",
+        plan: "plan-b",
+        tag: "app",
+      },
+      Date.parse("2026-10-21T10:00:00.000Z"),
+    );
+    expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.plan).toBe("plan-b");
+    expect(readLead(world.paths.stateDir, world.repo, "previous-plan-b")?.adoptedBy).toBe(
+      LEAD_SESSION,
+    );
+    expect(readLead(world.paths.stateDir, world.repo, "older-plan-a")?.adoptedBy).toBeUndefined();
+  });
+  test.each(["cwd", "name"])("a bare fork refuses different plans matched by %s", async (match) => {
+    const world = crewWorld();
+    for (const [sessionId, plan, at] of [
+      ["older-plan-a", "plan-a", "2026-10-20T10:00:00.000Z"],
+      ["previous-plan-b", "plan-b", "2026-10-21T10:00:00.000Z"],
+    ] as const) {
+      await writeLead(
+        world.paths.stateDir,
+        {
+          cwd: world.repo,
+          repo: world.repo,
+          sessionId,
+          name: match === "name" ? "lead" : `LEAD app ${plan}`,
+          plan,
+          tag: "app",
+        },
+        Date.parse(at),
+      );
+    }
+    expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(1);
+    const error = world.err.join("\n");
+    expect(error).toContain(match === "name" ? "lead" : "LEAD app plan-a");
+    expect(error).toContain("older-pl");
+    expect(error).toContain("previous");
+    expect(error).toContain("plan-a");
+    expect(error).toContain("plan-b");
+    expect(error).toContain("2026-10-20T10:00:00.000Z");
+    expect(error).toContain("2026-10-21T10:00:00.000Z");
+    expect(error).toContain("crew lead --plan <plan>");
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)).toBeNull();
+    expect(readLead(world.paths.stateDir, world.repo, "older-plan-a")?.adoptedBy).toBeUndefined();
+    expect(
+      readLead(world.paths.stateDir, world.repo, "previous-plan-b")?.adoptedBy,
+    ).toBeUndefined();
   });
   test("an explicitly ended lead is recorded; recording the plan again reopens it", async () => {
     const world = crewWorld();

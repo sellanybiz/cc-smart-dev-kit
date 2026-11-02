@@ -171,6 +171,7 @@ function maskedLine(text, known, max, options = {}) {
 
 // src/project/config.ts
 import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { posix, win32 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -6633,6 +6634,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
+    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -7523,14 +7525,11 @@ function liveSessions(claudeConfigDir, facts = {}) {
     if (record === null) {
       throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
     }
-    if ((facts.platform ?? process.platform) === "linux") {
+    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
       const stat = (facts.readStat ?? readProcStat)(pid);
-      if (stat === null)
-        throw new Error(`the start time of session ${pid} cannot be read; retry`);
-      const start = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
-      if (record.procStart === undefined || start === undefined)
-        throw new Error(`the start identity of running session ${pid} cannot be read; retry`);
-      if (record.procStart !== start)
+      const end = stat?.lastIndexOf(")") ?? -1;
+      const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+      if (start !== undefined && /^\d+$/.test(start) && record.procStart !== start)
         continue;
     }
     live.push(record);
@@ -10543,6 +10542,7 @@ var leadFields = object({
   planFile: text2.nullable().optional(),
   earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
   adoptedBy: text2.optional(),
+  adoptedAt: text2.optional(),
   generation: count.optional(),
   endedAt: text2.nullable().optional(),
   sessionUnknownSince: text2.nullable().optional(),
@@ -10883,6 +10883,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),
@@ -16634,6 +16635,10 @@ async function startCard(input, id, repo, paths, options) {
   if (!found.ok)
     return found.result;
   const record = found.record;
+  const sessionId = stringField(input.session_id);
+  if (sessionId !== null && sessionId !== record.sessionId && record.earlierSessions?.some((one) => one.sessionId === sessionId)) {
+    return addContext("SessionStart", `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing \u2014 change no file, run no command \u2014 and end your turn now.`);
+  }
   const nowMs = options.nowMs ?? Date.now();
   const cwd = stringField(input.cwd);
   if (cwd !== null && !isInside(realPath(cwd), realPath(record.worktree))) {
@@ -17131,7 +17136,7 @@ function requestsIssueWrite(command, dialect) {
 import { existsSync as existsSync17 } from "fs";
 
 // src/cli/git-bash.ts
-import { win32 } from "path";
+import { win32 as win322 } from "path";
 var GIT_BASH_VAR = "CLAUDE_CODE_GIT_BASH_PATH";
 var ACCEPTED_NAMES = ["bash.exe", "sh.exe", "bash", "sh"];
 var GIT_BASH_INSTALLS = [
@@ -17156,7 +17161,7 @@ function findGitBash(env, facts) {
   }
   const git = facts.which("git");
   if (git !== null) {
-    const beside = win32.join(win32.dirname(git), "..", "bin", "bash.exe");
+    const beside = win322.join(win322.dirname(git), "..", "bin", "bash.exe");
     if (facts.exists(beside))
       return { ignoredVariable, path: beside };
   }
@@ -19299,7 +19304,19 @@ function sameAsMain(worktree, mainCheckout, path) {
   };
   return same(path.replace(/\/$/, ""));
 }
-function safeIgnoredEntry(worktree, mainCheckout, entry) {
+function projectRebuildable(mainCheckout) {
+  if (mainCheckout === null)
+    return [];
+  try {
+    const patterns = loadCcSmartDevKitConfig(join31(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
+    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
+  } catch {
+    return [];
+  }
+}
+function safeEntry(worktree, mainCheckout, entry, patterns) {
+  if (patterns.some((pattern) => pattern.match(entry)))
+    return true;
   if (REBUILDABLE.some((pattern) => pattern.test(entry))) {
     if (!entry.endsWith("/cli-latest"))
       return true;
@@ -19323,7 +19340,8 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  const safe = (entry) => safeIgnoredEntry(worktree, mainCheckout, entry);
+  const patterns = projectRebuildable(mainCheckout);
+  const safe = (entry) => safeEntry(worktree, mainCheckout, entry, patterns);
   const onlySafeInside = (entry) => {
     if (!entry.endsWith("/"))
       return false;
@@ -19672,7 +19690,7 @@ function reportDetail(record) {
   }
   return null;
 }
-function eventLine(event, record, waits, reviewed) {
+function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
   const name = event.name;
   switch (event.type) {
     case "adopted":
@@ -19712,7 +19730,7 @@ function eventLine(event, record, waits, reviewed) {
       const asked = record?.questions[number - 1];
       const head = `${name}: question ${number} \xB7 ${clip(event.text ?? "")}`;
       if (asked?.answeredAt != null)
-        return `${head} \xB7 answered ${agoText(asked.answeredAt, Date.now())}`;
+        return `${head} \xB7 answered ${agoText(asked.answeredAt, nowMs)}`;
       return `${head} \xB7 answer it: crew answer "${name}" --question ${number} "<text>" (or --file <path|-> for long text)`;
     }
     case "person":
@@ -19815,7 +19833,7 @@ function leadNotesAnswer(input, event, paths, repo, env, deps = {}) {
     return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null) {
-    if (event !== "UserPromptSubmit")
+    if (event !== "UserPromptSubmit" || crewIdOf(env) !== null)
       return SILENT;
     const leads = listLeads(paths.stateDir, repo).records.filter((one) => one.endedAt == null);
     if (leads.length === 0)
@@ -19824,7 +19842,10 @@ function leadNotesAnswer(input, event, paths, repo, env, deps = {}) {
     try {
       sessions = deps.sessions?.() ?? liveSessions(paths.claudeConfigDir);
     } catch {
-      return addContext(event, "The session records cannot be read; retry crew lead before starting more crew.");
+      return {
+        ...SILENT,
+        stderr: `${COMMAND} lead-notes: the session records cannot be read`
+      };
     }
     const sessionName = sessions.find((one) => one.sessionId === sessionId)?.name;
     const candidates = leads.filter((one) => one.cwd === input.cwd || one.name === input.session_title || one.name === sessionName);
@@ -20453,7 +20474,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname11, isAbsolute as isAbsolute8, posix, relative as relative2, resolve as resolve10, win32 as win322 } from "path";
+import { dirname as dirname11, isAbsolute as isAbsolute8, posix as posix2, relative as relative2, resolve as resolve10, win32 as win323 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -20550,7 +20571,7 @@ function persistentDrop(words, program, args) {
   return null;
 }
 function pathRules(platform) {
-  return platform === "win32" ? win322 : posix;
+  return platform === "win32" ? win323 : posix2;
 }
 function shellTargetPath(path, platform = process.platform, dialect = "bash") {
   if (platform !== "win32" || dialect !== "bash")

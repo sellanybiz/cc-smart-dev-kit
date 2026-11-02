@@ -254,5 +254,24 @@ export function readCrewSelf(
   } catch (error) {
     return refuse(reasonOf(error));
   }
+  // An earlier copy of this crew session (one Claude Code brought back after the record moved
+  // to a resumed copy) must not write over the current copy's record. A caller that cannot be
+  // named is judged as before this check: refusing it would stop every crew session whose
+  // session records cannot be read, the current copy included.
+  let session: ReturnType<typeof callingSession> = null;
+  try {
+    session = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env);
+  } catch {
+    session = null;
+  }
+  if (
+    session !== null &&
+    session.sessionId !== record.sessionId &&
+    record.earlierSessions?.some((one) => one.sessionId === session?.sessionId)
+  ) {
+    return refuse(
+      `this session is an earlier copy of ${record.name}; its current session is ${record.shortId}. Change nothing and end your turn.`,
+    );
+  }
   return { ok: true, self: { record, repo, resolved } };
 }

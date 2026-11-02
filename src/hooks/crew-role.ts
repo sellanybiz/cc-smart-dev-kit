@@ -450,6 +450,17 @@ async function startCard(
   const found = recordOf(id, repo, paths);
   if (!found.ok) return found.result;
   const record = found.record;
+  const sessionId = stringField(input.session_id);
+  if (
+    sessionId !== null &&
+    sessionId !== record.sessionId &&
+    record.earlierSessions?.some((one) => one.sessionId === sessionId)
+  ) {
+    return addContext(
+      "SessionStart",
+      `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing — change no file, run no command — and end your turn now.`,
+    );
+  }
   const nowMs = options.nowMs ?? Date.now();
   const cwd = stringField(input.cwd);
   if (cwd !== null && !isInside(realPath(cwd), realPath(record.worktree))) {

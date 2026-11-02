@@ -6967,6 +6967,7 @@ function retryWatchdogState(paths) {
 
 // src/project/config.ts
 import { existsSync as existsSync3, readFileSync as readFileSync4 } from "fs";
+import { posix, win32 } from "path";
 
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
@@ -7431,6 +7432,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
+    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -8073,6 +8075,7 @@ var leadFields = object({
   planFile: text2.nullable().optional(),
   earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
   adoptedBy: text2.optional(),
+  adoptedAt: text2.optional(),
   generation: count.optional(),
   endedAt: text2.nullable().optional(),
   sessionUnknownSince: text2.nullable().optional(),
@@ -8140,6 +8143,7 @@ var handBackReportSchema = reportFields.loose().superRefine((report, context) =>
 });
 var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
+  summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
   parkedAt: number2().int().min(0).optional(),

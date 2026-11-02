@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { proxyMcp } from "./mcp-proxy";
 
 function harness(start: () => Promise<{ ok: true } | { ok: false; why: string }>) {
@@ -136,24 +136,25 @@ test("split UTF-8, large lines, malformed lines and an unterminated tail stay in
   expect(Buffer.concat(h.sent).equals(bytes)).toBe(true);
 });
 
-test("failed batch calls are answered; other elements and held batches retain their bytes", async () => {
+test("failed batch gets one array and forwards none of its requests or notifications", async () => {
   const started = Promise.withResolvers<{ ok: false; why: string }>();
   const h = harness(() => started.promise);
-  h.send('[ {"id":1,"method":"tools/call"}, { "method":"notice", "params":["a,b]", {"x":1}] } ]\n');
+  h.send(
+    '[ {"id":1,"method":"tools/call"}, {"id":3,"method":"tools/list"}, {"method":"notice"} ]\n',
+  );
   const other = ' [ { "id":2, "method":"tools/list" } ]\r\n';
   h.send(other);
   await turn();
   started.resolve({ ok: false, why: "No display" });
   await h.finish();
-  expect(Buffer.concat(h.sent).toString()).toBe(
-    `[ { "method":"notice", "params":["a,b]", {"x":1}] } ]\n${other}`,
-  );
+  expect(Buffer.concat(h.sent).toString()).toBe(other);
   expect(JSON.parse(Buffer.concat(h.received).toString())).toEqual([
     {
       jsonrpc: "2.0",
       id: 1,
       result: { content: [{ type: "text", text: "No display" }], isError: true },
     },
+    { jsonrpc: "2.0", id: 3, error: { code: -32000, message: "No display" } },
   ]);
 });
 
@@ -176,6 +177,22 @@ test("a local failure never splits a child's partial output line", async () => {
     },
     { method: "notice" },
   ]);
+});
+
+test("proved Chrome forwards later lines without JSON parsing", async () => {
+  const h = harness(async () => ({ ok: true }));
+  h.send(call(1));
+  await turn();
+  const parse = spyOn(JSON, "parse");
+  try {
+    const later = ' {"id":2,"method":"tools/call"}\r\nnot json\n';
+    h.send(later);
+    await h.finish();
+    expect(parse).not.toHaveBeenCalled();
+    expect(Buffer.concat(h.sent).toString()).toBe(call(1) + later);
+  } finally {
+    parse.mockRestore();
+  }
 });
 
 test("a batch call starts Chrome and the original batch is forwarded", async () => {

@@ -1057,6 +1057,81 @@ describe("runJob", () => {
 // machine is busy, and every core of an idle one. systemd shares them between sibling
 // slices, so the whole chain carries the weight.
 describe("the heavy slices' CPU and I/O weights", () => {
+  test("real slice control persists idle refusal and reads CPUWeight through systemctl", () => {
+    const folder = tempDir("slice-control");
+    const log = join(folder, "calls");
+    writeFileSync(
+      join(folder, "systemctl"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nprintf 'CPUWeight=100\\n'\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = folder;
+    try {
+      const first = realSliceControl(() => null, 200, folder);
+      expect(first.idleUnsupported?.()).toBe(false);
+      first.rememberIdleUnsupported?.();
+      const later = realSliceControl(() => null, 200, folder);
+      expect(later.idleUnsupported?.()).toBe(true);
+      expect(later.cpuWeight?.("app-heavy.slice")).toBe(100);
+      expect(readFileSync(log, "utf8")).toBe("--user show -p CPUWeight app-heavy.slice\n");
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  test("custom slices never weight a foreign parent", async () => {
+    const r = recorder();
+    await runJob(
+      { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "idle", ioWeight: 0 },
+      deps(r),
+    );
+    expect(r.events.filter((event) => event.startsWith("weights "))).toEqual([
+      "weights app-heavy.slice CPUWeight=idle",
+    ]);
+  });
+
+  test("idle refusal is remembered across jobs and slices", async () => {
+    const r = recorder();
+    const base = deps(r);
+    let refused = false;
+    const calls: string[] = [];
+    const slice = {
+      ...base.slice,
+      idleUnsupported: () => refused,
+      rememberIdleUnsupported: () => {
+        refused = true;
+      },
+      setWeights: (name: string, weights: { cpu?: number | "idle" }) => {
+        calls.push(`${name}:${String(weights.cpu)}`);
+        return weights.cpu !== "idle";
+      },
+    };
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, { ...base, slice });
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, { ...base, slice });
+    expect(calls.filter((call) => call.endsWith(":idle"))).toEqual(["cc.slice:idle"]);
+    expect(calls.filter((call) => call.endsWith(":10"))).toHaveLength(10);
+    expect(r.said).toEqual([
+      "CPU priority: this systemd could not set idle; using weight 10 instead.",
+    ]);
+  });
+
+  test("off skips a normal or unset CPU weight but clears idle", async () => {
+    for (const current of [100, null, "idle"] as const) {
+      const r = recorder();
+      const base = deps(r);
+      await runJob(
+        { ...request, ...tsc, slice: "app-heavy.slice", cpuWeight: "off", ioWeight: 0 },
+        {
+          ...base,
+          slice: { ...base.slice, cpuWeight: () => current },
+        },
+      );
+      expect(r.events.filter((event) => event.startsWith("weights "))).toEqual(
+        current === "idle" ? ["weights app-heavy.slice CPUWeight=100"] : [],
+      );
+    }
+  });
   test("one set-property call carries both weights, in systemd's own form", () => {
     expect(weightsArgv(SLICE, { cpu: 20, io: 20 })).toEqual([
       "systemctl",

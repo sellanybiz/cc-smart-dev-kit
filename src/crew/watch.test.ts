@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { recordUsageWindow } from "../cli/usage-window";
 import { fakeFeed } from "../issues/fake-feed";
@@ -54,6 +55,7 @@ import {
   readCrew,
   readCrewEvents,
   readIssueFeed,
+  readLead,
   readWatchLease,
   readWatchState,
   takeWatchLease,
@@ -81,6 +83,52 @@ import {
   type WatchScope,
   watchPass,
 } from "./watch";
+
+describe("watch installed version", () => {
+  for (const once of [false, true]) {
+    test(`a newer installed plugin ends ${once ? "--once" : "the watch"} with restart instructions`, async () => {
+      const world = await leadWorld();
+      await addCrew(world, "working");
+      const ctx = world.ctx({
+        installedVersion: () => "999999.0.0",
+        sleep: () => {
+          throw new Error("the outdated watch kept watching");
+        },
+      });
+      expect(await runCrew(once ? ["watch", "--once", "--timeout", "0"] : ["watch"], ctx)).toBe(0);
+      expect(world.out).toEqual([
+        `crew watch ended: plugin 999999.0.0 is installed and this watch runs ${VERSION} — start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/${COMMAND}" crew watch`,
+      ]);
+      expect(world.err).toEqual([]);
+    });
+  }
+
+  for (const installed of [VERSION, "0.0.0", null, "not-a-version"]) {
+    test(`installed ${installed} keeps watching silently`, async () => {
+      const world = await leadWorld();
+      await addCrew(world, "working");
+      let reads = 0;
+      let sleeps = 0;
+      let closed = false;
+      const ctx = world.ctx({
+        installedVersion: () => {
+          reads += 1;
+          return installed;
+        },
+        outputClosed: () => closed,
+        sleep: async () => {
+          sleeps += 1;
+          if (sleeps === 2) closed = true;
+        },
+      });
+      expect(await runCrew(["watch"], ctx)).toBe(0);
+      expect(reads).toBeGreaterThanOrEqual(2);
+      expect(sleeps).toBe(2);
+      expect(world.out).toEqual([]);
+      expect(world.err).toEqual(["crew watch: nobody reads its output any more; this watch ends"]);
+    });
+  }
+});
 
 test("an adopted old watch ends without another pass", async () => {
   const world = await leadWorld();
@@ -238,6 +286,165 @@ function agentRowOf(over: Record<string, unknown> = {}): Record<string, unknown>
     ...over,
   };
 }
+
+describe("watch adoption regressions", () => {
+  async function adoptedWorld(withCrew = true) {
+    const world = await leadWorld();
+    if (withCrew) await addCrew(world, "working");
+    const old = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
+    if (old === null) throw new Error("missing test lead");
+    await writeLead(world.paths.stateDir, { ...old, sessionId: OTHER_SESSION }, T0);
+    await adoptLead(world.paths.stateDir, world.repo, LEAD_SESSION, OTHER_SESSION, T0, () => false);
+    return world;
+  }
+
+  for (const withCrew of [true, false]) {
+    test(`A1: ${withCrew ? "adoption summary" : "empty notice"} survives a watch restart`, async () => {
+      const world = await adoptedWorld(withCrew);
+      const run = (change: Partial<CrewContext> = {}) =>
+        runCrew(
+          ["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "1"],
+          world.ctx(change, { FAKE_AGENTS_JSON: "[]" }),
+        );
+      expect(await run()).toBe(0);
+      expect(world.out).toEqual(
+        withCrew
+          ? [`${NAME}: working — adopted by this lead`]
+          : ["crew watch: this lead has no crew sessions"],
+      );
+      world.out.length = 0;
+      let now = T0;
+      let sleeps = 0;
+      expect(
+        await run({
+          now: () => now,
+          sleep: async () => {
+            sleeps++;
+            now += 2000;
+          },
+        }),
+      ).toBe(0);
+      expect(world.out).toEqual([]);
+      expect(sleeps).toBe(1);
+    });
+  }
+
+  test("A2: registration after adoption does not hide unread state events", async () => {
+    const world = await adoptedWorld();
+    const run = () =>
+      runCrew(
+        ["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"],
+        world.ctx({}, { FAKE_AGENTS_JSON: "[]" }),
+      );
+    await run();
+    world.out.length = 0;
+    const lead = readLead(world.paths.stateDir, world.repo, OTHER_SESSION);
+    if (lead === null) throw new Error("missing test lead");
+    await writeLead(world.paths.stateDir, lead, T0 + 120000);
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: OTHER_SESSION,
+        name: NAME,
+        state: "done",
+        type: "state",
+        text: null,
+      },
+      T0 + 60000,
+    );
+    await run();
+    expect(world.out).toContain(`${NAME}: done`);
+  });
+
+  test("A4: replayed answered question age uses the watch clock", async () => {
+    const world = await leadWorld();
+    const record = await addCrew(world, "working");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { question: "which route?", options: ["a", "b"], recommended: 1 },
+      T0,
+    );
+    await answerCrewQuestion(world.paths.stateDir, world.repo, record.id, 0, "a", T0);
+    await runCrew(
+      ["watch", "--lead", LEAD_SESSION, "--once", "--timeout", "0"],
+      world.ctx({ now: () => T0 + 120000 }, { FAKE_AGENTS_JSON: "[]" }),
+    );
+    expect(world.out).toContain(`${NAME}: question 1 · which route? · answered 2 min ago`);
+  });
+
+  for (const fails of [false, true]) {
+    test(`A5: earlier live copy stop ${fails ? "failure" : "success"} is said once`, async () => {
+      const world = await leadWorld();
+      const record = await addCrew(world, "working", {
+        earlierSessions: [
+          { sessionId: "bbbb2222-2222-3333-4444-555555555555", shortId: "bbbb2222" },
+        ],
+      });
+      const rows = [
+        {
+          id: record.shortId,
+          sessionId: record.sessionId,
+          cwd: record.worktree,
+          kind: "background",
+          state: "working",
+          pid: 4242,
+        },
+        {
+          id: "bbbb2222",
+          sessionId: "bbbb2222-2222-3333-4444-555555555555",
+          cwd: record.worktree,
+          kind: "background",
+          state: "idle",
+          pid: 4243,
+        },
+      ];
+      const stops: string[][] = [];
+      const base = world.ctx({}, { FAKE_AGENTS_JSON: JSON.stringify(rows) });
+      const ctx = world.ctx(
+        {
+          runProgram: (argv, options) => {
+            if (argv[1] === "stop") {
+              stops.push(argv.slice(1));
+              return {
+                stdout: "",
+                stderr: "",
+                exitCode: fails ? 1 : 0,
+                error: null,
+                timedOut: false,
+              };
+            }
+            return base.runProgram(argv, options);
+          },
+        },
+        { FAKE_AGENTS_JSON: JSON.stringify(rows) },
+      );
+      const scope: WatchScope = {
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved: resolveWorkflow(world.paths, null),
+      };
+      const first = await watchPass(
+        { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+        ctx,
+        scope,
+      );
+      expect(stops).toEqual([["stop", "bbbb2222"]]);
+      const line = fails
+        ? `${NAME}: not stopped — claude stop bbbb2222 failed`
+        : `${NAME}: an earlier copy (bbbb2222) came back; stopped it — its current session is aaaa1111`;
+      expect(world.out).toContain(line);
+      world.out.length = 0;
+      await watchPass(first.state, ctx, scope);
+      expect(world.out).not.toContain(line);
+      expect(stops.every((args) => args[1] === "bbbb2222")).toBe(true);
+    });
+  }
+});
 
 describe("crew watch", () => {
   test("P4: replayed answered questions never ask for another answer", async () => {

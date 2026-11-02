@@ -249,7 +249,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         },
         launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
         now,
-        slice: realSliceControl(ctx.memory.read),
+        slice: realSliceControl(ctx.memory.read, undefined, jobsPaths(ctx.paths.home).stateDir),
         run: (argv, scopeUnit) => {
           started = true;
           const scope = scopeUnit === null ? null : realScope(slice, scopeUnit, ctx.memory.read);

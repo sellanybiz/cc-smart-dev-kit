@@ -32,31 +32,6 @@ function parse(line: Buffer): unknown {
   } // Invalid protocol input belongs to the child, unchanged.
 }
 
-/** Original byte spans of batch elements, used only when a failed call must be removed. */
-function batchElements(line: Buffer): Buffer[] {
-  const elements: Buffer[] = [];
-  let depth = 0;
-  let quoted = false;
-  let escaped = false;
-  let start = line.indexOf(91) + 1;
-  for (let i = start; i < line.length; i++) {
-    const byte = line[i];
-    if (quoted) {
-      if (escaped) escaped = false;
-      else if (byte === 92) escaped = true;
-      else if (byte === 34) quoted = false;
-    } else if (byte === 34) quoted = true;
-    else if (byte === 123 || byte === 91) depth++;
-    else if (byte === 125 || (byte === 93 && depth > 0)) depth--;
-    else if ((byte === 44 || byte === 93) && depth === 0) {
-      elements.push(line.subarray(start, i));
-      start = i + 1;
-      if (byte === 93) break;
-    }
-  }
-  return elements;
-}
-
 /** A byte-preserving stdio bridge. Only browser tool requests wait for Chrome. */
 export function proxyMcp(deps: ProxyDeps): {
   done: Promise<void>;
@@ -81,19 +56,20 @@ export function proxyMcp(deps: ProxyDeps): {
   async function reject(line: Buffer, why: string) {
     const value = parse(line);
     if (Array.isArray(value) && value.some(isCall)) {
-      // Keep non-call elements' original bytes; never serialize a forwarded message.
-      const replies = value.filter(isCall).map((call) => failure(call.id, why));
+      // One batch gets one response array. Notifications have no response.
+      const replies = value.flatMap((request) => {
+        if (typeof request !== "object" || request === null || !("id" in request)) return [];
+        return [
+          isCall(request)
+            ? failure(request.id, why)
+            : {
+                jsonrpc: "2.0",
+                id: request.id,
+                error: { code: -32000, message: why },
+              },
+        ];
+      });
       await write(deps.clientOutput, Buffer.from(`${JSON.stringify(replies)}\n`));
-      const kept = batchElements(line).filter((element) => !isCall(parse(element)));
-      if (kept.length)
-        await write(
-          deps.childInput,
-          Buffer.concat([
-            Buffer.from("["),
-            ...kept.flatMap((element, i) => (i ? [Buffer.from(","), element] : [element])),
-            Buffer.from("]\n"),
-          ]),
-        );
     } else if (isCall(value)) {
       await write(deps.clientOutput, Buffer.from(`${JSON.stringify(failure(value.id, why))}\n`));
     } else await write(deps.childInput, line);
@@ -103,7 +79,7 @@ export function proxyMcp(deps: ProxyDeps): {
     while (queue.length && !stopped) {
       const line = queue[0];
       if (!line) break;
-      const value = parse(line);
+      const value = proved ? undefined : parse(line);
       if (!proved && (isCall(value) || (Array.isArray(value) && value.some(isCall)))) {
         const result = await deps.startChrome();
         if (stopped) break;

@@ -3,6 +3,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { scanWorktrees } from "../worktrees/scan";
+import { localFiles } from "./local-files";
 
 function world(ignored = "supabase/.temp/\n") {
   const root = tempDir("local-files");
@@ -31,6 +32,57 @@ function world(ignored = "supabase/.temp/\n") {
     }).find((one) => one.listed.path === worktree)?.state;
   return { main, worktree, put, state };
 }
+
+function projectFile(main: string, text: string) {
+  mkdirSync(join(main, ".claude"), { recursive: true });
+  writeFileSync(join(main, ".claude", "cc-smart-dev-kit.json"), text);
+}
+
+test("a project's ignored cache blocks removal until it is declared rebuildable", () => {
+  const { main, worktree } = world(".tool-cache/\n");
+  mkdirSync(join(worktree, ".tool-cache"));
+  writeFileSync(join(worktree, ".tool-cache", "data"), "cache");
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".tool-cache/"]);
+  projectFile(
+    main,
+    JSON.stringify({
+      requires: ">=1.9",
+      worktrees: { base: "main", rebuildable: [".tool-cache/"] },
+    }),
+  );
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
+});
+
+test("project rebuildable patterns match at depth and inside a collapsed ignored folder", () => {
+  const { main, worktree } = world("server/\n");
+  mkdirSync(join(worktree, "server", ".tool-cache"), { recursive: true });
+  writeFileSync(join(worktree, "server", ".tool-cache", "data"), "cache");
+  writeFileSync(join(worktree, "server", "result.cache"), "cache");
+  projectFile(
+    main,
+    JSON.stringify({
+      requires: ">=1.9",
+      worktrees: { base: "main", rebuildable: [".tool-cache/", "*.cache"] },
+    }),
+  );
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
+  writeFileSync(join(worktree, "server", "notes.txt"), "keep");
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual(["server/"]);
+});
+
+test.each([
+  "{broken",
+  JSON.stringify({
+    requires: ">=999.0",
+    worktrees: { base: "main", rebuildable: [".tool-cache/"] },
+  }),
+])("an unusable project file keeps the strict ignored-file rule: %s", (text) => {
+  const { main, worktree } = world(".tool-cache/\n");
+  mkdirSync(join(worktree, ".tool-cache"));
+  writeFileSync(join(worktree, ".tool-cache", "data"), "cache");
+  projectFile(main, text);
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".tool-cache/"]);
+});
 
 test("Supabase's version-check cache alone does not keep a finished worktree", () => {
   const { worktree, put, state } = world();

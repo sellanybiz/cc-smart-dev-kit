@@ -196,6 +196,39 @@ describe("a session that is not a crew session hears nothing", () => {
 });
 
 describe("SessionStart: the role card", () => {
+  test("C3: an earlier copy in the main folder leaves the record unchanged", async () => {
+    const world = await crewWorld({ sessionId: SESSION_UUID, shortId: "9f1c2d3e" });
+    await updateCrew(
+      world.stateDir,
+      world.repo,
+      CREW_ID,
+      {
+        earlierSessions: [{ sessionId: "old-session", shortId: "old-sess" }],
+      },
+      T0,
+    );
+    const before = readCrew(world.stateDir, world.repo, CREW_ID);
+    const events = readCrewEvents(world.stateDir, world.repo);
+    const result = await runHook(
+      crewRoleHook,
+      {
+        hook_event_name: "SessionStart",
+        session_id: "old-session",
+        cwd: world.repo,
+        source: "resume",
+      },
+      world.env,
+    );
+    expect(readCrew(world.stateDir, world.repo, CREW_ID)).toEqual(before);
+    expect(readCrewEvents(world.stateDir, world.repo)).toEqual(events);
+    expect(result).toEqual(
+      addContext(
+        "SessionStart",
+        "You are an earlier copy of the crew session `C app W2 hooks`; its current session is `9f1c2d3e`. Do nothing — change no file, run no command — and end your turn now.",
+      ),
+    );
+  });
+
   test("the exact card, built from the record and the brief's path", async () => {
     const world = await crewWorld();
     // A crew session starts in its worktree: its SessionStart input's `cwd` is that folder.

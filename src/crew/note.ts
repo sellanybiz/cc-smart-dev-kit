@@ -1,4 +1,4 @@
-import { deliveryReport, resumeSession, sessionLiveness } from "./answer";
+import { deliveryReport, markResumed, resumeSession, sessionLiveness } from "./answer";
 import { findCrew } from "./board";
 import { readCaller, reasonOf } from "./caller";
 import type { CrewContext } from "./context";
@@ -82,22 +82,8 @@ export async function runCrewNote(args: NoteArgs, ctx: CrewContext): Promise<num
         ctx.error(`crew note: note recorded, not delivered: ${resumed.why}`);
         return 1;
       }
-      await updateCrew(
-        ctx.paths.stateDir,
-        repo,
-        record.id,
-        {
-          sessionId: resumed.session.sessionId,
-          shortId: resumed.session.shortId,
-          state: record.questions.some(
-            (one) => one.answer === null && (one.supersededBy ?? null) === null,
-          )
-            ? "blocked"
-            : "working",
-        },
-        ctx.now(),
-      );
-      await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+      const stored = await markResumed(record, resumed.session, ctx);
+      if (stored) await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
       ctx.print(`${record.name}: resumed with your note`);
       return 0;
     }

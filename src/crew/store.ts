@@ -725,6 +725,8 @@ const leadFields = z.object({
   planFile: text.nullable().optional(),
   earlierSessions: z.array(z.object({ sessionId: text, shortId: text })).optional(),
   adoptedBy: text.optional(),
+  /** When this lead last adopted crew; later registration does not move this boundary. */
+  adoptedAt: text.optional(),
   generation: count.optional(),
   /** The plan ended; absent on leads recorded before this field existed. */
   endedAt: text.nullable().optional(),
@@ -1695,12 +1697,21 @@ export async function adoptLead(
         { sessionId: old.sessionId, shortId: old.sessionId.slice(0, 8) },
       ].map((one) => [one.sessionId, one]),
     );
-    writeJsonFile(leadFile(stateDir, repo, newSessionId), {
-      ...next,
-      earlierSessions: [...earlier.values()],
-      generation: Math.max(next.generation ?? 0, old.generation ?? 0) + 1,
-      updatedAt: at,
-    });
+    const nextFile = leadFile(stateDir, repo, newSessionId);
+    writeJsonFile(
+      nextFile,
+      checked(
+        leadRecordSchema,
+        {
+          ...next,
+          earlierSessions: [...earlier.values()],
+          generation: Math.max(next.generation ?? 0, old.generation ?? 0) + 1,
+          adoptedAt: at,
+          updatedAt: at,
+        },
+        nextFile,
+      ),
+    );
     const fresh = readWatchState(stateDir, repo, newSessionId);
     const previous = readWatchState(stateDir, repo, oldSessionId);
     const missingSince = { ...previous?.missingSince, ...fresh?.missingSince };
@@ -1745,12 +1756,20 @@ export async function adoptLead(
       recordRunOf({ after, at, before, event });
       count += 1;
     }
-    writeJsonFile(leadFile(stateDir, repo, oldSessionId), {
-      ...old,
-      endedAt: at,
-      adoptedBy: newSessionId,
-      updatedAt: at,
-    });
+    const oldFile = leadFile(stateDir, repo, oldSessionId);
+    writeJsonFile(
+      oldFile,
+      checked(
+        leadRecordSchema,
+        {
+          ...old,
+          endedAt: at,
+          adoptedBy: newSessionId,
+          updatedAt: at,
+        },
+        oldFile,
+      ),
+    );
     return count;
   });
 }
@@ -2081,6 +2100,8 @@ export function watchStateFile(stateDir: string, repo: string, leadSessionId: st
  * from, and the last thing it said about each crew session (so a line is said once, not every cycle).
  */
 export interface WatchState {
+  /** The latest adoption generation whose summary this lead has heard. */
+  summarizedGeneration?: number | undefined;
   /** The byte after the last whole line the watch read. */
   offset: number;
   /** First missing agent-view observation by repository and record id (D73). */
@@ -2112,6 +2133,7 @@ export interface WatchState {
 }
 
 const watchStateFields = z.object({
+  summarizedGeneration: count.optional(),
   missingSince: z.record(z.string(), z.number()).optional(),
   removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),
   parkedAt: z.number().int().min(0).optional(),

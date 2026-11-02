@@ -17,7 +17,7 @@
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its
  *          processes is killed. Inside, `choom -n 900` marks the job to die first if the
  *          whole machine runs out. CPU defaults to idle, yielding to other work. Disk I/O
- *          stays at normal priority unless configured. Every slice carries the weights
+ *          stays at normal priority unless configured. Only owned slices carry the weights
  *          (`weightsArgv`); there is no quota.
  *   choom  Linux with no user manager (cron, a container, CI, ssh after logout): the mark.
  *   plain  No `choom`, macOS, or `launch: plain`: the command as it is. The queue still
@@ -53,8 +53,10 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { constants } from "node:os";
+import { join } from "node:path";
+import { atomicWrite } from "../setup/write";
 import { type ReadText, userManagerControllers, userSliceCgroup } from "./memory";
 import { endJobTree, processIsGone, realWindowsFacts, type WindowsFacts } from "./windows";
 
@@ -445,6 +447,11 @@ export interface SliceControl {
   setMemoryMax: (slice: string, value: string) => boolean;
   /** `weightsArgv`: one slice's CPU and I/O weights; true on success, and for none. */
   setWeights: (slice: string, weights: SliceWeights) => boolean;
+  /** Machine-local capability record; absent on controls without persistent state. */
+  idleUnsupported?: () => boolean;
+  rememberIdleUnsupported?: () => void;
+  /** null means not set; undefined means the read failed, so reset conservatively. */
+  cpuWeight?: (slice: string) => number | "idle" | null | undefined;
   /**
    * The controllers this machine's user manager was given (`userManagerControllers`), or
    * null when it cannot be read: no user manager, or not Linux.
@@ -479,8 +486,30 @@ export function realLaunchFacts(slice: string, timeoutMs = SYSTEMD_TIMEOUT_MS): 
   };
 }
 
-export function realSliceControl(read: ReadText, timeoutMs = SYSTEMD_TIMEOUT_MS): SliceControl {
+export function realSliceControl(
+  read: ReadText,
+  timeoutMs = SYSTEMD_TIMEOUT_MS,
+  stateDir?: string,
+): SliceControl {
+  const refusalFile = stateDir === undefined ? undefined : join(stateDir, "cpu-idle-unsupported");
   return {
+    idleUnsupported: () => refusalFile !== undefined && existsSync(refusalFile),
+    rememberIdleUnsupported: () => {
+      if (stateDir === undefined || refusalFile === undefined) return;
+      mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+      atomicWrite(refusalFile, "idle refused\n", 0o600);
+    },
+    cpuWeight: (slice) => {
+      const result = spawnSync("systemctl", ["--user", "show", "-p", "CPUWeight", slice], {
+        encoding: "utf8",
+        timeout: timeoutMs,
+      });
+      if (result.status !== 0) return undefined;
+      const value = /^CPUWeight=(.*)$/m.exec(result.stdout)?.[1]?.trim();
+      if (value === "" || value === "[not set]") return null;
+      if (value === "idle") return "idle";
+      return value !== undefined && /^\d+$/.test(value) ? Number(value) : undefined;
+    },
     setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
     setWeights: (slice, weights) => {
       const argv = weightsArgv(slice, weights);

@@ -594,7 +594,7 @@ export async function runCrew(argv: readonly string[], ctx: CrewContext): Promis
     return await runCrewReport(args, ctx);
   }
   if (sub === "note") {
-    const args = parseAnswerArgs(rest);
+    const args = parseAnswerArgs(rest, "note");
     if ("error" in args) {
       ctx.error(usageError(args.error));
       return 2;
@@ -737,12 +737,15 @@ export function parseReportArgs(argv: readonly string[]): ReportArgs | { error: 
  * has no session above it and may carry the crew environment of the session that started the
  * portal, so neither the "no session runs this command" refusal nor the crew one applies.
  */
-export function parseAnswerArgs(argv: readonly string[]): AnswerArgs | { error: string } {
+export function parseAnswerArgs(
+  argv: readonly string[],
+  command: "answer" | "note" = "answer",
+): AnswerArgs | { error: string } {
   const parsed = parseOptions(argv, ["--question", "--file"], ["--as-person"]);
   if ("error" in parsed) return parsed;
   const [crew, text, ...extra] = parsed.positionals;
   if (crew === undefined)
-    return { error: 'Say which crew session: crew answer <crew session> "<text>"' };
+    return { error: `Say which crew session: crew ${command} <crew session> "<text>"` };
   const file = parsed.options.get("--file");
   if ((text === undefined) === (file === undefined))
     return { error: "Give exactly one answer: <text> or --file <path|->" };

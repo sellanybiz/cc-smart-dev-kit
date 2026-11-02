@@ -865,3 +865,38 @@ describe("a lead whose watch is gone is told how to start it", () => {
     );
   });
 });
+
+test("an unregistered crew session hears no adoption hint even when session records throw", async () => {
+  const world = await leadWorld({ watch: "never" });
+  const result = leadNotesAnswer(
+    leadInput(world.repo, { session_id: OTHER_SESSION }),
+    "UserPromptSubmit",
+    cliPaths(world.env),
+    world.repo,
+    { ...world.env, CC_SMART_DEV_KIT_CREW: CREW_ID },
+    {
+      sessions: () => {
+        throw new Error("records unreadable");
+      },
+    },
+  );
+  expect(result).toEqual({});
+});
+
+test("an unregistered session with unreadable records gets only one stderr line", async () => {
+  const world = await leadWorld({ watch: "never" });
+  expect(
+    leadNotesAnswer(
+      leadInput(world.repo, { session_id: OTHER_SESSION }),
+      "UserPromptSubmit",
+      cliPaths(world.env),
+      world.repo,
+      world.env,
+      {
+        sessions: () => {
+          throw new Error("records unreadable");
+        },
+      },
+    ),
+  ).toEqual({ stderr: "cc-smart-dev-kit lead-notes: the session records cannot be read" });
+});

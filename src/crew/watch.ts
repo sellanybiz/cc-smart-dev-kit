@@ -62,6 +62,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit } from "../hooks/git";
 import { type FeedMemory, newFeedMemory, pollIssueFeed } from "../issues/feed";
@@ -349,6 +350,7 @@ export function eventLine(
   record: null | CrewRecord,
   waits: readonly string[],
   reviewed: boolean,
+  nowMs = Date.now(),
 ): null | string {
   const name = event.name;
   switch (event.type) {
@@ -400,7 +402,7 @@ export function eventLine(
       const asked = record?.questions[number - 1];
       const head = `${name}: question ${number} · ${clip(event.text ?? "")}`;
       if (asked?.answeredAt != null)
-        return `${head} · answered ${agoText(asked.answeredAt, Date.now())}`;
+        return `${head} · answered ${agoText(asked.answeredAt, nowMs)}`;
       return `${head} · answer it: crew answer "${name}" --question ${number} "<text>" (or --file <path|-> for long text)`;
     }
     case "person":
@@ -639,8 +641,8 @@ function refusalReason(error: NonNullable<CrewRecord["lastApiError"]>): string {
  *
  * Idempotent: the question is asked once for each error (`said` keeps its time), so a pass that
  * fails between the question and the stop does not ask a second time. A session that already has
- * a question open on the lead is not given another (it would close the real one): the stop's line
- * carries the reason then.
+ * a question open on the lead is not given another: keep the lead focused on its pending answer,
+ * and carry the refusal's reason in the stop's line instead.
  */
 async function holdRefusedSession(
   record: CrewRecord,
@@ -1087,6 +1089,7 @@ function sayEvents(
       record,
       record === null ? [] : phasesWaitingFor(record, mine),
       reviewed,
+      ctx.now(),
     );
     if (line !== null) say(line);
   }
@@ -1324,6 +1327,7 @@ function stateAfter(before: WatchState, draft: PassDraft): WatchState {
   const routerRequests =
     draft.resumed === null ? before.routerRequests : draft.resumed.routerRequests;
   return {
+    summarizedGeneration: before.summarizedGeneration,
     missingSince: before.missingSince,
     removals: draft.removals,
     stoppedRemindedAt: draft.stoppedRemindedAt,
@@ -1455,6 +1459,34 @@ async function runPass(
   );
   for (const record of mine) {
     const row = agents === null ? null : rowOf(agents, record);
+    if (
+      agents !== null &&
+      !OVER_STATES.includes(record.state) &&
+      record.state !== "removed" &&
+      record.state !== "discarded"
+    ) {
+      for (const earlier of record.earlierSessions ?? []) {
+        if (earlier.sessionId === record.sessionId) continue;
+        const stale = agents.find((one) => one.sessionId === earlier.sessionId);
+        if (
+          stale === undefined ||
+          !isLiveRow(stale) ||
+          stale.sessionId === record.sessionId ||
+          stale.id === record.shortId
+        )
+          continue;
+        const key = `${record.id}:earlier-copy:${earlier.sessionId}`;
+        const why = await stopSession(
+          { ...record, sessionId: earlier.sessionId, shortId: stale.id },
+          ctx,
+        );
+        const line =
+          why ??
+          `${record.name}: an earlier copy (${stale.id}) came back; stopped it — its current session is ${record.shortId}`;
+        if (said[key] !== line) say(line);
+        said[key] = line;
+      }
+    }
     const alert = crewAlert(
       record,
       row,
@@ -2194,7 +2226,8 @@ async function watchLoop(
   let state: WatchState = known ?? { offset: 0, said: {} };
   let generation = -1;
   let leadIds: readonly string[] = [leadSessionId];
-  let emptySaid = false;
+  // A crew id is a plain file name and cannot start with a colon.
+  const emptyKey = `:lead-empty:${leadSessionId}`;
   // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
   // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
@@ -2232,6 +2265,22 @@ async function watchLoop(
     /** The lines this round said: a `--once` ends on the first round that said any. */
     let lines = 0;
     try {
+      // A lead can outlive a plugin update. End its old watch so the next one loads the new code.
+      const installed = ctx.installedVersion?.() ?? null;
+      let newer = false;
+      if (installed !== null) {
+        try {
+          newer = Bun.semver.order(installed, VERSION) > 0;
+        } catch {
+          // An unrecognised version is no evidence that this watch is out of date.
+          newer = false;
+        }
+      }
+      if (newer)
+        throw new WatchEnd(
+          "print",
+          endedLine(`plugin ${installed} is installed and this watch runs ${VERSION}`),
+        );
       // Before it acts: a watch that may not act any more ends here (`WatchEnd`), and one whose
       // store is too busy to say acts on nothing this time and asks again at its next look.
       if (await goesOn()) {
@@ -2248,7 +2297,8 @@ async function watchLoop(
             said: {},
           };
           leadIds = lead === null ? [leadSessionId] : leadSessions(lead);
-          if (generation > 0) {
+          if (generation > (state.summarizedGeneration ?? 0)) {
+            state.summarizedGeneration = generation;
             for (const record of listCrew(ctx.paths.stateDir, repo).records.filter(
               (one) => one.leadSessionId === leadSessionId,
             )) {
@@ -2258,8 +2308,10 @@ async function watchLoop(
           }
         }
         const records = listCrew(ctx.paths.stateDir, repo).records;
-        if (!emptySaid && !records.some((one) => one.leadSessionId === leadSessionId)) {
-          emptySaid = true;
+        const hasCrew = records.some((one) => one.leadSessionId === leadSessionId);
+        if (hasCrew) delete state.said[emptyKey];
+        if (!hasCrew && state.said[emptyKey] === undefined) {
+          state.said[emptyKey] = "said";
           ctx.print("crew watch: this lead has no crew sessions");
           lines++;
           try {
@@ -2304,7 +2356,7 @@ async function watchLoop(
         const scope: WatchScope = {
           ...start,
           leadIds,
-          ...(generation > 0 && lead != null ? { adoptedAt: lead.updatedAt } : {}),
+          ...(lead?.adoptedAt === undefined ? {} : { adoptedAt: lead.adoptedAt }),
           feedMemory,
           mayStart,
           resolved: caps,

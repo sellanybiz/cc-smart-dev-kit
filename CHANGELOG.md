@@ -12,6 +12,8 @@ can recover its crew after its session id changes.
 
 - Restart Claude Code to load the new plugin. A lead moved to the background may receive a
   new session id: run `cc-smart-dev-kit crew lead --plan <plan>` there to recover its crew.
+- A lead whose `crew watch` was already running starts it again once: a watch from before
+  1.9.0 keeps its old code until it ends.
 - Linux heavy jobs use idle CPU priority by default. `job set cpu-weight off` opts out; older
   systemd versions that refuse idle use weight 10 instead. No CPU quota is imposed.
 
@@ -28,6 +30,26 @@ What changed:
   than six hours; `--removed` includes them, and JSON stays unfiltered.
 - Lead guidance explains monitor expiry and re-arming, the first push before merge checks,
   and review of changes made after a review. Empty file globs produce a warning.
+- An earlier copy of a crew session that Claude Code brings back after a restart now stands
+  down. It changes nothing in the store, its own commands are refused, and the lead's watch
+  stops it. Before, such a copy could fail the record of the copy that was really working.
+- A bare `crew lead` takes the lead with this session's name first. Folder matches that span
+  more than one plan are refused, with the candidates listed.
+- A running session whose start identity cannot be proved counts as running, never as gone.
+  So the cleanups, `sessions` and `crew lead` keep working when a record has no `procStart`.
+- The adoption summary is said once per adoption, not again at each re-armed watch. Crew
+  sessions no longer get the lead's adoption hints. A crew report whose here-doc a guard
+  refuses goes through a file instead (the crew skill says how).
+- Idle CPU priority goes only on the kit's own slices, never on a parent such as `app.slice`.
+  Where systemd refuses idle, the fallback is said once per machine.
+- A running `crew watch` ends when a newer plugin version is installed, with the line that says
+  to start it again. Before, a lead session that never restarted kept running the old watch code
+  for days. A watch started before 1.9.0 has no such check: after this update, start each
+  running lead's watch again once.
+- A project can name its own rebuildable ignored paths: `worktrees.rebuildable` in
+  `.claude/cc-smart-dev-kit.json` (needs `requires` 1.9.0). Crew removal, release and the
+  worktree cleanups treat a match like `node_modules`, so a tool's cache folder no longer keeps
+  a finished crew worktree forever.
 
 ## 1.8.1
 

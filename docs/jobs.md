@@ -518,16 +518,18 @@ With `launch: auto` (the default), on Linux:
   whose desktop and sessions need more than 8 GB raises `reserveGb` (or sets `budgetGb`).
 - **Idle CPU, normal disk I/O.** CPU defaults to `idle` on Linux: heavy jobs get CPU only
   when nothing else wants it. `job set cpu-weight idle|<1-10000>|off` changes it.
-  Older systemd versions that refuse idle get weight 10 instead; the job says so once.
+  Older systemd versions that refuse idle get weight 10 instead. The first job says so and
+  records the refusal in machine-local jobs state; later slices and jobs go straight to 10.
+  With `off`, the job reads the current CPU weight first: 100 or unset needs no reset;
+  another value, or a failed read, gets an explicit reset to 100.
   Disk I/O stays off by default; `ioWeight` accepts 1 to 10000 or `off`.
   Then, at the same moment and in the same form as the ceiling, the slices get that
-  `CPUWeight=` and `IOWeight=`. A weight, never a quota. The weight goes on **every slice of
-  the chain**, not only the heavy one: a dash in a slice name nests, so
-  `cc-smart-dev-kit-heavy.slice` sits inside `cc-smart-dev-kit.slice`, which sits inside
-  `cc-smart-dev.slice`, and so on up to `cc.slice`. systemd shares CPU and I/O between slices
-  that are siblings, so the heavy slice alone would compete only with what sits beside it
-  inside the kit's own slice; the outermost slice is the one that competes with the desktop
-  and the sessions.
+  `CPUWeight=` and `IOWeight=`. A weight, never a quota. Only slices the kit owns get weights:
+  members of the default heavy slice's chain, plus the exact configured slice. A dash nests,
+  so the default chain reaches from `cc-smart-dev-kit-heavy.slice` up to `cc.slice`.
+  A configured `app-heavy.slice` gets weights, but its foreign parent `app.slice` does not:
+  desktop apps may run there. systemd shares CPU and I/O between sibling slices, so the
+  default chain's outermost slice competes with the desktop and sessions without weighting them.
 - **A controller first.** A weight needs its controller (the `cpu` and `io` controllers)
   delegated to this machine's systemd user manager:
   `/sys/fs/cgroup/user.slice/user-<uid>.slice/user@<uid>.service/cgroup.controllers`.
@@ -586,7 +588,7 @@ Optional. Unknown fields are an error that names the file and the field.
 | `sharedDirs` | none | Shared folders (§ The shared view), used in path order. |
 | `launch` | `auto` | `auto` or `plain` (§ The launch). |
 | `slice` | `cc-smart-dev-kit-heavy.slice` | The systemd slice for `auto`. |
-| `cpuWeight` | idle | Linux CPU priority: `idle`, 1 to 10000, or `off`. Unset means idle; `0` remains an alias for off. Machine-wide, on every slice in the chain. |
+| `cpuWeight` | idle | Linux CPU priority: `idle`, 1 to 10000, or `off`. Unset means idle; `0` remains an alias for off. Machine-wide, on the kit's own slices only: the default chain and the configured slice, never a parent outside them such as `app.slice`. |
 | `ioWeight` | off | The disk I/O weight of the heavy slices, 1 to 10000. `0` or `"off"` leaves systemd's default (100). Machine-wide, like `cpuWeight`. |
 
 The weights and the slots are machine-wide on purpose. The slices and the machine's memory
@@ -608,14 +610,14 @@ says so, and writes nothing. A job that already runs or waits keeps what it star
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits for a slot, runs, passes the job's stdio, exit code and signals through. `--kind`, `--exclusive`, or both. `--gb <n>` is accepted and ignored. |
 | `cc-smart-dev-kit job status` | How many slots are in use, who holds them and who waits, here and on each shared folder; the light slots in use; the free-memory rule and the free memory now; the memory ceiling; the CPU and I/O weights of the heavy slices (or why one is not set); the line that changes `maxJobs`; and the job route for the folder it runs in — on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. A store it cannot read is one line saying so. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `cc-smart-dev-kit job kinds` | Every kind: where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
-| `cc-smart-dev-kit job set <setting> <value>` | `max-jobs <n>`, `light-jobs <n>`, `start-free-gb <n>`, `cpu-weight <n\|off>`, `io-weight <n\|off>`: the person's own settings, written to `jobs.json`. |
+| `cc-smart-dev-kit job set <setting> <value>` | `max-jobs <n>`, `light-jobs <n>`, `start-free-gb <n>`, `cpu-weight <idle\|n\|off>`, `io-weight <n\|off>`: the person's own settings, written to `jobs.json`. |
 
 `job status`, on an idle machine and on a full one:
 
 ```text
 Memory: 32 GB.
 Memory ceiling for all heavy jobs together: 24 GB (32 GB of memory less 8 GB kept for everything else), on cc-smart-dev-kit-heavy.slice. A job over it is stopped, and the memory kept for everything else stays free.
-CPU priority: not set: a job runs at systemd's own weight (100). cc-smart-dev-kit job set cpu-weight <1-10000> asks for another.
+CPU priority: idle (the default): a heavy job gets the CPU only when nothing else wants it. cc-smart-dev-kit job set cpu-weight off turns it off.
 Disk I/O priority: not set: a job runs at systemd's own weight (100). cc-smart-dev-kit job set io-weight <1-10000> asks for another.
 This machine (~/.local/share/cc-smart-dev-kit/jobs): 0 of 3 slots in use
   nothing held, nobody waits

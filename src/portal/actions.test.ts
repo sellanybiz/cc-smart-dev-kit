@@ -206,6 +206,20 @@ describe("a crew action runs the CLI's own command in a child", () => {
     expect(runsOf(w.log)).toMatchObject([{ args: ["crew", "resume", idB], cwd: w.repoB }]);
   });
 
+  test("crew.answer rejects question values other than positive safe integers", async () => {
+    const w = world();
+    const id = await w.crewIn(w.repoA, "crew-P-question", { state: "blocked" });
+    for (const question of [0, -1, 1.5, 9007199254740992, "2", "--help", null, true, {}, []]) {
+      expect(
+        await runAction("crew.answer", { crew: id, answer: "yes", question }, w.action),
+      ).toEqual({
+        lines: ["The question number must be a whole number, 1 or more."],
+        ok: false,
+      });
+    }
+    expect(runsOf(w.log)).toEqual([]);
+  });
+
   test("crew.answer runs the CLI as the person, in the record's repository", async () => {
     // `crew answer` resumes a stopped crew session with a synchronous `claude` call, so it
     // runs in a child too; `--as-person` is the click (D52), and the bare `--` keeps an

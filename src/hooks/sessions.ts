@@ -53,6 +53,9 @@ function isRunning(pid: number): boolean {
  * The records of the running sessions. A record whose process is gone, or that was written
  * before the machine started (its pid may now be another program's), is skipped.
  *
+ * On Linux, only a proved process-start mismatch skips a running record. An unproved
+ * identity stays live: absence needs proof before adoption or cleanup.
+ *
  * Throws when a RUNNING process's record cannot be read: then nobody can say where that
  * session works, and a caller that needs to know must not guess.
  */
@@ -86,16 +89,18 @@ export function liveSessions(
         `the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`,
       );
     }
-    if ((facts.platform ?? process.platform) === "linux") {
+    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
       const stat = (facts.readStat ?? readProcStat)(pid);
-      if (stat === null) throw new Error(`the start time of session ${pid} cannot be read; retry`);
-      const start = stat
-        .slice(stat.lastIndexOf(")") + 1)
-        .trim()
-        .split(/\s+/)[19];
-      if (record.procStart === undefined || start === undefined)
-        throw new Error(`the start identity of running session ${pid} cannot be read; retry`);
-      if (record.procStart !== start) continue;
+      const end = stat?.lastIndexOf(")") ?? -1;
+      const start =
+        end < 0
+          ? undefined
+          : stat
+              ?.slice(end + 1)
+              .trim()
+              .split(/\s+/)[19];
+      // Only a proved mismatch establishes pid reuse. An unproved identity stays live.
+      if (start !== undefined && /^\d+$/.test(start) && record.procStart !== start) continue;
     }
     live.push(record);
   }

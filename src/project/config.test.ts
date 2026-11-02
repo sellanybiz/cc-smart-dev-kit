@@ -77,6 +77,7 @@ const ACCEPTED_BY_0_5_2 = [
 /** Every key that came after 0.5.2, with the release that first took it. */
 const FIRST_ACCEPTED_IN: Record<string, string> = {
   "worktrees.autoClean": "1.0.0",
+  "worktrees.rebuildable": "1.9.0",
   "workflow.fixesAfterReview": "1.0.0",
   "workflow.fixesAfterReview.lines": "1.0.0",
   "workflow.fixesAfterReview.files": "1.0.0",
@@ -247,6 +248,28 @@ describe("the ownHooks names, against the floor", () => {
       });
     }
   });
+});
+
+describe("worktrees.rebuildable", () => {
+  test("accepts relative patterns for ignored files and folders", () => {
+    expect(
+      ccSmartDevKitConfigSchema.parse({
+        requires: ">=1.9",
+        worktrees: { base: "main", rebuildable: [".tool-cache/", "*.cache"] },
+      }).worktrees?.rebuildable,
+    ).toEqual([".tool-cache/", "*.cache"]);
+  });
+
+  test.each(["/abs", "../x", "", "a/../x", "C:\\cache", "\\\\server\\cache"])(
+    "refuses unsafe rebuildable pattern %j",
+    (pattern) => {
+      expect(
+        ccSmartDevKitConfigSchema.safeParse({
+          worktrees: { base: "main", rebuildable: [pattern] },
+        }).success,
+      ).toBe(false);
+    },
+  );
 });
 
 describe("the since-tables", () => {

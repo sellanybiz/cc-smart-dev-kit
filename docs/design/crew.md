@@ -246,10 +246,17 @@ repository, under the state folder:
 
 **A forked lead adopts its crew.** Moving a session to the background gives it a new id,
 with its name and folder but no parent id. Run `crew lead` in the new session. Without
-`--plan`, it first matches a stopped lead by name or folder, then falls back to the branch.
+`--plan`, it first matches a lead that is not running and has this session's name. Only when
+no name matches does it look for one in this folder, and folder matches that span more than one
+plan refuse, listing each with its plan, because dead leads pile up in one checkout and an
+adoption cannot be undone. Then it falls back to the branch.
 A session is running when a process-identity-checked session record, a live agent-view row,
 or a live watch lease names it. All three must prove absence; unreadable presence refuses
-with a retry line. A same-plan live lead refuses registration, never splits the crew.
+with a retry line. **Absence needs proof:** a running pid whose record has no `procStart`, or
+whose `/proc` start cannot be read, counts as running ("identity unproved"); only a start
+that differs from the record's (a reused pid) does not. A row agent view lists as stopped is not
+running, so a lead whose session stopped is gone for adoption and for cleanup alike. A
+same-plan live lead refuses registration, never splits the crew.
 
 `adoptLead` holds one store lock and rechecks the old lead. It writes the new lead with
 `earlierSessions` and an increased `generation`, transfers every non-removed crew record
@@ -258,10 +265,15 @@ Watch and notes cursors merge at the lowest offset; watch `said` and missing-ses
 clocks are joined. Leases and issue-mark queues stay in place. The new watch settles
 marks for every earlier id; an adopted old watch ends without settling. Each pass reloads
 its cursor and id set when the generation changes. Adoption summarizes crew state and
-replays questions and unread reports instead of old progress lines. Ended, empty lead
+replays questions and unread reports instead of old progress lines, **once per adoption**:
+the watch state keeps the generation it summarized, so a watch re-armed every 30 minutes does
+not say it again, and the time of the adoption (`adoptedAt`, on the new lead record) bounds the
+replay, never the record's `updatedAt`, which a later `crew lead` moves. Ended, empty lead
 groups disappear from the portal, and ended leads do not receive merge news or tell messages.
 The board shows lead short ids and a resume command for missing crew after the shared
 one-minute grace. A prompt in an unregistered fork hints at adoption without calling agent view.
+A crew session never hears the hint, and session records that cannot be read are one stderr
+line, never a line in the session's context.
 
 **`crew lead [--plan <slug>] [--plan-file <path>] [--tag <tag>]`** (`src/crew/lead.ts`) records the session
 that runs it as a lead of this repository. **Which session** is first the one Claude Code names in
@@ -823,6 +835,29 @@ is a stopped row with no process. The record keeps it (`earlierSessions`, RX1), 
 removes it with the rest (§ A removed crew session's conversation); `sessions --finished` never
 offers it, because it is the crew's own.
 
+**An earlier copy that comes back stands down.** Seen live on 2026-11-02 (2.1.316): after a
+Claude Code restart, the lead's `crew resume` made copy `361009ed` of `955c446a`. Eight seconds
+later, Claude Code restored `955c446a` itself. Its SessionStart hook was given the main checkout
+as `cwd`, while its transcript at the same moment names the worktree. So the wrong-folder rule
+failed a record that now belonged to the copy, the watch stopped the copy that was right, and
+the lead built the phase a second time. Its reviewer's findings went to the old copy, which
+could not send them on.
+
+Now a session whose id is in the record's `earlierSessions`, and is not its `sessionId`, is an
+earlier copy:
+- its role card says it is an earlier copy, names the current session, and says to do nothing
+  and end its turn;
+- `startCard` checks this before the folder, and changes nothing in the store;
+- its own commands (`crew step`, `crew report`, the self-watch) are refused in `readCrewSelf`,
+  the one home for a crew session's own record;
+- the watch stops it once, with one line, while agent view shows it live. It never stops the
+  record's current session.
+
+A session id the record does not know is judged as before, because a fresh copy may start
+before its resume is recorded. **Not proved:** whether Claude Code also gives a restored
+session that is the record's current one the main checkout as `cwd`. If it does, that session is
+still failed, and the lead's `crew resume` brings it back as a copy in its worktree.
+
 A resume that printed **no such line**, a note that names another id than the line, or a copy
 agent view cannot show is said with the reason, and the record keeps its state and its session —
 never `working` on a guess. Such a resume may have started a session nobody can name, so the
@@ -1321,7 +1356,15 @@ resumed five sessions at once), and each writing the same state file over the ot
   Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew
   watch`. Every other end that can still write says why on stdout too: a lease lost to a newer
   watch (its own line, above), a start that cannot name its lead or find crew sessions on, a
-  lease it cannot take — each as `crew watch ended: <why> — <the same restart>`. The ends that
+  lease it cannot take, and **a newer plugin installed under a running watch** — each as
+  `crew watch ended: <why> — <the same restart>`. Each pass compares the watch's own version with
+  the one Claude Code records as installed (`installedVersion` in `CrewContext`). When the
+  installed one is newer, the watch ends with both versions in its line, so the lead's next
+  watch runs the new code. An installed version that cannot be read, or is equal or older, goes
+  on. Seen on 2026-11-02: a lead session that never restarts keeps its watch, and six lead
+  watches on one machine had run for two and a half days on 1.7.1 while 1.8.1 was installed. They
+  missed every later fix and held their leads' leases. A watch started before 1.9.0 has no
+  such check, so after the update each lead starts its watch again once by hand. The ends that
   cannot write (the output closed, the parent gone) stay on stderr. The command in the line is
   the plugin's own `crew-events` monitor command (`WATCH_MONITOR_COMMAND`; a test keeps the two
   equal). The presence mark every pass writes for every lead (`setLeadPresence`) reads the

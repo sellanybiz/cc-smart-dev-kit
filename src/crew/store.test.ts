@@ -1130,6 +1130,44 @@ describe("what a paused crew session waits for", () => {
 });
 
 describe("the lead record", () => {
+  test("A3: adoption validates the successor before writing it", async () => {
+    const state = tempDir("state");
+    const lead = {
+      cwd: REPO,
+      name: "LEAD my-app master-plan",
+      plan: "master-plan",
+      repo: REPO,
+      sessionId: LEAD,
+      tag: "my-app",
+      generation: Number.MAX_SAFE_INTEGER,
+    };
+    await writeLead(state, lead, T0);
+    await writeLead(state, { ...lead, sessionId: "successor" }, T0);
+    const file = leadFile(state, REPO, "successor");
+    const before = readFileSync(file, "utf8");
+    await expect(adoptLead(state, REPO, LEAD, "successor", T1, () => false)).rejects.toThrow(
+      "generation",
+    );
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readLead(state, REPO, LEAD)?.adoptedBy).toBeUndefined();
+  });
+
+  test("A2: adoption time survives later lead writes", async () => {
+    const state = tempDir("state");
+    const lead = {
+      cwd: REPO,
+      name: "LEAD my-app master-plan",
+      plan: "master-plan",
+      repo: REPO,
+      sessionId: LEAD,
+      tag: "my-app",
+    };
+    await writeLead(state, lead, T0);
+    await writeLead(state, { ...lead, sessionId: "successor" }, T0);
+    await adoptLead(state, REPO, LEAD, "successor", T1, () => false);
+    await writeLead(state, { ...lead, sessionId: "successor" }, T1 + 60000);
+    expect(readLead(state, REPO, "successor")?.adoptedAt).toBe("2026-10-21T10:05:00.000Z");
+  });
   test("concurrent adoption cannot split one old lead between two successors", async () => {
     const state = tempDir("state");
     const lead = {
