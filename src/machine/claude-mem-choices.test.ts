@@ -434,6 +434,7 @@ describe("PM1: the route", () => {
     const plan = w.setup();
     expect(plan.provider).toBeNull();
     expect(plan.notes).toEqual([
+      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
       "  claude-mem settings left alone: you chose CLAUDE_MEM_PROVIDER in the portal (your choice)",
     ]);
     expect(w.settings().CLAUDE_MEM_PROVIDER).toBe("claude");
@@ -525,7 +526,9 @@ describe("PM1: setup and restore after a portal write", () => {
     config.slots["cc-smart-dev-kit-scout"] = ["omniroute:scout/next"];
     writeFileSync(w.paths.gatewayConfigFile, JSON.stringify(config), { mode: 0o600 });
     const plan = w.setup();
-    expect(plan.notes).toEqual([]);
+    expect(plan.notes).toEqual([
+      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
+    ]);
     expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("scout/next");
   });
 });
@@ -558,6 +561,7 @@ describe("PM1: back to setup", () => {
     expect(result).toEqual({
       lines: [
         "Your choices are forgotten: setup decides claude-mem's route again, from the scout slot.",
+        '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "glm/flash" -> "scout/model"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-5-5" -> (none)',
       ],
@@ -572,7 +576,9 @@ describe("PM1: back to setup", () => {
     // The start blocks are setup's own step: left as they were.
     expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("true");
     // A later setup has nothing of the person's to leave alone.
-    expect(w.setup().notes).toEqual([]);
+    expect(w.setup().notes).toEqual([
+      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
+    ]);
   });
 });
 

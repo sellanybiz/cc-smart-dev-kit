@@ -3,7 +3,8 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import { isTaskFile, type ProjectTaskSettings, scanProjectTasks } from "./files";
 export const DEFAULT_STALE_DAYS = 30;
-const DAY_MS = 86_400_000;
+/** One day, the unit of `tasks.staleDays` and every task age. */
+export const DAY_MS = 86_400_000;
 export interface ProjectTaskFinding {
   kind:
     | "stale"

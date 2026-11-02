@@ -69,6 +69,8 @@ import { type FeedMemory, newFeedMemory, pollIssueFeed } from "../issues/feed";
 import { type PassBudget, passBudget, queueMarks, settleMarks } from "../issues/pending";
 import { checkPhaseIssues, unnamedIssueLine } from "../issues/phase-issues";
 import { currentHolder, LockBusyError } from "../setup/lock";
+import { taskContext } from "../tasks/context";
+import { branchTaskChanges } from "../tasks/project/branch";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import type { ResolvedWorkflow } from "../workflow/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
@@ -1611,6 +1613,33 @@ async function runPass(
       if (record.state !== "merged") {
         const proof = mergeProof(record, ctx);
         if (proof === undefined) continue;
+        try {
+          const tasks = taskContext(record.worktree, ctx.env);
+          if (!tasks.ok) throw new Error(tasks.why);
+          if (!tasks.projectTasks.ok) throw new Error(tasks.projectTasks.why);
+          // The recorded cut point still describes the incoming branch after the merge.
+          const changes = branchTaskChanges(
+            record.worktree,
+            tasks.projectTasks.dir,
+            record.base?.sha ?? record.baseRef,
+          );
+          const broken = changes.find((change) => change.why !== undefined);
+          if (broken) throw new Error(broken.why);
+          const brought = changes
+            .filter((change) => change.change === "added" || change.change === "changed")
+            .flatMap((change) =>
+              change.task
+                ? [
+                    `${change.task.id} (${change.task.kind}, ${change.task.when}) ${JSON.stringify(change.task.title)}`,
+                  ]
+                : [],
+            );
+          if (brought.length) say(`brought project tasks: ${brought.join("; ")}`);
+        } catch (error) {
+          ctx.error(
+            `note: project tasks brought by ${record.name} could not be read: ${reasonOf(error)}`,
+          );
+        }
         // Queued before the mark, so a pass that stops between the two loses nothing: the
         // next pass queues the same marks again, and the queue keeps each once (D67).
         try {

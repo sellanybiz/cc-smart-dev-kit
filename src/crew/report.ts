@@ -24,6 +24,8 @@
 import { z } from "zod";
 import { commentHandBack } from "../issues/handback";
 import { MAX_PHASE_ISSUES, phaseIssues } from "../issues/phase-issues";
+import { projectKey } from "../tasks/context";
+import { crewTaskView, type OpenTaskLine } from "../tasks/guard-view";
 import { runGh } from "../workflow/merge-check";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { readCrewSelf, reasonOf } from "./caller";
@@ -37,13 +39,7 @@ import {
   isQuestionOpen,
   recordCrewReport,
 } from "./store";
-import {
-  openTasks,
-  readSessionTasks,
-  type SessionTask,
-  sessionTasksDir,
-  taskListId,
-} from "./tasks";
+import { taskListId } from "./tasks";
 import { contextUseOf, transcriptFile } from "./transcript";
 
 /** The statuses a report can end a phase with (`REPORT_STATUSES`). */
@@ -283,32 +279,34 @@ function doneReportGate(
   ctx: CrewContext,
 ): { line: string | null } | { refused: ReportRefusal } {
   const listId = taskListId(ctx.env, record.sessionId);
-  const read = readSessionTasks(ctx.paths.claudeConfigDir, listId);
-  if (read.state === "none") {
-    return { line: noTaskListLine("no task list was found for this session") };
+  const view = crewTaskView({
+    stateDir: ctx.paths.stateDir,
+    claudeConfigDir: ctx.paths.claudeConfigDir,
+    settingsFile: ctx.paths.settingsFile,
+    project: projectKey(record.repo),
+    crewId: record.id,
+    listId,
+  });
+  const open = view.open;
+  if (open.length === 0) {
+    if (view.unreadable.length) return { line: noTaskListLine(view.unreadable.join("; ")) };
+    if (!view.listed && view.phase === null)
+      return { line: noTaskListLine("no task list was found for this session") };
+    return { line: null };
   }
-  if (read.state === "unreadable") {
-    return {
-      line: noTaskListLine(
-        `the task list in ${sessionTasksDir(ctx.paths.claudeConfigDir, listId)} cannot be read`,
-      ),
-    };
-  }
-  const open = openTasks(read.tasks);
-  if (open.length === 0) return { line: null };
   return {
     refused: refusal(
       `the task list still has ${open.length} open ${open.length === 1 ? "task" : "tasks"}: ${open.map(taskLine).join(", ")}`,
-      "Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+      "Finish each open subtask (`task_done`), or drop one that no longer applies (`task_done` with outcome dropped) and say why under `open` in your report",
     ),
   };
 }
 
 /** One open task as the refusal names it: its number, its subject, and where it stands. */
-function taskLine(task: SessionTask): string {
+function taskLine(task: OpenTaskLine): string {
   return task.subject === ""
-    ? `#${task.id} (${task.status})`
-    : `#${task.id} "${task.subject}" (${task.status})`;
+    ? `${task.ref} (${task.status})`
+    : `${task.ref} "${task.subject}" (${task.status})`;
 }
 
 /** A test run's words in a refusal: its command and what failed. */

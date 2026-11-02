@@ -121,10 +121,9 @@ you touch a check that names a plugin, a launcher or a folder.
 
 ## Dependencies
 
-- One runtime dependency: `zod`. Ask the owner before you add another one — it goes
-  into every bundle.
-- Bun only: `bun add`, never `npm`. CI installs with `bun install --frozen-lockfile`, so
-  commit `bun.lock` with any dependency change.
+- Runtime dependencies: `zod`, official MCP SDK (`@modelcontextprotocol/server` and
+  `@modelcontextprotocol/core` 2.4.0; approved 2026-11-03). Ask the owner before adding another.
+- SDK only in `plugin/dist/tasks-mcp.js`, never `cli.js`. Use `bun add`; commit `bun.lock`.
 
 ## Releasing
 

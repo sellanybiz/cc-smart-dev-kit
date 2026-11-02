@@ -22,6 +22,17 @@ command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
 
+## 1.10.0 — keep going, with the kit's task list (D75)
+
+In progress: the release joins the lead and crew keep-going guards with one task system.
+Local SQLite holds live work across worktrees; reviewed Markdown files hold production,
+database, teammate and follow-up obligations. The task tools and command share both stores.
+Setup replaces Claude Code's list tools and turns off claude-mem work state; memory stays.
+The first-edit gate, Stop gates, done report and lead reminder read the kit's list, with
+Claude Code's beside it for one release. Start notes, status progress, checks, imports and
+release lists make open work visible. [The task design](design/tasks.md) records the
+boundary; live MCP, permissions and process-identity proofs remain release checks.
+
 ## 1.0.1 — a crew session reaches its worktree
 
 **A hotfix of 1.0.0**, from its first live use (H101). `crew start` read

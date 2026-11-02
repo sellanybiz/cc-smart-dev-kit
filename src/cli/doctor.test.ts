@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
 import { applyClaudeMem, claudeMemPlan, TODO_TOOLS_KEY } from "../machine/claude-mem";
 import { applyManagedJson } from "../setup/managed-json";
+import { applyTaskPermissions } from "../setup/task-tools";
 import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import {
@@ -17,6 +18,7 @@ import {
   doctorReport,
   doctorVerdict,
   groupSummary,
+  oldTodoToolsKeyCheck,
   taskToolsCheck,
 } from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
@@ -114,11 +116,10 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
   const WORK_STATE = "CLAUDE_MEM_WORK_STATE_ENABLED";
   const MEMORY = "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED";
   const SHORT = "~/.claude-mem/settings.json";
-  const SETTINGS = "~/.claude/settings.json";
   const SEEDED = {
     CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
     CLAUDE_MEM_PROVIDER: "claude",
-    [WORK_STATE]: "true",
+    [WORK_STATE]: "",
     [MEMORY]: "true",
   };
 
@@ -155,6 +156,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     const planned = claudeMemPlan(paths);
     if (!("plan" in planned)) throw new Error("expected a plan");
     applyClaudeMem(paths, planned.plan, false);
+    applyTaskPermissions(paths, true, false);
     applyManagedJson({
       file: paths.settingsFile,
       stateDir: paths.stateDir,
@@ -167,7 +169,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
   test("D68: task tools are checked without claude-mem", () => {
     const w = world(undefined, false);
     expect(checkLine(taskToolsCheck(w.paths))).toBe(
-      `✗ Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is not set in ${SETTINGS}, so a lead, and a session without claude-mem's work state, has no task list Fix: cc-smart-dev-kit setup`,
+      "✗ task tools: missing allow rule mcp__cc-smart-dev-kit-tasks__*; missing deny rules TaskCreate, TaskUpdate, TaskList, TaskGet, TodoWrite Fix: cc-smart-dev-kit setup",
     );
   });
 
@@ -180,7 +182,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       unchosen: () => true,
     });
     expect(lines(w.paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit. Work state is off from an older setup, so sessions get no to-do list from claude-mem Fix: cc-smart-dev-kit setup`,
+      `✗ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -190,7 +192,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
 
   test("D68: claude-mem's defaults: ✗ with setup as the command to run", () => {
     expect(lines(world(SEEDED).paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit Fix: cc-smart-dev-kit setup`,
+      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit. Work state must be off so the kit owns the task list Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -198,7 +200,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);
     expect(lines(w.paths)).toEqual([
-      `✓ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
   });
 
@@ -210,7 +212,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     afterSetup(w.paths);
     writeFileSync(w.paths.settingsFile, `\uFEFF${readFileSync(w.paths.settingsFile, "utf8")}`);
     expect(lines(w.paths)).toEqual([
-      `✓ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
   });
 
@@ -219,39 +221,39 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     afterSetup(w.paths);
     const file = w.paths.claudeMemSettingsFile;
     const settings = JSON.parse(readFileSync(file, "utf8"));
-    settings[WORK_STATE] = "false";
+    settings[WORK_STATE] = "true";
     writeFileSync(file, JSON.stringify(settings, null, 2));
     expect(lines(w.paths)).toEqual([
-      `· claude-mem's start blocks in ${SHORT}: work state is off (your choice), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `· claude-mem's start blocks in ${SHORT}: work state is on (your choice), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
   });
 
-  test("D68: work state off without the task tools: ✗ with setup as the command", () => {
+  test("D75: both start blocks off from setup pass, with no task-tools key at all", () => {
     const w = world(SEEDED);
     const planned = claudeMemPlan(w.paths);
     if (!("plan" in planned)) throw new Error("expected a plan");
-    // Both start blocks off, but the task-tools key never written (a setup before D68).
+    // Only claude-mem's keys written: the start-block line does not read the task tools.
     applyClaudeMem(w.paths, planned.plan, false);
     expect(lines(w.paths)).toEqual([
-      `✓ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
   });
 
-  test("D68: a task-tools value the person set: information, never a failure", () => {
+  test("D75: a task-tools value the person set leaves the start-block line as it was", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);
     const settings = JSON.parse(readFileSync(w.paths.settingsFile, "utf8"));
     settings.env.CLAUDE_CODE_ENABLE_TODO_TOOLS = "0";
     writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
     expect(lines(w.paths)).toEqual([
-      `✓ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is off (set by cc-smart-dev-kit setup)`,
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
   });
 
-  test("D68: task tools on, BOM, personal off, and owned off", () => {
+  test("D75: allow and deny entries in place (also behind a BOM); without them ✗ with setup", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);
-    const on = `✓ Claude Code's task tools are on for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "1" in ${SETTINGS}`;
+    const on = "✓ task tools: the kit's tools are allowed and the built-in task lists are hidden";
     expect(checkLine(taskToolsCheck(w.paths))).toBe(on);
     writeFileSync(w.paths.settingsFile, `﻿${readFileSync(w.paths.settingsFile, "utf8")}`);
     expect(checkLine(taskToolsCheck(w.paths))).toBe(on);
@@ -260,7 +262,17 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       JSON.stringify({ env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" } }),
     );
     expect(checkLine(taskToolsCheck(w.paths))).toBe(
-      `· Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" in ${SETTINGS} (your choice), so a lead, and a session without claude-mem's work state, has no task list`,
+      "✗ task tools: missing allow rule mcp__cc-smart-dev-kit-tasks__*; missing deny rules TaskCreate, TaskUpdate, TaskList, TaskGet, TodoWrite Fix: cc-smart-dev-kit setup",
+    );
+    const oldKey = oldTodoToolsKeyCheck(w.paths);
+    expect(oldKey === null ? null : checkLine(oldKey)).toBe(
+      "· ~/.claude/settings.json: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is yours and no longer used; it can go, the kit's own task list replaced Claude Code's",
+    );
+    writeFileSync(w.paths.settingsFile, "{}");
+    expect(oldTodoToolsKeyCheck(w.paths)).toBeNull();
+    writeFileSync(
+      w.paths.settingsFile,
+      JSON.stringify({ env: { CLAUDE_CODE_ENABLE_TODO_TOOLS: "0" } }),
     );
     applyManagedJson({
       file: w.paths.settingsFile,
@@ -269,11 +281,11 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       unchosen: () => true,
     });
     expect(checkLine(taskToolsCheck(w.paths))).toBe(
-      `· Claude Code's task tools are off for sessions: env.CLAUDE_CODE_ENABLE_TODO_TOOLS is "0" in ${SETTINGS} (set by cc-smart-dev-kit setup), so a lead, and a session without claude-mem's work state, has no task list`,
+      "✗ task tools: missing allow rule mcp__cc-smart-dev-kit-tasks__*; missing deny rules TaskCreate, TaskUpdate, TaskList, TaskGet, TodoWrite Fix: cc-smart-dev-kit setup",
     );
   });
 
-  test("D68: old work state alone fails; personal memory-use on is information", () => {
+  test("D75: work state off from setup passes; a person's own on is information", () => {
     const w = world(SEEDED);
     afterSetup(w.paths);
     applyManagedJson({
@@ -283,7 +295,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       unchosen: () => true,
     });
     expect(lines(w.paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup). Work state is off from an older setup, so sessions get no to-do list from claude-mem Fix: cc-smart-dev-kit setup`,
+      `✓ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)`,
     ]);
     const settings = JSON.parse(readFileSync(w.paths.claudeMemSettingsFile, "utf8"));
     settings[WORK_STATE] = "true";

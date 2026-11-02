@@ -18,7 +18,7 @@ function value<T>(result: Result<T>): T {
 function world() {
   const stateDir = tempDir();
   const claudeConfigDir = tempDir();
-  return { stateDir, claudeConfigDir };
+  return { stateDir, claudeConfigDir, settingsFile: join(claudeConfigDir, "settings.json") };
 }
 
 /** Claude Code's own list: one JSON file per task under `<config>/tasks/<list id>/`. */
@@ -116,6 +116,36 @@ test("Claude Code's list alone still counts, for a session that used it before s
   expect(view.open).toEqual([
     { ref: "Claude Code task 1", subject: "Legacy", status: "in_progress" },
   ]);
+});
+
+test("once setup denies TaskUpdate, a task left on Claude Code's list holds no one", () => {
+  const w = world();
+  claudeList(w.claudeConfigDir, "crew-1", [{ status: "in_progress", subject: "Legacy" }]);
+  claudeList(w.claudeConfigDir, "lead-1", [{ status: "in_progress", subject: "Legacy step" }]);
+  // Another deny of the person's own changes nothing: the list can still be closed.
+  writeFileSync(w.settingsFile, JSON.stringify({ permissions: { deny: ["WebFetch"] } }));
+  expect(crewTaskView({ ...w, project: "p", crewId: "crew-a", listId: "crew-1" }).open).toEqual([
+    { ref: "Claude Code task 1", subject: "Legacy", status: "in_progress" },
+  ]);
+  // Setup's entries, behind a byte order mark an editor added.
+  writeFileSync(
+    w.settingsFile,
+    `﻿${JSON.stringify({ permissions: { deny: ["WebFetch", "TaskCreate", "TaskUpdate"] } })}`,
+  );
+  expect(crewTaskView({ ...w, project: "p", crewId: "crew-a", listId: "crew-1" })).toEqual({
+    phase: null,
+    listed: false,
+    open: [],
+    unreadable: [],
+  });
+  expect(
+    leadTaskView({ ...w, project: "p", plan: "plan", sessionIds: ["lead-1"], listId: "lead-1" }),
+  ).toEqual({ hasOwn: false, inProgress: [], unreadable: [] });
+  // A settings file that is not JSON shows no deny: the list is read as before setup.
+  writeFileSync(w.settingsFile, "{not json");
+  expect(crewTaskView({ ...w, project: "p", crewId: "crew-a", listId: "crew-1" }).listed).toBe(
+    true,
+  );
 });
 
 test("what cannot be read is named, never read as an empty list", () => {

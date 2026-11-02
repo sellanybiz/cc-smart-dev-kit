@@ -1,13 +1,42 @@
 import { cliPaths } from "../../cli/paths";
 import { crewIdOf, realProcessFacts } from "../../crew/session";
-import { liveSessions } from "../../hooks/sessions";
+import { isRunning, liveSessions, sessionIdentityProved } from "../../hooks/sessions";
 import {
   ancestorPids,
   type ParentReader,
   readProcStat,
   type StatReader,
 } from "../../jobs/ancestry";
-import type { Who } from "./types";
+import type { Who, WorkClaim } from "./types";
+
+export interface ClaimFacts {
+  platform?: NodeJS.Platform;
+  readStat?: StatReader;
+  running?: (pid: number) => boolean;
+}
+
+/**
+ * Whether a claim's Claude process still runs: the one test the server, the command and the
+ * hooks use. On Linux the process's start time must match, so a reused pid is not the claimer;
+ * elsewhere the pid alone answers, the same evidence `callerOf` had when the claim was made.
+ */
+export function claimLive(claim: WorkClaim, facts: ClaimFacts = {}): boolean {
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux") return (facts.running ?? isRunning)(claim.pid);
+  return (
+    claim.procStart !== null &&
+    sessionIdentityProved(
+      {
+        pid: claim.pid,
+        procStart: claim.procStart,
+        sessionId: claim.sessionId ?? "",
+        cwd: "",
+        name: "",
+      },
+      { platform, ...(facts.readStat ? { readStat: facts.readStat } : {}) },
+    )
+  );
+}
 export interface CallerFacts {
   claudeConfigDir?: string;
   env?: Record<string, string | undefined>;

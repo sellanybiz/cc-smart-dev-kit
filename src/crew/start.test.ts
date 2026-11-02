@@ -288,10 +288,18 @@ describe("D25: crew start returns at once", () => {
     // Control off; with no plugin list read, it turns no plugin off. The `--mcp-config` file
     // passes no server, because this world has no Tavily key. All three files are the kit's, 0600.
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
+      `{\n  "permissions": {\n    "allow": [\n      "mcp__cc-smart-dev-kit-tasks__*"\n    ]\n  },\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     expect(statSync(settingsFile).mode & 0o777).toBe(0o600);
-    expect(readFileSync(mcpFile, "utf8")).toBe(`{\n  "mcpServers": {}\n}\n`);
+    expect(JSON.parse(readFileSync(mcpFile, "utf8"))).toEqual({
+      mcpServers: {
+        "cc-smart-dev-kit-tasks": {
+          alwaysLoad: true,
+          args: ["task", "mcp"],
+          command: join(world.paths.binDir, COMMAND),
+        },
+      },
+    });
     expect(statSync(mcpFile).mode & 0o777).toBe(0o600);
     const brief = readFileSync(briefFile, "utf8");
     expect(brief).toStartWith("# B6b\n\nBuild the live stream.\n\n---\n\n## Your frame");
@@ -409,11 +417,11 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const settingsFile = crewSettingsFile(world.paths.stateDir, world.repo, ID);
     const mcpFile = join(dirname(settingsFile), "mcp.json");
     expect(readFileSync(settingsFile, "utf8")).toBe(
-      `{\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
+      `{\n  "permissions": {\n    "allow": [\n      "mcp__cc-smart-dev-kit-tasks__*"\n    ]\n  },\n  "env": {\n    "CC_SMART_DEV_KIT_CREW": "${ID}",\n    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG": "1",\n    "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS": "300000"\n  },\n  "enabledPlugins": {\n    "stripe@claude-plugins-official": false\n  },\n  "disableClaudeAiConnectors": true,\n  "remoteControlAtStartup": false\n}\n`,
     );
     // The registration is the kit's own, with Claude Code's placeholder, never a key.
     expect(readFileSync(mcpFile, "utf8")).toBe(
-      `{\n  "mcpServers": {\n    "tavily-websearch": {\n      "headers": {\n        "Authorization": "Bearer \${TAVILY_API_KEY}"\n      },\n      "timeout": 300000,\n      "type": "http",\n      "url": "${TAVILY_MCP_URL}"\n    }\n  }\n}\n`,
+      `{\n  "mcpServers": {\n    "tavily-websearch": {\n      "headers": {\n        "Authorization": "Bearer \${TAVILY_API_KEY}"\n      },\n      "timeout": 300000,\n      "type": "http",\n      "url": "${TAVILY_MCP_URL}"\n    },\n    "cc-smart-dev-kit-tasks": {\n      "command": "${join(world.paths.binDir, COMMAND)}",\n      "args": [\n        "task",\n        "mcp"\n      ],\n      "alwaysLoad": true\n    }\n  }\n}\n`,
     );
     const launched = world.claudeCalls()[1] ?? [];
     expect(launched.slice(0, 2)).toEqual(["--bg", "-w"]);
@@ -442,7 +450,7 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const servers = Object.keys(
       (JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers,
     );
-    expect(servers).toEqual(["playwright", "tavily-websearch"]);
+    expect(servers).toEqual(["playwright", "tavily-websearch", "cc-smart-dev-kit-tasks"]);
   });
 
   test("workflow.crew.keep keeps a plugin on and adds a server every kind lacks", async () => {
@@ -468,7 +476,11 @@ describe("a lean start: the plugins and servers the phase uses, and no others", 
     const mcp = JSON.parse(readFileSync(mcpFile, "utf8")) as {
       mcpServers: Record<string, { args?: string[]; command?: string }>;
     };
-    expect(Object.keys(mcp.mcpServers)).toEqual(["sequential-thinking", "tavily-websearch"]);
+    expect(Object.keys(mcp.mcpServers)).toEqual([
+      "sequential-thinking",
+      "tavily-websearch",
+      "cc-smart-dev-kit-tasks",
+    ]);
     expect(mcp.mcpServers["sequential-thinking"]).toEqual({
       args: [
         "-y",
@@ -582,7 +594,7 @@ describe("a lean start: a queued crew session is lean when it starts", () => {
     );
     expect(
       Object.keys((JSON.parse(readFileSync(mcpFile, "utf8")) as { mcpServers: object }).mcpServers),
-    ).toEqual(["tavily-websearch"]);
+    ).toEqual(["tavily-websearch", "cc-smart-dev-kit-tasks"]);
     expect(onlyCrew(world.paths.stateDir, world.repo).state).toBe("starting");
   });
 
@@ -1293,6 +1305,7 @@ describe("D25: the queue — still one line, at once", () => {
     const world = await ledWorld();
     expect(await runCrew(startArgs(world.brief, "--waits-for", "B6a,B7"), world.ctx())).toBe(0);
     expect(world.out).toEqual([
+      "note: phase task dependencies skipped: no task yet for B6a, B7",
       "queued C my-app master-plan B6b portal-live: waits for B6a (not started yet), B7 (not started yet); it starts when each is merged",
     ]);
     expect(onlyCrew(world.paths.stateDir, world.repo).waitsFor).toEqual(["B6a", "B7"]);
@@ -1883,6 +1896,7 @@ describe("Remote Control: off in every crew session", () => {
     // file is the one source that turns it off for that session alone (a project file cannot
     // turn it on, and need not turn it off). No process is started here, so it runs anywhere.
     expect(crewSettings("c1", [])).toEqual({
+      permissions: { allow: ["mcp__cc-smart-dev-kit-tasks__*"] },
       disableClaudeAiConnectors: true,
       env: {
         CC_SMART_DEV_KIT_CREW: "c1",

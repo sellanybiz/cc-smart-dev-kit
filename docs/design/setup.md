@@ -94,6 +94,27 @@ state is per config folder, but the launcher in `~/.local/bin` is shared by all 
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
+## The task system (D75)
+
+Setup registers `cc-smart-dev-kit-tasks` at user scope through the stable launcher, with
+`alwaysLoad: true`. It asks before adding `mcp__cc-smart-dev-kit-tasks__*` to
+`permissions.allow`: this is a trust rule, like the auto-mode entries, and is left out
+when no terminal can ask. Every crew session's settings allow it and its `mcp.json`
+keeps the server, including on resume.
+
+Managed deny entries remove `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` and
+`TodoWrite` from Claude's tools. They never deny `TaskStop` or `TaskOutput`. Setup takes
+back its own `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` opt-in from D68. It sets claude-mem's
+`CLAUDE_MEM_WORK_STATE_ENABLED` to `"false"`; a person's own `"true"` stays.
+Restore undoes the managed registration, permission entries and settings, not the person's
+choices or task data.
+
+After updating, run setup and restart Claude Code. Run `task import claude-mem` once to
+move open lists; the import is not an automatic setup step. Doctor checks the server,
+allow and deny entries, claude-mem's switch, work-store schema and integrity, and in a
+project the task-file findings from `task check`. [Task design](tasks.md) owns the stores,
+commands and guards. The status line adds `#12 Subject · 2/5` for current work.
+
 ### Who changes what, and when
 
 - **A SessionStart hook** adds a note to the session (§ The hooks) or starts the background

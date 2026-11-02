@@ -544,6 +544,7 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
     record: crewRecordOf(crew),
     report: answer.report,
     reviews: answer.reviews,
+    tasks: answer.tasks,
   };
 }
 

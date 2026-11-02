@@ -16,7 +16,13 @@
 import { realpathSync } from "node:fs";
 import { runGit } from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { checkoutFailure, loadProjectConfig, locateCheckout } from "../project/resolve";
+import {
+  type Checkout,
+  checkoutFailure,
+  loadProjectConfig,
+  locateCheckout,
+  locateCheckoutAsync,
+} from "../project/resolve";
 import { repoKey } from "../workflow/reviews";
 import { DEFAULT_STALE_DAYS } from "./project/check";
 import { projectTasksDir } from "./project/files";
@@ -63,12 +69,32 @@ export function projectKey(repo: string): string {
 }
 
 export function taskContext(cwd: string, env: Env = process.env): TaskContext {
-  let checkout: ReturnType<typeof locateCheckout>;
+  let checkout: Checkout | null;
   try {
     checkout = locateCheckout(cwd, { env });
   } catch (error) {
     return { ok: false, why: checkoutFailure(error) };
   }
+  return contextOf(checkout, cwd, env);
+}
+
+/**
+ * `taskContext`, without blocking: the same answer, with git read through `Bun.spawn`, for the
+ * portal's server, where a blocking spawn freezes every page (`.claude/rules/portal.md`). Its
+ * `releaseBranch()` still asks git directly: the portal never calls it.
+ */
+export async function taskContextAsync(cwd: string, env: Env = process.env): Promise<TaskContext> {
+  let checkout: Checkout | null;
+  try {
+    checkout = await locateCheckoutAsync(cwd, { env });
+  } catch (error) {
+    return { ok: false, why: checkoutFailure(error) };
+  }
+  return contextOf(checkout, cwd, env);
+}
+
+/** The answer for a checkout already found (null: the folder is not in git). */
+function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContext {
   if (checkout === null) {
     return {
       ok: true,

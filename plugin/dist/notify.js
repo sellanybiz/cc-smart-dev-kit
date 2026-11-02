@@ -28,8 +28,8 @@ __export(exports_iso, {
 });
 
 // src/hooks/notify-entry.ts
-import { existsSync as existsSync9 } from "fs";
-import { join as join15 } from "path";
+import { existsSync as existsSync11 } from "fs";
+import { join as join16 } from "path";
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -210,9 +210,9 @@ function shellQuote(value) {
 }
 
 // src/hooks/notify.ts
-import { existsSync as existsSync8, readFileSync as readFileSync11, rmSync as rmSync2, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync10, readFileSync as readFileSync11, rmSync as rmSync2, statSync as statSync5, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename2, join as join13 } from "path";
+import { basename as basename2, join as join14 } from "path";
 
 // src/crew/names.ts
 var MAX_SESSION_NAME = 60;
@@ -6835,18 +6835,20 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "crew-role",
-  "lead-notes"
+  "lead-notes",
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
+    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -6861,6 +6863,12 @@ var ccSmartDevKitConfigSchema = strictObject({
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  tasks: strictObject({
+    dir: inCheckout.optional(),
+    staleDays: number2().int().min(1).optional(),
+    releaseBranch: string2().trim().min(1).optional(),
+    legacyFolders: array(inCheckout).optional()
+  }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
@@ -7395,6 +7403,27 @@ function stringField(value) {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
+// src/mcp/task-server-name.ts
+var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
+
+// src/tasks/words.ts
+var TASK_TOOL = {
+  create: "task_create",
+  update: "task_update",
+  done: "task_done",
+  note: "task_note",
+  list: "task_list",
+  get: "task_get",
+  search: "task_search",
+  delete: "task_delete"
+};
+var RETIRED_TASK_CLOSER = "TaskUpdate";
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
+function taskCloseStep(ref) {
+  return ref.startsWith("#") ? `\`${TASK_TOOL.done}\` with task "${ref}", or \`${TASK_COMMAND} done ${ref}\`` : `\`${RETIRED_TASK_CLOSER}\` with status "completed"`;
+}
+
 // src/crew/skills.ts
 var CREW_SKILL = `${PLUGIN}:crew`;
 var LEAD_SKILL = `${PLUGIN}:lead`;
@@ -7454,9 +7483,9 @@ var IGNORE_CASE = process.platform === "win32";
 import {
   appendFileSync,
   closeSync as closeSync2,
-  existsSync as existsSync5,
+  existsSync as existsSync7,
   fstatSync,
-  mkdirSync as mkdirSync3,
+  mkdirSync as mkdirSync4,
   openSync as openSync2,
   readdirSync as readdirSync2,
   readFileSync as readFileSync6,
@@ -7464,7 +7493,7 @@ import {
   rmSync,
   statSync as statSync3
 } from "fs";
-import { dirname as dirname2, join as join8 } from "path";
+import { dirname as dirname3, join as join9 } from "path";
 
 // src/workflow/reviews.ts
 import { createHash } from "crypto";
@@ -7472,6 +7501,169 @@ var START_KEPT_MS = 24 * 60 * 60 * 1000;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 function repoKey(repo) {
   return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+}
+
+// src/tasks/project/format.ts
+var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
+var projectTaskSchema = object({
+  id: string2().regex(/^T-[a-z2-7]{6}$/),
+  title: string2().min(1).max(200),
+  kind: _enum(["production", "database", "teammate", "follow-up"]),
+  status: _enum(["open", "done", "dropped"]),
+  when: _enum(["now", "next-release", "any"]).optional(),
+  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
+  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
+  created: date3,
+  closed: date3.optional(),
+  from: string2().optional(),
+  refs: array(string2()).optional(),
+  evidence: string2().optional()
+}).passthrough();
+
+// src/tasks/context.ts
+function projectKey(repo) {
+  return repoKey(repo);
+}
+
+// src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
+import { dirname as dirname2, join as join8 } from "path";
+var WORK_SCHEMA_VERSION = 1;
+var WRITE_TIMEOUT_MS = 3000;
+var HOOK_TIMEOUT_MS = 200;
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+function workDbFile(paths) {
+  return join8(paths.stateDir, "tasks", "work.db");
+}
+var SCHEMA = `
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('min_compatible','1');
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
+ parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
+ subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
+ plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
+CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
+CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
+CREATE INDEX task_status ON tasks(project,status);
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE INDEX task_crew ON tasks(project,crew_id);
+CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
+CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
+CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+`;
+function openWorkDb(file, options) {
+  const hook = options.mode === "hook";
+  const fresh = !existsSync5(file);
+  if (hook && fresh)
+    throw new Error("task store does not exist");
+  if (!hook)
+    mkdirSync3(dirname2(file), { recursive: true, mode: 448 });
+  const sqlite = new Database(file, { create: !hook, readwrite: true });
+  try {
+    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
+    sqlite.run("PRAGMA foreign_keys = ON");
+    if (!hook) {
+      chmodSync(dirname2(file), 448);
+      chmodSync(file, 384);
+      if (fresh)
+        sqlite.run("PRAGMA journal_mode = WAL");
+      sqlite.run("BEGIN IMMEDIATE");
+      try {
+        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
+        if (version < 1) {
+          sqlite.run(SCHEMA);
+          sqlite.run("PRAGMA user_version = 1");
+        }
+        sqlite.run("COMMIT");
+      } catch (error) {
+        sqlite.run("ROLLBACK");
+        throw error;
+      }
+    }
+    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
+    if (hook || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
+    return {
+      sqlite,
+      writable: !hook && minimum <= WORK_SCHEMA_VERSION,
+      close: () => sqlite.close()
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+
+// src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
+function crewIdOf(env) {
+  const id = env[CREW_ENV]?.trim() ?? "";
+  return id === "" ? null : id;
+}
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
+
+// src/tasks/work/identity.ts
+var cached2 = new Map;
+
+// src/tasks/work/queries.ts
+function allTasks(db, project) {
+  const dependencies = new Map;
+  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
+    const refs = dependencies.get(row.task_id) ?? [];
+    refs.push(row.waits_for);
+    dependencies.set(row.task_id, refs);
+  }
+  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
+    id: row.id,
+    number: row.number,
+    project: row.project,
+    parentId: row.parent_id,
+    kind: row.kind,
+    subject: row.subject,
+    description: row.description,
+    status: row.status,
+    plan: row.plan,
+    phase: row.phase,
+    crewId: row.crew_id,
+    createdBy: row.created_by,
+    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    waitsFor: dependencies.get(row.id) ?? []
+  }));
+}
+
+// src/tasks/work/read.ts
+import { existsSync as existsSync6 } from "fs";
+function readWorkStore(paths, body) {
+  let db;
+  try {
+    const file = workDbFile(paths);
+    if (!existsSync6(file))
+      return { state: "none" };
+    db = openWorkDb(file, { mode: "hook" });
+    return { state: "ready", value: body(db) };
+  } catch (error) {
+    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+  } finally {
+    db?.close();
+  }
+}
+function own2(db, project, sessionIds, plan) {
+  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
+}
+function leadOwnState(paths, project, plan, sessionIds) {
+  return readWorkStore(paths, (db) => {
+    const tasks = own2(db, project, sessionIds, plan);
+    return { inProgress: tasks.filter((t) => t.status === "in_progress"), total: tasks.length };
+  });
 }
 
 // src/crew/runs.ts
@@ -7546,13 +7738,13 @@ function fileId(id, what) {
   return id;
 }
 function crewRootDir(stateDir) {
-  return join8(stateDir, "crew");
+  return join9(stateDir, "crew");
 }
 function crewStoreDir(stateDir, repo) {
-  return join8(crewRootDir(stateDir), repoKey(repo));
+  return join9(crewRootDir(stateDir), repoKey(repo));
 }
 function leadFile(stateDir, repo, sessionId) {
-  return join8(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
+  return join9(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
 }
 var text2 = string2().min(1);
 var version2 = number2().int().min(1);
@@ -7807,6 +7999,11 @@ function readRecord(schema, file) {
 function readLead(stateDir, repo, sessionId) {
   return readRecord(leadRecordSchema, leadFile(stateDir, repo, sessionId));
 }
+function leadSessions(lead) {
+  return [
+    ...new Set([lead.sessionId, ...(lead.earlierSessions ?? []).map((one) => one.sessionId)])
+  ];
+}
 var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
   summarizedGeneration: count.optional(),
@@ -7850,18 +8047,6 @@ var issueFeedFields = object({
   version: literal(1)
 });
 
-// src/worktrees/machine-facts.ts
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
-function crewIdOf(env) {
-  const id = env[CREW_ENV]?.trim() ?? "";
-  return id === "" ? null : id;
-}
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
-
 // src/worktrees/auto-state.ts
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var removedSchema = object({
@@ -7880,6 +8065,16 @@ var recordSchema = object({
   seq: number2()
 });
 var toldSchema = object({ seq: number2() });
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
 
 // src/crew/transcript.ts
 var TAIL_BYTES = 256 * 1024;
@@ -8028,7 +8223,7 @@ var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 var GIB = 1024 ** 3;
 
 // src/jobs/config.ts
-import { isAbsolute, join as join9 } from "path";
+import { isAbsolute, join as join10 } from "path";
 var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
 var MAX_WEIGHT = 1e4;
 var weightSchema = union([
@@ -8058,7 +8253,7 @@ var storedSchema = looseObject({
 });
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync7, statSync as statSync4 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync7, statSync as statSync4 } from "fs";
 
 // src/gateway/history.ts
 var HISTORY_MAX_RETENTION_DAYS = 3650;
@@ -8392,8 +8587,8 @@ ${parsed.error}`);
 
 // src/setup/managed-json.ts
 import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync6, readFileSync as readFileSync8 } from "fs";
-import { join as join10 } from "path";
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "fs";
+import { join as join11 } from "path";
 var OWNED_FILE = "owned.json";
 function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -8405,7 +8600,7 @@ function detectIndent(text) {
   return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
 }
 function readJsonObject(file) {
-  if (!existsSync6(file))
+  if (!existsSync8(file))
     return { data: {}, indent: "  ", text: null };
   const text = readFileSync8(file, "utf8");
   if (text.trim() === "")
@@ -8442,8 +8637,8 @@ function toRecord(entry, file) {
   throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
 }
 function readOwned(stateDir) {
-  const file = join10(stateDir, OWNED_FILE);
-  if (!existsSync6(file))
+  const file = join11(stateDir, OWNED_FILE);
+  if (!existsSync8(file))
     return {};
   const parsed = JSON.parse(readFileSync8(file, "utf8"));
   if (!isObject2(parsed))
@@ -8769,10 +8964,11 @@ var MAX_PHASE_ISSUES = 10;
 
 // src/crew/tasks.ts
 import { readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
-import { join as join11 } from "path";
+import { join as join12 } from "path";
 var TASK_LIST_ENV = "CLAUDE_CODE_TASK_LIST_ID";
+var OPEN_TASK_STATUSES = ["pending", "in_progress"];
 function sessionTasksDir(claudeConfigDir, listId) {
-  return join11(claudeConfigDir, "tasks", listId);
+  return join12(claudeConfigDir, "tasks", listId);
 }
 function taskListId(env, sessionId) {
   const named = env[TASK_LIST_ENV]?.trim() ?? "";
@@ -8818,11 +9014,75 @@ function readSessionTasks(claudeConfigDir, listId) {
   }
   const tasks = [];
   for (const name of names) {
-    const task = taskOf(join11(folder, name), name);
+    const task = taskOf(join12(folder, name), name);
     if (task !== null)
       tasks.push(task);
   }
   return { files: names.length, state: "read", tasks: tasks.sort(byNumber) };
+}
+function openTasks(tasks) {
+  return tasks.filter((task) => OPEN_TASK_STATUSES.includes(task.status));
+}
+
+// src/tasks/guard-view.ts
+function kitLine(task) {
+  return { ref: `#${task.number}`, subject: task.subject, status: task.status };
+}
+function claudeListClosable(settingsFile) {
+  let settings;
+  try {
+    settings = readUserJson(settingsFile);
+  } catch {
+    return true;
+  }
+  const permissions = typeof settings === "object" && settings !== null && "permissions" in settings ? settings.permissions : undefined;
+  const deny = typeof permissions === "object" && permissions !== null && "deny" in permissions ? permissions.deny : undefined;
+  return !(Array.isArray(deny) && deny.includes(RETIRED_TASK_CLOSER));
+}
+function claudeList(where) {
+  if (!claudeListClosable(where.settingsFile))
+    return { files: 0, open: [], unreadable: null };
+  const read = readSessionTasks(where.claudeConfigDir, where.listId);
+  if (read.state === "none")
+    return { files: 0, open: [], unreadable: null };
+  if (read.state === "unreadable") {
+    return {
+      files: 0,
+      open: [],
+      unreadable: `Claude Code's task list in ${sessionTasksDir(where.claudeConfigDir, where.listId)} cannot be read`
+    };
+  }
+  const open = openTasks(read.tasks).sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress"));
+  return {
+    files: read.files,
+    open: open.map((task) => ({
+      ref: `Claude Code task ${task.id}`,
+      subject: task.subject,
+      status: task.status
+    })),
+    unreadable: null
+  };
+}
+function storeProblem(why) {
+  return `the kit's task store cannot be read: ${why}`;
+}
+function leadTaskView(where) {
+  const kit = leadOwnState({ stateDir: where.stateDir }, where.project, where.plan, [
+    ...where.sessionIds
+  ]);
+  const legacy = claudeList(where);
+  const ready = kit.state === "ready" ? kit.value : null;
+  return {
+    hasOwn: (ready?.total ?? 0) > 0 || legacy.files > 0,
+    inProgress: [
+      ...(ready?.inProgress ?? []).map(kitLine),
+      ...legacy.open.filter((task) => task.status === "in_progress")
+    ],
+    unreadable: [
+      ...kit.state === "unreadable" ? [storeProblem(kit.why)] : [],
+      ...legacy.unreadable === null ? [] : [legacy.unreadable]
+    ]
+  };
 }
 
 // src/crew/report.ts
@@ -9068,16 +9328,6 @@ var STRIPPED_CONTENT_TAGS = [
 var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
 var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
 
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
@@ -9136,9 +9386,9 @@ var TEXT_RULE = `small regular UTF-8 text only (at most ${DISCARD_IGNORED_FILE_M
 var STOPPED_REMINDER_MS = 24 * 60 * 60000;
 
 // src/hooks/lead-notes.ts
-function continueTask(subject, count) {
+function continueTask(first, count) {
   const more = count > 1 ? ` (and ${String(count - 1)} more)` : "";
-  return `Your task "${subject}"${more} is still in progress. Continue it now. If it really waits for something \u2014 a crew session, the person, CI \u2014 end your turn with one line: Waiting for: <what>.`;
+  return `Your task "${first.ref} ${first.subject}"${more} is still in progress. Continue it now, and mark it done the moment it is: ${taskCloseStep(first.ref)}. If it really waits for something \u2014 a crew session, the person, CI \u2014 end your turn with one line: Waiting for: <what>.`;
 }
 function leadStopReason(input, env, paths) {
   if (crewIdOf(env) !== null || input.stop_hook_active === true)
@@ -9165,12 +9415,20 @@ function leadStopReason(input, env, paths) {
   const lead = readLead(paths.stateDir, repo, sessionId);
   if (lead === null || lead.endedAt != null)
     return null;
-  const list = readSessionTasks(paths.claudeConfigDir, taskListId(env, sessionId));
-  if (list.state !== "read")
+  const list = leadTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    listId: taskListId(env, sessionId),
+    plan: lead.plan,
+    sessionIds: leadSessions(lead)
+  });
+  if (list.unreadable.length > 0)
     return null;
-  const active = list.tasks.filter((task) => task.status === "in_progress");
+  const active = list.inProgress;
   const first = active[0];
-  return first === undefined ? null : continueTask(first.subject, active.length);
+  return first === undefined ? null : continueTask(first, active.length);
 }
 function leadStopWouldBlockAt(input, env) {
   try {
@@ -9193,8 +9451,8 @@ var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
 var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
 
 // src/hooks/stop-failure.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync10, writeFileSync as writeFileSync2 } from "fs";
-import { join as join12 } from "path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync10, writeFileSync as writeFileSync2 } from "fs";
+import { join as join13 } from "path";
 var LIMIT_TEXT = /^You've hit your (?:[\w-]+ ){0,3}limit\b/;
 var NOT_LIMIT_TEXT = /\(not your usage limit\)/;
 var BREAKER_TEXT = new RegExp(`${PLUGIN}-router: every target of (\\S+)(?: in profile (\\S+))? is limited or down since `);
@@ -9272,7 +9530,7 @@ function planAlert(input, ctx) {
 function readAlertContext(paths, nowMs, input, env = process.env) {
   const cwd = isJsonObject2(input) && typeof input.cwd === "string" && input.cwd !== "" ? input.cwd : null;
   const here = alertsAt(paths, cwd, env);
-  const gatewaySetUp = existsSync7(paths.gatewayConfigFile);
+  const gatewaySetUp = existsSync9(paths.gatewayConfigFile);
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   let state = null;
   try {
@@ -9304,7 +9562,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync10(join12(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync10(join13(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));
@@ -10923,7 +11181,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync11(join13(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync11(join14(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject3(settings) || !isJsonObject3(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID] !== true)
@@ -10932,7 +11190,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync11(join13(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync11(join14(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject3(installed) || !isJsonObject3(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID];
@@ -11052,7 +11310,7 @@ function alertFor(input, event, ctx) {
       forget(ctx.failed);
       if (ctx.stopWouldBlock)
         return null;
-      if (input.stop_hook_active === true && existsSync8(ctx.finished))
+      if (input.stop_hook_active === true && existsSync10(ctx.finished))
         return null;
       markFinished(ctx.finished);
       if (ctx.transcript !== null && startedByPeer(ctx.transcript))
@@ -11226,9 +11484,9 @@ function notifyHook(input, event, deps) {
     return SILENT;
   const session = sessionKey(input.session_id);
   const dir = runtimeDir(deps.env);
-  const mark = join13(dir, `cc-smart-dev-kit-notify-asked-${session}`);
-  const failed = join13(dir, `cc-smart-dev-kit-notify-failed-${session}`);
-  const finished = join13(dir, `cc-smart-dev-kit-notify-finished-${session}`);
+  const mark = join14(dir, `cc-smart-dev-kit-notify-asked-${session}`);
+  const failed = join14(dir, `cc-smart-dev-kit-notify-failed-${session}`);
+  const finished = join14(dir, `cc-smart-dev-kit-notify-finished-${session}`);
   if (WAIT_END_EVENTS.includes(event)) {
     forget(mark);
     forget(finished);
@@ -11314,7 +11572,7 @@ function withProblem(result, problem) {
 
 // src/hooks/terminal.ts
 import { closeSync as closeSync4, constants, openSync as openSync4, readlinkSync as readlinkSync2, statSync as statSync6, writeSync } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 var TERMINAL_DEVICE = /^\/dev\/(?:pts\/\d+|tty\d+)$/;
 function isTerminalDevice(device) {
   return TERMINAL_DEVICE.test(device);
@@ -11333,7 +11591,7 @@ function sessionTerminalDevice(probe) {
     return null;
   const allowed = probe.isTerminalDevice ?? isTerminalDevice;
   for (const fd of [0, 1, 2]) {
-    const device = probe.readlink(join14(probe.procRoot, String(probe.pid), "fd", String(fd)));
+    const device = probe.readlink(join15(probe.procRoot, String(probe.pid), "fd", String(fd)));
     if (device === null || !allowed(device))
       continue;
     if (probe.owner(device) !== probe.uid)
@@ -11396,11 +11654,11 @@ async function runNotifyEntry() {
     const env = process.env;
     const paths = cliPaths(env);
     const probe = realTerminalProbe(env, process.ppid);
-    const launcher = join15(paths.binDir, LAUNCHER_NAME);
+    const launcher = join16(paths.binDir, LAUNCHER_NAME);
     const result = notifyHook(input, typeof event === "string" ? event : "", {
       capture: spawnRunner,
       env,
-      launcher: existsSync9(launcher) ? launcher : null,
+      launcher: existsSync11(launcher) ? launcher : null,
       nowMs: Date.now(),
       paths,
       platform: process.platform,

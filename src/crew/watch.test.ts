@@ -1445,6 +1445,32 @@ describe("crew watch", () => {
     expect(record?.state).toBe("removed");
   });
 
+  test("the watch names project tasks brought by a merged branch", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "done");
+    const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
+    git(world.repo, "worktree", "add", "-q", "-b", "crew/B6b-portal-live", worktree);
+    const dir = join(worktree, ".claude", "tasks");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "T-abc234-backfill.md"),
+      '---\nid: "T-abc234"\ntitle: "Run the backfill"\nkind: "database"\nstatus: "open"\nwhen: "next-release"\ncreated: "2026-10-21"\n---\nSteps.\n',
+    );
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-q", "-m", "add project task");
+    git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
+    expect(
+      await runCrew(
+        ["watch", "--once", "--timeout", "0"],
+        world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
+      ),
+    ).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toContain(
+      'brought project tasks: T-abc234 (database, next-release) "Run the backfill"',
+    );
+  });
+
   test("D35: a branch the lead merged is removed by the watch's next pass", async () => {
     const world = await leadWorld();
     await addCrew(world, "done");

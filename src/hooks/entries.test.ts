@@ -222,6 +222,7 @@ esac
       "lead-notes",
       "verify-gate",
     ]);
+    expect(bundlesFor("SessionStart")).toContain("task-start");
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([
       "review-record",

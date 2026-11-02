@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { GATEWAY_CARD_REFRESH, PROJECT_REFRESH, WORKFLOW_CARD_REFRESH } from "./refresh";
+import {
+  CREW_PAGE_REFRESH,
+  CREW_REFRESH,
+  GATEWAY_CARD_REFRESH,
+  PROJECT_REFRESH,
+  TASKS_CARD_REFRESH,
+  WORKFLOW_CARD_REFRESH,
+} from "./refresh";
 import type { LiveMessage } from "./stream";
 
 const crewEvent = { name: "crew", data: { kind: "step" } } as unknown as LiveMessage;
+const tasksEvent: LiveMessage = { name: "tasks", data: { at: 1 } };
 const resultOf = (action: string): LiveMessage =>
   ({ name: "action", data: { action, lines: [], ok: true } }) as unknown as LiveMessage;
 const lineOf = (action: string): LiveMessage =>
@@ -38,5 +46,25 @@ describe("a project's cards read again only for what changes them", () => {
     expect(refresh(resultOf("slot.save"))).toBe(true);
     expect(refresh(resultOf("switch"))).toBe(true);
     expect(refresh(lineOf("project.gateway.set"))).toBe(false);
+  });
+
+  test("the Tasks card follows the work store, a crew session and a project result", () => {
+    const refresh = asFunction(TASKS_CARD_REFRESH);
+    expect(refresh(tasksEvent)).toBe(true);
+    expect(refresh(crewEvent)).toBe(true);
+    expect(refresh(resultOf("crew.rm"))).toBe(true);
+    expect(refresh(resultOf("project.write"))).toBe(true);
+    // A slot change or a progress line changes no task.
+    expect(refresh(resultOf("slot.save"))).toBe(false);
+    expect(refresh(lineOf("crew.rm"))).toBe(false);
+  });
+});
+
+describe("Work and a crew page", () => {
+  test("a crew page reads its phase's subtasks again when the work store changes; Work does not", () => {
+    expect(asFunction(CREW_PAGE_REFRESH)(tasksEvent)).toBe(true);
+    expect(asFunction(CREW_PAGE_REFRESH)(crewEvent)).toBe(true);
+    expect(asFunction(CREW_REFRESH)(tasksEvent)).toBe(false);
+    expect(asFunction(CREW_REFRESH)(crewEvent)).toBe(true);
   });
 });

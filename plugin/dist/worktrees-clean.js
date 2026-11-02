@@ -122,17 +122,17 @@ function tildify(path, home) {
 }
 
 // src/worktrees/auto-clean.ts
-import { existsSync as existsSync16, readdirSync as readdirSync11 } from "fs";
-import { join as join22 } from "path";
+import { existsSync as existsSync17, readdirSync as readdirSync11 } from "fs";
+import { join as join23 } from "path";
 
 // src/crew/discard.ts
 import { createHash as createHash3 } from "crypto";
 import {
   closeSync as closeSync4,
   copyFileSync as copyFileSync2,
-  existsSync as existsSync15,
+  existsSync as existsSync16,
   lstatSync as lstatSync4,
-  mkdirSync as mkdirSync9,
+  mkdirSync as mkdirSync10,
   mkdtempSync as mkdtempSync2,
   openSync as openSync4,
   readdirSync as readdirSync10,
@@ -144,7 +144,7 @@ import {
   writeFileSync as writeFileSync3
 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { dirname as dirname8, join as join21 } from "path";
+import { dirname as dirname9, join as join22 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync } from "fs";
@@ -6649,18 +6649,20 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "crew-role",
-  "lead-notes"
+  "lead-notes",
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
+    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -6675,6 +6677,12 @@ var ccSmartDevKitConfigSchema = strictObject({
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  tasks: strictObject({
+    dir: inCheckout.optional(),
+    staleDays: number2().int().min(1).optional(),
+    releaseBranch: string2().trim().min(1).optional(),
+    legacyFolders: array(inCheckout).optional()
+  }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
@@ -6997,7 +7005,7 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
 }
 
 // src/crew/end.ts
-import { existsSync as existsSync14, readFileSync as readFileSync18 } from "fs";
+import { existsSync as existsSync15, readFileSync as readFileSync18 } from "fs";
 
 // src/setup/lock.ts
 import {
@@ -7523,9 +7531,9 @@ function mountPoints(on = platform()) {
 }
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync13, mkdtempSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync9 } from "fs";
+import { existsSync as existsSync14, mkdtempSync, readdirSync as readdirSync9, rmSync as rmSync4, statSync as statSync9 } from "fs";
 import { tmpdir } from "os";
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 
 // src/hooks/sessions.ts
 import { existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
@@ -7641,24 +7649,24 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync12, readFileSync as readFileSync17, statSync as statSync8 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute2, join as join19, resolve as resolve4 } from "path";
+import { existsSync as existsSync13, readFileSync as readFileSync17, statSync as statSync8 } from "fs";
+import { basename as basename6, isAbsolute as isAbsolute2, join as join20, resolve as resolve4 } from "path";
 
 // src/crew/store.ts
 import {
   appendFileSync,
   closeSync as closeSync3,
-  existsSync as existsSync6,
+  existsSync as existsSync7,
   fstatSync,
-  mkdirSync as mkdirSync4,
+  mkdirSync as mkdirSync5,
   openSync as openSync3,
   readdirSync as readdirSync6,
-  readFileSync as readFileSync9,
+  readFileSync as readFileSync10,
   readSync,
   rmSync,
   statSync as statSync5
 } from "fs";
-import { dirname as dirname4, join as join10 } from "path";
+import { dirname as dirname5, join as join12 } from "path";
 
 // src/setup/write.ts
 import {
@@ -7726,9 +7734,330 @@ function describeIssues(issues) {
   }).join("; ");
 }
 
+// src/tasks/project/format.ts
+var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
+var projectTaskSchema = object({
+  id: string2().regex(/^T-[a-z2-7]{6}$/),
+  title: string2().min(1).max(200),
+  kind: _enum(["production", "database", "teammate", "follow-up"]),
+  status: _enum(["open", "done", "dropped"]),
+  when: _enum(["now", "next-release", "any"]).optional(),
+  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
+  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
+  created: date3,
+  closed: date3.optional(),
+  from: string2().optional(),
+  refs: array(string2()).optional(),
+  evidence: string2().optional()
+}).passthrough();
+
+// src/tasks/context.ts
+function projectKey(repo) {
+  return repoKey(repo);
+}
+
+// src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
+import { dirname as dirname3, join as join9 } from "path";
+var WORK_SCHEMA_VERSION = 1;
+var WRITE_TIMEOUT_MS = 3000;
+var HOOK_TIMEOUT_MS = 200;
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+function workDbFile(paths) {
+  return join9(paths.stateDir, "tasks", "work.db");
+}
+var SCHEMA = `
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('min_compatible','1');
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
+ parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
+ subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
+ plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
+CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
+CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
+CREATE INDEX task_status ON tasks(project,status);
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE INDEX task_crew ON tasks(project,crew_id);
+CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
+CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
+CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+`;
+function openWorkDb(file, options) {
+  const hook = options.mode === "hook";
+  const fresh = !existsSync5(file);
+  if (hook && fresh)
+    throw new Error("task store does not exist");
+  if (!hook)
+    mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
+  const sqlite = new Database(file, { create: !hook, readwrite: true });
+  try {
+    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
+    sqlite.run("PRAGMA foreign_keys = ON");
+    if (!hook) {
+      chmodSync2(dirname3(file), 448);
+      chmodSync2(file, 384);
+      if (fresh)
+        sqlite.run("PRAGMA journal_mode = WAL");
+      sqlite.run("BEGIN IMMEDIATE");
+      try {
+        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
+        if (version < 1) {
+          sqlite.run(SCHEMA);
+          sqlite.run("PRAGMA user_version = 1");
+        }
+        sqlite.run("COMMIT");
+      } catch (error) {
+        sqlite.run("ROLLBACK");
+        throw error;
+      }
+    }
+    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
+    if (hook || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
+    return {
+      sqlite,
+      writable: !hook && minimum <= WORK_SCHEMA_VERSION,
+      close: () => sqlite.close()
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+function writeWork(db, body) {
+  if (!db.writable)
+    return { ok: false, why: NEWER_STORE };
+  let began = false;
+  try {
+    db.sqlite.run("BEGIN IMMEDIATE");
+    began = true;
+    const min = Number(db.sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
+    if (min > WORK_SCHEMA_VERSION)
+      throw new Error(NEWER_STORE);
+    const value = body();
+    db.sqlite.run("COMMIT");
+    return { ok: true, value };
+  } catch (error) {
+    if (began)
+      db.sqlite.run("ROLLBACK");
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// src/crew/session.ts
+import { readFileSync as readFileSync8 } from "fs";
+import { join as join10 } from "path";
+var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
+function crewIdOf(env) {
+  const id = env[CREW_ENV]?.trim() ?? "";
+  return id === "" ? null : id;
+}
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
+function sessionRecordFile(claudeConfigDir, pid) {
+  return join10(claudeConfigDir, "sessions", `${pid}.json`);
+}
+
+class SessionRecordError extends Error {
+  name = "SessionRecordError";
+}
+var readText = (file) => {
+  try {
+    return readFileSync8(file, "utf8");
+  } catch {
+    return null;
+  }
+};
+var CLAUDE_PID_ENV = "CLAUDE_PID";
+var CLAUDE_SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
+function recordOf(claudeConfigDir, pid, read) {
+  const file = sessionRecordFile(claudeConfigDir, pid);
+  const text = read(file);
+  if (text === null)
+    return null;
+  const record = parseSessionRecord(text);
+  if (record === null || record.pid !== pid) {
+    throw new SessionRecordError(`the session record ${file} cannot be read, so the session that runs this command is unknown`);
+  }
+  return record;
+}
+function sessionNamedByEnv(claudeConfigDir, env, read = readText) {
+  const pid = env[CLAUDE_PID_ENV]?.trim() ?? "";
+  const id = env[CLAUDE_SESSION_ID_ENV]?.trim() ?? "";
+  if (!/^[1-9]\d*$/.test(pid) || id === "")
+    return null;
+  const record = recordOf(claudeConfigDir, Number(pid), read);
+  return record !== null && record.sessionId === id ? record : null;
+}
+function callingSession(claudeConfigDir, pid, parentOf, env = {}, read = readText) {
+  const named = sessionNamedByEnv(claudeConfigDir, env, read);
+  if (named !== null)
+    return named;
+  for (const ancestor of ancestorsBy(pid, parentOf)) {
+    const record = recordOf(claudeConfigDir, ancestor, read);
+    if (record !== null)
+      return record;
+  }
+  return null;
+}
+function procCommandLine(pid) {
+  try {
+    const raw = readFileSync8(`/proc/${String(pid)}/cmdline`, "utf8");
+    const args = raw.split("\x00").filter((arg) => arg !== "");
+    return args.length === 0 ? null : args.join(" ");
+  } catch {
+    return null;
+  }
+}
+function realProcessFacts(platform) {
+  if (platform === "linux") {
+    return {
+      commandLineOf: procCommandLine,
+      parentOf: (pid) => {
+        const stat = readProcStat(pid);
+        return stat === null ? null : parentPidFromStat(stat);
+      }
+    };
+  }
+  let listed = null;
+  const program = (pid) => {
+    if (listed === null) {
+      const found = runningPrograms(platform);
+      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
+    }
+    return listed.get(pid);
+  };
+  return {
+    commandLineOf: (pid) => platform === "win32" ? null : program(pid)?.path ?? null,
+    parentOf: (pid) => program(pid)?.parentPid ?? null
+  };
+}
+
+// src/tasks/work/identity.ts
+var cached2 = new Map;
+
+// src/tasks/work/queries.ts
+function allTasks(db, project) {
+  const dependencies = new Map;
+  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
+    const refs = dependencies.get(row.task_id) ?? [];
+    refs.push(row.waits_for);
+    dependencies.set(row.task_id, refs);
+  }
+  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
+    id: row.id,
+    number: row.number,
+    project: row.project,
+    parentId: row.parent_id,
+    kind: row.kind,
+    subject: row.subject,
+    description: row.description,
+    status: row.status,
+    plan: row.plan,
+    phase: row.phase,
+    crewId: row.crew_id,
+    createdBy: row.created_by,
+    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    waitsFor: dependencies.get(row.id) ?? []
+  }));
+}
+function getTask(db, project, ref) {
+  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
+  return allTasks(db, project).find((t) => number === null ? t.id === ref : t.number === number) ?? null;
+}
+function taskById(db, id) {
+  const row = db.sqlite.query("SELECT project FROM tasks WHERE id=?").get(id);
+  if (!row)
+    throw new Error("task not found");
+  const task = getTask(db, row.project, id);
+  if (!task)
+    throw new Error("task not found");
+  return task;
+}
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function descendants(db, id) {
+  const task = taskById(db, id);
+  return descendantsIn(allTasks(db, task.project), id);
+}
+function descendantsIn(tasks, id) {
+  const ids = new Set([id]);
+  const result = [];
+  let added = true;
+  while (added) {
+    added = false;
+    for (const t of tasks)
+      if (t.parentId && ids.has(t.parentId) && !ids.has(t.id)) {
+        ids.add(t.id);
+        result.push(t);
+        added = true;
+      }
+  }
+  return result;
+}
+function openSubtasks(db, id) {
+  return descendants(db, id).filter(isOpen).sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number);
+}
+
+// src/tasks/work/types.ts
+var NOTE_LIMIT = 64000;
+
+// src/tasks/work/store.ts
+function insertNote(db, id, text, who, now) {
+  taskById(db, id);
+  if (!text.trim() || text.length > NOTE_LIMIT)
+    throw new Error(`note must be 1\u2013${NOTE_LIMIT} characters`);
+  const row = db.sqlite.query("INSERT INTO task_notes(task_id,text,session_id,crew_id,at) VALUES (?,?,?,?,?) RETURNING id").get(id, text, who.sessionId, who.crewId, now);
+  db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
+  return {
+    id: row?.id ?? 0,
+    taskId: id,
+    text,
+    sessionId: who.sessionId,
+    crewId: who.crewId,
+    at: now
+  };
+}
+function systemClose(db, id, status, reason, who, now) {
+  return writeWork(db, () => {
+    const task = taskById(db, id);
+    for (const child of openSubtasks(db, id)) {
+      db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
+      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now);
+    }
+    db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
+    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now);
+    return taskById(db, id);
+  });
+}
+
+// src/crew/phase-task.ts
+var UNKNOWN = { sessionId: null, crewId: null, pid: null, procStart: null };
+function closePhaseTask(stateDir, record, outcome, reason, now, error) {
+  let db;
+  try {
+    db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    const phase = allTasks(db, projectKey(record.repo)).find((t) => t.kind === "phase" && t.crewId === record.id);
+    if (!phase || phase.status === "done" || phase.status === "dropped")
+      return;
+    const result = systemClose(db, phase.id, outcome, reason, UNKNOWN, now);
+    if (!result.ok)
+      throw new Error(result.why);
+  } catch (cause) {
+    error(`note: the phase task could not be closed: ${cause instanceof Error ? cause.message : String(cause)}`);
+  } finally {
+    db?.close();
+  }
+}
+
 // src/crew/runs.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readdirSync as readdirSync5, readFileSync as readFileSync8 } from "fs";
-import { basename as basename3, dirname as dirname3, join as join9 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readdirSync as readdirSync5, readFileSync as readFileSync9 } from "fs";
+import { basename as basename3, dirname as dirname4, join as join11 } from "path";
 var RUNS_DIR = "runs";
 var PLAN_ARCHIVE_DIR = "archive";
 var RUN_VERSION = 1;
@@ -7739,19 +8068,19 @@ function planFolderOf(planFile) {
 }
 function livePlanFolder(planFile) {
   const folder = planFolderOf(planFile);
-  if (existsSync5(folder))
+  if (existsSync6(folder))
     return folder;
-  const archived = join9(dirname3(folder), PLAN_ARCHIVE_DIR, basename3(folder));
-  if (!existsSync5(planFile) && (existsSync5(archived) || existsSync5(`${archived}.md`))) {
+  const archived = join11(dirname4(folder), PLAN_ARCHIVE_DIR, basename3(folder));
+  if (!existsSync6(planFile) && (existsSync6(archived) || existsSync6(`${archived}.md`))) {
     return archived;
   }
   return folder;
 }
 function plansFolderGone(planFile) {
-  return !existsSync5(dirname3(planFile));
+  return !existsSync6(dirname4(planFile));
 }
 function runFile(planFile, id) {
-  return join9(livePlanFolder(planFile), RUNS_DIR, `${id}.json`);
+  return join11(livePlanFolder(planFile), RUNS_DIR, `${id}.json`);
 }
 var runEventSchema = looseObject({
   at: text,
@@ -8036,7 +8365,7 @@ function nextRun(previous, change) {
 function readRunFile(file) {
   let raw;
   try {
-    raw = readFileSync8(file, "utf8");
+    raw = readFileSync9(file, "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
       return null;
@@ -8054,7 +8383,7 @@ function readRunFile(file) {
   return parsed.data;
 }
 function writeRunFile(file, run) {
-  mkdirSync3(dirname3(file), { recursive: true });
+  mkdirSync4(dirname4(file), { recursive: true });
   atomicWrite(file, `${JSON.stringify(run, null, 2)}
 `, 420);
 }
@@ -8098,22 +8427,22 @@ function fileId(id, what) {
   return id;
 }
 function crewRootDir(stateDir) {
-  return join10(stateDir, "crew");
+  return join12(stateDir, "crew");
 }
 function crewStoreDir(stateDir, repo) {
-  return join10(crewRootDir(stateDir), repoKey(repo));
+  return join12(crewRootDir(stateDir), repoKey(repo));
 }
 function crewFile(stateDir, repo, id) {
-  return join10(crewStoreDir(stateDir, repo), "crew", `${fileId(id, "crew id")}.json`);
+  return join12(crewStoreDir(stateDir, repo), "crew", `${fileId(id, "crew id")}.json`);
 }
 function leadFile(stateDir, repo, sessionId) {
-  return join10(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
+  return join12(crewStoreDir(stateDir, repo), "leads", `${fileId(sessionId, "session id")}.json`);
 }
 function crewFilesDir(stateDir, repo, id) {
-  return join10(crewStoreDir(stateDir, repo), "files", fileId(id, "crew id"));
+  return join12(crewStoreDir(stateDir, repo), "files", fileId(id, "crew id"));
 }
 function crewEventsFile(stateDir, repo) {
-  return join10(crewStoreDir(stateDir, repo), "events.jsonl");
+  return join12(crewStoreDir(stateDir, repo), "events.jsonl");
 }
 var text2 = string2().min(1);
 var version2 = number2().int().min(1);
@@ -8369,7 +8698,7 @@ function checked(schema, value, file) {
 function readRecord(schema, file) {
   let raw;
   try {
-    raw = readFileSync9(file, "utf8");
+    raw = readFileSync10(file, "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -8385,13 +8714,13 @@ function readRecord(schema, file) {
 }
 function listRecords(schema, folder) {
   const listed = { broken: [], records: [] };
-  if (!existsSync6(folder))
+  if (!existsSync7(folder))
     return listed;
   const found = [];
   for (const name of readdirSync6(folder).sort()) {
     if (!RECORD_FILE.test(name))
       continue;
-    const file = join10(folder, name);
+    const file = join12(folder, name);
     try {
       const record2 = readRecord(schema, file);
       if (record2 !== null)
@@ -8405,7 +8734,7 @@ function listRecords(schema, folder) {
   return listed;
 }
 function writeStoreFile(file, text) {
-  mkdirSync4(dirname4(file), { mode: 448, recursive: true });
+  mkdirSync5(dirname5(file), { mode: 448, recursive: true });
   atomicWrite(file, text, 384);
 }
 function writeJsonFile(file, value) {
@@ -8415,7 +8744,7 @@ function writeJsonFile(file, value) {
 function appendEvent(stateDir, repo, event) {
   const file = crewEventsFile(stateDir, repo);
   const line = checked(crewEventSchema, event, file);
-  mkdirSync4(dirname4(file), { mode: 448, recursive: true });
+  mkdirSync5(dirname5(file), { mode: 448, recursive: true });
   appendFileSync(file, `${JSON.stringify(line)}
 `, { mode: 384 });
 }
@@ -8432,22 +8761,22 @@ function recordRunOf(change) {
 }
 async function underStoreLock(stateDir, repo, write) {
   const folder = crewStoreDir(stateDir, repo);
-  mkdirSync4(folder, { mode: 448, recursive: true });
+  mkdirSync5(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: STORE_LOCK_WAIT_MS });
 }
 function readCrew(stateDir, repo, id) {
   return readRecord(crewRecordSchema, crewFile(stateDir, repo, id));
 }
 function listCrew(stateDir, repo) {
-  return listRecords(crewRecordSchema, join10(crewStoreDir(stateDir, repo), "crew"));
+  return listRecords(crewRecordSchema, join12(crewStoreDir(stateDir, repo), "crew"));
 }
 function listAllRecords(schema, stateDir, folder, tie) {
   const root = crewRootDir(stateDir);
   const all = { broken: [], records: [] };
-  if (!existsSync6(root))
+  if (!existsSync7(root))
     return all;
   for (const key of readdirSync6(root).sort()) {
-    const one = listRecords(schema, join10(root, key, folder));
+    const one = listRecords(schema, join12(root, key, folder));
     all.broken.push(...one.broken);
     all.records.push(...one.records);
   }
@@ -8545,6 +8874,13 @@ async function changeCrew(stateDir, repo, id, atMs, plan, by = null) {
     const line = event(after);
     if (line !== null)
       appendEvent(stateDir, repo, line);
+    if (after.state !== before.state) {
+      if (after.state === "merged") {
+        closePhaseTask(stateDir, after, "done", `merged into ${after.mergeProof?.leadRef ?? after.baseRef}`, atMs, reportRunFailure);
+      } else if (after.state === "removed" || after.state === "discarded") {
+        closePhaseTask(stateDir, after, "dropped", line?.text ?? after.state, atMs, reportRunFailure);
+      }
+    }
     recordRunOf({ after, at, before, by: by ?? undefined, event: line });
     return { changed: true, record: after };
   });
@@ -8553,7 +8889,7 @@ function readLead(stateDir, repo, sessionId) {
   return readRecord(leadRecordSchema, leadFile(stateDir, repo, sessionId));
 }
 function listLeads(stateDir, repo) {
-  return listRecords(leadRecordSchema, join10(crewStoreDir(stateDir, repo), "leads"));
+  return listRecords(leadRecordSchema, join12(crewStoreDir(stateDir, repo), "leads"));
 }
 async function setLeadPresence(stateDir, repo, sessionId, known, atMs) {
   const file = leadFile(stateDir, repo, sessionId);
@@ -8600,7 +8936,7 @@ var watchStateFields = object({
   stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
 function watchLeaseFile(stateDir, repo, leadSessionId) {
-  return join10(crewStoreDir(stateDir, repo), "watch-lease", `${fileId(leadSessionId, "session id")}.json`);
+  return join12(crewStoreDir(stateDir, repo), "watch-lease", `${fileId(leadSessionId, "session id")}.json`);
 }
 var watchLeaseFields = object({
   at: number2().int().min(0),
@@ -8614,7 +8950,7 @@ var watchLeaseFields = object({
 function readWatchLease(stateDir, repo, leadSessionId) {
   let raw;
   try {
-    raw = readFileSync9(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+    raw = readFileSync10(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -8657,94 +8993,6 @@ var issueFeedFields = object({
   version: literal(1)
 });
 
-// src/crew/session.ts
-import { readFileSync as readFileSync10 } from "fs";
-import { join as join11 } from "path";
-var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
-function crewIdOf(env) {
-  const id = env[CREW_ENV]?.trim() ?? "";
-  return id === "" ? null : id;
-}
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
-function sessionRecordFile(claudeConfigDir, pid) {
-  return join11(claudeConfigDir, "sessions", `${pid}.json`);
-}
-
-class SessionRecordError extends Error {
-  name = "SessionRecordError";
-}
-var readText = (file) => {
-  try {
-    return readFileSync10(file, "utf8");
-  } catch {
-    return null;
-  }
-};
-var CLAUDE_PID_ENV = "CLAUDE_PID";
-var CLAUDE_SESSION_ID_ENV = "CLAUDE_CODE_SESSION_ID";
-function recordOf(claudeConfigDir, pid, read) {
-  const file = sessionRecordFile(claudeConfigDir, pid);
-  const text = read(file);
-  if (text === null)
-    return null;
-  const record = parseSessionRecord(text);
-  if (record === null || record.pid !== pid) {
-    throw new SessionRecordError(`the session record ${file} cannot be read, so the session that runs this command is unknown`);
-  }
-  return record;
-}
-function sessionNamedByEnv(claudeConfigDir, env, read = readText) {
-  const pid = env[CLAUDE_PID_ENV]?.trim() ?? "";
-  const id = env[CLAUDE_SESSION_ID_ENV]?.trim() ?? "";
-  if (!/^[1-9]\d*$/.test(pid) || id === "")
-    return null;
-  const record = recordOf(claudeConfigDir, Number(pid), read);
-  return record !== null && record.sessionId === id ? record : null;
-}
-function callingSession(claudeConfigDir, pid, parentOf, env = {}, read = readText) {
-  const named = sessionNamedByEnv(claudeConfigDir, env, read);
-  if (named !== null)
-    return named;
-  for (const ancestor of ancestorsBy(pid, parentOf)) {
-    const record = recordOf(claudeConfigDir, ancestor, read);
-    if (record !== null)
-      return record;
-  }
-  return null;
-}
-function procCommandLine(pid) {
-  try {
-    const raw = readFileSync10(`/proc/${String(pid)}/cmdline`, "utf8");
-    const args = raw.split("\x00").filter((arg) => arg !== "");
-    return args.length === 0 ? null : args.join(" ");
-  } catch {
-    return null;
-  }
-}
-function realProcessFacts(platform) {
-  if (platform === "linux") {
-    return {
-      commandLineOf: procCommandLine,
-      parentOf: (pid) => {
-        const stat = readProcStat(pid);
-        return stat === null ? null : parentPidFromStat(stat);
-      }
-    };
-  }
-  let listed = null;
-  const program = (pid) => {
-    if (listed === null) {
-      const found = runningPrograms(platform);
-      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
-    }
-    return listed.get(pid);
-  };
-  return {
-    commandLineOf: (pid) => platform === "win32" ? null : program(pid)?.path ?? null,
-    parentOf: (pid) => program(pid)?.parentPid ?? null
-  };
-}
-
 // src/hooks/detached.ts
 var CMD = "cmd";
 var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
@@ -8786,8 +9034,8 @@ function cmdLine(head, argv) {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync11 } from "fs";
-import { dirname as dirname5, join as join12 } from "path";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync11 } from "fs";
+import { dirname as dirname6, join as join13 } from "path";
 var AUTO_CLEAN_TRIGGERS = ["merge", "session"];
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var removedSchema = object({
@@ -8807,15 +9055,15 @@ var recordSchema = object({
 });
 var toldSchema = object({ seq: number2() });
 function autoCleanLog(stateDir) {
-  return join12(stateDir, "worktrees-auto-clean.log");
+  return join13(stateDir, "worktrees-auto-clean.log");
 }
 function autoCleanFiles(stateDir, repo) {
   const key = createHash2("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join12(stateDir, "worktrees-auto-clean");
+  const dir = join13(stateDir, "worktrees-auto-clean");
   return {
     log: autoCleanLog(stateDir),
-    result: join12(dir, `${key}.json`),
-    told: join12(dir, `${key}.told.json`)
+    result: join13(dir, `${key}.json`),
+    told: join13(dir, `${key}.told.json`)
   };
 }
 function readJson(file, schema) {
@@ -8827,7 +9075,7 @@ function readJson(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync5(dirname5(file), { recursive: true, mode: 448 });
+  mkdirSync6(dirname6(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -8973,7 +9221,12 @@ import { basename as basename5 } from "path";
 
 // src/crew/claude.ts
 import { readFileSync as readFileSync12, statSync as statSync6 } from "fs";
-import { join as join13 } from "path";
+import { join as join14 } from "path";
+
+// src/mcp/task-server-name.ts
+var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
+
+// src/crew/claude.ts
 var CLAUDE_TIMEOUT_MS = 30000;
 var realRunProgram = (argv, options) => {
   try {
@@ -9019,7 +9272,7 @@ function findClaude(deps) {
   if (onPath !== null)
     return onPath;
   for (const name of fallbackNames(deps.platform)) {
-    const path = join13(deps.home, ".local", "bin", name);
+    const path = join14(deps.home, ".local", "bin", name);
     if (isFile(path))
       return path;
   }
@@ -9233,9 +9486,9 @@ function machineLoad(facts) {
 }
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync7, readFileSync as readFileSync14 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync14 } from "fs";
 function pluginsRecord(installedPluginsFile) {
-  if (!existsSync7(installedPluginsFile))
+  if (!existsSync8(installedPluginsFile))
     return null;
   let parsed;
   try {
@@ -9260,7 +9513,7 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 }
 
 // src/jobs/config.ts
-import { isAbsolute, join as join14 } from "path";
+import { isAbsolute, join as join15 } from "path";
 var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
 var MAX_WEIGHT = 1e4;
 var weightSchema = union([
@@ -9296,27 +9549,27 @@ var FIND_INSTALL_JS = [
 // src/update/state.ts
 import {
   appendFileSync as appendFileSync2,
-  existsSync as existsSync8,
-  mkdirSync as mkdirSync6,
+  existsSync as existsSync9,
+  mkdirSync as mkdirSync7,
   readdirSync as readdirSync7,
   readFileSync as readFileSync15,
   rmSync as rmSync2,
   statSync as statSync7,
   writeFileSync as writeFileSync2
 } from "fs";
-import { join as join15 } from "path";
+import { join as join16 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function ensureDir(dir) {
-  mkdirSync6(dir, { recursive: true, mode: 448 });
+  mkdirSync7(dir, { recursive: true, mode: 448 });
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLogLine(logFile, line, nowMs) {
-  ensureDir(join15(logFile, ".."));
+  ensureDir(join16(logFile, ".."));
   try {
     if (statSync7(logFile).size > LOG_MAX_BYTES) {
       const text = readFileSync15(logFile, "utf8");
@@ -9927,16 +10180,16 @@ function leadGone(lead, rows, now, ctx) {
 }
 
 // src/crew/remove.ts
-import { existsSync as existsSync11, mkdirSync as mkdirSync8 } from "fs";
-import { join as join18 } from "path";
+import { existsSync as existsSync12, mkdirSync as mkdirSync9 } from "fs";
+import { join as join19 } from "path";
 
 // src/worktrees/include.ts
-import { copyFileSync, existsSync as existsSync9, mkdirSync as mkdirSync7 } from "fs";
-import { dirname as dirname6, join as join16 } from "path";
+import { copyFileSync, existsSync as existsSync10, mkdirSync as mkdirSync8 } from "fs";
+import { dirname as dirname7, join as join17 } from "path";
 var INCLUDE_TIMEOUT_MS = 60000;
 function copyWorktreeInclude(source, target, env) {
-  const includeFile = join16(source, ".worktreeinclude");
-  if (!existsSync9(includeFile))
+  const includeFile = join17(source, ".worktreeinclude");
+  if (!existsSync10(includeFile))
     return [];
   const listed = runGit(source, ["ls-files", "-z", "--others", "--ignored", `--exclude-from=${includeFile}`], env, INCLUDE_TIMEOUT_MS);
   if (!listed.ok || listed.out === "")
@@ -9953,18 +10206,18 @@ function copyWorktreeInclude(source, target, env) {
   });
   const copied = [];
   for (const path of ignored.stdout.toString().split("\x00")) {
-    if (path === "" || existsSync9(join16(target, path)))
+    if (path === "" || existsSync10(join17(target, path)))
       continue;
-    mkdirSync7(dirname6(join16(target, path)), { recursive: true });
-    copyFileSync(join16(source, path), join16(target, path));
+    mkdirSync8(dirname7(join17(target, path)), { recursive: true });
+    copyFileSync(join17(source, path), join17(target, path));
     copied.push(path);
   }
   return copied;
 }
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync10, lstatSync as lstatSync3, readdirSync as readdirSync8, readFileSync as readFileSync16, rmSync as rmSync3 } from "fs";
-import { dirname as dirname7, join as join17, relative } from "path";
+import { existsSync as existsSync11, lstatSync as lstatSync3, readdirSync as readdirSync8, readFileSync as readFileSync16, rmSync as rmSync3 } from "fs";
+import { dirname as dirname8, join as join18, relative } from "path";
 
 // src/worktrees/verdict.ts
 var MIN_MERGE_TREE_GIT = "2.38.0";
@@ -10111,9 +10364,9 @@ function strayParkedFolders(repo, env) {
   } catch {
     return [];
   }
-  const folders = new Set([join17(repo, ".claude", "worktrees")]);
+  const folders = new Set([join18(repo, ".claude", "worktrees")]);
   for (const listed of all.slice(1))
-    folders.add(dirname7(listed.path));
+    folders.add(dirname8(listed.path));
   const found = [];
   for (const folder of folders) {
     let names;
@@ -10123,7 +10376,7 @@ function strayParkedFolders(repo, env) {
       continue;
     }
     for (const name of names) {
-      const path = join17(folder, name);
+      const path = join18(folder, name);
       const parkedAt = parkedAtOf(path);
       if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
         continue;
@@ -10170,7 +10423,7 @@ function walkLeftover(root, limitMs) {
         walk.tooMany = true;
         return walk;
       }
-      const path = join17(folder, name);
+      const path = join18(folder, name);
       let stat;
       try {
         stat = lstatSync3(path);
@@ -10194,7 +10447,7 @@ function walkLeftover(root, limitMs) {
   return walk;
 }
 function gitEntryWhy(folder) {
-  const dotGit = join17(folder, ".git");
+  const dotGit = join18(folder, ".git");
   let stat;
   try {
     stat = lstatSync3(dotGit);
@@ -10207,7 +10460,7 @@ function gitEntryWhy(folder) {
     return "its .git entry is neither a file nor a folder";
   try {
     const target = readFileSync16(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
-    return target !== "" && existsSync10(target) ? `git still has an administrative folder for it: ${target}` : null;
+    return target !== "" && existsSync11(target) ? `git still has an administrative folder for it: ${target}` : null;
   } catch {
     return "its .git file cannot be read";
   }
@@ -10402,7 +10655,7 @@ function discardBlocker(record, ctx) {
   }
 }
 function crewRemovalLockDir(stateDir, repo, id) {
-  return join18(crewFilesDir(stateDir, repo, id), "removal");
+  return join19(crewFilesDir(stateDir, repo, id), "removal");
 }
 async function remakeReleasedWorktree(record, ctx, options) {
   if (record.released === undefined)
@@ -10410,7 +10663,7 @@ async function remakeReleasedWorktree(record, ctx, options) {
   return await remakeWorktree(record, ctx, options);
 }
 async function remakeWorktree(record, ctx, options) {
-  if (existsSync11(record.worktree))
+  if (existsSync12(record.worktree))
     return { ok: false, why: `${record.worktree} exists already; inspect it first` };
   if (record.released === undefined) {
     let all;
@@ -10466,7 +10719,7 @@ async function runCrewRm(ref, ctx, options = {}) {
   const dir = crewRemovalLockDir(ctx.paths.stateDir, first.record.repo, first.record.id);
   let entered = false;
   try {
-    mkdirSync8(dir, { mode: 448, recursive: true });
+    mkdirSync9(dir, { mode: 448, recursive: true });
     return await withLock(dir, async () => {
       entered = true;
       return await removeCrewSession(ref, ctx, options);
@@ -10486,7 +10739,7 @@ async function removeCrewSession(ref, ctx, options) {
   const release = options.release === true;
   const then = release ? "; the watch then releases it by itself" : ", then run crew rm again";
   const releasedBefore = record.released !== undefined;
-  const hadWorktree = existsSync11(record.worktree);
+  const hadWorktree = existsSync12(record.worktree);
   if (release) {
     if (!RELEASE_STATES.includes(record.state))
       return refuse(failure2(`crew rm: ${record.name} is not over or stopped`), ctx);
@@ -10515,7 +10768,7 @@ async function removeCrewSession(ref, ctx, options) {
     return stored ? 0 : 1;
   }
   const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS).ok;
-  const folderGone = discard && record.released === undefined && record.archive === undefined && !existsSync11(record.worktree);
+  const folderGone = discard && record.released === undefined && record.archive === undefined && !existsSync12(record.worktree);
   if (folderGone && !branchThere) {
     return refuse(failure2(`crew rm: ${record.name} has no worktree and no branch ${record.branch}, so there is nothing to archive`, `Fix: crew rm ${record.id}, without --discard, removes the record`), ctx);
   }
@@ -10549,7 +10802,7 @@ async function removeCrewSession(ref, ctx, options) {
       }
     }
   }
-  if (!discard && existsSync11(record.worktree) && hasChanges(record.worktree, ctx.env)) {
+  if (!discard && existsSync12(record.worktree) && hasChanges(record.worktree, ctx.env)) {
     return refuse(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, `Fix: commit or discard them there${then}; it never forces`), ctx);
   }
   let listed;
@@ -10564,7 +10817,7 @@ async function removeCrewSession(ref, ctx, options) {
     const held = personLock(record, listed);
     return refuse(failure2(`crew rm: ${held.why}`, `${held.fix}${release ? then : ""}`), ctx);
   }
-  if (discard && existsSync11(record.worktree)) {
+  if (discard && existsSync12(record.worktree)) {
     if (listed === undefined)
       return refuse(failure2("crew rm: discard needs its registered worktree; nothing archived or removed"), ctx);
     const blocker = discardBlocker(record, ctx);
@@ -10588,7 +10841,7 @@ async function removeCrewSession(ref, ctx, options) {
       return refuse(failure2(`crew rm: ${reasonOf2(error)}`), ctx);
     }
   }
-  if (release && existsSync11(record.worktree)) {
+  if (release && existsSync12(record.worktree)) {
     const blocker = discardBlocker(record, ctx);
     const local = blocker === null ? localFiles(record.worktree, record.repo, ctx.env) : [];
     if (blocker !== null || local === null || local.length > 0) {
@@ -10724,7 +10977,7 @@ async function removeCrewSession(ref, ctx, options) {
       }
     }
   }
-  if (existsSync11(record.worktree)) {
+  if (existsSync12(record.worktree)) {
     return await refuseKept(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, `Fix: remove that folder yourself${then}; crew rm never deletes what git does not know`));
   }
   const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS).ok;
@@ -10921,16 +11174,16 @@ function isCrewWorktree(worktree, records) {
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync17(join19(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync17(join20(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
   if (!isAbsolute2(admin))
     admin = resolve4(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join19("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join20("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync8(join19(admin, file)).mtimeMs);
+      last = Math.max(last, statSync8(join20(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -10961,7 +11214,7 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join20(worktree, ".claude", "worktrees");
+  const claudeOwn = join21(worktree, ".claude", "worktrees");
   let entries;
   try {
     entries = readdirSync9(claudeOwn);
@@ -10969,7 +11222,7 @@ function innerWorktreeOf(worktree, all) {
     return null;
   }
   for (const entry of entries) {
-    const folder = join20(claudeOwn, entry);
+    const folder = join21(claudeOwn, entry);
     try {
       if (statSync9(folder).isDirectory() && readdirSync9(folder).length > 0)
         return folder;
@@ -11033,8 +11286,8 @@ function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);
   if (!common.ok || common.out === "")
     return null;
-  const dir = mkdtempSync(join20(tmpdir(), `${COMMAND}-worktrees-`));
-  const objects = join20(common.out, "objects");
+  const dir = mkdtempSync(join21(tmpdir(), `${COMMAND}-worktrees-`));
+  const objects = join21(common.out, "objects");
   return {
     dir,
     own: {
@@ -11192,7 +11445,7 @@ function scanWorktrees(repo, options) {
   const [main, ...others] = all;
   const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
-    if (listed.locked && (!existsSync13(listed.path) || !staleClaudeLock(listed, look))) {
+    if (listed.locked && (!existsSync14(listed.path) || !staleClaudeLock(listed, look))) {
       const onBase = (listed.lockReason ?? "").startsWith("claude session ") && ["ancestor", "replay"].includes(workOnRef(repo, look.ref, listed.head, env, look.replayer));
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
@@ -11201,7 +11454,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync13(listed.path)) {
+    if (listed.prunable || !existsSync14(listed.path)) {
       scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
@@ -11218,7 +11471,7 @@ function removeWorktree(repo, listed, options) {
     return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
   }
   const current = all.find((one) => samePath(one.path, listed.path));
-  if (current === undefined || !existsSync13(current.path)) {
+  if (current === undefined || !existsSync14(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -11324,6 +11577,20 @@ function deleteMergedBranch(repo, base, branch, env) {
 function pruneWorktrees(repo, env) {
   runGit(repo, ["worktree", "prune"], env);
 }
+
+// src/setup/launcher-cmd.ts
+var FIND_INSTALL_JS2 = [
+  "const f=process.argv[process.argv.length-1];",
+  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
+  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
+  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/tasks/words.ts
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
 
 // src/crew/transcript.ts
 var TAIL_BYTES = 256 * 1024;
@@ -11575,16 +11842,6 @@ var STRIPPED_CONTENT_TAGS = [
 var STRIPPED_OPEN = new RegExp(`<(${STRIPPED_CONTENT_TAGS.join("|")})(?=[\\s/>])[^>]*>`, "gi");
 var STRIPPED_PAIRS = new Map(STRIPPED_CONTENT_TAGS.map((tag) => [tag, new RegExp(`<(/?)${tag}(?=[\\s/>])[^>]*>`, "gi")]));
 
-// src/setup/launcher-cmd.ts
-var FIND_INSTALL_JS2 = [
-  "const f=process.argv[process.argv.length-1];",
-  "const j=JSON.parse(require('fs').readFileSync(f,'utf8'));",
-  `const e=((j&&j.plugins&&j.plugins['${PLUGIN_ID}'])||[]).find(function(x){`,
-  "return x&&x.scope==='user'&&typeof x.installPath==='string';});",
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
@@ -11816,7 +12073,7 @@ function leadRef(record, ctx) {
       return { why: reasonOf2(error) };
     }
   }
-  if (lead !== null && existsSync14(lead.cwd)) {
+  if (lead !== null && existsSync15(lead.cwd)) {
     const sha = runGit(lead.cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], ctx.env, GIT_TIMEOUT_MS);
     if (sha.ok) {
       const branch = runGit(lead.cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS);
@@ -11958,12 +12215,12 @@ function protectedIgnored(record, ctx) {
   const walk = (file) => {
     if (++visited > DISCARD_IGNORED_MAX_FILES * 2)
       throw new Error(`ignored files must be ${TEXT_RULE}`);
-    const stat = lstatSync4(join21(record.worktree, file));
+    const stat = lstatSync4(join22(record.worktree, file));
     const entry = stat.isDirectory() ? `${file.replace(/\/$/, "")}/` : file;
     if (safeEntry(record.worktree, record.repo, entry, patterns))
       return;
     if (stat.isDirectory())
-      for (const name of readdirSync10(join21(record.worktree, file)))
+      for (const name of readdirSync10(join22(record.worktree, file)))
         walk(`${file.replace(/\/$/, "")}/${name}`);
     else
       files.push(file);
@@ -11973,7 +12230,7 @@ function protectedIgnored(record, ctx) {
   return files.sort();
 }
 function buildCrewDiscardFacts(record, ctx) {
-  if (record.released !== undefined && !existsSync15(record.worktree))
+  if (record.released !== undefined && !existsSync16(record.worktree))
     throw new Error("its worktree was released; crew rm --discard makes it again on its kept branch first");
   const head = checkedGit(record.repo, ["rev-parse", "--verify", `refs/heads/${record.branch}^{commit}`], ctx);
   if (record.discardPending !== undefined)
@@ -12014,7 +12271,7 @@ function buildCrewDiscardFacts(record, ctx) {
     throw new Error(`ignored files must be ${TEXT_RULE}`);
   for (const file of [...new Set([...changedFiles, ...ignoredFiles])]) {
     hash.update(JSON.stringify(file));
-    const path = join21(record.worktree, file);
+    const path = join22(record.worktree, file);
     let stat;
     try {
       stat = lstatSync4(path);
@@ -12098,9 +12355,9 @@ function buildCrewDiscardFacts(record, ctx) {
 async function archiveCrewDiscard(record, facts, ctx) {
   if (buildCrewDiscardFacts(record, ctx).token !== facts.token)
     throw new Error("the work changed since confirmation; preview and confirm it again");
-  const dir = mkdtempSync2(join21(tmpdir2(), "crew-discard-"));
+  const dir = mkdtempSync2(join22(tmpdir2(), "crew-discard-"));
   try {
-    const index = join21(dir, "index");
+    const index = join22(dir, "index");
     const own = { GIT_INDEX_FILE: index, GIT_LITERAL_PATHSPECS: "1" };
     const sourceIndex = checkedGit(record.worktree, ["rev-parse", "--path-format=absolute", "--git-path", "index"], ctx);
     copyFileSync2(sourceIndex, index);
@@ -12111,7 +12368,7 @@ async function archiveCrewDiscard(record, facts, ctx) {
       parent = checkedGit(record.repo, ["commit-tree", stagedTree, "-p", facts.head, "-m", "discarded staged work in progress"], ctx);
     checkedGit(record.worktree, ["read-tree", facts.head], ctx, own);
     for (const file of [...new Set([...facts.changedFiles, ...facts.ignoredFiles])]) {
-      const path = join21(record.worktree, file);
+      const path = join22(record.worktree, file);
       let stat;
       try {
         stat = lstatSync4(path);
@@ -12134,9 +12391,9 @@ async function archiveCrewDiscard(record, facts, ctx) {
     checkedGit(record.repo, ["update-ref", facts.archiveRef, commit, ""], ctx);
     const archive = { ref: facts.archiveRef, head: commit, at: new Date(ctx.now()).toISOString() };
     const indexPath = checkedGit(record.worktree, ["rev-parse", "--path-format=absolute", "--git-path", "index"], ctx);
-    const indexBackup = join21(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.bak`);
-    const indexArchived = join21(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.new`);
-    mkdirSync9(dirname8(indexBackup), { recursive: true, mode: 448 });
+    const indexBackup = join22(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.bak`);
+    const indexArchived = join22(crewFilesDir(ctx.paths.stateDir, record.repo, record.id), `discard-index-${commit}.new`);
+    mkdirSync10(dirname9(indexBackup), { recursive: true, mode: 448 });
     copyFileSync2(sourceIndex, indexBackup);
     copyFileSync2(index, indexArchived);
     const pending = {
@@ -12230,7 +12487,7 @@ function refLockUnder(dir, depth = 0) {
   try {
     for (const entry of readdirSync11(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        const found = refLockUnder(join22(dir, entry.name), depth + 1);
+        const found = refLockUnder(join23(dir, entry.name), depth + 1);
         if (found !== null)
           return found;
       } else if (entry.name.endsWith(".lock")) {
@@ -12242,10 +12499,10 @@ function refLockUnder(dir, depth = 0) {
 }
 function gitLockHeld(gitDir) {
   for (const name of GIT_LOCKS) {
-    if (existsSync16(join22(gitDir, name)))
+    if (existsSync17(join23(gitDir, name)))
       return name;
   }
-  return refLockUnder(join22(gitDir, "refs"));
+  return refLockUnder(join23(gitDir, "refs"));
 }
 function sessionsToKeep(deps, claudeConfigDir) {
   const running = deps.facts?.sessions ?? liveSessions(claudeConfigDir);

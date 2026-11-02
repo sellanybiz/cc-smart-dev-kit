@@ -31,6 +31,7 @@ import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { LoadingState, PagePad, ResourceView } from "@/components/states";
 import { StatusMark, TonePill } from "@/components/status";
+import { TasksCard } from "@/components/tasks-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -523,6 +524,7 @@ function ProjectPage({
             </CardContent>
           </Card>
         )}
+        <TasksCard project={project} />
         {project.setUp && <WorkflowCard project={project} />}
         <GatewayCard project={project} />
         <Branches data={data} />

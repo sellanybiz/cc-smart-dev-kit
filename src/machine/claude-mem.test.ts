@@ -23,7 +23,7 @@ const SEEDED = {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
-  CLAUDE_MEM_WORK_STATE_ENABLED: "true",
+  CLAUDE_MEM_WORK_STATE_ENABLED: "",
   CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "true",
 };
 
@@ -97,7 +97,10 @@ describe("D68: claude-mem's start blocks", () => {
     const planned = w.plan();
     if (!("plan" in planned)) throw new Error("expected a plan");
     expect(planned.plan.withdraw).toEqual([]);
-    expect(planned.plan.startBlocks).toEqual([[[MEMORY], "false"]]);
+    expect(planned.plan.startBlocks).toEqual([
+      [[WORK_STATE], "false"],
+      [[MEMORY], "false"],
+    ]);
     applyClaudeMem(w.paths, planned.plan, false);
     expect(readJson(w.paths.claudeMemSettingsFile)[WORK_STATE]).toBe("false");
   });
@@ -106,7 +109,10 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [[[MEMORY], "false"]],
+        startBlocks: [
+          [[WORK_STATE], "false"],
+          [[MEMORY], "false"],
+        ],
         provider: null,
         notes: [],
         withdraw: [],
@@ -119,7 +125,10 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [[[MEMORY], "false"]],
+        startBlocks: [
+          [[WORK_STATE], "false"],
+          [[MEMORY], "false"],
+        ],
         provider: null,
         notes: [],
         withdraw: [],
@@ -136,7 +145,10 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [[[MEMORY], "false"]],
+        startBlocks: [
+          [[WORK_STATE], "false"],
+          [[MEMORY], "false"],
+        ],
         provider: null,
         notes: [],
         withdraw: [],
@@ -149,7 +161,10 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [[[MEMORY], "false"]],
+        startBlocks: [
+          [[WORK_STATE], "false"],
+          [[MEMORY], "false"],
+        ],
         provider: null,
         notes: [],
         withdraw: [],
@@ -162,7 +177,7 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [],
+        startBlocks: [[[WORK_STATE], "false"]],
         provider: null,
         notes: [
           '! claude-mem settings left alone: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED is "0" in ~/.claude-mem/settings.json (your choice)',
@@ -185,7 +200,7 @@ describe("D68: claude-mem's start blocks", () => {
     expect(w.plan()).toEqual({
       plan: {
         remove: RETIRED,
-        startBlocks: [],
+        startBlocks: [[[WORK_STATE], "false"]],
         provider: null,
         notes: [
           '! claude-mem settings left alone: CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
@@ -212,19 +227,19 @@ describe("D68: claude-mem's start blocks", () => {
     const before = readFileSync(w.paths.claudeMemSettingsFile, "utf8");
     const planned = w.plan();
     if (!("plan" in planned)) throw new Error("expected a plan");
-    expect(planned.plan.withdraw).toEqual([[WORK_STATE]]);
+    expect(planned.plan.withdraw).toEqual([]);
     const result = applyClaudeMem(w.paths, planned.plan, false);
     expect(
       ownedRecords(w.paths.stateDir, w.paths.claudeMemSettingsFile).some(
         (r) => r.path.at(-1) === WORK_STATE,
       ),
-    ).toBe(false);
+    ).toBe(true);
     if (value === "true") {
       expect(result.changes).toEqual([]);
       expect(readFileSync(w.paths.claudeMemSettingsFile, "utf8")).toBe(before);
     } else {
-      expect(result.changes).toEqual([{ path: [WORK_STATE], before: "false", after: undefined }]);
-      expect(readJson(w.paths.claudeMemSettingsFile)[WORK_STATE]).toBeUndefined();
+      expect(result.changes).toEqual([]);
+      expect(readJson(w.paths.claudeMemSettingsFile)[WORK_STATE]).toBe("false");
     }
     restore(w.paths.stateDir);
     expect(readJson(w.paths.claudeMemSettingsFile)[WORK_STATE]).toBe(
@@ -246,7 +261,10 @@ describe("D68: claude-mem's start blocks", () => {
     const w = machine({ settings: SEEDED, gateway: true });
     const planned = w.plan();
     if (!("plan" in planned)) throw new Error("expected a plan");
-    expect(planned.plan.startBlocks).toEqual([[[MEMORY], "false"]]);
+    expect(planned.plan.startBlocks).toEqual([
+      [[WORK_STATE], "false"],
+      [[MEMORY], "false"],
+    ]);
     expect(planned.plan.provider).toEqual({
       target: {
         backend: "omniroute",
@@ -271,6 +289,7 @@ describe("D68: claude-mem's start blocks", () => {
     const planned = w.plan();
     if (!("plan" in planned)) throw new Error("expected a plan");
     expect(applyClaudeMem(w.paths, planned.plan, false).changes).toEqual([
+      { path: [WORK_STATE], before: "", after: "false" },
       { path: [MEMORY], before: "true", after: "false" },
     ]);
     expect(statSync(w.paths.claudeMemSettingsFile).mode & 0o777).toBe(0o600);
@@ -281,14 +300,13 @@ describe("D68: claude-mem's start blocks", () => {
       CLAUDE_MEM_OPENAI_COMPAT_API_KEY: "",
       CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: "",
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "",
-      [WORK_STATE]: "true",
+      [WORK_STATE]: "false",
       [MEMORY]: "false",
     });
 
     restore(w.paths.stateDir);
     // Work state was never managed, so restore keeps it.
     expect(readJson(w.paths.claudeMemSettingsFile)).toEqual({
-      [WORK_STATE]: "true",
       CLAUDE_MEM_MODEL: "claude-haiku-4-5-20251001",
       CLAUDE_MEM_PROVIDER: "claude",
       CLAUDE_MEM_OPENAI_COMPAT_PRESET: "",
@@ -322,7 +340,7 @@ describe("D68: what doctor reads", () => {
     writeFileSync(w.paths.claudeMemSettingsFile, JSON.stringify(written, null, 2));
 
     expect(readStartBlocks(w.paths)).toEqual([
-      { key: WORK_STATE, value: "true", by: "default" },
+      { key: WORK_STATE, value: "true", by: "person" },
       { key: MEMORY, value: "0", by: "person" },
     ]);
   });
@@ -330,7 +348,7 @@ describe("D68: what doctor reads", () => {
   test("D68: both keys from claude-mem's defaults: nobody set them", () => {
     const w = machine({ settings: SEEDED });
     expect(readStartBlocks(w.paths)).toEqual([
-      { key: WORK_STATE, value: "true", by: "default" },
+      { key: WORK_STATE, value: "", by: "default" },
       { key: MEMORY, value: "true", by: "default" },
     ]);
   });
@@ -341,7 +359,7 @@ describe("D68: what doctor reads", () => {
     if (!("plan" in planned)) throw new Error("expected a plan");
     applyClaudeMem(w.paths, planned.plan, false);
     expect(readStartBlocks(w.paths)).toEqual([
-      { key: WORK_STATE, value: "true", by: "default" },
+      { key: WORK_STATE, value: "false", by: "setup" },
       { key: MEMORY, value: "false", by: "setup" },
     ]);
   });

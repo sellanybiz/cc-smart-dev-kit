@@ -23,6 +23,16 @@ repeats the rows that name it: the hooks fire, and the worktree contract holds o
 installed Claude Code. A "unit" proof tests **our reader** on a hand-written copy of Claude
 Code's file; it shows we read the shape correctly, not that Claude Code still writes it.
 
+## The kit's task server (D75)
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| `alwaysLoad: true` exempts an MCP server from tool deferral, so its tools need no ToolSearch. | Schema seen in 2.1.312–2.1.316; not proved live | Documented: code.claude.com/docs/en/mcp § Exempt a server from deferral; seen in the stdio config schema. **Live owed:** task tools in the first model request, without ToolSearch. |
+| A deny rule naming a built-in tool bare removes it from Claude's context. | Documented; not proved live for D75 | code.claude.com/docs/en/permissions § Permission system. **Live owed:** after setup and restart, `TaskCreate` is absent from the model's tools. |
+| An allow rule accepts a glob after a literal `mcp__<server>__` prefix; `mcp__cc-smart-dev-kit-tasks__*` allows all task tools. | Documented; not proved live for D75 | code.claude.com/docs/en/permissions § Permission system. **Live owed:** a background crew session calls a task tool without a prompt. |
+| A stdio MCP server inherits its session's environment, including `CC_SMART_DEV_KIT_CREW`. | Not proved live | The crew launcher supplies the variable; **live owed:** its task server observes it and resolves the phase task. |
+| A stdio MCP server is a descendant of its Claude process, so Linux `/proc` ancestry finds that session. | Not proved live | `src/tasks/context.ts` and the server's process resolver rely on the session record and process identity. **Live owed:** `/clear` and a background fork keep the same tasks, including through the server. |
+
 ## Background session forks
 
 | Behaviour | Last proved on | How it is proved |
@@ -298,11 +308,11 @@ first crew start after this ships is that live run.
 
 ## The to-do list
 
-Claude Code's task tools — `TaskCreate`, `TaskGet`, `TaskList`, `TaskUpdate` — are the one
-to-do list the kit builds on (D23): the crew skill asks for one, the `crew-role` hook holds a
-crew session's first edit until it exists, `crew report --status done` waits until no task is
-open, and `lead-notes` reminds a lead that has none. Where Claude Code keeps that list, and
-what it writes, the kit reads as files; `src/crew/tasks.ts` is the one reader.
+These rows record the built-in list used under D23 and D68. D75 replaces it with the
+kit's task tools (see the task-server rows above). `src/crew/tasks.ts` remains the legacy
+reader for one release; `src/tasks/guard-view.ts` joins it with the kit's list for every
+gate. Historical live proofs below describe the earlier implementation, not proof that
+the new kit-backed gates have run live.
 
 | Behaviour | Last proved on | How it is proved |
 |---|---|---|

@@ -19,17 +19,10 @@
  *   here would be the very thing the hook prevents. **No store read**, so the answer is the same
  *   when the project's file is broken or too new, and outside git.
  * - **PreToolUse on `Edit`, `Write` and `NotebookEdit`**: the session's **first edit waits for
- *   its task list** (D23). While the session's task folder holds no task file, the call is
- *   **denied** with the step — look the task tools up, then one `TaskCreate` per part of the
- *   brief, each with its done-check. Nobody watches a crew session, and its list is what it
- *   resumes from after a compaction and what the person reads; the crew skill asked for one and
- *   17 of 24 live sessions still skipped it, because Claude Code leaves the task tools out until
- *   a session looks them up. Once a task file exists the hook answers from its own cache
- *   (`taskGateFile`, `src/crew/tasks.ts`) and never lists the folder again for that list. A
- *   subagent's edit is judged too: its `TaskCreate` writes into its parent session's folder, one
- *   list for the whole session (proved live, `docs/claude-code-contract.md` § The to-do list).
- *   A store or a folder the hook cannot read lets the edit through: a check that cannot be made
- *   is no denial.
+ *   its task list** (D75). A phase with no subtasks is denied with the shared task step.
+ *   The kit's list and Claude Code's legacy list are joined by `crewTaskView` for one release.
+ *   A crew with no phase task, or a list that cannot be read, goes on. Once listed, the gate
+ *   remembers that fact (`taskGateFile`), so later edits need no task-store read.
  * - **UserPromptSubmit (D55)**: the person typed into the crew session. Their word wins over the
  *   brief, so the lead has to hear it: one `person` event (the first line, masked and clipped)
  *   and one short line of context telling the session whose word it is. Only the person's own
@@ -110,14 +103,7 @@ import {
   updateCrewIfState,
   writeStopState,
 } from "../crew/store";
-import {
-  openTasks,
-  readSessionTasks,
-  readTaskGate,
-  sessionTasksDir,
-  taskListId,
-  writeTaskGate,
-} from "../crew/tasks";
+import { readTaskGate, taskListId, writeTaskGate } from "../crew/tasks";
 import {
   checksDownFor,
   checksPauseText,
@@ -131,6 +117,9 @@ import {
 import { checksDownNow } from "../gateway/checks-down";
 import type { ChecksDownRecord } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
+import { projectKey } from "../tasks/context";
+import { crewTaskView } from "../tasks/guard-view";
+import { crewTaskStep, taskCloseStep } from "../tasks/words";
 import { sessionGatewayOf } from "./agent-guard";
 import { isInside, realPath } from "./git";
 import {
@@ -167,27 +156,20 @@ export function reportStep(): string {
  * the plain report step would read to them as "hand back now". A list that cannot be read, or
  * has nothing open, gets the report step as before.
  */
-function stopStep(input: HookInput, env: Env, paths: CliPaths): string {
-  const tasks = readSessionTasks(
-    paths.claudeConfigDir,
-    taskListId(env, stringField(input.session_id)),
-  );
-  if (tasks.state !== "read") return reportStep();
-  const open = openTasks(tasks.tasks);
+function stopStep(input: HookInput, env: Env, paths: CliPaths, repo: string, id: string): string {
+  const tasks = crewTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    crewId: id,
+    listId: taskListId(env, stringField(input.session_id)),
+  });
+  const open = tasks.open;
   const first = open.find((task) => task.status === "in_progress") ?? open[0];
   if (first === undefined) return reportStep();
   const more = open.length > 1 ? ` (and ${String(open.length - 1)} more)` : "";
-  return `Your task "${first.subject}"${more} is still open. Continue it now. Hand back only when every task is done, with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review). If the phase cannot be done, hand back \`--status failed\` and why. A question for your lead goes through \`${REPORT_COMMAND} --question\`.`;
-}
-
-/**
- * The one step that makes a crew session's to-do list: look the task tools up (Claude Code
- * leaves them out until a session does, so a session that skips this cannot make one at all),
- * then one task per part of the brief, each with its done-check. The deny of the first edit
- * and the role card both say it, from here.
- */
-function taskListStep(): string {
-  return "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
+  return `Your task "${first.ref} ${first.subject}"${more} is still open. Continue it now, and mark each task done the moment it is: ${taskCloseStep(first.ref)}. Hand back only when every task is done, with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review). If the phase cannot be done, hand back \`--status failed\` and why. A question for your lead goes through \`${REPORT_COMMAND} --question\`.`;
 }
 
 /**
@@ -199,7 +181,7 @@ function taskListStep(): string {
  * otherwise hold every edit it makes for good.
  */
 function taskListRefusal(): string {
-  return `A crew session writes its task list before it changes a file: the list is what it resumes from after a compaction, and what the person reads. ${taskListStep()} If ToolSearch finds no task tools in this session, tell your lead: \`${questionStep()}\``;
+  return `Your phase has no subtasks yet, so this edit waits. ${crewTaskStep()} If this session has no task tools, tell your lead: \`${questionStep()}\``;
 }
 
 /** The line a crew session gets instead of asking the person (D36). */
@@ -387,7 +369,7 @@ export function roleCard(record: CrewRecord, briefFile: string): string {
     `You are the crew session \`${record.name}\`, phase \`${record.phase}\` of \`${record.plan}\`, for the lead \`${record.leadName}\`.`,
     `Your brief, which is your task: ${briefFile}`,
     files,
-    `${taskListStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
+    `${crewTaskStep()} Your first edit waits for it, and \`${REPORT_DONE_COMMAND}\` waits until no task is open.`,
     `Hand the phase back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`,
     `Ask your lead, never the person: \`${questionStep()}\``,
     `Tell another crew session only a contract change or a contract question: \`${tellStep()}\``,
@@ -470,6 +452,7 @@ async function startCard(
   repo: string,
   paths: CliPaths,
   options: CrewRoleOptions,
+  env: Env,
 ): Promise<HookResult> {
   const source = stringField(input.source);
   // A `clear` is a new conversation: no card, as on a session that is not a crew session's.
@@ -532,7 +515,26 @@ async function startCard(
     }
   }
   const brief = crewBriefFile(paths.stateDir, repo, id);
-  const answer = addContext("SessionStart", roleCard(record, brief));
+  const tasks = crewTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    crewId: id,
+    listId: taskListId(env, sessionId),
+  });
+  const open = tasks.open.slice(0, 8);
+  const lines = open.map(
+    (task) =>
+      `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`,
+  );
+  if (tasks.open.length > open.length)
+    lines.push(`+${tasks.open.length - open.length} more: task_list`);
+  const card = [
+    roleCard(record, brief),
+    ...(lines.length > 0 ? ["Open subtasks:", ...lines] : []),
+  ].join("\n");
+  const answer = addContext("SessionStart", card);
   return stderr === undefined ? answer : { ...answer, stderr };
 }
 
@@ -653,7 +655,12 @@ async function stopAnswer(
   }
   const answer: HookResult =
     !followUp && last === "step"
-      ? { stdout: JSON.stringify({ decision: "block", reason: stopStep(input, env, paths) }) }
+      ? {
+          stdout: JSON.stringify({
+            decision: "block",
+            reason: stopStep(input, env, paths, repo, id),
+          }),
+        }
       : SILENT;
   // A turn that reported is over as it should be: never a pause. A report counts only while the
   // record is still in the state it left: a blocked report that was answered, and a session that
@@ -778,19 +785,9 @@ async function personPromptAnswer(
 }
 
 /**
- * The first edit of a crew session waits for its task list (D23): while the session's task
- * folder holds no task file, the call is denied with the step. The list is the session's own —
- * `CLAUDE_CODE_TASK_LIST_ID` when the environment names one, else the input's `session_id`,
- * which is the parent session's for a subagent's call too — and a subagent's `TaskCreate`
- * writes into that same folder, so every edit of the session is judged against the one list
- * it keeps (proved live, `docs/claude-code-contract.md` § The to-do list).
- *
- * Once a task file has been seen, the gate's own file answers (`taskGateFile`) and the folder
- * is not read again for that list. **Every answer that cannot be made lets the edit through**:
- * no session id names no folder, a folder the hook cannot read says nothing about the list, and
- * a gate file it cannot write is one line on stderr — a denial on a guess would hold the
- * session's work for nothing. Outside git (`repo` null) the gate has no store folder to
- * remember in, so the folder is read on each call.
+ * The phase needs a subtask before its first edit (D75). The shared view also accepts a
+ * legacy task file for one release. A listed phase is remembered; no phase or an unreadable
+ * list never holds an edit. A cache write failure says so on stderr and leaves the edit alone.
  */
 function taskListGate(
   input: HookInput,
@@ -802,16 +799,24 @@ function taskListGate(
   const listId = taskListId(env, stringField(input.session_id));
   if (listId === "") return SILENT;
   if (repo !== null && readTaskGate(paths.stateDir, repo, id)?.listId === listId) return SILENT;
-  const tasks = readSessionTasks(paths.claudeConfigDir, listId);
-  if (tasks.state === "unreadable") {
-    return storeProblem(
-      `the task folder ${sessionTasksDir(paths.claudeConfigDir, listId)} cannot be read, so the edit is not held for the task list`,
-    );
-  }
-  if (tasks.state === "none" || tasks.files === 0) {
+  if (repo === null) return SILENT;
+  const tasks = crewTaskView({
+    stateDir: paths.stateDir,
+    claudeConfigDir: paths.claudeConfigDir,
+    settingsFile: paths.settingsFile,
+    project: projectKey(repo),
+    crewId: id,
+    listId,
+  });
+  if (!tasks.listed) {
+    if (tasks.unreadable.length > 0) {
+      return storeProblem(
+        `${tasks.unreadable.join("; ")}, so the edit is not held for the task list`,
+      );
+    }
+    if (tasks.phase === null) return SILENT;
     return toolDecision("deny", taskListRefusal());
   }
-  if (repo === null) return SILENT;
   try {
     writeTaskGate(paths.stateDir, repo, id, { listId });
   } catch (error) {
@@ -854,7 +859,7 @@ export async function crewRoleAnswer(
     return SILENT;
   }
   if (repo === null) return SILENT;
-  if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
+  if (event === "SessionStart") return await startCard(input, id, repo, paths, options, env);
   if (event === "UserPromptSubmit" || event === "Stop" || event === "StopFailure") {
     const found = recordOf(id, repo, paths);
     if (found.ok && isEarlierCopy(found.record, stringField(input.session_id)))

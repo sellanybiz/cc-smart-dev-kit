@@ -478,8 +478,14 @@ describe("the adapters", () => {
       },
       report: null,
       reviews: [{ at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" }],
+      tasks: { state: "unreadable", why: "the kit's task store cannot be read: locked" },
     };
     const data = crewOf(answer);
+    // The phase tree passes as the server sent it: the card draws each state itself.
+    expect(data.tasks).toEqual({
+      state: "unreadable",
+      why: "the kit's task store cannot be read: locked",
+    });
     expect(data.brief).toBe("");
     expect(data.diffTotals).toEqual({ deletions: 3, error: null, files: 2, insertions: 40 });
     // A binary file has no line counts: unknown, never 0.

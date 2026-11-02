@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { DEFAULT_RELEASE_BRANCH, taskContext } from "./context";
+import { DEFAULT_RELEASE_BRANCH, taskContext, taskContextAsync } from "./context";
 
 function repoWith(config: unknown | null): string {
   const dir = realpathSync(tempDir());
@@ -90,4 +90,22 @@ test("outside git: the folder is its own project, with no project tasks", () => 
 test("a folder that is not there is an error, never a guessed project", () => {
   const context = taskContext(join(tempDir(), "gone"), cleanGitEnv());
   expect(context.ok).toBe(false);
+});
+
+test("the async twin gives the same answer, for the portal's server", async () => {
+  const dir = repoWith({ tasks: { dir: "docs/tasks", staleDays: 9 } });
+  const wt = join(realpathSync(tempDir()), "work");
+  git(dir, "worktree", "add", "-b", "test-work", wt);
+  const sync = taskContext(wt, cleanGitEnv());
+  const async = await taskContextAsync(wt, cleanGitEnv());
+  if (!sync.ok || !async.ok || !sync.projectTasks.ok || !async.projectTasks.ok) {
+    throw new Error("expected both to resolve");
+  }
+  expect(async.project).toBe(sync.project);
+  expect([async.repo, async.checkoutRoot]).toEqual([dir, wt]);
+  expect([async.projectTasks.dir, async.projectTasks.staleDays]).toEqual([
+    join(wt, "docs", "tasks"),
+    9,
+  ]);
+  expect((await taskContextAsync(join(tempDir(), "gone"), cleanGitEnv())).ok).toBe(false);
 });

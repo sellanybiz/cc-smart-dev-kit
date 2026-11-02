@@ -47,6 +47,8 @@ import { savedSessions } from "../../sessions/command";
 import { readFinishedSessions } from "../../sessions/finished";
 import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, type OpenWait } from "../../sessions/flow";
 import type { SavedSession } from "../../sessions/saved-sessions";
+import { projectKey } from "../../tasks/context";
+import { crewPhaseTree } from "../../tasks/work/tree";
 import {
   type MergeVerdict as CheckVerdict,
   checkBranch,
@@ -59,6 +61,7 @@ import { type PageDataDeps, updateFacts } from "../page-data";
 import { readWorktreesOffLoop } from "../worktrees-read";
 import { readPortalAgentsForPage } from "./agents-read";
 import { readCleanupForPage } from "./cleanup-read";
+import { workTaskNodeOf } from "./project-tasks";
 import {
   type BreakerNeed,
   type CrewAnswer,
@@ -483,6 +486,8 @@ export async function crewAnswerFor(
     record.branch,
     record.base?.ref ?? record.baseRef,
   );
+  // The store's key is the crew store's own repository key: no git call to find it.
+  const phaseTree = crewPhaseTree(paths, projectKey(repo), record.id);
   return {
     brief,
     crew: crewSummary(record, allEvents, deps.action.portal.now(), gone),
@@ -492,6 +497,14 @@ export async function crewAnswerFor(
     mergeCheck,
     report: reportOf(record.reportPath),
     reviews,
+    tasks:
+      phaseTree.state === "ready"
+        ? {
+            more: phaseTree.value.more,
+            phase: phaseTree.value.phase === null ? null : workTaskNodeOf(phaseTree.value.phase),
+            state: "ready",
+          }
+        : phaseTree,
   };
 }
 

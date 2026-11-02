@@ -468,8 +468,9 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    enabled except this one, what `workflow.crew.keep` names, and every plugin those depend on,
    `disableClaudeAiConnectors: true`
    stops the claude.ai connectors, and `mcp.json` beside it is the `--mcp-config` file — the kit's
-   own registrations for Tavily (every kind) and the browser (`ui`), with no key in it (`Bearer
-   ${TAVILY_API_KEY}` is Claude Code's placeholder). A `claude plugin list --json` read decides
+   own tasks server (every kind, `alwaysLoad`), Tavily (every kind) and the browser (`ui`),
+   with no key in it (`Bearer ${TAVILY_API_KEY}` is Claude Code's placeholder). The settings
+   allow `mcp__cc-smart-dev-kit-tasks__*`; resume keeps the server in the rewritten MCP file. A `claude plugin list --json` read decides
    what to turn off; one that fails turns nothing off, because a lean start never fails a start.
    Entries merge key by key across settings sources, so a plugin the file does not name keeps its
    own state (`docs/claude-code-contract.md`). **A plugin whose dependency is off does not load**,
@@ -1061,9 +1062,10 @@ ends the crew session's phase: its state becomes the status, and the report file
 `report` event are written under one hold. **Only a `blocked` report carries a question** — the
 one it waits on, or else the newest the crew session asked that nobody answered; a `done` report with
 an old open question in it would tell the lead the crew session is blocked. **A `done` report waits
-for the task list** (D23): while any task on the session's own list is `pending` or `in_progress`
-the report is refused, with each open task named (`#3 "Part 3" (pending)`), and the fix is to finish
-it with `TaskUpdate status completed`, or to delete it (`status deleted`) and say why under `open` in the report — a deleted task's file is gone, so a reason written in the task would vanish with it (proved live, `docs/claude-code-contract.md` § The to-do list). A
+for the task list** (D75): open phase subtasks refuse it, with each task named. Finish them
+with the kit's `task_done`, or drop them with a note; delete is only for a mistake. The one
+`src/tasks/guard-view.ts` also reads Claude Code's list for one release, until setup denies
+its tools (`docs/design/tasks.md`). A
 `handoff`, `blocked` or `failed` report is never held: those exist because the phase could not be
 finished. No list at all — a session that never got the tools, or one whose folder cannot be read —
 lets the report through with one `note:` line on stdout, so the lead can tell the two apart.
@@ -1758,20 +1760,12 @@ each is silent unless its own session is the one it is about, and neither reads
   store and no project file, so it is the same with no `cc-smart-dev-kit.json`, a broken or too new
   one, and outside git.
   At **PreToolUse** on `Edit`, `Write` and `NotebookEdit` it **denies a crew session's first
-  edit until its task list exists** (D23): while the session's task folder holds no task file, the
-  call is refused with the step — use Claude Code's task tools, not claude-mem's work state;
-  look them up (`ToolSearch
-  select:TaskCreate,TaskUpdate,TaskList`), then one `TaskCreate` per part of the brief, each with
-  its done-check — and the card names the same step at the start. The list is Claude Code's own
-  (`src/crew/tasks.ts`: `<config dir>/tasks/<CLAUDE_CODE_TASK_LIST_ID or the input's session id>/`,
-  proved live in `docs/claude-code-contract.md` § The to-do list), a subagent's edit is judged
-  against the same folder, and the first answer that sees a task file is cached in the crew
-  session's store folder (`files/<crew id>/task-gate.json`), so an edit costs one small file read
-  and never lists the folder again for that list. Every answer that cannot be made lets the edit
-  through: no session id names no folder, a folder or a record the hook cannot read is one line on
-  stderr, and a gate it cannot write is only a slower next call. The step also says what to do when
-  `ToolSearch` finds no task tools (the legacy `TodoWrite`, a deny rule): tell the lead, who tells
-  the person — otherwise a refusal nobody can satisfy would hold every edit for good.
+  edit until its phase task has a subtask** (D75). Use the kit's `task_create` per part of the
+  brief, with its done-check, or the `cc-smart-dev-kit task add` fallback. The role card names
+  the same step and includes the phase's subtasks. The gate uses `src/tasks/guard-view.ts`,
+  joining the kit's list with Claude Code's for one release. A crew made before phase tasks
+  existed is let through; a read that cannot answer fails open. The store and ownership rules
+  live in [the task design](tasks.md), not in a second task reader here.
   At **UserPromptSubmit** it hears the person (D55): a prompt typed into the crew session is one
   `person` event (its first line, masked and clipped) and one line of context — their word wins
   over the brief, a change of scope or files is said in the report, and a word to stop still gets
@@ -1807,8 +1801,8 @@ each is silent unless its own session is the one it is about, and neither reads
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
   session is a `step`, the turn ended mid-phase with no report: it **blocks once**
   (`{"decision":"block","reason":…}`), and never again while `stop_hook_active` is true. The
-  reason depends on the session's Claude Code task list (the same reader as the edit gate,
-  `src/crew/tasks.ts`). While a task is still open — the first one `in_progress`, else the first
+  reason depends on the phase's kit subtasks, with Claude Code's list beside them for one
+  release (the same `src/tasks/guard-view.ts` as the edit gate). While a task is still open — the first one `in_progress`, else the first
   `pending` — it names that task and says to go on with it, and to hand back only when every
   task is done. Some models end a turn after each step and only say the next one; a report line
   there made them hand back half a phase. With no open task, or a list it cannot read, the reason
@@ -1844,11 +1838,10 @@ each is silent unless its own session is the one it is about, and neither reads
   watch's own line is the one that resolves a project's list. At a prompt it also sets the lead's
   name (`sessionTitle`, beside the note in the same answer), through `titleToSet`, the one rule and
   record `session-name` keeps (§ The lead and the launch › The lead's name). **At a prompt it also
-  reminds a lead with no Claude Code task list** (D23): while the lead's own task folder (`taskListId`, the
-  same reader the crew session's gate uses) holds no task file, one more line of context — put the
-  person's asks and the lead's open work on Claude Code's list (`TaskCreate`, not claude-mem's
-  work state), and keep it true as they move — said before
-  the news, and gone the moment a task exists. **At a SessionStart it adds one line first**
+  reminds a lead with no task of its own** (D75): one line before the news says to put its
+  own work on the kit's list and keep it current. `leadSessions` carries those tasks across
+  adoption; plan and phase tasks are not the lead's own work. The joined view includes
+  Claude Code's list for one release. A start also names stale project tasks in one line. **At a SessionStart it adds one line first**
   (D61): the lead's crew sessions build the work, because the lead's context is re-read on every
   turn — at a start, a resume and a compaction, never at a prompt and never on an edit.
   **A lead whose watch is gone is told, at every turn it lasts**: when the lead's plan is not
@@ -1861,14 +1854,14 @@ each is silent unless its own session is the one it is about, and neither reads
   none. Those lines are reminders, never a block.
   **At Stop it holds a lead once that ended a turn on a promise.** Some models end a turn after
   each step and only say what they will do next, so a lead sat idle for hours with its work in
-  progress. When the lead's task list (`readSessionTasks`) holds a task `in_progress`, and no line
+  progress. When the lead's own joined task view (`leadTaskView`) holds a task `in_progress`, and no line
   of the turn's `last_assistant_message` starts with `Waiting for:` (after list marks and bold),
   it blocks once: the reason names the task (and how many more are in progress) and says to go on
   with it, or to end the turn on `Waiting for: <what>` when it really waits — a crew session's
   hand-back, the person, CI. A `pending` task does not count: a lead plans more than it runs at
   once. It is silent while `stop_hook_active` is true, in a crew session, with no message to read,
-  and when the list cannot be read; it gives no context, and a failure is one stderr line and no
-  block.
+  and when the list cannot be read, or background work other than its watch remains. The
+  notifier waits for this gate (`leadStopWouldBlockAt`); a failure is one stderr line, no block.
 
 ### Additional lead notes and file input
 

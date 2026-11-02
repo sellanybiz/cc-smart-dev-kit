@@ -6,9 +6,14 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { projectKey } from "../tasks/context";
+import { crewPhaseState } from "../tasks/work/read";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
+import { defaultResolved } from "../testing/fake-workflow";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
+import { writePhaseTask } from "./phase-task";
+import { startQueued } from "./start";
 import {
   type CrewRecord,
   createCrew,
@@ -109,6 +114,54 @@ function crewNamed(records: CrewRecord[], name: string): CrewRecord | undefined 
 }
 
 describe("crew start --continue", () => {
+  test("the continuation owns the same phase task and releases a queued dependent on merge", async () => {
+    const world = await handoffWorld();
+    const old = listCrew(world.paths.stateDir, world.repo).records[0];
+    if (!old) throw new Error("no old crew");
+    writePhaseTask(old, world.ctx());
+    const before = crewPhaseState(world.paths, projectKey(world.repo), old.id);
+    if (before.state !== "ready" || !before.value.phase) throw new Error("no phase");
+    const brief = crewBriefFile(world.paths.stateDir, world.repo, old.id);
+    expect(
+      await runCrew(
+        [
+          "start",
+          "B7",
+          "--slug",
+          "next",
+          "--kind",
+          "build",
+          "--brief",
+          brief,
+          "--waits-for",
+          "B6b",
+        ],
+        world.ctx({ randomSuffix: () => "111111" }),
+      ),
+    ).toBe(0);
+    expect(await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT))).toBe(0);
+    const records = listCrew(world.paths.stateDir, world.repo).records;
+    const next = records.find((record) => record.continues === ID);
+    const queued = records.find((record) => record.phase === "B7");
+    if (!next || !queued) throw new Error("missing records");
+    const after = crewPhaseState(world.paths, projectKey(world.repo), next.id);
+    expect(after.state).toBe("ready");
+    if (after.state !== "ready") throw new Error("no phase");
+    expect(after.value.phase?.id).toBe(before.value.phase.id);
+    expect(after.value.phase?.crewId).toBe(next.id);
+    await startQueued(queued, world.ctx({ now: () => T0 + 61_000 }), defaultResolved());
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((record) => record.id === queued.id)
+        ?.state,
+    ).toBe("queued");
+    const { updateCrew } = await import("./store");
+    await updateCrew(world.paths.stateDir, world.repo, next.id, { state: "merged" }, T0 + 1);
+    await startQueued(queued, world.ctx({ now: () => T0 + 61_000 }), defaultResolved());
+    expect(
+      listCrew(world.paths.stateDir, world.repo).records.find((record) => record.id === queued.id)
+        ?.state,
+    ).toBe("starting");
+  });
   test("D25: the hand-off — the same phase, cut from the old head, with the next number", async () => {
     const world = await handoffWorld();
     const code = await runCrew(["start", "B6b", "--continue", NAME], world.ctx(NEXT));

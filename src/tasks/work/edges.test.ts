@@ -1,11 +1,20 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { readProcStat } from "../../jobs/ancestry";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, workDbFile } from "./db";
 import { callerOf } from "./identity";
-import { getTask, listTasks, notesOf, openSubtasks, searchTasks } from "./queries";
-import { crewPhaseState, hasOwnTask, leadOwnState, startView } from "./read";
+import {
+  allTasks,
+  getTask,
+  listTasks,
+  notesOf,
+  openSubtasks,
+  searchTasks,
+  subtreeProgress,
+} from "./queries";
+import { crewPhaseState, hasOwnTask, leadOwnState, startView, statusTask } from "./read";
 import {
   addNote,
   createTask,
@@ -134,18 +143,119 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   if (lead.state !== "ready") throw Error("not ready");
   expect(lead.value.total).toBe(2);
   expect(lead.value.inProgress.map((t) => t.subject)).toEqual(["Beta"]);
+  // The phase and its subtasks are the crew session's own: a session start shows the plan alone.
   const view = startView(paths, "p", who, { limit: 1 });
   expect(view).toEqual({
     state: "ready",
     value: {
-      tasks: [{ id: b.id, number: 4, subject: "Beta", status: "in_progress", claim: "free" }],
-      more: 3,
+      tasks: [{ id: plan.id, number: 1, subject: "Plan", status: "pending", claim: "free" }],
+      more: 0,
+      stale: 0,
     },
   });
   ok(systemClose(db, phase.id, "dropped", "removed", who, 20));
   expect(notesOf(db, b.id)[0]?.text).toBe("Automatically dropped: removed");
   expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: false });
   db.close();
+});
+test("the start view leaves crew phases out, puts this process's claims first, and counts stale work it hides", () => {
+  const { db, paths } = setup();
+  // This test process stands in for the Claude process: its claim must read as live.
+  const stat = readProcStat(process.pid) ?? "";
+  const me = {
+    sessionId: "me",
+    crewId: null,
+    pid: process.pid,
+    procStart:
+      process.platform === "linux"
+        ? (stat
+            .slice(stat.lastIndexOf(")") + 1)
+            .trim()
+            .split(/\s+/)[19] ?? null)
+        : null,
+  };
+  const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+  const DAY = 86_400_000;
+  const now = 100 * DAY;
+  const plan = ok(
+    ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, nobody, now - DAY),
+  );
+  const phase = ok(
+    ensurePhaseTask(
+      db,
+      {
+        project: "p",
+        plan: "plan",
+        phase: "a",
+        subject: "Phase",
+        description: "",
+        crewId: "crew",
+        waitsForPhases: [],
+      },
+      nobody,
+      now - DAY,
+    ),
+  );
+  ok(
+    createTask(
+      db,
+      { project: "p", subject: "Crew step", parentId: phase.id, status: "in_progress" },
+      nobody,
+      now,
+    ),
+  );
+  ok(createTask(db, { project: "p", subject: "Old idea" }, nobody, now - 40 * DAY));
+  const mine = ok(createTask(db, { project: "p", subject: "Old but mine" }, me, now - 40 * DAY));
+  ok(updateTask(db, mine.id, { status: "in_progress" }, me, now - 40 * DAY));
+  const theirs = ok(
+    createTask(
+      db,
+      { project: "p", subject: "Theirs", status: "in_progress" },
+      nobody,
+      now - 2 * DAY,
+    ),
+  );
+  ok(createTask(db, { project: "p", subject: "Recent" }, nobody, now - 3 * DAY));
+  db.close();
+  expect(startView(paths, "p", me, { limit: 3, staleBefore: now - 30 * DAY })).toEqual({
+    state: "ready",
+    value: {
+      tasks: [
+        { id: mine.id, number: 5, subject: "Old but mine", status: "in_progress", claim: "mine" },
+        { id: theirs.id, number: 6, subject: "Theirs", status: "in_progress", claim: "free" },
+        { id: plan.id, number: 1, subject: "Plan", status: "pending", claim: "free" },
+      ],
+      more: 1,
+      stale: 1,
+    },
+  });
+  // With no cutoff nothing is stale: the old idea is back, after the newer ones.
+  const all = startView(paths, "p", me, { limit: 8 });
+  expect(all.state === "ready" ? all.value.tasks.map((t) => t.subject) : []).toEqual([
+    "Old but mine",
+    "Theirs",
+    "Plan",
+    "Recent",
+    "Old idea",
+  ]);
+});
+test("progress counts done and dropped at every depth, the same in the status line's query", () => {
+  const { db, paths } = setup();
+  const top = ok(createTask(db, { project: "p", subject: "Top", status: "in_progress" }, who, 1));
+  const done = ok(createTask(db, { project: "p", subject: "Done", parentId: top.id }, who, 2));
+  const dropped = ok(
+    createTask(db, { project: "p", subject: "Dropped", parentId: top.id }, who, 3),
+  );
+  const open = ok(createTask(db, { project: "p", subject: "Open", parentId: top.id }, who, 4));
+  ok(createTask(db, { project: "p", subject: "Under open", parentId: open.id }, who, 5));
+  ok(updateTask(db, done.id, { status: "done" }, who, 6));
+  ok(updateTask(db, dropped.id, { status: "dropped" }, who, 7));
+  expect(subtreeProgress(allTasks(db, "p"), top.id)).toEqual({ closed: 2, total: 4 });
+  db.close();
+  expect(statusTask(paths, "p", who)).toEqual({
+    state: "ready",
+    value: { number: 1, subject: "Top", closed: 2, total: 4 },
+  });
 });
 test("hook failures return unreadable, query-only blocks writes, schema versions persist", () => {
   const paths = { stateDir: tempDir() };

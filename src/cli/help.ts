@@ -34,6 +34,7 @@ import {
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
+import { TASK_USAGE } from "../tasks/command";
 import { USER_USAGE } from "../user-away/words";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
@@ -305,6 +306,7 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
         asks first; --yes takes them over without the question.`;
 
 export const COMMAND_HELP: readonly CommandHelp[] = [
+  { name: "task", listed: "more", help: TASK_USAGE },
   {
     name: "setup",
     summary: "Set up this machine (safe to run again)",

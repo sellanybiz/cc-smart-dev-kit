@@ -941,6 +941,21 @@ async function main(argv: string[]): Promise<number> {
         print: (line) => console.log(line),
         say: (line) => console.error(line),
       });
+    case "task": {
+      if (rest[0] === "mcp") {
+        if (rest.length !== 1) {
+          console.error("task mcp takes no arguments");
+          return 2;
+        }
+        // Keep the SDK in its own bundle: a computed import cannot be inlined by Bun.build.
+        const built = join(import.meta.dir, "tasks-mcp.js");
+        const entry = existsSync(built) ? built : join(import.meta.dir, "tasks-mcp.ts");
+        await import(entry);
+        return 0;
+      }
+      const { runTaskCommand } = await import("../tasks/command");
+      return await runTaskCommand(rest);
+    }
     case "job":
       return runJobCommand(rest, {
         paths,

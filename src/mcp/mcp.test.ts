@@ -103,6 +103,7 @@ describe("the servers the plugin registers", () => {
       "playwright",
       "sequential-thinking",
       "tavily-websearch",
+      "cc-smart-dev-kit-tasks",
     ]);
     expect(JSON.parse(servers[0]?.json ?? "{}")).toEqual({
       args: ["browser", "mcp"],
@@ -158,7 +159,7 @@ describe("what setup registers, and what it leaves alone", () => {
     const fake = fakeClaude(home);
     const servers = mcpServers(context(home));
     const plan = planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile));
-    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add", "add"]);
 
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.ok).toBe(true);
@@ -166,18 +167,21 @@ describe("what setup registers, and what it leaves alone", () => {
       "+ MCP server playwright registered for your user",
       "+ MCP server sequential-thinking registered for your user",
       "+ MCP server tavily-websearch registered for your user",
+      "+ MCP server cc-smart-dev-kit-tasks registered for your user",
     ]);
     recordApplied(fake.paths.stateDir, applied, "2026-10-16T00:00:00.000Z");
     expect(readMcpRecords(fake.paths.stateDir)).toEqual({
       playwright: { at: "2026-10-16T00:00:00.000Z", json: servers[0]?.json ?? "" },
       "sequential-thinking": { at: "2026-10-16T00:00:00.000Z", json: servers[1]?.json ?? "" },
       "tavily-websearch": { at: "2026-10-16T00:00:00.000Z", json: servers[2]?.json ?? "" },
+      "cc-smart-dev-kit-tasks": { at: "2026-10-16T00:00:00.000Z", json: servers[3]?.json ?? "" },
     });
     // The commands ran remove-then-add for nobody: first registrations are one command each.
     expect(fake.calls.map((argv) => argv.join(" "))).toEqual([
       `claude mcp add-json --scope user playwright ${servers[0]?.json ?? ""}`,
       `claude mcp add-json --scope user sequential-thinking ${servers[1]?.json ?? ""}`,
       `claude mcp add-json --scope user tavily-websearch ${servers[2]?.json ?? ""}`,
+      `claude mcp add-json --scope user cc-smart-dev-kit-tasks ${servers[3]?.json ?? ""}`,
     ]);
 
     // A second setup: nothing to do.
@@ -186,7 +190,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep"]);
+    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
     expect(
       applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending).changes,
     ).toEqual([]);
@@ -248,6 +252,7 @@ describe("what setup registers, and what it leaves alone", () => {
     ).toEqual([
       "+ MCP server sequential-thinking registered for your user",
       "+ MCP server tavily-websearch registered for your user",
+      "+ MCP server cc-smart-dev-kit-tasks registered for your user",
     ]);
     expect(readUserServers(fake.paths.userConfigFile)?.playwright).toEqual({
       args: [],
@@ -328,7 +333,7 @@ describe("what setup registers, and what it leaves alone", () => {
     const live = readUserServers(fake.paths.userConfigFile);
     expect(live).toBeNull();
     const plan = planMcpServers(servers, records, live);
-    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
     expect(plan.every((entry) => entry.forget === undefined)).toBe(true);
     const again = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(again.changes).toEqual([]);
@@ -339,7 +344,7 @@ describe("what setup registers, and what it leaves alone", () => {
     expect(readMcpRecords(fake.paths.stateDir)).toEqual(records);
     // The one line the caller prints, with every kept name.
     expect(unreadableUserConfigNote("~/.claude.json", Object.keys(records))).toBe(
-      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, tavily-websearch",
+      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, tavily-websearch",
     );
   });
 
@@ -418,7 +423,7 @@ describe("what setup registers, and what it leaves alone", () => {
       },
     );
     // Each add ran with its pending record already there.
-    expect(seen).toEqual([true, true, true]);
+    expect(seen).toEqual([true, true, true, true]);
     // ... and no `recordApplied`: the run stopped here. The next setup keeps them all as ours.
     const again = planMcpServers(
       servers,
@@ -429,9 +434,10 @@ describe("what setup registers, and what it leaves alone", () => {
       ["keep", true],
       ["keep", true],
       ["keep", true],
+      ["keep", true],
     ]);
     const applied = applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending);
-    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls).toHaveLength(4);
     recordApplied(fake.paths.stateDir, applied, "later");
     expect(readMcpRecords(fake.paths.stateDir).playwright).toEqual({
       at: "later",
@@ -619,6 +625,7 @@ describe("restore: exactly what setup registered", () => {
 
     const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
     expect(removal.removed).toEqual([
+      "- MCP server cc-smart-dev-kit-tasks removed from your user config",
       "- MCP server playwright removed from your user config",
       "- MCP server tavily-websearch removed from your user config",
     ]);
@@ -626,6 +633,7 @@ describe("restore: exactly what setup registered", () => {
       "  MCP server sequential-thinking holds a config cc-smart-dev-kit did not write: left alone (it is yours now)",
     ]);
     expect(removal.forgotten.sort()).toEqual([
+      "cc-smart-dev-kit-tasks",
       "playwright",
       "sequential-thinking",
       "tavily-websearch",
@@ -649,9 +657,9 @@ describe("restore: exactly what setup registered", () => {
     recordApplied(fake.paths.stateDir, applied, "then");
     const removal = removeMcpServers(fake.paths, fake.run, () => null, false);
     expect(removal.removed).toEqual([]);
-    expect(removal.kept).toHaveLength(3);
+    expect(removal.kept).toHaveLength(4);
     expect(removal.notes[0]).toContain("The claude command is not on PATH");
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(3);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
   });
 
   test("nothing of ours is registered: nothing to do, and no command runs", () => {
@@ -688,13 +696,18 @@ describe("restore: exactly what setup registered", () => {
     const removal = removeMcpServers(fake.paths, fake.run, () => "/usr/bin/claude", false);
     expect(removal.removed).toEqual([]);
     expect(removal.forgotten).toEqual([]);
-    expect(removal.kept).toEqual(["playwright", "sequential-thinking", "tavily-websearch"]);
+    expect(removal.kept).toEqual([
+      "cc-smart-dev-kit-tasks",
+      "playwright",
+      "sequential-thinking",
+      "tavily-websearch",
+    ]);
     // `~` and then the platform's own separators: `~\.claude\.claude.json` on Windows.
     expect(removal.notes).toEqual([
-      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: playwright, sequential-thinking, tavily-websearch`,
+      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, tavily-websearch`,
     ]);
     expect(fake.calls).toHaveLength(callsBefore);
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(3);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
   });
 });
 
@@ -810,6 +823,7 @@ describe("mcp status: what is registered by something else", () => {
       "playwright:missing",
       "sequential-thinking:missing",
       "tavily-websearch:missing",
+      "cc-smart-dev-kit-tasks:missing",
     ]);
   });
 
@@ -842,6 +856,7 @@ describe("mcp status: what is registered by something else", () => {
       "playwright",
       "sequential-thinking",
       "tavily-websearch",
+      "cc-smart-dev-kit-tasks",
     ]);
     expect(mcpServerStatus(paths_).every((one) => one.state === "missing")).toBe(true);
     // A user config that cannot be read: `unreadable`, never "missing" (the installer must not
@@ -1129,6 +1144,7 @@ describe("M3: the live scenario — every name registered by a project's script"
       "playwright:foreign",
       "sequential-thinking:foreign",
       "tavily-websearch:foreign",
+      "cc-smart-dev-kit-tasks:foreign",
     ]);
     // What runs instead: the command and its arguments, and never that server's key.
     const tavily = status.find((one) => one.name === "tavily-websearch");

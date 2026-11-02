@@ -27,6 +27,9 @@ import {
 } from "../crew/store";
 import { ISSUE_DATA_FRAME, WATCH_MONITOR_COMMAND } from "../crew/watch";
 import { currentHolder } from "../setup/lock";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask } from "../tasks/work/store";
 import { LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { hookEnv, makeClone, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
@@ -166,13 +169,38 @@ describe("lead Stop continuation", () => {
     last_assistant_message: "Next I'll push the PRs.",
     ...extra,
   });
+  // A task on Claude Code's own list (no deny entries in this world's settings, as before setup).
   const one = {
     stdout: JSON.stringify({
       decision: "block",
       reason:
-        'Your task "Part 1" is still in progress. Continue it now. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+        'Your task "Claude Code task 1 Part 1" is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
     }),
   };
+  // A task on the kit's own list.
+  const kitOne = {
+    stdout: JSON.stringify({
+      decision: "block",
+      reason:
+        'Your task "#1 Part 1" is still in progress. Continue it now, and mark it done the moment it is: `task_done` with task "#1", or `cc-smart-dev-kit task done #1`. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+    }),
+  };
+
+  test("a kit task suppresses the reminder and blocks Stop through the notifier's one decision", async () => {
+    const w = await leadWorld({ list: false });
+    const db = openWorkDb(workDbFile(cliPaths(w.env)), { mode: "write" });
+    const task = createTask(
+      db,
+      { project: projectKey(w.repo), plan: "plan", subject: "Part 1", status: "in_progress" },
+      { sessionId: LEAD_SESSION, crewId: null, pid: null, procStart: null },
+      T0,
+    );
+    db.close();
+    if (!task.ok) throw new Error(task.why);
+    expect(await runHook(leadNotesHook, leadInput(w.repo), w.env)).toEqual({});
+    expect(await runHook(leadNotesHook, stop(w.repo), w.env)).toEqual(kitOne);
+    expect(leadStopWouldBlockAt(stop(w.repo), w.env)).toBe(true);
+  });
 
   test("the notifier decision matches the Stop and fails open", async () => {
     const w = await leadWorld();
@@ -199,7 +227,7 @@ describe("lead Stop continuation", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          'Your task "Part 1" (and 1 more) is still in progress. Continue it now. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+          'Your task "Claude Code task 1 Part 1" (and 1 more) is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
       }),
     });
   });
@@ -735,10 +763,35 @@ describe("D61: a lead's start note, and never a prompt", () => {
   });
 });
 
+test("a lead hears stale project tasks only at startup and resume", async () => {
+  const w = await leadWorld();
+  const dir = join(w.repo, ".claude", "tasks");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "T-aaaaaa.md"),
+    "---\nid: T-aaaaaa\ntitle: Follow up\nkind: follow-up\nstatus: open\ncreated: 2000-01-01\n---\nCheck the result.\n",
+  );
+  for (const source of ["startup", "resume", "compact"]) {
+    const result = await runHook(
+      leadNotesHook,
+      { hook_event_name: "SessionStart", session_id: LEAD_SESSION, cwd: w.repo, source },
+      w.env,
+    );
+    expect(result).toEqual(
+      addContext(
+        "SessionStart",
+        source === "compact"
+          ? START_NOTE
+          : `${START_NOTE}\n1 project tasks are open past 30 days: run \`cc-smart-dev-kit task check\`.`,
+      ),
+    );
+  }
+});
+
 describe("D23: a lead with no to-do list is reminded, never blocked", () => {
   /** The reminder, written out. */
   const REMINDER =
-    "You have no Claude Code task list: put the person's asks and your open work on it (TaskCreate, not claude-mem's work state), and keep it true as they move.";
+    "You have no task of your own on the kit's task list: put the person's asks and your open work there (`task_create`, or `cc-smart-dev-kit task add`), and keep each one's status true as it moves.";
   const NAME = "LEAD app plan";
 
   test("a prompt while the lead has no list: the reminder, as the one line of context", async () => {

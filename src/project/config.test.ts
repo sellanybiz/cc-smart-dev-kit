@@ -145,6 +145,7 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "verify-gate": "1.1.0",
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
+  "task-start": "1.10.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */

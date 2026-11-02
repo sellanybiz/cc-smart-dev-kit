@@ -15,6 +15,7 @@ import type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
+  CrewPhaseTasks,
   CrewReport,
   CrewReview,
   HistoryAnswer,
@@ -33,6 +34,10 @@ import type {
   ProjectGatewayStateName,
   ProjectInitPlan,
   ProjectProfileSlot,
+  ProjectTaskFiles,
+  ProjectTaskRow,
+  ProjectTasksAnswer,
+  ProjectWorkTasks,
   RequestsAnswer,
   RouterFacts,
   SessionSummary,
@@ -41,6 +46,7 @@ import type {
   SlotTarget,
   SwitchFacts,
   HistoryPoint as WireHistoryPoint,
+  WorkTaskNode,
 } from "./wire";
 
 export type {
@@ -50,6 +56,7 @@ export type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
+  CrewPhaseTasks,
   JobCeilingState,
   JobRouteState,
   JobWeightsState,
@@ -61,11 +68,18 @@ export type {
   ProjectGatewayStateName,
   ProjectInitPlan,
   ProjectProfileSlot,
+  ProjectTaskFiles,
+  ProjectTaskRow,
+  ProjectWorkTasks,
   RouterFacts,
   SlotRow,
   SlotTarget,
   SwitchFacts,
+  WorkTaskNode,
 };
+
+/** `GET /api/projects/<id>/tasks` (D75): a project's Tasks card, as the server answers it. */
+export type ProjectTasksData = ProjectTasksAnswer;
 
 // ── The shell ──────────────────────────────────────────────────────────────────────────
 
@@ -867,6 +881,8 @@ export interface CrewDetail {
   memory: { at: number; mb: number }[];
   /** The reviews recorded for its branch, oldest first. */
   reviews: CrewReviewRecord[];
+  /** Its phase task and every subtask, from the kit's work store (D75). */
+  tasks: CrewPhaseTasks;
 }
 
 // ── Guard log (D52; planned: `GET /api/guard-asks?…`) ─────────────────────────────────

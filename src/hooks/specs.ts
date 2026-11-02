@@ -101,6 +101,7 @@ import type { HookSpec } from "./run";
 import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
+import { taskStart } from "./task-start";
 import { tierView } from "./tier-view";
 import { inAwayDomain, userAwayAnswer } from "./user-away";
 import { verifyGate } from "./verify-gate";
@@ -687,7 +688,17 @@ function cwdOf(input: HookInput): string {
 }
 
 /** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
+export const taskStartHook: HookSpec = {
+  name: "task-start",
+  events: ["SessionStart"],
+  onConfigProblem: (_message, input, _event, _checkout, context) =>
+    taskStart(input, context.paths, context.env),
+  outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
+  run: ({ input, paths, env }) => taskStart(input, paths, env),
+};
+
 export const HOOKS: readonly HookSpec[] = [
+  taskStartHook,
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
@@ -754,6 +765,7 @@ export const USER_HOOKS: readonly string[] = [
  */
 export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
+  "task-start",
   "agent-guard",
   "fable-session",
   "tier-view",

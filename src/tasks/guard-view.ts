@@ -8,11 +8,15 @@
  * Code's own (`src/crew/tasks.ts`) is read beside it, because a machine that updated the plugin
  * before running `setup` still has Claude Code's task tools, and a session there may have used
  * them. A task open on either list is open. The legacy half goes in the release after.
+ * **Once setup has run, Claude Code's list is not read**: setup denies its tools, so a task left
+ * open there can never be closed, and it must not hold a session at a stop or a done report.
  *
  * **What cannot be read is named, never read as an empty list**: each caller decides what an
  * unreadable list means for its own answer (a guard lets the call through, `hooks-guards.md`).
  */
 import { openTasks, readSessionTasks, sessionTasksDir } from "../crew/tasks";
+import { readUserJson } from "../setup/user-json";
+import { RETIRED_TASK_CLOSER } from "./words";
 import { crewPhaseState, leadOwnState } from "./work/read";
 import type { WorkTask } from "./work/types";
 
@@ -29,6 +33,8 @@ interface Where {
   stateDir: string;
   /** Claude Code's config folder, which holds its own task lists. */
   claudeConfigDir: string;
+  /** The user's Claude Code settings (`cliPaths().settingsFile`), where setup's deny entries are. */
+  settingsFile: string;
   /** The work store's project key (`taskContext`). */
   project: string;
   /** Claude Code's list id for the session (`taskListId`); "" when none is known. */
@@ -39,12 +45,36 @@ function kitLine(task: WorkTask): OpenTaskLine {
   return { ref: `#${task.number}`, subject: task.subject, status: task.status };
 }
 
+/**
+ * Whether a session can still close a task on Claude Code's own list: not once the user's
+ * settings deny `TaskUpdate`, which setup does (`src/setup/task-tools.ts`). A settings file that
+ * is missing or is not JSON shows no deny, so the list is read, as on a machine before setup.
+ */
+function claudeListClosable(settingsFile: string): boolean {
+  let settings: unknown;
+  try {
+    settings = readUserJson(settingsFile);
+  } catch {
+    return true;
+  }
+  const permissions =
+    typeof settings === "object" && settings !== null && "permissions" in settings
+      ? settings.permissions
+      : undefined;
+  const deny =
+    typeof permissions === "object" && permissions !== null && "deny" in permissions
+      ? permissions.deny
+      : undefined;
+  return !(Array.isArray(deny) && deny.includes(RETIRED_TASK_CLOSER));
+}
+
 /** Claude Code's list, read: its open tasks, whether it holds any task file, and what failed. */
 function claudeList(where: Where): {
   files: number;
   open: OpenTaskLine[];
   unreadable: string | null;
 } {
+  if (!claudeListClosable(where.settingsFile)) return { files: 0, open: [], unreadable: null };
   const read = readSessionTasks(where.claudeConfigDir, where.listId);
   if (read.state === "none") return { files: 0, open: [], unreadable: null };
   if (read.state === "unreadable") {

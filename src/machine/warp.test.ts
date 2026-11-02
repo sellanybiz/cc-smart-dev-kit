@@ -30,6 +30,10 @@ import {
 
 capturePrinted();
 
+// A fresh home has no allow rule for the task tools yet, so every setup here asks for that trust
+// rule first (`.claude/rules/setup-commands.md`); any question after it is Warp's own.
+const TASK_TOOLS = "Allow the kit's task tools?";
+
 const INSTALLED = "Package: warp-terminal\nStatus: install ok installed\nVersion: 0.2026.10.01\n";
 
 const STAGE = (home: string) => join(home, ".claude", "cc-smart-dev-kit", "warp");
@@ -56,15 +60,17 @@ describe("setup --warp", () => {
         "",
       ].join("\n"),
     );
-    expect(w.questions).toEqual(["Run these commands now?"]);
+    expect(w.questions).toEqual([TASK_TOOLS, "Run these commands now?"]);
     // What root got: Warp's key, and the source that names it.
     expect(readFileSync(join(w.staged, "warpdotdev.gpg"), "utf8")).toBe(FAKE_KEY);
     expect(readFileSync(join(w.staged, "warpdotdev.sources"), "utf8")).toBe(aptSourceText("amd64"));
     // The staged files are gone again.
     expect(existsSync(stage)).toBe(false);
     // The commands were shown before the question.
-    // After the heading and its blank line.
-    expect(printed.slice(2, 7)).toEqual([
+    // After the heading, its blank line and the task tools' trust rule with its question.
+    expect(printed.slice(2, 9)).toEqual([
+      "Task tools: trust rule for permissions.allow:",
+      '  + "mcp__cc-smart-dev-kit-tasks__*"',
       "To install Warp from its signed source, cc-smart-dev-kit runs these commands (sudo asks for your password):",
       `  $ ${install(`${stage}/warpdotdev.gpg`, APT_KEY)}`,
       `  $ ${install(`${stage}/warpdotdev.sources`, APT_SOURCE)}`,
@@ -272,7 +278,7 @@ describe("setup --warp", () => {
         "",
       ].join("\n"),
     );
-    expect(w.questions).toEqual([]);
+    expect(w.questions).toEqual([TASK_TOOLS]);
     expect(printed).toContain("  · Warp 0.2026.10.01 is installed already");
   });
 
@@ -291,7 +297,7 @@ describe("plain setup and Warp", () => {
     const w = world({ bins: { "dpkg-query": `printf '${INSTALLED}'` } });
     expect(await w.setup()).toBe(0);
     expect(w.calls()).toBe("");
-    expect(w.questions).toEqual([]);
+    expect(w.questions).toEqual([TASK_TOOLS]);
   });
 
   test("without the Warp app: nothing about Warp", async () => {
@@ -324,7 +330,7 @@ describe("setup --remove-warp", () => {
     );
     expect(existsSync(shortcut)).toBe(false);
     expect(printed).toContain("  - ~/Desktop/dev.warp.Warp.desktop: Warp shortcut removed");
-    expect(w.questions).toEqual(["Run these commands now?"]);
+    expect(w.questions).toEqual([TASK_TOOLS, "Run these commands now?"]);
   });
 
   test("a package removed but not purged does not count as installed", async () => {
@@ -389,11 +395,11 @@ describe("setup --remove-warp", () => {
     );
   });
 
-  test("nothing of Warp's here: nothing to run, nothing asked", async () => {
+  test("nothing of Warp's here: nothing to run, nothing asked about Warp", async () => {
     const w = world();
     expect(await w.setup({ removeWarp: true })).toBe(0);
     expect(w.calls()).toBe("");
-    expect(w.questions).toEqual([]);
+    expect(w.questions).toEqual([TASK_TOOLS]);
   });
 });
 

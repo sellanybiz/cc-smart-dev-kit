@@ -9,11 +9,16 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeIssueGh } from "../issues/fake-github";
 import { MAX_PHASE_ISSUES } from "../issues/phase-issues";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { allTasks } from "../tasks/work/queries";
+import { createTask } from "../tasks/work/store";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
 import { commitConfig } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { recordReview, reviewsFile } from "../workflow/reviews";
 import { runCrew } from "./command";
+import { writePhaseTask } from "./phase-task";
 import {
   createCrew,
   crewReportFile,
@@ -430,6 +435,34 @@ describe("crew report", () => {
     expect(report?.outsideBrief).toEqual(["extra.ts"]);
   });
 
+  test("a done report is refused with an open kit subtask", async () => {
+    const world = await crewWorld1();
+    const record = listCrew(world.paths.stateDir, world.repo).records[0];
+    if (!record) throw new Error("no crew");
+    writePhaseTask(record, world.ctx());
+    const db = openWorkDb(workDbFile(world.paths), { mode: "write" });
+    try {
+      const phase = allTasks(db, projectKey(world.repo)).find((task) => task.kind === "phase");
+      if (!phase) throw new Error("no phase");
+      expect(
+        createTask(
+          db,
+          { project: projectKey(world.repo), parentId: phase.id, subject: "Make it pass" },
+          { sessionId: null, crewId: null, pid: null, procStart: null },
+          T0,
+        ).ok,
+      ).toBe(true);
+    } finally {
+      db.close();
+    }
+    expect(
+      await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID })),
+    ).toBe(1);
+    expect(world.err[0]).toBe(
+      'crew report: the task list still has 1 open task: #3 "Make it pass" (pending)',
+    );
+  });
+
   test("D23: a done report is refused while a task is open, and each open task is named", async () => {
     const world = await crewWorld1();
     taskFile(world, 1, "completed");
@@ -441,8 +474,8 @@ describe("crew report", () => {
     );
     expect(code).toBe(1);
     expect(world.err).toEqual([
-      'crew report: the task list still has 2 open tasks: #3 "Part 3" (pending), #5 "Part 5" (in_progress)',
-      "Fix: Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+      'crew report: the task list still has 2 open tasks: Claude Code task 5 "Part 5" (in_progress), Claude Code task 3 "Part 3" (pending)',
+      "Fix: Finish each open subtask (`task_done`), or drop one that no longer applies (`task_done` with outcome dropped) and say why under `open` in your report",
     ]);
     // Nothing was written and nothing was said: the phase is still working.
     expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))).toBeNull();
@@ -457,8 +490,8 @@ describe("crew report", () => {
     const ctx = world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID });
     expect(await runCrew(doneArgs(), ctx)).toBe(1);
     expect(world.err).toEqual([
-      'crew report: the task list still has 1 open task: #2 "Part 2" (in_progress)',
-      "Fix: Finish or remove each open task first (TaskUpdate status completed, or status deleted for one that no longer applies, and say why under `open` in your report)",
+      'crew report: the task list still has 1 open task: Claude Code task 2 "Part 2" (in_progress)',
+      "Fix: Finish each open subtask (`task_done`), or drop one that no longer applies (`task_done` with outcome dropped) and say why under `open` in your report",
     ]);
     world.err.length = 0;
     taskFile(world, 2, "completed");
@@ -503,7 +536,7 @@ describe("crew report", () => {
     ]);
   });
 
-  test("D23: an empty list after every task was removed is a finished list: no note, no hold", async () => {
+  test("an empty legacy folder without a phase task has no list: a note, no hold", async () => {
     const world = await crewWorld1();
     // What a live run left after its last task was removed: no `N.json` at all.
     const folder = join(world.paths.claudeConfigDir, "tasks", SESSION_ID);
@@ -515,6 +548,7 @@ describe("crew report", () => {
     ).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([
+      "note: no task list was found for this session; nothing was checked before the report",
       `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
     ]);
   });
@@ -528,7 +562,7 @@ describe("crew report", () => {
       await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID })),
     ).toBe(0);
     expect(world.out).toEqual([
-      `note: the task list in ${join(world.paths.claudeConfigDir, "tasks", SESSION_ID)} cannot be read; nothing was checked before the report`,
+      `note: Claude Code's task list in ${join(world.paths.claudeConfigDir, "tasks", SESSION_ID)} cannot be read; nothing was checked before the report`,
       `report done · ${crewReportFile(world.paths.stateDir, world.repo, ID)}`,
     ]);
   });
@@ -545,7 +579,7 @@ describe("crew report", () => {
     );
     expect(await runCrew(doneArgs(), ctx)).toBe(1);
     expect(world.err[0]).toBe(
-      'crew report: the task list still has 1 open task: #7 "Part 7" (in_progress)',
+      'crew report: the task list still has 1 open task: Claude Code task 7 "Part 7" (in_progress)',
     );
     world.err.length = 0;
     taskFile(world, 7, "completed", "shared-list");

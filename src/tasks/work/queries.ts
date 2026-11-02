@@ -80,7 +80,22 @@ export function isOpen(task: WorkTask): boolean {
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);
-  const tasks = allTasks(db, task.project);
+  return descendantsIn(allTasks(db, task.project), id);
+}
+/**
+ * How far a task is: the tasks under it, at every depth, that are closed (done or dropped), of
+ * all of them. The one rule the status line, the board, `task_list` and the portal count by: a
+ * parent may be done once each is done or dropped, so a dropped one is finished with too.
+ */
+export function subtreeProgress(
+  tasks: readonly WorkTask[],
+  id: string,
+): { closed: number; total: number } {
+  const under = descendantsIn(tasks, id);
+  return { closed: under.filter((t) => !isOpen(t)).length, total: under.length };
+}
+/** `descendants`, over a project's tasks already read. */
+function descendantsIn(tasks: readonly WorkTask[], id: string): WorkTask[] {
   const ids = new Set([id]);
   const result: WorkTask[] = [];
   let added = true;

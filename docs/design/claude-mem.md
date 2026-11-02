@@ -1,8 +1,17 @@
-# claude-mem: the memory-use block off, work state on (D68)
+# claude-mem: memory only (D75)
 
-claude-mem's work state is its to-do list, kept across sessions. D68 (2026-10-29) restores
-it on every machine while keeping the memory-use block off. D23 turned both blocks off;
-its overflow came from the memory-use block, not work state.
+D75 (2026-11-03, 1.10.0) gives all tasks to [the kit's task list](tasks.md). Setup writes
+`CLAUDE_MEM_WORK_STATE_ENABLED: "false"`; a person's own `"true"` stays. It withdraws its
+`CLAUDE_CODE_ENABLE_TODO_TOOLS` opt-in and denies Claude Code's list tools. Run
+`cc-smart-dev-kit setup`, restart, then run `cc-smart-dev-kit task import claude-mem` once
+to move open lists. Restore undoes only managed changes. Memory still uses `save_memory`;
+work notes and to-dos use the kit's task tools. Doctor checks that split.
+
+## D68's earlier split
+
+The rest of this section records D68, not the current setup contract. D68 (2026-10-29)
+restored claude-mem work state while keeping the memory-use block off. D23 had turned
+both blocks off; its overflow came from the memory-use block, not work state.
 
 The [research](../../.claude/research/archive/2026-10-29-claude-mem-work-state.md) reads
 claude-mem 15.4.0's worker and CHANGELOG. Work state is capped at 3,000 characters, with

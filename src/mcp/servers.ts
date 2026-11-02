@@ -26,7 +26,8 @@
  *
  * A project's own servers are the project's: the plugin never knows them.
  */
-import { TASKS_SERVER_NAME, TAVILY_SERVER_NAME } from "./names";
+import { TAVILY_SERVER_NAME } from "./names";
+import { TASKS_SERVER_NAME } from "./task-server-name";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */

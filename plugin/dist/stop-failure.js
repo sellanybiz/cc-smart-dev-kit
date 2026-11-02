@@ -7421,18 +7421,20 @@ var PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "crew-role",
-  "lead-notes"
+  "lead-notes",
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = ["serena-root"];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
+    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -7447,6 +7449,12 @@ var ccSmartDevKitConfigSchema = strictObject({
   instructions: boolean2().optional(),
   autoMode: array(string2().min(1)).optional(),
   jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+  tasks: strictObject({
+    dir: inCheckout.optional(),
+    staleDays: number2().int().min(1).optional(),
+    releaseBranch: string2().trim().min(1).optional(),
+    legacyFolders: array(inCheckout).optional()
+  }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
@@ -7858,6 +7866,35 @@ var IGNORE_CASE = process.platform === "win32";
 // src/workflow/reviews.ts
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
 var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+// src/tasks/project/format.ts
+var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
+var projectTaskSchema = object({
+  id: string2().regex(/^T-[a-z2-7]{6}$/),
+  title: string2().min(1).max(200),
+  kind: _enum(["production", "database", "teammate", "follow-up"]),
+  status: _enum(["open", "done", "dropped"]),
+  when: _enum(["now", "next-release", "any"]).optional(),
+  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
+  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
+  created: date3,
+  closed: date3.optional(),
+  from: string2().optional(),
+  refs: array(string2()).optional(),
+  evidence: string2().optional()
+}).passthrough();
+
+// src/tasks/work/db.ts
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+
+// src/worktrees/machine-facts.ts
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+
+// src/crew/session.ts
+var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
+
+// src/tasks/work/identity.ts
+var cached2 = new Map;
 
 // src/crew/runs.ts
 var text = string2().min(1);
@@ -8241,12 +8278,6 @@ function urlMeaning(url, routerUrl) {
   }
   return { profile: null, state: "other" };
 }
-// src/worktrees/machine-facts.ts
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
 
 // src/models/launch-policy.ts
 var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];

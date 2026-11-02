@@ -46,11 +46,11 @@ import { companionState, companions, comparableVersion } from "./companions";
  * `CHOICES_FILE` as the person's: setup then leaves the provider keys (together) and a chosen
  * fallback as they are (`isPersonsChoice`). The person choosing is not the plugin choosing.
  *
- * **The memory-use block stays off** (D68). Work state uses claude-mem's default again:
- * its room is reserved in claude-mem's 10,000-character budget; the memory-use block's is not.
- * Setup withdraws its old work-state claim. See `docs/design/claude-mem.md`.
+ * **Both task and memory-use start blocks stay off** (D75). The kit owns the task list;
+ * claude-mem keeps memory only. A work-state value the person set to "true" stays.
+ * See `docs/design/claude-mem.md`.
  *
- * Six keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a restore
+ * Seven keys in `~/.claude-mem/settings.json`, owned through `applyManagedJson`, so a restore
  * takes them out: the five provider keys and the memory-use block. claude-mem writes every
  * default into that file on its first run, so a key
  * that holds claude-mem's own default (`""`, `claude` for the provider, `true` for a start
@@ -122,9 +122,8 @@ export const OPENROUTER_API_KEY_POOL = "CLAUDE_MEM_OPENROUTER_API_KEYS";
 export const OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_API_KEY] as const;
 
 /**
- * claude-mem's two start blocks, read by doctor. D68 keeps only the memory-use block off:
- * work state's room is reserved in claude-mem's 10,000-character budget, while memory-use
- * is not. Work state returns to claude-mem's default. See `docs/design/claude-mem.md`.
+ * claude-mem's two start blocks, both planned off by D75 and read by doctor.
+ * Work state belongs to the kit; the memory-use block can overflow the context budget.
  */
 export const START_BLOCK_KEYS = [
   "CLAUDE_MEM_WORK_STATE_ENABLED",
@@ -421,7 +420,12 @@ export function readStartBlocks(paths: CliPaths): StartBlockReading[] | { proble
       key,
       value,
       // Not in the file's own default form (a value that is not a string, say): the person's.
-      by: unchosen(path, current.value) ? "default" : "person",
+      by:
+        key === WORK_STATE_KEY && current.value === "true"
+          ? "person"
+          : unchosen(path, current.value)
+            ? "default"
+            : "person",
     };
   });
 }
@@ -442,7 +446,9 @@ function planStartBlocks(
   notes: string[],
 ): Array<readonly [KeyPath, string]> {
   const planned: Array<readonly [KeyPath, string]> = [];
-  for (const key of [MEMORY_USE_KEY]) {
+  // claude-mem 15.5.0: worker-service.cjs:3677 skips session-start work-state
+  // context; mcp-server.cjs:409 hides its work-state tools and refuses calls while off.
+  for (const key of START_BLOCK_KEYS) {
     const path = read.at(key);
     const current = getKey(read.data, path);
     if (!current.found || Bun.deepEquals(current.value, START_BLOCK_OFF)) {
@@ -453,7 +459,11 @@ function planStartBlocks(
     // A value setup wrote before and the person changed since is theirs, whatever it is.
     const theirs = record !== undefined && Object.hasOwn(record, "value");
     // claude-mem seeded its own default ("true" or ""): nobody chose it, so setup may take it.
-    if (!theirs && unchosen(path, current.value)) {
+    if (
+      !theirs &&
+      unchosen(path, current.value) &&
+      !(key === WORK_STATE_KEY && current.value === "true")
+    ) {
       planned.push([path, START_BLOCK_OFF]);
       continue;
     }
@@ -650,9 +660,7 @@ export function claudeMemPlan(
       startBlocks,
       provider,
       notes,
-      withdraw: read.records.some((record) => samePath(record.path, read.at(WORK_STATE_KEY)))
-        ? [read.at(WORK_STATE_KEY)]
-        : [],
+      withdraw: [],
     },
   };
 }

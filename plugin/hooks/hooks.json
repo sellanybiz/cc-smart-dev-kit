@@ -300,6 +300,15 @@
     ],
     "SessionStart": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/task-start.js\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "startup|resume",
         "hooks": [
           {

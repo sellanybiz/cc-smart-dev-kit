@@ -30,6 +30,7 @@ export const PLUGIN_HOOK_NAMES = [
   "session-name",
   "crew-role",
   "lead-notes",
+  "task-start",
 ] as const;
 
 /** One name from `PLUGIN_HOOK_NAMES`. */
@@ -154,6 +155,7 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, strin
   "verify-gate": "1.1.0",
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
+  "task-start": "1.10.0",
 };
 
 /**

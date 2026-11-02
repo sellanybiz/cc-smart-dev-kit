@@ -1588,15 +1588,6 @@ function withRecords(state, file, key, records) {
 function ownedEntries(stateDir, file) {
   return readOwnedEntries(stateDir)[file] ?? {};
 }
-function deleteWithEmptyParents(data, path) {
-  deleteKey(data, path);
-  for (let depth = path.length - 1;depth > 0; depth -= 1) {
-    const parent = getKey(data, path.slice(0, depth));
-    if (!parent.found || !isObject(parent.value) || Object.keys(parent.value).length > 0)
-      return;
-    deleteKey(data, path.slice(0, depth));
-  }
-}
 function applyOnce2(file, options, plan, snapshot) {
   const { path } = options;
   const key = pathKey(path);
@@ -1674,9 +1665,17 @@ function applyOnce2(file, options, plan, snapshot) {
     writeOwnedEntries(options.stateDir, withRecords(snapshot, file, key, kept));
     return { file, added, removed, skipped, written: false, backup: null };
   }
-  if (dropList)
-    deleteWithEmptyParents(data, path);
-  else
+  const created = createdObjects(options.stateDir, file);
+  if (dropList || list.length === 0 && created(path)) {
+    deleteKey(data, path);
+    for (let depth = path.length - 1;depth > 0; depth -= 1) {
+      const parentPath = path.slice(0, depth);
+      const parent = getKey(data, parentPath);
+      if (!created(parentPath) || !parent.found || !isObject(parent.value) || Object.keys(parent.value).length > 0)
+        break;
+      deleteKey(data, parentPath);
+    }
+  } else
     setKey(data, path, list);
   const claimed = withRecords(snapshot, file, key, [
     ...live,
