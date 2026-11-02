@@ -330,7 +330,7 @@ Setup also registers the tasks server through the launcher at user scope, with
 `permissions.allow`, like the auto-mode trust entries; without a terminal it leaves this
 entry out. It adds managed deny entries for `TaskCreate`, `TaskUpdate`, `TaskList`,
 `TaskGet`, `TodoWrite` — never `TaskStop` or `TaskOutput`. It withdraws its D68 task-tool
-opt-in and turns off claude-mem work state, leaving your own `"true"` alone. Restore undoes
+opt-in and turns off claude-mem work state; a `"true"` you set after that stays. Restore undoes
 these managed changes. [Setup design](docs/design/setup.md).
 
 #### `cc-smart-dev-kit restore`
@@ -398,13 +398,13 @@ Every command below starts with `cc-smart-dev-kit`.
 | `task list [--scope mine\|plan\|project\|all] [--json]` | List tasks in the selected scope. |
 | `task list --branch [--base <branch>]` | Project task changes for the pull request body. |
 | `task list --branches` | Open project tasks on local unmerged branches. |
-| `task show <ref> [--offset <n>] [--history]` | Read a task with its notes and its history: each change with its time, the values before and after, and the session (name and id), crew and process that made it, or the kit's reason (a merge, a removal, an import). A project task's history is its file's git log. `--history` also prints every earlier description in full. Output is capped; `--offset` reads more. |
+| `task show <ref> [--offset <n>] [--history]` | Read a task with its notes and its history: each change with its time, the values before and after, and the session (name and id), crew and process that made it, or the kit's reason (a merge, a removal, an import). A deleted task shows its history, its last version included. A project task's history is its file's git log. `--history` also prints every earlier description in full. Output is capped; `--offset` reads more. |
 | `task search <text> [--all]` | Search tasks; include closed work with `--all`. |
 | `task check [--json]` | Find stale tasks, missed releases, broken refs or files, duplicate titles and new legacy notes. Exit 1 on findings. |
 | `task release [--json]` | List release obligations by weight, including missed ones. |
 | `task import notes <folder> --kind <kind> [--since YYYY-MM-DD] [--dry-run]` | Import old notes, keeping their Markdown body. |
 | `task import claude-mem [--project <name>] [--dry-run]` | Move open claude-mem lists once. |
-| `task delete <ref>` | Delete a mistake, not completed work. Work with notes or subtasks cannot be deleted. |
+| `task delete <ref>` | Delete a mistake, not completed work. Work with notes or subtasks cannot be deleted. The number is not given to another task. |
 | `task mcp` | Run the stdio server; setup registers it. |
 
 The server exposes eight tools: `task_create`, `task_update`, `task_done`, `task_note`,
@@ -1658,7 +1658,7 @@ explains how to use the memories it loaded. `setup` keeps the memory-use block o
 Claude Code's 10,000-character limit. Work state fits within claude-mem's own context budget
 but is replaced by the kit's task list in 1.10.0 (D75, replacing D68).
 
-- **Memory only.** Setup sets `CLAUDE_MEM_WORK_STATE_ENABLED: "false"`; your own `"true"`
+- **Memory only.** Setup sets `CLAUDE_MEM_WORK_STATE_ENABLED: "false"`; a `"true"` you set after that
   stays. Stored lists remain available for the one-time `task import claude-mem`.
 - **One task system.** Setup takes back its own `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` opt-in
   and denies Claude Code's list tools. The kit's tools serve normal sessions, leads and crew.

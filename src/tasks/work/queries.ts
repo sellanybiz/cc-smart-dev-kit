@@ -93,15 +93,56 @@ export function descendants(db: WorkDb, id: string): WorkTask[] {
   return descendantsIn(allTasks(db, task.project), id);
 }
 /**
+ * Whether a task counts toward progress, given the crew id of the nearest crew phase above it
+ * (null: none). A closed task an earlier crew session of that phase made does not: a phase
+ * started again after `crew rm` or a merge (`ensurePhaseTask` reopens it) keeps that session's
+ * closed subtasks as its record, and the new session's gates and `closed/total` start from its
+ * own work. A continuation takes its predecessor's subtasks over, so they count on.
+ */
+export function countsToward(task: WorkTask, phaseCrew: string | null): boolean {
+  return phaseCrew === null || isOpen(task) || task.crewId === null || task.crewId === phaseCrew;
+}
+/** The tasks under a task, at every depth, that its progress counts (`countsToward`). */
+export function countedUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
+  const children = new Map<string, WorkTask[]>();
+  for (const t of tasks) {
+    if (!t.parentId) continue;
+    const siblings = children.get(t.parentId);
+    if (siblings) siblings.push(t);
+    else children.set(t.parentId, [t]);
+  }
+  const crewOf = (t: WorkTask | undefined, above: string | null) =>
+    t?.kind === "phase" ? t.crewId : above;
+  const seen = new Set([id]);
+  const result: WorkTask[] = [];
+  const walk = (parent: string, phaseCrew: string | null) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      if (countsToward(child, phaseCrew)) result.push(child);
+      walk(child.id, crewOf(child, phaseCrew));
+    }
+  };
+  walk(
+    id,
+    crewOf(
+      tasks.find((t) => t.id === id),
+      null,
+    ),
+  );
+  return result;
+}
+/**
  * How far a task is: the tasks under it, at every depth, that are closed (done or dropped), of
- * all of them. The one rule the status line, the board, `task_list` and the portal count by: a
- * parent may be done once each is done or dropped, so a dropped one is finished with too.
+ * all of them that count (`countsToward`). The one rule the status line, the board, `task_list`,
+ * the crew gates and the portal count by: a parent may be done once each is done or dropped, so
+ * a dropped one is finished with too.
  */
 export function subtreeProgress(
   tasks: readonly WorkTask[],
   id: string,
 ): { closed: number; total: number } {
-  const under = descendantsIn(tasks, id);
+  const under = countedUnder(tasks, id);
   return { closed: under.filter((t) => !isOpen(t)).length, total: under.length };
 }
 /** `descendants`, over a project's tasks already read. */
@@ -214,6 +255,21 @@ export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
       pid: row.pid,
       reason: row.reason,
     }));
+}
+/**
+ * The history of a task no longer in the store, by its `#n` or id: a deleted task keeps its
+ * entries, the last one its last version. Empty when no task ever had it, or the task is there.
+ */
+export function deletedHistory(db: WorkDb, project: string, ref: string): WorkEvent[] {
+  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
+  const row = db.sqlite
+    .query<{ task_id: string }, [string, number | null, string]>(
+      "SELECT task_id FROM task_events WHERE project=? AND (number=? OR task_id=?) ORDER BY id DESC LIMIT 1",
+    )
+    .get(project, number, ref);
+  if (!row) return [];
+  const events = eventsOf(db, row.task_id);
+  return events.at(-1)?.action === "deleted" ? events : [];
 }
 export function claimState(
   task: WorkTask,

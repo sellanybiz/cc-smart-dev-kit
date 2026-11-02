@@ -22,6 +22,7 @@ import { callerOf, claimLive } from "./work/identity";
 import {
   allTasks,
   claimState,
+  deletedHistory,
   descendants,
   eventsOf,
   getTask,
@@ -30,7 +31,7 @@ import {
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
-import { ack, deleteTask, insertNote, insertTask, updateTask } from "./work/store";
+import { ack, applyUpdate, deleteTask, insertNote, insertTask, updateTask } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
 
 export const TASK_LINE_CAP = 200;
@@ -242,9 +243,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · ${input.outcome}` };
         }
         const task = work(input.task);
-        for (const text of [input.note, input.evidence])
-          if (text) value(writeWork(store, () => insertNote(store, task.id, text, who, now)));
-        const changed = value(updateTask(store, task.id, { status: input.outcome }, who, now));
+        // One transaction: a close the store refuses (an open subtask) keeps no note either, so
+        // a retry after finishing the subtask saves each note once.
+        const changed = value(
+          writeWork(store, () => {
+            for (const text of [input.note, input.evidence])
+              if (text) insertNote(store, task.id, text, who, now);
+            return applyUpdate(store, task.id, { status: input.outcome }, who, now);
+          }),
+        );
         return { ok: true, text: `${label(changed)} · ${input.outcome}` };
       }
       if (operation === "note") {
@@ -295,7 +302,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               return `${body.trimEnd()}\n\n${history}`;
             })()
           : (() => {
-              const task = work(input.task);
+              const task = getTask(store, ctx.project, input.task);
+              if (!task) {
+                // A deleted task is gone from the list, not from its history.
+                const gone = deletedHistory(store, ctx.project, input.task);
+                const last = gone.at(-1);
+                if (!last) throw new Error(`Task not found: ${input.task}`);
+                return `#${last.number} "${String(last.changes.subject?.[0] ?? "")}" [deleted]\n\n${historyText(gone, { full: input.history })}`;
+              }
               const notes = notesOf(store, task)
                 .map((n) => `${new Date(n.at).toISOString()} ${n.text}`)
                 .join("\n");

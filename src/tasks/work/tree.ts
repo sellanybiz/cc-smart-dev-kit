@@ -4,7 +4,7 @@
  * recent window. Read-only, through the hook reader's mode: it never creates or migrates the
  * store, and a store it cannot read is said, never shown as an empty list.
  */
-import { allTasks, isOpen, listTasks } from "./queries";
+import { allTasks, countsToward, isOpen, listTasks } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
 import type { WorkKind, WorkStatus, WorkTree } from "./types";
 
@@ -39,13 +39,19 @@ interface Counted {
   total: number;
 }
 
-function subtreeCount(task: WorkTree): Counted {
+/**
+ * `subtreeProgress`'s rule over a tree already built: `above` is the crew id of the nearest crew
+ * phase above `task` (`countsToward`).
+ */
+function subtreeCount(task: WorkTree, above: string | null = null): Counted {
+  const phaseCrew = task.kind === "phase" ? task.crewId : above;
   let closed = 0;
   let total = 0;
   for (const child of task.children) {
-    const below = subtreeCount(child);
-    total += 1 + below.total;
-    closed += (isOpen(child) ? 0 : 1) + below.closed;
+    const below = subtreeCount(child, phaseCrew);
+    const own = countsToward(child, phaseCrew) ? 1 : 0;
+    total += own + below.total;
+    closed += (isOpen(child) ? 0 : own) + below.closed;
   }
   return { closed, total };
 }

@@ -14980,6 +14980,7 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
  at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
  changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
 CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
 `;
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
@@ -15417,6 +15418,36 @@ function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
 }
+function countsToward(task, phaseCrew) {
+  return phaseCrew === null || isOpen(task) || task.crewId === null || task.crewId === phaseCrew;
+}
+function countedUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const crewOf = (t, above) => t?.kind === "phase" ? t.crewId : above;
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent, phaseCrew) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id))
+        continue;
+      seen.add(child.id);
+      if (countsToward(child, phaseCrew))
+        result.push(child);
+      walk(child.id, crewOf(child, phaseCrew));
+    }
+  };
+  walk(id, crewOf(tasks.find((t) => t.id === id), null));
+  return result;
+}
 function descendantsIn(tasks, id) {
   const ids = new Set([id]);
   const result = [];
@@ -15475,11 +15506,12 @@ function readWorkStore(paths, body) {
 }
 function crewPhaseState(paths, project, crewId) {
   return readWorkStore(paths, (db) => {
-    const phase = allTasks(db, project).find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const tasks = allTasks(db, project);
+    const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
     return {
       phase,
       openSubtasks: phase ? openSubtasks(db, phase.id) : [],
-      total: phase ? descendants(db, phase.id).length : 0
+      total: phase ? countedUnder(tasks, phase.id).length : 0
     };
   });
 }
@@ -32681,13 +32713,15 @@ var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 // src/tasks/work/tree.ts
 var TREE_TASK_LIMIT = 300;
-function subtreeCount(task) {
+function subtreeCount(task, above = null) {
+  const phaseCrew = task.kind === "phase" ? task.crewId : above;
   let closed = 0;
   let total = 0;
   for (const child of task.children) {
-    const below = subtreeCount(child);
-    total += 1 + below.total;
-    closed += (isOpen(child) ? 0 : 1) + below.closed;
+    const below = subtreeCount(child, phaseCrew);
+    const own = countsToward(child, phaseCrew) ? 1 : 0;
+    total += own + below.total;
+    closed += (isOpen(child) ? 0 : own) + below.closed;
   }
   return { closed, total };
 }
@@ -33149,7 +33183,7 @@ function readStartBlocks(paths) {
     return {
       key,
       value,
-      by: key === WORK_STATE_KEY && current.value === "true" ? "person" : unchosen(path, current.value) ? "default" : "person"
+      by: unchosen(path, current.value) ? "default" : "person"
     };
   });
 }
@@ -33167,7 +33201,7 @@ function planStartBlocks(read, notes) {
     }
     const record = read.records.find((entry) => samePath(entry.path, path));
     const theirs = record !== undefined && Object.hasOwn(record, "value");
-    if (!theirs && unchosen(path, current.value) && !(key === WORK_STATE_KEY && current.value === "true")) {
+    if (!theirs && unchosen(path, current.value)) {
       planned.push([path, START_BLOCK_OFF]);
       continue;
     }

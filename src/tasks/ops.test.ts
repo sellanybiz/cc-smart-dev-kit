@@ -7,6 +7,50 @@ import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
 import { ensurePhaseTask } from "./work/store";
 
+test("a close the store refuses keeps no note, so a retry saves each note once", () => {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  const ops = createTaskOps({
+    stateDir,
+    cwd: () => cwd,
+    caller: () => ({ sessionId: "s", crewId: null, pid: process.pid, procStart: null, cwd }),
+  });
+  const written = () => {
+    const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
+    try {
+      return {
+        notes: db.sqlite
+          .query<{ text: string }, []>("SELECT text FROM task_notes ORDER BY id")
+          .all()
+          .map((row) => row.text),
+        history: db.sqlite
+          .query<{ action: string }, []>("SELECT action FROM task_events ORDER BY id")
+          .all()
+          .map((row) => row.action),
+      };
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    expect(ops.call("create", { subject: "Parent" }).ok).toBe(true);
+    expect(ops.call("create", { subject: "Child", parent: "#1" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#1", note: "Tried", evidence: "Checked" })).toEqual({
+      ok: false,
+      why: "open subtasks: #2 Child",
+    });
+    expect(written()).toEqual({ notes: [], history: ["created", "created"] });
+    expect(ops.call("done", { task: "#2" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#1", note: "Tried", evidence: "Checked" }).ok).toBe(true);
+    expect(written()).toEqual({
+      notes: ["Tried", "Checked"],
+      history: ["created", "created", "closed", "noted", "noted", "closed"],
+    });
+  } finally {
+    ops.close();
+  }
+});
+
 test("work hierarchy, dependencies, notes, claims and paging", () => {
   const cwd = tempDir();
   const stateDir = tempDir();

@@ -420,12 +420,7 @@ export function readStartBlocks(paths: CliPaths): StartBlockReading[] | { proble
       key,
       value,
       // Not in the file's own default form (a value that is not a string, say): the person's.
-      by:
-        key === WORK_STATE_KEY && current.value === "true"
-          ? "person"
-          : unchosen(path, current.value)
-            ? "default"
-            : "person",
+      by: unchosen(path, current.value) ? "default" : "person",
     };
   });
 }
@@ -436,10 +431,12 @@ function shownStartBlock(value: unknown): string {
 }
 
 /**
- * The memory-use block, planned off. claude-mem's own default (`"true"` or `""`) counts as
- * unchosen, so setup may take it. Any other value is the person's: it stays, and the note
- * says so. A value setup wrote before and the person changed since is theirs too — also
- * `"true"`, which is how the README's way back on reads, so setup must never undo it.
+ * Both start blocks, planned off (D75: memory-use and work state). claude-mem's own default
+ * (`"true"` or `""`) counts as unchosen, so setup may take it: claude-mem 15.5.0 writes every
+ * default into a settings file it makes (`loadFromFile`), so a `"true"` with no record of setup
+ * is claude-mem's, not a choice. Any other value is the person's: it stays, and the note says
+ * so. A value setup wrote before and the person changed since is theirs too — also `"true"`,
+ * which is how the README's way back on reads, so setup must never undo it.
  */
 function planStartBlocks(
   read: ClaudeMemSettings,
@@ -459,11 +456,7 @@ function planStartBlocks(
     // A value setup wrote before and the person changed since is theirs, whatever it is.
     const theirs = record !== undefined && Object.hasOwn(record, "value");
     // claude-mem seeded its own default ("true" or ""): nobody chose it, so setup may take it.
-    if (
-      !theirs &&
-      unchosen(path, current.value) &&
-      !(key === WORK_STATE_KEY && current.value === "true")
-    ) {
+    if (!theirs && unchosen(path, current.value)) {
       planned.push([path, START_BLOCK_OFF]);
       continue;
     }

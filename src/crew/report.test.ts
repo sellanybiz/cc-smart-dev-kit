@@ -458,9 +458,10 @@ describe("crew report", () => {
     expect(
       await runCrew(doneArgs(), world.ctx({ cwd: world.worktree }, { CC_SMART_DEV_KIT_CREW: ID })),
     ).toBe(1);
-    expect(world.err[0]).toBe(
+    expect(world.err).toEqual([
       'crew report: the task list still has 1 open task: #3 "Make it pass" (pending)',
-    );
+      'Fix: Finish each open subtask and mark it done: `task_done` with task "#3", or `cc-smart-dev-kit task done #3`. Drop one that no longer applies (`task_done` with task "#3" and outcome "dropped", or `cc-smart-dev-kit task drop #3`) and say why under `open` in your report',
+    ]);
   });
 
   test("D23: a done report is refused while a task is open, and each open task is named", async () => {
@@ -475,7 +476,7 @@ describe("crew report", () => {
     expect(code).toBe(1);
     expect(world.err).toEqual([
       'crew report: the task list still has 2 open tasks: Claude Code task 5 "Part 5" (in_progress), Claude Code task 3 "Part 3" (pending)',
-      "Fix: Finish each open subtask (`task_done`), or drop one that no longer applies (`task_done` with outcome dropped) and say why under `open` in your report",
+      'Fix: Finish each open subtask and mark it done: `TaskUpdate` with status "completed". Drop one that no longer applies (`TaskUpdate` with status "deleted") and say why under `open` in your report',
     ]);
     // Nothing was written and nothing was said: the phase is still working.
     expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))).toBeNull();
@@ -491,7 +492,7 @@ describe("crew report", () => {
     expect(await runCrew(doneArgs(), ctx)).toBe(1);
     expect(world.err).toEqual([
       'crew report: the task list still has 1 open task: Claude Code task 2 "Part 2" (in_progress)',
-      "Fix: Finish each open subtask (`task_done`), or drop one that no longer applies (`task_done` with outcome dropped) and say why under `open` in your report",
+      'Fix: Finish each open subtask and mark it done: `TaskUpdate` with status "completed". Drop one that no longer applies (`TaskUpdate` with status "deleted") and say why under `open` in your report',
     ]);
     world.err.length = 0;
     taskFile(world, 2, "completed");

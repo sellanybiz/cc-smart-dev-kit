@@ -434,7 +434,6 @@ describe("PM1: the route", () => {
     const plan = w.setup();
     expect(plan.provider).toBeNull();
     expect(plan.notes).toEqual([
-      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
       "  claude-mem settings left alone: you chose CLAUDE_MEM_PROVIDER in the portal (your choice)",
     ]);
     expect(w.settings().CLAUDE_MEM_PROVIDER).toBe("claude");
@@ -465,10 +464,10 @@ describe("PM1: setup and restore after a portal write", () => {
     const before = w.settings();
     const plan = w.setup();
     expect(plan.provider).toBeNull();
-    // Only memory-use goes off; work state and the route stay untouched.
+    // Both start blocks go off (claude-mem seeded them "true"); the route stays untouched.
     expect(w.settings()).toEqual({
       ...before,
-      CLAUDE_MEM_WORK_STATE_ENABLED: "true",
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
     });
     expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("glm/flash");
@@ -526,9 +525,7 @@ describe("PM1: setup and restore after a portal write", () => {
     config.slots["cc-smart-dev-kit-scout"] = ["omniroute:scout/next"];
     writeFileSync(w.paths.gatewayConfigFile, JSON.stringify(config), { mode: 0o600 });
     const plan = w.setup();
-    expect(plan.notes).toEqual([
-      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
-    ]);
+    expect(plan.notes).toEqual([]);
     expect(w.settings().CLAUDE_MEM_OPENAI_COMPAT_MODEL).toBe("scout/next");
   });
 });
@@ -561,7 +558,6 @@ describe("PM1: back to setup", () => {
     expect(result).toEqual({
       lines: [
         "Your choices are forgotten: setup decides claude-mem's route again, from the scout slot.",
-        '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_OPENAI_COMPAT_MODEL: "glm/flash" -> "scout/model"',
         '~ ~/.claude-mem/settings.json: CLAUDE_MEM_QUOTA_FALLBACK_MODEL: "claude-sonnet-5-5" -> (none)',
       ],
@@ -575,10 +571,9 @@ describe("PM1: back to setup", () => {
     });
     // The start blocks are setup's own step: left as they were.
     expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("true");
-    // A later setup has nothing of the person's to leave alone.
-    expect(w.setup().notes).toEqual([
-      '! claude-mem settings left alone: CLAUDE_MEM_WORK_STATE_ENABLED is "true" in ~/.claude-mem/settings.json (your choice)',
-    ]);
+    // A later setup has nothing of the person's to leave alone, and takes the seeded "true".
+    expect(w.setup().notes).toEqual([]);
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
   });
 });
 
@@ -1349,7 +1344,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
       ],
       ok: true,
     });
-    // After take-over, setup still disables memory-use and leaves the person's route alone.
+    // After take-over, setup still turns both start blocks off and leaves the person's route alone.
     const hand = machine({
       settings: { ...SEEDED, CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model" },
     });
@@ -1358,7 +1353,7 @@ describe("MS1: the take-over, and what restore puts back", () => {
     expect(hand.settings()).toMatchObject({
       CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false",
       CLAUDE_MEM_OPENAI_COMPAT_MODEL: "their-model",
-      CLAUDE_MEM_WORK_STATE_ENABLED: "true",
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false",
     });
   });
 
@@ -1517,6 +1512,7 @@ describe("MS1: what a later setup does to a taken-over value", () => {
     });
     // The taken values read as the person's, not as setup's.
     expect(readClaudeMemFacts(w.paths).current?.route.source).toBe("portal");
-    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("true");
+    // Work state held claude-mem's seeded "true", which the take-over never claims: it goes off.
+    expect(w.settings().CLAUDE_MEM_WORK_STATE_ENABLED).toBe("false");
   });
 });

@@ -194,6 +194,22 @@ test("task_get prints a work task's history with the caller's session name", () 
     });
     const full = ops.call("get", { task: "#1", history: true });
     expect(full.ok && full.text.endsWith("  description after:\n    Do it")).toBe(true);
+
+    // A deleted task's number is never given again, and its history still answers to it.
+    expect(ops.call("create", { subject: "Oops" }).ok).toBe(true);
+    expect(ops.call("delete", { task: "#2" }).ok).toBe(true);
+    expect(ops.call("create", { subject: "Next" })).toEqual({ ok: true, text: '#3 "Next"' });
+    expect(ops.call("get", { task: "#2" })).toEqual({
+      ok: true,
+      text: [
+        '#2 "Oops" [deleted]',
+        "",
+        "History (oldest first):",
+        '2026-11-03T09:00:00.000Z by session "lead-b" s-9, process 42 · created: kind task; subject "Oops"; status pending',
+        '2026-11-03T09:00:00.000Z by session "lead-b" s-9, process 42 · deleted; its last version: subject "Oops"; status pending',
+      ].join("\n"),
+    });
+    expect(ops.call("get", { task: "#9" })).toEqual({ ok: false, why: "Task not found: #9" });
   } finally {
     ops.close();
   }

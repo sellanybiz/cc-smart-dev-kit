@@ -44,6 +44,7 @@ test("restore keeps personal permissions and values and withdraws setup's old op
     JSON.stringify({ ...original, permissions: { deny: ["TodoWrite"], allow: ["Read"] } }),
   );
   mkdirSync(dirname(w.paths.claudeMemSettingsFile), { recursive: true });
+  // claude-mem 15.5.0 seeds every default into a file it makes, work state "true" among them.
   writeFileSync(
     w.paths.claudeMemSettingsFile,
     JSON.stringify({ CLAUDE_MEM_WORK_STATE_ENABLED: "true" }),
@@ -53,13 +54,24 @@ test("restore keeps personal permissions and values and withdraws setup's old op
     stateDir: w.paths.stateDir,
     set: [[["env", "CLAUDE_CODE_ENABLE_TODO_TOOLS"], "1"]],
   });
+  const workState = () =>
+    JSON.parse(readFileSync(w.paths.claudeMemSettingsFile, "utf8")).CLAUDE_MEM_WORK_STATE_ENABLED;
   await w.setup();
   expect(
     JSON.parse(readFileSync(w.paths.settingsFile, "utf8")).env?.CLAUDE_CODE_ENABLE_TODO_TOOLS,
   ).toBeUndefined();
-  expect(
-    JSON.parse(readFileSync(w.paths.claudeMemSettingsFile, "utf8")).CLAUDE_MEM_WORK_STATE_ENABLED,
-  ).toBe("true");
+  // Nobody chose the seeded "true": setup turns work state off.
+  expect(workState()).toBe("false");
+  // The person turns it back on after setup: that "true" is theirs, and a later setup keeps it.
+  writeFileSync(
+    w.paths.claudeMemSettingsFile,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(w.paths.claudeMemSettingsFile, "utf8")),
+      CLAUDE_MEM_WORK_STATE_ENABLED: "true",
+    }),
+  );
+  await w.setup();
+  expect(workState()).toBe("true");
   restore(w.paths.stateDir);
   expect(JSON.parse(readFileSync(w.paths.settingsFile, "utf8"))).toEqual({
     ...original,

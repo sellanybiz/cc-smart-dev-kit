@@ -22889,6 +22889,7 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
  at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
  changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
 CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
 `;
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
@@ -23326,8 +23327,38 @@ function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
 }
+function countsToward(task, phaseCrew) {
+  return phaseCrew === null || isOpen(task) || task.crewId === null || task.crewId === phaseCrew;
+}
+function countedUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const crewOf = (t, above) => t?.kind === "phase" ? t.crewId : above;
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent, phaseCrew) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id))
+        continue;
+      seen.add(child.id);
+      if (countsToward(child, phaseCrew))
+        result.push(child);
+      walk(child.id, crewOf(child, phaseCrew));
+    }
+  };
+  walk(id, crewOf(tasks.find((t) => t.id === id), null));
+  return result;
+}
 function subtreeProgress(tasks, id) {
-  const under = descendantsIn(tasks, id);
+  const under = countedUnder(tasks, id);
   return { closed: under.filter((t) => !isOpen(t)).length, total: under.length };
 }
 function descendantsIn(tasks, id) {
@@ -23370,6 +23401,14 @@ function eventsOf(db, task) {
     pid: row.pid,
     reason: row.reason
   }));
+}
+function deletedHistory(db, project, ref) {
+  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
+  const row = db.sqlite.query("SELECT task_id FROM task_events WHERE project=? AND (number=? OR task_id=?) ORDER BY id DESC LIMIT 1").get(project, number, ref);
+  if (!row)
+    return [];
+  const events = eventsOf(db, row.task_id);
+  return events.at(-1)?.action === "deleted" ? events : [];
 }
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
@@ -23448,7 +23487,7 @@ function insertTask(db, input, who, now, reason = null) {
   const description = descriptionOf(input.description ?? "");
   parentValid(db, input.project, null, input.parentId ?? null);
   const id = newId();
-  const number = db.sqlite.query("SELECT COALESCE(MAX(number),0)+1 AS n FROM tasks WHERE project=?").get(input.project)?.n ?? 1;
+  const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, input.plan ?? null, input.phase ?? null, input.crewId ?? who.crewId, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null);
@@ -23490,23 +23529,24 @@ function dependencies(db, task, change) {
   }
 }
 function updateTask(db, id, change, who, now) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    const before = shape(db, task);
-    const status = change.status ?? task.status;
-    if (status === "done")
-      doneValid(db, id);
-    const parent = change.parentId === undefined ? task.parentId : change.parentId;
-    parentValid(db, task.project, id, parent);
-    if (change.waitsFor)
-      dependencies(db, task, change.waitsFor);
-    const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
-    const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
-    db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, id);
-    const changed = taskById(db, id);
-    recordChange(db, before, changed, who, now, null);
-    return changed;
-  });
+  return writeWork(db, () => applyUpdate(db, id, change, who, now));
+}
+function applyUpdate(db, id, change, who, now) {
+  const task = taskById(db, id);
+  const before = shape(db, task);
+  const status = change.status ?? task.status;
+  if (status === "done")
+    doneValid(db, id);
+  const parent = change.parentId === undefined ? task.parentId : change.parentId;
+  parentValid(db, task.project, id, parent);
+  if (change.waitsFor)
+    dependencies(db, task, change.waitsFor);
+  const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
+  const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
+  db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, id);
+  const changed = taskById(db, id);
+  recordChange(db, before, changed, who, now, null);
+  return changed;
 }
 function insertNote(db, id, text, who, now, reason = null) {
   const task = taskById(db, id);
@@ -24193,10 +24233,12 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 ${input.outcome}` };
         }
         const task = work(input.task);
-        for (const text of [input.note, input.evidence])
-          if (text)
-            value(writeWork(store, () => insertNote(store, task.id, text, who, now)));
-        const changed = value(updateTask(store, task.id, { status: input.outcome }, who, now));
+        const changed = value(writeWork(store, () => {
+          for (const text of [input.note, input.evidence])
+            if (text)
+              insertNote(store, task.id, text, who, now);
+          return applyUpdate(store, task.id, { status: input.outcome }, who, now);
+        }));
         return { ok: true, text: `${label(changed)} \xB7 ${input.outcome}` };
       }
       if (operation === "note") {
@@ -24235,7 +24277,16 @@ ${log.out.split(`
 
 ${history}`;
         })() : (() => {
-          const task = work(input.task);
+          const task = getTask(store, ctx.project, input.task);
+          if (!task) {
+            const gone = deletedHistory(store, ctx.project, input.task);
+            const last = gone.at(-1);
+            if (!last)
+              throw new Error(`Task not found: ${input.task}`);
+            return `#${last.number} "${String(last.changes.subject?.[0] ?? "")}" [deleted]
+
+${historyText(gone, { full: input.history })}`;
+          }
           const notes = notesOf(store, task).map((n) => `${new Date(n.at).toISOString()} ${n.text}`).join(`
 `);
           return [

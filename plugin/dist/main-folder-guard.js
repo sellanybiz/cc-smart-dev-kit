@@ -10417,6 +10417,7 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
  at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
  changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
 CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
 `;
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
@@ -10586,6 +10587,36 @@ function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
 }
+function countsToward(task, phaseCrew) {
+  return phaseCrew === null || isOpen(task) || task.crewId === null || task.crewId === phaseCrew;
+}
+function countedUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const crewOf = (t, above) => t?.kind === "phase" ? t.crewId : above;
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent, phaseCrew) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id))
+        continue;
+      seen.add(child.id);
+      if (countsToward(child, phaseCrew))
+        result.push(child);
+      walk(child.id, crewOf(child, phaseCrew));
+    }
+  };
+  walk(id, crewOf(tasks.find((t) => t.id === id), null));
+  return result;
+}
 function descendantsIn(tasks, id) {
   const ids = new Set([id]);
   const result = [];
@@ -10628,11 +10659,12 @@ function readWorkStore(paths, body) {
 }
 function crewPhaseState(paths, project, crewId) {
   return readWorkStore(paths, (db) => {
-    const phase = allTasks(db, project).find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const tasks = allTasks(db, project);
+    const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
     return {
       phase,
       openSubtasks: phase ? openSubtasks(db, phase.id) : [],
-      total: phase ? descendants(db, phase.id).length : 0
+      total: phase ? countedUnder(tasks, phase.id).length : 0
     };
   });
 }

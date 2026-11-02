@@ -1,7 +1,8 @@
 # claude-mem: memory only (D75)
 
 D75 (2026-11-03, 1.10.0) gives all tasks to [the kit's task list](tasks.md). Setup writes
-`CLAUDE_MEM_WORK_STATE_ENABLED: "false"`; a person's own `"true"` stays. It withdraws its
+`CLAUDE_MEM_WORK_STATE_ENABLED: "false"`; a `"true"` the person sets after that stays (claude-mem
+seeds `"true"` itself, so a `"true"` setup never wrote over is no choice). It withdraws its
 `CLAUDE_CODE_ENABLE_TODO_TOOLS` opt-in and denies Claude Code's list tools. Run
 `cc-smart-dev-kit setup`, restart, then run `cc-smart-dev-kit task import claude-mem` once
 to move open lists. Restore undoes only managed changes. Memory still uses `save_memory`;

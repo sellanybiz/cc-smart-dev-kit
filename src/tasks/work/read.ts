@@ -4,7 +4,7 @@ import { claimLive } from "./identity";
 import {
   allTasks,
   claimState,
-  descendants,
+  countedUnder,
   isOpen,
   openSubtasks,
   subtreeProgress,
@@ -35,12 +35,13 @@ export function readWorkStore<T>(paths: Paths, body: (db: WorkDb) => T): ReadSta
 }
 export function crewPhaseState(paths: Paths, project: string, crewId: string) {
   return readWorkStore(paths, (db) => {
-    const phase =
-      allTasks(db, project).find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const tasks = allTasks(db, project);
+    const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
     return {
       phase,
       openSubtasks: phase ? openSubtasks(db, phase.id) : [],
-      total: phase ? descendants(db, phase.id).length : 0,
+      // Only what counts: an earlier crew session's closed subtasks never meet this one's gates.
+      total: phase ? countedUnder(tasks, phase.id).length : 0,
     };
   });
 }
@@ -132,7 +133,8 @@ export function phaseProgressByCrew(paths: Paths, projects: Iterable<string>) {
 }
 /**
  * One query for the status line: the claimed task (or crew phase) and its subtree's counts, by
- * `subtreeProgress`'s rule (closed is done or dropped).
+ * `subtreeProgress`'s rule (closed is done or dropped; `countsToward` says what counts). `pass`
+ * is the crew id of the nearest crew phase, handed down; `above` is the one a row is judged by.
  */
 export function statusTask(paths: Paths, project: string, who: Who) {
   return readWorkStore(paths, (db) =>
@@ -147,16 +149,24 @@ export function statusTask(paths: Paths, project: string, who: Who) {
         [string, string | null, string | null, number | null, string | null]
       >(`
     WITH RECURSIVE chosen AS (
-      SELECT id, number, subject FROM tasks WHERE project = ? AND
+      SELECT id, number, subject, CASE WHEN kind = 'phase' THEN crew_id END AS pass
+      FROM tasks WHERE project = ? AND
         ((? IS NOT NULL AND kind = 'phase' AND crew_id = ?) OR
          (kind = 'task' AND status = 'in_progress' AND claim_pid = ? AND claim_start = ?))
       ORDER BY CASE WHEN kind = 'phase' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
     ), tree AS (
-      SELECT t.id, t.status FROM tasks t JOIN chosen c ON t.parent_id = c.id
-      UNION ALL SELECT t.id, t.status FROM tasks t JOIN tree p ON t.parent_id = p.id
+      SELECT t.id, t.status, t.crew_id, c.pass AS above,
+        CASE WHEN t.kind = 'phase' THEN t.crew_id ELSE c.pass END AS pass
+        FROM tasks t JOIN chosen c ON t.parent_id = c.id
+      UNION ALL SELECT t.id, t.status, t.crew_id, p.pass,
+        CASE WHEN t.kind = 'phase' THEN t.crew_id ELSE p.pass END
+        FROM tasks t JOIN tree p ON t.parent_id = p.id
+    ), counted AS (
+      SELECT status FROM tree WHERE above IS NULL OR status NOT IN ('done', 'dropped')
+        OR crew_id IS NULL OR crew_id = above
     ) SELECT number, subject,
-      (SELECT COUNT(*) FROM tree WHERE status IN ('done', 'dropped')) AS closed,
-      (SELECT COUNT(*) FROM tree) AS total FROM chosen
+      (SELECT COUNT(*) FROM counted WHERE status IN ('done', 'dropped')) AS closed,
+      (SELECT COUNT(*) FROM counted) AS total FROM chosen
   `)
       .get(project, who.crewId, who.crewId, who.pid, who.procStart),
   );

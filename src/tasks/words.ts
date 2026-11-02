@@ -72,6 +72,13 @@ export function taskCloseStep(ref: string): string {
     : `\`${RETIRED_TASK_CLOSER}\` with status "completed"`;
 }
 
+/** How a session drops a task that no longer applies, by `taskCloseStep`'s two lists. */
+export function taskDropStep(ref: string): string {
+  return ref.startsWith("#")
+    ? `\`${TASK_TOOL.done}\` with task "${ref}" and outcome "dropped", or \`${TASK_COMMAND} drop ${ref}\``
+    : `\`${RETIRED_TASK_CLOSER}\` with status "deleted"`;
+}
+
 /** The line a lead with no task of its own gets with each prompt (`lead-notes`). */
 export function leadTaskReminder(): string {
   return `You have no task of your own on the kit's task list: put the person's asks and your open work there (\`${TASK_TOOL.create}\`, or \`${TASK_COMMAND} add\`), and keep each one's status true as it moves.`;

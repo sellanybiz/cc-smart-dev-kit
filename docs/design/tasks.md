@@ -29,10 +29,12 @@ keep the work log. Machine acknowledgements record teammate tasks completed here
 
 The store enforces these rules, not the caller:
 
-- Done requires every subtask to be done or dropped. A refusal names what remains.
+- Done requires every subtask to be done or dropped. A refusal names what remains, and keeps
+  none of the call's notes or evidence: they are written in the same transaction.
 - A parent or dependency cycle is refused.
 - A system close on merge or removal drops open subtasks and leaves an automatic note.
-- Delete is for a mistake with no notes or subtasks, not for finished work.
+- Delete is for a mistake with no notes or subtasks, not for finished work. A deleted task's
+  number is never given again: its history still answers to it.
 
 ### A task's history
 
@@ -46,7 +48,8 @@ a crew session taking a phase, an import) carries its reason instead. A change t
 nothing adds no entry. Entries are never edited, and the table has no foreign key on purpose:
 a deleted task keeps its history, whose last entry holds the task as it was.
 
-`task_get` and `task show` print it as a timeline, oldest first, from `history.ts`. A
+`task_get` and `task show` print it as a timeline, oldest first, from `history.ts`, and a
+deleted task's too (`#12 "Subject" [deleted]`, then its history). A
 description is long, so its line gives the length; `history: true` (`--history`) prints every
 earlier description in full. A project task's history is its file's git log (`git log
 --follow`, which tracks the move into `archive/`): who committed each change, and when. Old
@@ -68,8 +71,11 @@ work is marked as belonging to another session. Live proof of these Claude Code 
 is still owed in [the contract](../claude-code-contract.md).
 
 `crew start` makes a phase task keyed by plan and phase, even while the phase is queued.
-`--waits-for` adds dependencies. A continuation points the same task at the new crew id;
-new crew tasks default to its subtasks. Merge closes the phase done; removal drops it.
+`--waits-for` adds dependencies. A continuation points the same task at the new crew id and
+takes over its predecessor's subtasks (their crew id moves too, with a history entry); new
+crew tasks default to its subtasks. Merge closes the phase done; removal drops it. A phase
+started again after either opens again for the new crew session; the old session's closed
+subtasks stay under it as its record, and stop counting (below).
 A lead has a plan task too. Its *own* tasks are those created by its sessions in
 `leadSessions`, not the plan or phase tasks. Adoption carries that ownership forward.
 
@@ -171,8 +177,11 @@ lead also gets a line about stale project tasks. Until registration exists, the 
 run setup.
 
 Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, the crew board,
-`task_list` and the portal: the tasks under a task at every depth, closed (done or dropped) of
-all of them (`subtreeProgress`), since a parent may be done once each is done or dropped.
+`task_list`, the crew gates and the portal: the tasks under a task at every depth, closed (done
+or dropped) of all of them (`subtreeProgress`), since a parent may be done once each is done or
+dropped. Under a crew phase, a closed task an earlier crew session of the phase made does not
+count (`countsToward`): so a phase started again after a removal holds its new session at the
+first-edit gate until that session lists its own work.
 
 The portal shows the list read-only: a Tasks card on each project's page (the work tree with
 its open work and what closed in the last seven days; the open task files by kind, stale ones
@@ -186,7 +195,8 @@ event, which fires when the store's file or its write-ahead log changes
 support. Run `cc-smart-dev-kit setup` after updating, then restart Claude Code. Setup
 registers the launcher-backed server at user scope with `alwaysLoad: true`, asks for the
 allow entry, denies the five built-in list tools, withdraws its D68 opt-in, and turns off
-claude-mem work state unless the person chose their own `"true"`.
+claude-mem work state. claude-mem seeds `"true"` itself, so only a `"true"` set after setup wrote
+`"false"` is the person's, and stays.
 
 Run `cc-smart-dev-kit task import claude-mem` once to move open lists. The import reads
 claude-mem's database read-only, folds its work-state rows as claude-mem does, and refuses

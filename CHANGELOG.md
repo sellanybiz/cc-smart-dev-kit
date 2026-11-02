@@ -15,7 +15,7 @@ each step and only say what they will do next: a lead could sit idle for hours t
 
 - `cc-smart-dev-kit setup`. It registers the task server, asks in your terminal before it
   allows the server's tools without a prompt, hides Claude Code's own task tools, and turns
-  claude-mem's work state off (a `"true"` you set yourself stays). `restore` undoes each.
+  claude-mem's work state off (a `"true"` you set after that stays). `restore` undoes each.
 - Restart Claude Code to load the new hooks and the server.
 - Move your open claude-mem lists once: `cc-smart-dev-kit task import claude-mem --dry-run`,
   then the same without `--dry-run`.
@@ -37,15 +37,18 @@ What changed:
   and after, and who made it: the session's name and id, its crew and process, or the kit's
   own reason (a merge, a removal, an import). `task_get` and `task show` print it as a
   timeline; `--history` adds every earlier description in full. A deleted task keeps its
-  history. A project task's history is its file's git log.
+  history and its number: `task show #n` still prints it, and no new task gets that number.
+  A project task's history is its file's git log.
 - **`cc-smart-dev-kit task`** runs the same operations from a terminal, plus `check` (stale,
   missed-release, broken and duplicate task files), `release` (what a release must do, by
   weight), `list --branch` and `--branches` (task files on a branch, for a pull request's
   notes), and `import notes` to move a project's old notes folders.
 - **Crew sessions work through phase tasks.** `crew start` makes one per phase (queued ones
-  too); a continuation keeps it; a merge closes it done and a removal drops it. A crew session
-  breaks its phase into subtasks before its first edit, cannot hand back done while one is
-  open, and its board row shows `closed/total`.
+  too); a continuation keeps it and takes over its predecessor's subtasks; a merge closes it
+  done and a removal drops it. A phase started again after a removal or a merge opens again,
+  and the old crew session's closed subtasks stay as its record without counting for the new
+  one. A crew session breaks its phase into subtasks before its first edit, cannot hand back
+  done while one is open, and its board row shows `closed/total`.
 - **Session start** lists the project's open work (eight lines at most; stale work is counted,
   not listed). The status line shows the task in hand and its progress.
 - **The portal** has a read-only Tasks card on each project's page and a phase card on each
@@ -61,8 +64,8 @@ What changed:
   updated before running setup is never stuck. Once setup has run, that list no longer counts:
   its tools are denied, so a task left open there could never be closed. Move anything still
   open on it to the kit's list (`task_create`).
-- A Stop block names the exact call that closes its task (`task_done` with the task's number,
-  or `cc-smart-dev-kit task done #12`), so any model can follow it.
+- A Stop block and a refused done report name the exact call that closes the task (`task_done`
+  with the task's number, or `cc-smart-dev-kit task done #12`), so any model can follow it.
 
 ## 1.9.0
 

@@ -105,7 +105,7 @@ keeps the server, including on resume.
 Managed deny entries remove `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` and
 `TodoWrite` from Claude's tools. They never deny `TaskStop` or `TaskOutput`. Setup takes
 back its own `env.CLAUDE_CODE_ENABLE_TODO_TOOLS` opt-in from D68. It sets claude-mem's
-`CLAUDE_MEM_WORK_STATE_ENABLED` to `"false"`; a person's own `"true"` stays.
+`CLAUDE_MEM_WORK_STATE_ENABLED` to `"false"`; a `"true"` the person sets after that stays.
 Restore undoes the managed registration, permission entries and settings, not the person's
 choices or task data.
 

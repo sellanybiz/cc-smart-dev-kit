@@ -1,5 +1,5 @@
 import { type WorkDb, writeWork } from "./db";
-import { allTasks, descendants, openSubtasks, taskById } from "./queries";
+import { allTasks, descendants, isOpen, openSubtasks, taskById } from "./queries";
 import {
   DESCRIPTION_LIMIT,
   NOTE_LIMIT,
@@ -155,12 +155,13 @@ export function insertTask(
   const description = descriptionOf(input.description ?? "");
   parentValid(db, input.project, null, input.parentId ?? null);
   const id = newId();
+  // Never a deleted task's number: its history still answers to it (`task_get #n`).
   const number =
     db.sqlite
-      .query<{ n: number }, [string]>(
-        "SELECT COALESCE(MAX(number),0)+1 AS n FROM tasks WHERE project=?",
+      .query<{ n: number }, [string, string]>(
+        "SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)",
       )
-      .get(input.project)?.n ?? 1;
+      .get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite
@@ -228,44 +229,55 @@ function dependencies(
   }
 }
 export function updateTask(db: WorkDb, id: string, change: UpdateTask, who: Who, now: number) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    const before = shape(db, task);
-    const status = change.status ?? task.status;
-    if (status === "done") doneValid(db, id);
-    const parent = change.parentId === undefined ? task.parentId : change.parentId;
-    parentValid(db, task.project, id, parent);
-    if (change.waitsFor) dependencies(db, task, change.waitsFor);
-    const claiming =
-      status === "in_progress" && (change.status === "in_progress" || change.claim === true);
-    const claim =
-      change.claim === false || status !== "in_progress"
-        ? null
-        : claiming
-          ? who.pid === null
-            ? null
-            : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
-          : task.claim;
-    db.sqlite
-      .query(
-        "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?",
-      )
-      .run(
-        change.subject === undefined ? task.subject : subjectOf(change.subject),
-        descriptionOf(change.description ?? task.description),
-        status,
-        parent,
-        claim?.pid ?? null,
-        claim?.procStart ?? null,
-        claim?.sessionId ?? null,
-        now,
-        status === "done" || status === "dropped" ? (task.closedAt ?? now) : null,
-        id,
-      );
-    const changed = taskById(db, id);
-    recordChange(db, before, changed, who, now, null);
-    return changed;
-  });
+  return writeWork(db, () => applyUpdate(db, id, change, who, now));
+}
+/**
+ * `updateTask` inside a transaction the caller holds, so other writes land with it or not at
+ * all: `task_done`'s notes roll back when the store refuses the close.
+ */
+export function applyUpdate(
+  db: WorkDb,
+  id: string,
+  change: UpdateTask,
+  who: Who,
+  now: number,
+): WorkTask {
+  const task = taskById(db, id);
+  const before = shape(db, task);
+  const status = change.status ?? task.status;
+  if (status === "done") doneValid(db, id);
+  const parent = change.parentId === undefined ? task.parentId : change.parentId;
+  parentValid(db, task.project, id, parent);
+  if (change.waitsFor) dependencies(db, task, change.waitsFor);
+  const claiming =
+    status === "in_progress" && (change.status === "in_progress" || change.claim === true);
+  const claim =
+    change.claim === false || status !== "in_progress"
+      ? null
+      : claiming
+        ? who.pid === null
+          ? null
+          : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
+        : task.claim;
+  db.sqlite
+    .query(
+      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?",
+    )
+    .run(
+      change.subject === undefined ? task.subject : subjectOf(change.subject),
+      descriptionOf(change.description ?? task.description),
+      status,
+      parent,
+      claim?.pid ?? null,
+      claim?.procStart ?? null,
+      claim?.sessionId ?? null,
+      now,
+      status === "done" || status === "dropped" ? (task.closedAt ?? now) : null,
+      id,
+    );
+  const changed = taskById(db, id);
+  recordChange(db, before, changed, who, now, null);
+  return changed;
 }
 /** Saves a note. `reason` says why the kit wrote it itself (a system close), for the history. */
 export function insertNote(
@@ -383,6 +395,19 @@ export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: num
         (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
       ) ?? insertTask(db, { ...fields, kind: "phase", parentId: parent.id }, who, now, reason);
     const before = shape(db, task);
+    if (!isOpen(task) && task.crewId !== input.crewId) {
+      // Started again after its crew session was removed or merged: open for the new session.
+      // The old session's closed subtasks stay as its record and stop counting (`countsToward`).
+      db.sqlite.query("UPDATE tasks SET status='pending',closed_at=NULL WHERE id=?").run(task.id);
+    } else if (task.crewId !== null && task.crewId !== input.crewId) {
+      // A continuation: its predecessor's subtasks are its own now, so they count on. Their
+      // `updated_at` stays: their work did not change, and the history entry says who took them.
+      for (const sub of descendants(db, task.id).filter((t) => t.crewId === task.crewId)) {
+        const old = shape(db, sub);
+        db.sqlite.query("UPDATE tasks SET crew_id=? WHERE id=?").run(input.crewId, sub.id);
+        recordChange(db, old, taskById(db, sub.id), who, now, reason);
+      }
+    }
     db.sqlite
       .query("UPDATE tasks SET crew_id=?,updated_at=? WHERE id=?")
       .run(input.crewId, now, task.id);
