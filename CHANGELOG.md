@@ -7,19 +7,28 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 A fix for `task import claude-mem`.
 
-**What to run** after the update, in each folder where you ran `cc-smart-dev-kit task import
-claude-mem` before (often your home folder): run it again, first with `--dry-run` to see what
-it drops, then without.
+**What to run** after the update:
+
+- In each folder where you ran `cc-smart-dev-kit task import claude-mem` before (often your
+  home folder): run it again, first with `--dry-run` to see what it drops, then without.
 
 What changed:
 
-- **The import leaves claude-mem's own lists out.** claude-mem keeps its own My Work data
-  (focus areas, rules and owner goals: the lists `my-focus`, `my-rules` and `owner-goals`) in
-  work state too. 1.10.0 took them in as open work, so a session started in that folder listed
-  them as its tasks. The import now says it left them out, and a second run drops what an
-  earlier import took from them, each with a note that says why.
+- **The import leaves claude-mem's own lists out.** claude-mem keeps its own data (focus
+  areas, rules, owner goals, and a record of each subagent: the lists `my-focus`, `my-rules`,
+  `owner-goals` and its month lists, and `agent-lifecycle`) in work state too. 1.10.0 took
+  them in as open work, so a session started in that folder listed them as its tasks. The
+  import now says it left them out, and a second run drops what an earlier import took from
+  them, each with a note that says why. A list a session added to or changed stays open, and
+  the run names the tasks to look at. The repair works without claude-mem installed.
+- **The import reads claude-mem's lists as claude-mem does:** in its own order, with the
+  project name in any case, and `completed` and `failed` closed too.
 - **An imported task keeps claude-mem's dates.** An item claude-mem last touched long ago now
   counts as stale (`tasks.staleDays`), so a session start counts it instead of listing it.
+  This holds for lists imported from 1.10.1 on: a list 1.10.0 imported keeps the import's
+  date.
+- A name longer than a task subject may be is cut, and kept whole in the description.
+- `--dry-run` refuses what the real run refuses: it makes the writes and rolls them back.
 - The import's list shows each item indented under its list again.
 
 ## 1.10.0

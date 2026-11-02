@@ -206,18 +206,22 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             now: Date.now(),
           });
           if (!answer.ok) throw new Error(answer.why);
-          const { imported, dropped, skipped } = answer.value;
+          const { imported, dropped, kept, skipped, open } = answer.value;
           for (const task of imported) out.say(task.subject, task.parent ? 2 : 0);
           for (const list of dropped)
             out.say(
               `${has("dry-run") ? "Would drop" : "Dropped"} #${list.number} "${list.list}" (${plural(list.tasks, "open task", "open tasks")}): claude-mem's own list, which an earlier import took as work.`,
+            );
+          for (const list of kept)
+            out.say(
+              `Left #${list.number} "${list.list}" open: claude-mem's own list, which an earlier import took as work, but a session made or changed ${list.touched.map((n) => `#${n}`).join(", ")} in it. Close what is not work yourself.`,
             );
           if (skipped.length)
             out.say(`Left out claude-mem's own lists (its My Work data): ${skipped.join(", ")}.`);
           if (has("dry-run")) out.say(dryRunEnding([]));
           else if (imported.length === 0)
             out.say(
-              dropped.length
+              open > 0
                 ? "Nothing new to import."
                 : "Nothing to import: claude-mem has no open lists here.",
             );

@@ -7,6 +7,7 @@ import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { taskContext } from "./context";
 import { openWorkDb, workDbFile } from "./work/db";
+import { addNote } from "./work/store";
 
 const CLI = join(import.meta.dir, "../entries/cli.ts");
 test("task command creates, lists, completes and checks as a process", async () => {
@@ -135,6 +136,11 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
   if (!context.ok) throw new Error(context.why);
   const store = openWorkDb(workDbFile(paths), { mode: "write" });
   mistakenImport(store, context.project, at);
+  // A session noted the item of another such list: it may be someone's work, so it stays open.
+  const rules = mistakenImport(store, context.project, at, "my-rules");
+  const session = { sessionId: "session", crewId: null, pid: null, procStart: null };
+  const noted = addNote(store, rules.item.id, "mine", session, at);
+  if (!noted.ok) throw new Error(noted.why);
   store.close();
   async function run(...args: string[]) {
     const child = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
@@ -150,12 +156,14 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
     };
   }
   const own = "Left out claude-mem's own lists (its My Work data): my-focus, owner-goals.";
+  const kept = `Left #3 "my-rules" open: claude-mem's own list, which an earlier import took as work, but a session made or changed #4 in it. Close what is not work yourself.`;
   expect(await run("import", "claude-mem", "--project", "home", "--dry-run")).toEqual({
     code: 0,
     lines: [
       "release-work",
       "  Ship it",
       `Would drop #1 "my-focus" (2 open tasks): claude-mem's own list, which an earlier import took as work.`,
+      kept,
       own,
       "Dry run: nothing was changed.",
     ],
@@ -167,6 +175,7 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
       "release-work",
       "  Ship it",
       `Dropped #1 "my-focus" (2 open tasks): claude-mem's own list, which an earlier import took as work.`,
+      kept,
       own,
       "Imported 2 work tasks from claude-mem's open lists.",
     ],
@@ -174,7 +183,7 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
   });
   expect(await run("import", "claude-mem", "--project", "home")).toEqual({
     code: 0,
-    lines: [own, "Nothing to import: claude-mem has no open lists here."],
+    lines: [kept, own, "Nothing new to import."],
     error: "",
   });
 });
