@@ -1805,9 +1805,14 @@ each is silent unless its own session is the one it is about, and neither reads
   At **Stop** it records the session's last line on its record (`lastLine`,
   masked and clipped) and **gives no context** — a Stop hook's `additionalContext` keeps the turn
   going and starves hand-backs (L1a.1). When the newest `step` or `report` event of the crew
-  session is a `step`, the turn ended mid-phase with no report: it **blocks once** with the report
-  line as its reason (`{"decision":"block","reason":…}`), and never again while `stop_hook_active`
-  is true. The events log is read from a **per-crew cursor** (`<store>/stop/<crew id>.json`: the
+  session is a `step`, the turn ended mid-phase with no report: it **blocks once**
+  (`{"decision":"block","reason":…}`), and never again while `stop_hook_active` is true. The
+  reason depends on the session's Claude Code task list (the same reader as the edit gate,
+  `src/crew/tasks.ts`). While a task is still open — the first one `in_progress`, else the first
+  `pending` — it names that task and says to go on with it, and to hand back only when every
+  task is done. Some models end a turn after each step and only say the next one; a report line
+  there made them hand back half a phase. With no open task, or a list it cannot read, the reason
+  is the report line, as before. The events log is read from a **per-crew cursor** (`<store>/stop/<crew id>.json`: the
   byte after the last line it read, and the newest `step` or `report` it saw), through the store's
   one `readCrewEvents`, so a Stop costs the same on day 30 as on day 1: the log only grows.
   Claude Code shows each block as a `stop-hook-error` notification and caps consecutive
@@ -1853,7 +1858,17 @@ each is silent unless its own session is the one it is about, and neither reads
   A lease whose watch is gone means its monitor ended, which the skill cannot undo (§ The
   monitors) — the line gives the `Monitor` tool's command, the same as `crew-events`
   (`WATCH_RESTART`). A lease or a store it cannot read says nothing: a wrong line is worse than
-  none. **Never a block**: a lead is reminded, never held.
+  none. Those lines are reminders, never a block.
+  **At Stop it holds a lead once that ended a turn on a promise.** Some models end a turn after
+  each step and only say what they will do next, so a lead sat idle for hours with its work in
+  progress. When the lead's task list (`readSessionTasks`) holds a task `in_progress`, and no line
+  of the turn's `last_assistant_message` starts with `Waiting for:` (after list marks and bold),
+  it blocks once: the reason names the task (and how many more are in progress) and says to go on
+  with it, or to end the turn on `Waiting for: <what>` when it really waits — a crew session's
+  hand-back, the person, CI. A `pending` task does not count: a lead plans more than it runs at
+  once. It is silent while `stop_hook_active` is true, in a crew session, with no message to read,
+  and when the list cannot be read; it gives no context, and a failure is one stderr line and no
+  block.
 
 ### Additional lead notes and file input
 

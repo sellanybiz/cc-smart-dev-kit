@@ -3,6 +3,26 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.10.0
+
+Leads and crew sessions keep going. Some models end a turn after each step and only say what
+they will do next. A lead could sit idle for hours that way.
+
+**What to run** after the update:
+
+- Restart Claude Code to load the new hooks. Nothing else.
+
+What changed:
+
+- A lead's turn that ends while one of its tasks is in progress, and with no line that starts
+  with `Waiting for:`, is blocked once. The block names the task and says to go on with it. A
+  turn that really waits ends on one line, for example `Waiting for: C1's hand-back`. A lead
+  with no task in progress, or whose task list cannot be read, is never blocked.
+- A crew session's turn that ends on a step while a task is still open is told to go on with
+  that task, not to hand back. With every task done, the block gives the report line, as
+  before.
+- The lead skill says it plainly: never end a turn on a promise of the next step.
+
 ## 1.9.0
 
 Desktop and crew reliability: lazy browser startup, low-priority heavy jobs, and a lead that

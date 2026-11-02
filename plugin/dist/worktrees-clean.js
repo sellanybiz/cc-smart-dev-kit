@@ -6183,7 +6183,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.9.0",
+  version: "1.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

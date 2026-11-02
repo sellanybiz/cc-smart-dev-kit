@@ -873,6 +873,39 @@ describe("Stop: the last line, one block, never context", () => {
     );
   });
 
+  test("after a step with tasks still open: the block says to continue, not to hand back", async () => {
+    const world = await crewWorld();
+    await step(world.stateDir, world.repo);
+    const folder = join(cliPaths(world.env).claudeConfigDir, "tasks", "s");
+    mkdirSync(folder, { recursive: true });
+    const write = (n: number, status: string) =>
+      writeFileSync(
+        join(folder, `${String(n)}.json`),
+        JSON.stringify({
+          id: String(n),
+          subject: `Part ${String(n)}`,
+          description: "x",
+          status,
+          blocks: [],
+          blockedBy: [],
+        }),
+      );
+    write(1, "completed");
+    write(2, "pending");
+    write(3, "in_progress");
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          'Your task "Part 3" (and 1 more) is still open. Continue it now. Hand back only when every task is done, with `cc-smart-dev-kit crew report --status done --file -` and the JSON part (tests, checks, review). If the phase cannot be done, hand back `--status failed` and why. A question for your lead goes through `cc-smart-dev-kit crew report --question`.',
+      }),
+    });
+    // Every task done: the hand-back block, as before.
+    write(2, "completed");
+    write(3, "completed");
+    expect(await runHook(crewRoleHook, stopInput(world.repo), world.env)).toEqual(blockAnswer());
+  });
+
   test("once: a stop that answers the block (stop_hook_active) is silent", async () => {
     const world = await crewWorld();
     await step(world.stateDir, world.repo);

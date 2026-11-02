@@ -195,6 +195,12 @@ the shared files, the plan file — and stay free for the person. **Never poll, 
 A turn that ends with a ready phase not started is a fault: before you end the turn, every
 phase whose waits are met runs or is queued.
 
+**Never end a turn on a promise.** "Next I'll push the PRs" is a step to take now, with a tool
+call, not a sentence to end on. When a task of yours is still in progress and you do end the
+turn, because it really waits for something, the last line says what: `Waiting for: C1's
+hand-back` (or the person's answer, or CI). Without that line the `lead-notes` hook blocks the
+stop once, names the task, and you go on.
+
 **A monitor that ended does not come back.** Claude Code arms a plugin's monitor once for each
 Claude process, and running this skill again does not arm it a second time. So when the `lead-notes`
 line or `crew watch ended: …` says your watch is gone, start the watch yourself with Claude Code's

@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.9.0",
+  version: "1.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

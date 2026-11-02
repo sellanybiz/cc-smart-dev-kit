@@ -145,8 +145,9 @@ end the turn after it. **Your own background work is finished by then:** wait fo
 command and agent you started, or stop it. A hand-back that leaves one running is blocked once
 by the `subagent-background` hook. **Never stop the `crew-self` monitor**: the kit started it,
 it ends with your session, and it carries your lead's answers and the hand-off line. If a turn
-ends on a step with no report, the `crew-role` hook blocks it once with the report line —
-report, then end the turn.
+ends on a step with no report, the `crew-role` hook blocks it once. While a task of yours is
+still open, it names that task: go on with it, and report only when every task is done.
+With nothing open, it gives the report line: report, then end the turn.
 
 ## 5. Questions
 

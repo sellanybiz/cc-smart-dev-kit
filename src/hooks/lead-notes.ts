@@ -21,7 +21,11 @@
  *   it is seeded at the log's end the first time (the lines before it are history the lead already
  *   saw — it started those crew sessions itself). A restart reads the same cursor file, so a lead
  *   that comes back is not told the same news again.
- * - **Never a question and never a block**: one `additionalContext` line, or nothing. A store that
+ * - **Stop continues an active task once**: a registered lead with an `in_progress` task and
+ *   no `Waiting for:` line in its last message gets a block. A follow-up Stop, a crew session,
+ *   a turn that waits on background work other than the lead's own watch, and a message or task
+ *   list it cannot read are silent.
+ * - **Notes never ask or block**: one `additionalContext` line, or nothing. A store that
  *   cannot be read is one line on stderr (the frame's own answer): a lead's turn goes on, because a
  *   note is never worth stopping work.
  * - **A lead whose watch is gone is told** (every turn, while it lasts): when no live watch holds
@@ -48,7 +52,8 @@
  */
 
 import { COMMAND } from "../build-info/names";
-import type { CliPaths } from "../cli/paths";
+import { type CliPaths, cliPaths } from "../cli/paths";
+import { isLeadWatchTask } from "../crew/brief";
 import { isOpenCrewOfLead } from "../crew/lifecycle";
 import { crewIdOf } from "../crew/session";
 import { LEAD_SKILL } from "../crew/skills";
@@ -67,6 +72,7 @@ import {
 } from "../crew/store";
 import { readSessionTasks, taskListId } from "../crew/tasks";
 import { eventLine, phasesWaitingFor, WATCH_RESTART } from "../crew/watch";
+import { loadProjectConfig, locateCheckout, ownHooksOf } from "../project/resolve";
 import { reviewsFile, reviewsOn } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -205,6 +211,53 @@ function answered(
     : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
 
+/** The one Stop instruction, naming the first task and counting the others. */
+function continueTask(subject: string, count: number): string {
+  const more = count > 1 ? ` (and ${String(count - 1)} more)` : "";
+  return `Your task "${subject}"${more} is still in progress. Continue it now. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.`;
+}
+
+/** The read-only Stop decision, shared with the notifier. Throws only when a read fails. */
+export function leadStopReason(input: HookInput, env: Env, paths: CliPaths): string | null {
+  if (crewIdOf(env) !== null || input.stop_hook_active === true) return null;
+  // A turn that waits on background work (a subagent, a background command) is not over: Claude
+  // Code wakes the lead when it lands. The lead's own watch is no such work: it runs all session.
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
+    return null;
+  }
+  const sessionId = input.session_id;
+  if (!isSessionId(sessionId)) return null;
+  const said = stringField(input.last_assistant_message);
+  if (said === null) return null;
+  if (
+    said.split(/\r?\n/).some((line) => /^waiting for:/i.test(line.trim().replace(/^[*_>\- ]+/, "")))
+  )
+    return null;
+  const cwd = stringField(input.cwd);
+  if (cwd === null) return null;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null || ownHooksOf(checkout).includes("lead-notes")) return null;
+  // Match the frame: a broken or too-new project file must never yield a Stop block.
+  const project = loadProjectConfig(checkout);
+  const repo = project.mainCheckout ?? project.root;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null || lead.endedAt != null) return null;
+  const list = readSessionTasks(paths.claudeConfigDir, taskListId(env, sessionId));
+  if (list.state !== "read") return null;
+  const active = list.tasks.filter((task) => task.status === "in_progress");
+  const first = active[0];
+  return first === undefined ? null : continueTask(first.subject, active.length);
+}
+
+/** Whether this Stop will continue the lead: an unreadable store asks nothing of a sibling. */
+export function leadStopWouldBlockAt(input: HookInput, env: Env): boolean {
+  try {
+    return leadStopReason(input, env, cliPaths(env)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The note this turn adds, or SILENT. `repo` is null outside a git checkout: a lead record lives in
  * a repository's store, so there is nothing to read then.
@@ -217,6 +270,11 @@ export function leadNotesAnswer(
   env: Env,
   deps: { sessions?: () => readonly SessionRecord[] } = {},
 ): HookResult {
+  if (event === "Stop") {
+    if (repo === null) return SILENT;
+    const reason = leadStopReason(input, env, paths);
+    return reason === null ? SILENT : { stdout: JSON.stringify({ decision: "block", reason }) };
+  }
   const sessionId = input.session_id;
   if (repo === null || !isSessionId(sessionId)) return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);

@@ -215,6 +215,13 @@ esac
     ]);
     const bundlesFor = (event: string) =>
       wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
+    expect(bundlesFor("Stop")).toEqual([
+      "notify",
+      "fable-session",
+      "crew-role",
+      "lead-notes",
+      "verify-gate",
+    ]);
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([
       "review-record",

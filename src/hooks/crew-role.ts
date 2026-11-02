@@ -111,6 +111,7 @@ import {
   writeStopState,
 } from "../crew/store";
 import {
+  openTasks,
   readSessionTasks,
   readTaskGate,
   sessionTasksDir,
@@ -157,6 +158,26 @@ export const LAST_LINE_MAX = 120;
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
+}
+
+/**
+ * The Stop block's reason. A crew session that stops on a step while its own task list still has
+ * an open task stopped too early: it is told to go on with that task (one in progress first), and
+ * to hand back only when every task is done. Some models end their turn after every step, and
+ * the plain report step would read to them as "hand back now". A list that cannot be read, or
+ * has nothing open, gets the report step as before.
+ */
+function stopStep(input: HookInput, env: Env, paths: CliPaths): string {
+  const tasks = readSessionTasks(
+    paths.claudeConfigDir,
+    taskListId(env, stringField(input.session_id)),
+  );
+  if (tasks.state !== "read") return reportStep();
+  const open = openTasks(tasks.tasks);
+  const first = open.find((task) => task.status === "in_progress") ?? open[0];
+  if (first === undefined) return reportStep();
+  const more = open.length > 1 ? ` (and ${String(open.length - 1)} more)` : "";
+  return `Your task "${first.subject}"${more} is still open. Continue it now. Hand back only when every task is done, with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review). If the phase cannot be done, hand back \`--status failed\` and why. A question for your lead goes through \`${REPORT_COMMAND} --question\`.`;
 }
 
 /**
@@ -632,7 +653,7 @@ async function stopAnswer(
   }
   const answer: HookResult =
     !followUp && last === "step"
-      ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) }
+      ? { stdout: JSON.stringify({ decision: "block", reason: stopStep(input, env, paths) }) }
       : SILENT;
   // A turn that reported is over as it should be: never a pause. A report counts only while the
   // record is still in the state it left: a blocked report that was answered, and a session that

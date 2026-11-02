@@ -682,6 +682,48 @@ const CASES: Case[] = [
   },
 ];
 
+describe("lead-notes Stop ownHooks", () => {
+  test.each([false, true])("listed = %s", async (listed) => {
+    const repo = project({ ...FULL_CONFIG, ownHooks: listed ? ["lead-notes"] : [] });
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    seedLeadNotes(paths.stateDir, repo, paths.claudeConfigDir);
+    writeFileSync(
+      join(paths.claudeConfigDir, "tasks", SESSION, "1.json"),
+      JSON.stringify({
+        id: "1",
+        subject: "the plan",
+        description: "x",
+        status: "in_progress",
+        blocks: [],
+        blockedBy: [],
+      }),
+    );
+    wireProjectHook(mainOf({ cwd: repo }), "Stop");
+    const result = await runHook(
+      leadNotesHook,
+      {
+        hook_event_name: "Stop",
+        session_id: SESSION,
+        cwd: repo,
+        last_assistant_message: "Next I'll push the PRs.",
+      },
+      env,
+    );
+    expect(result).toEqual(
+      listed
+        ? {}
+        : {
+            stdout: JSON.stringify({
+              decision: "block",
+              reason:
+                'Your task "the plan" is still in progress. Continue it now. If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
+            }),
+          },
+    );
+  });
+});
+
 test("the table covers every hook", () => {
   expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });

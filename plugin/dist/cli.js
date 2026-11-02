@@ -52,7 +52,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.9.0",
+  version: "1.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -56599,6 +56599,17 @@ var LAST_LINE_MAX = 120;
 function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
+function stopStep(input, env, paths) {
+  const tasks = readSessionTasks(paths.claudeConfigDir, taskListId(env, stringField(input.session_id)));
+  if (tasks.state !== "read")
+    return reportStep();
+  const open = openTasks(tasks.tasks);
+  const first = open.find((task) => task.status === "in_progress") ?? open[0];
+  if (first === undefined)
+    return reportStep();
+  const more = open.length > 1 ? ` (and ${String(open.length - 1)} more)` : "";
+  return `Your task "${first.subject}"${more} is still open. Continue it now. Hand back only when every task is done, with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review). If the phase cannot be done, hand back \`--status failed\` and why. A question for your lead goes through \`${REPORT_COMMAND} --question\`.`;
+}
 function taskListStep() {
   return "Write your task list first, in Claude Code's task tools (not claude-mem's work state): look up the task tools (ToolSearch `select:TaskCreate,TaskUpdate,TaskList`), then one TaskCreate per part of your brief, each with its done-check.";
 }
@@ -56829,7 +56840,7 @@ async function stopAnswer(input, id, repo, paths, env, options) {
   } catch (error) {
     return storeProblem(reasonOf7(error));
   }
-  const answer = !followUp && last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: reportStep() }) } : SILENT;
+  const answer = !followUp && last === "step" ? { stdout: JSON.stringify({ decision: "block", reason: stopStep(input, env, paths) }) } : SILENT;
   const record = found.record;
   if (last === "report" && !WORKING_STATES.includes(record.state))
     return answer;
@@ -58128,7 +58139,56 @@ function answered(event, lines, name) {
   const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
   return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
+function continueTask(subject, count) {
+  const more = count > 1 ? ` (and ${String(count - 1)} more)` : "";
+  return `Your task "${subject}"${more} is still in progress. Continue it now. If it really waits for something \u2014 a crew session, the person, CI \u2014 end your turn with one line: Waiting for: <what>.`;
+}
+function leadStopReason(input, env, paths) {
+  if (crewIdOf(env) !== null || input.stop_hook_active === true)
+    return null;
+  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
+    return null;
+  }
+  const sessionId = input.session_id;
+  if (!isSessionId2(sessionId))
+    return null;
+  const said = stringField(input.last_assistant_message);
+  if (said === null)
+    return null;
+  if (said.split(/\r?\n/).some((line) => /^waiting for:/i.test(line.trim().replace(/^[*_>\- ]+/, ""))))
+    return null;
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return null;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null || ownHooksOf(checkout).includes("lead-notes"))
+    return null;
+  const project = loadProjectConfig(checkout);
+  const repo = project.mainCheckout ?? project.root;
+  const lead = readLead(paths.stateDir, repo, sessionId);
+  if (lead === null || lead.endedAt != null)
+    return null;
+  const list = readSessionTasks(paths.claudeConfigDir, taskListId(env, sessionId));
+  if (list.state !== "read")
+    return null;
+  const active = list.tasks.filter((task) => task.status === "in_progress");
+  const first = active[0];
+  return first === undefined ? null : continueTask(first.subject, active.length);
+}
+function leadStopWouldBlockAt(input, env) {
+  try {
+    return leadStopReason(input, env, cliPaths(env)) !== null;
+  } catch {
+    return false;
+  }
+}
 function leadNotesAnswer(input, event, paths, repo, env, deps = {}) {
+  if (event === "Stop") {
+    if (repo === null)
+      return SILENT;
+    const reason = leadStopReason(input, env, paths);
+    return reason === null ? SILENT : { stdout: JSON.stringify({ decision: "block", reason }) };
+  }
   const sessionId = input.session_id;
   if (repo === null || !isSessionId2(sessionId))
     return SILENT;
@@ -59734,8 +59794,8 @@ var crewRoleHook = {
 };
 var leadNotesHook = {
   name: "lead-notes",
-  events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (_message, input, event, checkout, context) => leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root, context.env),
+  events: ["SessionStart", "UserPromptSubmit", "Stop"],
+  onConfigProblem: (_message, input, event, checkout, context) => event === "Stop" ? SILENT : leadNotesAnswer(input, event, context.paths, checkout.mainCheckout ?? checkout.root, context.env),
   outsideGit: () => SILENT,
   run: ({ input, event, project, paths, env }) => leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env)
 };
@@ -63876,7 +63936,7 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
-  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || leadStopWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
     finished,

@@ -278,10 +278,12 @@ a command must never report success when it did not run.
 - No informational plugin hook exits 1 (`crashExitCode`): a bug never stops a person's work.
 - **A Stop hook blocks at most once per change, and never gives context.** A turn a block caused
   carries `stop_hook_active: true`, and the hook is silent there; a Stop answer's
-  `additionalContext` keeps the turn going. The two Stop hooks that block are `crew-role` (a
-  crew session's turn ended on a step with no report) and `verify-gate` (the project's
-  `checks.fast` did not run after the last change); `verify-gate` is silent in a crew session,
-  which has its own report gate. Its block's own feedback line in the transcript is its mark,
+  `additionalContext` keeps the turn going. The three Stop hooks that block are `crew-role` (a
+  crew session's turn ended on a step with no report, or with a task still open),
+  `lead-notes` (a lead's turn ended with a task in progress and no `Waiting for:` line) and
+  `verify-gate` (the project's `checks.fast` did not run after the last change); `lead-notes`
+  and `verify-gate` are silent in a crew session, which has its own report gate. The
+  `verify-gate` block's own feedback line in the transcript is its mark,
   so no change is reminded about twice, a change made after a reminder earns the next one, and a
   check that fails never traps a turn.
 - **`subagent-background` never blocks on a failure.** A broken input, a broken or too new
