@@ -1711,7 +1711,7 @@ describe("the review gate is read as committed on the pull request's base (CM-1)
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
       stdout: willNotMerge(
         "this pull request",
-        "the merge policy committed on dev cannot be read: origin/dev is not known in this repository (no origin, or the branch was never fetched); a policy counts once it is committed, pushed and fetched",
+        "the merge policy committed on dev cannot be read: origin/dev is not known in this repository (no origin, or the branch was never fetched); the base branch may never have been pushed: push it once (git push -u origin dev), then run merge-check again; if it already exists on origin, fetch it first",
       ),
     });
     expect(ghCalls(gh)).toEqual([]);

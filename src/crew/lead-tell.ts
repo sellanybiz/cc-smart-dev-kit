@@ -45,7 +45,11 @@ function findLead(
   records: readonly LeadRecord[],
   ref: string,
 ): { record: LeadRecord } | { lines: string[] } {
-  const found = findNamed(records, ref, LEAD_LOOK);
+  const found = findNamed(
+    records.filter((one) => one.endedAt == null),
+    ref,
+    LEAD_LOOK,
+  );
   switch (found.kind) {
     case "one":
       return { record: found.record };

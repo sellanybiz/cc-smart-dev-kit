@@ -1075,6 +1075,14 @@ describe("the heavy slices' CPU and I/O weights", () => {
       "cc-smart-dev-kit-heavy.slice",
       "IOWeight=7",
     ]);
+    expect(weightsArgv(SLICE, { cpu: "idle" })).toEqual([
+      "systemctl",
+      "--user",
+      "set-property",
+      "--runtime",
+      SLICE,
+      "CPUWeight=idle",
+    ]);
     expect(weightsArgv(SLICE, {})).toBeNull();
   });
 
@@ -1092,6 +1100,53 @@ describe("the heavy slices' CPU and I/O weights", () => {
       "weights cc-smart-dev-kit.slice CPUWeight=20 IOWeight=20",
       "weights cc-smart-dev-kit-heavy.slice CPUWeight=20 IOWeight=20",
     ]);
+  });
+
+  test("idle succeeds across the chain without a warning", async () => {
+    const r = recorder();
+    await runJob({ ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 }, deps(r));
+    expect(
+      r.events
+        .filter((event) => event.startsWith("weights "))
+        .map((event) => event.split(" ").at(-1)),
+    ).toEqual([
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+      "CPUWeight=idle",
+    ]);
+    expect(r.said).toEqual([]);
+  });
+
+  test("idle fallback sets 10 across the chain and warns once", async () => {
+    const r = recorder();
+    const base = deps(r);
+    const calls: string[] = [];
+    await runJob(
+      { ...request, ...tsc, cpuWeight: "idle", ioWeight: 0 },
+      {
+        ...base,
+        slice: {
+          ...base.slice,
+          setWeights: (slice, weights) => {
+            calls.push(`${slice}:${String(weights.cpu)}`);
+            return weights.cpu !== "idle";
+          },
+        },
+      },
+    );
+    expect(calls.filter((call) => call.endsWith(":10"))).toEqual([
+      "cc.slice:10",
+      "cc-smart.slice:10",
+      "cc-smart-dev.slice:10",
+      "cc-smart-dev-kit.slice:10",
+      `${SLICE}:10`,
+    ]);
+    expect(r.said).toEqual([
+      "CPU priority: this systemd could not set idle; using weight 10 instead.",
+    ]);
+    expect(r.runs).toHaveLength(1);
   });
 
   test("a controller the user manager was not given skips its weight, and the job still runs", async () => {
@@ -1145,18 +1200,20 @@ describe("the heavy slices' CPU and I/O weights", () => {
     const off = recorder();
     const offBase = deps(off);
     await runJob(
-      { ...request, ...tsc, cpuWeight: 0, ioWeight: 7 },
+      { ...request, ...tsc, cpuWeight: "off", ioWeight: 7 },
       {
         ...offBase,
         slice: { ...offBase.slice, controllers: () => ["cpu", "io", "memory", "pids"] },
       },
     );
     expect(off.events.filter((event) => event.startsWith("weights "))[0]).toBe(
-      "weights cc.slice IOWeight=7",
+      "weights cc.slice CPUWeight=100 IOWeight=7",
     );
     const bothOff = recorder();
-    await runJob({ ...request, ...tsc, cpuWeight: 0, ioWeight: 0 }, deps(bothOff));
-    expect(bothOff.events.some((event) => event.startsWith("weights "))).toBe(false);
+    await runJob({ ...request, ...tsc, cpuWeight: "off", ioWeight: 0 }, deps(bothOff));
+    expect(bothOff.events.filter((event) => event.startsWith("weights "))[0]).toBe(
+      "weights cc.slice CPUWeight=100",
+    );
   });
 
   test("a weight systemd refuses is one line, and the job runs without priority there", async () => {

@@ -532,19 +532,15 @@ export function crewOf(answer: CrewAnswer): CrewDetail {
     lead,
     memory: answer.memory.map((point) => ({ at: Date.parse(point.at), mb: point.mb })),
     mergeCheck: mergeCheckOf(answer.mergeCheck),
-    questions:
-      crew.question === null
-        ? []
-        : [
-            {
-              answer: null,
-              answeredAt: null,
-              askedAt: crew.question.askedAt,
-              options: crew.question.options,
-              question: crew.question.question,
-              recommended: crew.question.recommended,
-            },
-          ],
+    questions: crew.questions.map((question) => ({
+      number: question.number,
+      answer: null,
+      answeredAt: null,
+      askedAt: question.askedAt,
+      options: question.options,
+      question: question.text,
+      recommended: question.recommend,
+    })),
     record: crewRecordOf(crew),
     report: answer.report,
     reviews: answer.reviews,
@@ -563,6 +559,7 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
     const crew = { id: need.crew.id, name: need.crew.name, shortId: need.crew.shortId };
     items.push({
       ask: {
+        number: need.number,
         answer: null,
         answeredAt: null,
         askedAt: need.askedAt,
@@ -572,7 +569,7 @@ export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
       },
       crew,
       // The question itself, not only its crew session: a later question is a new item.
-      id: `question-${need.crew.id}-${need.askedAt}`,
+      id: `question-${need.crew.id}-${need.number}`,
       kind: "question",
       since: need.askedAt,
     });

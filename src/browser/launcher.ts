@@ -23,12 +23,12 @@
  *   comes from the person's own file (`browser/token.ts`) and goes into the child's ENVIRONMENT
  *   only: `argv` is world-readable (`/proc`), and `~/.claude.json` reaches no secret.
  *
- * IT STARTS THE PERSON'S CHROME WHEN NONE IS RUNNING
+ * IT STARTS CHROME AT THE FIRST BROWSER TOOL, NOT AT SESSION START
  *   Extension mode connects by handing a page to Chrome, and the MCP starts Chrome itself only
  *   when it finds it closed — detached, with its output ignored, and with no check of whether it
  *   came up. A machine restart leaves Chrome closed, and a session the Claude daemon starts has no
  *   `DISPLAY` (measured 2026-10-23), so that start died unseen and the MCP waited its full 30 s.
- *   So this launcher starts the Chrome `chrome.ts` finds, with the `claude-code` profile, on the
+ *   On the first tools/call this launcher starts the Chrome `chrome.ts` finds, with the profile, on the
  *   person's desktop (`chrome-start.ts`), and goes on once Chrome's singleton lock is there. What
  *   cannot start is one plain line naming the one step — never a 30-second wait.
  *
@@ -47,8 +47,8 @@
  *   the MCP resolves such a name against the folder the server was started in (which is this
  *   folder too, now; the hook still makes the name absolute, so it never depends on that).
  *
- * 🔴 NOTHING HERE MAY WRITE TO STDOUT. The launcher's stdout IS the MCP protocol stream; one
- *   stray line and the server shows in Claude Code as failed. Every line goes through `log`
+ * Only protocol bytes may go to stdout. The launcher's stdout IS the MCP protocol stream; one
+ *   stray line and the server shows in Claude Code as failed. Diagnostics go through `log`
  *   (stderr).
  */
 import { COMMAND } from "../build-info";
@@ -57,6 +57,7 @@ import { ensurePrivateDir } from "../machine/private-dir";
 import { MCP_VERSIONS } from "../mcp/versions";
 import { type ChromeDeps, connectPrerequisites } from "./chrome";
 import { type DesktopEnvironment, ensureChromeRunning, type StartChrome } from "./chrome-start";
+import { type McpSink, proxyMcp } from "./mcp-proxy";
 import { BROWSER_TOKEN_ENV, type BrowserToken, readBrowserToken } from "./token";
 
 /** Oldest files are deleted once the output folder grows past this (the MCP's own limit). */
@@ -69,21 +70,29 @@ const OWN_OPTIONS = {
 
 /** A process this launcher started (the Playwright MCP). */
 export interface McpChild {
+  stdin: McpSink;
+  stdout: ReadableStream<Uint8Array>;
   exited: Promise<number>;
   kill: (signal: NodeJS.Signals) => void;
 }
 
 export interface BrowserMcpDeps {
   /**
-   * Starts the MCP. Its stdout is this process's stdout. `env` is added to the child's own
+   * Starts the MCP with piped stdin/stdout and inherited stderr. `env` is added to the child's own
    * environment (the caller merges it over the current one) — the extension token travels there,
    * never in `argv`, which every user on the machine can read from `/proc`. `cwd` is the folder
    * the child must start in: the browser's own, never the session's.
    */
   spawn: (
     argv: string[],
-    options: { cwd: string; env: Record<string, string>; stdio: "inherit" },
+    options: {
+      cwd: string;
+      env: Record<string, string>;
+      stdio: readonly ["pipe", "pipe", "inherit"];
+    },
   ) => McpChild;
+  clientInput: ReadableStream<Uint8Array>;
+  clientOutput: Pick<McpSink, "write" | "flush">;
   /** Chrome's files on this machine: where the `claude-code` profile is (`claudeCodeProfileOn`). */
   chrome: ChromeDeps & { home: string; platform: NodeJS.Platform };
   /**
@@ -206,25 +215,23 @@ export async function runBrowserMcp(
     return 2;
   }
 
-  // Chrome not running — the state a machine restart leaves — is started here, on the person's
-  // desktop, and the MCP is started once Chrome's singleton lock is there. A session the Claude
-  // daemon starts has no DISPLAY, and the MCP's own Chrome start would die unseen and end in its
-  // generic 30-second failure; a start that cannot work is one plain line instead.
-  const chrome = await ensureChromeRunning(
-    { chrome: ready.chrome, profileDirName: ready.profile.dirName, userDataDir: ready.userDataDir },
-    {
-      chrome: deps.chrome,
-      desktop: deps.desktop,
-      env: deps.env,
-      startChrome: deps.startChrome,
-      ...(deps.chromeLimitMs === undefined ? {} : { limitMs: deps.chromeLimitMs }),
-      ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
-    },
-  );
-  if (!chrome.ok) {
-    deps.log(chrome.why);
-    return 2;
-  }
+  // Handshakes read files only. The proxy checks Chrome at the first browser tool request.
+  const startChrome = () =>
+    ensureChromeRunning(
+      {
+        chrome: ready.chrome,
+        profileDirName: ready.profile.dirName,
+        userDataDir: ready.userDataDir,
+      },
+      {
+        chrome: deps.chrome,
+        desktop: deps.desktop,
+        env: deps.env,
+        startChrome: deps.startChrome,
+        ...(deps.chromeLimitMs === undefined ? {} : { limitMs: deps.chromeLimitMs }),
+        ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+      },
+    );
 
   // Everything the browser saves goes here, and it can hold a page of a signed-in session: its
   // owner only. The MCP writes into this folder; it is made private before it starts.
@@ -239,14 +246,32 @@ export async function runBrowserMcp(
     cwd: options.outputDir,
     // The token, and nothing else: an environment variable, never an argument.
     env: { [BROWSER_TOKEN_ENV]: token.value },
-    stdio: "inherit",
+    stdio: ["pipe", "pipe", "inherit"],
   });
 
+  const proxy = proxyMcp({
+    clientInput: deps.clientInput,
+    clientOutput: deps.clientOutput,
+    childInput: child.stdin,
+    childOutput: child.stdout,
+    startChrome,
+  });
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
-  for (const signal of signals) {
-    process.on(signal, () => {
-      child.kill(signal);
+  const handlers = signals.map((signal) => [signal, () => child.kill(signal)] as const);
+  for (const [signal, handler] of handlers) process.on(signal, handler);
+  try {
+    const exited = child.exited.then(async (code) => {
+      // Drain the child's final response before closing our protocol output.
+      await proxy.outputDone;
+      return code;
     });
+    return await Promise.race([exited, proxy.done.then(() => exited)]);
+  } catch (error) {
+    deps.log(`browser MCP stream failed: ${String(error)}`);
+    child.kill("SIGTERM");
+    return await child.exited;
+  } finally {
+    for (const [signal, handler] of handlers) process.off(signal, handler);
+    await proxy.stop();
   }
-  return await child.exited;
 }

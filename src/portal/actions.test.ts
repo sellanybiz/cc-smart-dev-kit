@@ -212,11 +212,15 @@ describe("a crew action runs the CLI's own command in a child", () => {
     // answer that starts with two dashes an answer.
     const w = world();
     const id = await w.crewIn(w.repoA, "crew-P-answer", { state: "blocked" });
-    const answered = await runAction("crew.answer", { answer: "-- port 3210", crew: id }, w.action);
+    const answered = await runAction(
+      "crew.answer",
+      { answer: "-- port 3210", crew: id, question: 2 },
+      w.action,
+    );
     expect(answered.ok).toBe(true);
     expect(runsOf(w.log)).toEqual([
       {
-        args: ["crew", "answer", "--as-person", "--", id, "-- port 3210"],
+        args: ["crew", "answer", "--as-person", "--question", "2", "--", id, "-- port 3210"],
         claudeCode: null,
         config: w.paths.claudeConfigDir,
         crew: null,

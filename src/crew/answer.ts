@@ -61,6 +61,7 @@ import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
 import { OPUS_TIER, placeFor, placeInputOf, withPlacesLock } from "./places";
 import { restoreReleasedWorktree } from "./release";
+import { readPart } from "./report";
 import { actorOfCaller } from "./runs-actor";
 import {
   ANSWER_BEAT_STALE_MS,
@@ -97,6 +98,8 @@ export interface AnswerArgs {
   asPerson?: boolean;
   /** The answer. */
   text: string;
+  file?: string;
+  question?: number;
 }
 
 /**
@@ -197,9 +200,39 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
     ctx.error(`crew answer: ${pending}`);
     return 1;
   }
-  let index = openQuestionIndex(record);
-  // The answer to the newest question, given again, is a correction (AN1) — while the phase runs.
-  let correcting = false;
+  if (args.file !== undefined) {
+    try {
+      const part = await readPart({ file: args.file }, ctx);
+      if ("refused" in part) {
+        ctx.error(`crew answer: the file ${args.file} cannot be read`);
+        return 1;
+      }
+      args = { ...args, text: part.raw };
+    } catch (error) {
+      ctx.error(`crew answer: ${reasonOf(error)}`);
+      return 1;
+    }
+  }
+  const open = record.questions.flatMap((one, index) => (isQuestionOpen(one) ? [index] : []));
+  if (args.question === undefined && open.length > 1 && !questionClosed(record.state)) {
+    ctx.error(`crew answer: ${record.name} has several open questions:`);
+    for (const index of open) {
+      const one = record.questions[index];
+      if (one !== undefined)
+        ctx.error(
+          `question ${index + 1} · asked ${Math.max(0, Math.floor((ctx.now() - Date.parse(one.askedAt)) / 1000))} s ago · ${one.question.slice(0, 100)}`,
+        );
+    }
+    ctx.error(`Fix: crew answer "${record.name}" --question <n> "<text>" (or --file <path|->)`);
+    return 1;
+  }
+  let index = args.question === undefined ? openQuestionIndex(record) : args.question - 1;
+  if (index !== null && (record.questions[index] === undefined || questionClosed(record.state))) {
+    ctx.error(`crew answer: question ${index + 1} is missing or the phase is finished`);
+    return 1;
+  }
+  // Explicit numbers can correct any answered question, not just the last one.
+  let correcting = index !== null && record.questions[index]?.answer !== null;
   if (index === null) {
     const last = record.questions.length - 1;
     if (last >= 0 && record.questions[last]?.answer !== null) {
@@ -340,13 +373,14 @@ export async function runCrewAnswer(args: AnswerArgs, ctx: CrewContext): Promise
  * The person's click (`asPerson`) gets no such line — they cannot send it — and is told when the
  * session will hear it instead.
  */
-async function deliveryReport(
+export async function deliveryReport(
   ctx: CrewContext,
   repo: string,
   record: CrewRecord,
   index: number,
   how: { asPerson: boolean; replaces: boolean },
   text: string,
+  kind: "answer" | "note" = "answer",
 ): Promise<string[]> {
   const { stateDir } = ctx.paths;
   const beat = readAnswerWatchBeat(stateDir, repo, record.id);
@@ -368,7 +402,11 @@ async function deliveryReport(
   }
   for (let look = 0; look < CONFIRM_LOOKS; look += 1) {
     await ctx.sleep(CONFIRM_WAIT_MS);
-    const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
+    const fresh = readCrew(stateDir, repo, record.id);
+    const now =
+      (kind === "answer"
+        ? fresh?.questions[index]?.deliveredAt
+        : fresh?.notes?.[index]?.deliveredAt) ?? null;
     if (now !== null) {
       return [
         how.replaces
@@ -400,7 +438,7 @@ export async function markResumed(
       record.id,
       [record.state],
       {
-        state: "working",
+        state: record.questions.some(isQuestionOpen) ? "blocked" : "working",
         sessionId: session.sessionId,
         shortId: session.shortId,
         resumeWaits: undefined,

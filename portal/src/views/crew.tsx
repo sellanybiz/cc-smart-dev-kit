@@ -10,6 +10,7 @@ import { CopyButton } from "@/components/copy-button";
 import { CrewActions } from "@/components/crew-actions";
 import { columnsFor, PortalTable } from "@/components/data-table";
 import { Markdown } from "@/components/markdown";
+import { NeedsList } from "@/components/needs-list";
 import { AppLink, useAppQuery, useAppQueryReady } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { Sparkline } from "@/components/sparkline";
@@ -329,6 +330,26 @@ function CrewPage({ data }: { data: CrewDetail }) {
           <CrewActions crew={record} />
         </div>
       </PagePad>
+      {data.questions.length > 0 && (
+        <PagePad>
+          <Card>
+            <CardHeader>
+              <CardTitle>Open questions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <NeedsList
+                items={data.questions.map((ask) => ({
+                  kind: "question" as const,
+                  id: `question-${record.id}-${ask.number}`,
+                  since: ask.askedAt,
+                  crew: { id: record.id, name: record.name, shortId: record.shortId },
+                  ask,
+                }))}
+              />
+            </CardContent>
+          </Card>
+        </PagePad>
+      )}
       <SectionCards columns={4}>
         <StatCard
           label="Model"

@@ -16,9 +16,9 @@
  *          never take the memory kept for everything else, and past it the kernel kills
  *          inside the slice only. `OOMPolicy=kill` ends the whole job when one of its
  *          processes is killed. Inside, `choom -n 900` marks the job to die first if the
- *          whole machine runs out. When `jobs.json` asks for a CPU or disk I/O weight, the
- *          slices carry it (`weightsArgv`); by default they carry none, so a job gets normal
- *          CPU and I/O.
+ *          whole machine runs out. CPU defaults to idle, yielding to other work. Disk I/O
+ *          stays at normal priority unless configured. Every slice carries the weights
+ *          (`weightsArgv`); there is no quota.
  *   choom  Linux with no user manager (cron, a container, CI, ssh after logout): the mark.
  *   plain  No `choom`, macOS, or `launch: plain`: the command as it is. The queue still
  *          applies.
@@ -273,7 +273,7 @@ function setPropertyArgv(slice: string, ...properties: string[]): [string, ...st
  * (100): a controller this machine's user manager was not given cannot carry one.
  */
 export interface SliceWeights {
-  cpu?: number;
+  cpu?: number | "idle";
   io?: number;
 }
 

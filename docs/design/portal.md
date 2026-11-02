@@ -729,3 +729,10 @@ Two numbers the design's mockups show are not invented, and the pages say so ins
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.
+
+### Numbered crew questions
+
+The crew detail and Needs view render every open question from the work API, with its
+number, age, options and recommendation. Both views share `NeedsList`; an answer carries
+the question number as well as the crew id. Items are keyed by those two values, so answering
+one question never replaces another question from the same crew session.

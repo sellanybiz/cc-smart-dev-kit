@@ -52,7 +52,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.8.1",
+  version: "1.9.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1670,6 +1670,182 @@ var MCP_VERSIONS = {
 };
 var TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/";
 
+// src/browser/mcp-proxy.ts
+import { Buffer as Buffer2 } from "buffer";
+function isCall(value) {
+  return typeof value === "object" && value !== null && "method" in value && value.method === "tools/call" && "id" in value;
+}
+function parse(line) {
+  try {
+    return JSON.parse(line.toString("utf8"));
+  } catch {
+    return;
+  }
+}
+function batchElements(line) {
+  const elements = [];
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let start = line.indexOf(91) + 1;
+  for (let i = start;i < line.length; i++) {
+    const byte = line[i];
+    if (quoted) {
+      if (escaped)
+        escaped = false;
+      else if (byte === 92)
+        escaped = true;
+      else if (byte === 34)
+        quoted = false;
+    } else if (byte === 34)
+      quoted = true;
+    else if (byte === 123 || byte === 91)
+      depth++;
+    else if (byte === 125 || byte === 93 && depth > 0)
+      depth--;
+    else if ((byte === 44 || byte === 93) && depth === 0) {
+      elements.push(line.subarray(start, i));
+      start = i + 1;
+      if (byte === 93)
+        break;
+    }
+  }
+  return elements;
+}
+function proxyMcp(deps) {
+  const input = deps.clientInput.getReader();
+  const output = deps.childOutput.getReader();
+  let stopped = false;
+  let proved = false;
+  let ended = false;
+  let pumping;
+  const queue = [];
+  const failed = Promise.withResolvers();
+  async function write(sink, bytes) {
+    if (stopped)
+      return;
+    await sink.write(bytes);
+    await sink.flush?.();
+  }
+  async function reject(line, why) {
+    const value = parse(line);
+    if (Array.isArray(value) && value.some(isCall)) {
+      const replies = value.filter(isCall).map((call) => failure(call.id, why));
+      await write(deps.clientOutput, Buffer2.from(`${JSON.stringify(replies)}
+`));
+      const kept = batchElements(line).filter((element) => !isCall(parse(element)));
+      if (kept.length)
+        await write(deps.childInput, Buffer2.concat([
+          Buffer2.from("["),
+          ...kept.flatMap((element, i) => i ? [Buffer2.from(","), element] : [element]),
+          Buffer2.from(`]
+`)
+        ]));
+    } else if (isCall(value)) {
+      await write(deps.clientOutput, Buffer2.from(`${JSON.stringify(failure(value.id, why))}
+`));
+    } else
+      await write(deps.childInput, line);
+  }
+  async function pump() {
+    while (queue.length && !stopped) {
+      const line = queue[0];
+      if (!line)
+        break;
+      const value = parse(line);
+      if (!proved && (isCall(value) || Array.isArray(value) && value.some(isCall))) {
+        const result = await deps.startChrome();
+        if (stopped)
+          break;
+        if (!result.ok) {
+          const held = queue.splice(0);
+          for (const pending of held)
+            await reject(pending, result.why);
+          continue;
+        }
+        proved = true;
+      }
+      queue.shift();
+      await write(deps.childInput, line);
+    }
+    if (ended && !stopped)
+      await deps.childInput.end();
+  }
+  function kick() {
+    if (!pumping)
+      pumping = pump().catch((error) => {
+        stopped = true;
+        failed.reject(error);
+      }).finally(() => {
+        pumping = undefined;
+        if (queue.length && !stopped)
+          kick();
+      });
+  }
+  const receive = (async () => {
+    let pieces = [];
+    while (!stopped) {
+      const chunk = await input.read();
+      if (chunk.done)
+        break;
+      const bytes = Buffer2.from(chunk.value);
+      let start = 0;
+      for (let i = 0;i < bytes.length; i++) {
+        if (bytes[i] !== 10)
+          continue;
+        pieces.push(bytes.subarray(start, i + 1));
+        queue.push(Buffer2.concat(pieces));
+        pieces = [];
+        start = i + 1;
+      }
+      if (start < bytes.length)
+        pieces.push(bytes.subarray(start));
+      kick();
+    }
+    if (pieces.length)
+      queue.push(Buffer2.concat(pieces));
+    ended = true;
+    kick();
+    await pumping;
+  })();
+  const send = (async () => {
+    let pieces = [];
+    while (!stopped) {
+      const chunk = await output.read();
+      if (chunk.done)
+        break;
+      const bytes = Buffer2.from(chunk.value);
+      let start = 0;
+      for (let i = 0;i < bytes.length; i++) {
+        if (bytes[i] !== 10)
+          continue;
+        pieces.push(bytes.subarray(start, i + 1));
+        await write(deps.clientOutput, Buffer2.concat(pieces));
+        pieces = [];
+        start = i + 1;
+      }
+      if (start < bytes.length)
+        pieces.push(bytes.subarray(start));
+    }
+    if (pieces.length)
+      await write(deps.clientOutput, Buffer2.concat(pieces));
+  })();
+  return {
+    done: Promise.race([Promise.all([receive, send]).then(() => {
+      return;
+    }), failed.promise]),
+    outputDone: send,
+    stop: async () => {
+      stopped = true;
+      queue.length = 0;
+      await Promise.all([input.cancel(), output.cancel()]);
+    }
+  };
+}
+function failure(id, why) {
+  return { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: why }], isError: true } };
+}
+
 // src/browser/launcher.ts
 var OUTPUT_MAX_BYTES = 200 * 1024 * 1024;
 var OWN_OPTIONS = {
@@ -1714,7 +1890,11 @@ async function runBrowserMcp(paths, argv, deps) {
     deps.log(ready.why);
     return 2;
   }
-  const chrome = await ensureChromeRunning({ chrome: ready.chrome, profileDirName: ready.profile.dirName, userDataDir: ready.userDataDir }, {
+  const startChrome = () => ensureChromeRunning({
+    chrome: ready.chrome,
+    profileDirName: ready.profile.dirName,
+    userDataDir: ready.userDataDir
+  }, {
     chrome: deps.chrome,
     desktop: deps.desktop,
     env: deps.env,
@@ -1722,10 +1902,6 @@ async function runBrowserMcp(paths, argv, deps) {
     ...deps.chromeLimitMs === undefined ? {} : { limitMs: deps.chromeLimitMs },
     ...deps.sleep === undefined ? {} : { sleep: deps.sleep }
   });
-  if (!chrome.ok) {
-    deps.log(chrome.why);
-    return 2;
-  }
   ensurePrivateDir(options.outputDir, deps.log);
   const bunx = deps.which("bunx");
   const head = bunx === null ? [process.execPath, "x"] : [bunx];
@@ -1733,15 +1909,34 @@ async function runBrowserMcp(paths, argv, deps) {
   const child = deps.spawn(browserMcpArgv(head, options, packageName, ready.profile.dirName), {
     cwd: options.outputDir,
     env: { [BROWSER_TOKEN_ENV]: token.value },
-    stdio: "inherit"
+    stdio: ["pipe", "pipe", "inherit"]
+  });
+  const proxy = proxyMcp({
+    clientInput: deps.clientInput,
+    clientOutput: deps.clientOutput,
+    childInput: child.stdin,
+    childOutput: child.stdout,
+    startChrome
   });
   const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
-  for (const signal of signals) {
-    process.on(signal, () => {
-      child.kill(signal);
+  const handlers = signals.map((signal) => [signal, () => child.kill(signal)]);
+  for (const [signal, handler] of handlers)
+    process.on(signal, handler);
+  try {
+    const exited = child.exited.then(async (code) => {
+      await proxy.outputDone;
+      return code;
     });
+    return await Promise.race([exited, proxy.done.then(() => exited)]);
+  } catch (error) {
+    deps.log(`browser MCP stream failed: ${String(error)}`);
+    child.kill("SIGTERM");
+    return await child.exited;
+  } finally {
+    for (const [signal, handler] of handlers)
+      process.off(signal, handler);
+    await proxy.stop();
   }
-  return await child.exited;
 }
 
 // src/browser/setup.ts
@@ -3352,9 +3547,9 @@ var _safeParse = (_Err) => (schema, value, _ctx) => {
   if (result instanceof Promise) {
     throw new $ZodAsyncError;
   }
-  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
+  return result.issues.length ? failure2(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
-function failure(Err, issues, ctx) {
+function failure2(Err, issues, ctx) {
   let error;
   return {
     success: false,
@@ -3378,7 +3573,7 @@ var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
   let result = schema._zod.run({ value, issues: [] }, ctx);
   if (result instanceof Promise)
     result = await result;
-  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
+  return result.issues.length ? failure2(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
 var COMPILE_INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
 var COMPILE_FALLBACK = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
@@ -7497,7 +7692,7 @@ var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefi
 });
 
 // node_modules/zod/v4/classic/parse.js
-var parse2 = /* @__PURE__ */ _parse(ZodRealError);
+var parse3 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
 var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync = /* @__PURE__ */ _safeParseAsync(ZodRealError);
@@ -7633,7 +7828,7 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     own(this, "~standard", value);
   },
   parse: function _parse(data, params) {
-    return parse2(this, data, params, { callee: _parse });
+    return parse3(this, data, params, { callee: _parse });
   },
   parseAsync: async function _parseAsync(data, params) {
     return await parseAsync(this, data, params, { callee: _parseAsync });
@@ -14589,6 +14784,9 @@ function mergeRefusal(facts) {
 }
 function policyUnread(branch, why, policy = "merge policy") {
   const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
+  if (branch !== null && why.startsWith(`origin/${branch} is not known in this repository`)) {
+    return `${where} cannot be read: ${why}; the base branch may never have been pushed: push it once (git push -u origin ${branch}), then run merge-check again; if it already exists on origin, fetch it first`;
+  }
   return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
 }
 function workflowUnread(error) {
@@ -15923,7 +16121,7 @@ function crewLaunch(kind, gateway, env) {
 
 // src/crew/answer.ts
 import { randomUUID as randomUUID5 } from "crypto";
-import { existsSync as existsSync40 } from "fs";
+import { existsSync as existsSync41 } from "fs";
 
 // src/crew/claude.ts
 import { readFileSync as readFileSync20, statSync as statSync9 } from "fs";
@@ -16995,6 +17193,7 @@ var crewFields = object({
   waitsFor: array(text2),
   files: array(text2),
   questions: array(crewQuestion),
+  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
   state: word(),
   lastLine: string2().nullable(),
   reportPath: text2.nullable(),
@@ -17055,6 +17254,9 @@ var leadFields = object({
   tag: text2,
   cwd: text2,
   planFile: text2.nullable().optional(),
+  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
+  adoptedBy: text2.optional(),
+  generation: count.optional(),
   endedAt: text2.nullable().optional(),
   sessionUnknownSince: text2.nullable().optional(),
   pausedAgents: array(text2).optional(),
@@ -17073,6 +17275,7 @@ var eventFields = object({
   text: string2().nullable(),
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
+  question: number2().int().min(1).optional(),
   memoryMb: number2().min(0).nullable().optional(),
   pair: text2.optional(),
   tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
@@ -17279,14 +17482,43 @@ async function sweepCrew(stateDir, repo, id, state, atMs) {
 async function addCrewQuestion(stateDir, repo, id, asked, atMs) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => ({
     change: {
-      questions: [
-        ...before.questions.map((one) => isQuestionOpen(one) ? { ...one, supersededBy: before.questions.length } : one),
-        { ...asked, answer: null, answeredAt: null, askedAt: at }
-      ]
+      questions: [...before.questions, { ...asked, answer: null, answeredAt: null, askedAt: at }]
     },
-    event: (after) => eventOf(after, at, "question", asked.question)
+    event: (after) => ({
+      ...eventOf(after, at, "question", asked.question),
+      question: after.questions.length
+    })
   }));
   return record2;
+}
+function crewNotesFile(stateDir, repo, id) {
+  return join23(crewFilesDir(stateDir, repo, id), "lead-notes.md");
+}
+async function addCrewNote(stateDir, repo, id, text, atMs) {
+  const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const notes = [...before.notes ?? [], { text, at, deliveredAt: null }];
+    writeStoreFile(crewNotesFile(stateDir, repo, id), notes.map((one) => `${one.at}
+${one.text}`).join(`
+
+`));
+    return { change: { notes }, event: () => null };
+  });
+  await noteCrewRun(stateDir, repo, id, atMs, { text, detail: { kind: "lead-note" } });
+  return record2;
+}
+async function markNoteDelivered(stateDir, repo, id, index, atMs) {
+  const { changed, record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
+    const note = before.notes?.[index];
+    if (note === undefined || note.deliveredAt !== null)
+      return null;
+    return {
+      change: {
+        notes: before.notes?.map((one, which) => which === index ? { ...one, deliveredAt: at } : one)
+      },
+      event: () => null
+    };
+  });
+  return changed ? record2.notes?.[index] ?? null : null;
 }
 async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resumes = null, session = null, how = {}, by = null) {
   const { record: record2 } = await changeCrew(stateDir, repo, id, atMs, (before, at) => {
@@ -17328,7 +17560,7 @@ async function answerCrewQuestion(stateDir, repo, id, index, answer, atMs, resum
       };
     });
     const waiting = before.state === "blocked" || before.state === "stopped";
-    const state = resumes !== null && waiting ? resumes : null;
+    const state = resumes !== null && waiting ? questions.some(isQuestionOpen) ? session === null ? null : "blocked" : resumes : null;
     return {
       change: {
         questions,
@@ -17462,9 +17694,10 @@ async function setLeadPlanFile(stateDir, repo, sessionId, planFile, atMs) {
     return after;
   });
 }
-async function writeLead(stateDir, lead, atMs) {
+async function writeLead(stateDir, lead, atMs, check) {
   const file = leadFile(stateDir, lead.repo, lead.sessionId);
   return await underStoreLock(stateDir, lead.repo, () => {
+    check?.();
     const before = readRecord(leadRecordSchema, file);
     const at = iso(atMs);
     const record2 = checked(leadRecordSchema, {
@@ -17476,6 +17709,86 @@ async function writeLead(stateDir, lead, atMs) {
     }, file);
     writeJsonFile(file, record2);
     return record2;
+  });
+}
+function leadSessions(lead) {
+  return [
+    ...new Set([lead.sessionId, ...(lead.earlierSessions ?? []).map((one) => one.sessionId)])
+  ];
+}
+async function adoptLead(stateDir, repo, oldSessionId, newSessionId, atMs, running) {
+  return await underStoreLock(stateDir, repo, () => {
+    const old = readLead(stateDir, repo, oldSessionId);
+    const next = readLead(stateDir, repo, newSessionId);
+    if (old === null || next === null || old.endedAt != null || old.adoptedBy != null)
+      throw new Error("the lead changed during adoption; run crew lead again");
+    const candidates = listLeads(stateDir, repo);
+    if (candidates.broken.length > 0)
+      throw new Error("a lead record cannot be read; retry crew lead");
+    for (const lead of candidates.records) {
+      if (lead.sessionId !== newSessionId && lead.plan === next.plan && lead.endedAt == null && running(lead))
+        throw new Error(`lead ${lead.name} (${lead.sessionId.slice(0, 8)}) still runs; end it before adopting`);
+    }
+    if (old.plan !== next.plan || old.repo !== repo || next.repo !== repo || next.endedAt != null || oldSessionId === newSessionId)
+      throw new Error("the leads no longer belong to the same active plan; retry crew lead");
+    const crew = listCrew(stateDir, repo);
+    if (crew.broken.length > 0)
+      throw new Error("a crew record cannot be read; retry crew lead");
+    const at = iso(atMs);
+    const earlier = new Map([
+      ...next.earlierSessions ?? [],
+      ...old.earlierSessions ?? [],
+      { sessionId: old.sessionId, shortId: old.sessionId.slice(0, 8) }
+    ].map((one) => [one.sessionId, one]));
+    writeJsonFile(leadFile(stateDir, repo, newSessionId), {
+      ...next,
+      earlierSessions: [...earlier.values()],
+      generation: Math.max(next.generation ?? 0, old.generation ?? 0) + 1,
+      updatedAt: at
+    });
+    const fresh = readWatchState(stateDir, repo, newSessionId);
+    const previous = readWatchState(stateDir, repo, oldSessionId);
+    const missingSince = { ...previous?.missingSince, ...fresh?.missingSince };
+    for (const [key, since] of Object.entries(previous?.missingSince ?? {})) {
+      missingSince[key] = Math.min(since, missingSince[key] ?? since);
+    }
+    if (previous !== null)
+      writeJsonFile(watchStateFile(stateDir, repo, newSessionId), {
+        ...previous,
+        ...fresh,
+        offset: Math.min(previous.offset, fresh?.offset ?? previous.offset),
+        said: { ...previous.said, ...fresh?.said },
+        missingSince
+      });
+    const notes = readNotesState(stateDir, repo, oldSessionId);
+    const newNotes = readNotesState(stateDir, repo, newSessionId);
+    if (notes !== null)
+      writeJsonFile(notesStateFile(stateDir, repo, newSessionId), {
+        offset: Math.min(notes.offset, newNotes?.offset ?? notes.offset)
+      });
+    let count = 0;
+    for (const before of crew.records) {
+      if (before.leadSessionId !== oldSessionId || before.state === "removed")
+        continue;
+      const after = checked(crewRecordSchema, {
+        ...before,
+        leadSessionId: newSessionId,
+        leadName: next.name,
+        updatedAt: at
+      }, crewFile(stateDir, repo, before.id));
+      writeJsonFile(crewFile(stateDir, repo, before.id), after);
+      const event = eventOf(after, at, "adopted", `now reports to ${next.name} (${newSessionId.slice(0, 8)})`);
+      appendEvent(stateDir, repo, event);
+      recordRunOf({ after, at, before, event });
+      count += 1;
+    }
+    writeJsonFile(leadFile(stateDir, repo, oldSessionId), {
+      ...old,
+      endedAt: at,
+      adoptedBy: newSessionId,
+      updatedAt: at
+    });
+    return count;
   });
 }
 async function setLeadPresence(stateDir, repo, sessionId, known, atMs) {
@@ -17687,9 +18000,13 @@ function eventsEndOffset(stateDir, repo) {
     return 0;
   }
 }
-function writeWatchState(stateDir, repo, leadSessionId, state) {
-  writeStoreFile(watchStateFile(stateDir, repo, leadSessionId), `${JSON.stringify(state, null, 2)}
-`);
+async function writeWatchState(stateDir, repo, leadSessionId, state, generation) {
+  await underStoreLock(stateDir, repo, () => {
+    const lead = readLead(stateDir, repo, leadSessionId);
+    if (lead?.adoptedBy != null || generation !== undefined && (lead?.generation ?? 0) !== generation)
+      return;
+    writeJsonFile(watchStateFile(stateDir, repo, leadSessionId), state);
+  });
 }
 function watchLeaseFile(stateDir, repo, leadSessionId) {
   return join23(crewStoreDir(stateDir, repo), "watch-lease", `${fileId(leadSessionId, "session id")}.json`);
@@ -17946,9 +18263,59 @@ import { pipeline } from "stream/promises";
 import { createGzip, gunzipSync as gunzipSync2 } from "zlib";
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync21, readdirSync as readdirSync10, readFileSync as readFileSync23, statSync as statSync11 } from "fs";
+import { existsSync as existsSync21, readdirSync as readdirSync10, readFileSync as readFileSync24, statSync as statSync11 } from "fs";
 import { uptime } from "os";
 import { join as join24 } from "path";
+
+// src/jobs/ancestry.ts
+import { readFileSync as readFileSync23 } from "fs";
+var MAX_DEPTH = 128;
+function parentPidFromStat(stat) {
+  const end = stat.lastIndexOf(")");
+  if (end === -1)
+    return null;
+  const fields = stat.slice(end + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+}
+function ancestorsBy(pid, parentOf) {
+  const ancestors = [];
+  const seen = new Set([pid]);
+  let current = pid;
+  while (ancestors.length < MAX_DEPTH) {
+    const parent = parentOf(current);
+    if (parent === null || parent === 0 || seen.has(parent))
+      break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+function ancestorPids(pid, readStat) {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
+}
+async function isInsideHeavyJob(facts) {
+  if (facts.platform !== "linux")
+    return false;
+  const ancestors = ancestorPids(facts.pid, facts.readStat);
+  if (ancestors.length === 0)
+    return false;
+  const holders = await facts.holderPids();
+  return ancestors.some((ancestor) => holders.has(ancestor));
+}
+function readProcStat(pid) {
+  try {
+    return readFileSync23(`/proc/${String(pid)}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/sessions.ts
 function parseSessionRecord(json) {
   let value;
   try {
@@ -17958,11 +18325,17 @@ function parseSessionRecord(json) {
   }
   if (typeof value !== "object" || value === null)
     return null;
-  const { cwd, name, pid, sessionId } = value;
+  const { cwd, name, pid, sessionId, procStart } = value;
   if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
     return null;
   }
-  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
+  return {
+    pid,
+    sessionId,
+    cwd,
+    name: typeof name === "string" ? name : sessionId.slice(0, 8),
+    ...typeof procStart === "string" ? { procStart } : {}
+  };
 }
 function isRunning2(pid) {
   try {
@@ -17972,7 +18345,7 @@ function isRunning2(pid) {
     return error.code === "EPERM";
   }
 }
-function liveSessions(claudeConfigDir) {
+function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join24(claudeConfigDir, "sessions");
   if (!existsSync21(dir))
     return [];
@@ -17980,19 +18353,31 @@ function liveSessions(claudeConfigDir) {
   const live = [];
   for (const file of readdirSync10(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning2(pid))
+    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning2)(pid))
       continue;
     let text;
     try {
       if (statSync11(join24(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync23(join24(dir, file), "utf8");
-    } catch {
-      continue;
+      text = readFileSync24(join24(dir, file), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT")
+        continue;
+      throw new Error(`the record of running session ${pid} cannot be read; retry`);
     }
     const record = parseSessionRecord(text);
     if (record === null) {
       throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+    }
+    if ((facts.platform ?? process.platform) === "linux") {
+      const stat = (facts.readStat ?? readProcStat)(pid);
+      if (stat === null)
+        throw new Error(`the start time of session ${pid} cannot be read; retry`);
+      const start = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
+      if (record.procStart === undefined || start === undefined)
+        throw new Error(`the start identity of running session ${pid} cannot be read; retry`);
+      if (record.procStart !== start)
+        continue;
     }
     live.push(record);
   }
@@ -18205,7 +18590,7 @@ function sessionsToReopen(sessions, running, machineStartedAt, withinHours) {
 }
 
 // src/crew/archive-read.ts
-import { readdirSync as readdirSync11, readFileSync as readFileSync24, statSync as statSync12 } from "fs";
+import { readdirSync as readdirSync11, readFileSync as readFileSync25, statSync as statSync12 } from "fs";
 import { join as join26 } from "path";
 import { gunzipSync } from "zlib";
 function crewArchiveRoot(stateDir) {
@@ -18270,7 +18655,7 @@ function transcriptTree(projectsDir, stateDir) {
 }
 function transcriptBytes(ref) {
   try {
-    const bytes = readFileSync24(ref.path);
+    const bytes = readFileSync25(ref.path);
     return ref.gz ? gunzipSync(bytes) : bytes;
   } catch {
     return null;
@@ -18293,7 +18678,7 @@ import { tmpdir as tmpdir7 } from "os";
 import { join as join50 } from "path";
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync12, readFileSync as readFileSync25, readlinkSync as readlinkSync4 } from "fs";
+import { lstatSync as lstatSync2, readdirSync as readdirSync12, readFileSync as readFileSync26, readlinkSync as readlinkSync4 } from "fs";
 import { join as join27 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
@@ -18327,7 +18712,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync12(here).every((entry) => same(join27(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync25(here).equals(readFileSync25(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync26(here).equals(readFileSync26(there));
     } catch {
       return false;
     }
@@ -18390,54 +18775,6 @@ import { basename as basename6, join as join30 } from "path";
 // src/crew/session.ts
 import { readFileSync as readFileSync28 } from "fs";
 import { join as join28 } from "path";
-
-// src/jobs/ancestry.ts
-import { readFileSync as readFileSync26 } from "fs";
-var MAX_DEPTH = 128;
-function parentPidFromStat(stat) {
-  const end = stat.lastIndexOf(")");
-  if (end === -1)
-    return null;
-  const fields = stat.slice(end + 1).trim().split(/\s+/);
-  const ppid = Number(fields[1]);
-  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
-}
-function ancestorsBy(pid, parentOf) {
-  const ancestors = [];
-  const seen = new Set([pid]);
-  let current = pid;
-  while (ancestors.length < MAX_DEPTH) {
-    const parent = parentOf(current);
-    if (parent === null || parent === 0 || seen.has(parent))
-      break;
-    ancestors.push(parent);
-    seen.add(parent);
-    current = parent;
-  }
-  return ancestors;
-}
-function ancestorPids(pid, readStat) {
-  return ancestorsBy(pid, (one) => {
-    const stat = readStat(one);
-    return stat === null ? null : parentPidFromStat(stat);
-  });
-}
-async function isInsideHeavyJob(facts) {
-  if (facts.platform !== "linux")
-    return false;
-  const ancestors = ancestorPids(facts.pid, facts.readStat);
-  if (ancestors.length === 0)
-    return false;
-  const holders = await facts.holderPids();
-  return ancestors.some((ancestor) => holders.has(ancestor));
-}
-function readProcStat(pid) {
-  try {
-    return readFileSync26(`/proc/${String(pid)}/stat`, "utf8");
-  } catch {
-    return null;
-  }
-}
 
 // src/worktrees/machine-facts.ts
 import { readdirSync as readdirSync13, readFileSync as readFileSync27, readlinkSync as readlinkSync5 } from "fs";
@@ -19201,6 +19538,8 @@ var DEFAULT_RESERVE_GB = 8;
 var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
 var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
 var MAX_WEIGHT = 1e4;
+var DEFAULT_CPU_WEIGHT = "idle";
+var FALLBACK_CPU_WEIGHT = 10;
 var weightSchema = union([
   literal(0),
   literal("off"),
@@ -19216,7 +19555,7 @@ var jobsMachineConfigSchema = strictObject({
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
   slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: weightSchema.optional(),
+  cpuWeight: union([weightSchema, literal("idle")]).optional(),
   ioWeight: weightSchema.optional()
 });
 
@@ -19250,7 +19589,8 @@ function maxJobsOf(config) {
   return config.maxJobs ?? DEFAULT_MAX_JOBS;
 }
 function cpuWeightOf(config) {
-  return weightOf(config.cpuWeight);
+  const value = config.cpuWeight ?? DEFAULT_CPU_WEIGHT;
+  return value === 0 ? "off" : value;
 }
 function ioWeightOf(config) {
   return weightOf(config.ioWeight);
@@ -21800,6 +22140,7 @@ async function placeForLeadStart(input) {
 
 // src/crew/board.ts
 var STATUS_EVENTS = 6;
+var REMOVED_VISIBLE_MS = 6 * 60 * 60 * 1000;
 var LABEL_WIDTH = 9;
 function isRefusal(value) {
   return "lines" in value && "code" in value;
@@ -21942,7 +22283,7 @@ function boardLines(record, events, options) {
   const lines = [
     `${record.name} \u2014 ${record.state}, ${agoText(stateSince(record, events), options.now)}`,
     `  ${record.phase} \xB7 ${record.kind} \xB7 ${modelLine(record)}`,
-    `  ${record.branch} \xB7 memory ${memoryText(record.memoryMb)} \xB7 lead ${record.leadName}${options.showRepo ? ` \xB7 ${tildify(record.repo, options.home)}` : ""}`
+    `  ${record.branch} \xB7 memory ${memoryText(record.memoryMb)} \xB7 lead ${record.leadName} (${record.leadSessionId.slice(0, 8)})${options.showRepo ? ` \xB7 ${tildify(record.repo, options.home)}` : ""}`
   ];
   if (record.released !== undefined)
     lines.push(`  released \u2014 branch ${record.branch} kept`);
@@ -21973,7 +22314,7 @@ function statusLines(record, events, options) {
   if (record.files.length > 0)
     lines.push(label("files", record.files.join(", ")));
   const from = record.base === null ? `to be cut from ${record.baseRef}` : `cut from ${record.baseRef} at ${record.base.sha.slice(0, 7)}`;
-  lines.push(label("branch", `${record.branch}, ${from}`), label("worktree", record.released === undefined ? tildify(record.worktree, options.home) : `released \u2014 branch ${record.branch} kept`), label("session", record.shortId === null || record.sessionId === null ? "none yet" : `${record.shortId} (${record.sessionId})`), label("lead", record.leadName));
+  lines.push(label("branch", `${record.branch}, ${from}`), label("worktree", record.released === undefined ? tildify(record.worktree, options.home) : `released \u2014 branch ${record.branch} kept`), label("session", record.shortId === null || record.sessionId === null ? "none yet" : `${record.shortId} (${record.sessionId})`), label("lead", `${record.leadName} (${record.leadSessionId.slice(0, 8)})`));
   if (record.pr !== null)
     lines.push(label("pr", `#${String(record.pr)}`));
   lines.push(label("memory", memoryText(record.memoryMb)));
@@ -21985,12 +22326,17 @@ function statusLines(record, events, options) {
   if (open === undefined) {
     lines.push(label("question", "none open"));
   } else {
-    lines.push(label("question", `asked ${agoText(open.askedAt, options.now)}: ${open.question}`));
-    for (const [index, option] of open.options.entries()) {
-      const mark = open.recommended === index + 1 ? " (recommended)" : "";
-      lines.push(`${" ".repeat(LABEL_WIDTH + 1)}${String(index + 1)}) ${option}${mark}`);
+    for (const [number, asked] of record.questions.entries()) {
+      if (!isQuestionOpen(asked))
+        continue;
+      lines.push(label(`question ${number + 1}`, `asked ${agoText(asked.askedAt, options.now)}: ${asked.question}`));
+      for (const [index, option] of asked.options.entries()) {
+        const mark = asked.recommended === index + 1 ? " (recommended)" : "";
+        lines.push(`${" ".repeat(LABEL_WIDTH + 1)}${String(index + 1)}) ${option}${mark}`);
+      }
     }
   }
+  lines.push(label("answered", String(record.questions.filter((one) => one.answer !== null).length)));
   lines.push("recent events:");
   for (const event of events.slice(0, STATUS_EVENTS).reverse()) {
     const text = event.text === null ? "" : `  ${event.text}`;
@@ -22033,16 +22379,32 @@ async function runCrewList(args, ctx) {
     ctx.print(args.all ? "No crew sessions on this machine." : `No crew sessions in ${read.repo ?? ""}.`);
     return 0;
   }
-  const caps = read.records.some((one) => one.state === "queued") ? await capsOf(ctx, read.checkout) : null;
   const eventsAbout = eventsOf2(ctx, read.records);
+  const visible = read.records.filter((record) => args.removed || record.state !== "removed" || !(ctx.now() - Date.parse(stateSince(record, eventsAbout(record))) > REMOVED_VISIBLE_MS));
+  const hidden = read.records.length - visible.length;
+  const caps = read.records.some((one) => one.state === "queued") ? await capsOf(ctx, read.checkout) : null;
   const held = new Map(read.records.map((record) => [
     record.id,
     caps === null ? null : heldBy(record, read.machine(), caps)
   ]));
-  const rows = args.all ? agentRows(ctx) : null;
-  const leads = args.all ? await observeLeadPresence(ctx.paths.stateDir, listAllLeads(ctx.paths.stateDir).records, rows, ctx.now()) : [];
-  const blocks = read.records.map((record) => boardLines(record, eventsAbout(record), {
-    leadGone: leadGone(leads.find((lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now()),
+  const rows = agentRows(ctx);
+  try {
+    const sessions = sessionSnapshot(ctx);
+    for (const lead of listAllLeads(ctx.paths.stateDir).records) {
+      if (lead.endedAt != null || !read.records.some((one) => one.repo === lead.repo && one.leadSessionId === lead.sessionId && !["removed", "discarded"].includes(one.state)))
+        continue;
+      if (!leadRunning(lead, rows, sessions, ctx))
+        ctx.print(`lead ${lead.name} (${lead.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${lead.plan} to take its crew`);
+    }
+  } catch (error) {
+    ctx.print(`Lead presence is unreadable: ${error instanceof Error ? error.message : String(error)}; retry crew list.`);
+  }
+  for (const record of read.records)
+    if (crewNotRunning(record, rows, ctx.now()))
+      ctx.print(`${record.name}: not running (last: ${record.state}, ${agoText(record.updatedAt, ctx.now())}) \u2014 crew resume "${record.name}"`);
+  const leads = args.all ? await observeLeadPresence(ctx.paths.stateDir, listAllLeads(ctx.paths.stateDir).records, rows, ctx.now(), ctx) : [];
+  const blocks = visible.map((record) => boardLines(record, eventsAbout(record), {
+    leadGone: leadGone(leads.find((lead) => lead.repo === record.repo && lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now(), ctx),
     held: held.get(record.id) ?? null,
     home: ctx.paths.home,
     now: ctx.now(),
@@ -22060,6 +22422,8 @@ async function runCrewList(args, ctx) {
   const unloaded = caps !== null && caps.load === null && read.records.some((one) => one.state === "queued" && held.get(one.id) === PLACE_FREE);
   if (unloaded)
     ctx.print(loadUnreadLine());
+  if (hidden > 0)
+    ctx.print(`${hidden} older removed crew session${hidden === 1 ? "" : "s"} hidden; crew list --removed shows them.`);
   return 0;
 }
 function refuse3(refusal, ctx) {
@@ -22079,7 +22443,17 @@ function runCrewStatus(ref, ctx) {
   if (isRefusal(found))
     return refuse3(found, ctx);
   const { record } = found;
+  const rows = agentRows(ctx);
+  if (crewNotRunning(record, rows, ctx.now()))
+    ctx.print(`${record.name}: not running (last: ${record.state}, ${agoText(record.updatedAt, ctx.now())}) \u2014 crew resume "${record.name}"`);
   const events = eventsOf2(ctx, [record])(record);
+  try {
+    const lead = listAllLeads(ctx.paths.stateDir).records.find((one) => one.repo === record.repo && one.sessionId === record.leadSessionId);
+    if (lead != null && lead.endedAt == null && !leadRunning(lead, rows, sessionSnapshot(ctx), ctx))
+      ctx.print(`lead ${lead.name} (${lead.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${lead.plan} to take its crew`);
+  } catch (error) {
+    ctx.print(`Lead presence is unreadable: ${error instanceof Error ? error.message : String(error)}; retry crew status.`);
+  }
   for (const line of statusLines(record, events, {
     home: ctx.paths.home,
     now: ctx.now(),
@@ -22186,6 +22560,7 @@ var REPORT_COMMAND = `${COMMAND} crew report`;
 var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
+  note: "sends its lead's notes",
   lead: "leads",
   "lead tell": "tells another lead",
   model: "changes a crew session's model or effort",
@@ -22195,6 +22570,7 @@ var CREW_NEVER_DOES = {
 };
 var CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
+  note: CREW_NEVER_DOES.note,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
   model: CREW_NEVER_DOES.model,
@@ -22239,8 +22615,8 @@ ${briefFrame(facts)}
 function launchLine(crewName, leadName, briefFile) {
   return `You are the crew session ${crewName} for the lead ${leadName}. Work by /${CREW_SKILL}. Read ${briefFile} first: it is your task, and it says how you report.`;
 }
-function firstPrompt(crewName, leadName, briefFile) {
-  return withCrewCommand(launchLine(crewName, leadName, briefFile));
+function firstPrompt(crewName, leadName, briefFile, notesFile) {
+  return withCrewCommand(launchLine(crewName, leadName, briefFile) + (notesFile === undefined ? "" : ` Then read ${notesFile}: your lead's notes since the brief.`));
 }
 var MODEL_CHANGE_START = "Your lead changed ";
 var MODEL_CHANGE_END = ". Go on from where you stopped.";
@@ -27251,6 +27627,9 @@ async function plan(args, ctx) {
   if (lead === null) {
     throw refusal(`this session is no lead in ${tildify(caller.repo, ctx.paths.home)}`, `run ${COMMAND} crew lead --plan <slug> in it first`);
   }
+  if (lead.endedAt != null) {
+    throw refusal(`this lead ended${lead.adoptedBy == null ? "" : `; adopted by ${lead.adoptedBy}`}`, lead.adoptedBy == null ? "run crew lead to reopen it" : `continue in lead ${lead.adoptedBy}`);
+  }
   const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
   if (claude === null) {
     throw refusal("claude is not on PATH, nor in ~/.local/bin", "install Claude Code, or put its folder on PATH");
@@ -27512,7 +27891,7 @@ async function launch(spec, record, ctx, previousLaunch) {
     mcpFile,
     model: spec.model,
     name: record.name,
-    prompt: firstPrompt(record.name, spec.leadName, briefFile),
+    prompt: firstPrompt(record.name, spec.leadName, briefFile, (record.notes?.length ?? 0) === 0 ? undefined : crewNotesFile(ctx.paths.stateDir, spec.repo, record.id)),
     settingsFile,
     worktreeName: basename7(worktree)
   });
@@ -27550,6 +27929,9 @@ ${run.stderr}`;
   let recorded = true;
   try {
     await updateCrew(ctx.paths.stateDir, spec.repo, record.id, { sessionId, shortId, startedAt: new Date(ctx.now()).toISOString() }, ctx.now());
+    for (const [index] of (record.notes ?? []).entries()) {
+      await markNoteDelivered(ctx.paths.stateDir, spec.repo, record.id, index, ctx.now());
+    }
   } catch (error) {
     recorded = false;
     ctx.error(`crew start: the store could not record the start: ${reasonOf2(error)}`);
@@ -27657,13 +28039,15 @@ function broadGlobLines(files, repo, env) {
   if (files.length === 0)
     return [];
   const tracked = trackedFiles(repo, env);
-  if (tracked.length < BROAD_GLOB_MIN_FILES)
-    return [];
   const lines = [];
   for (const entry of files) {
     const { glob, pattern } = filePattern(entry);
     const matched = tracked.filter((path) => matchesFilePattern(path, pattern, glob)).length;
-    if (matched <= tracked.length * BROAD_GLOB_SHARE)
+    if (matched === 0) {
+      lines.push(`warning: --files "${pattern}" matches no file yet: fine for a file this phase creates; else check the path \u2014 not blocked`);
+      continue;
+    }
+    if (tracked.length < BROAD_GLOB_MIN_FILES || matched <= tracked.length * BROAD_GLOB_SHARE)
       continue;
     lines.push(`warning: --files "${pattern}" matches ${matched} of ${tracked.length} tracked files (${Math.round(matched / tracked.length * 100)}%), far more than one phase usually changes \u2014 it makes every other crew session that holds a file under it clash with this one; name the files the phase owns \u2014 not blocked`);
   }
@@ -28681,7 +29065,7 @@ async function runCrewRm(ref, ctx, options = {}) {
     }, { waitMs: 0 });
   } catch (error) {
     if (error instanceof LockBusyError && !entered) {
-      return refuse4(options.release === true ? failure2(`crew rm: ${first.record.name} is being removed or resumed by another run`, "Fix: nothing to do; the watch tries the release again by itself") : failure2(`crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`), ctx);
+      return refuse4(options.release === true ? failure3(`crew rm: ${first.record.name} is being removed or resumed by another run`, "Fix: nothing to do; the watch tries the release again by itself") : failure3(`crew rm: ${first.record.name} is being removed by another run; wait for it to end, then run crew rm again if it is still there`), ctx);
     }
     throw error;
   }
@@ -28697,17 +29081,17 @@ async function removeCrewSession(ref, ctx, options) {
   const hadWorktree = existsSync33(record.worktree);
   if (release) {
     if (!RELEASE_STATES.includes(record.state))
-      return refuse4(failure2(`crew rm: ${record.name} is not over or stopped`), ctx);
+      return refuse4(failure3(`crew rm: ${record.name} is not over or stopped`), ctx);
     if (record.discardPending !== undefined)
-      return refuse4(failure2(`crew rm: ${pendingDiscardWhy(record)}`), ctx);
+      return refuse4(failure3(`crew rm: ${pendingDiscardWhy(record)}`), ctx);
     if (resumeClaimHeld(record.resumeClaim, ctx.now()))
-      return refuse4(failure2(`crew rm: a resume of ${record.name} is starting`, "Fix: nothing to do; the watch tries the release again once the resume is over"), ctx);
+      return refuse4(failure3(`crew rm: a resume of ${record.name} is starting`, "Fix: nothing to do; the watch tries the release again once the resume is over"), ctx);
   }
   if (record.discardPending !== undefined) {
     try {
       record = await rollbackCrewDiscard(record, ctx);
     } catch (error) {
-      return refuse4(failure2(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf3(error)})`), ctx);
+      return refuse4(failure3(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf3(error)})`), ctx);
     }
   }
   const { repo } = record;
@@ -28715,7 +29099,7 @@ async function removeCrewSession(ref, ctx, options) {
   const discard = options.discard === true;
   let preview;
   if (["removed", "discarded"].includes(record.state)) {
-    return refuse4(failure2(`crew rm: ${record.name} is removed already`), ctx);
+    return refuse4(failure3(`crew rm: ${record.name} is removed already`), ctx);
   }
   if (record.state === "queued" && record.shortId === null) {
     const stored = await markState(record, "removed", "removed before it started", ctx);
@@ -28725,13 +29109,13 @@ async function removeCrewSession(ref, ctx, options) {
   const branchThere = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS4).ok;
   const folderGone = discard && record.released === undefined && record.archive === undefined && !existsSync33(record.worktree);
   if (folderGone && !branchThere) {
-    return refuse4(failure2(`crew rm: ${record.name} has no worktree and no branch ${record.branch}, so there is nothing to archive`, `Fix: crew rm ${record.id}, without --discard, removes the record`), ctx);
+    return refuse4(failure3(`crew rm: ${record.name} has no worktree and no branch ${record.branch}, so there is nothing to archive`, `Fix: crew rm ${record.id}, without --discard, removes the record`), ctx);
   }
   let remadeForDiscard = false;
   if (discard && (record.released !== undefined || folderGone)) {
     const remade = record.released !== undefined ? await remakeReleasedWorktree(record, ctx, { include: false }) : await remakeWorktree(record, ctx, { include: false });
     if (!remade.ok)
-      return refuse4(failure2(`crew rm: ${remade.why}`, ...remade.fix === undefined ? [] : [remade.fix]), ctx);
+      return refuse4(failure3(`crew rm: ${remade.why}`, ...remade.fix === undefined ? [] : [remade.fix]), ctx);
     record = remade.record;
     remadeForDiscard = true;
     ctx.print(`made ${relative2(repo, record.worktree)} again on ${record.branch}, to discard it${folderGone ? " (its folder was gone)" : ""}`);
@@ -28739,7 +29123,7 @@ async function removeCrewSession(ref, ctx, options) {
   const proof = options.against === undefined && !discard && validMergeProof(record, ctx) ? record.mergeProof : undefined;
   const lead = options.against !== undefined ? { folder: null, label: options.against.label, sha: options.against.ref } : discard ? { folder: null, label: "discard archive", sha: record.archive?.head ?? "HEAD" } : proof === undefined ? leadRef(record, ctx) : { folder: null, label: proof.leadRef, sha: proof.leadCommit };
   if ("why" in lead)
-    return refuse4(failure2(`crew rm: ${lead.why}`), ctx);
+    return refuse4(failure3(`crew rm: ${lead.why}`), ctx);
   let removalBase = { label: lead.label, ref: lead.sha };
   const discardRollbackBase = removalBase;
   const mergeStep = lead.folder === null ? `merge ${record.branch} into ${lead.label}` : `git merge ${record.branch}, in ${lead.folder}`;
@@ -28747,60 +29131,60 @@ async function removeCrewSession(ref, ctx, options) {
     const merged = options.against === undefined ? mergedIntoBase(record, ctx) : workOnRef(repo, removalBase.ref, `refs/heads/${record.branch}`, ctx.env);
     const legacy = record.state === "merged" && record.mergeProof === undefined ? "merged earlier, but no exact-head proof was recorded; its lead's branch may have been rewritten since. Confirm the work with the lead and merge it again, or use explicit recoverable crew rm --discard" : null;
     if (merged === "unknown") {
-      return refuse4(failure2(`crew rm: ${legacy ?? `git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`}`, `Fix: ${mergeStep} so that it is an ancestor, then run crew rm again`), ctx);
+      return refuse4(failure3(`crew rm: ${legacy ?? `git could not tell whether the work of ${record.branch} is on ${lead.label} (a conflict, or a git older than 2.38)`}`, `Fix: ${mergeStep} so that it is an ancestor, then run crew rm again`), ctx);
     }
     if (merged === "missing") {
       const count = commitsNotOn(repo, lead, record.branch, ctx.env);
       if (count !== 0) {
         const missing = count === null ? "some commits" : commits(count);
-        return refuse4(failure2(`crew rm: ${legacy ?? `${record.branch} has ${missing} that ${lead.label} does not have`}`, lead.folder === null ? `Fix: the lead must ${mergeStep}, then run crew rm again` : `Fix: the lead merges it first (${mergeStep}), then run crew rm again`), ctx);
+        return refuse4(failure3(`crew rm: ${legacy ?? `${record.branch} has ${missing} that ${lead.label} does not have`}`, lead.folder === null ? `Fix: the lead must ${mergeStep}, then run crew rm again` : `Fix: the lead merges it first (${mergeStep}), then run crew rm again`), ctx);
       }
     }
   }
   if (!discard && existsSync33(record.worktree) && hasChanges(record.worktree, ctx.env)) {
-    return refuse4(failure2(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, `Fix: commit or discard them there${then}; it never forces`), ctx);
+    return refuse4(failure3(`crew rm: ${tildify(record.worktree, home)} has changes that are not committed (or git cannot read it)`, `Fix: commit or discard them there${then}; it never forces`), ctx);
   }
   let listed;
   try {
     listed = listWorktrees(repo, ctx.env).find((one) => samePath2(one.path, record.worktree));
   } catch (error) {
-    return refuse4(failure2(`crew rm: ${reasonOf3(error)}`), ctx);
+    return refuse4(failure3(`crew rm: ${reasonOf3(error)}`), ctx);
   }
   const shown = relative2(repo, record.worktree);
   const locked = listed?.locked === true;
   if (listed !== undefined && lockedByPerson(listed)) {
     const held = personLock(record, listed);
-    return refuse4(failure2(`crew rm: ${held.why}`, `${held.fix}${release ? then : ""}`), ctx);
+    return refuse4(failure3(`crew rm: ${held.why}`, `${held.fix}${release ? then : ""}`), ctx);
   }
   if (discard && existsSync33(record.worktree)) {
     if (listed === undefined)
-      return refuse4(failure2("crew rm: discard needs its registered worktree; nothing archived or removed"), ctx);
+      return refuse4(failure3("crew rm: discard needs its registered worktree; nothing archived or removed"), ctx);
     const blocker = discardBlocker(record, ctx);
     if (blocker !== null)
-      return refuse4(failure2(`crew rm: ${blocker}`), ctx);
+      return refuse4(failure3(`crew rm: ${blocker}`), ctx);
     try {
       preview = buildCrewDiscardFacts(record, ctx);
       if (record.archive !== undefined && (preview.head !== record.archive.head || preview.changedFiles.length > 0 || preview.ignoredFiles.length > 0))
-        return refuse4(failure2("crew rm: work changed after its archive was made; keep this worktree and recover the existing archive before discarding again"), ctx);
+        return refuse4(failure3("crew rm: work changed after its archive was made; keep this worktree and recover the existing archive before discarding again"), ctx);
       for (const line of preview.lines)
         ctx.print(line);
       if (options.expectedDiscardToken !== undefined && options.expectedDiscardToken !== preview.token)
-        return refuse4(failure2("crew rm: the work changed since the discard preview; preview and confirm it again"), ctx);
+        return refuse4(failure3("crew rm: the work changed since the discard preview; preview and confirm it again"), ctx);
       if (!options.yes && (options.confirm === undefined || !options.confirm(preview.question))) {
         ctx.print(`Nothing removed${remadeForDiscard ? `; ${shown} stays made again for this preview` : ""}. Use crew rm <name|id> --discard --yes to confirm without a terminal.`);
         return 1;
       }
       if (buildCrewDiscardFacts(record, ctx).token !== preview.token)
-        return refuse4(failure2("crew rm: the work changed since confirmation; preview and confirm it again"), ctx);
+        return refuse4(failure3("crew rm: the work changed since confirmation; preview and confirm it again"), ctx);
     } catch (error) {
-      return refuse4(failure2(`crew rm: ${reasonOf3(error)}`), ctx);
+      return refuse4(failure3(`crew rm: ${reasonOf3(error)}`), ctx);
     }
   }
   if (release && existsSync33(record.worktree)) {
     const blocker = discardBlocker(record, ctx);
     const local = blocker === null ? localFiles(record.worktree, record.repo, ctx.env) : [];
     if (blocker !== null || local === null || local.length > 0) {
-      return refuse4(blocker !== null || local === null ? failure2(`crew rm: ${blocker ?? "git could not list the files it does not keep"}`, `Fix: clear that${then}`) : failure2(`crew rm: local files git does not keep: ${local.join(", ")}`, `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`), ctx);
+      return refuse4(blocker !== null || local === null ? failure3(`crew rm: ${blocker ?? "git could not list the files it does not keep"}`, `Fix: clear that${then}`) : failure3(`crew rm: local files git does not keep: ${local.join(", ")}`, `Fix: commit them on ${record.branch}, or move them out of ${tildify(record.worktree, home)}${then}`), ctx);
     }
   }
   if (record.shortId !== null && record.state !== "stopped" && !(release && options.notLive)) {
@@ -28816,9 +29200,9 @@ async function removeCrewSession(ref, ctx, options) {
       if (preview !== undefined && record.archive === undefined) {
         const blocker = discardBlocker(record, ctx);
         if (blocker !== null)
-          return refuse4(failure2(`crew rm: ${blocker}`), ctx);
+          return refuse4(failure3(`crew rm: ${blocker}`), ctx);
         if (buildCrewDiscardFacts(record, ctx).token !== preview.token)
-          return refuse4(failure2("crew rm: the work changed since confirmation; preview and confirm it again"), ctx);
+          return refuse4(failure3("crew rm: the work changed since confirmation; preview and confirm it again"), ctx);
         const own = findOwnLeftovers(record, ctx);
         const stopped = await stopOwnLeftovers(record, own, ctx);
         if (stopped.line !== null)
@@ -28826,16 +29210,16 @@ async function removeCrewSession(ref, ctx, options) {
         record = await archiveCrewDiscard(record, preview, ctx);
       }
       if (record.archive === undefined)
-        return refuse4(failure2("crew rm: discard has no saved archive"), ctx);
+        return refuse4(failure3("crew rm: discard has no saved archive"), ctx);
       const archive = runGit(repo, ["rev-parse", "--verify", record.archive.ref], ctx.env, GIT_TIMEOUT_MS4);
       if (!archive.ok || archive.out !== record.archive.head)
-        return refuse4(failure2("crew rm: saved discard archive is missing or changed; nothing removed"), ctx);
+        return refuse4(failure3("crew rm: saved discard archive is missing or changed; nothing removed"), ctx);
       if (preview === undefined && branchThere)
-        return refuse4(failure2("crew rm: worktree is gone but its branch remains; inspect the saved archive before retrying"), ctx);
+        return refuse4(failure3("crew rm: worktree is gone but its branch remains; inspect the saved archive before retrying"), ctx);
       removalBase = { label: record.archive.ref, ref: record.archive.head };
       ctx.print(`archived ${record.name} at ${record.archive.ref}`);
     } catch (error) {
-      return refuse4(failure2(`crew rm: ${reasonOf3(error)}`), ctx);
+      return refuse4(failure3(`crew rm: ${reasonOf3(error)}`), ctx);
     }
   }
   let releasedReason = null;
@@ -28850,7 +29234,7 @@ async function removeCrewSession(ref, ctx, options) {
           ctx.error(`crew rm: ${pendingDiscardWhy(record)} (${reasonOf3(error)})`);
         }
       }
-      return refuse4(failure2(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand${then}`), ctx);
+      return refuse4(failure3(`crew rm: ${shown} could not be unlocked: ${unlock.err}`, `Fix: git worktree unlock ${record.worktree} by hand${then}`), ctx);
     }
     releasedReason = listed.lockReason ?? "";
     ctx.print(`unlocked ${shown}`);
@@ -28887,7 +29271,7 @@ async function removeCrewSession(ref, ctx, options) {
     return samePath2(one.path, repo) || original !== null && samePath2(original, record.worktree);
   });
   if (stuck !== undefined) {
-    return await refuseKept(failure2(`crew rm: ${relative2(repo, stuck.path)} is kept: ${stuck.why}`, `Fix: clear that${then}; it never forces`));
+    return await refuseKept(failure3(`crew rm: ${relative2(repo, stuck.path)} is kept: ${stuck.why}`, `Fix: clear that${then}; it never forces`));
   }
   if (listed !== undefined) {
     let judged;
@@ -28901,17 +29285,17 @@ async function removeCrewSession(ref, ctx, options) {
         idleLimit: 0
       }).find((one) => one.state !== "main" && samePath2(one.listed.path, record.worktree));
     } catch (error) {
-      return await refuseKept(failure2(`crew rm: ${reasonOf3(error)}`));
+      return await refuseKept(failure3(`crew rm: ${reasonOf3(error)}`));
     }
     if (judged === undefined || judged.state === "main") {
-      return await refuseKept(failure2(`crew rm: ${shown} is listed by git but could not be judged`));
+      return await refuseKept(failure3(`crew rm: ${shown} is listed by git but could not be judged`));
     }
     if (judged.state === "gone") {
       pruneWorktrees(repo, ctx.env);
       ctx.print(`forgot ${shown} (its folder was already gone)`);
     } else {
       if (!judged.state.finished) {
-        return await refuseKept(failure2(`crew rm: ${shown} is kept: ${judged.state.why}`, `Fix: clear that${then}; it never forces`));
+        return await refuseKept(failure3(`crew rm: ${shown} is kept: ${judged.state.why}`, `Fix: clear that${then}; it never forces`));
       }
       const stopped = await stopOwnLeftovers(record, leftovers, ctx);
       if (stopped.line !== null)
@@ -28928,12 +29312,12 @@ async function removeCrewSession(ref, ctx, options) {
       for (const said of removal.said)
         ctx.print(said);
       if (removal.status !== "removed") {
-        return await refuseKept(release ? failure2(`crew rm: ${shown} was not removed${removal.said.length > 0 ? `: ${removal.said.join("; ")}` : ""}`, `Fix: clear what holds it${then}; it never forces`) : failure2(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
+        return await refuseKept(release ? failure3(`crew rm: ${shown} was not removed${removal.said.length > 0 ? `: ${removal.said.join("; ")}` : ""}`, `Fix: clear what holds it${then}; it never forces`) : failure3(`crew rm: ${shown} was not removed`, "Fix: clear what holds it (the line above says what), then run crew rm again; it never forces"));
       }
     }
   }
   if (existsSync33(record.worktree)) {
-    return await refuseKept(failure2(`crew rm: ${shown} is still there, and git does not list it as a worktree`, `Fix: remove that folder yourself${then}; crew rm never deletes what git does not know`));
+    return await refuseKept(failure3(`crew rm: ${shown} is still there, and git does not list it as a worktree`, `Fix: remove that folder yourself${then}; crew rm never deletes what git does not know`));
   }
   const branchLeft = () => runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${record.branch}`], ctx.env, GIT_TIMEOUT_MS4).ok;
   if (branchLeft() && !release) {
@@ -29185,7 +29569,7 @@ var WATCH_POLL_MS = 20000;
 var WATCH_FAILED_PASSES_MAX = 60;
 var SELF_WATCH_GRACE_MS = 5 * 60000;
 var WATCH_MONITOR_COMMAND = `"$HOME/.local/bin/${COMMAND}" ${LEAD_WATCH_ARGS}`;
-var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (persistent), command: ${WATCH_MONITOR_COMMAND}`;
+var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: ${WATCH_MONITOR_COMMAND}`;
 
 class WatchEnd extends Error {
   name = "WatchEnd";
@@ -29259,6 +29643,8 @@ function reportDetail(record) {
 function eventLine(event, record, waits, reviewed) {
   const name = event.name;
   switch (event.type) {
+    case "adopted":
+      return `${name}: ${event.text ?? "adopted by this lead"}`;
     case "state": {
       if (event.state === "starting" && (event.text === null || event.text === ""))
         return null;
@@ -29289,8 +29675,14 @@ function eventLine(event, record, waits, reviewed) {
         parts.push(`report ${record.reportPath}`);
       return parts.join(" \xB7 ");
     }
-    case "question":
-      return `${name}: question \xB7 ${clip(event.text ?? "")} \xB7 answer it: crew answer "${name}" "<text>"`;
+    case "question": {
+      const number = event.question ?? Math.max(1, (record?.questions.findIndex((one) => one.askedAt === event.at && one.question === event.text) ?? -1) + 1);
+      const asked = record?.questions[number - 1];
+      const head = `${name}: question ${number} \xB7 ${clip(event.text ?? "")}`;
+      if (asked?.answeredAt != null)
+        return `${head} \xB7 answered ${agoText(asked.answeredAt, Date.now())}`;
+      return `${head} \xB7 answer it: crew answer "${name}" --question ${number} "<text>" (or --file <path|-> for long text)`;
+    }
     case "person":
       return `${name}: the person wrote \xB7 ${clip(event.text ?? "")} \xB7 read its next report against the brief before the merge`;
     case "tell": {
@@ -29414,7 +29806,7 @@ async function holdRefusedSession(record, error, ctx, said) {
     }, ctx.now());
   }
   said[key] = error.at;
-  await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, ["starting", "working", "blocked", "quiet"], { state: "stopped", stoppedByWatch: true }, ctx.now(), open ? `its backend refused the turn (${reason}); your answer to its open question resumes it` : "its backend refused the turn; your answer to its question resumes it");
+  await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, ["starting", "working", "blocked", "quiet"], { state: "stopped", stoppedByWatch: true }, ctx.now(), open ? `its backend refused the turn (${reason}); your answer to question ${record.questions.findIndex(isQuestionOpen) + 1} resumes it` : `its backend refused the turn; your answer to question ${record.questions.length + 1} resumes it`);
 }
 function branchMerged(record, ctx) {
   const found = mergedIntoBase(record, ctx);
@@ -29574,10 +29966,22 @@ function sayEvents(from, scope, ctx, say) {
     return read.offset;
   const mine = listCrew(ctx.paths.stateDir, scope.repo).records.filter((one) => one.leadSessionId === scope.leadSessionId);
   const reviewFile = reviewsFile(ctx.paths.stateDir, scope.repo);
+  const lastReports = new Map;
+  if (scope.adoptedAt !== undefined) {
+    for (const event of read.events)
+      if (event.type === "report" && event.at <= scope.adoptedAt)
+        lastReports.set(event.crew, event);
+  }
   for (const event of read.events) {
-    if (event.lead !== scope.leadSessionId)
+    if (event.lead === null || !(scope.leadIds ?? [scope.leadSessionId]).includes(event.lead))
+      continue;
+    if (scope.adoptedAt !== undefined && event.at <= scope.adoptedAt && !["question", "report"].includes(event.type))
       continue;
     const record = mine.find((one) => one.id === event.crew) ?? null;
+    if (scope.adoptedAt !== undefined && event.at <= scope.adoptedAt && event.type === "report" && (record === null || lastReports.get(event.crew) !== event))
+      continue;
+    if (scope.adoptedAt !== undefined && event.at <= scope.adoptedAt && event.type === "question" && (!record || ["done", "failed", "handoff", "merged", "removed", "discarded"].includes(record.state) || !record.questions.some((one) => one.askedAt === event.at && isQuestionOpen(one))))
+      continue;
     const reviewed = record !== null && reviewsOn(reviewFile, record.branch, scope.resolved.reviewAgents.value).length > 0;
     const line = eventLine(event, record, record === null ? [] : phasesWaitingFor(record, mine), reviewed);
     if (line !== null)
@@ -29738,14 +30142,14 @@ async function runPass(state, ctx, scope, draft) {
       if (record.sweptFrom !== undefined && record.state === "stopped" && isLiveRow(row)) {
         await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, ["stopped"], { state: record.sweptFrom, sweptFrom: undefined }, ctx.now(), "its session is back in agent view");
       }
-      if (record.sessionId === null || !isRunning3(record) || row !== null) {
+      if (record.sessionId === null || !isRunning3(record) || isLiveRow(row)) {
         delete missing[key];
         continue;
       }
       const first = missing[key];
       if (first === undefined)
         missing[key] = ctx.now();
-      else if (ctx.now() - first >= 60000) {
+      else if (crewNotRunning(record, agents, ctx.now(), first)) {
         await sweepCrew(ctx.paths.stateDir, record.repo, record.id, record.state, ctx.now());
         delete missing[key];
       }
@@ -29754,7 +30158,7 @@ async function runPass(state, ctx, scope, draft) {
       if (!seen.has(key))
         delete missing[key];
   }
-  await observeLeadPresence(ctx.paths.stateDir, listLeads(ctx.paths.stateDir, repo).records, agents, ctx.now());
+  await observeLeadPresence(ctx.paths.stateDir, listLeads(ctx.paths.stateDir, repo).records, agents, ctx.now(), ctx);
   const mine = listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === scope.leadSessionId);
   for (const record of mine) {
     const row = agents === null ? null : rowOf(agents, record);
@@ -29983,16 +30387,30 @@ async function runPass(state, ctx, scope, draft) {
         await updateCrewIfState(ctx.paths.stateDir, repo, record.id, [record.state], { resumeWaits: undefined }, ctx.now());
         continue;
       }
-      const index = record.resumeWaits.answer;
-      const question = index === null ? undefined : record.questions[index];
-      const prompt2 = question?.answer == null ? "Continue your phase." : deliveryText(question.question, question.answer, lastHeardAnswer(question, true));
+      const indexes = undeliveredAnswerIndexes(record);
+      const notes = (record.notes ?? []).flatMap((one, index) => one.deliveredAt === null ? [index] : []);
+      const prompt2 = [
+        ...indexes.map((index) => {
+          const one = record.questions[index];
+          return one?.answer == null ? "" : `Question ${index + 1}: ${one.question}
+${deliveryText(one.question, one.answer, lastHeardAnswer(one, true))}`;
+        }),
+        ...notes.map((index) => `Your lead's note:
+${record.notes?.[index]?.text ?? ""}`)
+      ].join(`
+
+`) || "Continue your phase.";
       const resumed = await resumeSession(ctx, record, prompt2);
       if (resumed.ok) {
         const stored = await markResumed(record, resumed.session, ctx);
         if (!stored)
           said[resumeHoldKey(record.id)] = "resume was not stored";
-        if (stored && index !== null)
-          await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+        if (stored) {
+          for (const index of indexes)
+            await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+          for (const index of notes)
+            await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+        }
       } else {
         if (resumed.unnamed)
           said[resumeHoldKey(record.id)] = resumed.why;
@@ -30036,15 +30454,17 @@ async function runPass(state, ctx, scope, draft) {
     await lookAtGitHub(scope, ctx, budget, said, say);
     const settleKey = "issues:settle";
     try {
-      const marks = await settleMarks(issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId), {
-        cwd: scope.repo,
-        env: ctx.env,
-        gh: scope.gh ?? runGh,
-        home: ctx.paths.home,
-        paths: ctx.paths
-      }, ctx.now(), budget);
-      for (const line of marks)
-        say(line);
+      for (const id of scope.leadIds ?? [scope.leadSessionId]) {
+        const marks = await settleMarks(issueMarksFile(ctx.paths.stateDir, repo, id), {
+          cwd: scope.repo,
+          env: ctx.env,
+          gh: scope.gh ?? runGh,
+          home: ctx.paths.home,
+          paths: ctx.paths
+        }, ctx.now(), budget);
+        for (const line of marks)
+          say(line);
+      }
       delete said[settleKey];
     } catch (error) {
       const line = `issues: the queue of marks could not be settled (${reasonOf2(error)})`;
@@ -30088,7 +30508,7 @@ async function runCrewWatch(args, ctx) {
   }
   const { repo, resolved } = read.caller;
   const leads = listLeads(ctx.paths.stateDir, repo).records;
-  const leadSessionId = leadOf2(args.lead, read.caller.session?.sessionId ?? null, leads.map((one) => one.sessionId));
+  const leadSessionId = leadOf2(args.lead, read.caller.session?.sessionId ?? null, leads.filter((one) => one.endedAt == null).map((one) => one.sessionId));
   if (leadSessionId === null) {
     const line = `crew watch: which lead's crew sessions? name one with --lead <session>${leads.length === 0 ? " (no lead is recorded in this repository)" : ` (the leads here: ${leads.map((one) => one.sessionId).join(", ")})`}`;
     ctx.error(line);
@@ -30120,6 +30540,9 @@ async function runCrewWatch(args, ctx) {
   }
   const parent = ctx.parentPid?.() ?? null;
   const goesOn = async () => {
+    const current = readLead(ctx.paths.stateDir, repo, leadSessionId);
+    if (current?.adoptedBy != null)
+      throw new WatchEnd("print", `crew watch: this lead was adopted by ${current.adoptedBy}; this watch ends`);
     if (parent !== null && ctx.parentPid?.() !== parent) {
       throw new WatchEnd("error", "crew watch: the process that started it ended; this watch ends");
     }
@@ -30175,6 +30598,9 @@ async function watchLoop(args, ctx, start) {
   const { goesOn, leadSessionId, repo, resolved } = start;
   const known = readWatchState(ctx.paths.stateDir, repo, leadSessionId);
   let state = known ?? { offset: 0, said: {} };
+  let generation = -1;
+  let leadIds = [leadSessionId];
+  let emptySaid = false;
   let caps = resolved;
   let capsSaid = false;
   const feedMemory = newFeedMemory();
@@ -30182,13 +30608,53 @@ async function watchLoop(args, ctx, start) {
   let failedInARow = 0;
   let failureSaid = false;
   const keep = async () => {
+    const lead = readLead(ctx.paths.stateDir, repo, leadSessionId);
+    if (lead?.adoptedBy != null)
+      throw new WatchEnd("print", `crew watch: this lead was adopted by ${lead.adoptedBy}; this watch ends`);
+    if ((lead?.generation ?? 0) !== generation)
+      return;
     if (await goesOn())
-      writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
+      await writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state, generation);
   };
   for (;; ) {
     let lines = 0;
     try {
       if (await goesOn()) {
+        const lead = readLead(ctx.paths.stateDir, repo, leadSessionId);
+        if (lead?.adoptedBy != null)
+          throw new WatchEnd("print", `crew watch: this lead was adopted by ${lead.adoptedBy}; this watch ends`);
+        if ((lead?.generation ?? 0) !== generation) {
+          generation = lead?.generation ?? 0;
+          state = readWatchState(ctx.paths.stateDir, repo, leadSessionId) ?? {
+            offset: 0,
+            said: {}
+          };
+          leadIds = lead === null ? [leadSessionId] : leadSessions(lead);
+          if (generation > 0) {
+            for (const record of listCrew(ctx.paths.stateDir, repo).records.filter((one) => one.leadSessionId === leadSessionId)) {
+              ctx.print(`${record.name}: ${record.state} \u2014 adopted by this lead`);
+              lines++;
+            }
+          }
+        }
+        const records = listCrew(ctx.paths.stateDir, repo).records;
+        if (!emptySaid && !records.some((one) => one.leadSessionId === leadSessionId)) {
+          emptySaid = true;
+          ctx.print("crew watch: this lead has no crew sessions");
+          lines++;
+          try {
+            const sessions = sessionSnapshot(ctx);
+            const rows = agentRows(ctx);
+            for (const other of listLeads(ctx.paths.stateDir, repo).records) {
+              if (other.sessionId === leadSessionId || other.endedAt != null || !(other.plan === lead?.plan || other.cwd === (lead?.cwd ?? ctx.cwd)) || !records.some((one) => one.leadSessionId === other.sessionId && one.state !== "removed"))
+                continue;
+              if (!leadRunning(other, rows, sessions, ctx))
+                ctx.print(`lead ${other.name} (${other.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${other.plan} to take its crew`);
+            }
+          } catch (error) {
+            ctx.print(`crew watch: ${reasonOf2(error)}; retry crew lead`);
+          }
+        }
         const reread = readCaller("watch", ctx, { session: "optional" });
         let mayStart = true;
         if (reread.ok) {
@@ -30202,10 +30668,17 @@ async function watchLoop(args, ctx, start) {
             capsSaid = true;
           }
         }
-        const scope = { ...start, feedMemory, mayStart, resolved: caps };
+        const scope = {
+          ...start,
+          leadIds,
+          ...generation > 0 && lead != null ? { adoptedAt: lead.updatedAt } : {},
+          feedMemory,
+          mayStart,
+          resolved: caps
+        };
         const pass = await watchPass(state, ctx, scope);
         state = pass.state;
-        lines = pass.lines;
+        lines += pass.lines;
         await keep();
         failedInARow = 0;
         failureSaid = false;
@@ -30216,7 +30689,7 @@ async function watchLoop(args, ctx, start) {
       const why = reasonOf2(error);
       if (error instanceof PassFailed) {
         state = error.state;
-        lines = error.lines;
+        lines += error.lines;
         try {
           await keep();
         } catch (again) {
@@ -30257,7 +30730,7 @@ function refuse4(refusal, ctx) {
     ctx.error(line);
   return refusal.code;
 }
-function failure2(...lines) {
+function failure3(...lines) {
   return { code: 1, lines };
 }
 function relative2(repo, path) {
@@ -30267,7 +30740,7 @@ function crewSessionRefusal(command, ctx) {
   const crew = crewIdOf(ctx.env);
   if (crew === null)
     return null;
-  return failure2(`crew ${command}: this session is the crew session ${crew}, and a crew session never ${CREW_NEVER_RUNS[command]}`, `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
+  return failure3(`crew ${command}: this session is the crew session ${crew}, and a crew session never ${CREW_NEVER_RUNS[command]}`, `Fix: hand the need to your lead: ${REPORT_COMMAND} --question "<the question>" --option "<choice>" --option "<choice>"`);
 }
 function actOn(ref, command, ctx) {
   const own = crewSessionRefusal(command, ctx);
@@ -30410,10 +30883,10 @@ async function runCrewStop(ref, ctx) {
     return refuse4(found, ctx);
   const { record } = found;
   if (["removed", "discarded"].includes(record.state)) {
-    return refuse4(failure2(`crew stop: ${record.name} is ${record.state}; it has no session left`), ctx);
+    return refuse4(failure3(`crew stop: ${record.name} is ${record.state}; it has no session left`), ctx);
   }
   if (record.shortId === null) {
-    return refuse4(failure2(`crew stop: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
+    return refuse4(failure3(`crew stop: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
   }
   const id = record.shortId;
   if (record.state === "stopped") {
@@ -30425,7 +30898,7 @@ async function runCrewStop(ref, ctx) {
   }
   const stopped = await stopSession(record, ctx);
   if (!stopped.ok) {
-    return refuse4(failure2(`crew stop: ${stopped.why}`, `Fix: claude stop ${id} by hand, or ${COMMAND} crew list to see it`), ctx);
+    return refuse4(failure3(`crew stop: ${stopped.why}`, `Fix: claude stop ${id} by hand, or ${COMMAND} crew list to see it`), ctx);
   }
   const what = stopped.gone ? "its session was gone already" : `the conversation is kept, and \`claude attach ${id}\` opens it again`;
   const stays = stopped.state === "stopped" ? "" : `; it stays ${stopped.state}`;
@@ -30442,18 +30915,18 @@ async function runCrewResume(ref, ctx) {
     return refuse4(found, ctx);
   const { record } = found;
   if (["removed", "discarded"].includes(record.state)) {
-    return refuse4(failure2(`crew resume: ${record.name} is ${record.state}; there is nothing to bring back`), ctx);
+    return refuse4(failure3(`crew resume: ${record.name} is ${record.state}; there is nothing to bring back`), ctx);
   }
   if (record.state === "merged") {
-    return refuse4(failure2(`crew resume: ${record.name} is merged; its work belongs to the lead's branch now`), ctx);
+    return refuse4(failure3(`crew resume: ${record.name} is merged; its work belongs to the lead's branch now`), ctx);
   }
   if (record.shortId === null) {
-    return refuse4(failure2(`crew resume: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
+    return refuse4(failure3(`crew resume: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
   }
   const id = record.shortId;
   const place = resumePlace(record);
   if (!place.ok) {
-    return refuse4(failure2(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`), ctx);
+    return refuse4(failure3(`crew resume: ${place.why}; remove it (${COMMAND} crew rm "${record.name}")`), ctx);
   }
   const liveness = sessionLiveness(ctx, record);
   if (liveness === "live") {
@@ -30461,7 +30934,7 @@ async function runCrewResume(ref, ctx) {
     return 0;
   }
   if (liveness === "unknown") {
-    return refuse4(failure2(`crew resume: ${record.name}: ${UNREADABLE_VIEW_WHY}`), ctx);
+    return refuse4(failure3(`crew resume: ${record.name}: ${UNREADABLE_VIEW_WHY}`), ctx);
   }
   const resumed = await resumeSession(ctx, record, null);
   if (!resumed.ok) {
@@ -30470,7 +30943,7 @@ async function runCrewResume(ref, ctx) {
       ctx.print(`${record.name} waits to come back: ${resumed.waits}; ${WATCH_RESUMES_IT}`);
       return 0;
     }
-    return refuse4(failure2(`crew resume: ${resumed.why}`, `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`), ctx);
+    return refuse4(failure3(`crew resume: ${resumed.why}`, `Fix: ${COMMAND} crew status "${record.name}" shows its files; if it cannot come back, merge its branch and start the phase again`), ctx);
   }
   const { session } = resumed;
   const stored = await markResumed(record, session, ctx);
@@ -30489,17 +30962,17 @@ async function runCrewResumePaused(named, ctx) {
   try {
     sessionId = callingSession(ctx.paths.claudeConfigDir, ctx.pid, ctx.processes.parentOf, ctx.env)?.sessionId ?? null;
   } catch (error) {
-    return refuse4(failure2(`crew resume: ${reasonOf3(error)}`), ctx);
+    return refuse4(failure3(`crew resume: ${reasonOf3(error)}`), ctx);
   }
   let leads;
   try {
     leads = listLeads(ctx.paths.stateDir, repo).records;
   } catch (error) {
-    return refuse4(failure2(`crew resume: the store could not be read: ${reasonOf3(error)}`), ctx);
+    return refuse4(failure3(`crew resume: the store could not be read: ${reasonOf3(error)}`), ctx);
   }
-  const leadSessionId = leadOf2(named, sessionId, leads.map((one) => one.sessionId));
+  const leadSessionId = leadOf2(named, sessionId, leads.filter((one) => one.endedAt == null).map((one) => one.sessionId));
   if (leadSessionId === null) {
-    return refuse4(failure2(`crew resume --paused: which lead's crew sessions? name one: crew resume --paused --lead <session>${leads.length === 0 ? " (no lead is recorded in this repository)" : ` (the leads here: ${leads.map((one) => one.sessionId).join(", ")})`}`), ctx);
+    return refuse4(failure3(`crew resume --paused: which lead's crew sessions? name one: crew resume --paused --lead <session>${leads.length === 0 ? " (no lead is recorded in this repository)" : ` (the leads here: ${leads.map((one) => one.sessionId).join(", ")})`}`), ctx);
   }
   const paused = read.records.filter((one) => one.leadSessionId === leadSessionId && one.state === "paused").sort((a, b) => pauseStartedAt(a) - pauseStartedAt(b) || a.createdAt.localeCompare(b.createdAt));
   if (paused.length === 0) {
@@ -31035,10 +31508,10 @@ async function orphanCrewOf(ctx) {
   if (crew.broken.length || leads.broken.length || leads.records.length === 0)
     return none;
   const rows = agentRows(ctx);
-  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
+  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now(), ctx);
   return {
     records: crew.records,
-    gone: new Set(crew.records.filter((record) => leadGone(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now())).map((record) => record.id))
+    gone: new Set(crew.records.filter((record) => leadGone(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now(), ctx)).map((record) => record.id))
   };
 }
 function orphanCrewLine(record) {
@@ -31911,6 +32384,13 @@ function pruneWorktrees(repo, env) {
 // src/crew/lifecycle.ts
 var RELEASE_STATES = ["done", "handoff", "failed", "stopped", "merged"];
 var STOPPED_REMINDER_MS = 24 * 60 * 60000;
+var CREW_MISSING_GRACE_MS = 60000;
+function crewNotRunning(record, rows, now, since = Date.parse(record.updatedAt)) {
+  if (rows === null || record.sessionId === null || !["starting", "working", "blocked"].includes(record.state))
+    return false;
+  const row = rows.find((one) => one.sessionId === record.sessionId || one.id === record.shortId) ?? null;
+  return !isLiveRow(row) && Number.isFinite(since) && now - since >= CREW_MISSING_GRACE_MS;
+}
 function holdsItsPredecessor(continuation) {
   return !["failed", "removed", "discarded"].includes(continuation.state);
 }
@@ -31975,26 +32455,48 @@ function mergeProof(record, ctx) {
   }
   return { head: head.out, leadRef: lead.label, leadCommit: lead.sha };
 }
+function sessionSnapshot(ctx) {
+  return ctx.sessions?.() ?? liveSessions(ctx.paths.claudeConfigDir);
+}
+function leadRunning(lead, rows, sessions, ctx) {
+  if (sessions.some((one) => one.sessionId === lead.sessionId))
+    return true;
+  if (ctx.watchAlive?.(lead.repo, lead.sessionId) ?? watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId))
+    return true;
+  if (rows === null)
+    throw new Error("the agent view cannot be read; retry crew lead");
+  return rowsOfLead(rows, lead).some((row) => isLiveRow(row));
+}
 function rowsOfLead(rows, lead) {
   return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
 }
-async function observeLeadPresence(stateDir, leads, rows, now) {
+async function observeLeadPresence(stateDir, leads, rows, now, ctx) {
   if (rows === null)
     return [...leads];
+  let sessions = [];
+  try {
+    sessions = sessionSnapshot(ctx);
+  } catch {
+    return [...leads];
+  }
   const observed = [];
   for (const lead of leads) {
-    const known = rowsOfLead(rows, lead).length > 0;
+    const known = leadRunning(lead, rows, sessions, ctx);
     observed.push(await setLeadPresence(stateDir, lead.repo, lead.sessionId, known, now) ?? lead);
   }
   return observed;
 }
-function leadGone(lead, rows, now) {
+function leadGone(lead, rows, now, ctx) {
   if (lead === null)
     return false;
   if (lead.endedAt != null)
     return true;
-  if (rows === null || rowsOfLead(rows, lead).length > 0)
+  try {
+    if (leadRunning(lead, rows, sessionSnapshot(ctx), ctx))
+      return false;
+  } catch {
     return false;
+  }
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
 }
@@ -32617,752 +33119,6 @@ function timelineDaysOf(paths, env, key) {
   };
 }
 
-// src/crew/answer.ts
-var REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"];
-function isReachable(state) {
-  return REACHABLE_STATES.includes(state);
-}
-var CONFIRM_LOOKS = 10;
-var CONFIRM_WAIT_MS = 1000;
-function deliveryLine(question, answer, earlier) {
-  return `${deliveryHead(question, earlier)} ${JSON.stringify(answer)}`;
-}
-function deliveryText(question, answer, earlier) {
-  return earlier === null ? answer : `${deliveryHead(question, earlier)}
-${answer}`;
-}
-function sendMessageLine(name, text) {
-  return `SendMessage ${JSON.stringify({ to: name, message: text })}`;
-}
-function sendMessageHint() {
-  return "The SendMessage tool is deferred: load it first with ToolSearch, query select:SendMessage. Then call SendMessage with the JSON object on each line below.";
-}
-function endedItsPhase(record) {
-  if (record.reportPath === null)
-    return false;
-  try {
-    const report = readReport(record.reportPath);
-    return report !== null && ["done", "failed", "handoff"].includes(report.status);
-  } catch {
-    return false;
-  }
-}
-async function runCrewAnswer(args, ctx) {
-  const read = readCaller("answer", ctx, args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" });
-  if (!read.ok) {
-    for (const line of read.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const { repo } = read.caller;
-  let records;
-  try {
-    records = listCrew(ctx.paths.stateDir, repo).records;
-  } catch (error) {
-    ctx.error(`crew answer: the store could not be read: ${reasonOf2(error)}`);
-    return 1;
-  }
-  const found = findCrew(records, args.crew, "answer");
-  if ("refusal" in found) {
-    for (const line of found.refusal.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const { record } = found;
-  const pending = pendingDiscardWhy(record);
-  if (pending !== null) {
-    ctx.error(`crew answer: ${pending}`);
-    return 1;
-  }
-  let index = openQuestionIndex(record);
-  let correcting = false;
-  if (index === null) {
-    const last = record.questions.length - 1;
-    if (last >= 0 && record.questions[last]?.answer !== null) {
-      if (questionClosed(record.state)) {
-        ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its answer cannot be corrected`);
-        return 1;
-      }
-      index = last;
-      correcting = true;
-    }
-  }
-  if (index === null) {
-    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
-      ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`);
-      return 1;
-    }
-    ctx.error(`crew answer: ${record.name} has no question waiting for an answer${record.questions.length === 0 ? " (it never asked one)" : ""}`);
-    return 1;
-  }
-  const asked = record.questions[index];
-  const question = asked?.question ?? "";
-  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
-  const text = deliveryText(question, args.text, earlier);
-  let way = "message";
-  if (record.state === "stopped") {
-    if (endedItsPhase(record)) {
-      ctx.error(`crew answer: ${record.name} ended its phase and was stopped, and it takes no more answers`);
-      return 1;
-    }
-    const liveness = sessionLiveness(ctx, record);
-    if (liveness === "unknown") {
-      ctx.error(`crew answer: ${record.name}: ${UNREADABLE_VIEW_WHY}`);
-      return 1;
-    }
-    if (liveness === "dead")
-      way = "resume";
-  } else if (!isReachable(record.state)) {
-    ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
-    return 1;
-  }
-  let session = null;
-  if (way === "resume") {
-    const resumed = await resumeSession(ctx, record, text);
-    if (!resumed.ok) {
-      if (resumed.waits !== undefined) {
-        await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), null, null, { correction: correcting, delivered: false }, actorOfCaller(ctx, repo));
-        await updateCrew(ctx.paths.stateDir, repo, record.id, { resumeWaits: resumeWaitOf(record, ctx.now(), index) }, ctx.now());
-        ctx.print(`${record.name}: the answer waits: ${resumed.waits}; it is delivered when the session comes back`);
-        return 0;
-      }
-      ctx.error(`crew answer: ${resumed.why}`);
-      return 1;
-    }
-    session = resumed.session;
-  }
-  try {
-    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session, { correction: correcting, delivered: session !== null }, actorOfCaller(ctx, repo));
-  } catch (error) {
-    const as = session === null ? "" : resumedAs(record, session.shortId);
-    ctx.error(`crew answer: the store could not record the answer: ${reasonOf2(error)}${as === "" ? "" : `; it was resumed${as}`}`);
-    return 1;
-  }
-  if (session !== null) {
-    ctx.print(`answered ${record.name}: resumed with your ${correcting ? "correction" : "answer"}${resumedAs(record, session.shortId)} \xB7 ${question}`);
-    return 0;
-  }
-  ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
-  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
-  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
-    ctx.print(line);
-  }
-  return 0;
-}
-async function deliveryReport(ctx, repo, record, index, how, text) {
-  const { stateDir } = ctx.paths;
-  const beat = readAnswerWatchBeat(stateDir, repo, record.id);
-  const age = beat === null ? null : Math.max(0, ctx.now() - beat);
-  if (age === null || age > ANSWER_BEAT_STALE_MS) {
-    const why = age === null ? "no heartbeat from its monitor" : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
-    return how.asPerson ? [
-      `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`
-    ] : [
-      `recorded, not delivered: ${why}, so send it yourself:`,
-      sendMessageHint(),
-      sendMessageLine(record.name, text)
-    ];
-  }
-  for (let look = 0;look < CONFIRM_LOOKS; look += 1) {
-    await ctx.sleep(CONFIRM_WAIT_MS);
-    const now = readCrew(stateDir, repo, record.id)?.questions[index]?.deliveredAt ?? null;
-    if (now !== null) {
-      return [
-        how.replaces ? "delivered: its monitor gave the session your correction, which replaces your earlier answer" : "delivered: its monitor gave it to the session"
-      ];
-    }
-  }
-  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${CONFIRM_LOOKS * CONFIRM_WAIT_MS / 1000} s;`;
-  return how.asPerson ? [`${late} it still will`] : [
-    `${late} if the session stays silent, send it yourself (it then arrives twice):`,
-    sendMessageHint(),
-    sendMessageLine(record.name, text)
-  ];
-}
-async function markResumed(record, session, ctx) {
-  try {
-    const result = await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, [record.state], {
-      state: "working",
-      sessionId: session.sessionId,
-      shortId: session.shortId,
-      resumeWaits: undefined
-    }, ctx.now(), "resumed by the lead");
-    if (!result.changed) {
-      ctx.error(`${record.name}: resumed as session ${session.shortId}, but its record changed to ${result.record.state}; its state was not overwritten`);
-    }
-    return result.changed;
-  } catch (error) {
-    ctx.error(`${record.name}: resumed as session ${session.shortId}, but the store could not record it: ${reasonOf2(error)}`);
-    return false;
-  }
-}
-function resumedAs(record, shortId) {
-  if (shortId === record.shortId)
-    return "";
-  return ` as session ${shortId}${record.shortId === null ? "" : ` (a copy of ${record.shortId})`}`;
-}
-var UNNAMED_FIX = "see claude agents before you resume it again";
-function resumePlace(record) {
-  const pending = pendingDiscardWhy(record);
-  if (pending !== null)
-    return { ok: false, why: pending };
-  if (!existsSync40(record.worktree) && record.released === undefined) {
-    return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
-  }
-  return { folder: record.worktree, ok: true };
-}
-function sessionLiveness(ctx, record, rows = agentRows(ctx)) {
-  if (rows === null) {
-    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
-    return claude === null ? "dead" : "unknown";
-  }
-  return isLiveRow(rowOf(rows, record)) ? "live" : "dead";
-}
-var UNREADABLE_VIEW_WHY = "agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again";
-function resumeArgs(launch, files, text) {
-  const args = [
-    "--bg",
-    "--resume",
-    launch.sessionId,
-    ...sessionFlags(launch.model, launch.effort, launch.permissionMode)
-  ];
-  if (files.mcpFile !== null)
-    args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
-  args.push("--settings", files.settingsFile);
-  args.push("--", withCrewCommand(text ?? ""));
-  return args;
-}
-async function resumeSession(ctx, record, text, options = {}) {
-  if (record.sessionId === null) {
-    return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
-  }
-  const place = resumePlace(record);
-  if (!place.ok)
-    return { ok: false, unnamed: false, why: place.why };
-  const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
-  if (!existsSync40(settingsFile)) {
-    return {
-      ok: false,
-      unnamed: false,
-      why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`
-    };
-  }
-  const mcpFile = crewMcpFile(ctx.paths.stateDir, record.repo, record.id);
-  const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
-  if (claude === null) {
-    return {
-      ok: false,
-      unnamed: false,
-      why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
-    };
-  }
-  const { stateDir } = ctx.paths;
-  const token = randomUUID5();
-  let claimed;
-  let previousLaunch = record.launchedAt;
-  try {
-    const checkout = locateCheckout(record.repo, { env: ctx.env });
-    const crew = resolveWorkflow(ctx.paths, checkout === null ? null : loadProjectConfig(checkout).config).crew;
-    const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
-    const decision = await withPlacesLock(stateDir, async () => {
-      const all = listAllCrew(stateDir).records;
-      previousLaunch = all.find((one) => one.repo === record.repo && one.id === record.id)?.launchedAt;
-      const input = placeInputOf(all, record.leadSessionId, crew, usage, {
-        continuation: false,
-        exclude: record,
-        opus: record.model.tier === OPUS_TIER,
-        unmet: [],
-        nowMs: ctx.now()
-      });
-      const first = options.replacesItself ? { start: true } : placeFor(input);
-      const place = first.start && !options.replacesItself ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() }) : first;
-      if (!place.start)
-        return { claimed: false, waits: place.why };
-      const claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
-      if (claimed)
-        await updateCrew(stateDir, record.repo, record.id, { launchedAt: new Date(ctx.now()).toISOString() }, ctx.now());
-      return { claimed, waits: null };
-    });
-    if (decision.waits !== null)
-      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
-    claimed = decision.claimed;
-  } catch (error) {
-    return {
-      ok: false,
-      unnamed: false,
-      why: `the store could not claim its resume: ${reasonOf2(error)}`
-    };
-  }
-  if (!claimed) {
-    return {
-      ok: false,
-      unnamed: false,
-      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`
-    };
-  }
-  const conversation = await restoreConversation(ctx.paths, record);
-  if (!conversation.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
-    return { ok: false, unnamed: false, why: conversation.why };
-  }
-  if (conversation.note !== undefined)
-    ctx.print(conversation.note);
-  const restored = await restoreReleasedWorktree(record, ctx);
-  if (!restored.ok) {
-    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
-    return { ok: false, unnamed: false, why: restored.why };
-  }
-  const prompt2 = restored.remade ? `Your worktree was made again on your kept branch. Install its dependencies before running anything.
-${text ?? "Continue your phase."}` : text;
-  const result = launchResume(ctx, record, prompt2, {
-    claude,
-    folder: place.folder,
-    mcpFile: existsSync40(mcpFile) ? mcpFile : null,
-    sessionId: record.sessionId,
-    settingsFile
-  });
-  if (result.ok || result.unnamed)
-    return result;
-  try {
-    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
-  } catch (error) {
-    return {
-      ...result,
-      why: `${result.why}; its claim could not be given back (${reasonOf2(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60000} minutes`
-    };
-  }
-  return result;
-}
-function launchResume(ctx, record, text, launch) {
-  const deps = claudeDeps(ctx);
-  const called = callClaude(deps, launch.claude, resumeArgs({
-    effort: record.effort,
-    model: record.model.named,
-    permissionMode: record.permissionMode,
-    sessionId: launch.sessionId
-  }, { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile }, text), launch.folder);
-  if (!called.ok)
-    return { ok: false, unnamed: false, why: called.why };
-  const { run } = called;
-  const command = `claude --bg --resume ${launch.sessionId}`;
-  if (run.timedOut) {
-    return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
-  }
-  if (run.exitCode !== 0) {
-    const last = `${run.stdout}
-${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
-    return {
-      ok: false,
-      unnamed: false,
-      why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`
-    };
-  }
-  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
-}
-function resumedSession(record, run, deps, claude, folder, command) {
-  const line = parseBackgrounded(run.stdout);
-  if (line === null) {
-    return {
-      ok: false,
-      unnamed: true,
-      why: `${command} printed no line backgrounded \xB7 <id>, so the session it started is not known; ${UNNAMED_FIX}`
-    };
-  }
-  const { shortId } = line;
-  const copy = parseCopyNote(run.stderr);
-  if (copy !== null && copy !== shortId) {
-    return {
-      ok: false,
-      unnamed: true,
-      why: `${command} said it started a copy as ${copy}, but printed backgrounded \xB7 ${shortId}; ${UNNAMED_FIX}`
-    };
-  }
-  if (copy === null && shortId === record.shortId && record.sessionId !== null) {
-    return { ok: true, session: { sessionId: record.sessionId, shortId } };
-  }
-  const listed = startedRow(deps, claude, shortId, folder);
-  const sessionId = listed.ok ? listed.row.sessionId : null;
-  if (sessionId !== null)
-    return { ok: true, session: { sessionId, shortId } };
-  const what = !listed.ok ? listed.why === "unreadable" ? "claude agents --json could not be read" : "claude agents does not list it" : "claude agents lists it with no session id";
-  return {
-    ok: false,
-    unnamed: true,
-    why: `session ${shortId} started, but ${what}; see claude agents, and stop it (claude stop ${shortId}) before you resume it again`
-  };
-}
-
-// src/crew/args.ts
-function parseOptions(argv, known, flagNames = [], repeatable = []) {
-  const options = new Map;
-  const lists = new Map;
-  const flags = new Set;
-  const positionals = [];
-  let index = 0;
-  while (index < argv.length) {
-    const arg = argv[index] ?? "";
-    index += 1;
-    if (arg === "--") {
-      positionals.push(...argv.slice(index));
-      break;
-    }
-    if (!arg.startsWith("--")) {
-      positionals.push(arg);
-      continue;
-    }
-    const equals = arg.indexOf("=");
-    const name = equals === -1 ? arg : arg.slice(0, equals);
-    if (flagNames.includes(name)) {
-      if (equals !== -1)
-        return { error: `${name} takes no value` };
-      if (flags.has(name))
-        return { error: `${name} is given twice` };
-      flags.add(name);
-      continue;
-    }
-    if (!known.includes(name))
-      return { error: `Unknown option: ${arg}` };
-    let value;
-    if (equals === -1) {
-      value = argv[index];
-      index += 1;
-    } else {
-      value = arg.slice(equals + 1);
-    }
-    if (value === undefined || value === "" || equals === -1 && value.startsWith("--")) {
-      return { error: `${name} needs a value` };
-    }
-    if (repeatable.includes(name)) {
-      const values = lists.get(name) ?? [];
-      values.push(value);
-      lists.set(name, values);
-      continue;
-    }
-    if (options.has(name))
-      return { error: `${name} is given twice` };
-    options.set(name, value);
-  }
-  return { flags, lists, options, positionals };
-}
-function commaList(value) {
-  return (value ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
-}
-
-// src/crew/cleanup-read.ts
-function crewCleanupAnswer(ctx) {
-  try {
-    const crew = listAllCrew(ctx.paths.stateDir);
-    const leads = listAllLeads(ctx.paths.stateDir);
-    if (crew.broken.length || leads.broken.length) {
-      return {
-        stopped: [],
-        error: "Could not read every crew and lead record; repair the crew store before removing sessions."
-      };
-    }
-    const events = new Map;
-    const stopped = [];
-    for (const record of crew.records) {
-      if (!events.has(record.repo)) {
-        const read = readCrewEvents(ctx.paths.stateDir, record.repo);
-        if (read.skipped !== 0)
-          throw new Error("the crew events include an unreadable record");
-        events.set(record.repo, read.events);
-      }
-      const need = stoppedCrewNeed(record, events.get(record.repo) ?? [], ctx, crew.records);
-      if (need !== null) {
-        let discard;
-        try {
-          discard = { facts: buildCrewDiscardFacts(record, ctx), error: null };
-        } catch (error) {
-          discard = { facts: null, error: error instanceof Error ? error.message : String(error) };
-        }
-        stopped.push({
-          ...need,
-          crew: { id: record.id, name: record.name, shortId: record.shortId, state: record.state },
-          repo: record.repo,
-          discard
-        });
-      }
-    }
-    return { stopped, error: null };
-  } catch (error) {
-    return {
-      stopped: [],
-      error: `Could not read cleanup facts: ${error instanceof Error ? error.message : String(error)}`
-    };
-  }
-}
-
-// src/crew/lead.ts
-import { existsSync as existsSync41 } from "fs";
-import { resolve as resolve9 } from "path";
-var GIT_TIMEOUT_MS5 = 15000;
-async function runCrewLead(args, ctx) {
-  const read = readCaller("lead", ctx);
-  if (!read.ok) {
-    for (const line of read.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const { checkout, repo, resolved } = read.caller;
-  const found = requireSession(read.caller, "lead");
-  if (!found.ok) {
-    for (const line of found.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const session = found.session;
-  const refuse = (line, fix, code) => {
-    ctx.error(`crew lead: ${line}`);
-    ctx.error(`Fix: ${fix}`);
-    return code;
-  };
-  let before;
-  try {
-    before = readLead(ctx.paths.stateDir, repo, session.sessionId);
-  } catch (error) {
-    return refuse(reasonOf2(error), "remove that record, then run this again", 1);
-  }
-  if (args.end) {
-    if (before === null)
-      return refuse("this session is not a recorded lead", "run crew lead first", 1);
-    try {
-      await writeLead(ctx.paths.stateDir, { ...before, endedAt: new Date(ctx.now()).toISOString() }, ctx.now());
-      ctx.print(`ended lead ${before.name}; its crew work is kept unless the project base holds it`);
-      return 0;
-    } catch (error) {
-      ctx.error(`crew lead: ${reasonOf2(error)}`);
-      return 1;
-    }
-  }
-  const branch = runGit(checkout.root, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS5);
-  const plan = args.plan ?? before?.plan ?? (branch.ok ? branch.out : null);
-  if (plan === null) {
-    return refuse("this checkout is on no branch, so the plan has no name", "pass --plan <slug>", 2);
-  }
-  let planFile = null;
-  if (args.planFile != null) {
-    planFile = resolve9(ctx.cwd, args.planFile);
-    if (!planFile.endsWith(".md") || !existsSync41(planFile)) {
-      return refuse(`the plan file ${args.planFile} is no existing .md file`, "pass the plan's file: --plan-file <path>", 2);
-    }
-  }
-  let tag;
-  let name;
-  try {
-    tag = args.tag ?? crewTag(repo, resolved.crew.tag.value);
-    name = leadName(tag, plan);
-  } catch (error) {
-    return refuse(reasonOf2(error), "pass --plan <slug> and --tag <tag>", 2);
-  }
-  let planNote;
-  if (planFile === null) {
-    const found = planFileOfLead({ plan, planFile: before?.plan === plan ? before.planFile : undefined }, listLeads(ctx.paths.stateDir, repo).records.filter((one) => one.sessionId !== session.sessionId), () => findPlanFile(plan, plansDirs(repo, ctx.paths), { archived: false }));
-    planFile = found.ok ? found.file : null;
-    planNote = found.ok ? `plan file ${tildify(found.file, ctx.paths.home)}` : `no plan file for ${plan}${found.reason === "several" ? ` (${found.matches.length} files match)` : ""}: its briefs and run records are off; pass --plan-file <path>`;
-  } else {
-    planNote = `plan file ${tildify(planFile, ctx.paths.home)}`;
-  }
-  try {
-    await writeLead(ctx.paths.stateDir, {
-      cwd: checkout.root,
-      name,
-      plan,
-      planFile,
-      repo,
-      sessionId: session.sessionId,
-      tag,
-      ...before?.endedAt == null ? {} : { endedAt: null }
-    }, ctx.now());
-  } catch (error) {
-    ctx.error(`crew lead: ${reasonOf2(error)}`);
-    return 1;
-  }
-  if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
-    try {
-      writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
-        offset: eventsEndOffset(ctx.paths.stateDir, repo),
-        said: {}
-      });
-    } catch {}
-  }
-  ctx.print(planNote);
-  const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;
-  const nameable = isSessionId2(session.sessionId);
-  const ownNotes = ownHooksOf(checkout).includes("lead-notes");
-  if (!nameable || ownNotes) {
-    ctx.print(`${head}${ownNotes ? "this project runs its own lead-notes hook, so type the next line if the name does not appear" : "this session's id cannot carry a session name, so type the next line in this session"}`);
-    ctx.print(`/rename ${name}`);
-  } else if (readAppliedName(ctx.env, session.sessionId) === name) {
-    ctx.print(`${head}this session already took that name, and a name given with /rename stays`);
-  } else {
-    ctx.print(`${head}this session takes that name at its next prompt`);
-  }
-  return 0;
-}
-
-// src/crew/tell-format.ts
-var TELL_KINDS = ["contract", "question"];
-function isTellKind(value) {
-  return TELL_KINDS.includes(value);
-}
-var LABELS = { contract: "CONTRACT", question: "QUESTION" };
-var NO_REPLY = "No reply needed.";
-function tellTag(phase, kind) {
-  return `[${phase}] ${LABELS[kind]}:`;
-}
-function firstLineOf(text) {
-  return (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
-}
-function tellHeadline(phase, kind, text) {
-  return `${tellTag(phase, kind)} ${firstLineOf(text)}`;
-}
-function leadTellHeadline(leadName, kind, text) {
-  return `[${leadName}] ${LABELS[kind]}: ${firstLineOf(text)}`;
-}
-function messageLines(firstLine, kind, text) {
-  const rest = text.trim().split(/\r?\n/).slice(1).join(`
-`).trimEnd();
-  const parts = [firstLine];
-  if (rest !== "")
-    parts.push(rest);
-  if (kind === "contract")
-    parts.push(NO_REPLY);
-  return parts.join(`
-`);
-}
-function tellMessage(phase, kind, text) {
-  return messageLines(tellHeadline(phase, kind, text), kind, text);
-}
-function leadTellMessage(leadName, kind, text) {
-  return messageLines(leadTellHeadline(leadName, kind, text), kind, text);
-}
-function hasTellTag(message, phase) {
-  const first = message.trimStart().split(/\r?\n/, 1)[0] ?? "";
-  return TELL_KINDS.some((kind) => first.startsWith(tellTag(phase, kind)));
-}
-
-// src/crew/lead-tell.ts
-var LEAD_LOOK = {
-  ids: (one) => [one.sessionId, one.sessionId.slice(0, 8)]
-};
-function findLead(records, ref) {
-  const found = findNamed(records, ref, LEAD_LOOK);
-  switch (found.kind) {
-    case "one":
-      return { record: found.record };
-    case "none":
-      return {
-        lines: [
-          `crew lead tell: no lead of this repository is "${ref}"`,
-          `Fix: name one of the leads here: ${records.map((one) => one.name).join(", ")}`
-        ]
-      };
-    case "many":
-      return {
-        lines: [
-          `crew lead tell: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} leads`,
-          ...found.records.map((one) => `  ${one.sessionId}  ${one.name}`),
-          "Fix: name one by its session id"
-        ]
-      };
-  }
-}
-async function recordLeadNotes(receivers, record, message, sinks) {
-  const recorded = [];
-  const missed = [];
-  for (const one of receivers) {
-    try {
-      await record(one);
-      recorded.push(one);
-    } catch (error) {
-      missed.push({ name: one.name, why: reasonOf2(error) });
-    }
-  }
-  for (const one of missed) {
-    sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${one.why}`);
-  }
-  const missing = missed.map((one) => one.name).join(", ");
-  if (recorded.length > 0 && missed.length > 0) {
-    const names = recorded.map((done) => done.name).join(", ");
-    sinks.error(`The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${missing} again.`);
-  } else if (recorded.length === 0 && missed.length > 1) {
-    sinks.error(`No note was recorded: tell ${missing} again.`);
-  }
-  if (recorded.length > 0)
-    sinks.print(sendMessageHint());
-  for (const one of recorded)
-    sinks.print(sendMessageLine(one.name, message));
-  return missed.length === 0 ? 0 : 1;
-}
-async function runLeadTell(args, ctx) {
-  const read = readCaller("lead tell", ctx);
-  if (!read.ok) {
-    for (const line of read.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const found = requireSession(read.caller, "lead tell");
-  if (!found.ok) {
-    for (const line of found.lines)
-      ctx.error(line);
-    return 1;
-  }
-  const { repo } = read.caller;
-  let sender;
-  try {
-    sender = readLead(ctx.paths.stateDir, repo, found.session.sessionId);
-  } catch (error) {
-    ctx.error(`crew lead tell: the store could not be read: ${reasonOf2(error)}`);
-    return 1;
-  }
-  if (sender === null) {
-    ctx.error("crew lead tell: this session is not a lead of this repository");
-    ctx.error(`Fix: ${COMMAND} crew lead --plan <slug>`);
-    return 1;
-  }
-  if (firstLineOf(args.text) === "") {
-    ctx.error('crew lead tell: say what you tell: crew lead tell <lead\u2026> --kind contract|question "<text>"');
-    return 2;
-  }
-  let leads;
-  try {
-    leads = listLeads(ctx.paths.stateDir, repo);
-  } catch (error) {
-    ctx.error(`crew lead tell: the store could not be read: ${reasonOf2(error)}`);
-    return 1;
-  }
-  const receivers = [];
-  for (const ref of args.to) {
-    const named = findLead(leads.records, ref);
-    if ("lines" in named) {
-      for (const line of named.lines)
-        ctx.error(line);
-      return 1;
-    }
-    if (named.record.sessionId === sender.sessionId) {
-      ctx.error("crew lead tell: you cannot tell yourself");
-      return 1;
-    }
-    if (!receivers.some((one) => one.sessionId === named.record.sessionId)) {
-      receivers.push(named.record);
-    }
-  }
-  const to = receivers.map((one) => one.name);
-  const message = leadTellMessage(sender.name, args.kind, args.text);
-  return await recordLeadNotes(receivers, async (one) => {
-    await appendCrewEvent(ctx.paths.stateDir, repo, {
-      crew: sender.sessionId,
-      lead: one.sessionId,
-      name: sender.name,
-      state: "working",
-      tell: { kind: args.kind, to },
-      text: firstLineOf(args.text),
-      type: "lead-tell"
-    }, ctx.now());
-  }, message, { error: ctx.error, print: ctx.print });
-}
-
 // src/issues/handback.ts
 var BEFORE_WORDS = {
   afterTimeout: "nothing was posted. Try again",
@@ -33525,7 +33281,7 @@ async function commentHandBack(world, issue, report, crewId) {
 }
 
 // src/crew/step.ts
-import { existsSync as existsSync42 } from "fs";
+import { existsSync as existsSync40 } from "fs";
 var CREW_STEPS = [
   "tests-red",
   "tests-green",
@@ -33540,11 +33296,11 @@ var CREW_STEPS = [
 function isCrewStep(value) {
   return CREW_STEPS.includes(value);
 }
-var GIT_TIMEOUT_MS6 = 15000;
+var GIT_TIMEOUT_MS5 = 15000;
 function headSha(record, ctx) {
-  const folders = existsSync42(record.worktree) ? [record.worktree, ctx.cwd] : [ctx.cwd];
+  const folders = existsSync40(record.worktree) ? [record.worktree, ctx.cwd] : [ctx.cwd];
   for (const folder of folders) {
-    const run = runGit(folder, ["rev-parse", "HEAD"], ctx.env, GIT_TIMEOUT_MS6);
+    const run = runGit(folder, ["rev-parse", "HEAD"], ctx.env, GIT_TIMEOUT_MS5);
     if (run.ok && run.out !== "")
       return run.out;
   }
@@ -33972,6 +33728,933 @@ async function runCrewReport(args, ctx) {
     return 0;
   } catch (error) {
     ctx.error(`crew report: the store could not record the report: ${reasonOf2(error)}`);
+    return 1;
+  }
+}
+
+// src/crew/answer.ts
+var REACHABLE_STATES = ["starting", "working", "blocked", "paused", "quiet"];
+function isReachable(state) {
+  return REACHABLE_STATES.includes(state);
+}
+var CONFIRM_LOOKS = 10;
+var CONFIRM_WAIT_MS = 1000;
+function deliveryLine(question, answer, earlier) {
+  return `${deliveryHead(question, earlier)} ${JSON.stringify(answer)}`;
+}
+function deliveryText(question, answer, earlier) {
+  return earlier === null ? answer : `${deliveryHead(question, earlier)}
+${answer}`;
+}
+function sendMessageLine(name, text) {
+  return `SendMessage ${JSON.stringify({ to: name, message: text })}`;
+}
+function sendMessageHint() {
+  return "The SendMessage tool is deferred: load it first with ToolSearch, query select:SendMessage. Then call SendMessage with the JSON object on each line below.";
+}
+function endedItsPhase(record) {
+  if (record.reportPath === null)
+    return false;
+  try {
+    const report = readReport(record.reportPath);
+    return report !== null && ["done", "failed", "handoff"].includes(report.status);
+  } catch {
+    return false;
+  }
+}
+async function runCrewAnswer(args, ctx) {
+  const read = readCaller("answer", ctx, args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" });
+  if (!read.ok) {
+    for (const line of read.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const { repo } = read.caller;
+  let records;
+  try {
+    records = listCrew(ctx.paths.stateDir, repo).records;
+  } catch (error) {
+    ctx.error(`crew answer: the store could not be read: ${reasonOf2(error)}`);
+    return 1;
+  }
+  const found = findCrew(records, args.crew, "answer");
+  if ("refusal" in found) {
+    for (const line of found.refusal.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const { record } = found;
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null) {
+    ctx.error(`crew answer: ${pending}`);
+    return 1;
+  }
+  if (args.file !== undefined) {
+    try {
+      const part = await readPart({ file: args.file }, ctx);
+      if ("refused" in part) {
+        ctx.error(`crew answer: the file ${args.file} cannot be read`);
+        return 1;
+      }
+      args = { ...args, text: part.raw };
+    } catch (error) {
+      ctx.error(`crew answer: ${reasonOf2(error)}`);
+      return 1;
+    }
+  }
+  const open = record.questions.flatMap((one, index) => isQuestionOpen(one) ? [index] : []);
+  if (args.question === undefined && open.length > 1 && !questionClosed(record.state)) {
+    ctx.error(`crew answer: ${record.name} has several open questions:`);
+    for (const index of open) {
+      const one = record.questions[index];
+      if (one !== undefined)
+        ctx.error(`question ${index + 1} \xB7 asked ${Math.max(0, Math.floor((ctx.now() - Date.parse(one.askedAt)) / 1000))} s ago \xB7 ${one.question.slice(0, 100)}`);
+    }
+    ctx.error(`Fix: crew answer "${record.name}" --question <n> "<text>" (or --file <path|->)`);
+    return 1;
+  }
+  let index = args.question === undefined ? openQuestionIndex(record) : args.question - 1;
+  if (index !== null && (record.questions[index] === undefined || questionClosed(record.state))) {
+    ctx.error(`crew answer: question ${index + 1} is missing or the phase is finished`);
+    return 1;
+  }
+  let correcting = index !== null && record.questions[index]?.answer !== null;
+  if (index === null) {
+    const last = record.questions.length - 1;
+    if (last >= 0 && record.questions[last]?.answer !== null) {
+      if (questionClosed(record.state)) {
+        ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its answer cannot be corrected`);
+        return 1;
+      }
+      index = last;
+      correcting = true;
+    }
+  }
+  if (index === null) {
+    if (questionClosed(record.state) && record.questions.some(isQuestionOpen)) {
+      ctx.error(`crew answer: ${record.name} is finished (${record.state}), so its question needs no answer`);
+      return 1;
+    }
+    ctx.error(`crew answer: ${record.name} has no question waiting for an answer${record.questions.length === 0 ? " (it never asked one)" : ""}`);
+    return 1;
+  }
+  const asked = record.questions[index];
+  const question = asked?.question ?? "";
+  const earlier = correcting && asked !== undefined ? lastHeardAnswer(asked, true) : null;
+  const text = deliveryText(question, args.text, earlier);
+  let way = "message";
+  if (record.state === "stopped") {
+    if (endedItsPhase(record)) {
+      ctx.error(`crew answer: ${record.name} ended its phase and was stopped, and it takes no more answers`);
+      return 1;
+    }
+    const liveness = sessionLiveness(ctx, record);
+    if (liveness === "unknown") {
+      ctx.error(`crew answer: ${record.name}: ${UNREADABLE_VIEW_WHY}`);
+      return 1;
+    }
+    if (liveness === "dead")
+      way = "resume";
+  } else if (!isReachable(record.state)) {
+    ctx.error(`crew answer: ${record.name} is ${record.state}, and it takes no more answers`);
+    return 1;
+  }
+  let session = null;
+  if (way === "resume") {
+    const resumed = await resumeSession(ctx, record, text);
+    if (!resumed.ok) {
+      if (resumed.waits !== undefined) {
+        await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), null, null, { correction: correcting, delivered: false }, actorOfCaller(ctx, repo));
+        await updateCrew(ctx.paths.stateDir, repo, record.id, { resumeWaits: resumeWaitOf(record, ctx.now(), index) }, ctx.now());
+        ctx.print(`${record.name}: the answer waits: ${resumed.waits}; it is delivered when the session comes back`);
+        return 0;
+      }
+      ctx.error(`crew answer: ${resumed.why}`);
+      return 1;
+    }
+    session = resumed.session;
+  }
+  try {
+    await answerCrewQuestion(ctx.paths.stateDir, repo, record.id, index, args.text, ctx.now(), "working", session, { correction: correcting, delivered: session !== null }, actorOfCaller(ctx, repo));
+  } catch (error) {
+    const as = session === null ? "" : resumedAs(record, session.shortId);
+    ctx.error(`crew answer: the store could not record the answer: ${reasonOf2(error)}${as === "" ? "" : `; it was resumed${as}`}`);
+    return 1;
+  }
+  if (session !== null) {
+    ctx.print(`answered ${record.name}: resumed with your ${correcting ? "correction" : "answer"}${resumedAs(record, session.shortId)} \xB7 ${question}`);
+    return 0;
+  }
+  ctx.print(`${correcting ? "corrected the answer to" : "answered"} ${record.name}: ${question}`);
+  const how = { asPerson: args.asPerson === true, replaces: earlier !== null };
+  for (const line of await deliveryReport(ctx, repo, record, index, how, text)) {
+    ctx.print(line);
+  }
+  return 0;
+}
+async function deliveryReport(ctx, repo, record, index, how, text, kind = "answer") {
+  const { stateDir } = ctx.paths;
+  const beat = readAnswerWatchBeat(stateDir, repo, record.id);
+  const age = beat === null ? null : Math.max(0, ctx.now() - beat);
+  if (age === null || age > ANSWER_BEAT_STALE_MS) {
+    const why = age === null ? "no heartbeat from its monitor" : `its monitor's last heartbeat was ${Math.round(age / 1000)} s ago`;
+    return how.asPerson ? [
+      `recorded, not delivered: ${why}, so it hears the answer when its monitor next runs, or when its lead sends it`
+    ] : [
+      `recorded, not delivered: ${why}, so send it yourself:`,
+      sendMessageHint(),
+      sendMessageLine(record.name, text)
+    ];
+  }
+  for (let look = 0;look < CONFIRM_LOOKS; look += 1) {
+    await ctx.sleep(CONFIRM_WAIT_MS);
+    const fresh = readCrew(stateDir, repo, record.id);
+    const now = (kind === "answer" ? fresh?.questions[index]?.deliveredAt : fresh?.notes?.[index]?.deliveredAt) ?? null;
+    if (now !== null) {
+      return [
+        how.replaces ? "delivered: its monitor gave the session your correction, which replaces your earlier answer" : "delivered: its monitor gave it to the session"
+      ];
+    }
+  }
+  const late = `recorded, not delivered yet: its monitor is running but did not pass it on within ${CONFIRM_LOOKS * CONFIRM_WAIT_MS / 1000} s;`;
+  return how.asPerson ? [`${late} it still will`] : [
+    `${late} if the session stays silent, send it yourself (it then arrives twice):`,
+    sendMessageHint(),
+    sendMessageLine(record.name, text)
+  ];
+}
+async function markResumed(record, session, ctx) {
+  try {
+    const result = await updateCrewIfState(ctx.paths.stateDir, record.repo, record.id, [record.state], {
+      state: record.questions.some(isQuestionOpen) ? "blocked" : "working",
+      sessionId: session.sessionId,
+      shortId: session.shortId,
+      resumeWaits: undefined
+    }, ctx.now(), "resumed by the lead");
+    if (!result.changed) {
+      ctx.error(`${record.name}: resumed as session ${session.shortId}, but its record changed to ${result.record.state}; its state was not overwritten`);
+    }
+    return result.changed;
+  } catch (error) {
+    ctx.error(`${record.name}: resumed as session ${session.shortId}, but the store could not record it: ${reasonOf2(error)}`);
+    return false;
+  }
+}
+function resumedAs(record, shortId) {
+  if (shortId === record.shortId)
+    return "";
+  return ` as session ${shortId}${record.shortId === null ? "" : ` (a copy of ${record.shortId})`}`;
+}
+var UNNAMED_FIX = "see claude agents before you resume it again";
+function resumePlace(record) {
+  const pending = pendingDiscardWhy(record);
+  if (pending !== null)
+    return { ok: false, why: pending };
+  if (!existsSync41(record.worktree) && record.released === undefined) {
+    return { ok: false, why: `${record.name} has no worktree at ${record.worktree} any more` };
+  }
+  return { folder: record.worktree, ok: true };
+}
+function sessionLiveness(ctx, record, rows = agentRows(ctx)) {
+  if (rows === null) {
+    const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+    return claude === null ? "dead" : "unknown";
+  }
+  return isLiveRow(rowOf(rows, record)) ? "live" : "dead";
+}
+var UNREADABLE_VIEW_WHY = "agent view could not be read (claude agents --json), so it cannot say whether its session still runs; try again";
+function resumeArgs(launch, files, text) {
+  const args = [
+    "--bg",
+    "--resume",
+    launch.sessionId,
+    ...sessionFlags(launch.model, launch.effort, launch.permissionMode)
+  ];
+  if (files.mcpFile !== null)
+    args.push("--strict-mcp-config", "--mcp-config", files.mcpFile);
+  args.push("--settings", files.settingsFile);
+  args.push("--", withCrewCommand(text ?? ""));
+  return args;
+}
+async function resumeSession(ctx, record, text, options = {}) {
+  if (record.sessionId === null) {
+    return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
+  }
+  const place = resumePlace(record);
+  if (!place.ok)
+    return { ok: false, unnamed: false, why: place.why };
+  const settingsFile = crewSettingsFile(ctx.paths.stateDir, record.repo, record.id);
+  if (!existsSync41(settingsFile)) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} has no settings file any more (${settingsFile}), so a resume would come back as a plain session`
+    };
+  }
+  const mcpFile = crewMcpFile(ctx.paths.stateDir, record.repo, record.id);
+  const claude = findClaude({ home: ctx.paths.home, platform: ctx.platform, which: ctx.which });
+  if (claude === null) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: "claude is not on PATH, nor in ~/.local/bin, so it cannot be resumed"
+    };
+  }
+  const { stateDir } = ctx.paths;
+  const token = randomUUID5();
+  let claimed;
+  let previousLaunch = record.launchedAt;
+  try {
+    const checkout = locateCheckout(record.repo, { env: ctx.env });
+    const crew = resolveWorkflow(ctx.paths, checkout === null ? null : loadProjectConfig(checkout).config).crew;
+    const usage = usageFacts(ctx.paths, ctx.now(), record.repo);
+    const decision = await withPlacesLock(stateDir, async () => {
+      const all = listAllCrew(stateDir).records;
+      previousLaunch = all.find((one) => one.repo === record.repo && one.id === record.id)?.launchedAt;
+      const input = placeInputOf(all, record.leadSessionId, crew, usage, {
+        continuation: false,
+        exclude: record,
+        opus: record.model.tier === OPUS_TIER,
+        unmet: [],
+        nowMs: ctx.now()
+      });
+      const first = options.replacesItself ? { start: true } : placeFor(input);
+      const place = first.start && !options.replacesItself ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() }) : first;
+      if (!place.start)
+        return { claimed: false, waits: place.why };
+      const claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
+      if (claimed)
+        await updateCrew(stateDir, record.repo, record.id, { launchedAt: new Date(ctx.now()).toISOString() }, ctx.now());
+      return { claimed, waits: null };
+    });
+    if (decision.waits !== null)
+      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
+    claimed = decision.claimed;
+  } catch (error) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `the store could not claim its resume: ${reasonOf2(error)}`
+    };
+  }
+  if (!claimed) {
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${record.name} is being resumed by another command right now, or it changed since it was read; try again in a moment`
+    };
+  }
+  const conversation = await restoreConversation(ctx.paths, record);
+  if (!conversation.ok) {
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
+    return { ok: false, unnamed: false, why: conversation.why };
+  }
+  if (conversation.note !== undefined)
+    ctx.print(conversation.note);
+  const restored = await restoreReleasedWorktree(record, ctx);
+  if (!restored.ok) {
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
+    return { ok: false, unnamed: false, why: restored.why };
+  }
+  const prompt2 = restored.remade ? `Your worktree was made again on your kept branch. Install its dependencies before running anything.
+${text ?? "Continue your phase."}` : text;
+  const result = launchResume(ctx, record, prompt2, {
+    claude,
+    folder: place.folder,
+    mcpFile: existsSync41(mcpFile) ? mcpFile : null,
+    sessionId: record.sessionId,
+    settingsFile
+  });
+  if (result.ok || result.unnamed)
+    return result;
+  try {
+    await releaseResume(stateDir, record.repo, record.id, token, { previous: previousLaunch });
+  } catch (error) {
+    return {
+      ...result,
+      why: `${result.why}; its claim could not be given back (${reasonOf2(error)}), so it can be resumed again in ${RESUME_CLAIM_MS / 60000} minutes`
+    };
+  }
+  return result;
+}
+function launchResume(ctx, record, text, launch) {
+  const deps = claudeDeps(ctx);
+  const called = callClaude(deps, launch.claude, resumeArgs({
+    effort: record.effort,
+    model: record.model.named,
+    permissionMode: record.permissionMode,
+    sessionId: launch.sessionId
+  }, { mcpFile: launch.mcpFile, settingsFile: launch.settingsFile }, text), launch.folder);
+  if (!called.ok)
+    return { ok: false, unnamed: false, why: called.why };
+  const { run } = called;
+  const command = `claude --bg --resume ${launch.sessionId}`;
+  if (run.timedOut) {
+    return { ok: false, unnamed: true, why: `${command} did not answer in time; ${UNNAMED_FIX}` };
+  }
+  if (run.exitCode !== 0) {
+    const last = `${run.stdout}
+${run.stderr}`.trim().split(/\r?\n/).at(-1) ?? "";
+    return {
+      ok: false,
+      unnamed: false,
+      why: `${command} failed (exit ${run.exitCode ?? "none"})${last === "" ? "" : `: ${last}`}`
+    };
+  }
+  return resumedSession(record, run, deps, launch.claude, launch.folder, command);
+}
+function resumedSession(record, run, deps, claude, folder, command) {
+  const line = parseBackgrounded(run.stdout);
+  if (line === null) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} printed no line backgrounded \xB7 <id>, so the session it started is not known; ${UNNAMED_FIX}`
+    };
+  }
+  const { shortId } = line;
+  const copy = parseCopyNote(run.stderr);
+  if (copy !== null && copy !== shortId) {
+    return {
+      ok: false,
+      unnamed: true,
+      why: `${command} said it started a copy as ${copy}, but printed backgrounded \xB7 ${shortId}; ${UNNAMED_FIX}`
+    };
+  }
+  if (copy === null && shortId === record.shortId && record.sessionId !== null) {
+    return { ok: true, session: { sessionId: record.sessionId, shortId } };
+  }
+  const listed = startedRow(deps, claude, shortId, folder);
+  const sessionId = listed.ok ? listed.row.sessionId : null;
+  if (sessionId !== null)
+    return { ok: true, session: { sessionId, shortId } };
+  const what = !listed.ok ? listed.why === "unreadable" ? "claude agents --json could not be read" : "claude agents does not list it" : "claude agents lists it with no session id";
+  return {
+    ok: false,
+    unnamed: true,
+    why: `session ${shortId} started, but ${what}; see claude agents, and stop it (claude stop ${shortId}) before you resume it again`
+  };
+}
+
+// src/crew/args.ts
+function parseOptions(argv, known, flagNames = [], repeatable = []) {
+  const options = new Map;
+  const lists = new Map;
+  const flags = new Set;
+  const positionals = [];
+  let index = 0;
+  while (index < argv.length) {
+    const arg = argv[index] ?? "";
+    index += 1;
+    if (arg === "--") {
+      positionals.push(...argv.slice(index));
+      break;
+    }
+    if (!arg.startsWith("--")) {
+      positionals.push(arg);
+      continue;
+    }
+    const equals = arg.indexOf("=");
+    const name = equals === -1 ? arg : arg.slice(0, equals);
+    if (flagNames.includes(name)) {
+      if (equals !== -1)
+        return { error: `${name} takes no value` };
+      if (flags.has(name))
+        return { error: `${name} is given twice` };
+      flags.add(name);
+      continue;
+    }
+    if (!known.includes(name))
+      return { error: `Unknown option: ${arg}` };
+    let value;
+    if (equals === -1) {
+      value = argv[index];
+      index += 1;
+    } else {
+      value = arg.slice(equals + 1);
+    }
+    if (value === undefined || value === "" || equals === -1 && value.startsWith("--")) {
+      return { error: `${name} needs a value` };
+    }
+    if (repeatable.includes(name)) {
+      const values = lists.get(name) ?? [];
+      values.push(value);
+      lists.set(name, values);
+      continue;
+    }
+    if (options.has(name))
+      return { error: `${name} is given twice` };
+    options.set(name, value);
+  }
+  return { flags, lists, options, positionals };
+}
+function commaList(value) {
+  return (value ?? "").split(",").map((part) => part.trim()).filter((part) => part !== "");
+}
+
+// src/crew/cleanup-read.ts
+function crewCleanupAnswer(ctx) {
+  try {
+    const crew = listAllCrew(ctx.paths.stateDir);
+    const leads = listAllLeads(ctx.paths.stateDir);
+    if (crew.broken.length || leads.broken.length) {
+      return {
+        stopped: [],
+        error: "Could not read every crew and lead record; repair the crew store before removing sessions."
+      };
+    }
+    const events = new Map;
+    const stopped = [];
+    for (const record of crew.records) {
+      if (!events.has(record.repo)) {
+        const read = readCrewEvents(ctx.paths.stateDir, record.repo);
+        if (read.skipped !== 0)
+          throw new Error("the crew events include an unreadable record");
+        events.set(record.repo, read.events);
+      }
+      const need = stoppedCrewNeed(record, events.get(record.repo) ?? [], ctx, crew.records);
+      if (need !== null) {
+        let discard;
+        try {
+          discard = { facts: buildCrewDiscardFacts(record, ctx), error: null };
+        } catch (error) {
+          discard = { facts: null, error: error instanceof Error ? error.message : String(error) };
+        }
+        stopped.push({
+          ...need,
+          crew: { id: record.id, name: record.name, shortId: record.shortId, state: record.state },
+          repo: record.repo,
+          discard
+        });
+      }
+    }
+    return { stopped, error: null };
+  } catch (error) {
+    return {
+      stopped: [],
+      error: `Could not read cleanup facts: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+
+// src/crew/lead.ts
+import { existsSync as existsSync42 } from "fs";
+import { resolve as resolve9 } from "path";
+var GIT_TIMEOUT_MS6 = 15000;
+async function runCrewLead(args, ctx) {
+  const read = readCaller("lead", ctx);
+  if (!read.ok) {
+    for (const line of read.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const { checkout, repo, resolved } = read.caller;
+  const found = requireSession(read.caller, "lead");
+  if (!found.ok) {
+    for (const line of found.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const session = found.session;
+  const refuse = (line, fix, code) => {
+    ctx.error(`crew lead: ${line}`);
+    ctx.error(`Fix: ${fix}`);
+    return code;
+  };
+  let before;
+  try {
+    before = readLead(ctx.paths.stateDir, repo, session.sessionId);
+  } catch (error) {
+    return refuse(reasonOf2(error), "remove that record, then run this again", 1);
+  }
+  if (before?.adoptedBy != null) {
+    return refuse(`this lead was adopted by ${before.adoptedBy}`, `continue in lead ${before.adoptedBy}`, 1);
+  }
+  if (args.end) {
+    if (before === null)
+      return refuse("this session is not a recorded lead", "run crew lead first", 1);
+    try {
+      await writeLead(ctx.paths.stateDir, { ...before, endedAt: new Date(ctx.now()).toISOString() }, ctx.now());
+      ctx.print(`ended lead ${before.name}; its crew work is kept unless the project base holds it`);
+      return 0;
+    } catch (error) {
+      ctx.error(`crew lead: ${reasonOf2(error)}`);
+      return 1;
+    }
+  }
+  const branch = runGit(checkout.root, ["symbolic-ref", "--quiet", "--short", "HEAD"], ctx.env, GIT_TIMEOUT_MS6);
+  const listed = listLeads(ctx.paths.stateDir, repo);
+  if (listed.broken.length > 0)
+    return refuse("a lead record cannot be read", "repair it and retry crew lead", 1);
+  const others = listed.records.filter((one) => one.sessionId !== session.sessionId && one.endedAt == null);
+  let running;
+  let matched;
+  try {
+    sessionSnapshot(ctx);
+    running = (lead) => leadRunning(lead, agentRows(ctx), sessionSnapshot(ctx), ctx);
+    if (args.plan === null && before === null) {
+      matched = others.find((one) => (one.cwd === checkout.root || one.name === session.name) && !running(one));
+    }
+  } catch (error) {
+    return refuse(reasonOf2(error), "retry crew lead when the session records and agent view can be read", 1);
+  }
+  const plan = args.plan ?? before?.plan ?? matched?.plan ?? (branch.ok ? branch.out : null);
+  const adopting = others.filter((one) => one.plan === plan);
+  try {
+    for (const other of adopting)
+      if (running(other))
+        return refuse(`lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs; this session is ${session.sessionId.slice(0, 8)}`, `end that lead with crew lead --end in its session, then retry here`, 1);
+  } catch (error) {
+    return refuse(reasonOf2(error), "retry crew lead when the agent view can be read", 1);
+  }
+  if (plan === null) {
+    return refuse("this checkout is on no branch, so the plan has no name", "pass --plan <slug>", 2);
+  }
+  let planFile = null;
+  if (args.planFile != null) {
+    planFile = resolve9(ctx.cwd, args.planFile);
+    if (!planFile.endsWith(".md") || !existsSync42(planFile)) {
+      return refuse(`the plan file ${args.planFile} is no existing .md file`, "pass the plan's file: --plan-file <path>", 2);
+    }
+  }
+  let tag;
+  let name;
+  try {
+    tag = args.tag ?? crewTag(repo, resolved.crew.tag.value);
+    name = leadName(tag, plan);
+  } catch (error) {
+    return refuse(reasonOf2(error), "pass --plan <slug> and --tag <tag>", 2);
+  }
+  let planNote;
+  if (planFile === null) {
+    const found = planFileOfLead({ plan, planFile: before?.plan === plan ? before.planFile : undefined }, listLeads(ctx.paths.stateDir, repo).records.filter((one) => one.sessionId !== session.sessionId), () => findPlanFile(plan, plansDirs(repo, ctx.paths), { archived: false }));
+    planFile = found.ok ? found.file : null;
+    planNote = found.ok ? `plan file ${tildify(found.file, ctx.paths.home)}` : `no plan file for ${plan}${found.reason === "several" ? ` (${found.matches.length} files match)` : ""}: its briefs and run records are off; pass --plan-file <path>`;
+  } else {
+    planNote = `plan file ${tildify(planFile, ctx.paths.home)}`;
+  }
+  try {
+    await writeLead(ctx.paths.stateDir, {
+      cwd: checkout.root,
+      name,
+      plan,
+      planFile,
+      repo,
+      sessionId: session.sessionId,
+      tag,
+      ...before?.endedAt == null ? {} : { endedAt: null }
+    }, ctx.now(), () => {
+      for (const other of listLeads(ctx.paths.stateDir, repo).records) {
+        if (other.sessionId !== session.sessionId && other.endedAt == null && other.plan === plan && running(other))
+          throw new Error(`lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs; end it before registering this session`);
+      }
+    });
+  } catch (error) {
+    ctx.error(`crew lead: ${reasonOf2(error)}`);
+    return 1;
+  }
+  if (readWatchState(ctx.paths.stateDir, repo, session.sessionId) === null) {
+    try {
+      await writeWatchState(ctx.paths.stateDir, repo, session.sessionId, {
+        offset: eventsEndOffset(ctx.paths.stateDir, repo),
+        said: {}
+      });
+    } catch {}
+  }
+  try {
+    for (const old of adopting) {
+      const count = await adoptLead(ctx.paths.stateDir, repo, old.sessionId, session.sessionId, ctx.now(), running);
+      ctx.print(`adopted lead ${old.name} (${old.sessionId.slice(0, 8)}): ${count} crew sessions now report to this session`);
+    }
+  } catch (error) {
+    return refuse(reasonOf2(error), "retry crew lead", 1);
+  }
+  ctx.print(planNote);
+  const head = `lead ${name} (${session.sessionId.slice(0, 8)}): the crew this session starts in ${tildify(repo, ctx.paths.home)} report to it; `;
+  const nameable = isSessionId2(session.sessionId);
+  const ownNotes = ownHooksOf(checkout).includes("lead-notes");
+  if (!nameable || ownNotes) {
+    ctx.print(`${head}${ownNotes ? "this project runs its own lead-notes hook, so type the next line if the name does not appear" : "this session's id cannot carry a session name, so type the next line in this session"}`);
+    ctx.print(`/rename ${name}`);
+  } else if (readAppliedName(ctx.env, session.sessionId) === name) {
+    ctx.print(`${head}this session already took that name, and a name given with /rename stays`);
+  } else {
+    ctx.print(`${head}this session takes that name at its next prompt`);
+  }
+  return 0;
+}
+
+// src/crew/tell-format.ts
+var TELL_KINDS = ["contract", "question"];
+function isTellKind(value) {
+  return TELL_KINDS.includes(value);
+}
+var LABELS = { contract: "CONTRACT", question: "QUESTION" };
+var NO_REPLY = "No reply needed.";
+function tellTag(phase, kind) {
+  return `[${phase}] ${LABELS[kind]}:`;
+}
+function firstLineOf(text) {
+  return (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+}
+function tellHeadline(phase, kind, text) {
+  return `${tellTag(phase, kind)} ${firstLineOf(text)}`;
+}
+function leadTellHeadline(leadName, kind, text) {
+  return `[${leadName}] ${LABELS[kind]}: ${firstLineOf(text)}`;
+}
+function messageLines(firstLine, kind, text) {
+  const rest = text.trim().split(/\r?\n/).slice(1).join(`
+`).trimEnd();
+  const parts = [firstLine];
+  if (rest !== "")
+    parts.push(rest);
+  if (kind === "contract")
+    parts.push(NO_REPLY);
+  return parts.join(`
+`);
+}
+function tellMessage(phase, kind, text) {
+  return messageLines(tellHeadline(phase, kind, text), kind, text);
+}
+function leadTellMessage(leadName, kind, text) {
+  return messageLines(leadTellHeadline(leadName, kind, text), kind, text);
+}
+function hasTellTag(message, phase) {
+  const first = message.trimStart().split(/\r?\n/, 1)[0] ?? "";
+  return TELL_KINDS.some((kind) => first.startsWith(tellTag(phase, kind)));
+}
+
+// src/crew/lead-tell.ts
+var LEAD_LOOK = {
+  ids: (one) => [one.sessionId, one.sessionId.slice(0, 8)]
+};
+function findLead(records, ref) {
+  const found = findNamed(records.filter((one) => one.endedAt == null), ref, LEAD_LOOK);
+  switch (found.kind) {
+    case "one":
+      return { record: found.record };
+    case "none":
+      return {
+        lines: [
+          `crew lead tell: no lead of this repository is "${ref}"`,
+          `Fix: name one of the leads here: ${records.map((one) => one.name).join(", ")}`
+        ]
+      };
+    case "many":
+      return {
+        lines: [
+          `crew lead tell: "${ref}" is ${found.records.length === 2 ? "two" : String(found.records.length)} leads`,
+          ...found.records.map((one) => `  ${one.sessionId}  ${one.name}`),
+          "Fix: name one by its session id"
+        ]
+      };
+  }
+}
+async function recordLeadNotes(receivers, record, message, sinks) {
+  const recorded = [];
+  const missed = [];
+  for (const one of receivers) {
+    try {
+      await record(one);
+      recorded.push(one);
+    } catch (error) {
+      missed.push({ name: one.name, why: reasonOf2(error) });
+    }
+  }
+  for (const one of missed) {
+    sinks.error(`crew lead tell: the store could not record the note for ${one.name}: ${one.why}`);
+  }
+  const missing = missed.map((one) => one.name).join(", ");
+  if (recorded.length > 0 && missed.length > 0) {
+    const names = recorded.map((done) => done.name).join(", ");
+    sinks.error(`The note is recorded for ${names}: send the ${recorded.length === 1 ? "line" : "lines"} below, and tell ${missing} again.`);
+  } else if (recorded.length === 0 && missed.length > 1) {
+    sinks.error(`No note was recorded: tell ${missing} again.`);
+  }
+  if (recorded.length > 0)
+    sinks.print(sendMessageHint());
+  for (const one of recorded)
+    sinks.print(sendMessageLine(one.name, message));
+  return missed.length === 0 ? 0 : 1;
+}
+async function runLeadTell(args, ctx) {
+  const read = readCaller("lead tell", ctx);
+  if (!read.ok) {
+    for (const line of read.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const found = requireSession(read.caller, "lead tell");
+  if (!found.ok) {
+    for (const line of found.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const { repo } = read.caller;
+  let sender;
+  try {
+    sender = readLead(ctx.paths.stateDir, repo, found.session.sessionId);
+  } catch (error) {
+    ctx.error(`crew lead tell: the store could not be read: ${reasonOf2(error)}`);
+    return 1;
+  }
+  if (sender === null) {
+    ctx.error("crew lead tell: this session is not a lead of this repository");
+    ctx.error(`Fix: ${COMMAND} crew lead --plan <slug>`);
+    return 1;
+  }
+  if (firstLineOf(args.text) === "") {
+    ctx.error('crew lead tell: say what you tell: crew lead tell <lead\u2026> --kind contract|question "<text>"');
+    return 2;
+  }
+  let leads;
+  try {
+    leads = listLeads(ctx.paths.stateDir, repo);
+  } catch (error) {
+    ctx.error(`crew lead tell: the store could not be read: ${reasonOf2(error)}`);
+    return 1;
+  }
+  const receivers = [];
+  for (const ref of args.to) {
+    const named = findLead(leads.records, ref);
+    if ("lines" in named) {
+      for (const line of named.lines)
+        ctx.error(line);
+      return 1;
+    }
+    if (named.record.sessionId === sender.sessionId) {
+      ctx.error("crew lead tell: you cannot tell yourself");
+      return 1;
+    }
+    if (!receivers.some((one) => one.sessionId === named.record.sessionId)) {
+      receivers.push(named.record);
+    }
+  }
+  const to = receivers.map((one) => one.name);
+  const message = leadTellMessage(sender.name, args.kind, args.text);
+  return await recordLeadNotes(receivers, async (one) => {
+    await appendCrewEvent(ctx.paths.stateDir, repo, {
+      crew: sender.sessionId,
+      lead: one.sessionId,
+      name: sender.name,
+      state: "working",
+      tell: { kind: args.kind, to },
+      text: firstLineOf(args.text),
+      type: "lead-tell"
+    }, ctx.now());
+  }, message, { error: ctx.error, print: ctx.print });
+}
+
+// src/crew/log.ts
+function runCrewLog(ref, ctx) {
+  const read = readRecords(ctx, false, "log");
+  if (isRefusal(read)) {
+    for (const line of read.lines)
+      ctx.error(line);
+    return read.code;
+  }
+  const found = findCrew(read.records, ref, "log");
+  if ("refusal" in found) {
+    for (const line of found.refusal.lines)
+      ctx.error(line);
+    return found.refusal.code;
+  }
+  const { record } = found;
+  if (record.base === null) {
+    ctx.error(`crew log: ${record.name} has no branch base yet; it has not started`);
+    return 1;
+  }
+  const range = `${record.base.sha}..${record.branch}`;
+  const commits = runGit(ctx.cwd, ["log", "--oneline", range, "--"], ctx.env);
+  if (!commits.ok) {
+    ctx.error(`crew log: cannot read commits for ${record.branch}: ${commits.err}`);
+    ctx.error("Fix: check that the crew branch and its base commit still exist");
+    return 1;
+  }
+  const stat = runGit(ctx.cwd, ["diff", "--stat", `${record.base.sha}...${record.branch}`, "--"], ctx.env);
+  if (!stat.ok) {
+    ctx.error(`crew log: cannot read diff stat for ${record.branch}: ${stat.err}`);
+    ctx.error("Fix: check that the crew branch and its base have a merge base");
+    return 1;
+  }
+  ctx.print(`${record.name} \u2014 ${record.branch}`);
+  ctx.print(`Commits since ${record.base.sha}:`);
+  ctx.print(commits.out || "No commits.");
+  ctx.print("Diff stat against merge base:");
+  ctx.print(stat.out || "No changes.");
+  return 0;
+}
+
+// src/crew/note.ts
+async function runCrewNote(args, ctx) {
+  const read = readCaller("note", ctx, args.asPerson === true ? { asPerson: true, session: "optional" } : { session: "required" });
+  if (!read.ok) {
+    for (const line of read.lines)
+      ctx.error(line);
+    return 1;
+  }
+  const { repo, session } = read.caller;
+  try {
+    const found = findCrew(listCrew(ctx.paths.stateDir, repo).records, args.crew, "note");
+    if ("refusal" in found) {
+      for (const line of found.refusal.lines)
+        ctx.error(line);
+      return 1;
+    }
+    const { record } = found;
+    if (args.asPerson !== true && session?.sessionId !== record.leadSessionId) {
+      ctx.error(`crew note: only ${record.leadName}, this crew session's lead, can send it a note`);
+      return 1;
+    }
+    if (questionClosed(record.state)) {
+      ctx.error(`crew note: ${record.name} is finished (${record.state})`);
+      return 1;
+    }
+    const part = args.file === undefined ? { raw: args.text } : await readPart({ file: args.file }, ctx);
+    if ("refused" in part) {
+      ctx.error(`crew note: the file ${args.file} cannot be read`);
+      return 1;
+    }
+    const updated = await addCrewNote(ctx.paths.stateDir, repo, record.id, part.raw, ctx.now());
+    const index = (updated.notes?.length ?? 1) - 1;
+    if (record.state === "queued") {
+      ctx.print(`${record.name}: note recorded for its launch`);
+      return 0;
+    }
+    const live = record.state === "stopped" ? sessionLiveness(ctx, record) : "live";
+    if (live === "unknown") {
+      ctx.error("crew note: note recorded, not delivered: the session view cannot be read; try again when it can");
+      return 1;
+    }
+    if (record.state === "stopped" && live === "dead") {
+      const resumed = await resumeSession(ctx, record, `Your lead's note:
+${part.raw}`);
+      if (!resumed.ok) {
+        if (resumed.waits !== undefined) {
+          await updateCrew(ctx.paths.stateDir, repo, record.id, { resumeWaits: resumeWaitOf(record, ctx.now()) }, ctx.now());
+          ctx.print(`${record.name}: note recorded; it waits for room to resume`);
+          return 0;
+        }
+        ctx.error(`crew note: note recorded, not delivered: ${resumed.why}`);
+        return 1;
+      }
+      await updateCrew(ctx.paths.stateDir, repo, record.id, {
+        sessionId: resumed.session.sessionId,
+        shortId: resumed.session.shortId,
+        state: record.questions.some((one) => one.answer === null && (one.supersededBy ?? null) === null) ? "blocked" : "working"
+      }, ctx.now());
+      await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+      ctx.print(`${record.name}: resumed with your note`);
+      return 0;
+    }
+    ctx.print(`${record.name}: note recorded`);
+    for (const line of await deliveryReport(ctx, repo, record, index, { asPerson: args.asPerson === true, replaces: false }, `Your lead's note:
+${part.raw}`, "note"))
+      ctx.print(line);
+    return 0;
+  } catch (error) {
+    ctx.error(`crew note: ${reasonOf2(error)}`);
     return 1;
   }
 }
@@ -34706,7 +35389,18 @@ async function deliverAnswer(ctx, repo, record, now) {
     }
     if (claimed === null || claimed.answer === null)
       continue;
-    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
+    ctx.print(`Question ${index + 1} (${JSON.stringify(claimed.question.slice(0, 100))}): ${deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false))}`);
+  }
+  for (const [index, note] of (record.notes ?? []).entries()) {
+    if (note.deliveredAt !== null)
+      continue;
+    try {
+      const claimed = await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+      if (claimed !== null)
+        ctx.print(`Your lead's note: ${JSON.stringify(claimed.text)}`);
+    } catch (error) {
+      ctx.error(`crew self-watch: the store could not claim the note: ${reasonOf2(error)}`);
+    }
   }
 }
 async function adviseOnce(ctx, repo, record, thresholds, windows, now) {
@@ -34811,8 +35505,19 @@ session's short id. A name that matches two LIVE crew sessions is refused, and b
 whose other matches are removed means the live one.`;
 var BOARD_COMMANDS = [
   {
-    args: "[--all] [--json] [--discarded]",
-    help: `Usage: ${COMMAND} crew list [--all] [--json] [--discarded]
+    args: CREW,
+    name: "log",
+    summary: "The crew branch's commits and diff stat since its base.",
+    help: `Usage: ${COMMAND} crew log ${CREW}
+
+Prints the crew branch's commits since its pinned base and the diff stat against their merge base.
+Read only, from any checkout of this repository; it never enters the crew worktree.
+
+${NAMED}`
+  },
+  {
+    args: "[--all] [--json] [--discarded] [--removed]",
+    help: `Usage: ${COMMAND} crew list [--all] [--json] [--discarded] [--removed]
 
 The board: every crew session of this repository, newest first. For each: its name, phase and kind,
 the model it runs on (and the gateway slot that answers it), its effort, its state and since
@@ -34820,9 +35525,12 @@ when, its branch, the files its brief gives it, the memory its session holds, it
 the last step or line it said. So it is the address book and the ownership map in one: two
 crew sessions that list one file would collide.
 A queued crew session says what holds it: the phases it waits for, a cap, or the memory.
+The lead's short id appears beside its name. A missing lead names crew lead --plan to
+adopt its crew. A dead crew session names crew resume after the watch's one-minute grace.
 
   --all    every repository on this machine, not only this one
-  --json   the crew records as one JSON list, for a script
+  --json   every crew record as one JSON list, without the removal filter
+  --removed   include removals older than 6 hours (hidden by default)
   --discarded   completed discard archives, their age and the git branch recovery command
                 (archives expire after 30 days)`,
     name: "list",
@@ -34832,8 +35540,8 @@ A queued crew session says what holds it: the phases it waits for, a cap, or the
     args: CREW,
     help: `Usage: ${COMMAND} crew status ${CREW}
 
-One crew session in full: its record, where its brief and its report are, the question it asked its
-lead that has no answer yet, and its last events.
+One crew session in full: its record, where its brief and its report are, every open question with its number, age, options and recommendation,
+and the count of answered questions, and its last events.
 
 ${NAMED}`,
     name: "status",
@@ -35047,6 +35755,8 @@ Commands:
                  Records this Claude Code session as the lead of a plan in this
                  repository, named LEAD <tag> <plan>. Run it once in the session
                  that leads: the session takes that name at its next prompt.
+                 After a background fork, run it again to adopt the old crew.
+                 A live lead of that plan refuses the hand-over.
                  --plan-file is the plan's file: the folder beside it holds the
                  plan's briefs and the record of each crew run (crew history).
                  --end records its plan ended; crew work stays unless on the base.
@@ -35091,7 +35801,11 @@ Commands:
           [--recommend <n>]
                  Records a question for the lead. The crew session goes on with
                  everything the question does not block.
-  answer <crew session> "<the answer>"
+  answer <crew session> [--question <n>] [--file <path|->] [--as-person] [<text>]
+  note <crew session> [--file <path|->] [--as-person] [<text>]
+                 A note from its own lead: queued phases read it after the brief;
+                 running ones hear it through self-watch; stopped ones resume with it.
+                 Give exactly one of text or --file. Several open questions need --question.
                  The lead's answer to a crew session's question. A running crew session
                  gets it from its own monitor, even when idle (the command says
                  delivered, or recorded and prints the line the lead sends by hand,
@@ -35279,7 +35993,7 @@ function parseHistoryArgs(argv) {
   };
 }
 function parseListArgs(argv) {
-  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded"]);
+  const parsed = parseOptions(argv, [], ["--all", "--json", "--discarded", "--removed"]);
   if ("error" in parsed)
     return parsed;
   if (parsed.positionals.length > 0) {
@@ -35288,7 +36002,8 @@ function parseListArgs(argv) {
   return {
     all: parsed.flags.has("--all"),
     json: parsed.flags.has("--json"),
-    ...parsed.flags.has("--discarded") ? { discarded: true } : {}
+    ...parsed.flags.has("--discarded") ? { discarded: true } : {},
+    ...parsed.flags.has("--removed") ? { removed: true } : {}
   };
 }
 function parseTargetArgs(command, argv) {
@@ -35431,7 +36146,7 @@ async function runCrew(argv, ctx) {
     }
     return await guarded(sub, ctx, () => ("all" in args) ? runCrewResumePaused(args.lead, ctx) : runCrewResume(args.ref, ctx));
   }
-  if (sub === "status" || sub === "attach" || sub === "stop") {
+  if (sub === "status" || sub === "attach" || sub === "stop" || sub === "log") {
     const args = parseTargetArgs(sub, rest);
     if ("error" in args) {
       ctx.error(usageError(args.error, sub));
@@ -35442,6 +36157,7 @@ async function runCrew(argv, ctx) {
       attach: () => runCrewAttach(ref, ctx),
       rm: () => runCrewRm(ref, ctx),
       status: () => runCrewStatus(ref, ctx),
+      log: () => runCrewLog(ref, ctx),
       stop: () => runCrewStop(ref, ctx)
     }[sub];
     return await guarded(sub, ctx, run);
@@ -35493,6 +36209,18 @@ async function runCrew(argv, ctx) {
       return 2;
     }
     return await runCrewReport(args, ctx);
+  }
+  if (sub === "note") {
+    const args = parseAnswerArgs(rest);
+    if ("error" in args) {
+      ctx.error(usageError(args.error));
+      return 2;
+    }
+    if (args.question !== undefined) {
+      ctx.error(usageError("crew note takes no --question"));
+      return 2;
+    }
+    return runCrewNote(args, ctx);
   }
   if (sub === "answer") {
     const args = parseAnswerArgs(rest);
@@ -35610,17 +36338,27 @@ function parseReportArgs(argv) {
   };
 }
 function parseAnswerArgs(argv) {
-  const parsed = parseOptions(argv, [], ["--as-person"]);
+  const parsed = parseOptions(argv, ["--question", "--file"], ["--as-person"]);
   if ("error" in parsed)
     return parsed;
   const [crew, text, ...extra] = parsed.positionals;
   if (crew === undefined)
     return { error: 'Say which crew session: crew answer <crew session> "<text>"' };
-  if (text === undefined)
-    return { error: 'Say the answer: crew answer <crew session> "<text>"' };
+  const file = parsed.options.get("--file");
+  if (text === undefined === (file === undefined))
+    return { error: "Give exactly one answer: <text> or --file <path|->" };
   if (extra.length > 0)
     return { error: `Unknown argument: ${extra.join(" ")}` };
-  return { asPerson: parsed.flags.has("--as-person"), text, crew };
+  const raw = parsed.options.get("--question");
+  if (raw !== undefined && (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(Number(raw))))
+    return { error: "--question needs a positive whole number" };
+  return {
+    asPerson: parsed.flags.has("--as-person"),
+    text: text ?? "",
+    crew,
+    ...file === undefined ? {} : { file },
+    ...raw === undefined ? {} : { question: Number(raw) }
+  };
 }
 var CREW_TELL = {
   ask: "who you tell",
@@ -40142,7 +40880,7 @@ function onceEach(given, names) {
   const bad = names.find((name) => (given[name]?.length ?? 0) !== 1);
   return bad === undefined ? null : `${bad} is needed, once`;
 }
-function parse4(argv) {
+function parse5(argv) {
   const read = parseOptions2(argv, ["--title", "--body-file", "--fingerprint", "--label"]);
   if (!read.ok)
     return read;
@@ -40207,7 +40945,7 @@ ${ISSUE_USAGE}` : `Unknown issue command: ${sub}
 ${ISSUE_USAGE}`);
     return 2;
   }
-  const parsed = parse4(rest);
+  const parsed = parse5(rest);
   if (!parsed.ok) {
     context.error(`${parsed.why}
 
@@ -42673,20 +43411,27 @@ async function runNested(request, deps) {
   }
 }
 function setSliceWeights(request, deps) {
-  if (request.cpuWeight <= 0 && request.ioWeight <= 0)
-    return;
   const controllers = deps.slice.controllers();
   const weights = {
-    ...request.cpuWeight > 0 && controllers?.includes("cpu") === true ? { cpu: request.cpuWeight } : {},
+    ...controllers?.includes("cpu") === true ? { cpu: request.cpuWeight === "off" || request.cpuWeight === 0 ? 100 : request.cpuWeight } : {},
     ...request.ioWeight > 0 && controllers?.includes("io") === true ? { io: request.ioWeight } : {}
   };
   if (weights.cpu === undefined && weights.io === undefined)
     return;
   const named = weights.cpu !== undefined && weights.io !== undefined ? "CPU and I/O weights" : weights.cpu !== undefined ? "CPU weight" : "I/O weight";
+  let warned = false;
   for (const slice of sliceChain(request.slice)) {
-    if (!deps.slice.setWeights(slice, weights)) {
-      deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
+    if (deps.slice.setWeights(slice, weights))
+      continue;
+    if (weights.cpu === "idle") {
+      if (!warned) {
+        deps.say(`CPU priority: this systemd could not set idle; using weight ${FALLBACK_CPU_WEIGHT} instead.`);
+        warned = true;
+      }
+      if (deps.slice.setWeights(slice, { ...weights, cpu: FALLBACK_CPU_WEIGHT }))
+        continue;
     }
+    deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
   }
 }
 async function runJob(request, deps) {
@@ -42753,9 +43498,14 @@ function parseMaxJobs(text) {
 }
 function parseWeight(name) {
   return (text) => {
+    if (name === "cpu-weight" && text === "idle")
+      return { ok: true, value: "idle" };
     if (text === "off" || text === "0")
       return { ok: true, value: "off" };
-    return /^\d+$/.test(text) && Number(text) >= 1 && Number(text) <= MAX_WEIGHT ? { ok: true, value: Number(text) } : { ok: false, why: `${name} is off, or a whole number 1-${MAX_WEIGHT}` };
+    return /^\d+$/.test(text) && Number(text) >= 1 && Number(text) <= MAX_WEIGHT ? { ok: true, value: Number(text) } : {
+      ok: false,
+      why: `${name} is ${name === "cpu-weight" ? "idle, " : ""}off, or a whole number 1-${MAX_WEIGHT}`
+    };
   };
 }
 var JOB_SETTINGS = {
@@ -43271,7 +44021,7 @@ function ceilingState(config, platform, controllers, ceiling) {
   return { gb: ceiling.gb, why: ceiling.why };
 }
 function weightState(controller, value, config, platform, controllers) {
-  if (value === 0) {
+  if (value === 0 || value === "off") {
     if (platform !== "linux") {
       return { value: null, why: "only a Linux systemd user manager has weights." };
     }
@@ -43415,7 +44165,7 @@ function weightLines(read) {
     ["CPU priority", read.weights.cpu],
     ["Disk I/O priority", read.weights.io]
   ]) {
-    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`);
+    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : state.value === "idle" ? `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`);
   }
   return lines;
 }
@@ -43479,7 +44229,8 @@ Commands:
   set <setting> <value>
                  Your own settings, written to jobs.json: ${Object.keys(JOB_SETTINGS).join(", ")}.
                  max-jobs is how many heavy jobs run at once (default 3).
-                 The weights are off, or 1 to 10000 (off leaves systemd's 100).
+                 CPU weight is idle (the default), off, or 1 to 10000.
+                 I/O weight is off (the default), or 1 to 10000.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 var PREFIX = "[cc-smart-dev-kit job]";
@@ -55541,7 +56292,7 @@ function mergedLine(pr, base, who) {
   return `${who} merged #${pr.number} (${quotableTitle(pr.title)}) into ${base} \u2014 at your next stop, merge origin/${base} into your branch`;
 }
 function leadsOf(stateDir, repo, sessionId) {
-  const leads = listLeads(stateDir, repo).records;
+  const leads = listLeads(stateDir, repo).records.filter((one) => one.endedAt == null);
   if (sessionId === null)
     return { merger: null, others: leads };
   const merger = leads.find((one) => one.sessionId === sessionId) ?? null;
@@ -57188,13 +57939,37 @@ function answered(event, lines, name) {
   const result = title === null ? text === null ? SILENT : addContext(event, text) : addContextAndTitle(event, text, title);
   return problem === null ? result : { ...result, stderr: `cc-smart-dev-kit lead-notes: ${problem}` };
 }
-function leadNotesAnswer(input, event, paths, repo, env) {
+function leadNotesAnswer(input, event, paths, repo, env, deps = {}) {
   const sessionId = input.session_id;
   if (repo === null || !isSessionId2(sessionId))
     return SILENT;
   const lead = readLead(paths.stateDir, repo, sessionId);
-  if (lead === null)
+  if (lead === null) {
+    if (event !== "UserPromptSubmit")
+      return SILENT;
+    const leads = listLeads(paths.stateDir, repo).records.filter((one) => one.endedAt == null);
+    if (leads.length === 0)
+      return SILENT;
+    let sessions;
+    try {
+      sessions = deps.sessions?.() ?? liveSessions(paths.claudeConfigDir);
+    } catch {
+      return addContext(event, "The session records cannot be read; retry crew lead before starting more crew.");
+    }
+    const sessionName = sessions.find((one) => one.sessionId === sessionId)?.name;
+    const candidates = leads.filter((one) => one.cwd === input.cwd || one.name === input.session_title || one.name === sessionName);
+    const crew = listCrew(paths.stateDir, repo).records;
+    for (const old of candidates) {
+      const count = crew.filter((one) => one.leadSessionId === old.sessionId && !["merged", "removed", "discarded"].includes(one.state)).length;
+      if (count === 0 || old.sessionUnknownSince == null || sessions.some((one) => one.sessionId === old.sessionId) || watchIsAlive(paths.stateDir, repo, old.sessionId))
+        continue;
+      return addContext(event, `This session continues lead ${old.name} (${old.sessionId.slice(0, 8)})? Run \`${COMMAND} crew lead --plan ${old.plan}\` to take its ${count} crew sessions.`);
+    }
     return SILENT;
+  }
+  if (lead.endedAt != null)
+    return SILENT;
+  const ids = leadSessions(lead);
   const startNote = event === "SessionStart" ? [leadStartNote()] : [];
   const reminder = reminderFor(paths, env, sessionId, event);
   const watch = watchNote(paths, repo, lead);
@@ -57210,7 +57985,7 @@ function leadNotesAnswer(input, event, paths, repo, env) {
   const reviewFile = reviewsFile(paths.stateDir, repo);
   const lines = [];
   for (const crewEvent of read.events) {
-    if (crewEvent.lead !== sessionId)
+    if (crewEvent.lead === null || !ids.includes(crewEvent.lead) || crewEvent.type === "adopted")
       continue;
     const record = mine.find((one) => one.id === crewEvent.crew) ?? null;
     const reviewed = record !== null && reviewsOn(reviewFile, record.branch, workflowDefaults.reviewAgents).length > 0;
@@ -64201,10 +64976,17 @@ ${result.stderr.toString()}`
             const child = Bun.spawn(argv, {
               cwd: options.cwd,
               env: { ...process.env, ...options.env },
-              stdio: [options.stdio, options.stdio, options.stdio]
+              stdio: [...options.stdio]
             });
-            return { exited: child.exited, kill: (signal) => child.kill(signal) };
+            return {
+              stdin: child.stdin,
+              stdout: child.stdout,
+              exited: child.exited,
+              kill: (signal) => child.kill(signal)
+            };
           },
+          clientInput: Bun.stdin.stream(),
+          clientOutput: Bun.stdout.writer(),
           startChrome: realStartChrome,
           which: (command) => Bun.which(command)
         });

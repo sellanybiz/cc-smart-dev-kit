@@ -31,13 +31,20 @@ import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import { agentRows } from "./agents";
 import type { CrewContext } from "./context";
 import { agoText, memoryText, modelText } from "./display";
-import { leadGone, observeLeadPresence } from "./lifecycle";
+import {
+  crewNotRunning,
+  leadGone,
+  leadRunning,
+  observeLeadPresence,
+  sessionSnapshot,
+} from "./lifecycle";
 import { withoutListRef } from "./names";
 import { OPUS_TIER, PLACE_FREE, placeFor, placeInputOf, unmetWaits } from "./places";
 import {
   type CrewEvent,
   type CrewRecord,
   crewBriefFile,
+  isQuestionOpen,
   type Listed,
   listAllCrew,
   listAllLeads,
@@ -49,6 +56,9 @@ import { crewSettingsFolder, usageFacts, usageUnreadLine } from "./usage-guard";
 
 /** How many events `crew status` shows. */
 export const STATUS_EVENTS = 6;
+
+/** How long a removed crew session stays on the default board. */
+const REMOVED_VISIBLE_MS = 6 * 60 * 60 * 1000;
 
 /** The width of a `crew status` label: one past the longest (`worktree`, `waits for`). */
 const LABEL_WIDTH = 9;
@@ -348,7 +358,7 @@ export function boardLines(
   const lines = [
     `${record.name} — ${record.state}, ${agoText(stateSince(record, events), options.now)}`,
     `  ${record.phase} · ${record.kind} · ${modelLine(record)}`,
-    `  ${record.branch} · memory ${memoryText(record.memoryMb)} · lead ${record.leadName}${
+    `  ${record.branch} · memory ${memoryText(record.memoryMb)} · lead ${record.leadName} (${record.leadSessionId.slice(0, 8)})${
       options.showRepo ? ` · ${tildify(record.repo, options.home)}` : ""
     }`,
   ];
@@ -402,7 +412,7 @@ export function statusLines(
         ? "none yet"
         : `${record.shortId} (${record.sessionId})`,
     ),
-    label("lead", record.leadName),
+    label("lead", `${record.leadName} (${record.leadSessionId.slice(0, 8)})`),
   );
   if (record.pr !== null) lines.push(label("pr", `#${String(record.pr)}`));
   lines.push(label("memory", memoryText(record.memoryMb)));
@@ -417,12 +427,23 @@ export function statusLines(
   if (open === undefined) {
     lines.push(label("question", "none open"));
   } else {
-    lines.push(label("question", `asked ${agoText(open.askedAt, options.now)}: ${open.question}`));
-    for (const [index, option] of open.options.entries()) {
-      const mark = open.recommended === index + 1 ? " (recommended)" : "";
-      lines.push(`${" ".repeat(LABEL_WIDTH + 1)}${String(index + 1)}) ${option}${mark}`);
+    for (const [number, asked] of record.questions.entries()) {
+      if (!isQuestionOpen(asked)) continue;
+      lines.push(
+        label(
+          `question ${number + 1}`,
+          `asked ${agoText(asked.askedAt, options.now)}: ${asked.question}`,
+        ),
+      );
+      for (const [index, option] of asked.options.entries()) {
+        const mark = asked.recommended === index + 1 ? " (recommended)" : "";
+        lines.push(`${" ".repeat(LABEL_WIDTH + 1)}${String(index + 1)}) ${option}${mark}`);
+      }
     }
   }
+  lines.push(
+    label("answered", String(record.questions.filter((one) => one.answer !== null).length)),
+  );
   lines.push("recent events:");
   for (const event of events.slice(0, STATUS_EVENTS).reverse()) {
     const text = event.text === null ? "" : `  ${event.text}`;
@@ -433,7 +454,7 @@ export function statusLines(
 
 /** `crew list [--all] [--json]`; the exit code. */
 export async function runCrewList(
-  args: { all: boolean; json: boolean; discarded?: boolean },
+  args: { all: boolean; json: boolean; discarded?: boolean; removed?: boolean },
   ctx: CrewContext,
 ): Promise<number> {
   const read = readRecords(ctx, args.all, "list");
@@ -473,27 +494,63 @@ export async function runCrewList(
     );
     return 0;
   }
+  const eventsAbout = eventsOf(ctx, read.records);
+  const visible = read.records.filter(
+    (record) =>
+      args.removed ||
+      record.state !== "removed" ||
+      !(ctx.now() - Date.parse(stateSince(record, eventsAbout(record))) > REMOVED_VISIBLE_MS),
+  );
+  const hidden = read.records.length - visible.length;
   // The caps (and the memory) are read only to say why a queued crew session waits.
   const caps = read.records.some((one) => one.state === "queued")
     ? await capsOf(ctx, read.checkout)
     : null;
-  const eventsAbout = eventsOf(ctx, read.records);
   const held = new Map(
     read.records.map((record) => [
       record.id,
       caps === null ? null : heldBy(record, read.machine(), caps),
     ]),
   );
-  const rows = args.all ? agentRows(ctx) : null;
+  const rows = agentRows(ctx);
+  try {
+    const sessions = sessionSnapshot(ctx);
+    for (const lead of listAllLeads(ctx.paths.stateDir).records) {
+      if (
+        lead.endedAt != null ||
+        !read.records.some(
+          (one) =>
+            one.repo === lead.repo &&
+            one.leadSessionId === lead.sessionId &&
+            !["removed", "discarded"].includes(one.state),
+        )
+      )
+        continue;
+      if (!leadRunning(lead, rows, sessions, ctx))
+        ctx.print(
+          `lead ${lead.name} (${lead.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${lead.plan} to take its crew`,
+        );
+    }
+  } catch (error) {
+    ctx.print(
+      `Lead presence is unreadable: ${error instanceof Error ? error.message : String(error)}; retry crew list.`,
+    );
+  }
+  for (const record of read.records)
+    if (crewNotRunning(record, rows, ctx.now()))
+      ctx.print(
+        `${record.name}: not running (last: ${record.state}, ${agoText(record.updatedAt, ctx.now())}) — crew resume "${record.name}"`,
+      );
   const leads = args.all
     ? await observeLeadPresence(
         ctx.paths.stateDir,
         listAllLeads(ctx.paths.stateDir).records,
         rows,
         ctx.now(),
+        ctx,
       )
     : [];
-  const blocks = read.records.map((record) =>
+  const blocks = visible.map((record) =>
     boardLines(record, eventsAbout(record), {
       leadGone: leadGone(
         leads.find(
@@ -501,6 +558,7 @@ export async function runCrewList(
         ) ?? null,
         rows,
         ctx.now(),
+        ctx,
       ),
       held: held.get(record.id) ?? null,
       home: ctx.paths.home,
@@ -531,6 +589,10 @@ export async function runCrewList(
     caps.load === null &&
     read.records.some((one) => one.state === "queued" && held.get(one.id) === PLACE_FREE);
   if (unloaded) ctx.print(loadUnreadLine());
+  if (hidden > 0)
+    ctx.print(
+      `${hidden} older removed crew session${hidden === 1 ? "" : "s"} hidden; crew list --removed shows them.`,
+    );
   return 0;
 }
 
@@ -557,7 +619,25 @@ export function runCrewStatus(ref: string, ctx: CrewContext): number {
   const found = target(ref, "status", ctx);
   if (isRefusal(found)) return refuse(found, ctx);
   const { record } = found;
+  const rows = agentRows(ctx);
+  if (crewNotRunning(record, rows, ctx.now()))
+    ctx.print(
+      `${record.name}: not running (last: ${record.state}, ${agoText(record.updatedAt, ctx.now())}) — crew resume "${record.name}"`,
+    );
   const events = eventsOf(ctx, [record])(record);
+  try {
+    const lead = listAllLeads(ctx.paths.stateDir).records.find(
+      (one) => one.repo === record.repo && one.sessionId === record.leadSessionId,
+    );
+    if (lead != null && lead.endedAt == null && !leadRunning(lead, rows, sessionSnapshot(ctx), ctx))
+      ctx.print(
+        `lead ${lead.name} (${lead.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${lead.plan} to take its crew`,
+      );
+  } catch (error) {
+    ctx.print(
+      `Lead presence is unreadable: ${error instanceof Error ? error.message : String(error)}; retry crew status.`,
+    );
+  }
   for (const line of statusLines(record, events, {
     home: ctx.paths.home,
     now: ctx.now(),

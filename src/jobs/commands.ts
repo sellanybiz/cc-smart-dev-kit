@@ -57,7 +57,8 @@ Commands:
   set <setting> <value>
                  Your own settings, written to jobs.json: ${Object.keys(JOB_SETTINGS).join(", ")}.
                  max-jobs is how many heavy jobs run at once (default 3).
-                 The weights are off, or 1 to 10000 (off leaves systemd's 100).
+                 CPU weight is idle (the default), off, or 1 to 10000.
+                 I/O weight is off (the default), or 1 to 10000.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 

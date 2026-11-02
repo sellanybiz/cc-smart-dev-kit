@@ -63,11 +63,15 @@ const absolutePath = z
 
 /** The top of a cgroup weight: systemd's own range is 1 to 10000. One home, for `job set` too. */
 export const MAX_WEIGHT = 10_000;
+/** CPU yields to other work by default on Linux. */
+export const DEFAULT_CPU_WEIGHT = "idle";
+/** Older systemd versions that refuse idle get this low weight. */
+export const FALLBACK_CPU_WEIGHT = 10;
+export type CpuWeight = number | "idle" | "off";
 
 /**
  * A cgroup weight, 1 to `MAX_WEIGHT`. `0` or `"off"` leaves systemd's default (100) in force,
- * and so does leaving the field out: a heavy job runs at normal CPU and disk I/O unless the
- * person asks for a lower weight.
+ * and so does leaving I/O unset. CPU also accepts idle, its default on Linux.
  */
 const weightSchema = z.union([
   z.literal(0),
@@ -112,11 +116,11 @@ export const jobsMachineConfigSchema = z.strictObject({
     .regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice")
     .optional(),
   /**
-   * The heavy slices' CPU weight on a Linux systemd machine, 1 to 10000. Default: off, which
-   * leaves systemd's own weight (100) in force. A weight below 100 makes a heavy job give way
+   * The heavy slices' Linux CPU priority: idle (the default), off, or 1 to 10000.
+   * Idle yields to other work. A weight below 100 makes a heavy job give way
    * under load. Machine-wide: the slices are the machine's, so a project's file cannot own this.
    */
-  cpuWeight: weightSchema.optional(),
+  cpuWeight: z.union([weightSchema, z.literal("idle")]).optional(),
   /**
    * The heavy slices' disk I/O weight, 1 to 10000. Default: off (systemd's own 100).
    * Machine-wide, like `cpuWeight`.
@@ -155,7 +159,7 @@ export function loadJobsConfig(file: string): JobsMachineConfig {
 }
 
 /** A weight from `jobs.json`; `0` means systemd's default is left in force (also unset). */
-function weightOf(value: JobsMachineConfig["cpuWeight"]): number {
+function weightOf(value: JobsMachineConfig["ioWeight"]): number {
   return value === undefined || value === "off" ? 0 : value;
 }
 
@@ -164,12 +168,13 @@ export function maxJobsOf(config: JobsMachineConfig): number {
   return config.maxJobs ?? DEFAULT_MAX_JOBS;
 }
 
-/** The CPU weight this machine's launches set on the slice chain; 0: systemd's default. */
-export function cpuWeightOf(config: JobsMachineConfig): number {
-  return weightOf(config.cpuWeight);
+/** The CPU priority this machine's launches set on the slice chain; off: systemd's default. */
+export function cpuWeightOf(config: JobsMachineConfig): CpuWeight {
+  const value = config.cpuWeight ?? DEFAULT_CPU_WEIGHT;
+  return value === 0 ? "off" : value;
 }
 
-/** The I/O weight this machine's launches set on the slice chain; 0: systemd's default. */
+/** The I/O weight this machine's launches set on the slice chain; off: systemd's default. */
 export function ioWeightOf(config: JobsMachineConfig): number {
   return weightOf(config.ioWeight);
 }

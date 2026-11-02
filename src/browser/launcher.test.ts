@@ -60,7 +60,20 @@ function launcher(
   const mcp: { argv: string[]; env: Record<string, string>; cwd: string }[] = [];
   const chrome: { argv: string[]; env: Record<string, string> }[] = [];
   const lines: string[] = [];
+  const received: Buffer[] = [];
+  let input!: ReadableStreamDefaultController<Uint8Array>;
+  let finish!: () => void;
   const deps: BrowserMcpDeps = {
+    clientInput: new ReadableStream({
+      start(controller) {
+        controller.close();
+      },
+    }),
+    clientOutput: {
+      write: (bytes) => {
+        received.push(Buffer.from(bytes));
+      },
+    },
     chrome: chromeDeps,
     desktop: () => desktop,
     // No DISPLAY here: the desktop's own value must be the one that reaches Chrome.
@@ -68,7 +81,18 @@ function launcher(
     log: (line) => lines.push(line),
     spawn: (argv, options) => {
       mcp.push({ argv, cwd: options.cwd, env: options.env });
-      return { exited: Promise.resolve(0), kill: () => undefined };
+      return {
+        stdin: { write: () => undefined, end: () => finish() },
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: new Promise<number>((resolve) => {
+          finish = () => resolve(0);
+        }),
+        kill: () => finish(),
+      };
     },
     startChrome: (argv, env) => {
       chrome.push({ argv, env });
@@ -83,7 +107,22 @@ function launcher(
     },
     which: () => "/usr/bin/bunx",
   };
-  return { chrome, deps, lines, mcp };
+  return {
+    chrome,
+    deps,
+    lines,
+    mcp,
+    received,
+    open: () => {
+      deps.clientInput = new ReadableStream({
+        start(controller) {
+          input = controller;
+        },
+      });
+    },
+    call: () => input.enqueue(Buffer.from('{"id":1,"method":"tools/call"}\n')),
+    end: () => input.close(),
+  };
 }
 
 describe("the launcher's own arguments", () => {
@@ -215,8 +254,9 @@ describe("runBrowserMcp", () => {
     writeWorldToken(built);
     const run = launcher(chromeDeps);
     await runBrowserMcp(built.paths, [], run.deps);
-    await runBrowserMcp(built.paths, ["--output-dir=/tmp/other-output"], run.deps);
-    expect(run.mcp.map((one) => one.cwd)).toEqual([
+    const other = launcher(chromeDeps);
+    await runBrowserMcp(built.paths, ["--output-dir=/tmp/other-output"], other.deps);
+    expect([...run.mcp, ...other.mcp].map((one) => one.cwd)).toEqual([
       join(built.home, ".local/share/cc-smart-dev-kit/playwright-output"),
       "/tmp/other-output",
     ]);
@@ -243,11 +283,16 @@ describe("runBrowserMcp", () => {
     expect(run.mcp[0]?.argv).not.toContain("--profile-dir-name=claude-code");
   });
 
-  test("no Chrome is running: it starts the found Chrome with the profile, then the MCP", async () => {
+  test("the MCP starts first; its first tool starts the found Chrome with the profile", async () => {
     const { built, chromeDeps, state } = world({ running: false });
     writeWorldToken(built);
     const run = launcher(chromeDeps);
+    run.open();
     const code = runBrowserMcp(built.paths, [], run.deps);
+    expect(run.mcp).toHaveLength(1);
+    expect(run.chrome).toHaveLength(0);
+    run.call();
+    run.end();
     await Bun.sleep(10);
     state.running = true; // Chrome takes its singleton lock while the launcher waits
     expect(await code).toBe(0);
@@ -266,7 +311,7 @@ describe("runBrowserMcp", () => {
     expect(run.mcp).toHaveLength(1);
   });
 
-  test("no Chrome is running and Chrome cannot start: exit 2, one plain line, no MCP", async () => {
+  test("Chrome cannot start: a tool error result, and the MCP stays available", async () => {
     const { built, chromeDeps } = world({ running: false });
     writeWorldToken(built);
     // What a session with no reachable display gets from Chrome itself.
@@ -274,13 +319,19 @@ describe("runBrowserMcp", () => {
       code: 1,
       stderr: "Missing X server or $DISPLAY",
     });
-    const code = await runBrowserMcp(built.paths, [], run.deps);
-    expect(code).toBe(2);
+    run.open();
+    const code = runBrowserMcp(built.paths, [], run.deps);
+    run.call();
+    run.end();
+    expect(await code).toBe(0);
     expect(run.chrome).toHaveLength(1);
-    expect(run.mcp).toHaveLength(0);
-    expect(run.lines).toHaveLength(1);
-    expect(run.lines[0]).toContain("exited at once (code 1: Missing X server or $DISPLAY)");
-    expect(run.lines[0]).toContain("Open Google Chrome");
+    expect(run.mcp).toHaveLength(1);
+    const reply = JSON.parse(Buffer.concat(run.received).toString());
+    expect(reply.result.isError).toBe(true);
+    expect(reply.result.content[0].text).toContain(
+      "exited at once (code 1: Missing X server or $DISPLAY)",
+    );
+    expect(reply.result.content[0].text).toContain("Open Google Chrome");
   });
 
   test("no Google Chrome on the machine: one line naming browser setup", async () => {
@@ -320,17 +371,21 @@ describe("runBrowserMcp", () => {
     expect(run.lines[0]).toContain("browser setup");
   });
 
-  test("no display for the person's desktop: one line, and nothing is started", async () => {
+  test("no desktop display: the first tool gets an error without starting Chrome", async () => {
     const { built, chromeDeps } = world({ running: false });
     writeWorldToken(built);
     const run = launcher(chromeDeps, { display: false, source: "none", vars: {} });
-    const code = await runBrowserMcp(built.paths, [], run.deps);
-    expect(code).toBe(2);
+    run.open();
+    const code = runBrowserMcp(built.paths, [], run.deps);
+    run.call();
+    run.end();
+    expect(await code).toBe(0);
     expect(run.chrome).toHaveLength(0);
-    expect(run.mcp).toHaveLength(0);
-    expect(run.lines).toHaveLength(1);
-    expect(run.lines[0]).toContain("no desktop display");
-    expect(run.lines[0]).toContain("Open Google Chrome");
+    expect(run.mcp).toHaveLength(1);
+    const reply = JSON.parse(Buffer.concat(run.received).toString());
+    expect(reply.result.isError).toBe(true);
+    expect(reply.result.content[0].text).toContain("no desktop display");
+    expect(reply.result.content[0].text).toContain("Open Google Chrome");
   });
 });
 

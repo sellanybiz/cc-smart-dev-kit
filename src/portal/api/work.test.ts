@@ -415,7 +415,7 @@ describe("cleanup data for the portal", () => {
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
     writeFileSync(
       binary,
-      `#!${process.execPath}\nconsole.log('[{"id":"lead-a","sessionId":"lead-a"}]');`,
+      `#!${process.execPath}\nconsole.log('[{"id":"lead-a","sessionId":"lead-a","pid":300,"state":"working"}]');`,
     );
     nextLook();
     expect((await workAnswer(w.deps)).crew[0]?.leadGone).toBe(false);
@@ -535,6 +535,45 @@ describe("Work from a folder that is no git project", () => {
     expect(answer).toEqual({
       error: 'No crew session on this machine is "crew-ghost": the Work page lists them.',
     });
+  });
+
+  test("P4: every open question has its number and the old field keeps the oldest", async () => {
+    const w = world();
+    await createCrew(w.paths.stateDir, newCrew(w.repoA, "crew-A-1", "lead-a"), NOW);
+    await addCrewQuestion(
+      w.paths.stateDir,
+      w.repoA,
+      "crew-A-1",
+      { question: "base?", options: ["a", "b"], recommended: 1 },
+      NOW,
+    );
+    await addCrewQuestion(
+      w.paths.stateDir,
+      w.repoA,
+      "crew-A-1",
+      { question: "route?", options: ["c", "d"], recommended: null },
+      NOW + 1000,
+    );
+    const page = await crewAnswerFor(w.deps, "crew-A-1");
+    if (!("crew" in page)) throw new Error("missing crew");
+    expect(page.crew.question?.question).toBe("base?");
+    expect(page.crew.questions).toEqual([
+      {
+        number: 1,
+        text: "base?",
+        options: ["a", "b"],
+        recommend: 1,
+        askedAt: "2026-10-23T12:00:00.000Z",
+      },
+      {
+        number: 2,
+        text: "route?",
+        options: ["c", "d"],
+        recommend: null,
+        askedAt: "2026-10-23T12:00:01.000Z",
+      },
+    ]);
+    expect((await needsAnswer(w.deps)).crew.map((one) => one.number)).toEqual([1, 2]);
   });
 
   test("Needs you lists the open questions of every repository's crew sessions", async () => {

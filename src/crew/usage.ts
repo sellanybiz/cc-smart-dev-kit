@@ -19,7 +19,17 @@ export interface BoardCommand {
   /** What `crew <name> --help` prints. */
   help: string;
   /** The word after `crew`. */
-  name: "attach" | "history" | "kinds" | "list" | "model" | "resume" | "rm" | "status" | "stop";
+  name:
+    | "attach"
+    | "history"
+    | "kinds"
+    | "list"
+    | "log"
+    | "model"
+    | "resume"
+    | "rm"
+    | "status"
+    | "stop";
   /** One short line for the list of commands. */
   summary: string;
 }
@@ -34,8 +44,19 @@ whose other matches are removed means the live one.`;
 
 export const BOARD_COMMANDS: readonly BoardCommand[] = [
   {
-    args: "[--all] [--json] [--discarded]",
-    help: `Usage: ${COMMAND} crew list [--all] [--json] [--discarded]
+    args: CREW,
+    name: "log",
+    summary: "The crew branch's commits and diff stat since its base.",
+    help: `Usage: ${COMMAND} crew log ${CREW}
+
+Prints the crew branch's commits since its pinned base and the diff stat against their merge base.
+Read only, from any checkout of this repository; it never enters the crew worktree.
+
+${NAMED}`,
+  },
+  {
+    args: "[--all] [--json] [--discarded] [--removed]",
+    help: `Usage: ${COMMAND} crew list [--all] [--json] [--discarded] [--removed]
 
 The board: every crew session of this repository, newest first. For each: its name, phase and kind,
 the model it runs on (and the gateway slot that answers it), its effort, its state and since
@@ -43,9 +64,12 @@ when, its branch, the files its brief gives it, the memory its session holds, it
 the last step or line it said. So it is the address book and the ownership map in one: two
 crew sessions that list one file would collide.
 A queued crew session says what holds it: the phases it waits for, a cap, or the memory.
+The lead's short id appears beside its name. A missing lead names crew lead --plan to
+adopt its crew. A dead crew session names crew resume after the watch's one-minute grace.
 
   --all    every repository on this machine, not only this one
-  --json   the crew records as one JSON list, for a script
+  --json   every crew record as one JSON list, without the removal filter
+  --removed   include removals older than 6 hours (hidden by default)
   --discarded   completed discard archives, their age and the git branch recovery command
                 (archives expire after 30 days)`,
     name: "list",
@@ -55,8 +79,8 @@ A queued crew session says what holds it: the phases it waits for, a cap, or the
     args: CREW,
     help: `Usage: ${COMMAND} crew status ${CREW}
 
-One crew session in full: its record, where its brief and its report are, the question it asked its
-lead that has no answer yet, and its last events.
+One crew session in full: its record, where its brief and its report are, every open question with its number, age, options and recommendation,
+and the count of answered questions, and its last events.
 
 ${NAMED}`,
     name: "status",

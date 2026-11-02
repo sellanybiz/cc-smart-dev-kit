@@ -114,6 +114,7 @@ describe("the command table", () => {
       expect(usage).toContain(one.summary);
     }
     expect(BOARD_COMMANDS.map((one) => one.name)).toEqual([
+      "log",
       "list",
       "status",
       "stop",

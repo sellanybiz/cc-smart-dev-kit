@@ -123,7 +123,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.8.1",
+  version: "1.9.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8112,7 +8112,7 @@ var jobsMachineConfigSchema = strictObject({
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
   slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: weightSchema.optional(),
+  cpuWeight: union([weightSchema, literal("idle")]).optional(),
   ioWeight: weightSchema.optional()
 });
 
@@ -8282,6 +8282,7 @@ var crewFields = object({
   waitsFor: array(text2),
   files: array(text2),
   questions: array(crewQuestion),
+  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
   state: word(),
   lastLine: string2().nullable(),
   reportPath: text2.nullable(),
@@ -8336,6 +8337,9 @@ var leadFields = object({
   tag: text2,
   cwd: text2,
   planFile: text2.nullable().optional(),
+  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
+  adoptedBy: text2.optional(),
+  generation: count.optional(),
   endedAt: text2.nullable().optional(),
   sessionUnknownSince: text2.nullable().optional(),
   pausedAgents: array(text2).optional(),
@@ -8354,6 +8358,7 @@ var eventFields = object({
   text: string2().nullable(),
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
+  question: number2().int().min(1).optional(),
   memoryMb: number2().min(0).nullable().optional(),
   pair: text2.optional(),
   tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
@@ -8952,6 +8957,7 @@ var REPORT_COMMAND = `${COMMAND} crew report`;
 var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
+  note: "sends its lead's notes",
   lead: "leads",
   "lead tell": "tells another lead",
   model: "changes a crew session's model or effort",
@@ -8961,6 +8967,7 @@ var CREW_NEVER_DOES = {
 };
 var CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
+  note: CREW_NEVER_DOES.note,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
   model: CREW_NEVER_DOES.model,

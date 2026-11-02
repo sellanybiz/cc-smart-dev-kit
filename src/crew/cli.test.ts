@@ -8,6 +8,7 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import type { LoadFacts } from "../machine/load";
 import { crewWorld, SHORT_ID, writeSessionRecord } from "../testing/crew-world";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -23,7 +24,27 @@ const CLI = join(import.meta.dir, "..", "entries", "cli.ts");
 /** Runs the CLI in `cwd` with `env`; its exit code and both outputs. */
 function cli(args: string[], cwd: string, env: Record<string, string>) {
   const guard = subprocessGuard();
-  const run = Bun.spawnSync([process.execPath, ...guard.args, CLI, ...args], {
+  // Keep the real CLI dispatch and process readers, but feed the load reader calm facts.
+  // A subprocess cannot use world.ctx's injection, so its preload replaces only that reader.
+  const loadFacts: Omit<LoadFacts, "cores" | "loadavg"> & { cores: number; loadavg: number[] } = {
+    cores: 16,
+    loadavg: [1, 1, 1],
+    platform: process.platform,
+  };
+  const preload = join(tempDir("crew-cli-load"), "load.ts");
+  const loadModule = JSON.stringify(join(import.meta.dir, "..", "machine", "load.ts"));
+  writeFileSync(
+    preload,
+    `import { mock } from "bun:test";
+import * as load from ${loadModule};
+const facts = ${JSON.stringify(loadFacts)};
+const exports = { ...load, realLoadFacts: () => ({
+  cores: () => facts.cores, loadavg: () => facts.loadavg, platform: facts.platform,
+}) };
+mock.module(${loadModule}, () => exports);
+`,
+  );
+  const run = Bun.spawnSync([process.execPath, ...guard.args, "--preload", preload, CLI, ...args], {
     cwd,
     env: { ...env, ...guard.env },
     stderr: "pipe",

@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import {
+  adoptLead,
   appendCrewEvent,
   createCrew,
   crewEventsFile,
@@ -15,6 +16,7 @@ import {
   leadFile,
   listCrew,
   type NewCrew,
+  readLead,
   readNotesState,
   takeWatchLease,
   updateCrew,
@@ -287,6 +289,36 @@ describe("one note, then none", () => {
       offset: statSync(crewEventsFile(world.stateDir, world.repo)).size,
     });
   });
+});
+
+test("a question from an earlier lead id reaches the adopted lead", async () => {
+  const world = await leadWorld({ watch: "never" });
+  const nextId = "dddd1111-2222-3333-4444-555555555555";
+  const lead = readLead(world.stateDir, world.repo, LEAD_SESSION);
+  if (lead === null) throw new Error("missing test lead");
+  await writeLead(world.stateDir, { ...lead, sessionId: nextId }, T0);
+  await appendCrewEvent(
+    world.stateDir,
+    world.repo,
+    {
+      crew: CREW_ID,
+      lead: LEAD_SESSION,
+      name: "C app W2 hooks",
+      state: "blocked",
+      type: "question",
+      text: "Which path?",
+    },
+    T0,
+  );
+  await adoptLead(world.stateDir, world.repo, LEAD_SESSION, nextId, T0, () => false);
+  const answer = leadNotesAnswer(
+    { ...leadInput(world.repo), session_id: nextId },
+    "UserPromptSubmit",
+    cliPaths(world.env),
+    world.repo,
+    world.env,
+  );
+  expect(JSON.stringify(answer)).toContain("Which path?");
 });
 
 describe("only this lead's news", () => {
@@ -713,7 +745,7 @@ describe("a lead whose watch is gone is told how to start it", () => {
   const NEVER =
     "Your crew watch is not running, so crew news will not reach you: run /cc-smart-dev-kit:lead to start it.";
   const ENDED =
-    'Your crew watch ended: start the watch again with Claude Code\'s Monitor tool (persistent), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch (or run /cc-smart-dev-kit:lead in a new session).';
+    'Your crew watch ended: start the watch again with Claude Code\'s Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch (or run /cc-smart-dev-kit:lead in a new session).';
 
   test("the two lines are the ones written out above", () => {
     expect(watchNeverStartedNote()).toBe(NEVER);

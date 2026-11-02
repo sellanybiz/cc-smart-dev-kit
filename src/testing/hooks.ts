@@ -10,6 +10,7 @@ import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
 import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
 import { subprocessGuard } from "./port-guard";
+import { sessionProcessIdentity } from "./session-record";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 /**
@@ -167,7 +168,7 @@ export function writeSessionRecord(
   const pid = record.pid ?? process.pid;
   writeFileSync(
     join(dir, `${pid}.json`),
-    JSON.stringify({ pid, sessionId: record.sessionId, cwd: record.cwd, name: record.name }),
+    JSON.stringify({ ...record, pid, ...sessionProcessIdentity(pid) }),
   );
 }
 

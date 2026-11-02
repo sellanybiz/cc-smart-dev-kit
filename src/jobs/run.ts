@@ -4,6 +4,7 @@
  * the tests run it with a fake queue and a fake launcher.
  */
 
+import { type CpuWeight, FALLBACK_CPU_WEIGHT } from "./config";
 import {
   chooseLaunch,
   type JobEnd,
@@ -46,7 +47,7 @@ export interface JobRequest {
   /** The systemd slice for a scope launch. */
   slice: string;
   /** The CPU weight for the slice chain; 0 leaves systemd's default in force. */
-  cpuWeight: number;
+  cpuWeight: CpuWeight;
   /** The I/O weight for the slice chain; 0 leaves systemd's default in force. */
   ioWeight: number;
   /** When `job run` started (ms): makes the unit name unique. */
@@ -192,11 +193,11 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
  * sat beside it.
  */
 function setSliceWeights(request: JobRequest, deps: JobDeps): void {
-  if (request.cpuWeight <= 0 && request.ioWeight <= 0) return;
   const controllers = deps.slice.controllers();
   const weights: SliceWeights = {
-    ...(request.cpuWeight > 0 && controllers?.includes("cpu") === true
-      ? { cpu: request.cpuWeight }
+    // Runtime properties survive a job. Off must clear idle from the previous launch.
+    ...(controllers?.includes("cpu") === true
+      ? { cpu: request.cpuWeight === "off" || request.cpuWeight === 0 ? 100 : request.cpuWeight }
       : {}),
     ...(request.ioWeight > 0 && controllers?.includes("io") === true
       ? { io: request.ioWeight }
@@ -209,10 +210,19 @@ function setSliceWeights(request: JobRequest, deps: JobDeps): void {
       : weights.cpu !== undefined
         ? "CPU weight"
         : "I/O weight";
+  let warned = false;
   for (const slice of sliceChain(request.slice)) {
-    if (!deps.slice.setWeights(slice, weights)) {
-      deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
+    if (deps.slice.setWeights(slice, weights)) continue;
+    if (weights.cpu === "idle") {
+      if (!warned) {
+        deps.say(
+          `CPU priority: this systemd could not set idle; using weight ${FALLBACK_CPU_WEIGHT} instead.`,
+        );
+        warned = true;
+      }
+      if (deps.slice.setWeights(slice, { ...weights, cpu: FALLBACK_CPU_WEIGHT })) continue;
     }
+    deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
   }
 }
 

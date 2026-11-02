@@ -45,12 +45,13 @@ function CrewLink({ id, name }: { id: string; name: string }) {
 /** What the page asks before an answer goes: the answer itself, and that the session goes on. */
 function answerConfirm(item: Extract<NeedsItem, { kind: "question" }>, answer: string) {
   return {
-    title: `Answer ${item.crew.name}?`,
+    title: `Answer question ${item.ask.number} from ${item.crew.name}?`,
     body: (
       <>
         <span className="block font-medium text-foreground">“{answer}”</span>
         <span className="mt-2 block">
-          It goes to the crew session as the lead's answer, and the session goes on at once.
+          It goes to the crew session as the lead's answer. Other open questions still wait for an
+          answer.
         </span>
       </>
     ),
@@ -78,7 +79,7 @@ function QuestionActions({
             <li key={option} className="flex flex-wrap items-start gap-2">
               <ActionButton
                 action="crew.answer"
-                body={{ answer: option, crew: item.crew.id }}
+                body={{ answer: option, crew: item.crew.id, question: item.ask.number }}
                 variant={recommended ? "default" : "outline"}
                 className="h-auto min-h-8 max-w-full justify-start py-1.5 text-left whitespace-normal"
                 confirm={answerConfirm(item, option)}
@@ -111,7 +112,7 @@ function QuestionActions({
         />
         <ActionButton
           action="crew.answer"
-          body={{ answer: own, crew: item.crew.id }}
+          body={{ answer: own, crew: item.crew.id, question: item.ask.number }}
           variant="outline"
           disabled={own === ""}
           confirm={answerConfirm(item, own)}
@@ -149,7 +150,11 @@ function Body({ item, onSettled }: { item: NeedsItem; onSettled: OnSettled }): {
     case "question":
       return {
         who: <CrewLink id={item.crew.id} name={item.crew.name} />,
-        what: item.ask.question,
+        what: (
+          <>
+            Question {item.ask.number}: {item.ask.question}
+          </>
+        ),
         action: <QuestionActions item={item} onSettled={onSettled} />,
       };
     case "permission": {

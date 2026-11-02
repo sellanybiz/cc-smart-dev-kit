@@ -430,6 +430,9 @@ export function mergeRefusal(facts: MergeFacts): string | null {
  */
 export function policyUnread(branch: string | null, why: string, policy = "merge policy"): string {
   const where = branch === null ? "the workflow settings" : `the ${policy} committed on ${branch}`;
+  if (branch !== null && why.startsWith(`origin/${branch} is not known in this repository`)) {
+    return `${where} cannot be read: ${why}; the base branch may never have been pushed: push it once (git push -u origin ${branch}), then run merge-check again; if it already exists on origin, fetch it first`;
+  }
   return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
 }
 

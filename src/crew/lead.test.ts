@@ -15,6 +15,43 @@ const NO_PLAN_FILE =
   "no plan file for master-plan: its briefs and run records are off; pass --plan-file <path>";
 
 describe("D26: crew lead", () => {
+  test("two live sessions cannot claim one plan", async () => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "second-lead-session", world.repo);
+    const ctx = world.ctx({
+      sessions: () => [{ pid: 301, sessionId: LEAD_SESSION, cwd: world.repo, name: "lead" }],
+    });
+    expect(await runCrewLead({ plan: "master-plan", tag: null }, ctx)).toBe(1);
+    expect(readLead(world.paths.stateDir, world.repo, "second-lead-session")).toBeNull();
+    expect(world.err.join("\n")).toContain("still runs");
+  });
+  test("an unreadable view refuses adoption", async () => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "second-lead-session", world.repo);
+    expect(
+      await runCrewLead(
+        { plan: "master-plan", tag: null },
+        world.ctx({}, { FAKE_AGENTS_JSON: "not json" }),
+      ),
+    ).toBe(1);
+    expect(world.err.join("\n")).toContain("retry crew lead");
+  });
+  test("a bare lead in a fork finds the old plan by folder and adopts it", async () => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
+    world.out.length = 0;
+    expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, "new-lead-session")?.plan).toBe(
+      "master-plan",
+    );
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.adoptedBy).toBe(
+      "new-lead-session",
+    );
+    expect(world.out.some((line) => line.startsWith("adopted lead "))).toBe(true);
+  });
   test("an explicitly ended lead is recorded; recording the plan again reopens it", async () => {
     const world = crewWorld();
     await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());

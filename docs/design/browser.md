@@ -4,7 +4,7 @@
 The Playwright MCP server (`src/browser/`, rules in `.claude/rules/browser.md`) drives **the
 person's own Google Chrome**, through the **Playwright extension**, in ONE Chrome profile of its
 own named `claude-code`. The owner decided this (2026-10-16), replacing 0.3.0's shared browser:
-the plugin starts no Chrome, keeps no profile folder of its own, and no longer carries the tab
+the plugin keeps no browser or profile folder of its own, and no longer carries the tab
 filter that made each session's windows its own.
 
 - **Extension mode is the only mode.** `browser mcp` runs the pinned `@playwright/mcp` with
@@ -13,19 +13,26 @@ filter that made each session's windows its own.
   unchanged — `{"command": <launcher>, "args":
   ["browser","mcp"]}` — because the mode is the launcher's own business and every setting
   reaches the MCP through its environment or `argv`.
-- **The launcher starts Chrome when none is running** (`chrome-start.ts`). A machine restart leaves
+- **The first browser tool starts Chrome when none is running** (`chrome-start.ts`).
+  The byte-preserving stdio proxy (`mcp-proxy.ts`) forwards `initialize`,
+  `notifications/initialized` and `tools/list` without starting Chrome. Claude Code sends these
+  at session start; Playwright's own handlers do not need a browser until `tools/call`.
+  The proxy holds that call and later lines until Chrome is ready, then forwards them in order.
+  A failed start returns an MCP `isError` result for every call held during that attempt;
+  other held lines still pass through. The next new call tries again. Child messages pass
+  straight through, even while Chrome starts. A machine restart leaves
   Chrome closed, and the MCP's own start of it — `cdpRelay.ts`'s `_openConnectPageInBrowser` — is
   detached with `stdio: "ignore"` and never checked. A session the Claude daemon starts has no
   `DISPLAY` (measured 2026-10-23: the daemon's `XDG_SESSION_TYPE=tty`, while the systemd user
   manager held `DISPLAY=:10.0`), so Chrome died in under a second and the browser call ended after
-  the MCP's 30-second deadline with a message about the extension and the token. So before the MCP
-  is started, `browser mcp` asks Chrome's own singleton lock whether a Chrome runs
+  the MCP's 30-second deadline with a message about the extension and the token. So at the first
+  `tools/call`, `browser mcp` asks Chrome's own singleton lock whether a Chrome runs
   (`chromeMayBeRunning`, the question `browser setup` already asks before it writes), and when none
   does, starts the Chrome `chrome.ts` finds with the `claude-code` profile on the person's desktop —
   this session's display variables, else the ones the graphical session imported into the systemd
-  user manager — and goes on once the lock is there. Every failure is ONE stderr line naming the
+  user manager — and goes on once the lock is there. Every failure is an error result naming the
   one step: no display, a spawn that throws, Chrome's early exit (its own stderr in the line), or no
-  lock within `CHROME_START_LIMIT_MS`. Nothing retries and nothing waits past that. The file checks
+  lock within `CHROME_START_LIMIT_MS`. No automatic retry runs and no start waits past that. The file checks
   come first (`connectPrerequisites`: Chrome, the profile, the extension), so the MCP's generic
   deadline never speaks for a file that is missing. A started Chrome is the person's own browser,
   not a second one, and the plugin writes no byte of Chrome's files.

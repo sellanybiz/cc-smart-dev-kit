@@ -27,6 +27,7 @@ import { sessionRecordFile } from "../crew/session";
 import { locateCheckout } from "../project/resolve";
 import { MACHINE_CREW_KEYS } from "../workflow/schema";
 import type { CleanLock } from "../worktrees/clean";
+import { sessionProcessIdentity } from "./session-record";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 /** The lead session's id in every world. */
@@ -149,7 +150,15 @@ export function writeSessionRecord(
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(
     file,
-    JSON.stringify({ cwd, jobId: sessionId.slice(0, 8), kind: "bg", name: "lead", pid, sessionId }),
+    JSON.stringify({
+      cwd,
+      jobId: sessionId.slice(0, 8),
+      kind: "bg",
+      name: "lead",
+      pid,
+      sessionId,
+      ...sessionProcessIdentity(pid),
+    }),
   );
 }
 
@@ -240,6 +249,8 @@ export function crewWorld(): CrewWorld {
         commandLineOf: (pid: number) => (pid === SESSION_PID ? "claude --bg" : null),
         parentOf: (pid: number) => ({ 300: 1, 400: 300, 500: 400 })[pid] ?? null,
       },
+      sessions: () => [],
+      watchAlive: () => false,
       randomSuffix: () => "1a2b3c",
       readStdin: () => Promise.resolve(""),
       runProgram: realRunProgram,

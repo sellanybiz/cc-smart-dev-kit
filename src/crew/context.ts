@@ -26,6 +26,10 @@ export interface CrewContext {
   /** This process: the walk to the calling session starts here. */
   pid: number;
   processes: ProcessFacts;
+  /** Running session records; tests inject their own process identities. */
+  sessions?: () => readonly import("../hooks/sessions").SessionRecord[];
+  /** Watch presence, injectable without real pids. */
+  watchAlive?: (repo: string, sessionId: string) => boolean;
   now: () => number;
   /** Waits `ms` milliseconds: the polls of the watch and the self-watch (a test hands in its own). */
   sleep: (ms: number) => Promise<void>;

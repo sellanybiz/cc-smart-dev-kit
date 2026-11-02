@@ -246,6 +246,7 @@ describe("crew lead tell", () => {
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
     expect(world.out).toEqual([
+      "crew watch: this lead has no crew sessions",
       "LEAD my-app master-plan: contract from another lead · src/x.ts:lookup is gone",
     ]);
   });

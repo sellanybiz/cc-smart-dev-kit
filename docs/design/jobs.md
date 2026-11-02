@@ -37,8 +37,9 @@ One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
   slice has one **memory ceiling for all heavy jobs together** (the machine's memory less
   `reserveGb`), so they can never take the memory kept for the desktop and the sessions and a
   job over it dies inside the slice. A light run gets the kill mark alone, never the heavy
-  slice, whose ceiling is for heavy runs. CPU and disk I/O run at normal weight unless the person
-  sets `cpuWeight`/`ioWeight`. A weight needs its controller delegated to the user manager; one
+  slice, whose ceiling is for heavy runs. Linux CPU defaults to `idle`, yielding to other work;
+  older systemd versions that refuse idle use weight 10 and the job says so once.
+  `cpuWeight` also accepts a number or `off`. Disk I/O stays off unless `ioWeight` is set. A weight needs its controller delegated to the user manager; one
   that is missing is skipped and `job status` says why.
 - **Mixed versions** during an update: every live lease counts as one slot whatever an older
   `job run` wrote in its record (it wrote its GB in the `gb` field; the new one writes 1 for a

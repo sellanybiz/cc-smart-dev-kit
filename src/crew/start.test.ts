@@ -190,6 +190,8 @@ describe("D25: crew start returns at once", () => {
     expect(code).toBe(0);
     expect(world.out).toEqual([
       `started C my-app master-plan B6b portal-live (${SHORT_ID}) · sonnet high · crew/B6b-portal-live @ ${head.slice(0, 7)}`,
+      'warning: --files "src/a.ts" matches no file yet: fine for a file this phase creates; else check the path — not blocked',
+      'warning: --files "src/b.ts" matches no file yet: fine for a file this phase creates; else check the path — not blocked',
     ]);
     const worktree = join(world.repo, ".claude", "worktrees", "crew-B6b-portal-live");
     const briefFile = crewBriefFile(world.paths.stateDir, world.repo, ID);
@@ -1683,6 +1685,9 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
       0,
     );
     expect(world.out[1]).toBe(
+      'warning: --files "src/crew/new.ts" matches no file yet: fine for a file this phase creates; else check the path — not blocked',
+    );
+    expect(world.out[2]).toBe(
       "clash: C my-app C5b trim (LEAD my-app docs-plan) may change the same files: src/crew/new.ts and src/crew/** (no file matches both yet) — not blocked; two leads may mean to share a file",
     );
     // The rule on its own: the tracked files decide when they can; a glob against a path that
@@ -1840,6 +1845,14 @@ describe("WN1: a clash pair is said once, and a glob that matches too much is wa
     expect(world.err).toEqual([]);
     expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([
       `warning: --files "docs/**/*.md" matches 30 of ${tracked} tracked files (${Math.round((30 / tracked) * 100)}%), far more than one phase usually changes — it makes every other crew session that holds a file under it clash with this one; name the files the phase owns — not blocked`,
+    ]);
+  });
+
+  test("an unmatched files glob warns but still starts", async () => {
+    const world = await ledWorld();
+    expect(await startSlug(world, "newfile", "src/new-*.ts")).toBe(0);
+    expect(world.out.filter((line) => line.startsWith("warning:"))).toEqual([
+      'warning: --files "src/new-*.ts" matches no file yet: fine for a file this phase creates; else check the path — not blocked',
     ]);
   });
 

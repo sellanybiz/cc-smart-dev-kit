@@ -186,6 +186,7 @@ export const REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
  */
 export const CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
+  note: "sends its lead's notes",
   lead: "leads",
   "lead tell": "tells another lead",
   model: "changes a crew session's model or effort",
@@ -205,6 +206,7 @@ export const CREW_NEVER_DOES = {
  */
 export const CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
+  note: CREW_NEVER_DOES.note,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
   model: CREW_NEVER_DOES.model,
@@ -282,8 +284,18 @@ export function launchLine(crewName: string, leadName: string, briefFile: string
  * The line a crew session's Claude session starts with: the crew command, then the launch line
  * (`launchLine`) as its arguments. The command dispatches the skill, so its monitor starts.
  */
-export function firstPrompt(crewName: string, leadName: string, briefFile: string): string {
-  return withCrewCommand(launchLine(crewName, leadName, briefFile));
+export function firstPrompt(
+  crewName: string,
+  leadName: string,
+  briefFile: string,
+  notesFile?: string,
+): string {
+  return withCrewCommand(
+    launchLine(crewName, leadName, briefFile) +
+      (notesFile === undefined
+        ? ""
+        : ` Then read ${notesFile}: your lead's notes since the brief.`),
+  );
 }
 
 /** A crew session's model and effort, as `crew model` names them in its resume. */

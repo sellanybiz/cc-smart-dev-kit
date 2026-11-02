@@ -677,10 +677,17 @@ async function main(argv: string[]): Promise<number> {
             const child = Bun.spawn(argv, {
               cwd: options.cwd,
               env: { ...process.env, ...options.env },
-              stdio: [options.stdio, options.stdio, options.stdio],
+              stdio: [...options.stdio],
             });
-            return { exited: child.exited, kill: (signal) => child.kill(signal) };
+            return {
+              stdin: child.stdin,
+              stdout: child.stdout,
+              exited: child.exited,
+              kill: (signal) => child.kill(signal),
+            };
           },
+          clientInput: Bun.stdin.stream(),
+          clientOutput: Bun.stdout.writer(),
           startChrome: realStartChrome,
           which: (command) => Bun.which(command),
         });

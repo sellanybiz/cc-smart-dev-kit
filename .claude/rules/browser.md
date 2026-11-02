@@ -16,8 +16,8 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 
 ## The rules that break something when they move
 
-- **Never write to stdout in the launcher.** The launcher's stdout IS the Playwright MCP's
-  protocol stream; one stray line and the server shows as failed. Every line goes through the
+- **Only protocol bytes go to stdout in the launcher.** The launcher's stdout IS the Playwright MCP's
+  protocol stream; one stray line and the server shows as failed. Diagnostics go through the
   `log` callback (stderr).
 - **The token is required, and it never reaches `argv`.** Without it the extension opens an
   approval page and waits for a click on EVERY connection, so `browser mcp` refuses to start
@@ -76,7 +76,10 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
 - **`--allow-unrestricted-file-access` and `--file-paths=absolute` stay in the launcher's argv**:
   the first is what lets a session upload a file from its worktree AND open `file://` pages (both
   blocked by default), the second is what makes a path the MCP reports usable from any folder.
-- **The launcher starts the person's Chrome when none is running.** A machine restart leaves Chrome
+- **Only a `tools/call` starts the person's Chrome when none is running.** The stdio proxy
+  forwards handshakes and tool lists unchanged without Chrome; session start opens no window.
+  It holds the first call and later lines until Chrome is ready, keeping their order.
+  A machine restart leaves Chrome
   closed, and the MCP's own start of it — it spawns Chrome only to open the connect page — is
   detached with its output ignored, so a Chrome that cannot start dies unseen and the call ends
   after the MCP's 30-second deadline. So `browser mcp` starts the Chrome `chrome.ts` finds, with the
@@ -85,9 +88,10 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   starts has no `DISPLAY`), then it waits for Chrome's own singleton lock
   (`chromeMayBeRunning`, the same question `browser setup` asks before it writes). No display, a
   spawn that throws, a Chrome that exits at once (its own stderr in the line) or one not up within
-  `CHROME_START_LIMIT_MS`: one stderr line naming the one step, exit 2 — never a retry, never the
-  30-second wait. Starting the person's own Chrome is not a second browser, and nothing here writes
-  a byte of Chrome's files.
+  `CHROME_START_LIMIT_MS`: an MCP `isError` result naming the one step for each call held
+  during that attempt, never the 30-second wait. Non-call lines still pass. A new call may retry.
+  Starting the person's own Chrome is not a second browser, and nothing here writes a byte of
+  Chrome's files.
 - **`browser check` always ends.** One named whole-check limit (`CHECK_LIMIT_MS`) and shorter ones
   derived from it for the start, every answer and every stop (close-input, SIGTERM, then SIGKILL);
   a failed start stops the run at once. No child or wait may ever be unbounded: before this, a dead
@@ -101,7 +105,9 @@ The behaviour it relies on, each proved: `docs/claude-code-contract.md` § The b
   child's environment and never in `argv`, the child's working folder (a planted `bunfig.toml`
   preload never runs), that a missing, unreadable or wrong-shaped token starts nothing, and the
   Chrome start: none running → the found Chrome with the profile on the desktop's variables;
-  cannot start → one line and no MCP.
+  cannot start → a tool error result while the MCP stays available.
+- `mcp-proxy.test.ts` — no Chrome for handshakes, one successful start, failed held calls and
+  a later retry, ordered lines, split and large messages, and malformed input passed unchanged.
 - `chrome-start.test.ts` — the display lookup (session, then the user manager, then none; macOS and
   Windows need none), the launch argv, already running → nothing started, a stale lock → started, a
   Chrome that exits at once or never comes up → one plain line (and a killed child), no display →

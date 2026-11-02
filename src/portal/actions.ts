@@ -2093,7 +2093,14 @@ async function runActionByName(
       return crewCliAction(
         action,
         "crew.answer",
-        ["answer", "--as-person", "--", found.record.id, answer],
+        [
+          "answer",
+          "--as-person",
+          ...(body.question === undefined ? [] : ["--question", String(body.question)]),
+          "--",
+          found.record.id,
+          answer,
+        ],
         found.record,
       );
     }

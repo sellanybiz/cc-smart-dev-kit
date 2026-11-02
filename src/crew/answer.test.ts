@@ -117,6 +117,83 @@ async function askedWorld(
 }
 
 describe("crew answer", () => {
+  test("a different lead cannot add a note to this crew", async () => {
+    const world = await askedWorld();
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { leadSessionId: "another-lead-session" },
+      T0,
+    );
+    expect(await runCrew(["note", NAME, "use the new contract"], world.ctx())).toBe(1);
+    expect(world.err.join("\n")).toContain("only LEAD my-app master-plan");
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.notes ?? []).toEqual([]);
+  });
+  test("P4: a queued phase's note is named in its launch prompt", async () => {
+    const world = await askedWorld();
+    await updateCrew(world.paths.stateDir, world.repo, ID, { state: "queued" }, T0);
+    expect(await runCrew(["note", NAME, "use the new contract"], world.ctx())).toBe(0);
+    const record = listCrew(world.paths.stateDir, world.repo).records[0];
+    expect(record?.notes?.[0]?.text).toBe("use the new contract");
+    const { crewNotesFile, crewBriefFile } = await import("./store");
+    const { firstPrompt } = await import("./brief");
+    const file = crewNotesFile(world.paths.stateDir, world.repo, ID);
+    expect(await Bun.file(file).text()).toContain("use the new contract");
+    expect(
+      firstPrompt(NAME, "lead", crewBriefFile(world.paths.stateDir, world.repo, ID), file),
+    ).toContain(`Then read ${file}: your lead's notes since the brief.`);
+  });
+
+  test("P4: questions stay open and an explicit number answers only that question", async () => {
+    const world = await askedWorld("blocked");
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { question: "which route?", options: ["one", "two"], recommended: 1 },
+      T0 + 45_000,
+    );
+    expect(await runCrew(["answer", NAME, "--question", "1", "3210"], world.ctx())).toBe(0);
+    const record = listCrew(world.paths.stateDir, world.repo).records[0];
+    expect(record?.questions[0]?.answer).toBe("3210");
+    expect(record?.questions[1]?.answer).toBeNull();
+    expect(record?.state).toBe("blocked");
+  });
+
+  test("P4: several open questions need a number", async () => {
+    const world = await askedWorld();
+    await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      ID,
+      { question: "which route?", options: ["one", "two"], recommended: 1 },
+      T0 + 45_000,
+    );
+    expect(await runCrew(["answer", NAME, "3210"], world.ctx())).toBe(1);
+    expect(world.err.join("\n")).toContain("--question");
+    expect(world.err.join("\n")).toContain("question 1");
+    expect(world.err.join("\n")).toContain("question 2");
+  });
+
+  test("P4: answers read a file or stdin without putting its words on argv", async () => {
+    const world = await askedWorld();
+    const file = join(world.repo, "answer.txt");
+    await Bun.write(file, "from file\n");
+    expect(await runCrew(["answer", NAME, "--file", file], world.ctx())).toBe(0);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.questions[0]?.answer).toBe(
+      "from file\n",
+    );
+    expect(
+      await runCrew(
+        ["answer", NAME, "--question", "1", "--file", "-"],
+        world.ctx({ readStdin: async () => "from stdin\n" }),
+      ),
+    ).toBe(0);
+    expect(listCrew(world.paths.stateDir, world.repo).records[0]?.questions[0]?.answer).toBe(
+      "from stdin\n",
+    );
+  });
   test("D36: a running crew session gets the line the lead sends it with, and the answer is recorded", async () => {
     const world = await askedWorld();
     const code = await runCrew(["answer", NAME, "the port is 3210"], world.ctx());
@@ -690,7 +767,7 @@ describe("crew answer", () => {
     );
     expect(asked).toBe(0);
     // The lead answers the newest question that has no answer: the second one.
-    expect(await runCrew(["answer", NAME, "no, drop it"], world.ctx())).toBe(0);
+    expect(await runCrew(["answer", NAME, "--question", "2", "no, drop it"], world.ctx())).toBe(0);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.questions.map((one) => one.answer)).toEqual([null, "no, drop it"]);
     expect(record?.questions[1]?.recommended).toBe(2);
@@ -773,7 +850,7 @@ describe("crew answer", () => {
     const world = await askedWorld();
     const code = await runCrew(["answer", NAME], world.ctx());
     expect(code).toBe(2);
-    expect(world.err[0]).toContain("Say the answer");
+    expect(world.err[0]).toContain("Give exactly one answer");
   });
 
   test("D52: the person through the portal answers with no Claude Code session", async () => {
@@ -924,6 +1001,19 @@ describe("RG1: crew answer after a supersede", () => {
       { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
       T0 + 1000,
     );
+    const before = listCrew(world.paths.stateDir, world.repo).records[0];
+    if (before)
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        ID,
+        {
+          questions: before.questions.map((one, index) =>
+            index === 0 ? { ...one, supersededBy: 1 } : one,
+          ),
+        },
+        T0,
+      );
     const code = await runCrew(["answer", NAME, "3211"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
@@ -942,6 +1032,19 @@ describe("RG1: crew answer after a supersede", () => {
       { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
       T0 + 1000,
     );
+    const before = listCrew(world.paths.stateDir, world.repo).records[0];
+    if (before)
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        ID,
+        {
+          questions: before.questions.map((one, index) =>
+            index === 0 ? { ...one, supersededBy: 1 } : one,
+          ),
+        },
+        T0,
+      );
     expect(await runCrew(["answer", NAME, "3211"], world.ctx())).toBe(0);
     world.out.length = 0;
     expect(await runCrew(["answer", NAME, "3211 again"], world.ctx())).toBe(0);
@@ -967,6 +1070,19 @@ describe("RG1: crew answer after a supersede", () => {
       { options: ["3210", "3211"], question: "which port, exactly?", recommended: null },
       T0 + 1000,
     );
+    const before = listCrew(world.paths.stateDir, world.repo).records[0];
+    if (before)
+      await updateCrew(
+        world.paths.stateDir,
+        world.repo,
+        ID,
+        {
+          questions: before.questions.map((one, index) =>
+            index === 0 ? { ...one, supersededBy: 1 } : one,
+          ),
+        },
+        T0,
+      );
     await runCrew(["answer", NAME, "3211"], world.ctx());
     await runCrew(["answer", NAME, "3211 again"], world.ctx());
     // A stale reader that still holds the old index is refused, with or without the correction flag.

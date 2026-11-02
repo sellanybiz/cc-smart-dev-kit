@@ -599,7 +599,7 @@ describe("job status", () => {
     // No memory group is made here, and the ceiling line says why: launch: plain on Linux, the
     // platform itself elsewhere.
     expect(lines[1]).toBe(`Memory ceiling for heavy jobs: none: ${NO_GROUP_WHY}`);
-    expect(lines[2]).toBe(`CPU priority: not set: ${WEIGHT_OFF("cpu")}`);
+    expect(lines[2]).toBe(`CPU priority: not set: ${NO_GROUP_WHY}`);
     expect(lines[3]).toBe(`Disk I/O priority: not set: ${WEIGHT_OFF("io")}`);
     // The free memory is the machine's real reading, so its number is matched, not fixed.
     expect(lines[10]).toMatch(
@@ -808,7 +808,7 @@ describe("job status on Windows", () => {
     expect(printed).toEqual([
       "Memory: 32 GB.",
       "Memory ceiling for heavy jobs: none: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.",
-      "CPU priority: not set: only a Linux systemd user manager has weights.",
+      "CPU priority: not set: Windows has no memory group, so a heavy job runs as a plain child, and the queue is what keeps heavy jobs apart.",
       "Disk I/O priority: not set: only a Linux systemd user manager has weights.",
       `This machine (${STATE_SHOWN}): 0 of 3 slots in use`,
       "  nothing held, nobody waits",
@@ -827,7 +827,7 @@ describe("job status on Windows", () => {
     expect(printed.slice(0, 4)).toEqual([
       "Memory: 32 GB.",
       "Memory ceiling for heavy jobs: none: no systemd user manager answers here.",
-      `CPU priority: not set: ${WEIGHT_DEFAULT("cpu")}`,
+      "CPU priority: not set: no systemd user manager answers here.",
       `Disk I/O priority: not set: ${WEIGHT_DEFAULT("io")}`,
     ]);
   });

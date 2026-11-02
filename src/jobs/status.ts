@@ -112,7 +112,7 @@ export interface JobStoreState {
 /** One cgroup weight on the heavy slices: its value, or why it is not in force. */
 export interface JobWeightState {
   /** The weight a scope launch sets, 1 to 10000; null when it sets none. */
-  value: null | number;
+  value: null | number | "idle";
   /** Why no weight is in force; absent when one is. */
   why?: string;
 }
@@ -248,12 +248,12 @@ function ceilingState(
 /** One weight as the machine would carry it, and why it would not. */
 function weightState(
   controller: "cpu" | "io",
-  value: number,
+  value: number | "idle" | "off",
   config: JobsMachineConfig,
   platform: string,
   controllers: string[] | null,
 ): JobWeightState {
-  if (value === 0) {
+  if (value === 0 || value === "off") {
     // Off is the default. Only a Linux slice carries a weight at all: elsewhere there is nothing
     // to ask for, so the line says so instead of offering a command that would change nothing.
     if (platform !== "linux") {
@@ -518,7 +518,9 @@ function weightLines(read: JobsRead): string[] {
     lines.push(
       state.value === null
         ? `${name}: not set: ${state.why ?? "no weight is in force."}`
-        : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`,
+        : state.value === "idle"
+          ? `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.`
+          : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`,
     );
   }
   return lines;

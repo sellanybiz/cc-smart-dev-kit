@@ -98,12 +98,12 @@ describe("crew lifecycle", () => {
     const ctx = world.ctx();
     const lead = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
     if (lead === null) throw new Error("missing fixture lead");
-    const [first] = await observeLeadPresence(ctx.paths.stateDir, [lead], [], NOW);
+    const [first] = await observeLeadPresence(ctx.paths.stateDir, [lead], [], NOW, ctx);
     if (first === undefined) throw new Error("missing observed lead");
-    expect(leadGone(first, [], NOW)).toBe(false);
-    expect(leadGone(first, [], NOW + DAY)).toBe(false);
-    expect(leadGone(first, [], NOW + DAY + 1)).toBe(true);
-    expect(leadGone(first, null, NOW + 2 * DAY)).toBe(false);
+    expect(leadGone(first, [], NOW, ctx)).toBe(false);
+    expect(leadGone(first, [], NOW + DAY, ctx)).toBe(false);
+    expect(leadGone(first, [], NOW + DAY + 1, ctx)).toBe(true);
+    expect(leadGone(first, null, NOW + 2 * DAY, ctx)).toBe(false);
     const row = {
       cwd: world.repo,
       id: LEAD_SESSION.slice(0, 8),
@@ -113,11 +113,45 @@ describe("crew lifecycle", () => {
       status: null,
       waitingFor: null,
     };
-    const [returned] = await observeLeadPresence(ctx.paths.stateDir, [first], [row], NOW + 2 * DAY);
+    const [returned] = await observeLeadPresence(
+      ctx.paths.stateDir,
+      [first],
+      [row],
+      NOW + 2 * DAY,
+      ctx,
+    );
     expect(returned?.sessionUnknownSince).toBeNull();
-    expect(leadGone(returned ?? null, [], NOW + 3 * DAY)).toBe(false);
+    expect(leadGone(returned ?? null, [], NOW + 3 * DAY, ctx)).toBe(false);
     expect(readLead(ctx.paths.stateDir, world.repo, LEAD_SESSION)?.updatedAt).toBe(lead.updatedAt);
   });
+
+  test.each(["session", "watch", "unreadable"])(
+    "%s presence never proves an old missing lead gone",
+    async (source) => {
+      const world = await boardWorld();
+      const lead = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
+      if (lead === null) throw new Error("missing fixture lead");
+      const absent = await writeLead(
+        world.paths.stateDir,
+        { ...lead, sessionUnknownSince: new Date(NOW - 2 * DAY).toISOString() },
+        NOW,
+      );
+      const ctx = world.ctx({
+        sessions: () => {
+          if (source === "unreadable") throw new Error("unreadable records");
+          return source === "session"
+            ? [{ pid: 42, sessionId: LEAD_SESSION, cwd: world.repo, name: lead.name }]
+            : [];
+        },
+        watchAlive: () => source === "watch",
+      });
+      expect(leadGone(absent, [], NOW, ctx)).toBe(false);
+      const [observed] = await observeLeadPresence(ctx.paths.stateDir, [absent], [], NOW, ctx);
+      expect(observed?.sessionUnknownSince).toBe(
+        source === "unreadable" ? absent.sessionUnknownSince : null,
+      );
+    },
+  );
 
   test("an explicitly ended lead is gone even when agent view is unreadable", async () => {
     const world = await boardWorld();
@@ -128,7 +162,7 @@ describe("crew lifecycle", () => {
       { ...lead, endedAt: new Date(NOW).toISOString() },
       NOW,
     );
-    expect(leadGone(ended, null, NOW)).toBe(true);
+    expect(leadGone(ended, null, NOW, world.ctx())).toBe(true);
   });
 
   test("proof survives a rewritten lead but never another crew commit", async () => {

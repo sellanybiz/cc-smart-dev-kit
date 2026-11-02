@@ -577,7 +577,7 @@ export async function runCrewResumePaused(named: null | string, ctx: CrewContext
   const leadSessionId = leadOf(
     named,
     sessionId,
-    leads.map((one) => one.sessionId),
+    leads.filter((one) => one.endedAt == null).map((one) => one.sessionId),
   );
   if (leadSessionId === null) {
     return refuse(

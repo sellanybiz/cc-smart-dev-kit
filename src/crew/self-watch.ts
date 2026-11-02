@@ -50,6 +50,7 @@ import {
   crewFile,
   lastHeardAnswer,
   markAnswerDelivered,
+  markNoteDelivered,
   readCrew,
   readSelfWatchState,
   undeliveredAnswerIndexes,
@@ -272,7 +273,18 @@ async function deliverAnswer(
     }
     if (claimed === null || claimed.answer === null) continue;
     // The claim came first, so a line that fails to print is not printed again: at most once.
-    ctx.print(deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false)));
+    ctx.print(
+      `Question ${index + 1} (${JSON.stringify(claimed.question.slice(0, 100))}): ${deliveryLine(claimed.question, claimed.answer, lastHeardAnswer(claimed, false))}`,
+    );
+  }
+  for (const [index, note] of (record.notes ?? []).entries()) {
+    if (note.deliveredAt !== null) continue;
+    try {
+      const claimed = await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, now);
+      if (claimed !== null) ctx.print(`Your lead's note: ${JSON.stringify(claimed.text)}`);
+    } catch (error) {
+      ctx.error(`crew self-watch: the store could not claim the note: ${reasonOf(error)}`);
+    }
   }
 }
 

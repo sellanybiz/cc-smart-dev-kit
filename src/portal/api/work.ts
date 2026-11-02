@@ -20,10 +20,11 @@ import {
   type CrewRecord,
   crewBriefFile,
   crewSessions,
+  isQuestionOpen,
   type LeadRecord,
   listAllCrew,
   listAllLeads,
-  openQuestionIndex,
+  questionClosed,
   readCrewEvents,
   readReport,
 } from "../../crew/store";
@@ -148,7 +149,9 @@ function crewSummary(
 ): CrewSummary {
   // The one open-question rule every reader shares (`openQuestionIndex`): a question the crew
   // session left behind at its end needs no answer, so this page and the Needs page agree.
-  const openIndex = openQuestionIndex(record);
+  const openIndex = questionClosed(record.state)
+    ? null
+    : record.questions.findIndex(isQuestionOpen);
   const open = openIndex === null ? undefined : record.questions[openIndex];
   const own = events.filter((event) => event.crew === record.id).reverse();
   // The board's own rule for its last line (`lastSaid`): never the "created" line, never empty.
@@ -178,6 +181,21 @@ function crewSummary(
     phase: record.phase,
     plan: record.plan,
     pr: record.pr,
+    questions: questionClosed(record.state)
+      ? []
+      : record.questions.flatMap((one, index) =>
+          isQuestionOpen(one)
+            ? [
+                {
+                  number: index + 1,
+                  text: one.question,
+                  options: one.options,
+                  recommend: one.recommended,
+                  askedAt: one.askedAt,
+                },
+              ]
+            : [],
+        ),
     question:
       open === undefined
         ? null
@@ -261,23 +279,28 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
         ) ?? null,
         agents.crew,
         now,
+        { paths },
       ),
     ),
   );
-  const leads = leadRecords.map(
-    (lead): LeadSummary => ({
-      crew: crew.filter((one) => one.leadSessionId === lead.sessionId),
-      createdAt: lead.createdAt,
-      cwd: lead.cwd,
-      name: lead.name,
-      pausedAgents: lead.pausedAgents ?? [],
-      plan: lead.plan,
-      repo: lead.repo,
-      sessionId: lead.sessionId,
-      tag: lead.tag,
-      updatedAt: lead.updatedAt,
-    }),
-  );
+  const leads = leadRecords
+    .filter(
+      (lead) => lead.endedAt == null || crew.some((one) => one.leadSessionId === lead.sessionId),
+    )
+    .map(
+      (lead): LeadSummary => ({
+        crew: crew.filter((one) => one.leadSessionId === lead.sessionId),
+        createdAt: lead.createdAt,
+        cwd: lead.cwd,
+        name: lead.name,
+        pausedAgents: lead.pausedAgents ?? [],
+        plan: lead.plan,
+        repo: lead.repo,
+        sessionId: lead.sessionId,
+        tag: lead.tag,
+        updatedAt: lead.updatedAt,
+      }),
+    );
   // The other sessions are the project of the folder the portal runs in, when it has one: a
   // session record is kept under its project's folder, and there is no list of every project.
   const found = await repoOf(deps);
@@ -453,7 +476,7 @@ export async function crewAnswerFor(
     listAllLeads(paths.stateDir).records.find(
       (one) => one.repo === record.repo && one.sessionId === record.leadSessionId,
     ) ?? null;
-  const gone = leadGone(lead, agents.crew, deps.action.portal.now());
+  const gone = leadGone(lead, agents.crew, deps.action.portal.now(), { paths });
   const mergeCheck = await mergeCheckOf(
     deps,
     repo,
@@ -587,21 +610,23 @@ export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
   }
   const crew: CrewNeed[] = [];
   for (const record of records) {
-    const index = openQuestionIndex(record);
-    const question = index === null ? undefined : record.questions[index];
-    if (question === undefined) continue;
-    crew.push({
-      askedAt: question.askedAt,
-      crew: {
-        id: record.id,
-        name: record.name,
-        shortId: record.shortId,
-        state: record.state,
-      },
-      options: question.options,
-      question: question.question,
-      recommended: question.recommended,
-    });
+    if (questionClosed(record.state)) continue;
+    for (const [index, question] of record.questions.entries()) {
+      if (!isQuestionOpen(question)) continue;
+      crew.push({
+        number: index + 1,
+        askedAt: question.askedAt,
+        crew: {
+          id: record.id,
+          name: record.name,
+          shortId: record.shortId,
+          state: record.state,
+        },
+        options: question.options,
+        question: question.question,
+        recommended: question.recommended,
+      });
+    }
   }
   const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
   const permissions: PermissionWait[] =

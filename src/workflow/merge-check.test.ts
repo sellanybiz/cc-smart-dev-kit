@@ -12,8 +12,17 @@ import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
 import { hookEnv, makeClone, writeClaudeFile } from "../testing/hooks";
 import { git } from "../testing/temp";
-import { checkBranch, type MergeWorld } from "./merge-check";
+import { checkBranch, type MergeWorld, policyUnread } from "./merge-check";
 import { reviewsFile } from "./reviews";
+
+test("a missing origin base names the first push and repeat check", () => {
+  const reason = policyUnread(
+    "lead-plan",
+    "origin/lead-plan is not known in this repository (no origin, or the branch was never fetched)",
+  );
+  expect(reason).toContain("git push -u origin lead-plan");
+  expect(reason).toContain("run merge-check again");
+});
 
 /** The project's policy as committed on `main`: the defaults the gate reads. */
 const POLICY = {
@@ -97,6 +106,15 @@ function branchWorld(policy: Record<string, unknown> = {}): {
   );
   return { env, repo, reviewed };
 }
+
+test("merge-check keeps the origin trust boundary for an unpushed lead base", async () => {
+  const { env, repo } = branchWorld();
+  git(repo, "branch", "lead-plan", "main");
+  const verdict = await checkBranch(worldOf(repo, env), { base: "lead-plan", branch: "feat" });
+  expect(verdict).toMatchObject({ kind: "refused" });
+  expect("reason" in verdict ? verdict.reason : "").toContain("git push -u origin lead-plan");
+  expect("reason" in verdict ? verdict.reason : "").toContain("run merge-check again");
+});
 
 const LIMITS = { files: 10, lines: 200, percent: 20 };
 

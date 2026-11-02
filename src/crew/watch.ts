@@ -89,13 +89,17 @@ import { LEAD_WATCH_ARGS } from "./brief";
 import { type Caller, readCaller, reasonOf } from "./caller";
 import { type AgentRow, callClaude, findClaude } from "./claude";
 import type { CrewContext } from "./context";
+import { agoText } from "./display";
 import { LEFTOVER_STOP_MARK, mergedIntoBase } from "./end";
 import {
+  crewNotRunning,
   holdsItsPredecessor,
+  leadRunning,
   mergeProof,
   observeLeadPresence,
   RELEASE_STATES,
   STOPPED_REMINDER_MS,
+  sessionSnapshot,
   stoppedCrewNeed,
 } from "./lifecycle";
 import { memoryMbOf } from "./memory";
@@ -117,13 +121,16 @@ import {
   isQuestionOpen,
   keepWatchLease,
   lastHeardAnswer,
+  leadSessions,
   listAllCrew,
   listCrew,
   listLeads,
   markAnswerDelivered,
+  markNoteDelivered,
   NO_RESUME_STATES,
   readAnswerWatchBeat,
   readCrewEvents,
+  readLead,
   readReport,
   readWatchState,
   resumeClaimHeld,
@@ -131,6 +138,7 @@ import {
   sweepCrew,
   takeWatchLease,
   takeWatchLeaseUnlessLive,
+  undeliveredAnswerIndexes,
   updateCrew,
   updateCrewIfState,
   type WatchLease,
@@ -179,10 +187,10 @@ export const WATCH_MONITOR_COMMAND = `"$HOME/.local/bin/${COMMAND}" ${LEAD_WATCH
 
 /**
  * How a lead starts its watch again after it ended: the skill cannot arm its monitor a second
- * time in the same Claude process, so the lead starts the same command itself, persistent.
+ * time in the same Claude process, so the lead starts the same command itself, with a bounded timeout.
  * Said in the watch's own end line and in the lead's notes hook (`src/hooks/lead-notes.ts`).
  */
-export const WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (persistent), command: ${WATCH_MONITOR_COMMAND}`;
+export const WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: ${WATCH_MONITOR_COMMAND}`;
 
 /**
  * A watch that must stop acting (WF1): a newer watch of its lead took the lease, the process that
@@ -344,6 +352,8 @@ export function eventLine(
 ): null | string {
   const name = event.name;
   switch (event.type) {
+    case "adopted":
+      return `${name}: ${event.text ?? "adopted by this lead"}`;
     case "state": {
       // `created` is the lead's own launch, which it saw. A `starting` event is news only when the
       // launcher gave it a line: one the watch started from the queue ("started from the queue").
@@ -378,8 +388,21 @@ export function eventLine(
       if (typeof record?.reportPath === "string") parts.push(`report ${record.reportPath}`);
       return parts.join(" · ");
     }
-    case "question":
-      return `${name}: question · ${clip(event.text ?? "")} · answer it: crew answer "${name}" "<text>"`;
+    case "question": {
+      const number =
+        event.question ??
+        Math.max(
+          1,
+          (record?.questions.findIndex(
+            (one) => one.askedAt === event.at && one.question === event.text,
+          ) ?? -1) + 1,
+        );
+      const asked = record?.questions[number - 1];
+      const head = `${name}: question ${number} · ${clip(event.text ?? "")}`;
+      if (asked?.answeredAt != null)
+        return `${head} · answered ${agoText(asked.answeredAt, Date.now())}`;
+      return `${head} · answer it: crew answer "${name}" --question ${number} "<text>" (or --file <path|-> for long text)`;
+    }
     case "person":
       // The person typed into the crew session (D55): their word wins over the brief, so the
       // phase it hands back may no longer be the phase it started — read it against the brief.
@@ -653,8 +676,8 @@ async function holdRefusedSession(
     { state: "stopped", stoppedByWatch: true },
     ctx.now(),
     open
-      ? `its backend refused the turn (${reason}); your answer to its open question resumes it`
-      : "its backend refused the turn; your answer to its question resumes it",
+      ? `its backend refused the turn (${reason}); your answer to question ${record.questions.findIndex(isQuestionOpen) + 1} resumes it`
+      : `its backend refused the turn; your answer to question ${record.questions.length + 1} resumes it`,
   );
 }
 
@@ -687,6 +710,9 @@ function historicallyMergedWhileStopped(record: CrewRecord, events: readonly Cre
 export interface WatchScope {
   /** The lead session whose crew sessions are watched. */
   leadSessionId: string;
+  leadIds?: readonly string[];
+  /** History before this time is summarized, not replayed line by line. */
+  adoptedAt?: string;
   /** The folder the lead merges in: its own, else the repository's main checkout. */
   mergeInto: string;
   repo: string;
@@ -1022,9 +1048,37 @@ function sayEvents(
     (one) => one.leadSessionId === scope.leadSessionId,
   );
   const reviewFile = reviewsFile(ctx.paths.stateDir, scope.repo);
+  const lastReports = new Map<string, CrewEvent>();
+  if (scope.adoptedAt !== undefined)
+    for (const event of read.events)
+      if (event.type === "report" && event.at <= scope.adoptedAt)
+        lastReports.set(event.crew, event);
   for (const event of read.events) {
-    if (event.lead !== scope.leadSessionId) continue;
+    if (event.lead === null || !(scope.leadIds ?? [scope.leadSessionId]).includes(event.lead))
+      continue;
+    if (
+      scope.adoptedAt !== undefined &&
+      event.at <= scope.adoptedAt &&
+      !["question", "report"].includes(event.type)
+    )
+      continue;
     const record = mine.find((one) => one.id === event.crew) ?? null;
+    if (
+      scope.adoptedAt !== undefined &&
+      event.at <= scope.adoptedAt &&
+      event.type === "report" &&
+      (record === null || lastReports.get(event.crew) !== event)
+    )
+      continue;
+    if (
+      scope.adoptedAt !== undefined &&
+      event.at <= scope.adoptedAt &&
+      event.type === "question" &&
+      (!record ||
+        ["done", "failed", "handoff", "merged", "removed", "discarded"].includes(record.state) ||
+        !record.questions.some((one) => one.askedAt === event.at && isQuestionOpen(one)))
+    )
+      continue;
     const reviewed =
       record !== null &&
       reviewsOn(reviewFile, record.branch, scope.resolved.reviewAgents.value).length > 0;
@@ -1375,13 +1429,13 @@ async function runPass(
           "its session is back in agent view",
         );
       }
-      if (record.sessionId === null || !isRunning(record) || row !== null) {
+      if (record.sessionId === null || !isRunning(record) || isLiveRow(row)) {
         delete missing[key];
         continue;
       }
       const first = missing[key];
       if (first === undefined) missing[key] = ctx.now();
-      else if (ctx.now() - first >= 60_000) {
+      else if (crewNotRunning(record, agents, ctx.now(), first)) {
         await sweepCrew(ctx.paths.stateDir, record.repo, record.id, record.state, ctx.now());
         delete missing[key];
       }
@@ -1394,6 +1448,7 @@ async function runPass(
     listLeads(ctx.paths.stateDir, repo).records,
     agents,
     ctx.now(),
+    ctx,
   );
   const mine = listCrew(ctx.paths.stateDir, repo).records.filter(
     (one) => one.leadSessionId === scope.leadSessionId,
@@ -1790,18 +1845,30 @@ async function runPass(
         );
         continue;
       }
-      const index = record.resumeWaits.answer;
-      const question = index === null ? undefined : record.questions[index];
+      const indexes = undeliveredAnswerIndexes(record);
+      const notes = (record.notes ?? []).flatMap((one, index) =>
+        one.deliveredAt === null ? [index] : [],
+      );
       const prompt =
-        question?.answer == null
-          ? "Continue your phase."
-          : deliveryText(question.question, question.answer, lastHeardAnswer(question, true));
+        [
+          ...indexes.map((index) => {
+            const one = record.questions[index];
+            return one?.answer == null
+              ? ""
+              : `Question ${index + 1}: ${one.question}\n${deliveryText(one.question, one.answer, lastHeardAnswer(one, true))}`;
+          }),
+          ...notes.map((index) => `Your lead's note:\n${record.notes?.[index]?.text ?? ""}`),
+        ].join("\n\n") || "Continue your phase.";
       const resumed = await resumeSession(ctx, record, prompt);
       if (resumed.ok) {
         const stored = await markResumed(record, resumed.session, ctx);
         if (!stored) said[resumeHoldKey(record.id)] = "resume was not stored";
-        if (stored && index !== null)
-          await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+        if (stored) {
+          for (const index of indexes)
+            await markAnswerDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+          for (const index of notes)
+            await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+        }
       } else {
         if (resumed.unnamed) said[resumeHoldKey(record.id)] = resumed.why;
         if (said[`${record.id}:resume-wait`] !== resumed.why) {
@@ -1897,19 +1964,21 @@ async function runPass(
     await lookAtGitHub(scope, ctx, budget, said, say);
     const settleKey = "issues:settle";
     try {
-      const marks = await settleMarks(
-        issueMarksFile(ctx.paths.stateDir, repo, scope.leadSessionId),
-        {
-          cwd: scope.repo,
-          env: ctx.env,
-          gh: scope.gh ?? runGh,
-          home: ctx.paths.home,
-          paths: ctx.paths,
-        },
-        ctx.now(),
-        budget,
-      );
-      for (const line of marks) say(line);
+      for (const id of scope.leadIds ?? [scope.leadSessionId]) {
+        const marks = await settleMarks(
+          issueMarksFile(ctx.paths.stateDir, repo, id),
+          {
+            cwd: scope.repo,
+            env: ctx.env,
+            gh: scope.gh ?? runGh,
+            home: ctx.paths.home,
+            paths: ctx.paths,
+          },
+          ctx.now(),
+          budget,
+        );
+        for (const line of marks) say(line);
+      }
       delete said[settleKey];
     } catch (error) {
       // The queue file cannot be read or written: one line, once while it lasts, and the watch goes on.
@@ -1985,7 +2054,7 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   const leadSessionId = leadOf(
     args.lead,
     read.caller.session?.sessionId ?? null,
-    leads.map((one) => one.sessionId),
+    leads.filter((one) => one.endedAt == null).map((one) => one.sessionId),
   );
   if (leadSessionId === null) {
     const line = `crew watch: which lead's crew sessions? name one with --lead <session>${
@@ -2030,6 +2099,12 @@ export async function runCrewWatch(args: WatchArgs, ctx: CrewContext): Promise<n
   }
   const parent = ctx.parentPid?.() ?? null;
   const goesOn = async (): Promise<boolean> => {
+    const current = readLead(ctx.paths.stateDir, repo, leadSessionId);
+    if (current?.adoptedBy != null)
+      throw new WatchEnd(
+        "print",
+        `crew watch: this lead was adopted by ${current.adoptedBy}; this watch ends`,
+      );
     // Claude Code ends a monitor by ending its shell, and the watch is re-parented: nobody
     // started it any more, and nobody reads it.
     if (parent !== null && ctx.parentPid?.() !== parent) {
@@ -2117,6 +2192,9 @@ async function watchLoop(
   // A watch with no mark yet reads the log from its start: no event is lost. The mark is written
   // when the lead records itself (`crew lead`), so the lines after it are this lead's.
   let state: WatchState = known ?? { offset: 0, said: {} };
+  let generation = -1;
+  let leadIds: readonly string[] = [leadSessionId];
+  let emptySaid = false;
   // **The workflow is read again at each pass.** Reading it once, before this loop, meant a cap
   // a person changes while a lead's watch runs never reached it: on 2026-10-23 the owner set
   // `crew.max 16` (the CPU was 5x overloaded) and every lead's watch went on starting queued
@@ -2140,7 +2218,15 @@ async function watchLoop(
    * memory for the next write.
    */
   const keep = async (): Promise<void> => {
-    if (await goesOn()) writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state);
+    const lead = readLead(ctx.paths.stateDir, repo, leadSessionId);
+    if (lead?.adoptedBy != null)
+      throw new WatchEnd(
+        "print",
+        `crew watch: this lead was adopted by ${lead.adoptedBy}; this watch ends`,
+      );
+    if ((lead?.generation ?? 0) !== generation) return;
+    if (await goesOn())
+      await writeWatchState(ctx.paths.stateDir, repo, leadSessionId, state, generation);
   };
   for (;;) {
     /** The lines this round said: a `--once` ends on the first round that said any. */
@@ -2149,6 +2235,55 @@ async function watchLoop(
       // Before it acts: a watch that may not act any more ends here (`WatchEnd`), and one whose
       // store is too busy to say acts on nothing this time and asks again at its next look.
       if (await goesOn()) {
+        const lead = readLead(ctx.paths.stateDir, repo, leadSessionId);
+        if (lead?.adoptedBy != null)
+          throw new WatchEnd(
+            "print",
+            `crew watch: this lead was adopted by ${lead.adoptedBy}; this watch ends`,
+          );
+        if ((lead?.generation ?? 0) !== generation) {
+          generation = lead?.generation ?? 0;
+          state = readWatchState(ctx.paths.stateDir, repo, leadSessionId) ?? {
+            offset: 0,
+            said: {},
+          };
+          leadIds = lead === null ? [leadSessionId] : leadSessions(lead);
+          if (generation > 0) {
+            for (const record of listCrew(ctx.paths.stateDir, repo).records.filter(
+              (one) => one.leadSessionId === leadSessionId,
+            )) {
+              ctx.print(`${record.name}: ${record.state} — adopted by this lead`);
+              lines++;
+            }
+          }
+        }
+        const records = listCrew(ctx.paths.stateDir, repo).records;
+        if (!emptySaid && !records.some((one) => one.leadSessionId === leadSessionId)) {
+          emptySaid = true;
+          ctx.print("crew watch: this lead has no crew sessions");
+          lines++;
+          try {
+            const sessions = sessionSnapshot(ctx);
+            const rows = agentRows(ctx);
+            for (const other of listLeads(ctx.paths.stateDir, repo).records) {
+              if (
+                other.sessionId === leadSessionId ||
+                other.endedAt != null ||
+                !(other.plan === lead?.plan || other.cwd === (lead?.cwd ?? ctx.cwd)) ||
+                !records.some(
+                  (one) => one.leadSessionId === other.sessionId && one.state !== "removed",
+                )
+              )
+                continue;
+              if (!leadRunning(other, rows, sessions, ctx))
+                ctx.print(
+                  `lead ${other.name} (${other.sessionId.slice(0, 8)}) is not running; run ${COMMAND} crew lead --plan ${other.plan} to take its crew`,
+                );
+            }
+          } catch (error) {
+            ctx.print(`crew watch: ${reasonOf(error)}; retry crew lead`);
+          }
+        }
         const reread = readCaller("watch", ctx, { session: "optional" });
         let mayStart = true;
         if (reread.ok) {
@@ -2166,10 +2301,17 @@ async function watchLoop(
             capsSaid = true;
           }
         }
-        const scope: WatchScope = { ...start, feedMemory, mayStart, resolved: caps };
+        const scope: WatchScope = {
+          ...start,
+          leadIds,
+          ...(generation > 0 && lead != null ? { adoptedAt: lead.updatedAt } : {}),
+          feedMemory,
+          mayStart,
+          resolved: caps,
+        };
         const pass = await watchPass(state, ctx, scope);
         state = pass.state;
-        lines = pass.lines;
+        lines += pass.lines;
         // A busy store keeps the state in memory for the next write.
         await keep();
         failedInARow = 0;
@@ -2181,7 +2323,7 @@ async function watchLoop(
       // What the failed pass had done stands: its lines were said, and its offset moves on.
       if (error instanceof PassFailed) {
         state = error.state;
-        lines = error.lines;
+        lines += error.lines;
         try {
           await keep();
         } catch (again) {

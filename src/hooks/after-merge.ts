@@ -1613,7 +1613,7 @@ function leadsOf(
   repo: string,
   sessionId: string | null,
 ): { merger: LeadRecord | null; others: LeadRecord[] } {
-  const leads = listLeads(stateDir, repo).records;
+  const leads = listLeads(stateDir, repo).records.filter((one) => one.endedAt == null);
   // No session id: which lead merged is unknown, so every lead is another one to tell.
   if (sessionId === null) return { merger: null, others: leads };
   const merger = leads.find((one) => one.sessionId === sessionId) ?? null;

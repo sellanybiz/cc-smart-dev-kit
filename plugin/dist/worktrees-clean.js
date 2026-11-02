@@ -875,7 +875,7 @@ import { join as join20 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.8.1",
+  version: "1.9.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -897,9 +897,44 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/sessions.ts
-import { existsSync, readdirSync as readdirSync3, readFileSync as readFileSync4, statSync as statSync2 } from "fs";
+import { existsSync, readdirSync as readdirSync3, readFileSync as readFileSync5, statSync as statSync2 } from "fs";
 import { uptime } from "os";
 import { join as join6 } from "path";
+
+// src/jobs/ancestry.ts
+import { readFileSync as readFileSync4 } from "fs";
+var MAX_DEPTH = 128;
+function parentPidFromStat(stat) {
+  const end = stat.lastIndexOf(")");
+  if (end === -1)
+    return null;
+  const fields = stat.slice(end + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+}
+function ancestorsBy(pid, parentOf) {
+  const ancestors = [];
+  const seen = new Set([pid]);
+  let current = pid;
+  while (ancestors.length < MAX_DEPTH) {
+    const parent = parentOf(current);
+    if (parent === null || parent === 0 || seen.has(parent))
+      break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+function readProcStat(pid) {
+  try {
+    return readFileSync4(`/proc/${String(pid)}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/sessions.ts
 function parseSessionRecord(json) {
   let value;
   try {
@@ -909,11 +944,17 @@ function parseSessionRecord(json) {
   }
   if (typeof value !== "object" || value === null)
     return null;
-  const { cwd, name, pid, sessionId } = value;
+  const { cwd, name, pid, sessionId, procStart } = value;
   if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
     return null;
   }
-  return { pid, sessionId, cwd, name: typeof name === "string" ? name : sessionId.slice(0, 8) };
+  return {
+    pid,
+    sessionId,
+    cwd,
+    name: typeof name === "string" ? name : sessionId.slice(0, 8),
+    ...typeof procStart === "string" ? { procStart } : {}
+  };
 }
 function isRunning(pid) {
   try {
@@ -923,7 +964,7 @@ function isRunning(pid) {
     return error.code === "EPERM";
   }
 }
-function liveSessions(claudeConfigDir) {
+function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join6(claudeConfigDir, "sessions");
   if (!existsSync(dir))
     return [];
@@ -931,19 +972,31 @@ function liveSessions(claudeConfigDir) {
   const live = [];
   for (const file of readdirSync3(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !isRunning(pid))
+    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning)(pid))
       continue;
     let text;
     try {
       if (statSync2(join6(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync4(join6(dir, file), "utf8");
-    } catch {
-      continue;
+      text = readFileSync5(join6(dir, file), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT")
+        continue;
+      throw new Error(`the record of running session ${pid} cannot be read; retry`);
     }
     const record = parseSessionRecord(text);
     if (record === null) {
       throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+    }
+    if ((facts.platform ?? process.platform) === "linux") {
+      const stat = (facts.readStat ?? readProcStat)(pid);
+      if (stat === null)
+        throw new Error(`the start time of session ${pid} cannot be read; retry`);
+      const start = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/)[19];
+      if (record.procStart === undefined || start === undefined)
+        throw new Error(`the start identity of running session ${pid} cannot be read; retry`);
+      if (record.procStart !== start)
+        continue;
     }
     live.push(record);
   }
@@ -963,7 +1016,7 @@ import {
   mkdirSync as mkdirSync4,
   openSync as openSync3,
   readdirSync as readdirSync6,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   readSync,
   rmSync,
   statSync as statSync4
@@ -6898,7 +6951,7 @@ import {
   mkdirSync as mkdirSync2,
   openSync as openSync2,
   readdirSync as readdirSync4,
-  readFileSync as readFileSync5,
+  readFileSync as readFileSync6,
   readlinkSync as readlinkSync4,
   realpathSync as realpathSync2,
   renameSync,
@@ -6956,7 +7009,7 @@ function describeIssues(issues) {
 }
 
 // src/crew/runs.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync5, readFileSync as readFileSync6 } from "fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync5, readFileSync as readFileSync7 } from "fs";
 import { basename as basename3, dirname as dirname3, join as join8 } from "path";
 var RUNS_DIR = "runs";
 var PLAN_ARCHIVE_DIR = "archive";
@@ -7265,7 +7318,7 @@ function nextRun(previous, change) {
 function readRunFile(file) {
   let raw;
   try {
-    raw = readFileSync6(file, "utf8");
+    raw = readFileSync7(file, "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
       return null;
@@ -7450,6 +7503,7 @@ var crewFields = object({
   waitsFor: array(text2),
   files: array(text2),
   questions: array(crewQuestion),
+  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
   state: word(),
   lastLine: string2().nullable(),
   reportPath: text2.nullable(),
@@ -7510,6 +7564,9 @@ var leadFields = object({
   tag: text2,
   cwd: text2,
   planFile: text2.nullable().optional(),
+  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
+  adoptedBy: text2.optional(),
+  generation: count.optional(),
   endedAt: text2.nullable().optional(),
   sessionUnknownSince: text2.nullable().optional(),
   pausedAgents: array(text2).optional(),
@@ -7528,6 +7585,7 @@ var eventFields = object({
   text: string2().nullable(),
   sha: sha.nullable().optional(),
   note: string2().nullable().optional(),
+  question: number2().int().min(1).optional(),
   memoryMb: number2().min(0).nullable().optional(),
   pair: text2.optional(),
   tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
@@ -7592,7 +7650,7 @@ function checked(schema, value, file) {
 function readRecord(schema, file) {
   let raw;
   try {
-    raw = readFileSync7(file, "utf8");
+    raw = readFileSync8(file, "utf8");
   } catch (error) {
     if (notThere(error))
       return null;
@@ -7821,6 +7879,9 @@ var watchStateFields = object({
   routerRequests: number2().int().min(0).nullable().optional(),
   stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
 });
+function watchLeaseFile(stateDir, repo, leadSessionId) {
+  return join9(crewStoreDir(stateDir, repo), "watch-lease", `${fileId(leadSessionId, "session id")}.json`);
+}
 var watchLeaseFields = object({
   at: number2().int().min(0),
   host: string2(),
@@ -7830,6 +7891,31 @@ var watchLeaseFields = object({
   startTime: string2().nullable(),
   token: text2
 });
+function readWatchLease(stateDir, repo, leadSessionId) {
+  let raw;
+  try {
+    raw = readFileSync8(watchLeaseFile(stateDir, repo, leadSessionId), "utf8");
+  } catch (error) {
+    if (notThere(error))
+      return null;
+    throw error;
+  }
+  try {
+    const parsed = watchLeaseFields.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+function watchIsAlive(stateDir, repo, leadSessionId) {
+  let lease;
+  try {
+    lease = readWatchLease(stateDir, repo, leadSessionId);
+  } catch {
+    return false;
+  }
+  return lease !== null && !holderIsGone(lease, lease.at, FALLBACK_STALE_MS);
+}
 var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
 var notesStateFields = object({ offset: count });
 var stopStateFields = object({
@@ -7854,41 +7940,6 @@ var issueFeedFields = object({
 // src/crew/session.ts
 import { readFileSync as readFileSync9 } from "fs";
 import { join as join10 } from "path";
-
-// src/jobs/ancestry.ts
-import { readFileSync as readFileSync8 } from "fs";
-var MAX_DEPTH = 128;
-function parentPidFromStat(stat) {
-  const end = stat.lastIndexOf(")");
-  if (end === -1)
-    return null;
-  const fields = stat.slice(end + 1).trim().split(/\s+/);
-  const ppid = Number(fields[1]);
-  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
-}
-function ancestorsBy(pid, parentOf) {
-  const ancestors = [];
-  const seen = new Set([pid]);
-  let current = pid;
-  while (ancestors.length < MAX_DEPTH) {
-    const parent = parentOf(current);
-    if (parent === null || parent === 0 || seen.has(parent))
-      break;
-    ancestors.push(parent);
-    seen.add(parent);
-    current = parent;
-  }
-  return ancestors;
-}
-function readProcStat(pid) {
-  try {
-    return readFileSync8(`/proc/${String(pid)}/stat`, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-// src/crew/session.ts
 var CREW_ENV = "CC_SMART_DEV_KIT_CREW";
 function crewIdOf(env) {
   const id = env[CREW_ENV]?.trim() ?? "";
@@ -9177,7 +9228,7 @@ var jobsMachineConfigSchema = strictObject({
   sharedDirs: array(absolutePath).optional(),
   launch: _enum(["auto", "plain"]).optional(),
   slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: weightSchema.optional(),
+  cpuWeight: union([weightSchema, literal("idle")]).optional(),
   ioWeight: weightSchema.optional()
 });
 
@@ -9761,26 +9812,48 @@ function validMergeProof(record, ctx) {
   const existing = runGit(record.repo, ["rev-parse", "--verify", proofRef], ctx.env, GIT_TIMEOUT_MS);
   return existing.ok && existing.out === record.mergeProof.leadCommit;
 }
+function sessionSnapshot(ctx) {
+  return ctx.sessions?.() ?? liveSessions(ctx.paths.claudeConfigDir);
+}
+function leadRunning(lead, rows, sessions, ctx) {
+  if (sessions.some((one) => one.sessionId === lead.sessionId))
+    return true;
+  if (ctx.watchAlive?.(lead.repo, lead.sessionId) ?? watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId))
+    return true;
+  if (rows === null)
+    throw new Error("the agent view cannot be read; retry crew lead");
+  return rowsOfLead(rows, lead).some((row) => isLiveRow(row));
+}
 function rowsOfLead(rows, lead) {
   return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
 }
-async function observeLeadPresence(stateDir, leads, rows, now) {
+async function observeLeadPresence(stateDir, leads, rows, now, ctx) {
   if (rows === null)
     return [...leads];
+  let sessions = [];
+  try {
+    sessions = sessionSnapshot(ctx);
+  } catch {
+    return [...leads];
+  }
   const observed = [];
   for (const lead of leads) {
-    const known = rowsOfLead(rows, lead).length > 0;
+    const known = leadRunning(lead, rows, sessions, ctx);
     observed.push(await setLeadPresence(stateDir, lead.repo, lead.sessionId, known, now) ?? lead);
   }
   return observed;
 }
-function leadGone(lead, rows, now) {
+function leadGone(lead, rows, now, ctx) {
   if (lead === null)
     return false;
   if (lead.endedAt != null)
     return true;
-  if (rows === null || rowsOfLead(rows, lead).length > 0)
+  try {
+    if (leadRunning(lead, rows, sessionSnapshot(ctx), ctx))
+      return false;
+  } catch {
     return false;
+  }
   const since = Date.parse(lead.sessionUnknownSince ?? "");
   return Number.isFinite(since) && now - since > STOPPED_REMINDER_MS;
 }
@@ -10140,6 +10213,7 @@ function lastLine(text) {
 }
 
 // src/crew/board.ts
+var REMOVED_VISIBLE_MS = 6 * 60 * 60 * 1000;
 function isRefusal(value) {
   return "lines" in value && "code" in value;
 }
@@ -10715,10 +10789,10 @@ async function orphanCrewOf(ctx) {
   if (crew.broken.length || leads.broken.length || leads.records.length === 0)
     return none;
   const rows = agentRows(ctx);
-  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now());
+  const observed = await observeLeadPresence(ctx.paths.stateDir, leads.records, rows, ctx.now(), ctx);
   return {
     records: crew.records,
-    gone: new Set(crew.records.filter((record) => leadGone(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now())).map((record) => record.id))
+    gone: new Set(crew.records.filter((record) => leadGone(observed.find((lead) => lead.sessionId === record.leadSessionId) ?? null, rows, ctx.now(), ctx)).map((record) => record.id))
   };
 }
 function orphanCrewLine(record) {
@@ -11211,6 +11285,7 @@ var REPORT_COMMAND = `${COMMAND} crew report`;
 var REPORT_DONE_COMMAND = `${REPORT_COMMAND} --status done --file -`;
 var CREW_NEVER_DOES = {
   answer: "answers its lead's questions",
+  note: "sends its lead's notes",
   lead: "leads",
   "lead tell": "tells another lead",
   model: "changes a crew session's model or effort",
@@ -11220,6 +11295,7 @@ var CREW_NEVER_DOES = {
 };
 var CREW_NEVER_RUNS = {
   answer: CREW_NEVER_DOES.answer,
+  note: CREW_NEVER_DOES.note,
   lead: CREW_NEVER_DOES.lead,
   "lead tell": CREW_NEVER_DOES["lead tell"],
   model: CREW_NEVER_DOES.model,
@@ -11229,6 +11305,57 @@ var CREW_NEVER_RUNS = {
   stop: CREW_NEVER_DOES.resume,
   watch: CREW_NEVER_DOES.watch
 };
+
+// src/workflow/merge-check.ts
+var PASSING_BUCKETS = new Set(["pass", "skipping"]);
+
+// src/setup/marketplace-access.ts
+var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
+
+// src/issues/marker.ts
+var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
+
+// src/issues/phase-issues.ts
+var MAX_PHASE_ISSUES = 10;
+
+// src/crew/report.ts
+var issueNumber = number2().int().positive();
+var testRunFields = looseObject({
+  command: string2().min(1),
+  passed: number2().int().min(0),
+  failed: number2().int().min(0),
+  ok: boolean2()
+});
+var checkFields = looseObject({
+  name: string2().min(1),
+  ok: boolean2(),
+  note: string2().nullable()
+});
+var modelReviewFields = looseObject({
+  agent: string2().min(1),
+  model: string2().min(1),
+  effort: string2().min(1),
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) }))
+});
+var ownReviewFields = looseObject({
+  findings: array(looseObject({ finding: string2().min(1), fix: string2().min(1) })),
+  reason: string2().min(1)
+});
+var modelReportSchema = looseObject({
+  issues: array(issueNumber).max(MAX_PHASE_ISSUES, `a phase fixes at most ${MAX_PHASE_ISSUES} issues: split it`).default([]),
+  tests: looseObject({
+    targeted: array(testRunFields).default([]),
+    full: testRunFields.nullable().default(null)
+  }).default({ targeted: [], full: null }),
+  checks: array(checkFields).default([]),
+  review: modelReviewFields.nullable().default(null),
+  ownReview: ownReviewFields.nullable().default(null),
+  docs: array(string2().min(1)).default([]),
+  needsLead: array(string2().min(1)).default([]),
+  open: array(string2().min(1)).default([]),
+  question: string2().nullable().default(null),
+  summary: string2().nullable().default(null).transform((value) => value === null || value.trim() === "" ? null : value.trim())
+});
 
 // src/crew/runs-actor.ts
 function actorOfCaller(ctx, repo) {
@@ -11338,15 +11465,6 @@ var FIRST_BACKOFF_MS = 5 * 60000;
 var MAX_BACKOFF_MS = 20 * 60000;
 var REPAUSE_WINDOW_MS = 15 * 60000;
 
-// src/workflow/merge-check.ts
-var PASSING_BUCKETS = new Set(["pass", "skipping"]);
-
-// src/setup/marketplace-access.ts
-var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
-
-// src/issues/marker.ts
-var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
-
 // src/issues/fixed.ts
 var MARKER_PREFIX2 = `<!-- ${COMMAND}:fixed `;
 
@@ -11428,7 +11546,7 @@ var CLASH_STATES = [...RUNNING_STATES, "queued"];
 // src/crew/watch.ts
 var SELF_WATCH_GRACE_MS = 5 * 60000;
 var WATCH_MONITOR_COMMAND = `"$HOME/.local/bin/${COMMAND}" ${LEAD_WATCH_ARGS}`;
-var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (persistent), command: ${WATCH_MONITOR_COMMAND}`;
+var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: ${WATCH_MONITOR_COMMAND}`;
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var PARKED_PASS_MS = 5 * 60000;
 var CONVERSATION_SWEEP_MS = 60 * 60 * 1000;

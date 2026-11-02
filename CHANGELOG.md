@@ -3,6 +3,32 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.9.0
+
+Desktop and crew reliability: lazy browser startup, low-priority heavy jobs, and a lead that
+can recover its crew after its session id changes.
+
+**What to run** after the update:
+
+- Restart Claude Code to load the new plugin. A lead moved to the background may receive a
+  new session id: run `cc-smart-dev-kit crew lead --plan <plan>` there to recover its crew.
+- Linux heavy jobs use idle CPU priority by default. `job set cpu-weight off` opts out; older
+  systemd versions that refuse idle use weight 10 instead. No CPU quota is imposed.
+
+What changed:
+
+- Chrome starts on the first browser tool call, not when the MCP server connects. Token
+  checks remain required, and `browser check` keeps its existing behaviour.
+- `crew lead` adopts a same-plan lead only when its session is proved absent. Live competing
+  leads are refused. Watches and prompt notes follow earlier session ids.
+- Crew questions remain open independently, with numbers. Answer one with `crew answer
+  <name> --question <n>`; long answers and notes accept `--file <path|->`. `crew note` reaches
+  queued, running and stopped crew sessions. The portal displays every open question.
+- `crew log <name>` shows branch commits and the diff stat. `crew list` hides removals older
+  than six hours; `--removed` includes them, and JSON stays unfiltered.
+- Lead guidance explains monitor expiry and re-arming, the first push before merge checks,
+  and review of changes made after a review. Empty file globs produce a warning.
+
 ## 1.8.1
 
 Fixes found while the 1.8.0 limits were put to work on a real machine.

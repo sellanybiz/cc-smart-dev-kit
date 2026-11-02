@@ -12,6 +12,7 @@ import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import {
   addCrewQuestion,
+  adoptLead,
   answerCrewQuestion,
   appendCrewEvent,
   CREW_STATES,
@@ -467,6 +468,7 @@ describe("D36: a crew session's questions", () => {
     ]);
     expect(after.state).toBe("working");
     expect(readCrewEvents(state, REPO).events.at(-1)).toEqual({
+      question: 1,
       at: "2026-10-21T10:05:00.000Z",
       lead: LEAD,
       name: "C my-app K contracts",
@@ -1128,6 +1130,31 @@ describe("what a paused crew session waits for", () => {
 });
 
 describe("the lead record", () => {
+  test("concurrent adoption cannot split one old lead between two successors", async () => {
+    const state = tempDir("state");
+    const lead = {
+      cwd: REPO,
+      name: "LEAD my-app master-plan",
+      plan: "master-plan",
+      repo: REPO,
+      sessionId: LEAD,
+      tag: "my-app",
+    };
+    await writeLead(state, lead, T0);
+    await writeLead(state, { ...lead, sessionId: "successor-one" }, T0);
+    await writeLead(state, { ...lead, sessionId: "successor-two" }, T0);
+    await createCrew(state, queued(), T0);
+    const results = await Promise.allSettled([
+      adoptLead(state, REPO, LEAD, "successor-one", T1, () => false),
+      adoptLead(state, REPO, LEAD, "successor-two", T1, () => false),
+    ]);
+    expect(results.filter((one) => one.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((one) => one.status === "rejected")).toHaveLength(1);
+    const owner = readLead(state, REPO, LEAD)?.adoptedBy;
+    if (owner === undefined) throw new Error("adoption did not record its owner");
+    expect(["successor-one", "successor-two"]).toContain(owner);
+    expect(listCrew(state, REPO).records.map((one) => one.leadSessionId)).toEqual([owner]);
+  });
   test("a lead is recorded by its session id; recording it again keeps its start", async () => {
     const state = tempDir("state");
     const lead = {
@@ -1339,11 +1366,11 @@ describe("the hand-back report", () => {
   });
 });
 
-describe("RG1: a new question supersedes the crew session's older open one", () => {
+describe("P4: independent questions and legacy superseding", () => {
   const first = { options: ["a", "b"], question: "Which port?", recommended: null };
   const second = { options: ["c", "d"], question: "Which port, 3210 or 3211?", recommended: 1 };
 
-  test("two questions in a row: the first is closed as superseded, with a pointer, and one is open", async () => {
+  test("two questions in a row both stay open", async () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), state: "working" }, T0);
     await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
@@ -1353,13 +1380,14 @@ describe("RG1: a new question supersedes the crew session's older open one", () 
       "Which port?",
       "Which port, 3210 or 3211?",
     ]);
-    expect(after.questions[0]).toMatchObject({ answer: null, supersededBy: 1 });
+    expect(after.questions[0]).toMatchObject({ answer: null });
+    expect(after.questions[0]?.supersededBy).toBeUndefined();
     expect(after.questions[1]?.supersededBy ?? null).toBeNull();
     expect(openQuestionIndex(after)).toBe(1);
-    expect(after.questions.map(isQuestionOpen)).toEqual([false, true]);
+    expect(after.questions.map(isQuestionOpen)).toEqual([true, true]);
   });
 
-  test("three in a row: only the newest is open, and each older one points at the one that replaced it", async () => {
+  test("three in a row stay open and the oldest takes its own answer", async () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), state: "working" }, T0);
     await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
@@ -1371,19 +1399,28 @@ describe("RG1: a new question supersedes the crew session's older open one", () 
       { ...second, question: "Third?" },
       T0 + 2000,
     );
-    expect(after.questions.map((one) => one.supersededBy ?? null)).toEqual([1, 2, null]);
+    expect(after.questions.map((one) => one.supersededBy ?? null)).toEqual([null, null, null]);
     expect(openQuestionIndex(after)).toBe(2);
-    // An answer to the oldest is refused with the line that names the newest, not the middle one.
-    await expect(answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1)).rejects.toThrow(
-      'was superseded by question 2 ("Third?"): answer that one',
-    );
+    const answered = await answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "a", T1);
+    expect(answered.questions.map(isQuestionOpen)).toEqual([false, true, true]);
   });
 
   test("an answer to a superseded question is refused with the line that names the newest", async () => {
     const state = tempDir("state");
     await createCrew(state, { ...queued(), state: "working" }, T0);
     await addCrewQuestion(state, REPO, "crew-K-contracts", first, T0);
-    await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    const old = await addCrewQuestion(state, REPO, "crew-K-contracts", second, T1);
+    await updateCrew(
+      state,
+      REPO,
+      "crew-K-contracts",
+      {
+        questions: old.questions.map((one, index) =>
+          index === 0 ? { ...one, supersededBy: 1 } : one,
+        ),
+      },
+      T1,
+    );
     await expect(
       answerCrewQuestion(state, REPO, "crew-K-contracts", 0, "3210", T1),
     ).rejects.toThrow(

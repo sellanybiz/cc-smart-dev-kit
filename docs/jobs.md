@@ -516,10 +516,10 @@ With `launch: auto` (the default), on Linux:
   through it instead of dying. On a 64 GB machine the ceiling is 56 GB; on a 32 GB machine it
   is 24 GB, shared by up to three jobs; on a 16 GB machine it is the floor, 14 GB. A machine
   whose desktop and sessions need more than 8 GB raises `reserveGb` (or sets `budgetGb`).
-- **Normal CPU and disk I/O.** The slices carry **no** weight by default: a heavy job runs at
-  systemd's own weight (100), the same as the desktop and the sessions, and an idle machine
-  gives it every core. A person who wants heavy jobs to give way under load can set
-  `cpuWeight` and `ioWeight` (1 to 10000; for example `cc-smart-dev-kit job set cpu-weight 50`).
+- **Idle CPU, normal disk I/O.** CPU defaults to `idle` on Linux: heavy jobs get CPU only
+  when nothing else wants it. `job set cpu-weight idle|<1-10000>|off` changes it.
+  Older systemd versions that refuse idle get weight 10 instead; the job says so once.
+  Disk I/O stays off by default; `ioWeight` accepts 1 to 10000 or `off`.
   Then, at the same moment and in the same form as the ceiling, the slices get that
   `CPUWeight=` and `IOWeight=`. A weight, never a quota. The weight goes on **every slice of
   the chain**, not only the heavy one: a dash in a slice name nests, so
@@ -586,7 +586,7 @@ Optional. Unknown fields are an error that names the file and the field.
 | `sharedDirs` | none | Shared folders (§ The shared view), used in path order. |
 | `launch` | `auto` | `auto` or `plain` (§ The launch). |
 | `slice` | `cc-smart-dev-kit-heavy.slice` | The systemd slice for `auto`. |
-| `cpuWeight` | off | The CPU weight of the heavy slices, 1 to 10000 (systemd's own default is 100). `0` or `"off"` (also leaving it out) leaves systemd's default. Machine-wide: the slices are the machine's, so a project's file cannot own it. |
+| `cpuWeight` | idle | Linux CPU priority: `idle`, 1 to 10000, or `off`. Unset means idle; `0` remains an alias for off. Machine-wide, on every slice in the chain. |
 | `ioWeight` | off | The disk I/O weight of the heavy slices, 1 to 10000. `0` or `"off"` leaves systemd's default (100). Machine-wide, like `cpuWeight`. |
 
 The weights and the slots are machine-wide on purpose. The slices and the machine's memory
@@ -683,10 +683,10 @@ cases are in `src/jobs/classify.test.ts` and, through the hook, in
   When they are, the kernel stops the largest inside the slice, `job run` says "killed for
   memory", and the job can run again. On a small machine lower `maxJobs`; on a big one raise
   it.
-- **CPU and disk I/O are shared by weight, and by default not even that.** With no weight set a
-  heavy job competes at systemd's normal weight; one job alone gets every core and the whole
-  disk, and several together may slow the desktop. Set `cpuWeight` and `ioWeight` to make
-  them give way. There is no quota either way.
+- **CPU yields by default; disk I/O does not.** Idle CPU priority lets a heavy job use every
+  core when nothing else wants it, but yields to other work. Older systemd versions use
+  weight 10 instead, which shares CPU under load rather than yielding completely.
+  Disk I/O stays at normal priority unless `ioWeight` is set. There is no quota.
 - **No I/O weight with systemd's default delegation.** `user@.service` delegates
   `pids memory cpu`, so the `io` controller is usually not there. A set I/O weight is then
   skipped, `job status` says so, and an administrator turns it on by adding `io` to

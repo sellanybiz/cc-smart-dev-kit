@@ -839,7 +839,8 @@ describe("crew report", () => {
       expect(await ask("which port, 3210 or 3211?")).toBe(0);
       const [record] = listCrew(world.paths.stateDir, world.repo).records;
       expect(record?.questions).toHaveLength(2);
-      expect(record?.questions[0]).toMatchObject({ question: "which port?", supersededBy: 1 });
+      expect(record?.questions[0]).toMatchObject({ question: "which port?", answer: null });
+      expect(record?.questions[0]?.supersededBy).toBeUndefined();
       expect(record === undefined ? null : openQuestionIndex(record)).toBe(1);
       expect(await runCrew(["report", "--status", "blocked"], ctx)).toBe(0);
       const report = readReport(crewReportFile(world.paths.stateDir, world.repo, ID));
@@ -853,12 +854,13 @@ describe("crew report", () => {
         runCrew(["report", "--question", question, "--option", "a", "--option", "b"], ctx);
       await ask("old?");
       await ask("new?");
-      // The newest is answered: nothing is open, and the blocked report has no question of its
-      // own to name (the old one is superseded, not open).
+      // The newest is answered, but the older question still waits.
       const { answerCrewQuestion } = await import("./store");
       await answerCrewQuestion(world.paths.stateDir, world.repo, ID, 1, "yes", T0);
-      expect(await runCrew(["report", "--status", "blocked"], ctx)).toBe(1);
-      expect(world.err[0]).toContain("question");
+      expect(await runCrew(["report", "--status", "blocked"], ctx)).toBe(0);
+      expect(readReport(crewReportFile(world.paths.stateDir, world.repo, ID))?.question).toBe(
+        "old?",
+      );
     });
   });
 

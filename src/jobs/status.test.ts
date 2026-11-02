@@ -164,7 +164,7 @@ describe("the jobs reader", () => {
         },
       ],
       weights: {
-        cpu: { value: null, why: WEIGHT_DEFAULT("cpu") },
+        cpu: { value: "idle" },
         io: { value: null, why: WEIGHT_DEFAULT("io") },
       },
     });
@@ -220,7 +220,9 @@ describe("the jobs reader", () => {
     expect(lines[1]).toBe(
       "Memory ceiling for all heavy jobs together: 10 GB (set in jobs.json), on cc-smart-dev-kit-heavy.slice. A job over it is stopped, and the memory kept for everything else stays free.",
     );
-    expect(lines[2]).toBe(`CPU priority: not set: ${WEIGHT_DEFAULT("cpu")}`);
+    expect(lines[2]).toBe(
+      `CPU priority: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.`,
+    );
     expect(lines[3]).toBe(`Disk I/O priority: not set: ${WEIGHT_DEFAULT("io")}`);
     expect(lines[4]).toContain(": 1 of 3 slots in use");
     expect(lines[5]).toStartWith(
@@ -339,6 +341,22 @@ describe("the jobs reader", () => {
     ]);
     const lines = statusLines(read, world1.home, Date.now());
     expect(lines).toContain(`Shared folder ${shared}: 0 of 2 slots in use`);
+  });
+
+  test("idle needs the cpu controller", async () => {
+    const w = world();
+    const read = await readJobs({
+      ...w.ctx,
+      memory: {
+        ...w.ctx.memory,
+        read: (path) => (path === CONTROLLERS ? "memory pids" : w.ctx.memory.read(path)),
+      },
+    });
+    expect(read.weights.cpu.value).toBeNull();
+    expect(read.weights.cpu.why).toContain("was not given the cpu controller");
+    expect(statusLines(read, w.home, Date.now())[2]).toContain(
+      "CPU priority: not set: the user manager was not given the cpu controller.",
+    );
   });
 
   test("a jobs.json weight overrides the default, and 0 or off leaves systemd's own", async () => {
