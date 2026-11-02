@@ -14817,29 +14817,37 @@ function onOpusTier(records) {
 function placeFor(input) {
   if (input.unmet.length > 0) {
     const phases = input.unmet.map((wait) => `${wait.phase} (${wait.state ?? "not started yet"})`).join(", ");
-    return { start: false, why: `waits for ${phases}; it starts when each is merged` };
+    return {
+      start: false,
+      hold: "phases",
+      why: `waits for ${phases}; it starts when each is merged`
+    };
   }
   if (input.leadRunning >= input.perLead) {
     return {
       start: false,
+      hold: "lead",
       why: `its lead has ${input.leadRunning} of ${input.perLead} crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.opus && input.leadRunningOpus >= input.perLeadOpus) {
     return {
       start: false,
+      hold: "lead-opus",
       why: `its lead has ${input.leadRunningOpus} of ${input.perLeadOpus} opus crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.running >= input.max) {
     return {
       start: false,
+      hold: "machine",
       why: `${input.running} of ${input.max} crew sessions running on this machine; it starts when one finishes`
     };
   }
   if (input.opus && input.maxOpus !== null && input.runningOpus >= input.maxOpus) {
     return {
       start: false,
+      hold: "machine-opus",
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`
     };
   }
@@ -14849,6 +14857,7 @@ function placeFor(input) {
     if (age < gap) {
       return {
         start: false,
+        hold: "spacing",
         why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`
       };
     }
@@ -14856,6 +14865,7 @@ function placeFor(input) {
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
+      hold: "memory",
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`
     };
   }
@@ -14864,6 +14874,7 @@ function placeFor(input) {
     if (input.load.oneMinute > limit) {
       return {
         start: false,
+        hold: "load",
         why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`
       };
     }
@@ -14871,6 +14882,7 @@ function placeFor(input) {
   if (input.opus && !input.opusFallback && input.usagePercent !== null && input.usagePercent > input.usageHoldPercent) {
     return {
       start: false,
+      hold: "usage",
       why: `the 5-hour usage window is at ${Math.round(input.usagePercent)}%, past ${input.usageHoldPercent}%; it starts when the window resets, or when the opus slot has a fallback chain`
     };
   }

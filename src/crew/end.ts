@@ -428,21 +428,36 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
     );
   }
   const id = record.shortId;
+  // A stop someone asked for also ends a resume waiting for room (D72): the watch would bring the
+  // session back once the machine has room, which is what this stop says not to do.
+  const waited = record.resumeWaits !== undefined;
+  const cancelled = waited ? "; it no longer waits to come back" : "";
   if (record.state === "stopped") {
     // The lead's own stop makes it the lead's call to remove it, also when the watch stopped it
     // first; and a session the sweep stopped (D73) is no longer brought back when its row returns.
-    if (record.stoppedByWatch === true || record.sweptFrom !== undefined) {
+    if (record.stoppedByWatch === true || record.sweptFrom !== undefined || waited) {
       await updateCrew(
         ctx.paths.stateDir,
         record.repo,
         record.id,
-        { stoppedByWatch: undefined, sweptFrom: undefined },
+        { resumeWaits: undefined, stoppedByWatch: undefined, sweptFrom: undefined },
         ctx.now(),
       );
     }
-    ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
+    ctx.print(
+      `${record.name} is stopped already${cancelled}; \`claude attach ${id}\` opens it again`,
+    );
     return 0;
   }
+  // Before the stop, so the watch cannot resume it between the two.
+  if (waited)
+    await updateCrew(
+      ctx.paths.stateDir,
+      record.repo,
+      record.id,
+      { resumeWaits: undefined },
+      ctx.now(),
+    );
   const stopped = await stopSession(record, ctx);
   if (!stopped.ok) {
     return refuse(
@@ -457,7 +472,7 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
     ? "its session was gone already"
     : `the conversation is kept, and \`claude attach ${id}\` opens it again`;
   const stays = stopped.state === "stopped" ? "" : `; it stays ${stopped.state}`;
-  ctx.print(`stopped ${record.name} (${id}); ${what}${stays}`);
+  ctx.print(`stopped ${record.name} (${id}); ${what}${stays}${cancelled}`);
   return stopped.stored ? 0 : 1;
 }
 

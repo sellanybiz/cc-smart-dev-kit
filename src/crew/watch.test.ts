@@ -3391,6 +3391,67 @@ describe("D72: queued resumes", () => {
     },
   );
 
+  test("a held resume is said once for each kind of wait, never again as its numbers move", async () => {
+    const world = await leadWorld();
+    const record = await resumable(world, {
+      resumeWaits: { at: new Date(T0).toISOString(), answer: null },
+    });
+    const checkout = locateCheckout(world.repo, { env: world.ctx().env });
+    if (checkout === null) throw new Error("missing checkout");
+    const scope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, loadProjectConfig(checkout).config),
+    };
+    const MINUTE = 60_000;
+    async function pass(state: WatchState, atMs: number, change: Partial<CrewContext>) {
+      const ctx = world.ctx({ now: () => atMs, ...change }, { FAKE_AGENTS: "missing" });
+      return (await watchPass(state, ctx, scope)).state;
+    }
+    const busy = (oneMinute: number) => ({ load: () => ({ cores: 16, oneMinute }) });
+    let state = await pass(
+      { noted: true, offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+      T0 + 2 * MINUTE,
+      busy(58.6),
+    );
+    state = await pass(state, T0 + 3 * MINUTE, busy(60.2));
+    // The spacing between launches lifts by itself: never said, and the load after it is no news.
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { launchedAt: new Date(T0 + 4 * MINUTE - 10_000).toISOString() },
+      T0 + 4 * MINUTE,
+    );
+    state = await pass(state, T0 + 4 * MINUTE, busy(61));
+    state = await pass(state, T0 + 6 * MINUTE, busy(59.9));
+    // Another kind of wait is news.
+    state = await pass(state, T0 + 7 * MINUTE, { freeMemoryGb: async () => 1 });
+    expect(world.out.filter((line) => line.includes("waits to come back"))).toEqual([
+      `${NAME}: waits to come back — the load is 58.6 on 16 cores, past 24 (1.5 for each core); it starts when the load falls`,
+      `${NAME}: waits to come back — 1 GB free, a crew session needs 6 GB; it starts when memory frees`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
+    // Back: the wait is over, so a later one is news again, the same kind too.
+    state = await pass(state, T0 + 8 * MINUTE, {});
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
+    state = await pass(state, T0 + 10 * MINUTE, {});
+    await updateCrew(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { resumeWaits: { at: new Date(T0 + 10 * MINUTE).toISOString(), answer: null } },
+      T0 + 10 * MINUTE,
+    );
+    await pass(state, T0 + 12 * MINUTE, { freeMemoryGb: async () => 2 });
+    expect(world.out.filter((line) => line.includes("waits to come back"))).toEqual([
+      `${NAME}: waits to come back — the load is 58.6 on 16 cores, past 24 (1.5 for each core); it starts when the load falls`,
+      `${NAME}: waits to come back — 1 GB free, a crew session needs 6 GB; it starts when memory frees`,
+      `${NAME}: waits to come back — 2 GB free, a crew session needs 6 GB; it starts when memory frees`,
+    ]);
+  });
+
   test("the drain reads agent view once a pass, not once for each waiting resume", async () => {
     const world = await leadWorld();
     const wait = { at: new Date(T0).toISOString(), answer: null };
@@ -4095,6 +4156,32 @@ describe("D42: the watch resumes a paused crew session", () => {
     ]);
     expect(done.lines).toBe(1);
     expect(done.state.resumedAt).toBeUndefined();
+    expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
+  });
+
+  test("a resume the launch gate holds is said once for its kind, not on every pass", async () => {
+    const world = await leadWorld();
+    const resolved = resolvedOf(world);
+    const record = await pausedCrew(world);
+    const scope: WatchScope = {
+      gateway: () => Promise.resolve(facts()),
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved,
+    };
+    const busy = (atMs: number, oneMinute: number) =>
+      world.ctx(
+        { now: () => atMs, load: () => ({ cores: 16, oneMinute }) },
+        { FAKE_AGENTS_JSON: "[]" },
+      );
+    const first = await watchPass(fresh(world), busy(T0, 58.6), scope);
+    const second = await watchPass(first.state, busy(T0 + MINUTE, 60.2), scope);
+    await watchPass(second.state, busy(T0 + 2 * MINUTE, 63.4), scope);
+    expect(world.out).toEqual([
+      `${NAME}: not resumed — the load is 58.6 on 16 cores, past 24 (1.5 for each core); it starts when the load falls`,
+    ]);
+    expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
   });
 });

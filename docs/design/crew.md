@@ -1400,9 +1400,14 @@ allows. An unreadable agent view leaves the wait alone; a session already live c
 without starting a copy. The drain reads agent view once a pass, not once a waiting resume.
 A record that reaches `merged`, `removed` or `discarded` drops its wait (`NO_RESUME_STATES`,
 the states `crew resume` refuses), and the drain never resumes one. Asked again, a wait keeps
-its first time, its place in line, and its answer unless a new one comes (`resumeWaitOf`). Paused-limit recovery that meets a hold skips that pass and says
-why once while the reason stays the same. The launch gate and drain order live in
-§ The lead and the launch.
+its first time, its place in line, and its answer unless a new one comes (`resumeWaitOf`). A
+`crew stop` someone runs ends the wait too, so the watch never brings back a session it was
+told to stop. A waiting resume, and a paused-limit recovery, that meets a hold skips that pass
+and says why once for each kind of hold (`PlaceHold`: the phases, a cap, the memory, the load,
+the usage window), not again while only its numbers move (the load, a count, the seconds
+left): each line wakes the lead's model. The spacing between launches lifts within a minute
+and is never said. A resume that went through forgets the wait, so a later one is said again.
+The launch gate and drain order live in § The lead and the launch.
 
 **A session gone from agent view frees its place** (D73). Each lead's watch checks running
 records across the machine. Two readable passes at least a minute apart with no matching row

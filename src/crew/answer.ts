@@ -63,7 +63,7 @@ import {
 } from "./claude";
 import type { CrewContext } from "./context";
 import { pendingDiscardWhy } from "./discard";
-import { OPUS_TIER, placeFor, placeInputOf, withPlacesLock } from "./places";
+import { OPUS_TIER, type PlaceHold, placeFor, placeInputOf, withPlacesLock } from "./places";
 import { restoreReleasedWorktree } from "./release";
 import { readPart } from "./report";
 import { actorOfCaller } from "./runs-actor";
@@ -475,10 +475,11 @@ export interface ResumedSession {
  * the write that makes it `working` (WF1); or why not. `unnamed` is true when a session may have
  * started that the kit cannot name — `claude` said it started one but no id could be read, or two
  * ids disagree: a second try could start a second one, so the watch does not try again by itself.
+ * `waits` is the launch gate's reason when the gate held it, and `hold` its kind (`PlaceHold`).
  */
 export type ResumeResult =
   | { ok: true; session: ResumedSession }
-  | { ok: false; unnamed: boolean; why: string; waits?: string };
+  | { ok: false; unnamed: boolean; why: string; waits?: string; hold?: PlaceHold };
 
 /**
  * The words a line adds when a resume came back as another session: ` as session <new> (a copy of
@@ -686,7 +687,7 @@ export async function resumeSession(
         first.start && !options.replacesItself
           ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() })
           : first;
-      if (!place.start) return { claimed: false, waits: place.why };
+      if (!place.start) return { claimed: false, hold: place.hold, waits: place.why };
       const claimed = await claimResume(
         stateDir,
         record.repo,
@@ -703,10 +704,16 @@ export async function resumeSession(
           { launchedAt: new Date(ctx.now()).toISOString() },
           ctx.now(),
         );
-      return { claimed, waits: null };
+      return { claimed, hold: null, waits: null };
     });
-    if (decision.waits !== null)
-      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
+    if (decision.waits !== null && decision.hold !== null)
+      return {
+        ok: false,
+        unnamed: false,
+        why: decision.waits,
+        waits: decision.waits,
+        hold: decision.hold,
+      };
     claimed = decision.claimed;
   } catch (error) {
     return {

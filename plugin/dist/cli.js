@@ -21284,29 +21284,37 @@ function onOpusTier(records) {
 function placeFor(input) {
   if (input.unmet.length > 0) {
     const phases = input.unmet.map((wait) => `${wait.phase} (${wait.state ?? "not started yet"})`).join(", ");
-    return { start: false, why: `waits for ${phases}; it starts when each is merged` };
+    return {
+      start: false,
+      hold: "phases",
+      why: `waits for ${phases}; it starts when each is merged`
+    };
   }
   if (input.leadRunning >= input.perLead) {
     return {
       start: false,
+      hold: "lead",
       why: `its lead has ${input.leadRunning} of ${input.perLead} crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.opus && input.leadRunningOpus >= input.perLeadOpus) {
     return {
       start: false,
+      hold: "lead-opus",
       why: `its lead has ${input.leadRunningOpus} of ${input.perLeadOpus} opus crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.running >= input.max) {
     return {
       start: false,
+      hold: "machine",
       why: `${input.running} of ${input.max} crew sessions running on this machine; it starts when one finishes`
     };
   }
   if (input.opus && input.maxOpus !== null && input.runningOpus >= input.maxOpus) {
     return {
       start: false,
+      hold: "machine-opus",
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`
     };
   }
@@ -21316,6 +21324,7 @@ function placeFor(input) {
     if (age < gap) {
       return {
         start: false,
+        hold: "spacing",
         why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`
       };
     }
@@ -21323,6 +21332,7 @@ function placeFor(input) {
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
+      hold: "memory",
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`
     };
   }
@@ -21331,6 +21341,7 @@ function placeFor(input) {
     if (input.load.oneMinute > limit) {
       return {
         start: false,
+        hold: "load",
         why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`
       };
     }
@@ -21338,6 +21349,7 @@ function placeFor(input) {
   if (input.opus && !input.opusFallback && input.usagePercent !== null && input.usagePercent > input.usageHoldPercent) {
     return {
       start: false,
+      hold: "usage",
       why: `the 5-hour usage window is at ${Math.round(input.usagePercent)}%, past ${input.usageHoldPercent}%; it starts when the window resets, or when the opus slot has a fallback chain`
     };
   }
@@ -29446,6 +29458,14 @@ function sayEvents(from, scope, ctx, say) {
 function resumeHoldKey(id) {
   return `resume-hold:${id}`;
 }
+function waitSaid(line, hold) {
+  if (hold === "spacing")
+    return null;
+  return hold ?? line;
+}
+function resumeWaitKey(id) {
+  return `${id}:resume-wait`;
+}
 async function resumePaused(paused, state, said, ctx, gateway, goesOn, agents, say) {
   const now = ctx.now();
   const facts = await gateway(now);
@@ -29463,11 +29483,12 @@ async function resumePaused(paused, state, said, ctx, gateway, goesOn, agents, s
   if (!await goesOn())
     return null;
   const held = `the watch leaves it paused: ${COMMAND} crew resume "${next.name}" brings it back`;
-  const one = await resumeOne(next, ctx, now, agents, (line) => {
+  const one = await resumeOne(next, ctx, now, agents, (line, hold) => {
     const key = `${next.id}:paused-resume`;
-    if (said[key] !== line) {
+    const value = waitSaid(line, hold);
+    if (value !== null && said[key] !== value) {
       say(line);
-      said[key] = line;
+      said[key] = value;
     }
   }, held);
   if (one.unnamed || one.ok && !one.stored)
@@ -29494,7 +29515,7 @@ async function resumeOne(record, ctx, now, agents, say, unnamedNote = null) {
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
     const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
-    say(`${record.name}: not resumed \u2014 ${resumed.why}${note}`);
+    say(`${record.name}: not resumed \u2014 ${resumed.why}${note}`, resumed.hold);
     return {
       ...failed,
       ...resumed.waits === undefined ? {} : { waits: resumed.waits },
@@ -29860,6 +29881,9 @@ async function runPass(state, ctx, scope, draft) {
   const here = listCrew(ctx.paths.stateDir, repo).records;
   const queued = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued").sort((a, b) => Number(b.continues != null) - Number(a.continues != null) || a.createdAt.localeCompare(b.createdAt));
   const waiting = here.filter((one) => one.leadSessionId === scope.leadSessionId && one.resumeWaits !== undefined && !NO_RESUME_STATES.includes(one.state)).sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
+  for (const one of here)
+    if (!waiting.includes(one))
+      delete said[resumeWaitKey(one.id)];
   const drain = [
     ...queued.filter((one) => one.continues != null),
     ...waiting,
@@ -29905,9 +29929,10 @@ ${record.notes?.[index]?.text ?? ""}`)
       } else {
         if (resumed.unnamed)
           said[resumeHoldKey(record.id)] = resumed.why;
-        if (said[`${record.id}:resume-wait`] !== resumed.why) {
+        const value = waitSaid(resumed.why, resumed.hold);
+        if (value !== null && said[resumeWaitKey(record.id)] !== value) {
           say(`${record.name}: waits to come back \u2014 ${resumed.why}`);
-          said[`${record.id}:resume-wait`] = resumed.why;
+          said[resumeWaitKey(record.id)] = value;
         }
       }
       continue;
@@ -30457,20 +30482,24 @@ async function runCrewStop(ref, ctx) {
     return refuse4(failure3(`crew stop: ${record.name} has no session yet (it is ${record.state})`, `Fix: ${COMMAND} crew list shows when it starts`), ctx);
   }
   const id = record.shortId;
+  const waited = record.resumeWaits !== undefined;
+  const cancelled = waited ? "; it no longer waits to come back" : "";
   if (record.state === "stopped") {
-    if (record.stoppedByWatch === true || record.sweptFrom !== undefined) {
-      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { stoppedByWatch: undefined, sweptFrom: undefined }, ctx.now());
+    if (record.stoppedByWatch === true || record.sweptFrom !== undefined || waited) {
+      await updateCrew(ctx.paths.stateDir, record.repo, record.id, { resumeWaits: undefined, stoppedByWatch: undefined, sweptFrom: undefined }, ctx.now());
     }
-    ctx.print(`${record.name} is stopped already; \`claude attach ${id}\` opens it again`);
+    ctx.print(`${record.name} is stopped already${cancelled}; \`claude attach ${id}\` opens it again`);
     return 0;
   }
+  if (waited)
+    await updateCrew(ctx.paths.stateDir, record.repo, record.id, { resumeWaits: undefined }, ctx.now());
   const stopped = await stopSession(record, ctx);
   if (!stopped.ok) {
     return refuse4(failure3(`crew stop: ${stopped.why}`, `Fix: claude stop ${id} by hand, or ${COMMAND} crew list to see it`), ctx);
   }
   const what = stopped.gone ? "its session was gone already" : `the conversation is kept, and \`claude attach ${id}\` opens it again`;
   const stays = stopped.state === "stopped" ? "" : `; it stays ${stopped.state}`;
-  ctx.print(`stopped ${record.name} (${id}); ${what}${stays}`);
+  ctx.print(`stopped ${record.name} (${id}); ${what}${stays}${cancelled}`);
   return stopped.stored ? 0 : 1;
 }
 function resumedLine(record, shortId) {
@@ -33885,14 +33914,20 @@ async function resumeSession(ctx, record, text, options = {}) {
       const first = options.replacesItself ? { start: true } : placeFor(input);
       const place = first.start && !options.replacesItself ? placeFor({ ...input, freeGb: await ctx.freeMemoryGb(), load: ctx.load() }) : first;
       if (!place.start)
-        return { claimed: false, waits: place.why };
+        return { claimed: false, hold: place.hold, waits: place.why };
       const claimed = await claimResume(stateDir, record.repo, record.id, [record.state], token, ctx.now());
       if (claimed)
         await updateCrew(stateDir, record.repo, record.id, { launchedAt: new Date(ctx.now()).toISOString() }, ctx.now());
-      return { claimed, waits: null };
+      return { claimed, hold: null, waits: null };
     });
-    if (decision.waits !== null)
-      return { ok: false, unnamed: false, why: decision.waits, waits: decision.waits };
+    if (decision.waits !== null && decision.hold !== null)
+      return {
+        ok: false,
+        unnamed: false,
+        why: decision.waits,
+        waits: decision.waits,
+        hold: decision.hold
+      };
     claimed = decision.claimed;
   } catch (error) {
     return {

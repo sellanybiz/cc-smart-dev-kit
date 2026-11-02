@@ -5,15 +5,27 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 1.10.1
 
-A fix for `task import claude-mem`.
+Fixes for `task import claude-mem`, the lead's watch and `crew stop`.
 
 **What to run** after the update:
 
 - In each folder where you ran `cc-smart-dev-kit task import claude-mem` before (often your
   home folder): run it again, first with `--dry-run` to see what it drops, then without.
+- Nothing for the watch: each lead's watch ends by itself once the new version is installed,
+  and says to start it again; the watch you start has the fix.
 
 What changed:
 
+- **The lead's watch stops repeating a crew session that waits to come back.** A resume the
+  launch gate held said its reason again whenever the text changed, and the text holds live
+  numbers (the load, the seconds left), so each waiting crew session said a new line on every
+  pass, and each line woke the lead. Now each kind of wait (the load, the memory, a cap) is
+  said once, the spacing between launches is never said, and a wait is said again only after
+  the session came back. The same holds for a paused session's `not resumed` line.
+- **`crew stop` ends a resume that waits for room.** A `crew answer`, `crew note` or
+  `crew resume` the launch gate held leaves the resume waiting, and the watch started it once
+  the machine had room, even after the lead stopped that crew session. The stop now ends the
+  wait, and its line says so.
 - **The import leaves claude-mem's own lists out.** claude-mem keeps its own data (focus
   areas, rules, owner goals, and a record of each subagent: the lists `my-focus`, `my-rules`,
   `owner-goals` and its month lists, and `agent-lifecycle`) in work state too. 1.10.0 took

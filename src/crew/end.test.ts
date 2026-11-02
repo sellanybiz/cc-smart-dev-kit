@@ -272,6 +272,36 @@ describe("crew stop", () => {
     expect(world.claudeCalls()).toEqual([]);
   });
 
+  test("D72: a stop ends a resume that waits for room, so the watch never brings the session back", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    const resumeWaits = { at: new Date(NOW).toISOString(), answer: null };
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { resumeWaits }, NOW);
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B1 help is stopped already; it no longer waits to come back; `claude attach a1b2c3d4` opens it again",
+    ]);
+    expect(world.claudeCalls()).toEqual([]);
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("stopped");
+    expect(after?.resumeWaits).toBeUndefined();
+  });
+
+  test("D72: stopping a finished crew session whose resume waits for room ends the wait too", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const resumeWaits = { at: new Date(NOW).toISOString(), answer: 1 };
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { resumeWaits }, NOW);
+    expect(await runCrew(["stop", record.id], world.ctx())).toBe(0);
+    expect(world.claudeCalls()).toEqual([["stop", "a1b2c3d4"]]);
+    expect(world.out).toEqual([
+      "stopped C my-app B1 help (a1b2c3d4); the conversation is kept, and `claude attach a1b2c3d4` opens it again; it stays done; it no longer waits to come back",
+    ]);
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("done");
+    expect(after?.resumeWaits).toBeUndefined();
+  });
+
   test("D73: the lead's stop of a swept crew session makes the stop the lead's, never restored", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });
