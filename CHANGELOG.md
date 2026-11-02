@@ -3,6 +3,25 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.10.1
+
+A fix for `task import claude-mem`.
+
+**What to run** after the update, in each folder where you ran `cc-smart-dev-kit task import
+claude-mem` before (often your home folder): run it again, first with `--dry-run` to see what
+it drops, then without.
+
+What changed:
+
+- **The import leaves claude-mem's own lists out.** claude-mem keeps its own My Work data
+  (focus areas, rules and owner goals: the lists `my-focus`, `my-rules` and `owner-goals`) in
+  work state too. 1.10.0 took them in as open work, so a session started in that folder listed
+  them as its tasks. The import now says it left them out, and a second run drops what an
+  earlier import took from them, each with a note that says why.
+- **An imported task keeps claude-mem's dates.** An item claude-mem last touched long ago now
+  counts as stale (`tasks.staleDays`), so a session start counts it instead of listing it.
+- The import's list shows each item indented under its list again.
+
 ## 1.10.0
 
 The kit's own task list (D75), and leads and crew sessions that keep going. Work had too many

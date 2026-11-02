@@ -403,7 +403,7 @@ Every command below starts with `cc-smart-dev-kit`.
 | `task check [--json]` | Find stale tasks, missed releases, broken refs or files, duplicate titles and new legacy notes. Exit 1 on findings. |
 | `task release [--json]` | List release obligations by weight, including missed ones. |
 | `task import notes <folder> --kind <kind> [--since YYYY-MM-DD] [--dry-run]` | Import old notes, keeping their Markdown body. |
-| `task import claude-mem [--project <name>] [--dry-run]` | Move open claude-mem lists once. |
+| `task import claude-mem [--project <name>] [--dry-run]` | Move open claude-mem lists once, from the claude-mem project named for this folder. claude-mem's own My Work lists (`my-focus`, `my-rules`, `owner-goals`) stay out, and a later run drops what an earlier import took from them. |
 | `task delete <ref>` | Delete a mistake, not completed work. Work with notes or subtasks cannot be deleted. The number is not given to another task. |
 | `task mcp` | Run the stdio server; setup registers it. |
 
@@ -413,8 +413,8 @@ are missing. Work references use a number such as `#12`; project ids use `T-` pl
 base32 characters. The status line adds `#12 Subject · 2/5` for current work.
 
 **After updating:** run `cc-smart-dev-kit setup`, then restart Claude Code. Run
-`cc-smart-dev-kit task import claude-mem` once to move its open lists. Preview with
-`--dry-run`. Setup does not import them automatically.
+`cc-smart-dev-kit task import claude-mem` once, in the folder whose lists you want, to move
+its open lists. Preview with `--dry-run`. Setup does not import them automatically.
 
 ### The crew
 

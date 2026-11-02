@@ -206,13 +206,24 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             now: Date.now(),
           });
           if (!answer.ok) throw new Error(answer.why);
-          for (const task of answer.value) out.say(`${task.parent ? "  " : ""}${task.subject}`);
+          const { imported, dropped, skipped } = answer.value;
+          for (const task of imported) out.say(task.subject, task.parent ? 2 : 0);
+          for (const list of dropped)
+            out.say(
+              `${has("dry-run") ? "Would drop" : "Dropped"} #${list.number} "${list.list}" (${plural(list.tasks, "open task", "open tasks")}): claude-mem's own list, which an earlier import took as work.`,
+            );
+          if (skipped.length)
+            out.say(`Left out claude-mem's own lists (its My Work data): ${skipped.join(", ")}.`);
           if (has("dry-run")) out.say(dryRunEnding([]));
-          else if (answer.value.length === 0)
-            out.say("Nothing to import: claude-mem has no open lists here.");
+          else if (imported.length === 0)
+            out.say(
+              dropped.length
+                ? "Nothing new to import."
+                : "Nothing to import: claude-mem has no open lists here.",
+            );
           else
             out.say(
-              `Imported ${plural(answer.value.length, "work task", "work tasks")} from claude-mem's open lists.`,
+              `Imported ${plural(imported.length, "work task", "work tasks")} from claude-mem's open lists.`,
             );
           return 0;
         } finally {

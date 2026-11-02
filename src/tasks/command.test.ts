@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { cliPaths } from "../cli/paths";
+import { claudeMemDb, mistakenImport } from "../testing/claude-mem-db";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { taskContext } from "./context";
+import { openWorkDb, workDbFile } from "./work/db";
 
 const CLI = join(import.meta.dir, "../entries/cli.ts");
 test("task command creates, lists, completes and checks as a process", async () => {
@@ -101,4 +105,76 @@ test("task import notes ends with what it did, and a dry run says nothing was ch
     "Imported 1 note into .claude/tasks: commit the task files with your branch.",
   );
   expect(real.lines[0]).toMatch(/^T-[a-z2-7]{6} "Backfill the column" · /);
+});
+
+test("task import claude-mem leaves claude-mem's own lists out, and drops what an earlier import took", async () => {
+  const home = tempDir();
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  git(cwd, "commit", "--allow-empty", "-m", "initial");
+  const guard = subprocessGuard();
+  const env = {
+    ...cleanGitEnv(),
+    ...guard.env,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    PATH: `${dirname(process.execPath)}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
+  };
+  const paths = cliPaths(env);
+  mkdirSync(dirname(paths.claudeMemSettingsFile), { recursive: true });
+  const at = Date.UTC(2026, 10, 1);
+  claudeMemDb(
+    [
+      ["my-focus", { task: "Focus area: Billing", status: "suggested" }, at],
+      ["owner-goals", { task: "Ask: Ship faster", status: "todo" }, at],
+      ["release-work", { task: "Ship it", status: "todo" }, at],
+    ],
+    dirname(paths.claudeMemSettingsFile),
+  );
+  const context = taskContext(cwd, env);
+  if (!context.ok) throw new Error(context.why);
+  const store = openWorkDb(workDbFile(paths), { mode: "write" });
+  mistakenImport(store, context.project, at);
+  store.close();
+  async function run(...args: string[]) {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
+      cwd,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      code: await child.exited,
+      lines: (await new Response(child.stdout).text()).trimEnd().split("\n"),
+      error: await new Response(child.stderr).text(),
+    };
+  }
+  const own = "Left out claude-mem's own lists (its My Work data): my-focus, owner-goals.";
+  expect(await run("import", "claude-mem", "--project", "home", "--dry-run")).toEqual({
+    code: 0,
+    lines: [
+      "release-work",
+      "  Ship it",
+      `Would drop #1 "my-focus" (2 open tasks): claude-mem's own list, which an earlier import took as work.`,
+      own,
+      "Dry run: nothing was changed.",
+    ],
+    error: "",
+  });
+  expect(await run("import", "claude-mem", "--project", "home")).toEqual({
+    code: 0,
+    lines: [
+      "release-work",
+      "  Ship it",
+      `Dropped #1 "my-focus" (2 open tasks): claude-mem's own list, which an earlier import took as work.`,
+      own,
+      "Imported 2 work tasks from claude-mem's open lists.",
+    ],
+    error: "",
+  });
+  expect(await run("import", "claude-mem", "--project", "home")).toEqual({
+    code: 0,
+    lines: [own, "Nothing to import: claude-mem has no open lists here."],
+    error: "",
+  });
 });

@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.10.0",
+  version: "1.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -16148,20 +16148,21 @@ function deleteTask(db, id, who, now) {
   });
 }
 function systemClose(db, id, status, reason, who, now) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    for (const child of openSubtasks(db, id)) {
-      const before = shape(db, child);
-      db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
-      recordChange2(db, before, taskById(db, child.id), who, now, reason);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
-    }
-    const before = shape(db, task);
-    db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
-    recordChange2(db, before, taskById(db, id), who, now, reason);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
-    return taskById(db, id);
-  });
+  return writeWork(db, () => applySystemClose(db, id, status, reason, who, now));
+}
+function applySystemClose(db, id, status, reason, who, now) {
+  const task = taskById(db, id);
+  for (const child of openSubtasks(db, id)) {
+    const before = shape(db, child);
+    db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
+    recordChange2(db, before, taskById(db, child.id), who, now, reason);
+    insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
+  }
+  const before = shape(db, task);
+  db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
+  recordChange2(db, before, taskById(db, id), who, now, reason);
+  insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
+  return taskById(db, id);
 }
 function planTask(db, input, who, now) {
   return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
@@ -46750,6 +46751,9 @@ var init_release2 = __esm(() => {
 
 // src/tasks/work/import-claude-mem.ts
 import { Database as Database4 } from "bun:sqlite";
+function claudeMemOwnList(name) {
+  return CLAUDE_MEM_OWN_LISTS.some((own) => name === own || name.startsWith(`${own}/`));
+}
 function merge2(target, patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (key === "task")
@@ -46760,9 +46764,18 @@ function merge2(target, patch) {
       target[key] = value;
   }
 }
+function seen(dates, at) {
+  if (at === null)
+    return;
+  dates.first ??= at;
+  dates.last = at;
+}
 function description2(fields) {
   return Object.entries(fields).filter(([key]) => key !== "status").map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`).join(`
 `);
+}
+function takenByMistake(db, project) {
+  return allTasks(db, project).filter((task) => task.parentId === null && isOpen(task) && claudeMemOwnList(task.subject) && eventsOf(db, task)[0]?.reason === IMPORTED);
 }
 function importClaudeMem(options) {
   let source;
@@ -46771,32 +46784,59 @@ function importClaudeMem(options) {
     const columns = source.query("PRAGMA table_info(work_state_entries)").all().map((r) => r.name);
     if (!["id", "project", "list_name", "fields"].every((c) => columns.includes(c)))
       throw new Error(`work_state_entries has unsupported columns: ${columns.join(", ")}`);
+    const at = columns.includes("created_at_epoch") ? "created_at_epoch" : "NULL";
     const lists = new Map;
-    for (const row of source.query("SELECT list_name,fields FROM work_state_entries WHERE project=? ORDER BY id").all(options.claudeMemProject)) {
+    for (const row of source.query(`SELECT list_name,fields,${at} AS at FROM work_state_entries WHERE project=? ORDER BY id`).all(options.claudeMemProject)) {
       const fields = JSON.parse(row.fields);
       if (!fields || typeof fields !== "object" || Array.isArray(fields))
         throw new Error(`invalid fields in list: ${row.list_name}`);
       const patch = fields;
       let list = lists.get(row.list_name);
       if (!list) {
-        list = { state: {}, items: new Map };
+        list = { state: {}, dates: { first: null, last: null }, items: new Map };
         lists.set(row.list_name, list);
       }
+      seen(list.dates, row.at);
       if (typeof patch.task === "string") {
         let item = list.items.get(patch.task);
         if (!item) {
-          item = {};
+          item = { fields: {}, dates: { first: null, last: null } };
           list.items.set(patch.task, item);
         }
-        merge2(item, patch);
+        merge2(item.fields, patch);
+        seen(item.dates, row.at);
       } else
         merge2(list.state, patch);
     }
     const perform = () => {
+      const db = options.workDb;
+      const insert = (input, dates) => {
+        const task = insertTask(db, input, importer, options.now, IMPORTED);
+        if (dates.first !== null && dates.last !== null)
+          db.sqlite.query("UPDATE tasks SET created_at=?,updated_at=? WHERE id=?").run(dates.first, dates.last, task.id);
+        return task;
+      };
+      const dropped = takenByMistake(db, options.project).map((task) => {
+        const list = {
+          list: task.subject,
+          number: task.number,
+          tasks: 1 + openSubtasks(db, task.id).length
+        };
+        if (!options.dryRun)
+          applySystemClose(db, task.id, "dropped", NOT_WORK, importer, options.now);
+        return list;
+      });
       const imported = [];
+      const skipped = [];
       for (const [name, list] of lists) {
         const marker = `imported:claude-mem:${options.claudeMemProject}:${name}`;
-        if (list.state.status === "done" || options.workDb.sqlite.query("SELECT 1 FROM meta WHERE key=?").get(marker))
+        if (list.state.status === "done")
+          continue;
+        if (claudeMemOwnList(name)) {
+          skipped.push(name);
+          continue;
+        }
+        if (db.sqlite.query("SELECT 1 FROM meta WHERE key=?").get(marker))
           continue;
         const task = {
           subject: name,
@@ -46805,9 +46845,9 @@ function importClaudeMem(options) {
           list: name,
           parent: null
         };
-        const parent = options.dryRun ? null : insertTask(options.workDb, { project: options.project, ...task }, importer, options.now, IMPORTED);
+        const parent = options.dryRun ? null : insert({ project: options.project, ...task }, list.dates);
         imported.push(task);
-        for (const [subject, fields] of list.items) {
+        for (const [subject, { fields, dates }] of list.items) {
           if (fields.status === "done" || fields.status === "dropped")
             continue;
           const item = {
@@ -46818,19 +46858,13 @@ function importClaudeMem(options) {
             parent: name
           };
           imported.push(item);
-          if (!options.dryRun) {
-            const input = {
-              project: options.project,
-              ...item,
-              parentId: parent?.id ?? null
-            };
-            insertTask(options.workDb, input, importer, options.now, IMPORTED);
-          }
+          if (!options.dryRun)
+            insert({ project: options.project, ...item, parentId: parent?.id ?? null }, dates);
         }
         if (!options.dryRun)
-          options.workDb.sqlite.query("INSERT INTO meta VALUES (?,?)").run(marker, String(options.now));
+          db.sqlite.query("INSERT INTO meta VALUES (?,?)").run(marker, String(options.now));
       }
-      return imported;
+      return { imported, dropped, skipped };
     };
     return options.dryRun ? { ok: true, value: perform() } : writeWork(options.workDb, perform);
   } catch (error) {
@@ -46839,10 +46873,11 @@ function importClaudeMem(options) {
     source?.close();
   }
 }
-var importer, IMPORTED = "imported from claude-mem's work state";
+var CLAUDE_MEM_OWN_LISTS, importer, IMPORTED = "imported from claude-mem's work state", NOT_WORK = "claude-mem's own list, not work: an earlier import took it by mistake";
 var init_import_claude_mem = __esm(() => {
   init_db();
   init_store();
+  CLAUDE_MEM_OWN_LISTS = ["my-focus", "my-rules", "owner-goals"];
   importer = { sessionId: null, crewId: null, pid: null, procStart: null };
 });
 
@@ -46891,14 +46926,19 @@ async function runTaskCommand(argv) {
           });
           if (!answer.ok)
             throw new Error(answer.why);
-          for (const task of answer.value)
-            out.say(`${task.parent ? "  " : ""}${task.subject}`);
+          const { imported, dropped, skipped } = answer.value;
+          for (const task of imported)
+            out.say(task.subject, task.parent ? 2 : 0);
+          for (const list of dropped)
+            out.say(`${has("dry-run") ? "Would drop" : "Dropped"} #${list.number} "${list.list}" (${plural(list.tasks, "open task", "open tasks")}): claude-mem's own list, which an earlier import took as work.`);
+          if (skipped.length)
+            out.say(`Left out claude-mem's own lists (its My Work data): ${skipped.join(", ")}.`);
           if (has("dry-run"))
             out.say(dryRunEnding([]));
-          else if (answer.value.length === 0)
-            out.say("Nothing to import: claude-mem has no open lists here.");
+          else if (imported.length === 0)
+            out.say(dropped.length ? "Nothing new to import." : "Nothing to import: claude-mem has no open lists here.");
           else
-            out.say(`Imported ${plural(answer.value.length, "work task", "work tasks")} from claude-mem's open lists.`);
+            out.say(`Imported ${plural(imported.length, "work task", "work tasks")} from claude-mem's open lists.`);
           return 0;
         } finally {
           db.close();
