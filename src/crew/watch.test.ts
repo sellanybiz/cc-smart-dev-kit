@@ -86,7 +86,7 @@ import {
 
 describe("watch installed version", () => {
   for (const once of [false, true]) {
-    test(`a newer installed plugin ends ${once ? "--once" : "the watch"} with restart instructions`, async () => {
+    test(`a newer installed plugin ${once ? "is ignored by --once" : "ends the watch with restart instructions"}`, async () => {
       const world = await leadWorld();
       await addCrew(world, "working");
       const ctx = world.ctx({
@@ -96,9 +96,13 @@ describe("watch installed version", () => {
         },
       });
       expect(await runCrew(once ? ["watch", "--once", "--timeout", "0"] : ["watch"], ctx)).toBe(0);
-      expect(world.out).toEqual([
-        `crew watch ended: plugin 999999.0.0 is installed and this watch runs ${VERSION} — start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/${COMMAND}" crew watch`,
-      ]);
+      expect(world.out).toEqual(
+        once
+          ? []
+          : [
+              `crew watch ended: plugin 999999.0.0 is installed and this watch runs ${VERSION} — start the watch again with Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/${COMMAND}" crew watch`,
+            ],
+      );
       expect(world.err).toEqual([]);
     });
   }
@@ -374,6 +378,66 @@ describe("watch adoption regressions", () => {
       world.ctx({ now: () => T0 + 120000 }, { FAKE_AGENTS_JSON: "[]" }),
     );
     expect(world.out).toContain(`${NAME}: question 1 · which route? · answered 2 min ago`);
+  });
+
+  for (const nullId of [false, true]) {
+    test(`A5: all live earlier rows are stopped, null id ${nullId}`, async () => {
+      const world = await leadWorld();
+      const sid = "bbbb2222-2222-3333-4444-555555555555";
+      const record = await addCrew(world, "working", {
+        earlierSessions: [{ sessionId: sid, shortId: "bbbb2222" }],
+      });
+      const rows = [
+        { id: "stopped-row", sessionId: sid, state: "done", pid: null },
+        { id: nullId ? null : "live-one", sessionId: sid, state: "working", pid: 4243 },
+        { id: "live-two", sessionId: sid, state: "idle", pid: 4244 },
+      ].map((one) => ({ ...one, cwd: record.worktree, kind: "background" }));
+      const stops: string[][] = [];
+      const base = world.ctx({}, { FAKE_AGENTS_JSON: JSON.stringify(rows) });
+      const ctx = world.ctx(
+        {
+          runProgram: (argv, options) => {
+            if (argv[1] === "stop") {
+              stops.push(argv.slice(1));
+              return { stdout: "", stderr: "", exitCode: 0, error: null, timedOut: false };
+            }
+            return base.runProgram(argv, options);
+          },
+        },
+        { FAKE_AGENTS_JSON: JSON.stringify(rows) },
+      );
+      await watchPass(
+        { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: {} },
+        ctx,
+        {
+          leadSessionId: LEAD_SESSION,
+          mergeInto: world.repo,
+          repo: world.repo,
+          resolved: resolveWorkflow(world.paths, null),
+        },
+      );
+      expect(stops).toEqual([
+        ["stop", nullId ? "bbbb2222" : "live-one"],
+        ["stop", "live-two"],
+      ]);
+    });
+  }
+
+  test("A5: earlier-copy keys are pruned when no earlier session remains", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const key = `${ID}:earlier-copy:old-session`;
+    const result = await watchPass(
+      { offset: eventsEndOffset(world.paths.stateDir, world.repo), said: { [key]: "said" } },
+      world.ctx(),
+      {
+        leadSessionId: LEAD_SESSION,
+        mergeInto: world.repo,
+        repo: world.repo,
+        resolved: resolveWorkflow(world.paths, null),
+      },
+    );
+    expect(result.state.said[key]).toBeUndefined();
   });
 
   for (const fails of [false, true]) {
@@ -4055,6 +4119,24 @@ describe("WF1: one acting watch per lead", () => {
     const ended = Bun.spawnSync(["true"]);
     return { ...currentHolder(), at: T0, pid: ended.pid, token: "a-watch-that-died" };
   }
+
+  test("a watch that lost its lease does not print a plugin version restart line", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    let installed = VERSION;
+    const ctx = waiting(
+      world,
+      async () => {
+        await takeWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION, newer());
+        installed = "999999.0.0";
+      },
+      { installedVersion: () => installed },
+    );
+    expect(await runCrew(["watch"], ctx)).toBe(0);
+    expect(world.out).toEqual([
+      `crew watch: a newer watch of this lead runs (pid ${process.pid}); this one ends`,
+    ]);
+  });
 
   test("a newer watch takes over: the older one says so once and ends before it acts", async () => {
     const world = await leadWorld();

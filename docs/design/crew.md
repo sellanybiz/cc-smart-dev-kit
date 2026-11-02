@@ -848,10 +848,17 @@ earlier copy:
 - its role card says it is an earlier copy, names the current session, and says to do nothing
   and end its turn;
 - `startCard` checks this before the folder, and changes nothing in the store;
+- every other answer of `crew-role` writes nothing for it either. A prompt gets the same
+  stand-down line as context, with no `person` event and no title change. Its Stop and
+  StopFailure are silent: no `lastLine`, no pause, and no "hand it back with `crew report`"
+  block, which would tell it to finish the phase. An edit tool is denied with the same line;
 - its own commands (`crew step`, `crew report`, the self-watch) are refused in `readCrewSelf`,
   the one home for a crew session's own record;
-- the watch stops it once, with one line, while agent view shows it live. It never stops the
-  record's current session.
+- the watch stops every live agent-view row of that earlier session once, with one line each.
+  It never stops the record's current session.
+
+One predicate decides all of this (`isEarlierCopy`, `src/crew/store.ts`), because one session
+id can be in both lists: after A → B → A, the current session A is also an earlier one.
 
 A session id the record does not know is judged as before, because a fresh copy may start
 before its resume is recorded. **Not proved:** whether Claude Code also gives a restored
@@ -1357,8 +1364,11 @@ resumed five sessions at once), and each writing the same state file over the ot
   watch`. Every other end that can still write says why on stdout too: a lease lost to a newer
   watch (its own line, above), a start that cannot name its lead or find crew sessions on, a
   lease it cannot take, and **a newer plugin installed under a running watch** — each as
-  `crew watch ended: <why> — <the same restart>`. Each pass compares the watch's own version with
-  the one Claude Code records as installed (`installedVersion` in `CrewContext`). When the
+  `crew watch ended: <why> — <the same restart>`. Each pass of a watch that still holds its lease
+  compares the watch's own version with the one Claude Code records as installed
+  (`installedVersion` in `CrewContext`). A watch that lost its lease ends with its own line, and
+  `--once` never compares: it is one look, and a session started before an update runs the old
+  version folder's command on its PATH. When the
   installed one is newer, the watch ends with both versions in its line, so the lead's next
   watch runs the new code. An installed version that cannot be read, or is equal or older, goes
   on. Seen on 2026-11-02: a lead session that never restarts keeps its watch, and six lead

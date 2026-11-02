@@ -119,6 +119,7 @@ import {
   crewStoreDir,
   ISSUE_DATA_NOTE,
   ISSUE_EVENT_CREW,
+  isEarlierCopy,
   isQuestionOpen,
   keepWatchLease,
   lastHeardAnswer,
@@ -1466,25 +1467,27 @@ async function runPass(
       record.state !== "discarded"
     ) {
       for (const earlier of record.earlierSessions ?? []) {
-        if (earlier.sessionId === record.sessionId) continue;
-        const stale = agents.find((one) => one.sessionId === earlier.sessionId);
-        if (
-          stale === undefined ||
-          !isLiveRow(stale) ||
-          stale.sessionId === record.sessionId ||
-          stale.id === record.shortId
-        )
-          continue;
+        if (!isEarlierCopy(record, earlier.sessionId)) continue;
         const key = `${record.id}:earlier-copy:${earlier.sessionId}`;
-        const why = await stopSession(
-          { ...record, sessionId: earlier.sessionId, shortId: stale.id },
-          ctx,
-        );
-        const line =
-          why ??
-          `${record.name}: an earlier copy (${stale.id}) came back; stopped it — its current session is ${record.shortId}`;
-        if (said[key] !== line) say(line);
-        said[key] = line;
+        const lines: string[] = [];
+        for (const stale of agents.filter(
+          (one) =>
+            one.sessionId === earlier.sessionId &&
+            isLiveRow(one) &&
+            (one.id === null || one.id !== record.shortId),
+        )) {
+          const shortId = stale.id ?? earlier.shortId ?? null;
+          const why = await stopSession({ ...record, sessionId: earlier.sessionId, shortId }, ctx);
+          lines.push(
+            why ??
+              `${record.name}: an earlier copy (${shortId}) came back; stopped it — its current session is ${record.shortId}`,
+          );
+        }
+        if (lines.length > 0) {
+          const mark = lines.join("\n");
+          if (said[key] !== mark) for (const line of new Set(lines)) say(line);
+          said[key] = mark;
+        }
       }
     }
     const alert = crewAlert(
@@ -1957,6 +1960,21 @@ async function runPass(
     ) {
       delete said[key];
     }
+    if (
+      key.includes(":earlier-copy:") &&
+      !own.some(
+        (one) =>
+          !OVER_STATES.includes(one.state) &&
+          one.state !== "removed" &&
+          one.state !== "discarded" &&
+          (one.earlierSessions ?? []).some(
+            (earlier) =>
+              isEarlierCopy(one, earlier.sessionId) &&
+              `${one.id}:earlier-copy:${earlier.sessionId}` === key,
+          ),
+      )
+    )
+      delete said[key];
     // A refusal's mark (`holdRefusedSession`) lasts while its record stays stopped: the state
     // file does not grow by one key for every refused session, for good.
     if (
@@ -2265,25 +2283,24 @@ async function watchLoop(
     /** The lines this round said: a `--once` ends on the first round that said any. */
     let lines = 0;
     try {
-      // A lead can outlive a plugin update. End its old watch so the next one loads the new code.
-      const installed = ctx.installedVersion?.() ?? null;
-      let newer = false;
-      if (installed !== null) {
-        try {
-          newer = Bun.semver.order(installed, VERSION) > 0;
-        } catch {
-          // An unrecognised version is no evidence that this watch is out of date.
-          newer = false;
-        }
-      }
-      if (newer)
-        throw new WatchEnd(
-          "print",
-          endedLine(`plugin ${installed} is installed and this watch runs ${VERSION}`),
-        );
-      // Before it acts: a watch that may not act any more ends here (`WatchEnd`), and one whose
-      // store is too busy to say acts on nothing this time and asks again at its next look.
+      // Before it acts: only the watch that holds the lease may ask the lead to restart it.
       if (await goesOn()) {
+        // A one-look is useful even from an old session's PATH after a plugin update.
+        const installed = args.once ? null : (ctx.installedVersion?.() ?? null);
+        let newer = false;
+        if (installed !== null) {
+          try {
+            newer = Bun.semver.order(installed, VERSION) > 0;
+          } catch {
+            // An unrecognised version is no evidence that this watch is out of date.
+            newer = false;
+          }
+        }
+        if (newer)
+          throw new WatchEnd(
+            "print",
+            endedLine(`plugin ${installed} is installed and this watch runs ${VERSION}`),
+          );
         const lead = readLead(ctx.paths.stateDir, repo, leadSessionId);
         if (lead?.adoptedBy != null)
           throw new WatchEnd(

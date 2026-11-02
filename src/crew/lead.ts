@@ -30,12 +30,13 @@ import { ownHooksOf } from "../project/resolve";
 import { agentRows } from "./agents";
 import { readCaller, reasonOf, requireSession } from "./caller";
 import type { CrewContext } from "./context";
-import { leadRunning, sessionSnapshot } from "./lifecycle";
+import { isOpenCrewOfLead, leadRunningReason, sessionSnapshot } from "./lifecycle";
 import { crewTag, leadName } from "./names";
 import { findPlanFile, planFileOfLead, plansDirs } from "./runs";
 import {
   adoptLead,
   eventsEndOffset,
+  listCrew,
   listLeads,
   readLead,
   readWatchState,
@@ -117,17 +118,32 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   const others = listed.records.filter(
     (one) => one.sessionId !== session.sessionId && one.endedAt == null,
   );
-  let running: (lead: (typeof others)[number]) => boolean;
+  let presence: (lead: (typeof others)[number]) => ReturnType<typeof leadRunningReason>;
+  const running = (lead: (typeof others)[number]) => presence(lead) !== null;
   let matched: (typeof others)[number] | undefined;
   try {
-    sessionSnapshot(ctx);
-    running = (lead) => leadRunning(lead, agentRows(ctx), sessionSnapshot(ctx), ctx);
+    const sessions = sessionSnapshot(ctx);
+    // Agent view is read once, and only when a lead needs judging: a first lead never needs it.
+    // An unreadable view throws inside `leadRunningReason`, only where it would decide.
+    let rows: undefined | null | ReturnType<typeof agentRows>;
+    presence = (lead) => {
+      if (rows === undefined) rows = agentRows(ctx);
+      return leadRunningReason(lead, rows, sessions, ctx);
+    };
     if (args.plan === null && before === null) {
-      const named = others.filter((one) => one.name === session.name && !running(one));
+      const crew = listCrew(ctx.paths.stateDir, repo);
+      if (crew.broken.length > 0)
+        throw new Error(
+          "a crew record cannot be read, so the plan cannot be found; repair it or pass --plan <plan>",
+        );
+      const withCrew = others.filter((lead) =>
+        crew.records.some((one) => isOpenCrewOfLead(one, lead)),
+      );
+      const named = withCrew.filter((one) => one.name === session.name && !running(one));
       const candidates =
         named.length > 0
           ? named
-          : others.filter((one) => one.cwd === checkout.root && !running(one));
+          : withCrew.filter((one) => one.cwd === checkout.root && !running(one));
       if (new Set(candidates.map((one) => one.plan)).size > 1) {
         ctx.error("crew lead: several plans match this session; nothing was adopted");
         for (const one of candidates)
@@ -149,13 +165,15 @@ export async function runCrewLead(args: LeadArgs, ctx: CrewContext): Promise<num
   const plan = args.plan ?? before?.plan ?? matched?.plan ?? (branch.ok ? branch.out : null);
   const adopting = others.filter((one) => one.plan === plan);
   try {
-    for (const other of adopting)
-      if (running(other))
+    for (const other of adopting) {
+      const reason = presence(other);
+      if (reason !== null)
         return refuse(
-          `lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs; this session is ${session.sessionId.slice(0, 8)}`,
-          `end that lead with crew lead --end in its session, then retry here`,
+          `lead ${other.name} (${other.sessionId.slice(0, 8)}) still runs: ${reason.line}; this session is ${session.sessionId.slice(0, 8)}`,
+          reason.fix,
           1,
         );
+    }
   } catch (error) {
     return refuse(reasonOf(error), "retry crew lead when the agent view can be read", 1);
   }

@@ -158,6 +158,22 @@ test("failed batch gets one array and forwards none of its requests or notificat
   ]);
 });
 
+test("a failed mixed batch replies only to calls and forwards client responses", async () => {
+  const h = harness(async () => ({ ok: false, why: "No display" }));
+  const response = { jsonrpc: "2.0", id: "roots-1", result: { roots: [] } };
+  h.send(`${JSON.stringify([{ id: 1, method: "tools/call" }, response, { method: "notice" }])}\n`);
+  await h.finish();
+  expect(JSON.parse(Buffer.concat(h.received).toString())).toEqual([
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { content: [{ type: "text", text: "No display" }], isError: true },
+    },
+  ]);
+  expect(h.sent).toHaveLength(1);
+  expect(JSON.parse(Buffer.concat(h.sent).toString())).toEqual([response]);
+});
+
 test("a local failure never splits a child's partial output line", async () => {
   const started = Promise.withResolvers<{ ok: false; why: string }>();
   const h = harness(() => started.promise);

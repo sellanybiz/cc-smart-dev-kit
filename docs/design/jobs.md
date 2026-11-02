@@ -38,8 +38,10 @@ One queue for the whole machine (`src/jobs/`, design and limits in `jobs.md`):
   `reserveGb`), so they can never take the memory kept for the desktop and the sessions and a
   job over it dies inside the slice. A light run gets the kill mark alone, never the heavy
   slice, whose ceiling is for heavy runs. Linux CPU defaults to `idle`, yielding to other work;
-  older systemd versions that refuse idle use weight 10. The first refusal is recorded in
-  machine-local jobs state: later slices and jobs use 10 without another warning or idle attempt.
+  older systemd versions that refuse idle use weight 10. A versioned marker is written only
+  after idle fails without a timeout and the same weights call succeeds with CPU weight 10.
+  A changed systemd version tries idle again; `job status` names the marker to remove for a
+  manual retry (a marker without a readable version remains valid).
   Weights apply only to the default chain's names and the exact configured slice, never a
   foreign parent such as `app.slice`. `cpuWeight` also accepts a number or `off`; off reads
   the current weight and resets it only when it is not already 100 or unset (or the read fails).

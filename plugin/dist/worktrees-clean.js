@@ -6660,7 +6660,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..")).optional(),
+    rebuildable: array(string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -6948,9 +6948,6 @@ function projectRebuildable(mainCheckout) {
     return [];
   }
 }
-function safeIgnoredEntry(worktree, mainCheckout, entry) {
-  return safeEntry(worktree, mainCheckout, entry, projectRebuildable(mainCheckout));
-}
 function safeEntry(worktree, mainCheckout, entry, patterns) {
   if (patterns.some((pattern) => pattern.match(entry)))
     return true;
@@ -6966,7 +6963,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
   }
   return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
 }
-function localFiles(worktree, mainCheckout, env) {
+function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(mainCheckout)) {
   const status = runGit(worktree, [
     "--no-optional-locks",
     "status",
@@ -6977,7 +6974,6 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  const patterns = projectRebuildable(mainCheckout);
   const safe = (entry) => safeEntry(worktree, mainCheckout, entry, patterns);
   const onlySafeInside = (entry) => {
     if (!entry.endsWith("/"))
@@ -7591,6 +7587,17 @@ function parseSessionRecord(json) {
     ...typeof procStart === "string" ? { procStart } : {}
   };
 }
+function processStart(pid, facts) {
+  if ((facts.platform ?? process.platform) !== "linux")
+    return;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+function sessionIdentityProved(record, facts = {}) {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
 function isRunning(pid) {
   try {
     process.kill(pid, 0);
@@ -7624,10 +7631,8 @@ function liveSessions(claudeConfigDir, facts = {}) {
       throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
     }
     if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const stat = (facts.readStat ?? readProcStat)(pid);
-      const end = stat?.lastIndexOf(")") ?? -1;
-      const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
-      if (start !== undefined && /^\d+$/.test(start) && record.procStart !== start)
+      const start = processStart(pid, facts);
+      if (start !== undefined && record.procStart !== start)
         continue;
     }
     live.push(record);
@@ -9861,14 +9866,31 @@ function validMergeProof(record, ctx) {
 function sessionSnapshot(ctx) {
   return ctx.sessions?.() ?? liveSessions(ctx.paths.claudeConfigDir);
 }
-function leadRunning(lead, rows, sessions, ctx) {
-  if (sessions.some((one) => one.sessionId === lead.sessionId))
-    return true;
+function leadRunningReason(lead, rows, sessions, ctx) {
+  const session = sessions.find((one) => one.sessionId === lead.sessionId);
+  if (session !== undefined) {
+    return sessionIdentityProved(session) ? {
+      line: "a live session record has a proved identity",
+      fix: "end that lead with crew lead --end in its session, then retry here"
+    } : {
+      line: `a session record for pid ${session.pid} has an unproved identity`,
+      fix: `when that session is really gone, retry once pid ${session.pid} has ended, or after a restart`
+    };
+  }
   if (ctx.watchAlive?.(lead.repo, lead.sessionId) ?? watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId))
-    return true;
+    return {
+      line: "its watch holds the lease",
+      fix: "stop that watch, or wait for it to end, then retry here"
+    };
   if (rows === null)
     throw new Error("the agent view cannot be read; retry crew lead");
-  return rowsOfLead(rows, lead).some((row) => isLiveRow(row));
+  return rowsOfLead(rows, lead).some((row) => isLiveRow(row)) ? {
+    line: "the agent view lists it as live",
+    fix: "stop it in the agent view or run crew lead --end in it, then retry here"
+  } : null;
+}
+function leadRunning(lead, rows, sessions, ctx) {
+  return leadRunningReason(lead, rows, sessions, ctx) !== null;
 }
 function rowsOfLead(rows, lead) {
   return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
@@ -11927,7 +11949,8 @@ function showFiles(label, files) {
   return `${files.length} ${label}${files.length === 0 ? "" : `: ${files.slice(0, PREVIEW_FILES).map((file) => JSON.stringify(file)).join(", ")}${files.length > PREVIEW_FILES ? ` and ${files.length - PREVIEW_FILES} more` : ""}`}`;
 }
 function protectedIgnored(record, ctx) {
-  const roots = localFiles(record.worktree, record.repo, ctx.env);
+  const patterns = projectRebuildable(record.repo);
+  const roots = localFiles(record.worktree, record.repo, ctx.env, patterns);
   if (roots === null)
     throw new Error("git could not list protected ignored files; nothing archived");
   const files = [];
@@ -11937,7 +11960,7 @@ function protectedIgnored(record, ctx) {
       throw new Error(`ignored files must be ${TEXT_RULE}`);
     const stat = lstatSync4(join21(record.worktree, file));
     const entry = stat.isDirectory() ? `${file.replace(/\/$/, "")}/` : file;
-    if (safeIgnoredEntry(record.worktree, record.repo, entry))
+    if (safeEntry(record.worktree, record.repo, entry, patterns))
       return;
     if (stat.isDirectory())
       for (const name of readdirSync10(join21(record.worktree, file)))

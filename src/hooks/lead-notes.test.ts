@@ -866,6 +866,38 @@ describe("a lead whose watch is gone is told how to start it", () => {
   });
 });
 
+test.each(["working", "merged", "removed", "discarded"])(
+  "an absent lead hints only for open crew: %s",
+  async (state) => {
+    const world = await leadWorld({ watch: "never" });
+    const lead = readLead(world.stateDir, world.repo, LEAD_SESSION);
+    if (lead === null) throw new Error("missing fixture lead");
+    await writeLead(
+      world.stateDir,
+      { ...lead, sessionUnknownSince: new Date(T0).toISOString() },
+      T0,
+    );
+    await updateCrew(world.stateDir, world.repo, CREW_ID, { state }, T0);
+    expect(
+      leadNotesAnswer(
+        leadInput(world.repo, { session_id: OTHER_SESSION }),
+        "UserPromptSubmit",
+        cliPaths(world.env),
+        world.repo,
+        world.env,
+        { sessions: () => [] },
+      ),
+    ).toEqual(
+      state === "working"
+        ? addContext(
+            "UserPromptSubmit",
+            "This session continues lead LEAD app plan (c00f9bb5)? Run `cc-smart-dev-kit crew lead --plan plan` to take its 1 crew sessions.",
+          )
+        : {},
+    );
+  },
+);
+
 test("an unregistered crew session hears no adoption hint even when session records throw", async () => {
   const world = await leadWorld({ watch: "never" });
   const result = leadNotesAnswer(

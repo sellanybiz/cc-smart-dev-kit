@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { namesDir } from "../hooks/session-name";
+import { boardWorld } from "../testing/board-world";
 import { crewWorld, LEAD_SESSION, SESSION_PID, writeSessionRecord } from "../testing/crew-world";
+import { sessionProcessIdentity } from "../testing/session-record";
 import { git, tempDir } from "../testing/temp";
 import { runCrew } from "./command";
 import { runCrewLead } from "./lead";
@@ -15,6 +17,145 @@ const NO_PLAN_FILE =
   "no plan file for master-plan: its briefs and run records are off; pass --plan-file <path>";
 
 describe("D26: crew lead", () => {
+  test.each([1, 2])("%s empty dead leads do not select a plan or get adopted", async (count) => {
+    const world = crewWorld();
+    git(world.repo, "checkout", "-b", "plan-a");
+    for (let index = 0; index < count; index++) {
+      await writeLead(
+        world.paths.stateDir,
+        {
+          cwd: world.repo,
+          repo: world.repo,
+          sessionId: `empty-${index}`,
+          name: "lead",
+          plan: `other-${index}`,
+          tag: "app",
+        },
+        world.ctx().now(),
+      );
+    }
+    expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.plan).toBe("plan-a");
+    for (let index = 0; index < count; index++) {
+      expect(readLead(world.paths.stateDir, world.repo, `empty-${index}`)?.endedAt).toBeUndefined();
+    }
+  });
+
+  test("several candidates share one agent view and session snapshot", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ worktree: false });
+    await writeLead(
+      world.paths.stateDir,
+      {
+        cwd: world.repo,
+        repo: world.repo,
+        sessionId: "another-lead",
+        name: "lead",
+        plan: "master-plan",
+        tag: "app",
+      },
+      world.ctx().now(),
+    );
+    await world.addCrew({ worktree: false, suffix: "2b2b2b", leadSessionId: "another-lead" });
+    writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
+    let snapshots = 0;
+    expect(
+      await runCrewLead(
+        { plan: null, tag: null },
+        world.ctx({
+          sessions: () => {
+            snapshots++;
+            return [];
+          },
+        }),
+      ),
+    ).toBe(0);
+    expect(world.claudeCalls().filter((call) => call[0] === "agents")).toEqual([
+      ["agents", "--json", "--all"],
+    ]);
+    expect(snapshots).toBe(1);
+  });
+
+  test.each([
+    [
+      "unproved",
+      "a session record for pid 301 has an unproved identity",
+      "when that session is really gone, retry once pid 301 has ended, or after a restart",
+    ],
+    [
+      "watch",
+      "its watch holds the lease",
+      "stop that watch, or wait for it to end, then retry here",
+    ],
+    [
+      "agent",
+      "the agent view lists it as live",
+      "stop it in the agent view or run crew lead --end in it, then retry here",
+    ],
+  ])("a %s refusal explains the evidence and a usable fix", async (source, reason, fix) => {
+    const world = crewWorld();
+    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
+    world.err.length = 0;
+    const ctx = world.ctx(
+      {
+        sessions: () =>
+          source === "unproved"
+            ? [{ pid: 301, sessionId: LEAD_SESSION, cwd: world.repo, name: "lead" }]
+            : [],
+        watchAlive: () => source === "watch",
+      },
+      {
+        FAKE_AGENTS_JSON:
+          source === "agent"
+            ? JSON.stringify([
+                {
+                  id: LEAD_SESSION.slice(0, 8),
+                  sessionId: LEAD_SESSION,
+                  cwd: world.repo,
+                  pid: 42,
+                  state: "working",
+                },
+              ])
+            : "[]",
+      },
+    );
+    expect(await runCrewLead({ plan: "master-plan", tag: null }, ctx)).toBe(1);
+    expect(world.err).toEqual([
+      `crew lead: lead LEAD my-app master-plan (c00f9bb5) still runs: ${reason}; this session is new-lead`,
+      `Fix: ${fix}`,
+    ]);
+  });
+  test.skipIf(process.platform !== "linux")(
+    "a proved session refusal names its live identity",
+    async () => {
+      const world = crewWorld();
+      await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+      writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
+      world.err.length = 0;
+      expect(
+        await runCrewLead(
+          { plan: "master-plan", tag: null },
+          world.ctx({
+            sessions: () => [
+              {
+                pid: process.pid,
+                sessionId: LEAD_SESSION,
+                cwd: world.repo,
+                name: "lead",
+                ...sessionProcessIdentity(process.pid),
+              },
+            ],
+          }),
+        ),
+      ).toBe(1);
+      expect(world.err).toEqual([
+        "crew lead: lead LEAD my-app master-plan (c00f9bb5) still runs: a live session record has a proved identity; this session is new-lead",
+        "Fix: end that lead with crew lead --end in its session, then retry here",
+      ]);
+    },
+  );
+
   test("two live sessions cannot claim one plan", async () => {
     const world = crewWorld();
     await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
@@ -38,9 +179,20 @@ describe("D26: crew lead", () => {
     ).toBe(1);
     expect(world.err.join("\n")).toContain("retry crew lead");
   });
-  test("a bare lead in a fork finds the old plan by folder and adopts it", async () => {
+  test("a first lead with no other lead needs no agent view", async () => {
     const world = crewWorld();
-    await runCrewLead({ plan: "master-plan", tag: null }, world.ctx());
+    expect(
+      await runCrewLead(
+        { plan: "master-plan", tag: null },
+        world.ctx({}, { FAKE_AGENTS_JSON: "not json" }),
+      ),
+    ).toBe(0);
+    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.plan).toBe("master-plan");
+    expect(world.claudeCalls().filter((call) => call[0] === "agents")).toEqual([]);
+  });
+  test("a bare lead in a fork finds the old plan by folder and adopts it", async () => {
+    const world = await boardWorld();
+    await world.addCrew({ worktree: false });
     writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
     world.out.length = 0;
     expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(0);
@@ -53,7 +205,11 @@ describe("D26: crew lead", () => {
     expect(world.out.some((line) => line.startsWith("adopted lead "))).toBe(true);
   });
   test("a bare fork prefers its same-name predecessor over an older cwd match", async () => {
-    const world = crewWorld();
+    const world = await boardWorld();
+    await world.addCrew({ worktree: false, leadSessionId: "older-plan-a" });
+    await world.addCrew({ worktree: false, leadSessionId: "previous-plan-b", suffix: "2b2b2b" });
+    await runCrewLead({ plan: null, tag: null, end: true }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
     await writeLead(
       world.paths.stateDir,
       {
@@ -79,14 +235,18 @@ describe("D26: crew lead", () => {
       Date.parse("2026-10-21T10:00:00.000Z"),
     );
     expect(await runCrewLead({ plan: null, tag: null }, world.ctx())).toBe(0);
-    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)?.plan).toBe("plan-b");
+    expect(readLead(world.paths.stateDir, world.repo, "new-lead-session")?.plan).toBe("plan-b");
     expect(readLead(world.paths.stateDir, world.repo, "previous-plan-b")?.adoptedBy).toBe(
-      LEAD_SESSION,
+      "new-lead-session",
     );
     expect(readLead(world.paths.stateDir, world.repo, "older-plan-a")?.adoptedBy).toBeUndefined();
   });
   test.each(["cwd", "name"])("a bare fork refuses different plans matched by %s", async (match) => {
-    const world = crewWorld();
+    const world = await boardWorld();
+    await runCrewLead({ plan: null, tag: null, end: true }, world.ctx());
+    writeSessionRecord(world.paths, SESSION_PID, "new-lead-session", world.repo);
+    await world.addCrew({ worktree: false, leadSessionId: "older-plan-a" });
+    await world.addCrew({ worktree: false, leadSessionId: "previous-plan-b", suffix: "2b2b2b" });
     for (const [sessionId, plan, at] of [
       ["older-plan-a", "plan-a", "2026-10-20T10:00:00.000Z"],
       ["previous-plan-b", "plan-b", "2026-10-21T10:00:00.000Z"],
@@ -114,7 +274,7 @@ describe("D26: crew lead", () => {
     expect(error).toContain("2026-10-20T10:00:00.000Z");
     expect(error).toContain("2026-10-21T10:00:00.000Z");
     expect(error).toContain("crew lead --plan <plan>");
-    expect(readLead(world.paths.stateDir, world.repo, LEAD_SESSION)).toBeNull();
+    expect(readLead(world.paths.stateDir, world.repo, "new-lead-session")).toBeNull();
     expect(readLead(world.paths.stateDir, world.repo, "older-plan-a")?.adoptedBy).toBeUndefined();
     expect(
       readLead(world.paths.stateDir, world.repo, "previous-plan-b")?.adoptedBy,

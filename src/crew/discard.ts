@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runGit } from "../hooks/git";
-import { localFiles, safeIgnoredEntry } from "../hooks/local-files";
+import { localFiles, projectRebuildable, safeEntry } from "../hooks/local-files";
 import { gitEnv } from "../project/git-env";
 import type { CrewContext } from "./context";
 import { GIT_TIMEOUT_MS, leadRef } from "./end";
@@ -187,7 +187,8 @@ function showFiles(label: string, files: string[]): string {
 
 /** Expand only protected ignored folders; reuse the cleanup policy for disposable descendants. */
 function protectedIgnored(record: CrewRecord, ctx: CrewContext): string[] {
-  const roots = localFiles(record.worktree, record.repo, ctx.env);
+  const patterns = projectRebuildable(record.repo);
+  const roots = localFiles(record.worktree, record.repo, ctx.env, patterns);
   if (roots === null)
     throw new Error("git could not list protected ignored files; nothing archived");
   const files: string[] = [];
@@ -197,7 +198,7 @@ function protectedIgnored(record: CrewRecord, ctx: CrewContext): string[] {
       throw new Error(`ignored files must be ${TEXT_RULE}`);
     const stat = lstatSync(join(record.worktree, file));
     const entry = stat.isDirectory() ? `${file.replace(/\/$/, "")}/` : file;
-    if (safeIgnoredEntry(record.worktree, record.repo, entry)) return;
+    if (safeEntry(record.worktree, record.repo, entry, patterns)) return;
     if (stat.isDirectory())
       for (const name of readdirSync(join(record.worktree, file)))
         walk(`${file.replace(/\/$/, "")}/${name}`);

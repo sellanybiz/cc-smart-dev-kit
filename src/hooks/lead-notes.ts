@@ -49,6 +49,7 @@
 
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { isOpenCrewOfLead } from "../crew/lifecycle";
 import { crewIdOf } from "../crew/session";
 import { LEAD_SKILL } from "../crew/skills";
 import {
@@ -239,11 +240,7 @@ export function leadNotesAnswer(
     );
     const crew = listCrew(paths.stateDir, repo).records;
     for (const old of candidates) {
-      const count = crew.filter(
-        (one) =>
-          one.leadSessionId === old.sessionId &&
-          !["merged", "removed", "discarded"].includes(one.state),
-      ).length;
+      const count = crew.filter((one) => isOpenCrewOfLead(one, old)).length;
       if (
         count === 0 ||
         old.sessionUnknownSince == null ||

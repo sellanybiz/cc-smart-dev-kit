@@ -23,7 +23,7 @@ import { bypassReason, settingsFilesOf } from "./bypass";
 import type { CrewContext } from "./context";
 import { runningCrew } from "./places";
 import { callingSession, crewIdOf } from "./session";
-import { type CrewRecord, listCrew, readCrew } from "./store";
+import { type CrewRecord, isEarlierCopy, listCrew, readCrew } from "./store";
 
 /** Who calls, once every check passed. */
 export interface Caller {
@@ -264,11 +264,7 @@ export function readCrewSelf(
   } catch {
     session = null;
   }
-  if (
-    session !== null &&
-    session.sessionId !== record.sessionId &&
-    record.earlierSessions?.some((one) => one.sessionId === session?.sessionId)
-  ) {
+  if (isEarlierCopy(record, session?.sessionId ?? null)) {
     return refuse(
       `this session is an earlier copy of ${record.name}; its current session is ${record.shortId}. Change nothing and end your turn.`,
     );

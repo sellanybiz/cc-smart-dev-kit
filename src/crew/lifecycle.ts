@@ -1,6 +1,6 @@
 /** Shared stopped-session needs, lead presence and the watch's durable merge proof. */
 import { runGit } from "../hooks/git";
-import { liveSessions, type SessionRecord } from "../hooks/sessions";
+import { liveSessions, type SessionRecord, sessionIdentityProved } from "../hooks/sessions";
 import { workOnRef } from "../worktrees/scan";
 import { isLiveRow } from "./agents";
 import type { AgentRow } from "./claude";
@@ -187,21 +187,63 @@ export function sessionSnapshot(ctx: LeadPresenceContext): readonly SessionRecor
   return ctx.sessions?.() ?? liveSessions(ctx.paths.claudeConfigDir);
 }
 
+/** Adoption rewrites crew ownership to the current id; earlier ids own events, not crew. */
+export function isOpenCrewOfLead(record: CrewRecord, lead: LeadRecord): boolean {
+  return (
+    record.leadSessionId === lead.sessionId &&
+    !["merged", "removed", "discarded"].includes(record.state)
+  );
+}
+
+export interface LeadRunningReason {
+  line: string;
+  fix: string;
+}
+
 /** All three sources must prove absence before a lead can be adopted. */
+export function leadRunningReason(
+  lead: LeadRecord,
+  rows: readonly AgentRow[] | null,
+  sessions: readonly SessionRecord[],
+  ctx: LeadPresenceContext,
+): LeadRunningReason | null {
+  const session = sessions.find((one) => one.sessionId === lead.sessionId);
+  if (session !== undefined) {
+    return sessionIdentityProved(session)
+      ? {
+          line: "a live session record has a proved identity",
+          fix: "end that lead with crew lead --end in its session, then retry here",
+        }
+      : {
+          line: `a session record for pid ${session.pid} has an unproved identity`,
+          fix: `when that session is really gone, retry once pid ${session.pid} has ended, or after a restart`,
+        };
+  }
+  if (
+    ctx.watchAlive?.(lead.repo, lead.sessionId) ??
+    watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId)
+  )
+    return {
+      line: "its watch holds the lease",
+      fix: "stop that watch, or wait for it to end, then retry here",
+    };
+  if (rows === null) throw new Error("the agent view cannot be read; retry crew lead");
+  return rowsOfLead(rows, lead).some((row) => isLiveRow(row))
+    ? {
+        line: "the agent view lists it as live",
+        fix: "stop it in the agent view or run crew lead --end in it, then retry here",
+      }
+    : null;
+}
+
+/** Boolean contract retained for the board, watch and cleanup callers. */
 export function leadRunning(
   lead: LeadRecord,
   rows: readonly AgentRow[] | null,
   sessions: readonly SessionRecord[],
   ctx: LeadPresenceContext,
 ): boolean {
-  if (sessions.some((one) => one.sessionId === lead.sessionId)) return true;
-  if (
-    ctx.watchAlive?.(lead.repo, lead.sessionId) ??
-    watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId)
-  )
-    return true;
-  if (rows === null) throw new Error("the agent view cannot be read; retry crew lead");
-  return rowsOfLead(rows, lead).some((row) => isLiveRow(row));
+  return leadRunningReason(lead, rows, sessions, ctx) !== null;
 }
 
 /** The rows agent view lists for the session of `lead`. */

@@ -4,7 +4,7 @@
  * next prompt (`claude --bg --resume <session id> "<text>"`).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { crewWorld, LEAD_SESSION } from "../testing/crew-world";
@@ -15,6 +15,7 @@ import {
   addCrewQuestion,
   answerCrewQuestion,
   createCrew,
+  crewFile,
   crewMcpFile,
   crewReportFile,
   crewSettingsFile,
@@ -117,6 +118,30 @@ async function askedWorld(
 }
 
 describe("crew answer", () => {
+  test("a note carried by a resume is delivered even when the record changes", async () => {
+    const world = await askedWorld("stopped");
+    const real = world.ctx().runProgram;
+    const ctx = world.ctx({
+      runProgram: (argv, options) => {
+        const result = real(argv, options);
+        if (argv.includes("--resume")) {
+          const file = crewFile(world.paths.stateDir, world.repo, ID);
+          const record = JSON.parse(readFileSync(file, "utf8"));
+          writeFileSync(file, JSON.stringify({ ...record, state: "working" }));
+        }
+        return result;
+      },
+    });
+    expect(await runCrew(["note", NAME, "use the new contract"], ctx)).toBe(1);
+    const [record] = listCrew(world.paths.stateDir, world.repo).records;
+    expect(record?.notes?.[0]?.deliveredAt).toBe("2026-10-21T10:00:00.000Z");
+    expect(record?.state).toBe("working");
+    expect(world.err).toEqual([
+      `${NAME}: resumed as session aaaa1111, but its record changed to working; its state was not overwritten`,
+    ]);
+    expect(world.out).toEqual([`${NAME}: resumed with your note`]);
+  });
+
   test("C1: a note resume clears its wait and records the lead resume", async () => {
     const world = await askedWorld("stopped");
     await updateCrew(

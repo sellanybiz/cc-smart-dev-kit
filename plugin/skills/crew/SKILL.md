@@ -95,8 +95,9 @@ report with an empty field is refused.
 
 **A guard refuses the here-doc?** Claude Code's worktree guard refuses a command it cannot show
 stays inside the worktree. Then write the JSON with the Write tool to a file outside the
-repository, such as your job's temp folder (`$CLAUDE_JOB_DIR/tmp/report.json`), and run
-`crew report --status <status> --file <that path>`. Never send a bare report instead: its fields
+repository, such as your job's temp folder. The Write tool takes a real path and expands no
+variable, so first run `echo "$CLAUDE_JOB_DIR"` and write to `<that folder>/tmp/report.json`. Then
+run `crew report --status <status> --file <that path>`. Never send a bare report instead: its fields
 reach the lead empty. Never write it inside the worktree either: git sees the file as a change,
 and `crew rm` refuses a worktree that holds one.
 

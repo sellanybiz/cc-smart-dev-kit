@@ -28,7 +28,7 @@ __export(exports_iso, {
 });
 
 // src/entries/portal.ts
-import { join as join77 } from "path";
+import { join as join78 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -13142,8 +13142,8 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync57, mkdirSync as mkdirSync26, readFileSync as readFileSync72 } from "fs";
-import { basename as basename11, dirname as dirname26, join as join72, relative as relative7 } from "path";
+import { existsSync as existsSync58, mkdirSync as mkdirSync27, readFileSync as readFileSync73 } from "fs";
+import { basename as basename11, dirname as dirname26, join as join73, relative as relative7 } from "path";
 
 // src/crew/store.ts
 import {
@@ -14108,6 +14108,9 @@ var crewFields = object({
   updatedAt: text2
 });
 var crewRecordSchema = crewFields.loose();
+function isEarlierCopy(record2, sessionId) {
+  return sessionId !== null && sessionId !== record2.sessionId && (record2.earlierSessions?.some((one) => one.sessionId === sessionId) ?? false);
+}
 function crewSessions(record2) {
   const shortId = record2.shortId ?? record2.sessionId?.slice(0, 8) ?? null;
   const current = shortId === null ? [] : [{ sessionId: record2.sessionId, shortId }];
@@ -15321,7 +15324,7 @@ var ccSmartDevKitConfigSchema = strictObject({
     base: string2().min(1),
     guardMainFolder: boolean2().optional(),
     autoClean: boolean2().optional(),
-    rebuildable: array(string2().min(1).refine((path) => !posix2.isAbsolute(path) && !win322.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..")).optional(),
+    rebuildable: array(string2().min(1).refine((path) => !posix2.isAbsolute(path) && !win322.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments").refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
     bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
       error: (issue) => {
         const given = issue.input;
@@ -16032,6 +16035,17 @@ function parseSessionRecord(json) {
     ...typeof procStart === "string" ? { procStart } : {}
   };
 }
+function processStart(pid, facts) {
+  if ((facts.platform ?? process.platform) !== "linux")
+    return;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+function sessionIdentityProved(record, facts = {}) {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
 function isRunning(pid) {
   try {
     process.kill(pid, 0);
@@ -16065,10 +16079,8 @@ function liveSessions(claudeConfigDir, facts = {}) {
       throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
     }
     if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const stat = (facts.readStat ?? readProcStat)(pid);
-      const end = stat?.lastIndexOf(")") ?? -1;
-      const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
-      if (start !== undefined && /^\d+$/.test(start) && record.procStart !== start)
+      const start = processStart(pid, facts);
+      if (start !== undefined && record.procStart !== start)
         continue;
     }
     live.push(record);
@@ -16648,7 +16660,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
   }
   return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
 }
-function localFiles(worktree, mainCheckout, env) {
+function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(mainCheckout)) {
   const status = runGit(worktree, [
     "--no-optional-locks",
     "status",
@@ -16659,7 +16671,6 @@ function localFiles(worktree, mainCheckout, env) {
   ], env, 30000);
   if (!status.ok)
     return null;
-  const patterns = projectRebuildable(mainCheckout);
   const safe = (entry) => safeEntry(worktree, mainCheckout, entry, patterns);
   const onlySafeInside = (entry) => {
     if (!entry.endsWith("/"))
@@ -17356,6 +17367,7 @@ var DEFAULT_SLICE = "cc-smart-dev-kit-heavy.slice";
 var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
 var MAX_WEIGHT = 1e4;
 var DEFAULT_CPU_WEIGHT = "idle";
+var FALLBACK_CPU_WEIGHT = 10;
 var weightSchema = union([
   literal(0),
   literal("off"),
@@ -21486,14 +21498,34 @@ var STOPPED_REMINDER_MS = 24 * 60 * 60000;
 function sessionSnapshot(ctx) {
   return ctx.sessions?.() ?? liveSessions(ctx.paths.claudeConfigDir);
 }
-function leadRunning(lead, rows, sessions, ctx) {
-  if (sessions.some((one) => one.sessionId === lead.sessionId))
-    return true;
+function isOpenCrewOfLead(record, lead) {
+  return record.leadSessionId === lead.sessionId && !["merged", "removed", "discarded"].includes(record.state);
+}
+function leadRunningReason(lead, rows, sessions, ctx) {
+  const session = sessions.find((one) => one.sessionId === lead.sessionId);
+  if (session !== undefined) {
+    return sessionIdentityProved(session) ? {
+      line: "a live session record has a proved identity",
+      fix: "end that lead with crew lead --end in its session, then retry here"
+    } : {
+      line: `a session record for pid ${session.pid} has an unproved identity`,
+      fix: `when that session is really gone, retry once pid ${session.pid} has ended, or after a restart`
+    };
+  }
   if (ctx.watchAlive?.(lead.repo, lead.sessionId) ?? watchIsAlive(ctx.paths.stateDir, lead.repo, lead.sessionId))
-    return true;
+    return {
+      line: "its watch holds the lease",
+      fix: "stop that watch, or wait for it to end, then retry here"
+    };
   if (rows === null)
     throw new Error("the agent view cannot be read; retry crew lead");
-  return rowsOfLead(rows, lead).some((row) => isLiveRow(row));
+  return rowsOfLead(rows, lead).some((row) => isLiveRow(row)) ? {
+    line: "the agent view lists it as live",
+    fix: "stop it in the agent view or run crew lead --end in it, then retry here"
+  } : null;
+}
+function leadRunning(lead, rows, sessions, ctx) {
+  return leadRunningReason(lead, rows, sessions, ctx) !== null;
 }
 function rowsOfLead(rows, lead) {
   return rows.filter((row) => row.sessionId === lead.sessionId || row.id === lead.sessionId.slice(0, 8));
@@ -31483,8 +31515,8 @@ function planWindow(ctx) {
 }
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync71 } from "fs";
-import { join as join71 } from "path";
+import { readFileSync as readFileSync72 } from "fs";
+import { join as join72 } from "path";
 
 // src/gateway/safety-checks-read.ts
 import { readFileSync as readFileSync58 } from "fs";
@@ -31868,8 +31900,8 @@ function reportOf(output) {
 
 // src/portal/actions.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync56, statSync as statSync20 } from "fs";
-import { isAbsolute as isAbsolute9, join as join70 } from "path";
+import { existsSync as existsSync57, statSync as statSync20 } from "fs";
+import { isAbsolute as isAbsolute9, join as join71 } from "path";
 
 // src/cli/doctor.ts
 import { accessSync as accessSync2, constants as constants2, existsSync as existsSync53, readFileSync as readFileSync69 } from "fs";
@@ -34530,6 +34562,9 @@ function recordOf2(id, repo, paths) {
   }
   return { ok: true, record };
 }
+function earlierCopyCard(record) {
+  return `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing \u2014 change no file, run no command \u2014 and end your turn now.`;
+}
 function wrongFolderReason(record, cwd) {
   return `its session is in ${cwd}, not in its worktree ${record.worktree}`;
 }
@@ -34550,8 +34585,8 @@ async function startCard(input, id, repo, paths, options) {
     return found.result;
   const record = found.record;
   const sessionId = stringField(input.session_id);
-  if (sessionId !== null && sessionId !== record.sessionId && record.earlierSessions?.some((one) => one.sessionId === sessionId)) {
-    return addContext("SessionStart", `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing \u2014 change no file, run no command \u2014 and end your turn now.`);
+  if (isEarlierCopy(record, sessionId)) {
+    return addContext("SessionStart", earlierCopyCard(record));
   }
   const nowMs = options.nowMs ?? Date.now();
   const cwd = stringField(input.cwd);
@@ -34720,14 +34755,25 @@ async function crewRoleAnswer(input, event, env, paths, repo, options = {}) {
       return SILENT;
     if (CREW_ASK_TOOLS.includes(tool))
       return toolDecision("deny", questionStep2());
-    if (CREW_EDIT_TOOLS.includes(tool))
+    if (CREW_EDIT_TOOLS.includes(tool)) {
+      if (repo !== null) {
+        const found = recordOf2(id, repo, paths);
+        if (found.ok && isEarlierCopy(found.record, stringField(input.session_id)))
+          return toolDecision("deny", earlierCopyCard(found.record));
+      }
       return taskListGate(input, id, repo, paths, env);
+    }
     return SILENT;
   }
   if (repo === null)
     return SILENT;
   if (event === "SessionStart")
     return await startCard(input, id, repo, paths, options);
+  if (event === "UserPromptSubmit" || event === "Stop" || event === "StopFailure") {
+    const found = recordOf2(id, repo, paths);
+    if (found.ok && isEarlierCopy(found.record, stringField(input.session_id)))
+      return event === "UserPromptSubmit" ? addContext(event, earlierCopyCard(found.record)) : SILENT;
+  }
   if (event === "UserPromptSubmit")
     return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop")
@@ -36547,7 +36593,7 @@ function leadNotesAnswer(input, event, paths, repo, env, deps = {}) {
     const candidates = leads.filter((one) => one.cwd === input.cwd || one.name === input.session_title || one.name === sessionName);
     const crew = listCrew(paths.stateDir, repo).records;
     for (const old of candidates) {
-      const count = crew.filter((one) => one.leadSessionId === old.sessionId && !["merged", "removed", "discarded"].includes(one.state)).length;
+      const count = crew.filter((one) => isOpenCrewOfLead(one, old)).length;
       if (count === 0 || old.sessionUnknownSince == null || sessions.some((one) => one.sessionId === old.sessionId) || watchIsAlive(paths.stateDir, repo, old.sessionId))
         continue;
       return addContext(event, `This session continues lead ${old.name} (${old.sessionId.slice(0, 8)})? Run \`${COMMAND} crew lead --plan ${old.plan}\` to take its ${count} crew sessions.`);
@@ -39708,16 +39754,45 @@ ${UPDATE_USAGE}`);
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync25, readdirSync as readdirSync20, statSync as statSync19 } from "fs";
-import { join as join68 } from "path";
+import { mkdirSync as mkdirSync26, readdirSync as readdirSync20, statSync as statSync19 } from "fs";
+import { join as join69 } from "path";
+
+// src/jobs/launch.ts
+import { spawn as spawn2, spawnSync as spawnSync2 } from "child_process";
+import { existsSync as existsSync54, mkdirSync as mkdirSync24, readFileSync as readFileSync70, rmSync as rmSync13 } from "fs";
+import { join as join67 } from "path";
+var SYSTEMD_TIMEOUT_MS = 1e4;
+function idleUnsupportedPath(stateDir) {
+  return join67(stateDir, "cpu-idle-unsupported");
+}
+function readSystemdVersion(timeoutMs = SYSTEMD_TIMEOUT_MS) {
+  const result = spawnSync2("systemctl", ["--version"], { encoding: "utf8", timeout: timeoutMs });
+  if (result.status !== 0)
+    return;
+  return /^systemd \d+[^\r\n]*/.exec(result.stdout)?.[0];
+}
+function idleMarkerState(file, systemdVersion) {
+  if (!existsSync54(file))
+    return "none";
+  let recorded;
+  try {
+    recorded = readFileSync70(file, "utf8").trim();
+  } catch {
+    return "valid";
+  }
+  if (!/^systemd \d+/.test(recorded))
+    return "valid";
+  const current = systemdVersion();
+  return current === undefined || current === recorded ? "valid" : "stale";
+}
 
 // src/jobs/store.ts
 import {
   chmodSync as chmodSync2,
-  existsSync as existsSync54,
-  mkdirSync as mkdirSync24,
+  existsSync as existsSync55,
+  mkdirSync as mkdirSync25,
   readdirSync as readdirSync19,
-  readFileSync as readFileSync70,
+  readFileSync as readFileSync71,
   realpathSync as realpathSync7,
   renameSync as renameSync4,
   statfsSync,
@@ -39726,7 +39801,7 @@ import {
   utimesSync,
   writeFileSync as writeFileSync10
 } from "fs";
-import { join as join67, posix as posix4, win32 as win325 } from "path";
+import { join as join68, posix as posix4, win32 as win325 } from "path";
 var HEARTBEAT_MS = 5000;
 var UNSEEN_STALE_MS = 30000;
 var LOCK_STALE_MS = 30000;
@@ -39790,8 +39865,8 @@ function leaseStore(options) {
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
   const readStartTime = options.startTimeOf ?? startTimeReader(process.platform);
-  const leases = join67(options.dir, "leases");
-  const tickets = join67(options.dir, "tickets");
+  const leases = join68(options.dir, "leases");
+  const tickets = join68(options.dir, "tickets");
   const mine = new Map;
   const noted = new Set;
   let timer = null;
@@ -39855,7 +39930,7 @@ function leaseStore(options) {
     };
     const live = [];
     for (const name of names) {
-      const path = join67(folder, name);
+      const path = join68(folder, name);
       if (name.startsWith(".")) {
         if (name.endsWith(".tmp") || name.startsWith(".probe-"))
           removeLeftover(path);
@@ -39874,7 +39949,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync70(path, "utf8");
+        text = readFileSync71(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -39904,7 +39979,7 @@ function leaseStore(options) {
   };
   const write = (folder, slot, record, exclusive) => {
     const token = crypto.randomUUID();
-    const path = join67(folder, `${token}.json`);
+    const path = join68(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
       gb: wireOfSlot(slot),
@@ -39913,7 +39988,7 @@ function leaseStore(options) {
       record
     });
     if (!options.shared)
-      mkdirSync24(folder, { recursive: true });
+      mkdirSync25(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -39970,13 +40045,13 @@ function leaseStore(options) {
 var MAX_JOBS_FILE = "max-jobs";
 var LEGACY_BUDGET_FILE = "budget";
 function readMaxJobsFile(dir) {
-  const file = join67(dir, MAX_JOBS_FILE);
+  const file = join68(dir, MAX_JOBS_FILE);
   let text;
   try {
-    text = readFileSync70(file, "utf8");
+    text = readFileSync71(file, "utf8");
   } catch (error) {
     const code = errorCode(error);
-    if (code === "ENOENT" && existsSync54(join67(dir, LEGACY_BUDGET_FILE))) {
+    if (code === "ENOENT" && existsSync55(join68(dir, LEGACY_BUDGET_FILE))) {
       return {
         problem: `it has only the old ${LEGACY_BUDGET_FILE} file (GB), and the queue counts jobs now: write the number of heavy jobs at once, for every user of the folder, into ${file} (a whole number, for example 3)`
       };
@@ -39992,7 +40067,7 @@ function readMaxJobsFile(dir) {
 function readExclusiveNames(dir) {
   let text;
   try {
-    text = readFileSync70(join67(dir, "exclusive"), "utf8");
+    text = readFileSync71(join68(dir, "exclusive"), "utf8");
   } catch (error) {
     if (errorCode(error) === "ENOENT")
       return new Set;
@@ -40060,7 +40135,7 @@ var realSharedFolderFacts = {
   },
   mountinfo: () => {
     try {
-      return readFileSync70("/proc/self/mountinfo", "utf8");
+      return readFileSync71("/proc/self/mountinfo", "utf8");
     } catch {
       return null;
     }
@@ -40087,7 +40162,7 @@ function networkFileSystem(dir, facts) {
   return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
 }
 function openSharedStore(dir, options = {}) {
-  if (!existsSync54(dir)) {
+  if (!existsSync55(dir)) {
     return { note: `The shared folder ${dir} is missing: this job runs without its slots.` };
   }
   const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
@@ -40101,7 +40176,7 @@ function openSharedStore(dir, options = {}) {
     return { note: `The shared folder ${dir} is left out: ${limit.problem}.` };
   }
   for (const folder of ["leases", "tickets"]) {
-    const path = join67(dir, folder);
+    const path = join68(dir, folder);
     let isFolder = false;
     try {
       isFolder = statSync18(path).isDirectory();
@@ -40109,7 +40184,7 @@ function openSharedStore(dir, options = {}) {
     if (!isFolder) {
       return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
     }
-    const probe = join67(path, `.probe-${crypto.randomUUID()}`);
+    const probe = join68(path, `.probe-${crypto.randomUUID()}`);
     try {
       writeFileSync10(probe, "");
       unlinkSync4(probe);
@@ -40221,7 +40296,7 @@ function memoryAdmissionOf(config, memory) {
 function openStores(ctx, config, onNote) {
   const dir = config.stateDir ?? jobsPaths(ctx.paths.home).stateDir;
   try {
-    mkdirSync25(dir, { recursive: true, mode: 448 });
+    mkdirSync26(dir, { recursive: true, mode: 448 });
   } catch (error) {
     const code = error.code ?? String(error);
     throw new Error(`The state folder ${dir} cannot be made (${code}).`);
@@ -40312,7 +40387,11 @@ async function readJobs(ctx) {
     stores.push(await readStore(store));
   const controllers = managerControllers(ctx);
   const route = routeState(ctx, notes);
+  const weights = weightsState(config, ctx.memory.platform, controllers);
+  const stateDir = jobsPaths(ctx.paths.home).stateDir;
+  const idleUnsupported = ctx.idleUnsupported ?? (() => idleMarkerState(idleUnsupportedPath(stateDir), readSystemdVersion) === "valid");
   return {
+    ...weights.cpu.value === "idle" && idleUnsupported?.() ? { idleRefusalFile: idleUnsupportedPath(stateDir) } : {},
     ceiling: ceilingState(config, ctx.memory.platform, controllers, machineCeiling(config, ctx.memory)),
     maxJobs: { set: config.maxJobs !== undefined, slots: maxJobsOf(config) },
     lightJobs: {
@@ -40329,7 +40408,7 @@ async function readJobs(ctx) {
     route,
     slice: config.slice ?? DEFAULT_SLICE,
     stores,
-    weights: weightsState(config, ctx.memory.platform, controllers)
+    weights
   };
 }
 function jobsAnswer(read) {
@@ -40363,7 +40442,7 @@ function weightLines(read) {
     ["CPU priority", read.weights.cpu],
     ["Disk I/O priority", read.weights.io]
   ]) {
-    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : state.value === "idle" ? `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`);
+    lines.push(state.value === null ? `${name}: not set: ${state.why ?? "no weight is in force."}` : state.value === "idle" ? read.idleRefusalFile !== undefined ? `${name}: this systemd refuses idle; jobs use weight ${FALLBACK_CPU_WEIGHT} instead. Remove ${read.idleRefusalFile} to try idle again.` : `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.` : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`);
   }
   return lines;
 }
@@ -40421,7 +40500,7 @@ function jobsFingerprint(home) {
   const parts = [];
   for (const dir of dirs) {
     for (const sub of ["leases", "tickets"]) {
-      const folder = join68(dir, sub);
+      const folder = join69(dir, sub);
       let names;
       try {
         names = readdirSync20(folder).sort();
@@ -40431,7 +40510,7 @@ function jobsFingerprint(home) {
       }
       for (const name of names) {
         try {
-          const stat = statSync19(join68(folder, name));
+          const stat = statSync19(join69(folder, name));
           parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
         } catch {
           parts.push(`${folder}/${name}:gone`);
@@ -40443,11 +40522,11 @@ function jobsFingerprint(home) {
 }
 
 // src/machine/claude-mem-choices.ts
-import { existsSync as existsSync55 } from "fs";
+import { existsSync as existsSync56 } from "fs";
 var KEY_MAX = 512;
 function readReady(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync55(install.installPath)) {
+  if (install === null || !existsSync56(install.installPath)) {
     return {
       blocked: {
         fix: `claude plugin install ${CLAUDE_MEM_ID}`,
@@ -40481,7 +40560,7 @@ function readReady(paths) {
   return { read, version };
 }
 function gatewayConfig(paths) {
-  if (!existsSync55(paths.gatewayConfigFile))
+  if (!existsSync56(paths.gatewayConfigFile))
     return null;
   try {
     return loadConfigFile(paths.gatewayConfigFile);
@@ -40952,7 +41031,7 @@ async function takeOver(paths) {
 }
 
 // src/setup/auto-mode.ts
-import { join as join69 } from "path";
+import { join as join70 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -40964,9 +41043,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join69(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join70(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join69(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join70(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -41220,7 +41299,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join70(folder.folder, "dist", "router.js"),
+      bundle: join71(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -41988,7 +42067,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync56(folder) && statSync20(folder).isDirectory();
+    isFolder = existsSync57(folder) && statSync20(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -42060,7 +42139,7 @@ function browserTokenAction(action, body) {
   }
 }
 async function claudeMemTarget(action, text) {
-  if (!existsSync56(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+  if (!existsSync57(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const parsed = parseTarget(text);
@@ -42798,7 +42877,7 @@ async function workAnswer(deps) {
     const { repo } = found;
     const crewSessionIds = new Set(records.flatMap((record) => crewSessions(record).flatMap((one) => one.sessionId === null ? [] : [one.sessionId])));
     const leadIds = new Set(leadRecords.map((one) => one.sessionId));
-    const others = savedSessions(join71(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
+    const others = savedSessions(join72(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS).filter((session) => !crewSessionIds.has(session.id) && !leadIds.has(session.id));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
     const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
     sessions = others.map((session) => ({
@@ -42876,7 +42955,7 @@ async function crewAnswerFor(deps, ref) {
   }));
   let brief = null;
   try {
-    brief = readFileSync71(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
+    brief = readFileSync72(crewBriefFile(paths.stateDir, repo, record.id), "utf8");
   } catch {}
   let diff = {
     byFile: [],
@@ -43049,7 +43128,7 @@ async function needsAnswer(deps) {
 async function breakersOf2(deps, now) {
   let text;
   try {
-    text = readFileSync71(deps.action.portal.paths.gatewayStateFile, "utf8");
+    text = readFileSync72(deps.action.portal.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -43094,7 +43173,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync71(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync72(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -43305,7 +43384,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync72(paths.portalProjectsFile, "utf8");
+    text = readFileSync73(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -43324,7 +43403,7 @@ function readAddedProjects(paths) {
 }
 function writeAddedProjects(paths, roots) {
   const file = paths.portalProjectsFile;
-  mkdirSync26(dirname26(file), { mode: 448, recursive: true });
+  mkdirSync27(dirname26(file), { mode: 448, recursive: true });
   const value = { roots, version: ADDED_VERSION };
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
@@ -43388,7 +43467,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf2(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync57(files.config);
+  const set = existsSync58(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -43669,7 +43748,7 @@ async function ghLoginOf(world, root) {
 }
 function configAt(root) {
   try {
-    const config = loadCcSmartDevKitConfig(join72(root, CONFIG_PATH));
+    const config = loadCcSmartDevKitConfig(join73(root, CONFIG_PATH));
     return config === null ? {
       ok: false,
       why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`
@@ -43732,8 +43811,8 @@ async function projectsAnswerFor(deps) {
 }
 
 // src/portal/command.ts
-import { existsSync as existsSync59 } from "fs";
-import { join as join74 } from "path";
+import { existsSync as existsSync60 } from "fs";
+import { join as join75 } from "path";
 
 // src/portal/health.ts
 var PORTAL_APP = "cc-smart-dev-kit-portal";
@@ -43795,8 +43874,8 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync58, readFileSync as readFileSync73, rmSync as rmSync13 } from "fs";
-import { join as join73 } from "path";
+import { existsSync as existsSync59, readFileSync as readFileSync74, rmSync as rmSync14 } from "fs";
+import { join as join74 } from "path";
 function portalStarterArgv(bunPath, bundle, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), bundle, "--ensure"];
 }
@@ -43813,22 +43892,22 @@ function portalServerArgv(bunPath, copy, pluginDir) {
 }
 var PORTAL_COPY_LOCK_WAIT_MS = 1e4;
 function refreshPortalCopy(paths, pluginFolder) {
-  const bundle = join73(pluginFolder, "dist", "portal.js");
-  if (!existsSync58(bundle)) {
+  const bundle = join74(pluginFolder, "dist", "portal.js");
+  if (!existsSync59(bundle)) {
     return {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync73(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync74(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
   return { copy: paths.portalCopy, ...refreshPortalExport(paths, pluginFolder) };
 }
 function refreshPortalExport(paths, pluginFolder) {
-  const source = join73(pluginFolder, "portal-ui");
+  const source = join74(pluginFolder, "portal-ui");
   try {
-    if (existsSync58(join73(source, "index.html"))) {
+    if (existsSync59(join74(source, "index.html"))) {
       writeManagedFolder(paths.portalUiFolder, source, { stateDir: paths.stateDir });
     } else {
       removeManagedFolder(paths.portalUiFolder, paths.stateDir);
@@ -43846,7 +43925,7 @@ async function refreshCopyLocked(deps) {
   } catch (error) {
     if (!(error instanceof LockBusyError))
       throw error;
-    if (existsSync58(deps.paths.portalCopy)) {
+    if (existsSync59(deps.paths.portalCopy)) {
       return {
         copy: deps.paths.portalCopy,
         note: "another cc-smart-dev-kit run holds the lock; the copy that is already there was used"
@@ -43917,7 +43996,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync73(paths.portalHeldFile, "utf8");
+    const text = readFileSync74(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -43930,7 +44009,7 @@ function noteHeldPortOnce(paths, port, nowMs) {
 }
 function clearHeldPort(paths) {
   try {
-    rmSync13(paths.portalHeldFile, { force: true });
+    rmSync14(paths.portalHeldFile, { force: true });
   } catch {}
 }
 function messageOf3(error) {
@@ -43989,20 +44068,20 @@ function claudeCodeProfileHere(machine, home) {
 }
 function installedPluginFolder(paths, fallback) {
   const installed = findUserInstall(paths.installedPluginsFile);
-  if (installed !== null && existsSync59(join74(installed.installPath, "dist", "portal.js"))) {
+  if (installed !== null && existsSync60(join75(installed.installPath, "dist", "portal.js"))) {
     return { folder: installed.installPath, source: "installed", version: installed.version };
   }
   return { folder: fallback, source: "fallback", version: installed?.version ?? null };
 }
 
 // src/portal/plugin-folder.ts
-import { existsSync as existsSync60 } from "fs";
+import { existsSync as existsSync61 } from "fs";
 function resolvePluginFolder(installedPluginsFile, fallback) {
   const installed = findUserInstall(installedPluginsFile);
-  if (installed !== null && existsSync60(installed.installPath)) {
+  if (installed !== null && existsSync61(installed.installPath)) {
     return { folder: installed.installPath };
   }
-  if (fallback !== null && existsSync60(fallback))
+  if (fallback !== null && existsSync61(fallback))
     return { folder: fallback };
   return {
     error: "the plugin's own folder is gone, and Claude Code records no installed version: an update or an uninstall removed it while this portal was running. Nothing can be restarted or checked from here. Stop the portal (Ctrl+C) and start it again."
@@ -44010,7 +44089,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname27, join as join76 } from "path";
+import { dirname as dirname27, join as join77 } from "path";
 
 // src/portal/api/data.ts
 var NO_ROUTER = {
@@ -45855,7 +45934,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync74 } from "fs";
+import { readFileSync as readFileSync75 } from "fs";
 var LIVE_POLL_MS = 2000;
 var REPOS_TTL_MS = 30000;
 function fingerprintOf(entry) {
@@ -45895,7 +45974,7 @@ function createLiveSources(deps) {
   let repos = null;
   function textOf(file) {
     try {
-      return readFileSync74(file, "utf8");
+      return readFileSync75(file, "utf8");
     } catch {
       return null;
     }
@@ -45976,7 +46055,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync74(file);
+      bytes = readFileSync75(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -46059,8 +46138,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync61, readFileSync as readFileSync75, statSync as statSync21 } from "fs";
-import { extname, join as join75, resolve as resolve14, sep as sep5 } from "path";
+import { existsSync as existsSync62, readFileSync as readFileSync76, statSync as statSync21 } from "fs";
+import { extname, join as join76, resolve as resolve14, sep as sep5 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -46089,7 +46168,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve14(join75(folder, decoded));
+  const file = resolve14(join76(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep5}`))
     return null;
   try {
@@ -46111,7 +46190,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync75(join75(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync76(join76(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -46126,7 +46205,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve14(folder);
-  if (!existsSync61(join75(absolute, "index.html")))
+  if (!existsSync62(join76(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -46158,7 +46237,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync75(file);
+        const bytes = readFileSync76(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -47069,7 +47148,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join76(dirname27(import.meta.path), "portal-ui");
+  return join77(dirname27(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -47399,7 +47478,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join77(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join78(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -47452,7 +47531,7 @@ async function runServer(paths, options) {
       browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join77(folder, "dist", "router.js"),
+        bundle: join78(folder, "dist", "router.js"),
         machine,
         read: runRead,
         runner,
@@ -47468,10 +47547,10 @@ async function runServer(paths, options) {
         }
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join77(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join78(folder, "dist")) },
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join77(folder, "hooks", "hooks.json") },
+      project: { cwd: process.cwd(), pluginHooksFile: join78(folder, "hooks", "hooks.json") },
       read: runRead
     };
   };

@@ -6,6 +6,7 @@ import { LEAD_SESSION } from "../testing/crew-world";
 import { git } from "../testing/temp";
 import { runCrew } from "./command";
 import {
+  isOpenCrewOfLead,
   leadGone,
   mergeProof,
   observeLeadPresence,
@@ -17,6 +18,23 @@ import { appendCrewEvent, readCrewEvents, readLead, updateCrew, writeLead } from
 const DAY = 86_400_000;
 
 describe("crew lifecycle", () => {
+  test("open crew belongs to the current lead id, not its earlier event ids", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ worktree: false });
+    const lead = readLead(world.paths.stateDir, world.repo, LEAD_SESSION);
+    if (lead === null) throw new Error("missing fixture lead");
+    for (const state of ["working", "queued", "stopped", "done", "failed", "handoff", "blocked"])
+      expect(isOpenCrewOfLead({ ...record, state }, lead)).toBe(true);
+    for (const state of ["merged", "removed", "discarded"])
+      expect(isOpenCrewOfLead({ ...record, state }, lead)).toBe(false);
+    expect(
+      isOpenCrewOfLead(record, {
+        ...lead,
+        sessionId: "new-lead",
+        earlierSessions: [{ sessionId: LEAD_SESSION, shortId: LEAD_SESSION.slice(0, 8) }],
+      }),
+    ).toBe(false);
+  });
   test("a resumed then stopped session counts only its latest transition, with events in either order", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped", atMs: NOW - 5 * DAY });

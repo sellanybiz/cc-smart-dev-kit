@@ -201,6 +201,14 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
                 !win32.isAbsolute(path) &&
                 !path.split(/[\\/]/).includes(".."),
               "must be relative to the checkout root, without ..",
+            )
+            .refine((path) => !path.includes("\\"), "use / as the separator")
+            .refine((path) => !path.split("/").includes("."), "must not contain . segments")
+            .refine(
+              // A dot alone names nothing either: `.*` would match every ignored dotfile,
+              // `.env.local` included.
+              (path) => /[^*?/[\]{},!.]/.test(path),
+              "names nothing; list the folder or file name",
             ),
         )
         .optional(),

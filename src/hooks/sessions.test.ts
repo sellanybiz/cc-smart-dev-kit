@@ -2,7 +2,21 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { liveSessions, parseSessionRecord } from "./sessions";
+import { liveSessions, parseSessionRecord, sessionIdentityProved } from "./sessions";
+
+test("session identity is proved only by a matching readable start", () => {
+  const noStart = { pid: 300, sessionId: "lead", cwd: "/project", name: "lead" };
+  const record = { ...noStart, procStart: "10" };
+  const facts = {
+    platform: "linux" as const,
+    readStat: () => "300 (session name) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 10 0",
+  };
+  expect(sessionIdentityProved(record, facts)).toBe(true);
+  expect(sessionIdentityProved(noStart, facts)).toBe(false);
+  expect(sessionIdentityProved(record, { ...facts, readStat: () => null })).toBe(false);
+  expect(sessionIdentityProved({ ...record, procStart: "11" }, facts)).toBe(false);
+  expect(sessionIdentityProved(record, { ...facts, platform: "win32" })).toBe(false);
+});
 
 test("a running session without a start identity stays live", () => {
   const config = tempDir("session-identity");

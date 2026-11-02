@@ -260,16 +260,32 @@ describe("worktrees.rebuildable", () => {
     ).toEqual([".tool-cache/", "*.cache"]);
   });
 
-  test.each(["/abs", "../x", "", "a/../x", "C:\\cache", "\\\\server\\cache"])(
-    "refuses unsafe rebuildable pattern %j",
-    (pattern) => {
-      expect(
-        ccSmartDevKitConfigSchema.safeParse({
-          worktrees: { base: "main", rebuildable: [pattern] },
-        }).success,
-      ).toBe(false);
-    },
-  );
+  test.each([
+    "/abs",
+    "../x",
+    "",
+    "a/../x",
+    "C:\\cache",
+    "\\\\server\\cache",
+    "a\\b",
+    "./x",
+    "a/./x",
+    ".",
+    "*",
+    "**",
+    "**/*",
+    "*/",
+    "?/[!]{,}",
+    ".*",
+    "*.*",
+    "**/.*",
+  ])("refuses unsafe rebuildable pattern %j", (pattern) => {
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({
+        worktrees: { base: "main", rebuildable: [pattern] },
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("the since-tables", () => {

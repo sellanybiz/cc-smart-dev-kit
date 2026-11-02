@@ -83,9 +83,9 @@ export async function runCrewNote(args: NoteArgs, ctx: CrewContext): Promise<num
         return 1;
       }
       const stored = await markResumed(record, resumed.session, ctx);
-      if (stored) await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
+      await markNoteDelivered(ctx.paths.stateDir, repo, record.id, index, ctx.now());
       ctx.print(`${record.name}: resumed with your note`);
-      return 0;
+      return stored ? 0 : 1;
     }
     ctx.print(`${record.name}: note recorded`);
     for (const line of await deliveryReport(

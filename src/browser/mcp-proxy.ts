@@ -58,7 +58,14 @@ export function proxyMcp(deps: ProxyDeps): {
     if (Array.isArray(value) && value.some(isCall)) {
       // One batch gets one response array. Notifications have no response.
       const replies = value.flatMap((request) => {
-        if (typeof request !== "object" || request === null || !("id" in request)) return [];
+        if (
+          typeof request !== "object" ||
+          request === null ||
+          !("id" in request) ||
+          !("method" in request) ||
+          typeof request.method !== "string"
+        )
+          return [];
         return [
           isCall(request)
             ? failure(request.id, why)
@@ -70,6 +77,12 @@ export function proxyMcp(deps: ProxyDeps): {
         ];
       });
       await write(deps.clientOutput, Buffer.from(`${JSON.stringify(replies)}\n`));
+      // Client responses finish requests the child sent; Chrome failure must not swallow them.
+      const responses = value.filter(
+        (entry) => typeof entry === "object" && entry !== null && !("method" in entry),
+      );
+      if (responses.length)
+        await write(deps.childInput, Buffer.from(`${JSON.stringify(responses)}\n`));
     } else if (isCall(value)) {
       await write(deps.clientOutput, Buffer.from(`${JSON.stringify(failure(value.id, why))}\n`));
     } else await write(deps.childInput, line);

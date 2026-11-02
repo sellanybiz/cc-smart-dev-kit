@@ -222,8 +222,13 @@ function setSliceWeights(request: JobRequest, deps: JobDeps): void {
     )
       delete perSlice.cpu;
     if (perSlice.cpu === undefined && perSlice.io === undefined) continue;
-    if (deps.slice.setWeights(slice, perSlice)) continue;
-    if (perSlice.cpu === "idle") {
+    const result = deps.slice.setWeights(slice, perSlice);
+    if (result === true) continue;
+    if (
+      perSlice.cpu === "idle" &&
+      result === false &&
+      deps.slice.setWeights(slice, { ...perSlice, cpu: FALLBACK_CPU_WEIGHT }) === true
+    ) {
       deps.say(
         `CPU priority: this systemd could not set idle; using weight ${FALLBACK_CPU_WEIGHT} instead.`,
       );
@@ -235,7 +240,7 @@ function setSliceWeights(request: JobRequest, deps: JobDeps): void {
         );
       }
       weights.cpu = FALLBACK_CPU_WEIGHT;
-      if (deps.slice.setWeights(slice, { ...perSlice, cpu: FALLBACK_CPU_WEIGHT })) continue;
+      continue;
     }
     deps.say(`could not set the ${named} on ${slice}: the job runs without priority there`);
   }

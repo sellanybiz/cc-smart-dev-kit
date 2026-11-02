@@ -675,6 +675,15 @@ const crewFields = z.object({
 export const crewRecordSchema = crewFields.loose();
 export type CrewRecord = z.infer<typeof crewFields>;
 
+/** A replaced Claude session, never the current one even when its id was used before. */
+export function isEarlierCopy(record: CrewRecord, sessionId: string | null): boolean {
+  return (
+    sessionId !== null &&
+    sessionId !== record.sessionId &&
+    (record.earlierSessions?.some((one) => one.sessionId === sessionId) ?? false)
+  );
+}
+
 /**
  * One Claude session of a crew session: its id and the short id `claude agents` shows. A start
  * that could not read agent view records the short id alone, so the id may be null.

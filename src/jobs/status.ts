@@ -29,12 +29,14 @@ import {
   DEFAULT_RESERVE_GB,
   DEFAULT_SLICE,
   DEFAULT_START_FREE_GB,
+  FALLBACK_CPU_WEIGHT,
   ioWeightOf,
   type JobsMachineConfig,
   jobsPaths,
   loadJobsConfig,
   maxJobsOf,
 } from "./config";
+import { idleMarkerState, idleUnsupportedPath, readSystemdVersion } from "./launch";
 import {
   GIB,
   type MemoryFacts,
@@ -71,6 +73,8 @@ export interface JobContext {
   /** `job status` and `job kinds` print here. */
   print: (line: string) => void;
   now?: () => number;
+  /** The launcher's version-aware marker reader; injected to keep status tests pure. */
+  idleUnsupported?: () => boolean;
 }
 
 /** One job a store holds or has waiting, as `/api/jobs` names it. */
@@ -173,6 +177,8 @@ export interface JobStoreRead {
 
 /** Everything one read of the queue found (the private side of `JobsAnswer`). */
 export interface JobsRead {
+  /** Valid idle-refusal marker, only when idle CPU priority is requested and available. */
+  idleRefusalFile?: string;
   ceiling: JobCeilingState;
   /** This machine's `maxJobs`, and whether `jobs.json` sets it. */
   maxJobs: { set: boolean; slots: number };
@@ -444,7 +450,16 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
   for (const store of opened.shared) stores.push(await readStore(store));
   const controllers = managerControllers(ctx);
   const route = routeState(ctx, notes);
+  const weights = weightsState(config, ctx.memory.platform, controllers);
+  const stateDir = jobsPaths(ctx.paths.home).stateDir;
+  // A read only: a stale marker is left for the next launch to remove (`idleMarkerState`).
+  const idleUnsupported =
+    ctx.idleUnsupported ??
+    (() => idleMarkerState(idleUnsupportedPath(stateDir), readSystemdVersion) === "valid");
   return {
+    ...(weights.cpu.value === "idle" && idleUnsupported?.()
+      ? { idleRefusalFile: idleUnsupportedPath(stateDir) }
+      : {}),
     ceiling: ceilingState(
       config,
       ctx.memory.platform,
@@ -466,7 +481,7 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
     route,
     slice: config.slice ?? DEFAULT_SLICE,
     stores,
-    weights: weightsState(config, ctx.memory.platform, controllers),
+    weights,
   };
 }
 
@@ -519,7 +534,9 @@ function weightLines(read: JobsRead): string[] {
       state.value === null
         ? `${name}: not set: ${state.why ?? "no weight is in force."}`
         : state.value === "idle"
-          ? `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.`
+          ? read.idleRefusalFile !== undefined
+            ? `${name}: this systemd refuses idle; jobs use weight ${FALLBACK_CPU_WEIGHT} instead. Remove ${read.idleRefusalFile} to try idle again.`
+            : `${name}: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.`
           : `${name}: weight ${String(state.value)} on ${read.slice} and the slices above it (systemd's default is 100; under load a heavy job gives way to the rest of the machine).`,
     );
   }

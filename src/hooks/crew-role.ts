@@ -100,6 +100,7 @@ import {
   appendCrewEvent,
   type CrewRecord,
   crewBriefFile,
+  isEarlierCopy,
   isQuestionOpen,
   lastHeardAnswer,
   readCrew,
@@ -415,6 +416,11 @@ function recordOf(
   return { ok: true, record };
 }
 
+/** The same stand-down instruction at startup, on a prompt and before an edit. */
+function earlierCopyCard(record: CrewRecord): string {
+  return `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing — change no file, run no command — and end your turn now.`;
+}
+
 /** Why a crew session is failed when it starts outside its worktree: where it is, and where it belongs. */
 export function wrongFolderReason(record: CrewRecord, cwd: string): string {
   return `its session is in ${cwd}, not in its worktree ${record.worktree}`;
@@ -451,15 +457,8 @@ async function startCard(
   if (!found.ok) return found.result;
   const record = found.record;
   const sessionId = stringField(input.session_id);
-  if (
-    sessionId !== null &&
-    sessionId !== record.sessionId &&
-    record.earlierSessions?.some((one) => one.sessionId === sessionId)
-  ) {
-    return addContext(
-      "SessionStart",
-      `You are an earlier copy of the crew session \`${record.name}\`; its current session is \`${record.shortId}\`. Do nothing — change no file, run no command — and end your turn now.`,
-    );
+  if (isEarlierCopy(record, sessionId)) {
+    return addContext("SessionStart", earlierCopyCard(record));
   }
   const nowMs = options.nowMs ?? Date.now();
   const cwd = stringField(input.cwd);
@@ -823,12 +822,25 @@ export async function crewRoleAnswer(
     if (tool === null) return SILENT;
     if ((CREW_ASK_TOOLS as readonly string[]).includes(tool))
       return toolDecision("deny", questionStep());
-    if ((CREW_EDIT_TOOLS as readonly string[]).includes(tool))
+    if ((CREW_EDIT_TOOLS as readonly string[]).includes(tool)) {
+      if (repo !== null) {
+        const found = recordOf(id, repo, paths);
+        if (found.ok && isEarlierCopy(found.record, stringField(input.session_id)))
+          return toolDecision("deny", earlierCopyCard(found.record));
+      }
       return taskListGate(input, id, repo, paths, env);
+    }
     return SILENT;
   }
   if (repo === null) return SILENT;
   if (event === "SessionStart") return await startCard(input, id, repo, paths, options);
+  if (event === "UserPromptSubmit" || event === "Stop" || event === "StopFailure") {
+    const found = recordOf(id, repo, paths);
+    if (found.ok && isEarlierCopy(found.record, stringField(input.session_id)))
+      return event === "UserPromptSubmit"
+        ? addContext(event, earlierCopyCard(found.record))
+        : SILENT;
+  }
   if (event === "UserPromptSubmit")
     return await personPromptAnswer(input, id, repo, paths, env, options);
   if (event === "Stop") return await stopAnswer(input, id, repo, paths, env, options);

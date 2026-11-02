@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -23,6 +24,26 @@ import { runCrewRm } from "./remove";
 import { readCrew, updateCrew } from "./store";
 
 describe("explicit recoverable crew discard", () => {
+  test("discard reads project rebuildable patterns once for the whole ignored walk", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "stopped" });
+    writeFileSync(join(record.worktree, ".gitignore"), "private/\n");
+    mkdirSync(join(record.worktree, "private"));
+    writeFileSync(join(record.worktree, "private", "one"), "one\n");
+    writeFileSync(join(record.worktree, "private", "two"), "two\n");
+    const config = join(record.repo, ".claude", "cc-smart-dev-kit.json");
+    const read = spyOn(fs, "readFileSync");
+    try {
+      expect(buildCrewDiscardFacts(record, world.ctx()).ignoredFiles).toEqual([
+        "private/one",
+        "private/two",
+      ]);
+      expect(read.mock.calls.filter(([file]) => file === config)).toHaveLength(1);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   test.each(["unlock", "scan", "move", "remove"])(
     "a failed %s restores exact branch/index without exposing ignored bytes and can retry",
     async (step) => {

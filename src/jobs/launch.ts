@@ -53,7 +53,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { constants } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "../setup/write";
@@ -445,8 +445,8 @@ export function spawnAndWait(
 export interface SliceControl {
   /** `ceilingArgv`: the slice's `MemoryMax`, and `MemorySwapMax=0`; true on success. */
   setMemoryMax: (slice: string, value: string) => boolean;
-  /** `weightsArgv`: one slice's CPU and I/O weights; true on success, and for none. */
-  setWeights: (slice: string, weights: SliceWeights) => boolean;
+  /** `weightsArgv`: true on success (or none), false on refusal, timeout separately. */
+  setWeights: (slice: string, weights: SliceWeights) => boolean | "timeout";
   /** Machine-local capability record; absent on controls without persistent state. */
   idleUnsupported?: () => boolean;
   rememberIdleUnsupported?: () => void;
@@ -486,18 +486,58 @@ export function realLaunchFacts(slice: string, timeoutMs = SYSTEMD_TIMEOUT_MS): 
   };
 }
 
+/** The capability marker's one path, shared by launch and status. */
+export function idleUnsupportedPath(stateDir: string): string {
+  return join(stateDir, "cpu-idle-unsupported");
+}
+
+/** The first line of `systemctl --version` (`systemd 249 (…)`), or undefined when it cannot be read. */
+export function readSystemdVersion(timeoutMs = SYSTEMD_TIMEOUT_MS): string | undefined {
+  const result = spawnSync("systemctl", ["--version"], { encoding: "utf8", timeout: timeoutMs });
+  if (result.status !== 0) return undefined;
+  return /^systemd \d+[^\r\n]*/.exec(result.stdout)?.[0];
+}
+
+/**
+ * What the idle-refusal marker says, read only: `none`, `valid`, or `stale` (another systemd
+ * version refused idle). It changes nothing, so `job status` and the portal can read it. An
+ * unreadable marker, an old one with no version, and a version that cannot be read stay valid.
+ */
+export function idleMarkerState(
+  file: string,
+  systemdVersion: () => string | undefined,
+): "none" | "stale" | "valid" {
+  if (!existsSync(file)) return "none";
+  let recorded: string;
+  try {
+    recorded = readFileSync(file, "utf8").trim();
+  } catch {
+    return "valid";
+  }
+  if (!/^systemd \d+/.test(recorded)) return "valid";
+  const current = systemdVersion();
+  return current === undefined || current === recorded ? "valid" : "stale";
+}
+
 export function realSliceControl(
   read: ReadText,
   timeoutMs = SYSTEMD_TIMEOUT_MS,
   stateDir?: string,
-): SliceControl {
-  const refusalFile = stateDir === undefined ? undefined : join(stateDir, "cpu-idle-unsupported");
+): Required<SliceControl> {
+  const refusalFile = stateDir === undefined ? undefined : idleUnsupportedPath(stateDir);
+  const systemdVersion = () => readSystemdVersion(timeoutMs);
   return {
-    idleUnsupported: () => refusalFile !== undefined && existsSync(refusalFile),
+    idleUnsupported: () => {
+      if (refusalFile === undefined) return false;
+      const state = idleMarkerState(refusalFile, systemdVersion);
+      // Only a launch removes a stale marker: it tries idle now, and writes a new one if refused.
+      if (state === "stale") rmSync(refusalFile, { force: true });
+      return state === "valid";
+    },
     rememberIdleUnsupported: () => {
       if (stateDir === undefined || refusalFile === undefined) return;
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-      atomicWrite(refusalFile, "idle refused\n", 0o600);
+      atomicWrite(refusalFile, `${systemdVersion() ?? "idle refused"}\n`, 0o600);
     },
     cpuWeight: (slice) => {
       const result = spawnSync("systemctl", ["--user", "show", "-p", "CPUWeight", slice], {
@@ -513,7 +553,13 @@ export function realSliceControl(
     setMemoryMax: (slice, value) => exitsZero(ceilingArgv(slice, value), timeoutMs),
     setWeights: (slice, weights) => {
       const argv = weightsArgv(slice, weights);
-      return argv === null || exitsZero(argv, timeoutMs);
+      if (argv === null) return true;
+      const [program, ...args] = argv;
+      const result = spawnSync(program, args, { stdio: "ignore", timeout: timeoutMs });
+      // Bun, like Node, ends a timed-out child with SIGTERM and an `ETIMEDOUT` error (probed).
+      const failure: NodeJS.ErrnoException | undefined = result.error;
+      if (failure?.code === "ETIMEDOUT") return "timeout";
+      return result.status === 0;
     },
     controllers: () => {
       const uid = process.getuid?.();

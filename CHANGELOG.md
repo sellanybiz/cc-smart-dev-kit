@@ -33,15 +33,20 @@ What changed:
 - An earlier copy of a crew session that Claude Code brings back after a restart now stands
   down. It changes nothing in the store, its own commands are refused, and the lead's watch
   stops it. Before, such a copy could fail the record of the copy that was really working.
-- A bare `crew lead` takes the lead with this session's name first. Folder matches that span
-  more than one plan are refused, with the candidates listed.
+- A bare `crew lead` takes the lead with this session's name first, then one in this folder.
+  Only a lead that still has open crew counts, so an empty old lead never gives this session
+  its plan. Matches that span more than one plan are refused, with the candidates listed. When
+  a lead still counts as running, the refusal says why (its session record, agent view or its
+  watch) and how to get past it.
 - A running session whose start identity cannot be proved counts as running, never as gone.
   So the cleanups, `sessions` and `crew lead` keep working when a record has no `procStart`.
 - The adoption summary is said once per adoption, not again at each re-armed watch. Crew
   sessions no longer get the lead's adoption hints. A crew report whose here-doc a guard
   refuses goes through a file instead (the crew skill says how).
 - Idle CPU priority goes only on the kit's own slices, never on a parent such as `app.slice`.
-  Where systemd refuses idle, the fallback is said once per machine.
+  Where systemd refuses idle, weight 10 is used and said once per machine. `job status` says
+  so, and a systemd upgrade tries idle again. A weight 1.8.1 put on a parent slice was a
+  runtime setting: it goes at the next login.
 - A running `crew watch` ends when a newer plugin version is installed, with the line that says
   to start it again. Before, a lead session that never restarted kept running the old watch code
   for days. A watch started before 1.9.0 has no such check: after this update, start each
@@ -49,7 +54,8 @@ What changed:
 - A project can name its own rebuildable ignored paths: `worktrees.rebuildable` in
   `.claude/cc-smart-dev-kit.json` (needs `requires` 1.9.0). Crew removal, release and the
   worktree cleanups treat a match like `node_modules`, so a tool's cache folder no longer keeps
-  a finished crew worktree forever.
+  a finished crew worktree forever. A pattern matches at any depth; one that names nothing
+  (`*`, `**`, `.*`), uses `\` or starts with `./` is refused.
 
 ## 1.8.1
 

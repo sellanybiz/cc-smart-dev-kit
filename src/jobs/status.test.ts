@@ -59,6 +59,7 @@ function world(config: Record<string, unknown> = {}): {
     print: () => undefined,
     say: () => undefined,
     uid: UID,
+    idleUnsupported: () => false,
   };
   return { ctx, dir, home };
 }
@@ -92,6 +93,24 @@ const WEIGHT_DEFAULT = (name: "cpu" | "io") =>
   `a job runs at systemd's own weight (100). ${COMMAND} job set ${name}-weight <1-10000> asks for another.`;
 
 describe("the jobs reader", () => {
+  test.each([{}, { cpuWeight: "idle" }])(
+    "idle status reports the valid refusal marker for %j",
+    async (config) => {
+      const w = world(config);
+      const read = await readJobs({ ...w.ctx, idleUnsupported: () => true });
+      expect(
+        statusLines(read, w.home, Date.now()).filter((line) => line.startsWith("CPU priority:")),
+      ).toEqual([
+        `CPU priority: this systemd refuses idle; jobs use weight 10 instead. Remove ${join(w.dir, "cpu-idle-unsupported")} to try idle again.`,
+      ]);
+      const normal = await readJobs(w.ctx);
+      expect(
+        statusLines(normal, w.home, Date.now()).filter((line) => line.startsWith("CPU priority:")),
+      ).toEqual([
+        `CPU priority: idle (the default): a heavy job gets the CPU only when nothing else wants it. ${COMMAND} job set cpu-weight off turns it off.`,
+      ]);
+    },
+  );
   test("a light run and a name only: each holder says its lane, as the portal shows it", async () => {
     const world1 = world();
     const store = machineStore(world1.dir);

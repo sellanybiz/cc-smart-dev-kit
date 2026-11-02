@@ -519,7 +519,10 @@ With `launch: auto` (the default), on Linux:
 - **Idle CPU, normal disk I/O.** CPU defaults to `idle` on Linux: heavy jobs get CPU only
   when nothing else wants it. `job set cpu-weight idle|<1-10000>|off` changes it.
   Older systemd versions that refuse idle get weight 10 instead. The first job says so and
-  records the refusal in machine-local jobs state; later slices and jobs go straight to 10.
+  records the systemd version in machine-local jobs state only when idle fails without timing
+  out and the same call with weight 10 succeeds; later slices and jobs go straight to 10.
+  A systemd upgrade tries idle again; remove the marker file shown by `job status` to try again
+  yourself (old markers without a version stay valid until removed).
   With `off`, the job reads the current CPU weight first: 100 or unset needs no reset;
   another value, or a failed read, gets an explicit reset to 100.
   Disk I/O stays off by default; `ioWeight` accepts 1 to 10000 or `off`.

@@ -39,6 +39,30 @@ export function parseSessionRecord(json: string): SessionRecord | null {
   };
 }
 
+type SessionIdentityFacts = { readStat?: StatReader; platform?: NodeJS.Platform };
+
+function processStart(pid: number, facts: SessionIdentityFacts): string | undefined {
+  if ((facts.platform ?? process.platform) !== "linux") return undefined;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start =
+    end < 0
+      ? undefined
+      : stat
+          ?.slice(end + 1)
+          .trim()
+          .split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+
+/** A live record is identified only when its saved start matches the running process. */
+export function sessionIdentityProved(
+  record: SessionRecord,
+  facts: SessionIdentityFacts = {},
+): boolean {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
+
 function isRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -90,17 +114,9 @@ export function liveSessions(
       );
     }
     if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const stat = (facts.readStat ?? readProcStat)(pid);
-      const end = stat?.lastIndexOf(")") ?? -1;
-      const start =
-        end < 0
-          ? undefined
-          : stat
-              ?.slice(end + 1)
-              .trim()
-              .split(/\s+/)[19];
+      const start = processStart(pid, facts);
       // Only a proved mismatch establishes pid reuse. An unproved identity stays live.
-      if (start !== undefined && /^\d+$/.test(start) && record.procStart !== start) continue;
+      if (start !== undefined && record.procStart !== start) continue;
     }
     live.push(record);
   }
