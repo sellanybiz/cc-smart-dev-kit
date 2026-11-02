@@ -34,9 +34,8 @@ heading reads as "not considered".
 2. **Configuration** — every environment variable or setting added, renamed or removed:
    what it is for, where to get its value, and whether the build or only the runtime needs
    it. **Names only, never values.**
-3. **Follow-up notes** — every note or ticket this change writes for later (something
-   production or a teammate must do by hand), one line each, blocking ones first: what it
-   asks, and who does it.
+3. **Follow-up notes** — the project tasks this branch adds, changes or closes, from the
+   branch task list below: IDs, what each asks, who does it; release blockers first.
 4. **Data changes** — each migration or data script, and what it does on a **populated**
    database, not only an empty one. Say "no-op in production" only when you checked.
 5. **How it was verified** — the real commands and their results. **Say what was not
@@ -44,9 +43,13 @@ heading reads as "not considered".
    opinion's result (or "small fix"). A branch that carries crew sessions' phases lists each phase
    with its review, then the integration review. "Verified" with nothing behind it is worse
    than an honest gap.
-6. **Still owed after the merge** — anything a person must do by hand, on a server, in a
-   dashboard or on their own machine. A pull request built on another open one says
-   "stacked on #n — merge after it".
+6. **Still owed after the merge** — open obligations from that same task output, with timing
+   and weight. A pull request built on another open one says "stacked on #n — merge after it".
+
+Run `cc-smart-dev-kit task list --branch --base <base>` against the pull request's real base
+before filling both task headings. Do not infer "none" from a failed command; state the gap.
+Task files travel with the change that needs them; closing and staging them is
+`/cc-smart-dev-kit:commit` § Steps.
 
 ## The issues it closes — a pull request into the default branch
 

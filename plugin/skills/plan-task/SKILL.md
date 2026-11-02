@@ -9,8 +9,12 @@ description: Use before building a change whose design is not settled or that sp
 differs, the add-on wins (`core.md`, top). It names where plans live and the template to
 copy.
 
-Order: **research and explore → ask → write the plan → self-check → approval → phases →
-build → keep it live → archive.**
+Order: **research and explore → ask → write the plan → self-check → approval → tasks →
+build → verify → archive.**
+
+The file holds design: context, decisions, approach, phases and verification. No checkboxes,
+build log, done lists or owed lists. Progress belongs in tasks; edit the file only when the
+design changes.
 
 The plan is a **file**, not only chat: it survives a compaction, a restart and a hand-off.
 Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md`.
@@ -88,7 +92,7 @@ Answer eight questions; they are the plan's sections:
    fails first), the checks the push and CI run, and what only the person can judge
    (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here.
 
-Put a three-line **Summary** at the top, and a **Status** line: `In review` until approved.
+Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
 clear the context and start from the plan (the person's `showClearContextOnPlanAccept`
 setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file.
@@ -102,11 +106,16 @@ or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
-`AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. Approved: Status
-`Approved`; a plan file plan mode kept outside the plan's home (above) moves there; the full
-research goes to `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the place the add-on
-names), linked from the plan; then build. Changes wanted: revise, ask again. Never go from
-`In review` to code without an explicit yes.
+`AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. After an explicit yes,
+move a plan kept outside its home there. Move full research to
+`.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
+Changes wanted: revise and ask again; never build without approval.
+
+After approval, use `task_create` for one plan task, subject = the plan's title. Each phase
+is its subtask; each phase's steps are subtasks with their done-check in the description.
+For crew phases, let `crew start` create the phase task (§ 5); do not make a duplicate.
+Create a project task for every production, database, teammate or follow-up obligation the
+plan finds. Task routing and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
 ## 5. Phases and owners — you lead, subagents and crew sessions build
 
@@ -146,19 +155,18 @@ Brief each owner with its phase, its files, the patterns, its done-check and its
 § 3). Check each subagent's hand-back yourself: read `git diff -- <its files>` in full, run its
 tests, confirm nothing changed outside its list. That read is your own review pass for those
 files. A crew session's hand-back passes the lead skill's gate instead (§ 6 there). While other
-owners still write, stage by path, never `git add -A`. You tick the plan, integrate, commit and
+owners still write, stage by path, never `git add -A`. You update tasks, integrate, commit and
 own the result. Once a subagent's work is merged, remove its worktree and its branch in the same
 step (`git worktree remove`, `git branch -D`): Claude Code keeps a worktree that holds commits,
 and a squash merge never shows its branch as merged.
 
-## 6. Keep it live
+## 6. Keep tasks live, the design stable
 
-- Status `In progress` while you build. Tick tasks and edge cases as you finish them.
-- New ambiguity: blocking → ask; not blocking → pick, write the assumption in the plan, go on.
-- A new ask mid-build goes into the task list before you act on it; outside this plan, see
-  the core instructions' "one plan" rule.
-- Write each decision in, with its reason, when you make it. After a compaction you resume
-  from this file, not from the chat.
+- Start and finish work in the task tree; record evidence and work notes there.
+- New ambiguity: blocking → ask; otherwise decide and note it on the task. If it changes
+  the design, update the plan with the decision and its reason.
+- Track a new ask before acting; scope still follows the core instructions' "one plan" rule.
+- After compaction, read the task tree for progress and the file for design.
 
 ## 7. Finish the phase, then the plan
 
@@ -167,29 +175,21 @@ and a squash merge never shows its branch as merged.
   `AskUserQuestion`. A part that turns out blocked: finish everything else, then say what you
   left out and why.
 - **End of a phase:** commit it as `/cc-smart-dev-kit:commit` allows (by default only when the person
-  asks; it also says when to push and ask for merges), write one progress line in the plan,
-  and start the next phase.
+  asks; it also says when to push and ask for merges), close its task with evidence,
+  and start the next phase. A crew merge closes its phase task through the watch.
 - **End of the plan:** a short summary (what shipped, what broke, what you left out), then
   the one merge question the commit skill describes.
 
 ## 8. Archive it — yourself, the moment it is finished
 
-A finished plan does not stay with the live ones. In the same turn: Status `Done` (or
-`Parked` with why and what would restart it, or `Superseded` naming the plan that replaced
-it), the commits that shipped it, then move it to the archive folder **with its folder** (the briefs
-and the run records move with the plan file to `<plans dir>/archive/<plan stem>/`; the run records are
-never deleted, and `cc-smart-dev-kit crew history` reads them there), and commit the move as
-`/cc-smart-dev-kit:commit` allows. Never leave it for the person or the next session. A status
-that is never updated becomes a claim that reads as current and is false.
+A finished plan leaves the live folder in the same turn. Close the plan task with verification
+and the commits that shipped it. If parked, leave its work pending and note why and what
+would restart it; if superseded, drop it with a pointer to its replacement.
 
-| Status | Meaning | Archive? |
-|---|---|---|
-| `In review` | written, not approved | no |
-| `Approved` | cleared to build | no |
-| `In progress` | being built | no |
-| `Done` | shipped and verified | yes, now |
-| `Parked` | stopped on purpose; say why | yes, now |
-| `Superseded` | replaced; name the new plan | yes, now |
+Move the file **with its folder** to `<plans dir>/archive/`: briefs and run records move to
+`<plans dir>/archive/<plan stem>/`. Never delete run records; `cc-smart-dev-kit crew history`
+reads them there. Commit the move as `/cc-smart-dev-kit:commit` allows. Keep the outcome on
+the task, not in a status history added to the design.
 
 Architecture decisions compare at least two approaches and write down why one won. Bug fixes
 find the root cause, by reading the code, before the fix.

@@ -114,6 +114,11 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues.readyLabel": "1.4.0",
   "jobs.kinds.*.noSlotForFiles": "1.5.0",
   "jobs.kinds.*.light": "1.8.0",
+  tasks: "1.10.0",
+  "tasks.dir": "1.10.0",
+  "tasks.staleDays": "1.10.0",
+  "tasks.releaseBranch": "1.10.0",
+  "tasks.legacyFolders": "1.10.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -285,6 +290,41 @@ describe("worktrees.rebuildable", () => {
         worktrees: { base: "main", rebuildable: [pattern] },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("tasks", () => {
+  test("accepts the folder, the stale age, the release branch and the old notes folders", () => {
+    const tasks = {
+      dir: "docs/tasks",
+      staleDays: 14,
+      releaseBranch: "main",
+      legacyFolders: [".claude/db-notes", ".claude/prod-notes"],
+    };
+    expect(ccSmartDevKitConfigSchema.parse({ requires: ">=1.10", tasks }).tasks).toEqual(tasks);
+    expect(ccSmartDevKitConfigSchema.parse({ tasks: {} }).tasks).toEqual({});
+  });
+
+  test.each([
+    { dir: "/abs" },
+    { dir: "../x" },
+    { dir: "a/../x" },
+    { dir: "./x" },
+    { dir: "a\\b" },
+    { dir: "" },
+    { dir: "." },
+    { legacyFolders: ["../notes"] },
+    { legacyFolders: [""] },
+    { staleDays: 0 },
+    { staleDays: 1.5 },
+    { releaseBranch: " " },
+    { folder: "x" },
+  ])("refuses %j", (tasks) => {
+    expect(ccSmartDevKitConfigSchema.safeParse({ tasks }).success).toBe(false);
+  });
+
+  test("a file that sets it needs 1.10.0", () => {
+    expect(requiresFloor({ tasks: { dir: ".claude/tasks" } }).version).toBe("1.10.0");
   });
 });
 

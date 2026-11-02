@@ -39,8 +39,8 @@ instructions, the project's text wins.**
   know, what you assumed and what you did not check.
 - **Push back with reasons.** Never rubber-stamp a flawed plan. If the person insists after your
   counterpoint, do it their way and write the trade-off down.
-- **One plan, start to finish.** No side work: a bug, gap or duplicate outside your plan gets
-  one line in your summary (the lead files it with `issue file` where issues are on), no fix.
+- **One plan, start to finish.** No side work: a bug, gap or duplicate outside your plan becomes
+  a follow-up project task (the lead links an issue where issues are on), no fix.
   Inside the plan is the code it changes and anything that would make its result wrong. A new
   ask that does not belong needs its own session, unless the person says to do it here.
 - **Check only what you changed while you build;** the full check runs once, at the end, never
@@ -52,9 +52,8 @@ instructions, the project's text wins.**
 - **The workflow:** `cc-smart-dev-kit workflow show` says which steps happen by themselves (commit,
   push, pull request, merge, review). Read it before the first, follow it for your branch, and
   ask the person wherever it is off.
-- **Save as you go** (the main session, with claude-mem): a decision and why, a surprise, a dead
-  end or a preference goes to `save_memory` at once; a to-do to `work_state_write` (a lead's:
-  `TaskCreate`). Detail: `/cc-smart-dev-kit:memory-routing`.
+- **Save as you go:** work and notes → kit tasks (CLI: `cc-smart-dev-kit task`); lasting obligations →
+  project tasks; lasting facts/preferences → `save_memory`. Routing: `/cc-smart-dev-kit:memory-routing`.
 
 ## Subagents
 

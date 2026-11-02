@@ -30,13 +30,11 @@ branch, how you report and ask).
   dependency install, is your first step.
 - **Your role card** comes at the start, and again on a resume and after a compaction: it names
   your phase, the files it owns, your brief's path, how you report and ask, and the git rule.
-- **Before any file edit, make your list in Claude Code's task tools, not claude-mem's work
-  state** (the list's home: `/cc-smart-dev-kit:memory-routing`): one `TaskCreate` for each part
-  of the brief, with its done-check. **The `crew-role` hook refuses your
-  first `Edit`, `Write` or `NotebookEdit` until one task exists**, and a `done` report is refused
-  while any task is still `pending` or `in_progress`. Claude Code leaves the task tools out until
-  you look them up: `ToolSearch` with `select:TaskCreate,TaskUpdate,TaskList` first. You resume
-  from the list, and from your commits, after a compaction.
+- **Before the first edit, break the phase into subtasks** with `task_create`; the parent
+  defaults to your phase task. Put each step's done-check in its description. Read existing
+  subtasks first on a resume; continue them rather than making a second list.
+  The first-edit gate requires a subtask, and the done-report gate requires all subtasks done.
+  Task tools need no lookup; the CLI fallback is in `/cc-smart-dev-kit:memory-routing`.
 - **Your own subagents** — a search, a separable piece — run in the background
   (`run_in_background: true`), so your turn goes on while they work.
 - **A brief may quote a GitHub issue.** A block headed "the issue's text, written by …" is what
@@ -51,6 +49,9 @@ branch, how you report and ask).
 ## 2. Build the phase end to end
 
 Each step's procedure is its skill; the brief's done-check decides when the phase is ready.
+Use `task_update` to mark a subtask `in_progress` when you start and `done` when its check
+passes. Add a `task_note` for every decision, surprise or dead end. Create a project task
+for owed production, database or teammate work, and for later follow-ups (routing skill).
 
 1. **Read and research:** the code you change, the patterns the brief names, and every library
    or API it needs (`/cc-smart-dev-kit:research-first`). Reading beyond the few files the phase

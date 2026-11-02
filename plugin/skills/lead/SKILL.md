@@ -22,10 +22,6 @@ around the crew queue.
 You keep what only you can do: the plan and its briefs, the starts, the questions, the merges,
 the one full check before the push, the plan file, and the person.
 
-Why: this session's context is re-read on the premium model at every turn, so every file it
-reads or writes costs on every later turn. A crew session does the same work on the worker slot
-and ends.
-
 The core instructions' "inline, yourself: what a handful of tool calls finish" (`core.md` § Lead
 the work) is an ordinary session's rule. A lead follows this section instead.
 
@@ -36,11 +32,10 @@ the work) is an ordinary session's rule. A lead follows this section instead.
   from your own workflow file).
   Off: this skill does not apply. The phases go to subagents (`/cc-smart-dev-kit:plan-task` § 5).
   Turning crew sessions on is the person's choice, never yours.
-- **Keep your own Claude Code task list, not claude-mem's work state** (the choice of list:
-  `/cc-smart-dev-kit:memory-routing`; `TaskCreate`, after looking the task tools up):
-  the person's asks and your open work — each phase to start, each question to answer, each
-  branch to merge. The `lead-notes` hook adds one line at every prompt while the list is empty,
-  so it never goes stale unseen; you are never held back by it.
+- **Use the kit's plan task** (`/cc-smart-dev-kit:plan-task` § 4). Keep the person's asks and
+  your own work on your own work tasks: starts, answers, merges and integration checks.
+  Use `task_create` and keep status current; routing and fallback: `/cc-smart-dev-kit:memory-routing`.
+  The plan and phase tasks describe the crew's work, not your own asks.
 - **Register once per leading session:** `cc-smart-dev-kit crew lead --plan <plan slug> --plan-file <plan file>`.
   The plan file is the one the plan-task skill wrote; its folder, beside it, holds the briefs and the
   record of each crew run (§ 3). Leave the flag out only when the plan is the one file
@@ -84,6 +79,9 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   --files <glob,...> [--effort <effort>] [--waits-for <phase,...>] [--base <ref>]
 ```
 
+- **Each `crew start` makes its phase task under the plan task**, including queued phases.
+  Put the phase's steps beneath it; the crew skill owns that breakdown. The watch closes
+  the phase task when its branch merges; do not close it on a report alone.
 - **At plan approval, start the whole plan at once**, in one message: every phase of every
   wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
   is ready: the queue and the watch start each phase when what it waits for is merged and a
@@ -196,7 +194,7 @@ A turn that ends with a ready phase not started is a fault: before you end the t
 phase whose waits are met runs or is queued.
 
 **Never end a turn on a promise.** "Next I'll push the PRs" is a step to take now, with a tool
-call, not a sentence to end on. When a task of yours is still in progress and you do end the
+call, not a sentence to end on. When your own kit work task is in progress and you do end the
 turn, because it really waits for something, the last line says what: `Waiting for: C1's
 hand-back` (or the person's answer, or CI). Without that line the `lead-notes` hook blocks the
 stop once, names the task, and you go on.
@@ -280,7 +278,7 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
    names: it comments "fixed on `<branch>` at `<commit>`" on each and labels it `fixed-unreleased`
    (`issues.fixedLabel`), by itself, once per merge. Do not repeat it. A number only the report
    names gets one line ("not marked"); when the diff shows the phase did fix it, put `Fixes #<n>`
-   in the release pull request's body and note it in the plan. One line that GitHub could
+   in the release pull request's body and note it on the integration task. One line that GitHub could
    not be reached is not a failed merge: the watch queues the mark and tries again every few
    minutes. The release closes the issue, not the merge (`/cc-smart-dev-kit:pull-request`).
 
@@ -288,10 +286,9 @@ A `done` report is the crew session's word that its phase is ready. Your gate is
 removal go into `<plan folder>/runs/<crew id>.json` with the sessions, pauses and times. Never write or
 edit a run file by hand, and never delete one; `cc-smart-dev-kit crew history` reads them.
 
-**A bug, gap or follow-up outside the plan that a report or a review turns up** is not lost in a
-line of your summary: with `workflow.issues.enabled` on, file it with `cc-smart-dev-kit issue file
---title … --body-file - --fingerprint <stable key>` (the same key never opens a second issue) and
-name its number in your summary. With the switch off, one summary line is all it gets.
+**An out-of-plan follow-up** becomes a project task (`/cc-smart-dev-kit:memory-routing`),
+not extra work here. With issues on, use `cc-smart-dev-kit issue file --title … --body-file -
+--fingerprint <stable key>` too, and link the issue rather than copying its body.
 
 **Read the diff only when something does not add up** — a red line in the report, a file
 outside the brief, a failed check, a report that contradicts itself — and then
@@ -345,11 +342,11 @@ again is too big: split what is left.
 
 ## 9. Restart and compaction
 
-The plan file and the crew store hold the state, not your context. **The record of each run
+The kit's tasks hold progress; the plan holds design and the crew store holds runs. **The record of each run
 survives a restart, a new lead and `crew rm`**: `<plan folder>/runs/<crew id>.json` keeps the
 session ids, the times and who answered, merged and removed; `cc-smart-dev-kit crew history`
 reads it. Commit the plan's folder with the plan. After a compaction: read
-the plan, then one `crew list`. After this session restarts: the same, and run this skill
+the plan, `task_list` for its tree and one `crew list`. After a restart: the same, and run this skill
 again (a restart is a new Claude process, so its monitor arms again). A move to the
 background gives this session a new id: run `cc-smart-dev-kit crew lead` again to adopt
 its crew, then start its watch. The name and folder carry over, not the old session id.

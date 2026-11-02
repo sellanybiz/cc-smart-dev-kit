@@ -71,8 +71,13 @@ cannot. So: **work tasks** local, **project tasks** in git, one tool surface, th
     "(another session)".
 - **Hooks read** through `src/tasks/work/read.ts`: open read-write with `PRAGMA query_only` (a
   read-only open of a WAL file fails when no writer has it open), indexed, short busy wait, fail
-  open. **For one release it also reads Claude Code's list** (`src/crew/tasks.ts`, the legacy
-  reader), so a machine that updated before running setup is never stuck.
+  open. **For one release the guards also read Claude Code's list** (`src/crew/tasks.ts`, the
+  legacy reader), so a machine that updated before running setup is never stuck. The two are
+  joined in one place, `src/tasks/guard-view.ts` (`crewTaskView`, `leadTaskView`), which every
+  guard and `crew report` read.
+- **One resolver** (`src/tasks/context.ts`, `taskContext`): a folder → the project key, the
+  checkout new project task files go into, and the `tasks` settings. A broken project file
+  leaves the work store usable; git that cannot answer is an error, never a guessed key.
 
 ## The project store (`src/tasks/project/`, in the repo)
 
@@ -107,7 +112,7 @@ cannot. So: **work tasks** local, **project tasks** in git, one tool surface, th
 
 ## What a session uses
 
-- **MCP server** `cc-smart-dev-kit tasks mcp` (the SDK, bundled), registered by setup at user scope
+- **MCP server** `cc-smart-dev-kit task mcp` (the SDK, bundled), registered by setup at user scope
   through the launcher (the `playwright` pattern, `src/mcp/servers.ts`: Windows-safe, outlives
   version folders) with `alwaysLoad: true`, a managed `permissions.allow` rule for its tools, and in
   **every crew session's `mcp.json`** (`serversFor`, `src/crew/claude.ts:355`; rewritten on resume,
@@ -169,9 +174,11 @@ this plan copied to `.claude/plans/2026-11-03-kit-task-list.md`.
 |---|---|---|---|
 | 1 | **T1a Work store** | `src/tasks/work/` (schema, migrations, rules, claims, `read.ts`, legacy union, claude-mem import), `TASKS_SERVER_NAME` in `src/mcp/names.ts` | builder `sonnet` xhigh |
 | 1 | **T1b Project store** | `src/tasks/project/` (format, scan, rules, branch list, release list, check, notes import) | builder `sonnet` high |
-| 2 | **T2 Server + CLI** | `src/tasks/mcp.ts`, `src/tasks/command.ts`, `src/entries/cli.ts`, `src/cli/help.ts`, `package.json`, `bun.lock` | builder `sonnet` high |
-| 2 | **T3 Guards + crew** | `crew-role.ts`, `lead-notes.ts`, `notify.ts`, `report.ts`, `crew start`/continue/queue, `src/crew/claude.ts`, `answer.ts`, watch/after-merge, `board.ts`, the start-block hook, status line, `specs.ts`, `hooks.json` | builder `sonnet` xhigh |
-| 2 | **T4 Setup + doctor** | `src/setup/`, `src/cli/setup.ts`, `doctor.ts`, `restore.ts`, `src/mcp/` (registration), `src/machine/claude-mem.ts`, the `tasks` field (`src/workflow/schema.ts`/`src/project/`) | builder `sonnet` high |
+| 2·0 | **Shared, before wave 2** | the `tasks` field (`src/project/config.ts`, `TASKS_SINCE`, the init floor), the server's registration entry (`src/mcp/servers.ts`), `src/tasks/context.ts`, `src/tasks/guard-view.ts`, `src/tasks/words.ts` (tool names, the allow rule, the step sentences) | me |
+| 2 | **T2 Server + CLI** | `src/tasks/mcp.ts`, `src/tasks/command.ts`, `src/entries/tasks-mcp.ts`, `src/entries/cli.ts`, `src/cli/help.ts`, `package.json`, `bun.lock` | builder `sonnet` high |
+| 2 | **T3a Guards** | `crew-role.ts`, `lead-notes.ts`, `notify.ts`, the start-block hook `task-start` (spec, entry, `hooks.json`, matrix, its `ownHooks` name), the status line | builder `sonnet` xhigh |
+| 2 | **T3b Crew** | `report.ts`, `crew start`/continue/queue phase tasks, `src/crew/claude.ts`, `answer.ts`, the phase task's close on merge and removal, the watch's project-tasks line, `board.ts`, `brief.ts` | builder `sonnet` xhigh |
+| 2 | **T4 Setup + doctor** | `src/setup/`, `src/cli/setup.ts`, `doctor.ts`, `project-checks.ts`, `restore.ts`, `src/mcp/` (records, status, doctor), `src/machine/claude-mem.ts`, and the setup and mcp tests the new server's entry changed | builder `sonnet` high |
 | 2 | **T5 Instructions + docs** | `plugin/instructions/`, `plugin/skills/`, `plugin/agents/`, `docs/`, README, rules | rules-maintainer `sonnet` high |
 | 2 | **T6 Portal** | `src/portal/api/` tasks routes, `portal/src` Tasks view | me (UI design on Opus) |
 
@@ -180,11 +187,16 @@ T3 owns the hook text; T5's brief gives the words.
 
 ## After the release: the web app moves (its own worktree, branch, PR into its `dev`)
 
-Run `task import notes` on its database, production and teammate ledgers; replace the ledger rules
+Run `task import notes --since <the day 30 days before the move>` on its database, production and
+teammate ledgers: **only notes from the last month are imported; every older note is deleted,
+not imported** (the owner's decision and responsibility, 2026-11-03). Replace the ledger rules
 (its `CLAUDE.md` lines, its notes rule, its commit, pull-request and memory-routing add-ons, its
 deploy skill's read-every-note step → `task release`, its after-pull line → teammate tasks); move
-its context notes into its docs; its plans README: tasks live in the kit, plans hold design. Its
-`.claude/` paths need its code owners' review, so it merges on their yes.
+its context notes into its docs; its plans README: tasks live in the kit, plans hold design. The
+old notes are deleted (git history keeps them) and each old folder keeps a one-line `README.md`
+for one release that points at `cc-smart-dev-kit task list`; the project names those folders in
+`tasks.legacyFolders`, so `task check` flags any note that still lands there (an unmerged branch)
+with the import line. Its `.claude/` paths need its code owners' review, so it merges on their yes.
 
 ## Verification
 
