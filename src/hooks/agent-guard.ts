@@ -3,12 +3,9 @@
  * `Workflow` tool, whose script's `agent(...)` launches are read and judged (`WorkflowLaunch`).
  *
  * **Machine-wide.** It runs with or without `.claude/cc-smart-dev-kit.json` (like `update-check`), and
- * its answer never depends on the project's file for the model and effort it judges: those are
- * what the launch runs on. One rule does read the project — D59's queue rule below, which needs
- * this repository's crew store and the project's caps — and that rule alone is why the frame
- * hands the run its checkout. A
- * project that runs its own Agent guard lists `"agent-guard"` in `ownHooks` and this one stays
- * silent there. It is wired with `--missing=ask`: a guard fails closed.
+ * its answer never depends on the project's file: it judges the model and effort the launch runs
+ * on. A project that runs its own Agent guard lists `"agent-guard"` in `ownHooks` and this one
+ * stays silent there. It is wired with `--missing=ask`: a guard fails closed.
  *
  * **Why.** An Agent call with no `model` runs on whatever model the session has; an Opus or
  * Fable launch spends the person's own plan usage; a subagent at `low` does work nobody chose
@@ -47,10 +44,10 @@
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can read as Sonnet, Haiku or a backend target is judged as one |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
- * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`, a crew session): deny |
+ * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`): deny |
  * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
  * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
- * | a session nobody watches (`claude -p`, or a crew session: a `--bg` session nobody reads) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a crew session says to put the question to its lead (`crew report --question`, `CREW_QUESTION_STEP`); a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
+ * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
  * A reason word is read with the punctuation around it dropped: `Fable reason: plan.` names
  * `plan`.
@@ -119,32 +116,9 @@
  * `tool_use_id`, so each is recorded under its own index, once. Anything the guard cannot work
  * out lets the call through, except a Workflow whose launches it cannot read
  * (`workflowRefusal`, `judgeWorkflowCall`).
- *
- * **A lead's building launch waits for the crew queue** (the owner's decision D59). The queue
- * exists for the machine (the caps `crew.max` and `crew.perLead`, the free memory, the 5-hour
- * usage window) and for each lead's fair share of it; a builder subagent runs outside every one
- * of those counts, and it has none of a crew phase's worktree, review, report gate or to-do list.
- * So in a **recorded lead's** session (`readLead`, by the input's `session_id` in the project's
- * repository), a launch that can change files (`buildsFiles`) is refused while a `crew start`
- * from that lead would queue now (`placeForLeadStart`, the same decision `crew start` makes) —
- * with one line naming the cap that holds and the `crew start` step. The model/effort rules
- * answer first: a launch they deny keeps their own words. Read-only subagents (a search, a
- * review, an audit, a UI check) are never held, and neither is a small fix a lead may hand to a
- * subagent while a place is free. It is a denial, not a question: the step needs no person.
- *
- * The rule is a lead's, so it never answers for a crew session (`crewAgentAnswer` is unchanged),
- * for an ordinary session, or for a call the guard cannot judge: a lead record it cannot read, a
- * checkout it was not given (a broken project file, a folder outside git), a store or a caps file
- * that throws — each lets the launch through and nothing is recorded. The hook log
- * (`guardFacts`) carries the model and effort verdict only: the queue refusal needs the store,
- * and a logged run reads none of it.
  */
 
-import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { OPUS_TIER, type Place, placeForLeadStart } from "../crew/places";
-import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
-import { readLead } from "../crew/store";
 import {
   type GatewayConfig,
   loadConfigFile,
@@ -153,8 +127,6 @@ import {
 } from "../gateway/config";
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gateway/settings";
-import { type MemoryFacts, realMemoryFacts } from "../jobs/memory";
-import { type LoadFacts, realLoadFacts } from "../machine/load";
 import {
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
@@ -177,7 +149,6 @@ import {
   uiTierAllowed,
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
-import type { Checkout } from "../project/resolve";
 import {
   scriptAtPath,
   scriptByName,
@@ -203,7 +174,6 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookEnvContext } from "./run";
-import { isSessionId } from "./session-name";
 import { lastClaudeModel } from "./transcript";
 
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
@@ -235,88 +205,6 @@ export function agentKey(type: string): string {
     .replace(/[\s_-]+/g, "-");
 }
 
-/**
- * The subagent types that build no phase's work (D59): a lead may launch them whatever the crew
- * queue holds. `Explore`, `Plan` and `claude-code-guide` only read and report. `statusline-setup`
- * is not read-only — Claude Code gives it `Edit` (the Agent tool lists its tools as `Read,
- * Edit`) and it writes the status line setting in the person's settings file — but it edits
- * nothing of the project, and a crew phase would not build that either. Every other type — a
- * `fork`, an unknown one, a custom one, a project's own agent — can change the project's
- * files, and so can a launch that asks for `isolation: "worktree"`, whatever its type.
- *
- * The two lists are separate because the ids are not the same kind. Claude Code's own four are
- * built in and carry no plugin prefix. The kit's three are plugin agents, and Claude Code
- * addresses a plugin's agent as `<plugin>:<agent>`: so only `cc-smart-dev-kit:reviewer` reads
- * as the kit's reviewer, and a project's own `.claude/agents/reviewer.md` (bare) or another
- * plugin's `probe-kit:reviewer` builds, as the brief's "any unknown or custom type" says.
- *
- * This is **not** `READ_ONLY_AGENTS`: that list is what Claude Fable may advise from (the
- * owner's), and the two answer different questions, so a type may sit in one and not the other.
- */
-export const READ_ONLY_BUILT_INS = [
-  "Explore",
-  "Plan",
-  "claude-code-guide",
-  "statusline-setup",
-] as const;
-
-/** The kit's own read-only agent types, as Claude Code addresses a plugin's agents. */
-export const READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"] as const;
-
-/** `READ_ONLY_BUILT_INS` as `agentKey` compares them, read once. */
-const READ_ONLY_BUILT_IN_KEYS: ReadonlySet<string> = new Set(READ_ONLY_BUILT_INS.map(agentKey));
-
-/** The kit's three, plugin-qualified, read once. */
-const READ_ONLY_KIT_KEYS: ReadonlySet<string> = new Set(
-  READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()),
-);
-
-/**
- * The kit's own Workflows that only read (`plugin/workflows/`): a lead may run them while its
- * crew queue is full. Every other Workflow — an inline script, a saved one, one named by a
- * path, a project's own saved file of the same name — may build, and a workflow's launches fire
- * no hook of their own. A bare name only ever finds a saved file (`scriptByName`), never the
- * kit's own workflow: its id is the plugin-qualified `<plugin>:<name>` the skills call.
- */
-export const READ_ONLY_WORKFLOWS = [
-  `${PLUGIN}:audit-run`,
-  `${PLUGIN}:review-split`,
-  `${PLUGIN}:research-sweep`,
-] as const;
-
-/** `READ_ONLY_WORKFLOWS` as Claude Code sends a plugin workflow's name, read once. */
-const READ_ONLY_WORKFLOW_KEYS: ReadonlySet<string> = new Set(
-  READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()),
-);
-
-/** True when an Agent launch can change files: any type but the read-only ones, or any worktree. */
-export function buildsFiles(launch: Launch): boolean {
-  if (launch.isolation?.toLowerCase() === "worktree") return true;
-  const type = (launch.subagentType ?? "").trim().toLowerCase();
-  if (!type.includes(":") && READ_ONLY_BUILT_IN_KEYS.has(agentKey(type))) return false;
-  return !READ_ONLY_KIT_KEYS.has(type);
-}
-
-/**
- * True when a Workflow call can change files: every call but one that runs one of the kit's own
- * read-only workflows. A call gives a script in Claude Code's own order (`callScript`): an
- * inline `script` runs whatever the call also names, else `scriptPath`, else `name` — and a
- * `resumeFromRunId` goes on from a script the guard cannot see. So only a call that gives the
- * kit's qualified name and nothing else is read-only; a named call with a script, a path or a
- * resume is judged as what it runs.
- */
-export function buildsWorkflow(fields: Record<string, unknown>): boolean {
-  if (
-    stringField(fields.script) !== null ||
-    stringField(fields.scriptPath) !== null ||
-    stringField(fields.resumeFromRunId) !== null
-  ) {
-    return true;
-  }
-  const name = stringField(fields.name);
-  return name === null || !READ_ONLY_WORKFLOW_KEYS.has(name.trim().toLowerCase());
-}
-
 function agentList(from: readonly string[], env: Env, name: string): Set<string> {
   const listed = (env[name] ?? "")
     .split(",")
@@ -330,8 +218,6 @@ export interface Launch {
   effort: null | string;
   /** True for `subagent_type: "fork"`: it runs on the session's model and effort. */
   fork: boolean;
-  /** `isolation` as the call names it: `"worktree"` gives the agent a checkout of its own. */
-  isolation: null | string;
   /** The model as the call names it; null when it names none. */
   model: null | string;
   prompt: string;
@@ -348,7 +234,6 @@ export function readLaunch(input: HookInput): Launch | null {
   return {
     effort: stringField(fields.effort),
     fork: subagentType?.toLowerCase() === FORK,
-    isolation: stringField(fields.isolation),
     model: stringField(fields.model),
     prompt: typeof fields.prompt === "string" ? fields.prompt : "",
     subagentType,
@@ -777,9 +662,6 @@ function asLaunch(one: WorkflowLaunch): Launch {
   return {
     effort: one.effort,
     fork: false,
-    // A script's `agent(…)` options carry no `isolation` the guard reads: D59 judges a Workflow
-    // by the workflow's own name, not by what one of its launches asks for.
-    isolation: null,
     model: one.model,
     prompt: one.prompt ?? "",
     subagentType: one.agentType,
@@ -962,14 +844,6 @@ const UNREADABLE_UNATTENDED =
   "The guard cannot see the model and effort its launches run on, and this session has nobody to answer (`claude -p`): pass the script inline (`script`), or by `scriptPath` to a file the guard can read, or run it in an interactive session.";
 
 /**
- * Said in a crew session after the reasons a run cannot be read: the same self-serve fix the
- * `claude -p` line names, without "run it in an interactive session", which a crew session
- * cannot do. `CREW_QUESTION_STEP` follows it.
- */
-const UNREADABLE_CREW =
-  "The guard cannot see the model and effort its launches run on: pass the script inline (`script`), or by `scriptPath` to a file the guard can read.";
-
-/**
  * The one answer for a whole Workflow call: a refusal or any denied launch denies it; a script
  * it cannot read asks (denied in `claude -p`, where nobody can answer); else the ask names each
  * launch that asks; else it is allowed.
@@ -984,10 +858,7 @@ function workflowAnswer(
   if (call.unreadable.length > 0 && nobodyWatches(env)) {
     return {
       decision: "deny",
-      reason: [
-        ...call.unreadable,
-        ...(inCrew(env) ? [UNREADABLE_CREW, CREW_QUESTION_STEP] : [UNREADABLE_UNATTENDED]),
-      ].join("\n"),
+      reason: [...call.unreadable, UNREADABLE_UNATTENDED].join("\n"),
     };
   }
   const asks = [
@@ -1311,9 +1182,7 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
         "A Fable launch is approved by the person, one by one, and this session has nobody to answer";
       return deny(
         real,
-        inCrew(env)
-          ? [`${why}.`, CREW_QUESTION_STEP].join("\n")
-          : [`${why} (\`claude -p\`).`, "Run it in an interactive session."].join("\n"),
+        [`${why} (\`claude -p\`).`, "Run it in an interactive session."].join("\n"),
       );
     }
     return {
@@ -1350,15 +1219,7 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
         const why = `This launch names \`${real.model}\`, which the guard cannot read as Claude Opus, and such a launch is approved by the person, one by one: this session has nobody to answer`;
         return deny(
           real,
-          inCrew(env)
-            ? [
-                `${why}.`,
-                "Name `opus` (or a Claude Opus id) as its model.",
-                CREW_QUESTION_STEP,
-              ].join("\n")
-            : [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join(
-                "\n",
-              ),
+          [`${why} (\`claude -p\`).`, "Name `opus` (or a Claude Opus id) as its model."].join("\n"),
         );
       }
       return {
@@ -1377,14 +1238,10 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
       const nobody = `A launch on ${namedModel(real)} at effort \`${effort}\` is approved by the person, one by one, and this session has nobody to answer`;
       return deny(
         real,
-        inCrew(env)
-          ? [`${nobody}.`, `Run it at ${levelsText(OPUS_FREE_EFFORTS)}.`, CREW_QUESTION_STEP].join(
-              "\n",
-            )
-          : [
-              `${nobody} (\`claude -p\`).`,
-              `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
-            ].join("\n"),
+        [
+          `${nobody} (\`claude -p\`).`,
+          `Run it at ${levelsText(OPUS_FREE_EFFORTS)}, or in an interactive session.`,
+        ].join("\n"),
       );
     }
     return {
@@ -1403,19 +1260,9 @@ function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: E
   return allow(real, "");
 }
 
-/**
- * True when this session has nobody to answer a question: `claude -p`, or a crew session (a
- * `--bg` session its lead started, with nobody watching it). A crew session is judged exactly
- * like `claude -p` — every ask becomes a refusal — but its words name the step that reaches its
- * lead (`CREW_QUESTION_STEP`) rather than "run it in an interactive session".
- */
+/** True when this session has nobody to answer a question: `claude -p`. */
 function nobodyWatches(env: Env): boolean {
-  return inCrew(env) || !isAttended(env);
-}
-
-/** True when the session is a crew session: nobody watches it, and its step is `crew report`. */
-function inCrew(env: Env): boolean {
-  return crewIdOf(env) !== null;
+  return !isAttended(env);
 }
 
 /**
@@ -1470,7 +1317,7 @@ export function gatewayOnOf(paths: CliPaths): boolean {
 
 /**
  * The gateway as the machine's own files see it: its config, and whether the user's settings
- * point at the router. A command outside a session (`crew start`, the usage guard) reads this;
+ * point at the router. A command outside a session (the usage guard) reads this;
  * a hook reads the session's own gateway instead (`sessionGatewayOf`).
  */
 export function gatewayFactsOf(paths: CliPaths): GatewayFacts {
@@ -1677,10 +1524,7 @@ type Judgement =
   | { kind: "workflow"; call: WorkflowCall; decision: "allow" | "ask" | "deny"; reason: string }
   | { kind: "launch"; launch: Launch; verdict: Verdict };
 
-/**
- * The guard's judgment of one call, with no record written: the one place `agentGuard` and the
- * crew part (`crewAgentAnswer`) both judge from, so a spelling that gets past one gets past both.
- */
+/** The guard's judgment of one call, with no record written. */
 function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Judgement | null {
   const tool = stringField(input.tool_name);
   const context = readGuardContext(paths, input, env);
@@ -1696,97 +1540,9 @@ function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Ju
   return { kind: "launch", launch, verdict: judgeLaunch(launch, context, env) };
 }
 
-/** How a refusal names the call it holds: `this launch (\`general-purpose\`)`, `this Workflow`. */
-function queueSubject(judged: Judgement, input: HookInput): string {
-  if (judged.kind === "launch") {
-    return `this launch (\`${judged.launch.subagentType ?? "general-purpose"}\`)`;
-  }
-  const name = stringField(toolInput(input).name);
-  return name === null ? "this Workflow" : `this Workflow (\`${name}\`)`;
-}
-
-/**
- * The refusal a lead gets for a building launch while its crew queue is full (D59): the cap
- * that holds, in `placeFor`'s own words, and the `crew start` step that queues and starts by
- * itself. The last line names what the rule never holds, so the lead does not stop using
- * read-only subagents.
- */
-function queueRefusal(what: string, why: string): string {
-  return [
-    `A lead never routes a building phase around its crew queue: ${what} may build, and a \`crew start\` from this lead would queue now — ${why}.`,
-    `Fix: ${COMMAND} crew start <phase> --slug <slug> --kind <kind> --brief <file>: it queues and starts by itself.`,
-    `Read-only launches are never held: the built-in ${levelsText(READ_ONLY_BUILT_INS)}, the kit's own \`${PLUGIN}:<name>\` agents for ${READ_ONLY_KIT_AGENTS.join(", ")}, and the kit's two read-only Workflows called by those ids with nothing else.`,
-  ].join("\n");
-}
-
-/**
- * D59's refusal for one call, or null when it may go on as judged. It is the lead's rule only:
- * a crew session (`crewAgentAnswer`'s), an ordinary session, and a launch that only reads are
- * each null. A Workflow is building unless it names one of the kit's own read-only ones, and it
- * counts as opus-tier when any of its launches does.
- *
- * It reads the lead record, then asks `placeForLeadStart` — the decision `crew start` makes.
- * Everything it cannot work out is null: no checkout (the frame had none), a session id that
- * cannot own a lead record, a record, store or project file that throws. A guard that cannot
- * work out the queue lets the call through; the launch it is judging is never blocked for it.
- */
-async function queuedLaunch(
-  judged: Judgement,
-  input: HookInput,
-  env: Env,
-  paths: CliPaths,
-  checkout: null | Checkout,
-  nowMs: number,
-  memory: MemoryFacts,
-  load: LoadFacts,
-): Promise<null | string> {
-  // A crew session has its own refusals (`crewAgentAnswer`), and it never leads.
-  if (inCrew(env)) return null;
-  if (checkout === null) return null;
-  // A launch that only reads is never held, and this check is free: the store is read only for a
-  // launch that can change files in a lead's session.
-  const building =
-    judged.kind === "workflow" ? buildsWorkflow(toolInput(input)) : buildsFiles(judged.launch);
-  if (!building) return null;
-  const sessionId = input.session_id;
-  if (!isSessionId(sessionId)) return null;
-  try {
-    const repo = checkout.mainCheckout ?? checkout.root;
-    if (readLead(paths.stateDir, repo, sessionId) === null) return null;
-  } catch {
-    // A store the guard cannot read is no lead to hold: the launch goes on.
-    return null;
-  }
-  const opus =
-    judged.kind === "workflow"
-      ? judged.call.results.some((one) => one.verdict.real?.tier === OPUS_TIER)
-      : judged.verdict.real?.tier === OPUS_TIER;
-  let place: null | Place;
-  try {
-    place = await placeForLeadStart({
-      checkout,
-      leadSessionId: sessionId,
-      load,
-      memory,
-      nowMs,
-      opus,
-      paths,
-    });
-  } catch {
-    return null;
-  }
-  if (place === null || place.start) return null;
-  return queueRefusal(queueSubject(judged, input), place.why);
-}
-
 /**
  * The hook's answer: judge the launch (or every launch a Workflow script makes), record an
  * Opus or Fable one once it is known to run, and answer with the PreToolUse decision.
- *
- * **A recorded lead's building launch waits for the crew queue** (D59): after the model and
- * effort rules — which keep their own words when they deny — a launch that can change files is
- * refused while a `crew start` from this lead would queue, with the cap and the step
- * (`queuedLaunch`). A refused launch never runs, so nothing is recorded for it.
  *
  * The record: on PreToolUse, a call the guard allows outright (it runs with no question); on
  * PostToolUse (`RAN_EVENT`), a call the guard asked about (it ran, so the person said yes). So
@@ -1796,35 +1552,19 @@ async function queuedLaunch(
  *
  * A Workflow run is judged however it names its script — inline, `scriptPath`, a saved or a
  * plugin's `name` — with the workflows it nests (`judgeWorkflowCall`). One the guard cannot read
- * (a built-in, a missing file, a resume) asks, and is refused in `claude -p` (and in a crew
- * session). Anything else it cannot work out lets the call through.
- *
- * `checkout` is the project the frame found for the call's `cwd` (`HookContext.project`); the
- * queue rule needs it to find this repository's lead record. The paths the frame calls without
- * one (a broken project file, a folder outside git) judge the model and effort alone, and let
- * the launch through: a guard that cannot work out the queue never blocks.
+ * (a built-in, a missing file, a resume) asks, and is refused in `claude -p`. Anything else it
+ * cannot work out lets the call through.
  */
-export async function agentGuard(
+export function agentGuard(
   input: HookInput,
   env: Env,
   paths: CliPaths,
   cwd: string,
   nowMs: number = Date.now(),
-  checkout: null | Checkout = null,
-  memory: MemoryFacts = realMemoryFacts(),
-  load: LoadFacts = realLoadFacts(),
-): Promise<HookResult> {
+): HookResult {
   const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
   const ran = afterTheCall(input);
-  // The model and effort rules answer first: a launch they deny keeps their own words, and the
-  // queue rule is asked only about a launch that would otherwise run (allowed or asked).
-  const judgedDeny =
-    judged.kind === "workflow" ? judged.decision === "deny" : judged.verdict.decision === "deny";
-  if (!ran && !judgedDeny) {
-    const queued = await queuedLaunch(judged, input, env, paths, checkout, nowMs, memory, load);
-    if (queued !== null) return toolDecision("deny", queued);
-  }
   const file = agentLaunchesFile(paths.stateDir);
   const record = (lines: ReadonlyArray<{ launch: Launch; verdict: Verdict }>) => {
     const records = lines
@@ -1850,35 +1590,4 @@ export async function agentGuard(
   return ran || verdict.decision === "allow"
     ? SILENT
     : toolDecision(verdict.decision, verdict.reason);
-}
-
-/**
- * The guard's crew part (D36): a crew session is a background session nobody watches, so every
- * launch the guard would ask the person about is refused, with the step that reaches its lead —
- * whatever the project's `ownHooks` says, since a project could otherwise switch the guard off
- * (`.claude/rules/hooks-guards.md` § A crew session's own limits). It is a **judgment only**: nothing
- * is recorded, because the run records a launch that runs and this part only ever refuses; the
- * launch it refuses never runs, so it is recorded nowhere, exactly as for `claude -p`.
- *
- * **Only the former questions.** A launch the guard denies for a person (no model or effort, a
- * low effort, the UI rule) stays the project's own policy: a project whose `ownHooks` lists
- * `agent-guard` runs its own copy, and this part must not answer for it. So the part denies
- * exactly the answers that name `CREW_QUESTION_STEP` — the four rules that ask a person.
- *
- * Not a crew session, a call outside the guard's tools, or a call it allows: silence.
- */
-export function crewAgentAnswer(
-  input: HookInput,
-  env: Env,
-  paths: CliPaths,
-  cwd: string,
-): HookResult {
-  if (!inCrew(env) || afterTheCall(input)) return SILENT;
-  const judged = judgeCall(input, env, paths, cwd);
-  if (judged === null) return SILENT;
-  const decision = judged.kind === "workflow" ? judged.decision : judged.verdict.decision;
-  const reason = judged.kind === "workflow" ? judged.reason : judged.verdict.reason;
-  return decision === "deny" && reason.includes(CREW_QUESTION_STEP)
-    ? toolDecision("deny", reason)
-    : SILENT;
 }

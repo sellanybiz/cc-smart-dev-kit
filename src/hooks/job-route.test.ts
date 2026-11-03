@@ -9,12 +9,11 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
 import { mergeKinds } from "../jobs/kinds";
 import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { pullRequestMerges } from "./after-merge";
-import { guardQuestions, PUSH_FREE } from "./git-guard";
+import { guardQuestions } from "./git-guard";
 import type { HookInput, HookResult } from "./io";
 import {
   bashLineOf,
@@ -203,7 +202,7 @@ describe("which commands are routed", () => {
     const routed = routeHeavyCommand("cd app && bunx tsc --noEmit", KINDS, SHELL);
     const options = {
       protectedBranches: ["main"],
-      pushRules: PUSH_FREE,
+      autoPushAsk: () => null,
       sharedStash: false,
       env: {},
     };
@@ -230,17 +229,6 @@ describe("the two answers", () => {
     });
   });
 
-  it("a lead's rewrite adds `run_in_background: true` beside the command", () => {
-    const answer = JSON.parse(
-      rewriteAnswer({ command: "gh pr checks 7 --watch" }, "gh pr checks 7 --watch", true).stdout ??
-        "{}",
-    ).hookSpecificOutput;
-    expect(answer).toEqual({
-      hookEventName: "PreToolUse",
-      updatedInput: { command: "gh pr checks 7 --watch", run_in_background: true },
-    });
-  });
-
   it("the denial names the exact command to run instead", () => {
     const answer = JSON.parse(routeDenial(routed).stdout ?? "{}").hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
@@ -250,13 +238,11 @@ describe("the two answers", () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// CC8: a crew session is never asked. The launch policy judges its `claude -p` run as
-// unattended, and a heavy command beside a broken or too new project file is refused too;
-// both name the step that puts the question to the lead (D36). A person's session is asked
-// exactly as before.
+// The judge outside the project, and a heavy command beside a broken or too new project
+// file: the person is asked.
 // ---------------------------------------------------------------------------------------
 
-describe("CC8: a crew session is never asked", () => {
+describe("the judge alone, and a project file that cannot be read", () => {
   const input = (command: string, tool = "Bash"): HookInput => ({
     hook_event_name: "PreToolUse",
     tool_input: { command },
@@ -270,21 +256,13 @@ describe("CC8: a crew session is never asked", () => {
   const decisionOf = (result: HookResult | null) =>
     JSON.parse(result?.stdout ?? "{}").hookSpecificOutput;
 
-  it("a `claude -p` launch the policy questions: refused in a crew session, asked for a person", () => {
-    const env = hookEnv();
+  it("a `claude -p` launch the policy questions: the person is asked", () => {
     const command = "claude -p --model opus --effort max 'do it'";
-    // The person's own session asks about the model and effort.
-    const person = decisionOf(judgeCommandAnswer(input(command), context(env)));
+    const person = decisionOf(judgeCommandAnswer(input(command), context(hookEnv())));
     expect(person.permissionDecision).toBe("ask");
-    const crew = decisionOf(
-      judgeCommandAnswer(input(command), context({ ...env, [CREW_ENV]: "B2-api-aaaaaa" })),
-    );
-    expect(crew.permissionDecision).toBe("deny");
-    expect(crew.permissionDecisionReason).toContain("nobody to answer");
-    expect(crew.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
   });
 
-  it("a heavy command beside a broken or too new project file: refused, with the step", () => {
+  it("a heavy command beside a broken or too new project file: the person is asked", () => {
     const env = hookEnv();
     const command = "bunx vitest run src/a.test.ts";
     const why =
@@ -300,48 +278,32 @@ describe("CC8: a crew session is never asked", () => {
         },
       }),
     });
-    expect(
-      jobRouteConfigAnswer(
-        "the file needs a newer plugin",
-        input(command),
-        context({
-          ...env,
-          [CREW_ENV]: "B2-api-aaaaaa",
-        }),
-      ),
-    ).toEqual({
-      stdout: JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: `${why}\n${CREW_QUESTION_STEP}`,
-        },
-      }),
-    });
   });
 
   it("a light command: silence", () => {
-    const crew = { ...hookEnv(), [CREW_ENV]: "B2-api-aaaaaa" };
-    expect(jobRouteConfigAnswer("broken", input("git status"), context(crew))).toEqual({});
-    expect(
-      jobRouteConfigAnswer("broken", input("git status", "PowerShell"), context(crew)),
-    ).toEqual({});
+    const env = hookEnv();
+    expect(jobRouteConfigAnswer("broken", input("git status"), context(env))).toEqual({});
+    expect(jobRouteConfigAnswer("broken", input("git status", "PowerShell"), context(env))).toEqual(
+      {},
+    );
   });
 
-  it("a PowerShell heavy command: refused like a Bash one, since the route may refuse it", () => {
+  it("a PowerShell heavy command: asked about like a Bash one, since the route may refuse it", () => {
     // A Git Bash the lookup finds on any machine (off Windows the Bash tool is always there).
     const bash = join(tempDir("git-bash"), "bash.exe");
     writeFileSync(bash, "");
-    const crew = { ...hookEnv(), [CREW_ENV]: "B2-api-aaaaaa", [GIT_BASH_VAR]: bash };
+    const env = { ...hookEnv(), [GIT_BASH_VAR]: bash };
     const answer = decisionOf(
       jobRouteConfigAnswer(
         "broken",
         input("bunx vitest run src/a.test.ts", "PowerShell"),
-        context(crew),
+        context(env),
       ),
     );
-    expect(answer.permissionDecision).toBe("deny");
-    expect(answer.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
+    expect(answer.permissionDecision).toBe("ask");
+    expect(answer.permissionDecisionReason).toBe(
+      "cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: broken",
+    );
   });
 });
 

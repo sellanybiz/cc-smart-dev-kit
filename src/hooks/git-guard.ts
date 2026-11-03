@@ -34,19 +34,7 @@
  * - when the project works in worktrees (`worktrees` in cc-smart-dev-kit.json): a bare `git stash`
  *   or `git stash pop`, because every worktree shares one stash.
  *
- * "ask", never "deny": the person may mean it, and a hook cannot tell. **One exception is a
- * crew session** (a session the crew launcher started: `CC_SMART_DEV_KIT_CREW` is set in its
- * environment). Nobody is at the machine to answer its questions, so its pushes are denied
- * (D24: it commits on its own branch and the lead merges it locally, whatever `autoPush`
- * says), and so is every command that would otherwise ask before it destroys work — a
- * discarding `checkout`, `reset --hard`, `clean -f`, `branch -D`, an unnamed stash — each with
- * the step that does the same job without a question (`CREW_STEPS`). The refusals are the
- * guard's **crew part** (`crewGitAnswer`, `HookSpec.crewLimits`): the frame runs it before
- * `ownHooks` and before the project's file is read, so a project that lists its own
- * `git-guard` in `ownHooks`, and a project with no `cc-smart-dev-kit.json` at all, cannot lose
- * them. Claude Code's background sessions push a worktree's branch on their own when the
- * repository has a remote, which is the reason for the push rule
- * (`docs/claude-code-contract.md`). Every command of a
+ * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
  * dialect of the tool that runs it (Bash or PowerShell; both when it is not told): quoted
  * text, quoted here-doc bodies and comments are data; a substitution (`$( … )`, a backtick,
@@ -66,11 +54,9 @@
  * checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
 import { isAbsolute, resolve } from "node:path";
-import { crewIdOf } from "../crew/session";
 import {
   CHANGE_DIR,
   type Dialect,
-  dialectOfTool,
   invocationOf,
   isShort,
   MAX_NESTING,
@@ -85,146 +71,18 @@ import {
   wordsOf,
 } from "../shell/command";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
-import {
-  type HookInput,
-  type HookResult,
-  SILENT,
-  stringField,
-  toolDecision,
-  toolInput,
-} from "./io";
 import type { Env } from "./run";
 
 /** The branches asked about when cc-smart-dev-kit.json names none. */
 export const DEFAULT_PROTECTED_BRANCHES = ["main"];
 
-/**
- * What the guard does differently for the session that calls it: a crew session never pushes,
- * and never runs a command that destroys work without reading the step that replaces it (D24);
- * `autoPush` off asks before every push (D15).
- */
-export interface PushRules {
-  /** The session is a crew session: its pushes are denied, and so are its work-destroying asks. */
-  crew: boolean;
-  /**
-   * The question `autoPush` off puts to the person, or null when it is on. A function, so the
-   * policy is read (git, a file) only for a line that really pushes.
-   */
-  autoPushAsk: () => string | null;
-}
-
-/** Pushes need no question of this kind: `autoPush` is on, and the session is nobody's crew. */
-export const PUSH_FREE: PushRules = { crew: false, autoPushAsk: () => null };
-
-/** The rules of the session whose environment is `env`: the crew variable decides `crew`. */
-export function pushRulesFor(env: Env, autoPushAsk: () => string | null): PushRules {
-  return { crew: crewIdOf(env) !== null, autoPushAsk };
-}
-
-/** Why a crew session's push is denied: the one reason, in the words the session reads. */
-export const CREW_PUSH_REFUSAL =
-  "A crew session never pushes: it commits on its own branch, and the lead merges that branch " +
-  "locally (`git merge`). Only the lead's final push reaches the remote, and the person " +
-  "approves that one. Stop at your commit and say so in your report.";
-
-/**
- * What a crew session reads instead of a question about a command that destroys work: the
- * command is denied, and the step does the same job without a person's yes (D24). A crew
- * session runs unattended, and a hook's `ask` cannot be silenced by "don't ask again", so an
- * ask would stall it until the person answers (`.claude/rules/hooks-guards.md` § Fail safe). Each
- * step is mechanical, so the session can go on by itself.
- */
-export const CREW_STEPS = {
-  /** A `checkout`, `switch -f` or `restore` that overwrites uncommitted changes. */
-  discard:
-    "A crew session never discards uncommitted changes with `git checkout`, `git switch -f` or " +
-    "`git restore`: nobody is at the machine to answer the guard's question, and the changes " +
-    "are lost for good. Commit the work in progress first. To undo a deliberate break, copy " +
-    "the file before you break it (`cp path path.bak`), copy it back after " +
-    "(`cp path.bak path`), delete the copy (`rm path.bak`), then check it with " +
-    "`git diff --quiet -- path`.",
-  /** `git worktree remove --force`. */
-  worktreeRemove:
-    "A crew session never runs `git worktree remove --force`: it deletes a worktree even when " +
-    "it holds uncommitted or untracked work, and nobody is at the machine to answer the " +
-    "guard's question. Look in it first: commit or copy out what it holds, then run `git " +
-    "worktree remove <path>` without `--force`, which refuses while anything is left.",
-  /** `git branch -D`. */
-  branchDelete:
-    "A crew session never deletes a branch with `git branch -D`: it can drop commits that " +
-    "were never merged, and nobody is at the machine to answer the guard's question. `git log " +
-    "--oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d " +
-    "<branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
-  /** `git reset --hard`. */
-  resetHard:
-    "A crew session never runs `git reset --hard`: it throws away every uncommitted change in " +
-    "this folder, and nobody is at the machine to answer the guard's question. Commit the " +
-    "work in progress first; `git reset --soft <commit>` moves the branch and keeps the " +
-    "changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak " +
-    "path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
-  /** `git reset --merge`. */
-  resetMerge:
-    "A crew session never runs `git reset --merge`: it throws away changes that are staged but " +
-    "not committed — a staged change to a tracked file goes back to the target version, and a " +
-    "staged new file is deleted for good — and nobody is at the machine to answer the guard's " +
-    "question. `git reset --keep <commit>` moves the branch and never overwrites a working " +
-    "file (it refuses instead), but it still resets the index, so a version staged and not " +
-    "also in the working file is dropped: commit it first when it is needed. To undo a " +
-    "deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm " +
-    "path.bak`), and check it with `git diff --quiet -- path`.",
-  /** `git clean -f`. */
-  clean:
-    "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody " +
-    "is at the machine to answer the guard's question. Run `git clean -n` and read the list " +
-    "first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
-  /** `git stash clear`. */
-  stashClear:
-    "A crew session never runs `git stash clear`: it throws away every stash for good, and " +
-    "nobody is at the machine to answer the guard's question. `git stash list` shows them " +
-    "all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
-  /** `git stash drop` with no stash named. */
-  stashDrop:
-    "A crew session never runs `git stash drop` without a name: it drops the newest stash, " +
-    "whoever made it, and nobody is at the machine to answer the guard's question. `git stash " +
-    "list` shows them; `git stash drop stash@{n}` names the one you mean.",
-  /** A bare `git stash` / `git stash pop`, which takes or restores a shared stash. */
-  stashShared:
-    "A crew session never runs a bare `git stash`, or `git stash pop`: the stash is shared by " +
-    "every worktree of the repo, and nobody is at the machine to answer the guard's question. " +
-    "Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
-} as const;
-
-/**
- * The guard's crew part (D24): a crew session's `git push`, in any form the guard's own
- * detector reads, is denied, and so is every command that would otherwise ask the person
- * before it destroys work — each with the step that replaces it (`CREW_STEPS`), so the session
- * goes on without waiting on someone who is not there. One detector — the same `guardVerdict`
- * the guard's `run` uses, with only the crew rule on — so a spelling that gets past one gets
- * past both.
- *
- * Not a crew session, or a line that raises nothing: silence, so an ordinary session pays
- * nothing and every other call goes on through the frame's usual steps.
- */
-export function crewGitAnswer(input: HookInput, env: Env, cwd: string): HookResult {
-  if (crewIdOf(env) === null) return SILENT;
-  const command = stringField(toolInput(input).command);
-  if (command === null) return SILENT;
-  const verdict = guardVerdict(command, cwd, {
-    // Only the crew rule is on: a push is denied before `protectedBranches` or `autoPushAsk`
-    // is read, and a crew session's stash counts as shared whatever `sharedStash` says.
-    protectedBranches: [],
-    pushRules: { crew: true, autoPushAsk: () => null },
-    sharedStash: false,
-    env,
-    dialect: dialectOfTool(input.tool_name),
-  });
-  return verdict.refuse.length === 0 ? SILENT : toolDecision("deny", verdict.refuse.join("\n"));
-}
-
 export interface GuardOptions {
   protectedBranches: string[];
-  /** What a push may do here (`PushRules`). */
-  pushRules: PushRules;
+  /**
+   * The question `autoPush` off puts to the person before every push (D15), or null when it is
+   * on. A function, so the policy is read (git, a file) only for a line that really pushes.
+   */
+  autoPushAsk: () => string | null;
   /** Ask before a bare `git stash` / `stash pop`: the project works in worktrees. */
   sharedStash: boolean;
   env: Env;
@@ -235,8 +93,6 @@ export interface GuardOptions {
 /** One guard run: its options, and what it read from git once (a line may push many times). */
 interface GuardRun {
   options: GuardOptions;
-  /** What the guard denies (a crew session's push or work-destroying ask), each once. */
-  refusals: Set<string>;
   branches: Map<string, string | undefined>;
   pushConfigs: Map<string, Map<string, string[]>>;
 }
@@ -517,108 +373,57 @@ function pushQuestions(
   return found;
 }
 
-/**
- * One thing the guard asks about a command, and the deny a crew session reads instead: the
- * command itself, or the step that does its job without a person's yes (D24).
- */
-interface AskStep {
-  /** The question's words, exactly as a person's session reads them today. */
-  ask: string;
-  /** The crew session's refusal, naming the step that replaces the command. */
-  crew: string;
-}
-
-/**
- * The guard's answer to one ask: the question, or — in a crew session, where nobody is at the
- * machine to answer it — the refusal that names the step (D24).
- */
-function answer(ask: AskStep | null, run: GuardRun): string[] {
-  if (ask === null) return [];
-  if (run.options.pushRules.crew) {
-    run.refusals.add(ask.crew);
-    return [];
-  }
-  return [ask.ask];
-}
-
 /** A discarding `checkout` / `switch -f` / `restore`: the question names the command. */
-function discardAsk(sub: string): AskStep {
-  return {
-    ask:
-      `\`git ${sub}\` here overwrites files in this folder with another version, and any ` +
-      "uncommitted change in them is lost for good. Approve only if you want them gone; a " +
-      "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
-    crew: CREW_STEPS.discard,
-  };
+function discardAsk(sub: string): string {
+  return (
+    `\`git ${sub}\` here overwrites files in this folder with another version, and any ` +
+    "uncommitted change in them is lost for good. Approve only if you want them gone; a " +
+    "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask."
+  );
 }
 
-const WORKTREE_REMOVE_ASK: AskStep = {
-  ask:
-    "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " +
-    "untracked work, and git cannot bring that back. Look in it first.",
-  crew: CREW_STEPS.worktreeRemove,
-};
+const WORKTREE_REMOVE_ASK =
+  "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " +
+  "untracked work, and git cannot bring that back. Look in it first.";
 
-const BRANCH_DELETE_ASK: AskStep = {
-  ask:
-    "`git branch -D` deletes a branch even if it was never merged: its commits are then " +
-    "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.",
-  crew: CREW_STEPS.branchDelete,
-};
+const BRANCH_DELETE_ASK =
+  "`git branch -D` deletes a branch even if it was never merged: its commits are then " +
+  "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.";
 
-const RESET_HARD_ASK: AskStep = {
-  ask:
-    "`git reset --hard` throws away every uncommitted change in this folder, for good. " +
-    "Approve only if you want them gone; a WIP commit keeps the work first.",
-  crew: CREW_STEPS.resetHard,
-};
+const RESET_HARD_ASK =
+  "`git reset --hard` throws away every uncommitted change in this folder, for good. " +
+  "Approve only if you want them gone; a WIP commit keeps the work first.";
 
-const RESET_MERGE_ASK: AskStep = {
-  ask:
-    "`git reset --merge` throws away changes that are staged but not committed: a staged " +
-    "change to a tracked file goes back to the target version, and a staged new file is " +
-    "deleted from the folder (measured). Your working files are kept: it refuses rather than " +
-    "overwrite one whose working copy differs from the target, including a file with both " +
-    "staged and unstaged changes (measured on git 2.53). Approve only if you want the " +
-    "staged work gone; a WIP commit keeps it first.",
-  crew: CREW_STEPS.resetMerge,
-};
+const RESET_MERGE_ASK =
+  "`git reset --merge` throws away changes that are staged but not committed: a staged " +
+  "change to a tracked file goes back to the target version, and a staged new file is " +
+  "deleted from the folder (measured). Your working files are kept: it refuses rather than " +
+  "overwrite one whose working copy differs from the target, including a file with both " +
+  "staged and unstaged changes (measured on git 2.53). Approve only if you want the " +
+  "staged work gone; a WIP commit keeps it first.";
 
-const CLEAN_FORCE_ASK: AskStep = {
-  ask:
-    "`git clean -f` deletes untracked files for good: git cannot bring them back. " +
-    "`git clean -n` shows what it would delete, without deleting.",
-  crew: CREW_STEPS.clean,
-};
+const CLEAN_FORCE_ASK =
+  "`git clean -f` deletes untracked files for good: git cannot bring them back. " +
+  "`git clean -n` shows what it would delete, without deleting.";
 
-const STASH_CLEAR_ASK: AskStep = {
-  ask:
-    "`git stash clear` throws away every stash for good: git cannot bring them back. " +
-    "`git stash list` shows what they hold, `git stash show -p` one of them.",
-  crew: CREW_STEPS.stashClear,
-};
+const STASH_CLEAR_ASK =
+  "`git stash clear` throws away every stash for good: git cannot bring them back. " +
+  "`git stash list` shows what they hold, `git stash show -p` one of them.";
 
-const STASH_DROP_ASK: AskStep = {
-  ask:
-    "`git stash drop` with no stash named drops the newest one, whoever made it. " +
-    "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.",
-  crew: CREW_STEPS.stashDrop,
-};
+const STASH_DROP_ASK =
+  "`git stash drop` with no stash named drops the newest one, whoever made it. " +
+  "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.";
 
-const STASH_SHARED_ASK: AskStep = {
-  ask:
-    "The git stash is shared by every worktree of this repo, so a bare `git stash` or " +
-    "`git stash pop` can take or restore another session's work. A WIP commit is safer; " +
-    "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
-  crew: CREW_STEPS.stashShared,
-};
+const STASH_SHARED_ASK =
+  "The git stash is shared by every worktree of this repo, so a bare `git stash` or " +
+  "`git stash pop` can take or restore another session's work. A WIP commit is safer; " +
+  "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.";
 
 /**
  * The ask a `git stash` line raises, or null when it raises none. `sharedStash`: the stash is
- * shared by every worktree of the repo — the project works in worktrees, or the session is a
- * crew session, which always does.
+ * shared by every worktree of the repo — the project works in worktrees.
  */
-function stashAsk(args: string[], sharedStash: boolean): AskStep | null {
+function stashAsk(args: string[], sharedStash: boolean): string | null {
   const sub = args[0];
   const named = args.slice(1).some((arg) => !arg.startsWith("-"));
   if (sub === "clear") return STASH_CLEAR_ASK;
@@ -834,22 +639,16 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
         return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
       },
     };
-    // A crew session's push is denied, whatever else it is (D24), and nothing else is asked.
-    if (options.pushRules.crew) {
-      run.refusals.add(CREW_PUSH_REFUSAL);
-      return [];
-    }
     return pushQuestions(
       alias === null ? rest : [...alias, ...rest],
       place,
       options.protectedBranches,
-      options.pushRules.autoPushAsk,
+      options.autoPushAsk,
     );
   }
-  // A crew session always works in a worktree, so its stash is shared even when the project
-  // does not set `worktrees`: the bare form is denied there like every other ask.
   if (sub === "stash") {
-    return answer(stashAsk(rest, options.sharedStash || options.pushRules.crew), run);
+    const ask = stashAsk(rest, options.sharedStash);
+    return ask === null ? [] : [ask];
   }
   if (sub === "worktree" && rest[0] === "remove") {
     const force = rest
@@ -859,19 +658,19 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
           longOption(arg, "--force", 6) ||
           (isShort(arg) && shortFlags(arg, "").flags.includes("f")),
       );
-    if (force) return answer(WORKTREE_REMOVE_ASK, run);
+    if (force) return [WORKTREE_REMOVE_ASK];
   }
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return answer(discardAsk(sub), run);
+    return [discardAsk(sub)];
   }
-  if (sub === "branch" && forceDeletesBranch(rest)) return answer(BRANCH_DELETE_ASK, run);
+  if (sub === "branch" && forceDeletesBranch(rest)) return [BRANCH_DELETE_ASK];
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
-    return answer(RESET_HARD_ASK, run);
+    return [RESET_HARD_ASK];
   }
   // `--merge` loses staged work too (the measurement is in the file's header); `--keep` loses
   // nothing and stays silent.
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
-    return answer(RESET_MERGE_ASK, run);
+    return [RESET_MERGE_ASK];
   }
   if (sub === "clean") {
     const force = rest.some(
@@ -883,7 +682,7 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
         longOption(arg, "--dry-run", 4) ||
         (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
     );
-    if (force && !dryRun) return answer(CLEAN_FORCE_ASK, run);
+    if (force && !dryRun) return [CLEAN_FORCE_ASK];
   }
   return [];
 }
@@ -912,14 +711,8 @@ function inspect(
     const operands = withoutRedirections(args);
     if (program === "git") found.push(...gitQuestions(operands, folder, run));
     // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
-    // guard cannot name it, so a line whose words name a push asks, never stays silent. A
-    // crew session never pushes (D24), so there the same words are the refusal itself (F5-1):
-    // the crew part and the guard's own run both read this one detector, so a spelling that
-    // gets past one gets past both.
-    if (invocation.computed && namesPush(words)) {
-      if (run.options.pushRules.crew) run.refusals.add(CREW_PUSH_REFUSAL);
-      else found.push(COMPUTED_PUSH_ASK);
-    }
+    // guard cannot name it, so a line whose words name a push asks, never stays silent.
+    if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
     if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
     if (inner !== undefined && depth < MAX_NESTING) {
@@ -938,36 +731,11 @@ function inspect(
  * joined to the next and not, since a trailing `\` may just end a Windows path.
  */
 export function guardQuestions(command: string, cwd: string, options: GuardOptions): string[] {
-  return guardVerdict(command, cwd, options).ask;
-}
-
-/** What the guard says about a command line: what it denies, and what it asks the person. */
-export interface GuardVerdict {
-  /**
-   * Denied, each reason once: the session reads it and does the step (a crew session's push,
-   * or a work-destroying command whose step the refusal names).
-   */
-  refuse: string[];
-  /** Asked, each question once; empty when `refuse` is not (a denied call asks nothing). */
-  ask: string[];
-}
-
-/**
- * `guardQuestions`, and what the guard denies besides: a crew session's push, and every ask
- * that would destroy work — each with the step that replaces it (D24).
- */
-export function guardVerdict(command: string, cwd: string, options: GuardOptions): GuardVerdict {
-  const run: GuardRun = {
-    options,
-    refusals: new Set(),
-    branches: new Map(),
-    pushConfigs: new Map(),
-  };
+  const run: GuardRun = { options, branches: new Map(), pushConfigs: new Map() };
   const found = readingsOf(command, options.dialect).flatMap((reading) =>
     inspect(command, cwd, reading, run),
   );
-  const refuse = [...run.refusals];
-  return { refuse, ask: refuse.length > 0 ? [] : [...new Set(found)] };
+  return [...new Set(found)];
 }
 
 /**

@@ -5,17 +5,12 @@
  *
  * **The launch judge** (`bash-judge.ts`, the rules; this file, the answer). It is
  * **machine-wide** (`HookSpec.alwaysOn`): a raw `claude --bg` asks the person (and is refused in
- * `claude -p`) and shows the `crew start` line; `claude -p` is judged by the launch policy
- * (`judgeLaunch`, the same one the Agent guard uses); a crew session's `crew start` is denied;
- * and a polling loop over `crew list|status` or `claude agents --json` is denied. **It ignores
- * the project's file**: a session cannot switch the limits on its own launches off by editing
- * `cc-smart-dev-kit.json`, so the frame skips the `ownHooks` step for this hook. It runs
- * outside git too, and with a broken or too new `cc-smart-dev-kit.json`.
- *
- * **A crew session is never asked** (D36): a `claude -p` launch the policy would question is
- * refused by the launch policy's unattended rule, with the step that reaches the lead (its
- * words: `CREW_QUESTION_STEP`), and so is a heavy command whose routing cannot be read because
- * the project's file is broken or too new (`jobRouteConfigAnswer`).
+ * `claude -p`); `claude -p` is judged by the launch policy (`judgeLaunch`, the same one the
+ * Agent guard uses); and `workflow propose` asks where the push gate says the push or the pull
+ * request is the person's. **It ignores the project's file**: a session cannot switch the
+ * limits on its own launches off by editing `cc-smart-dev-kit.json`, so the frame skips the
+ * `ownHooks` step for this hook. It runs outside git too, and with a broken or too new
+ * `cc-smart-dev-kit.json`.
  *
  * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
  * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
@@ -24,8 +19,8 @@
  * anything but one plain command, a `sh -c` line, which the PowerShell tool cannot run, and a
  * wrong rewrite is worse than none. So where the route is on, a PowerShell line that runs a
  * heavy command is **refused**, with the Bash tool and (for one plain command) the exact Bash
- * line to run there, which the Bash tool then queues (`powerShellDenial`); a crew session gets
- * the same refusal. Only where the Bash tool exists: on Windows it needs Git Bash, and with none
+ * line to run there, which the Bash tool then queues (`powerShellDenial`). Only where the Bash
+ * tool exists: on Windows it needs Git Bash, and with none
  * (`bashToolExists`) the line is left as written. Any other PowerShell line is judged and left
  * as it is.
  *
@@ -48,13 +43,6 @@
  *     `cc-smart-dev-kit job run --kind <kind> -- <command>` instead, byte for byte the same command.
  *   - **deny**: the same command line, named in the reason, for the session to run.
  *
- * **A lead never waits on what it started** (D22): in a session recorded as a lead (`crew lead`,
- * `readLead`), a CI watch (`gh pr checks --watch`, `gh run watch`), a queued job and the
- * project's full check (`bun run check`, …, its package manager's `check` script) are moved to
- * the background with `run_in_background: true` (proved honoured on 2.1.308, and in L1a.1 on
- * 2.1.306), so the lead goes on to what the news unblocks. A routed heavy job gets both in one
- * rewrite.
- *
  * The command is passed through as argv words when it is one plain command
  * (`bun run test:run x.ts`), and through a shell otherwise (`a && b`, a pipe, an expansion):
  * **the person's own shell** (`routedShell`), so a line written for bash reads the same
@@ -68,8 +56,6 @@
 
 import { existsSync } from "node:fs";
 import { findGitBash, type GitBashFacts } from "../cli/git-bash";
-import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
-import { readLead } from "../crew/store";
 import { classifyHeavyCommand, routableLine, type ScriptSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { packageScripts } from "../jobs/package-scripts";
@@ -87,9 +73,7 @@ import {
 } from "../shell/command";
 import { resolveJobRoute } from "../workflow/resolve";
 import {
-  type BashReading,
   type BashVerdict,
-  backgroundFor,
   commandOf,
   isJobRun,
   judgeAnswer,
@@ -229,24 +213,15 @@ export const REWRITE_SUPPORTED = true;
 
 /**
  * The answer that makes the call run `command` instead: the same tool input, its `command`
- * replaced, and — for a lead's CI watch, queued job or full check — `run_in_background: true`
- * added (proved honoured, L1a.1: the call moves to the background and its exit starts a new
- * turn). **No `permissionDecision`**: the hook replaces the input and the permission system
+ * replaced. **No `permissionDecision`**: the hook replaces the input and the permission system
  * still decides about the rewritten command, so a person's own deny or ask rule for Bash is not
  * overridden by the rewrite (proved live on 2.1.301: without a decision Claude Code ran the
  * rewritten command).
  */
-export function rewriteAnswer(
-  fields: Record<string, unknown>,
-  command: string,
-  background = false,
-): HookResult {
+export function rewriteAnswer(fields: Record<string, unknown>, command: string): HookResult {
   return {
     stdout: JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        updatedInput: { ...fields, command, ...(background ? { run_in_background: true } : {}) },
-      },
+      hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...fields, command } },
     }),
   };
 }
@@ -344,22 +319,6 @@ export function routesHeavyCommands(context: HookContext): boolean {
   return resolveJobRoute(context.paths, context.project.config).value;
 }
 
-/**
- * True when the calling session is a lead recorded in this repository (`crew lead`): the one
- * session whose waits the hook moves to the background. A store that cannot be read is not a
- * lead — the call runs as the model wrote it.
- */
-export function isLead(context: HookContext): boolean {
-  const sessionId = stringField(context.input.session_id);
-  if (sessionId === null) return false;
-  try {
-    const repo = context.project.mainCheckout ?? context.project.root;
-    return readLead(context.paths.stateDir, repo, sessionId) !== null;
-  } catch {
-    return false;
-  }
-}
-
 /** The judge's answer for one command, or null; the part that runs outside the project. */
 export function judgeCommandAnswer(input: HookInput, context: HookEnvContext): null | HookResult {
   const command = commandOf(input);
@@ -382,12 +341,12 @@ function inputDialect(input: HookInput): Dialect {
 }
 
 /**
- * The hook: the judge first, then the route and the lead's background move.
+ * The hook: the judge first, then the route.
  *
  * A judged line answers the judge and goes no further: an ask or a denial is never combined
- * with a rewrite. A line already asking for the background keeps its own input.
+ * with a rewrite.
  *
- * **The rewrite and the background move are Bash only.** Their rewritten line is a Bash command
+ * **The rewrite is Bash only.** Their rewritten line is a Bash command
  * (`routedShell`), and the PowerShell tool cannot run one. So where the route is on, a heavy
  * PowerShell line is refused instead, naming the Bash tool (`powerShellDenial`) — but only where
  * the Bash tool exists (`bashTool`, Git Bash on Windows): with none, the line is left as written.
@@ -401,8 +360,7 @@ export function jobRoute(
   const command = stringField(fields.command);
   if (command === null) return SILENT;
   const dialect = inputDialect(context.input);
-  const reading: BashReading = readBash(command, dialect);
-  const verdict: BashVerdict | null = judgeBash(reading, {
+  const verdict: BashVerdict | null = judgeBash(readBash(command, dialect), {
     env: context.env,
     input: context.input,
     paths: context.paths,
@@ -418,32 +376,17 @@ export function jobRoute(
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  const background = backgroundFor(reading.top);
   const routed = routesHeavyCommands(context)
     ? routeHeavyCommand(command, kinds, routedShell(context.env), source)
     : null;
-  // The lead's record is one file read, so only a line it could move to the background asks for
-  // it: a `git status` never reads the crew store.
-  const lead = routed !== null || background !== null ? isLead(context) : false;
-  if (routed !== null) {
-    // A lead waits for neither the queue nor the heavy job itself: the rewrite carries both.
-    return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command, lead) : routeDenial(routed);
-  }
-  if (lead && background !== null && fields.run_in_background !== true) {
-    return rewriteAnswer(fields, command, true);
-  }
-  return SILENT;
+  if (routed === null) return SILENT;
+  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command) : routeDenial(routed);
 }
 
 /**
  * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin. The judge runs
  * anyway (it ignores the file). Otherwise routing cannot be read: a heavy command is asked
  * about rather than run raw, exactly as before. A line outside both is left alone.
- *
- * A crew session is never asked (D36): the same answer is a denial, naming the step that puts
- * the question to its lead. `job-route` is `alwaysOn`, so this answer runs whatever the
- * project's file or `ownHooks` says; its crew rule lives here rather than in a crew part, so
- * each call is judged once.
  */
 export function jobRouteConfigAnswer(
   message: string,
@@ -463,10 +406,10 @@ export function jobRouteConfigAnswer(
   ) {
     return SILENT;
   }
-  const why = `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`;
-  return crewIdOf(context.env) === null
-    ? toolDecision("ask", why)
-    : toolDecision("deny", `${why}\n${CREW_QUESTION_STEP}`);
+  return toolDecision(
+    "ask",
+    `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`,
+  );
 }
 
 /** The answer outside git: the judge alone (routing is a project's, and there is none here). */
@@ -485,7 +428,7 @@ export function jobRouteDomain(input: HookInput): boolean {
 }
 
 /**
- * The facts for the hook log: what the judge read (its launches, polls and decision) and
+ * The facts for the hook log: what the judge read (its launches and decision) and
  * whether the line already runs `job run`, so `doctor --live` can prove both parts answered.
  */
 export function routeFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
@@ -500,12 +443,7 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
   });
   const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
-  if (reading.crewNeverRuns.length > 0) facts.crew_commands = reading.crewNeverRuns;
   if (reading.workflowPropose) facts.workflow_propose = true;
-  if (reading.statusReads > 0) {
-    facts.status_reads = reading.statusReads;
-    facts.waits = reading.waits;
-  }
   if (verdict !== null) {
     facts.decision = verdict.decision;
     facts.why = verdict.why;

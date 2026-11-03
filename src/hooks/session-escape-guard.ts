@@ -22,11 +22,6 @@
  *      its gate from the base branch, but the person's own `workflow.json` and the record are
  *      read from these files.
  *
- * **A crew session is never asked** (D36): every ask above is a denial that names the step —
- * the kit's own limits are the person's, and the portal is no place for a crew session — and
- * the question goes to its lead with `crew report --question` (`CREW_QUESTION_STEP`). The
- * person's own session keeps each ask exactly as before.
- *
  * **Machine-wide**, like `agent-guard`: it runs with or without `cc-smart-dev-kit.json`, in a
  * folder outside git, and when the project's file is broken; its answer never depends on the
  * project. And `ownHooks` cannot switch it off (`HookSpec.alwaysOn`): the project file is one
@@ -63,7 +58,6 @@
 import { dirname, isAbsolute, posix, relative, resolve, win32 } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CREW_QUESTION_STEP } from "../crew/session";
 import { isInside } from "../path-compare";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import {
@@ -602,37 +596,13 @@ const PORTAL_ADDRESS = new RegExp(
 
 const PORTAL_QUESTION = `This command reaches the portal's port (${DEFAULT_PORTAL_PORT}) on this machine. The portal has no sign-in of its own: its pages change the gateway, the safety judge, updates and the workflow settings, the review gate included. It is for you, in your own browser. Allow this only if you asked for it.`;
 
-/**
- * Why a crew session's write into the kit's own files is denied (D36): the limits are the
- * person's, nobody is at the machine to answer the guard's question, and the step puts the
- * question to the lead. It covers an edit and a shell write alike — the project's
- * `cc-smart-dev-kit.json`, the kit's settings, its state folder and its installed plugin.
- */
-export const CREW_KIT_REFUSAL =
-  "A crew session never changes the kit's own limits (the project's cc-smart-dev-kit.json, the " +
-  "kit's settings, its state folder, or its installed plugin): the limits are the person's, and " +
-  "the guard asks before such a write. " +
-  CREW_QUESTION_STEP;
-
-/** Why a crew session's call into the portal is denied: it has no business with it (D36). */
-export const CREW_PORTAL_REFUSAL =
-  "A crew session has no business with the portal: its pages change the gateway, the safety " +
-  "judge, updates and the workflow settings, and the portal is for the person, in their own " +
-  "browser. " +
-  CREW_QUESTION_STEP;
-
 /** The text of a command line, for the checks that read the whole text rather than its commands. */
 function commandOf(input: HookInput): string {
   return stringField(toolInput(input).command) ?? "";
 }
 
-/** The answer for a Bash or PowerShell call. `crew`: a crew session, which is never asked. */
-function judgeShell(
-  input: HookInput,
-  paths: CliPaths,
-  platform: NodeJS.Platform,
-  crew: boolean,
-): HookResult {
+/** The answer for a Bash or PowerShell call. */
+function judgeShell(input: HookInput, paths: CliPaths, platform: NodeJS.Platform): HookResult {
   const command = commandOf(input);
   if (command === "") return SILENT;
   const found: Findings = { denials: new Set(), asks: new Set() };
@@ -649,25 +619,7 @@ function judgeShell(
   if (found.denials.size > 0) return toolDecision("deny", [...found.denials].join("\n"));
   // The text, not the commands: a client in a script (`python3 <<EOF … urlopen(…)`) is no
   // word of the line. A message that only mentions the address asks too — the cheaper mistake.
-  const portal = PORTAL_ADDRESS.test(command);
-  if (crew) {
-    // A crew session is never asked: each question is a denial, and the portal is one no
-    // crew session has any business with.
-    if (portal) return toolDecision("deny", CREW_PORTAL_REFUSAL);
-    // A computed kit command keeps its own fix ("write it out in full"), which a crew session
-    // can take — `crew report` is such a command, and it is how the session hands back. The
-    // kit-file asks get the limits refusal, which says the limits are the person's.
-    const computedKit = found.asks.has(COMPUTED_KIT_ASK);
-    const limits = [...found.asks].some((ask) => ask !== COMPUTED_KIT_ASK);
-    if (!computedKit && !limits) return SILENT;
-    return toolDecision(
-      "deny",
-      limits
-        ? [CREW_KIT_REFUSAL, ...(computedKit ? [COMPUTED_KIT_ASK] : [])].join("\n")
-        : [COMPUTED_KIT_ASK, CREW_QUESTION_STEP].join("\n"),
-    );
-  }
-  if (portal) found.asks.add(PORTAL_QUESTION);
+  if (PORTAL_ADDRESS.test(command)) found.asks.add(PORTAL_QUESTION);
   return found.asks.size > 0 ? toolDecision("ask", [...found.asks].join("\n")) : SILENT;
 }
 
@@ -732,15 +684,12 @@ function editedPaths(input: HookInput, cwd: string | null, home: string): string
   return [...new Set([written, realPath(written)])];
 }
 
-/** The answer for an Edit, Write or NotebookEdit call. `crew`: a crew session, never asked. */
-function judgeEdit(input: HookInput, paths: CliPaths, crew: boolean): HookResult {
+/** The answer for an Edit, Write or NotebookEdit call. */
+function judgeEdit(input: HookInput, paths: CliPaths): HookResult {
   for (const file of editedPaths(input, stringField(input.cwd), paths.home)) {
     const what = kitFileKind(file, paths);
-    if (what !== null) {
-      return crew
-        ? toolDecision("deny", CREW_KIT_REFUSAL)
-        : toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
-    }
+    if (what !== null)
+      return toolDecision("ask", settingsQuestion(what, file, "This edit changes"));
   }
   return SILENT;
 }
@@ -750,20 +699,16 @@ function judgeEdit(input: HookInput, paths: CliPaths, crew: boolean): HookResult
 /**
  * The guard's answer for one call; silent for a tool it does not judge. `platform` is the
  * machine whose paths a shell line names (the hook's own; a test may pass another, so the
- * Windows forms of a path are proved on Linux too). `crew`: the session is a crew session,
- * which is never asked — every question is a denial naming the step that reaches its lead
- * (D36). The guard is `alwaysOn`, so this one flag in every path it answers through is the
- * whole crew rule; a crew part would judge each call twice.
+ * Windows forms of a path are proved on Linux too).
  */
 export function sessionEscapeGuard(
   input: HookInput,
   paths: CliPaths,
   platform: NodeJS.Platform = process.platform,
-  crew = false,
 ): HookResult {
   const tool = stringField(input.tool_name) ?? "";
-  if (ESCAPE_SHELL_TOOLS.includes(tool)) return judgeShell(input, paths, platform, crew);
-  if (ESCAPE_EDIT_TOOLS.includes(tool)) return judgeEdit(input, paths, crew);
+  if (ESCAPE_SHELL_TOOLS.includes(tool)) return judgeShell(input, paths, platform);
+  if (ESCAPE_EDIT_TOOLS.includes(tool)) return judgeEdit(input, paths);
   return SILENT;
 }
 
