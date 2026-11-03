@@ -453,8 +453,6 @@ export type WorkflowKey =
   | "clearWorktreeAfterMerge"
   | "issues.enabled"
   | "issues.allowPublic"
-  | "issues.watch"
-  | "issues.watchMinutes"
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"

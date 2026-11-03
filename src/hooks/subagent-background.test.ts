@@ -187,7 +187,7 @@ describe("the hook", () => {
               id: "mainshell",
               type: "shell",
               status: "running",
-              description: "the lead's watch",
+              description: "the main session's dev server",
               command: "sleep 60",
             },
           ],

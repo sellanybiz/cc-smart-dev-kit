@@ -40,9 +40,9 @@ describe("editJsonText", () => {
 
   test("a new nested key lands after the last key of its object, with the file's indent", () => {
     const after = parsed(BIOME_FILE);
-    (after.workflow as { issues: Record<string, unknown> }).issues.watchMinutes = 2;
+    (after.workflow as { issues: Record<string, unknown> }).issues.allowPublic = true;
     expect(editJsonText(BIOME_FILE, after)).toBe(
-      BIOME_FILE.replace('"enabled": true', '"enabled": true,\n      "watchMinutes": 2'),
+      BIOME_FILE.replace('"enabled": true', '"enabled": true,\n      "allowPublic": true'),
     );
   });
 

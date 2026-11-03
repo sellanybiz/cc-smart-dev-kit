@@ -252,7 +252,7 @@ export function resolveSwitch(
     });
     if (!read.ok) {
       // Not "off": the policy may be committed and not yet pushed, or git may have failed once.
-      // A caller that can wait (the watch's queue) waits; `retry` says so.
+      // `retry` says so: the caller may try again once the policy is pushed.
       return {
         retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`,

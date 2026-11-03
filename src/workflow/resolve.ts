@@ -81,9 +81,6 @@ export interface ResolvedWorkflow {
   issues: {
     enabled: ResolvedValue<boolean>;
     allowPublic: ResolvedValue<boolean>;
-    /** The lead hears new issues and comments (1.4.0): the watch looks at GitHub now and then. */
-    watch: ResolvedValue<boolean>;
-    watchMinutes: ResolvedValue<number>;
     foundLabel: ResolvedValue<string>;
     fixedLabel: ResolvedValue<string>;
     readyLabel: ResolvedValue<string>;
@@ -374,8 +371,6 @@ const RESOLVED: {
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
   "issues.enabled": (r) => r.issues.enabled,
   "issues.allowPublic": (r) => r.issues.allowPublic,
-  "issues.watch": (r) => r.issues.watch,
-  "issues.watchMinutes": (r) => r.issues.watchMinutes,
   "issues.foundLabel": (r) => r.issues.foundLabel,
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
@@ -445,11 +440,6 @@ export function resolveWorkflow(
       allowPublic: of(
         "issues.allowPublic",
         issues.allowPublic ?? workflowDefaults.issues.allowPublic,
-      ),
-      watch: of("issues.watch", issues.watch ?? workflowDefaults.issues.watch),
-      watchMinutes: of(
-        "issues.watchMinutes",
-        issues.watchMinutes ?? workflowDefaults.issues.watchMinutes,
       ),
       foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
       fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),

@@ -85,6 +85,8 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues": "1.4.0",
   "workflow.issues.enabled": "1.4.0",
   "workflow.issues.allowPublic": "1.4.0",
+  // Accepted and ignored since 2.0: the issue feed and the lead's watch are gone. The keys stay
+  // in the schema, so an old file still needs the release that first took them.
   "workflow.issues.watch": "1.4.0",
   "workflow.issues.watchMinutes": "1.4.0",
   "workflow.issues.foundLabel": "1.4.0",

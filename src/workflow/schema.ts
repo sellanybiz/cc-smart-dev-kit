@@ -47,16 +47,6 @@ type NumberRule = { kind: "whole"; max?: number; min: number };
 const PERCENT: NumberRule = { kind: "whole", max: 100, min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
 
-/**
- * The fewest minutes between two looks at GitHub (`issues.watchMinutes`). One look is two
- * requests, so 2 minutes is at most 60 requests an hour for a repository, against the 5 000 an
- * authenticated account has; a look that finds nothing new is a `304`, which is free against that
- * limit (`.claude/research/2026-10-25-gi4-conditional.md`). A lower floor would only raise the
- * chance of a secondary limit. At most a day, so a typo cannot silence the watch for good.
- */
-export const WATCH_MINUTES_FLOOR = 2;
-const WATCH_MINUTES: NumberRule = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
-
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
   const whole = z.number().int().min(rule.min);
@@ -66,7 +56,6 @@ function numberSchema(rule: NumberRule): z.ZodNumber {
 /** Every number setting, and what it takes. */
 const NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
@@ -192,14 +181,10 @@ export const workflowSchema = z.strictObject({
       enabled: z.boolean().optional(),
       /** It may file them in a public repository, where everyone reads them. Default: false. */
       allowPublic: z.boolean().optional(),
-      /**
-       * The lead's watch looks at the project's issues and comments now and then and prints a
-       * line for each new one (1.4.0, `src/issues/feed.ts`). A second switch, off by default even
-       * with `enabled` on: it needs `enabled`, and reads only. Default: false.
-       */
-      watch: z.boolean().optional(),
-      /** Minutes between two looks, 2 or more (`WATCH_MINUTES_FLOOR`). Default: 5. */
-      watchMinutes: numberField("issues.watchMinutes"),
+      /** Accepted and ignored since 2.0: the issue feed and the lead's watch are gone. */
+      watch: z.unknown().optional(),
+      /** Accepted and ignored since 2.0: the issue feed and the lead's watch are gone. */
+      watchMinutes: z.unknown().optional(),
       /** The label on every issue the kit files. Default: kit:found. */
       foundLabel: labelSchema.optional(),
       /** The label of an issue whose fix is merged and not yet released. Default: fixed-unreleased. */
@@ -263,7 +248,7 @@ export const workflowDefaults = {
   deleteBranch: false,
   reviewBeforePush: true,
   reviewAgents: ["cc-smart-dev-kit:reviewer"],
-  // The lead's limits from the measured fix rounds (R5): 10% is covered, 105% and 160% ask.
+  // The limits from the measured fix rounds (R5): 10% is covered, 105% and 160% ask.
   fixesAfterReview: {
     lines: 200,
     files: 10,
@@ -274,8 +259,6 @@ export const workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
-    watch: false,
-    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready",
@@ -310,8 +293,6 @@ export type WorkflowKey =
   | "clearWorktreeAfterMerge"
   | "issues.enabled"
   | "issues.allowPublic"
-  | "issues.watch"
-  | "issues.watchMinutes"
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
@@ -336,8 +317,6 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
-  "issues.watch",
-  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
@@ -371,13 +350,12 @@ export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.
 
 /**
  * The settings that decide what text from GitHub reaches a session (`issues.readyLabel`: which
- * issues count as chosen, D67; `issues.watch`: the feed that puts new issues into the lead's
- * context). `workflow set` and `unset` refuse them inside Claude Code, like `OUTBOUND_KEYS`: a
- * session must never pick which issues are ready, nor open the channel for outside text. Both
- * are read from the person's file and the project's file as committed on the base, never from a
- * working copy. `propose` stays open: a person reviews its pull request.
+ * issues count as chosen, D67). `workflow set` and `unset` refuse them inside Claude Code, like
+ * `OUTBOUND_KEYS`: a session must never pick which issues are ready. They are read from the
+ * person's file and the project's file as committed on the base, never from a working copy.
+ * `propose` stays open: a person reviews its pull request.
  */
-export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel", "issues.watch"];
+export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel"];
 
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(

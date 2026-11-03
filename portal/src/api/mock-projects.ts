@@ -113,8 +113,6 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "clearWorktreeAfterMerge", source: "personal", value: true },
   { key: "issues.enabled", source: "default", value: false },
   { key: "issues.allowPublic", source: "default", value: false },
-  { key: "issues.watch", source: "default", value: false },
-  { key: "issues.watchMinutes", source: "default", value: 5 },
   { key: "issues.foundLabel", source: "default", value: "kit:found" },
   { key: "issues.fixedLabel", source: "default", value: "fixed-unreleased" },
   { key: "issues.readyLabel", source: "default", value: "kit:ready" },
