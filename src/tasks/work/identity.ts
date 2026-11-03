@@ -1,5 +1,5 @@
 import { cliPaths } from "../../cli/paths";
-import { crewIdOf, realProcessFacts } from "../../crew/session";
+import { realProcessFacts } from "../../crew/session";
 import { isRunning, liveSessions, sessionIdentityProved } from "../../hooks/sessions";
 import {
   ancestorPids,
@@ -83,7 +83,6 @@ export function callerOf(
     cached.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
     return {
       sessionId: record.sessionId,
-      crewId: crewIdOf(env),
       pid: record.pid,
       procStart: record.procStart ?? null,
       cwd: record.cwd,
@@ -95,7 +94,6 @@ export function callerOf(
   return sessionId
     ? {
         sessionId,
-        crewId: crewIdOf(env),
         pid: null,
         procStart: null,
         cwd: facts.cwd ?? process.cwd(),

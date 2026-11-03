@@ -10,9 +10,9 @@ import { addNote, createTask, deleteTask, systemClose, updateTask } from "./stor
 import type { Result, WorkEvent } from "./types";
 
 const at = (minute: number) => Date.UTC(2026, 10, 3, 9, minute);
-const lead = { sessionId: "s-1", crewId: null, pid: 7, procStart: "70", name: "lead-a" };
-const crew = { sessionId: "s-2", crewId: "crew-a", pid: 8, procStart: "80", name: "crew-session" };
-const kit = { sessionId: null, crewId: null, pid: null, procStart: null };
+const lead = { sessionId: "s-1", pid: 7, procStart: "70", name: "lead-a" };
+const builder = { sessionId: "s-2", pid: 8, procStart: "80", name: "builder-session" };
+const kit = { sessionId: null, pid: null, procStart: null };
 
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
@@ -31,7 +31,7 @@ function world() {
     createTask(db, { project: "p", subject: "Ship it", description: "v1" }, lead, at(0)),
   );
   const child = value(
-    createTask(db, { project: "p", subject: "Part", parentId: root.id }, crew, at(1)),
+    createTask(db, { project: "p", subject: "Part", parentId: root.id }, builder, at(1)),
   );
   value(
     updateTask(
@@ -43,14 +43,14 @@ function world() {
     ),
   );
   value(addNote(db, root.id, "Checked the build", lead, at(3)));
-  value(systemClose(db, root.id, "done", "crew merged", kit, at(4)));
+  value(systemClose(db, root.id, "done", "phase merged", kit, at(4)));
   return { db, root, child };
 }
 
 test("every change is recorded with its time, its values before and after, and who made it", () => {
   const { db, root, child } = world();
-  const mine = { sessionId: "s-1", sessionName: "lead-a", crewId: null, pid: 7, reason: null };
-  const theKit = { sessionId: null, sessionName: null, crewId: null, pid: null };
+  const mine = { sessionId: "s-1", sessionName: "lead-a", pid: 7, reason: null };
+  const theKit = { sessionId: null, sessionName: null, pid: null };
   expect(eventsOf(db, root).map(entry)).toEqual([
     {
       taskId: root.id,
@@ -93,24 +93,24 @@ test("every change is recorded with its time, its values before and after, and w
       action: "closed",
       changes: { status: ["in_progress", "done"], claim: ["s-1", null] },
       ...theKit,
-      reason: "crew merged",
+      reason: "phase merged",
     },
     {
       taskId: root.id,
       number: 1,
       at: at(4),
       action: "noted",
-      changes: { note: [null, "Automatically done: crew merged"] },
+      changes: { note: [null, "Automatically done: phase merged"] },
       ...theKit,
-      reason: "crew merged",
+      reason: "phase merged",
     },
   ]);
   expect(historyText(eventsOf(db, child), { full: false })).toBe(
     [
       "History (oldest first):",
-      '2026-11-03T09:01:00.000Z by session "crew-session" s-2, crew crew-a, process 8 · created: kind task; subject "Part"; status pending; parent #1; crew crew-a',
-      "2026-11-03T09:04:00.000Z by the kit (crew merged) · closed: status pending → dropped",
-      '2026-11-03T09:04:00.000Z by the kit (crew merged) · noted: note "Automatically dropped: crew merged"',
+      '2026-11-03T09:01:00.000Z by session "builder-session" s-2, process 8 · created: kind task; subject "Part"; status pending; parent #1',
+      "2026-11-03T09:04:00.000Z by the kit (phase merged) · closed: status pending → dropped",
+      '2026-11-03T09:04:00.000Z by the kit (phase merged) · noted: note "Automatically dropped: phase merged"',
     ].join("\n"),
   );
   db.close();
@@ -124,8 +124,8 @@ test("the history reads as a timeline, and with full it keeps every earlier desc
       '2026-11-03T09:00:00.000Z by session "lead-a" s-1, process 7 · created: kind task; subject "Ship it"; status pending; description 2 characters',
       '2026-11-03T09:02:00.000Z by session "lead-a" s-1, process 7 · changed: subject "Ship it" → "Ship it now"; status pending → in_progress; claimed by none → s-1; description changed, 2 → 9 characters',
       '2026-11-03T09:03:00.000Z by session "lead-a" s-1, process 7 · noted: note "Checked the build"',
-      "2026-11-03T09:04:00.000Z by the kit (crew merged) · closed: status in_progress → done; claimed by s-1 → none",
-      '2026-11-03T09:04:00.000Z by the kit (crew merged) · noted: note "Automatically done: crew merged"',
+      "2026-11-03T09:04:00.000Z by the kit (phase merged) · closed: status in_progress → done; claimed by s-1 → none",
+      '2026-11-03T09:04:00.000Z by the kit (phase merged) · noted: note "Automatically done: phase merged"',
     ].join("\n"),
   );
   const full = historyText(eventsOf(db, root), { full: true }).split("\n");
@@ -171,7 +171,6 @@ test("task_get prints a work task's history with the caller's session name", () 
     cwd: () => cwd,
     caller: () => ({
       sessionId: "s-9",
-      crewId: null,
       pid: 42,
       procStart: null,
       cwd,

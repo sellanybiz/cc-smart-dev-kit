@@ -7,20 +7,19 @@ import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { NEWER_STORE, openWorkDb, workDbFile } from "./db";
 import { importClaudeMem } from "./import-claude-mem";
 import { claimState, getTask, listTasks, notesOf, openSubtasks, searchTasks } from "./queries";
-import { crewPhaseState, hasOwnTask, leadOwnState, startView } from "./read";
+import { hasOwnTask, startView } from "./read";
 import {
   ack,
   addNote,
   createTask,
   deleteTask,
-  ensurePhaseTask,
   ensurePlanTask,
   systemClose,
   updateTask,
 } from "./store";
 import type { Result } from "./types";
 
-const who = { sessionId: "session", crewId: null, pid: 12, procStart: "34" };
+const who = { sessionId: "session", pid: 12, procStart: "34" };
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
   return result.value;
@@ -76,81 +75,20 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   value(ack(db, "p", "T-abcd", 22));
   db.close();
 });
-test("plan and phase upserts, hook views and claim classification", () => {
+test("plan upserts and process claims survive a clear", () => {
   const { db, paths } = setup();
   const plan = value(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
-  const a = value(
-    ensurePhaseTask(
-      db,
-      {
-        project: "p",
-        plan: "plan",
-        phase: "a",
-        subject: "A",
-        description: "",
-        crewId: "a",
-        waitsForPhases: [],
-      },
-      who,
-      2,
-    ),
-  );
-  const b = value(
-    ensurePhaseTask(
-      db,
-      {
-        project: "p",
-        plan: "plan",
-        phase: "b",
-        subject: "B",
-        description: "",
-        crewId: "b",
-        waitsForPhases: ["a"],
-      },
-      who,
-      3,
-    ),
-  );
-  expect(a.parentId).toBe(plan.id);
-  expect(b.waitsFor).toEqual([a.id]);
   expect(
-    value(
-      ensurePhaseTask(
-        db,
-        {
-          project: "p",
-          plan: "plan",
-          phase: "a",
-          subject: "A",
-          description: "",
-          crewId: "new",
-          waitsForPhases: [],
-        },
-        who,
-        4,
-      ),
-    ).id,
-  ).toBe(a.id);
+    value(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Other" }, who, 2)).id,
+  ).toBe(plan.id);
   const own = value(
-    createTask(
-      db,
-      { project: "p", subject: "Work", plan: "plan", parentId: a.id, status: "in_progress" },
-      who,
-      5,
-    ),
+    createTask(db, { project: "p", subject: "Work", status: "in_progress" }, who, 3),
   );
-  expect(claimState(own, () => true, who)).toBe("mine");
-  // A `/clear` gives the same Claude process a new session id: the claim is still its own.
   expect(claimState(own, () => true, { ...who, sessionId: "clear" })).toBe("mine");
   expect(claimState(own, () => true, { ...who, pid: 99 })).toBe("another session");
-  expect(claimState(own, () => true, { ...who, procStart: "reused" })).toBe("another session");
   expect(claimState(own, () => false, who)).toBe("free");
   db.close();
-  expect(crewPhaseState(paths, "p", "new").state).toBe("ready");
-  expect(leadOwnState(paths, "p", "plan", ["session"]).state).toBe("ready");
-  // A task its session made inside a phase is still its own for the reminder (D76): it laid it out.
   expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: true });
-  expect(startView(paths, "p", who, { limit: 8 }).state).toBe("ready");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {
   const { db, paths } = setup();
@@ -158,7 +96,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='3' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='4' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");
@@ -195,7 +133,7 @@ test("ten processes allocate exactly 500 project numbers", async () => {
   const dbModule = new URL("./db.ts", import.meta.url).pathname;
   writeFileSync(
     script,
-    `import {openWorkDb} from ${JSON.stringify(dbModule)}; import {createTask} from ${JSON.stringify(store)}; const db=openWorkDb(process.argv[2],{mode:'write'}); for(let i=0;i<50;i++){ const r=createTask(db,{project:'p',subject:'task'}, {sessionId:null,crewId:null,pid:null,procStart:null},1); if(!r.ok) throw Error(r.why); } db.close();`,
+    `import {openWorkDb} from ${JSON.stringify(dbModule)}; import {createTask} from ${JSON.stringify(store)}; const db=openWorkDb(process.argv[2],{mode:'write'}); for(let i=0;i<50;i++){ const r=createTask(db,{project:'p',subject:'task'}, {sessionId:null,pid:null,procStart:null},1); if(!r.ok) throw Error(r.why); } db.close();`,
   );
   const guard = subprocessGuard();
   const children = Array.from({ length: 10 }, () =>

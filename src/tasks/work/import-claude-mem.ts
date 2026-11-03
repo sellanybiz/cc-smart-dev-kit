@@ -100,7 +100,7 @@ function named(name: string, text: string): { subject: string; description: stri
     description: [`name: ${subject}`, text].filter(Boolean).join("\n"),
   };
 }
-const importer: Who = { sessionId: null, crewId: null, pid: null, procStart: null };
+const importer: Who = { sessionId: null, pid: null, procStart: null };
 /** What each imported task's history says made it. */
 const IMPORTED = "imported from claude-mem's work state";
 /** Why a second run drops what an earlier import took from claude-mem's own lists. */

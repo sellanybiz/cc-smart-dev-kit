@@ -8,7 +8,7 @@ import type { Result } from "./types";
  * code from an older version folder still reads and writes the store, and a column it does not
  * know takes its default.
  */
-export const WORK_SCHEMA_VERSION = 2;
+export const WORK_SCHEMA_VERSION = 3;
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
 export const NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -48,6 +48,10 @@ CREATE INDEX task_event_number ON task_events(project,number);
  */
 const MIGRATIONS = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
+  `ALTER TABLE tasks ADD COLUMN agent TEXT;
+   ALTER TABLE tasks ADD COLUMN branch TEXT;
+   ALTER TABLE tasks ADD COLUMN worktree TEXT;
+   ALTER TABLE tasks ADD COLUMN base TEXT;`,
 ];
 // `task_events` has no foreign key on purpose: a task's history outlives the task.
 export function openWorkDb(file: string, options: { mode: "write" | "hook" }): WorkDb {

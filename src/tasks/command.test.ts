@@ -42,6 +42,60 @@ test("task command creates, lists, completes and checks as a process", async () 
     error: "",
   });
   expect(await run("list")).toEqual({ code: 0, text: "#1 [pending] Read the result\n", error: "" });
+  expect(
+    (
+      await run(
+        "add",
+        "Bound",
+        "--agent",
+        "builder-a",
+        "--branch",
+        "phase-a",
+        "--worktree",
+        "/tmp/phase-a",
+        "--base",
+        "abc123",
+      )
+    ).code,
+  ).toBe(0);
+  expect((await run("show", "#2")).text).toContain(
+    "Agent: builder-a\nBranch: phase-a\nWorktree: /tmp/phase-a\nBase: abc123",
+  );
+  expect(
+    (
+      await run(
+        "set",
+        "#2",
+        "--agent",
+        "builder-b",
+        "--branch",
+        "phase-b",
+        "--worktree",
+        "/tmp/phase-b",
+        "--base",
+        "def456",
+      )
+    ).code,
+  ).toBe(0);
+  expect(
+    (
+      await run(
+        "start",
+        "#2",
+        "--agent",
+        "builder-c",
+        "--branch",
+        "phase-c",
+        "--worktree",
+        "/tmp/phase-c",
+        "--base",
+        "fedcba",
+      )
+    ).code,
+  ).toBe(0);
+  expect((await run("show", "#2")).text).toContain(
+    "Agent: builder-c\nBranch: phase-c\nWorktree: /tmp/phase-c\nBase: fedcba",
+  );
   expect(await run("done", "#1")).toEqual({
     code: 0,
     text: '#1 "Read the result" · done\n',
@@ -138,7 +192,7 @@ test("task import claude-mem leaves claude-mem's own lists out, and drops what a
   mistakenImport(store, context.project, at);
   // A session noted the item of another such list: it may be someone's work, so it stays open.
   const rules = mistakenImport(store, context.project, at, "my-rules");
-  const session = { sessionId: "session", crewId: null, pid: null, procStart: null };
+  const session = { sessionId: "session", pid: null, procStart: null };
   const noted = addNote(store, rules.item.id, "mine", session, at);
   if (!noted.ok) throw new Error(noted.why);
   store.close();

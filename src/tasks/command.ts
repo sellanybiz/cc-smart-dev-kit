@@ -24,9 +24,11 @@ export const TASK_USAGE = `Usage: ${TASK_COMMAND} <command>
 add <subject> [--description <text> | --file <path|->] [--kind work|production|database|teammate|follow-up]
     [--parent <ref>] [--start] [--type blocking|non-blocking] [--blocked-by <ref>]...
     [--phase <id>] [--plan <slug>]
+    [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]
     [--when now|next-release|any] [--weight blocks-release|after-deploy|owner]
     [--flag <flag>]... [--ref <path>]...
 set <ref> [--type blocking|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
+    Bindings on set/start: --agent <id> --branch <name> --worktree <absolute-path> --base <sha>
 start <ref>
 done <ref> [--evidence <text>] [--note <text>] [--for-everyone]
 drop <ref> [--note <text>]
@@ -46,12 +48,14 @@ mcp
 Work tasks stay on this machine. Project task files travel with your branch: commit them.
 Layers: phase › task › subtask. A blocking task (the default) holds its parent; a non-blocking
 one holds nothing. A task blocked by an open task cannot start or be done.`;
+const bindingFlags = ["--agent", "--branch", "--worktree", "--base"];
 const definitions: Record<
   string,
   { values?: string[]; flags?: string[]; repeat?: string[]; min: number; max?: number }
 > = {
   add: {
     values: [
+      ...bindingFlags,
       "--description",
       "--file",
       "--kind",
@@ -70,13 +74,13 @@ const definitions: Record<
     min: 1,
   },
   set: {
-    values: ["--type", "--block", "--unblock", "--parent"],
+    values: [...bindingFlags, "--type", "--block", "--unblock", "--parent"],
     flags: ["--top"],
     repeat: ["--block", "--unblock"],
     min: 1,
     max: 1,
   },
-  start: { min: 1, max: 1 },
+  start: { values: bindingFlags, min: 1, max: 1 },
   done: { values: ["--evidence", "--note"], flags: ["--for-everyone"], min: 1, max: 1 },
   drop: { values: ["--note"], min: 1, max: 1 },
   note: { values: ["--file"], min: 1 },
@@ -125,11 +129,17 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
     let operation: TaskOperation;
     let input: Record<string, unknown>;
     const task = args[0];
+    const bindings = Object.fromEntries(
+      bindingFlags
+        .filter((flag) => options.has(flag))
+        .map((flag) => [flag.slice(2), options.get(flag)]),
+    );
     switch (command) {
       case "add":
         if (get("file") && get("description")) return bad("Use --description or --file, not both");
         operation = "create";
         input = {
+          ...bindings,
           subject: args.join(" "),
           description: get("file") ? await fileText() : get("description"),
           kind: get("kind"),
@@ -150,6 +160,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         operation = "update";
         input = {
           task,
+          ...bindings,
           type: get("type"),
           blocked_by_add: lists.get("--block"),
           blocked_by_remove: lists.get("--unblock"),
@@ -158,7 +169,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         break;
       case "start":
         operation = "update";
-        input = { task, status: "in_progress" };
+        input = { task, status: "in_progress", ...bindings };
         break;
       case "done":
       case "drop":

@@ -73,6 +73,42 @@ test("SDK transport initializes, lists eight annotated tools and runs work", asy
     expect(await request("tools/call", { name: "task_list", arguments: {} })).toEqual({
       content: [{ type: "text", text: "#1 [pending] Read the result" }],
     });
+    expect(
+      await request("tools/call", {
+        name: "task_update",
+        arguments: {
+          task: "#1",
+          agent: "builder-t",
+          branch: "phase-t",
+          worktree: "/tmp/phase-t",
+          base: "abc123",
+        },
+      }),
+    ).toEqual({ content: [{ type: "text", text: '#1 "Read the result" · pending' }] });
+    const got = z
+      .object({ content: z.array(z.object({ text: z.string() })) })
+      .parse(await request("tools/call", { name: "task_get", arguments: { task: "#1" } }));
+    expect(got.content[0]?.text).toContain(
+      "Agent: builder-t\nBranch: phase-t\nWorktree: /tmp/phase-t\nBase: abc123",
+    );
+    expect(
+      await request("tools/call", {
+        name: "task_create",
+        arguments: {
+          subject: "Bound",
+          agent: "builder-b",
+          branch: "phase-b",
+          worktree: "/tmp/phase-b",
+          base: "def456",
+        },
+      }),
+    ).toEqual({ content: [{ type: "text", text: '#2 "Bound"' }] });
+    const bound = z
+      .object({ content: z.array(z.object({ text: z.string() })) })
+      .parse(await request("tools/call", { name: "task_get", arguments: { task: "#2" } }));
+    expect(bound.content[0]?.text).toContain(
+      "Agent: builder-b\nBranch: phase-b\nWorktree: /tmp/phase-b\nBase: def456",
+    );
     expect(await request("tools/call", { name: "task_done", arguments: { task: "#1" } })).toEqual({
       content: [{ type: "text", text: '#1 "Read the result" · done' }],
     });

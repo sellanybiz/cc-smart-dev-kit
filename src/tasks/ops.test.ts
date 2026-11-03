@@ -1,11 +1,9 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { taskContext } from "./context";
 import { createTaskOps } from "./ops";
 import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
-import { ensurePhaseTask } from "./work/store";
 
 test("a close the store refuses keeps no note, so a retry saves each note once", () => {
   const cwd = tempDir();
@@ -13,7 +11,7 @@ test("a close the store refuses keeps no note, so a retry saves each note once",
   const ops = createTaskOps({
     stateDir,
     cwd: () => cwd,
-    caller: () => ({ sessionId: "s", crewId: null, pid: process.pid, procStart: null, cwd }),
+    caller: () => ({ sessionId: "s", pid: process.pid, procStart: null, cwd }),
   });
   const written = () => {
     const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
@@ -58,7 +56,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
   const ops = createTaskOps({
     stateDir,
     cwd: () => cwd,
-    caller: () => ({ sessionId: session, crewId: null, pid: process.pid, procStart: null, cwd }),
+    caller: () => ({ sessionId: session, pid: process.pid, procStart: null, cwd }),
   });
   try {
     expect(ops.call("create", { subject: "Parent" }).ok).toBe(true);
@@ -100,47 +98,6 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
     expect(ops.call("create", { subject: "Next" })).toEqual({ ok: true, text: '#3 "Next"' });
     expect(ops.call("delete", { task: "#3" }).ok).toBe(true);
     expect(ops.call("note", { task: "#1", text: "x".repeat(64001) }).ok).toBe(false);
-  } finally {
-    ops.close();
-  }
-});
-
-test("crew caller defaults to its phase parent and follows its current checkout", () => {
-  const cwd = tempDir();
-  const stateDir = tempDir();
-  const ctx = taskContext(cwd);
-  if (!ctx.ok) throw new Error(ctx.why);
-  const who = { sessionId: "crew-session", crewId: "crew-one", pid: null, procStart: null };
-  const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
-  expect(
-    ensurePhaseTask(
-      db,
-      {
-        project: ctx.project,
-        plan: "my-plan",
-        subject: "Build",
-        phase: "one",
-        description: "Check it",
-        crewId: "crew-one",
-        waitsForPhases: [],
-      },
-      who,
-      1,
-    ).ok,
-  ).toBe(true);
-  db.close();
-  const ops = createTaskOps({ stateDir, caller: () => ({ ...who, cwd }) });
-  try {
-    expect(ops.call("create", { subject: "Check" })).toEqual({
-      ok: true,
-      text: '#3 "Check" under #2',
-    });
-    expect(ops.call("list", { scope: "plan" })).toMatchObject({
-      ok: true,
-      // Progress counts the whole subtree, the status line's and the board's rule. A plan and a
-      // phase say their layer (D76).
-      text: "#1 [pending · plan] my-plan · 0/2\n  #2 [pending · phase one] Build · 0/1\n    #3 [pending] Check",
-    });
   } finally {
     ops.close();
   }
@@ -197,6 +154,62 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
     const mistake = scanProjectTasks(dir, { archive: false }).tasks[0];
     if (!mistake) throw new Error("missing mistake");
     expect(ops.call("delete", { task: mistake.id }).ok).toBe(true);
+  } finally {
+    ops.close();
+  }
+});
+
+test("subagent phase bindings survive updates and appear in the plan ledger", () => {
+  const cwd = tempDir();
+  const state = tempDir();
+  const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null });
+  try {
+    expect(
+      ops.call("create", {
+        subject: "Build",
+        plan: "upgrade",
+        phase: "T",
+        agent: "builder-t",
+        branch: "task-ledger",
+        worktree: "/tmp/task-ledger",
+        base: "abc123",
+      }).ok,
+    ).toBe(true);
+    expect(ops.call("create", { subject: "Test", parent: "#2" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#3" }).ok).toBe(true);
+    expect(
+      ops.call("update", {
+        task: "#2",
+        agent: "builder-next",
+        branch: "task-next",
+        worktree: "/tmp/task-next",
+        base: "def456",
+      }).ok,
+    ).toBe(true);
+    const got = ops.call("get", { task: "#2" });
+    expect(got.ok && got.text).toContain(
+      "Agent: builder-next\nBranch: task-next\nWorktree: /tmp/task-next\nBase: def456",
+    );
+    expect(ops.call("list", { scope: "plan" })).toMatchObject({
+      ok: true,
+      text: "#1 [pending · plan] upgrade · 1/2\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+    });
+    expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
+    expect(ops.call("done", { task: "#2" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#1" }).ok).toBe(true);
+    const resumed = createTaskOps({
+      stateDir: state,
+      cwd: () => cwd,
+      caller: () => ({ sessionId: "after-clear", pid: null, procStart: null, cwd }),
+    });
+    try {
+      expect(resumed.call("list", { scope: "plan" })).toMatchObject({
+        ok: true,
+        text: "#1 [done · plan] upgrade · 2/2\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      });
+    } finally {
+      resumed.close();
+    }
   } finally {
     ops.close();
   }

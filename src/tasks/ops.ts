@@ -6,7 +6,6 @@ export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
 import { isPhase, PHASE_RULE } from "../crew/names";
-import { leadSessions, listLeads, readCrew } from "../crew/store";
 import { runGit } from "../hooks/git";
 import { taskContext } from "./context";
 import {
@@ -25,7 +24,6 @@ import {
   allTasks,
   claimState,
   deletedHistory,
-  descendants,
   eventsOf,
   getTask,
   isOpen,
@@ -46,6 +44,20 @@ import {
   updateTask,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
+
+function bindings(input: {
+  agent?: string | undefined;
+  branch?: string | undefined;
+  worktree?: string | undefined;
+  base?: string | undefined;
+}) {
+  return {
+    ...(input.agent === undefined ? {} : { agent: input.agent }),
+    ...(input.branch === undefined ? {} : { branch: input.branch }),
+    ...(input.worktree === undefined ? {} : { worktree: input.worktree }),
+    ...(input.base === undefined ? {} : { base: input.base }),
+  };
+}
 
 export const TASK_LINE_CAP = 200;
 export const TASK_TEXT_CAP = 20_000;
@@ -115,24 +127,29 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
   function call(operation: TaskOperation, raw: unknown): TaskAnswer {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
-      const who: Who = caller ?? { sessionId: null, crewId: null, pid: null, procStart: null };
+      const who: Who = caller ?? { sessionId: null, pid: null, procStart: null };
       const cwd = caller?.cwd ?? options.cwd?.() ?? process.cwd();
       const ctx = taskContext(cwd, env);
       if (!ctx.ok) throw new Error(ctx.why);
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const phase = who.crewId
-        ? all.find((t) => t.kind === "phase" && t.crewId === who.crewId)
-        : undefined;
-      const lead =
-        ctx.repo && who.sessionId
-          ? listLeads(stateDir, ctx.repo).records.find(
-              (l) => !l.endedAt && leadSessions(l).includes(who.sessionId ?? ""),
-            )
-          : undefined;
-      const crew = ctx.repo && who.crewId ? readCrew(stateDir, ctx.repo, who.crewId) : null;
-      const plan = phase?.plan ?? lead?.plan ?? crew?.plan ?? null;
+      // The ledger is project-wide: the caller's latest task with a plan selects its plan.
+      const plan =
+        [...all]
+          .reverse()
+          .find(
+            (t) =>
+              t.plan !== null &&
+              (t.createdBy === who.sessionId ||
+                (who.pid !== null &&
+                  t.claim?.pid === who.pid &&
+                  t.claim.procStart === who.procStart)),
+          )?.plan ??
+        all
+          .filter((t) => t.kind === "plan")
+          .sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ??
+        null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
@@ -156,6 +173,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
           if (
+            Object.keys(bindings(input)).length ||
             input.parent ||
             input.blocked_by?.length ||
             input.status ||
@@ -170,9 +188,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ? runGit(ctx.checkoutRoot, ["branch", "--show-current"], env)
             : null;
           if (!branch?.ok) throw new Error("Could not read the current branch");
-          const from =
-            input.from ??
-            `branch ${branch.out}${crew ? ` · plan ${crew.plan} · phase ${crew.phase}` : ""}`;
+          const from = input.from ?? `branch ${branch.out}`;
           const task = createProjectTask(
             projectDir(),
             {
@@ -195,27 +211,22 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
         if (input.phase !== undefined || input.plan !== undefined) {
-          // A plan's own task, or a phase laid out ahead of its crew (D76): a lead's call.
-          if (who.crewId !== null)
-            throw new Error(
-              `A crew session works inside its own phase${phase ? ` (#${phase.number})` : ""}: its lead lays out the plan's phases`,
-            );
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
           if (input.status !== undefined)
             throw new Error("A plan or a phase starts pending: leave out status");
           if (
             input.phase === undefined &&
-            (blockedBy.length || input.type !== undefined || input.description !== undefined)
+            (Object.keys(bindings(input)).length ||
+              blockedBy.length ||
+              input.type !== undefined ||
+              input.description !== undefined)
           )
             throw new Error(
               "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
             );
           const slug = input.plan ?? plan;
-          if (slug === null)
-            throw new Error(
-              "A phase belongs to a plan: give plan (its slug, as `crew lead --plan` names it)",
-            );
+          if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
             const there = allTasks(store, ctx.project).some(
               (t) => t.kind === "plan" && t.plan === slug,
@@ -236,7 +247,6 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             };
           }
           const phaseId = input.phase;
-          // The id `crew start` takes it over by: one it would refuse could never be adopted.
           if (!isPhase(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const laid = value(
@@ -249,6 +259,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   phase: phaseId,
                   subject: input.subject,
                   ...(input.description === undefined ? {} : { description: input.description }),
+                  ...bindings(input),
                   ...(input.type === undefined ? {} : { type: input.type }),
                   blockedBy,
                 },
@@ -262,6 +273,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ...(input.description === undefined ? [] : ["description"]),
             ...(input.type === undefined ? [] : ["type"]),
             ...(blockedBy.length ? ["blocked_by"] : []),
+            ...Object.keys(bindings(input)),
           ];
           const unchanged = kept.length
             ? `: its ${kept.join(", ")} stay as they were (${TASK_TOOL.update} changes them)`
@@ -271,7 +283,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             text: `${label(laid.task)} · phase ${phaseId} of plan ${slug}${laid.made ? "" : ` · it was there already${unchanged}`}`,
           };
         }
-        const parent = input.parent ? work(input.parent) : phase;
+        const parent = input.parent ? work(input.parent) : undefined;
         // The task and its blockers go in one transaction: a refused blocker leaves no task.
         const task = value(
           writeWork(store, () =>
@@ -281,11 +293,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 project: ctx.project,
                 subject: input.subject,
                 ...(input.description === undefined ? {} : { description: input.description }),
+                ...bindings(input),
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
                 plan: parent?.plan ?? plan,
-                crewId: who.crewId,
                 blockedBy,
               },
               who,
@@ -306,6 +318,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.update.parse(raw);
         if (input.task.startsWith("T-")) {
           if (
+            Object.keys(bindings(input)).length ||
             input.status !== undefined ||
             input.parent !== undefined ||
             input.type !== undefined ||
@@ -339,6 +352,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             {
               ...(input.subject === undefined ? {} : { subject: input.subject }),
               ...(input.description === undefined ? {} : { description: input.description }),
+              ...bindings(input),
               ...(input.status === undefined ? {} : { status: input.status }),
               ...(input.parent === undefined
                 ? {}
@@ -462,6 +476,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               return [
                 [
                   `${label(task)} [${stateWords(task, byId, true)}]`,
+                  ...(["agent", "branch", "worktree", "base"] as const).flatMap((key) =>
+                    task[key] === null
+                      ? []
+                      : [`${key[0]?.toUpperCase()}${key.slice(1)}: ${task[key]}`],
+                  ),
                   ...(blockers.length ? [`Blocked by: ${blockers.join(", ")}`] : []),
                 ].join("\n"),
                 task.description,
@@ -516,29 +535,19 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
       } else {
         const input = taskSchemas.list.parse(raw);
-        const openOnly = input.scope !== "all" && input.open_only;
+        const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
-          const subtree = new Set(
-            phase ? [phase.id, ...descendants(store, phase.id).map((t) => t.id)] : [],
-          );
-          const sessions = new Set(
-            lead ? leadSessions(lead) : who.sessionId ? [who.sessionId] : [],
-          );
           selected = selected.filter(
             (t) =>
-              subtree.has(t.id) ||
-              (t.kind === "task" &&
-                ((t.createdBy !== null && sessions.has(t.createdBy)) ||
-                  (who.pid !== null &&
-                    t.claim?.pid === who.pid &&
-                    t.claim.procStart === who.procStart))),
+              t.createdBy === who.sessionId ||
+              (who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart),
           );
           // A terminal without Claude identity owns the tasks made without a session.
           if (!caller)
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
         } else if (input.scope === "plan")
-          selected = selected.filter((t) => plan !== null && t.plan === plan);
+          selected = selected.filter((t) => plan !== null && t.plan === plan && t.kind !== "task");
         else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter(
             (t) =>
@@ -551,10 +560,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const lines: string[] = [];
       const visit = (task: WorkTask, depth: number) => {
         const count = subtreeProgress(all, task.id);
-        const progress = count.total ? ` · ${count.closed}/${count.total}` : "";
+        const progress =
+          count.total || task.kind === "phase" ? ` · ${count.closed}/${count.total}` : "";
+        const binding =
+          task.kind === "phase"
+            ? ` · agent ${task.agent ?? "none"} · branch ${task.branch ?? "none"}`
+            : "";
         const state = claimState(task, claimLive, who);
         lines.push(
-          `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${state === "another session" ? " (another session)" : ""}`,
+          `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`,
         );
         for (const child of selected.filter((t) => t.parentId === task.id)) visit(child, depth + 1);
       };
