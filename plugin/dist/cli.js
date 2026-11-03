@@ -33633,7 +33633,7 @@ function gateKeyRefusal(sub, key) {
 }
 function issueKeyReason(key) {
   if (key === "issues.readyLabel") {
-    return "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose";
+    return "names the label that marks a GitHub issue a person chose (D67), whose text the kit then never rewrites; only you choose it";
   }
   return "lets text leave this machine for GitHub, which only you switch";
 }
