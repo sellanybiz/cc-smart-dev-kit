@@ -35,6 +35,11 @@ Read its notes for the caller's rulings, then the named files, patterns and near
 
 ## Build and check
 
+Before the first edit, bring your worktree to the commit the brief names as its base:
+`git merge --ff-only <that commit>`. When it cannot fast-forward, stop and report it: never
+build on another base. The brief names no commit: say so in your report, with the commit
+you started from.
+
 1. Read callers before changing shared code. Use the loaded impact-analysis skill without
    dispatching a helper. Use existing code before adding a second implementation.
 2. Keep the phase's steps current in kit tasks. Create missing steps under its task.

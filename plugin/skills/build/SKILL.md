@@ -53,9 +53,10 @@ brief. Allow commits on its own worktree branch, never a push. Require a `Report
 note and a short return: status, commits, test result and concerns. No nested agents,
 self-review, questions to the person or writes outside its named files.
 
-Verify each checkout starts from the intended base. If the worktree tool used a different
-base, have the builder incorporate the required plan commits before implementation and
-record the actual starting commit. Never pretend `HEAD~1` covers a multi-commit phase.
+Claude Code's worktree may start from the default branch, not from your plan branch. So each
+brief names the plan branch and its head commit at launch (`git rev-parse HEAD`), and that
+commit is the phase's `base`. The builder brings its worktree there before its first edit
+(`plugin/agents/builder.md`). Never pretend `HEAD~1` covers a multi-commit phase.
 
 Never wait on work you do not need. While agents run, prepare reviews, update tasks or do
 shared integration work that does not change files a running check reads. Do not poll;
