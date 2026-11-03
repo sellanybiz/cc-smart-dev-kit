@@ -3,6 +3,7 @@ paths:
   - "src/hooks/**"
   - "src/entries/after-merge.ts"
   - "src/entries/agent-usage.ts"
+  - "src/entries/builder-finish.ts"
   - "src/entries/fable-session.ts"
   - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
@@ -46,21 +47,25 @@ subagents, and one that prints no folder makes the creation fail (proved live). 
 WorktreeCreate cannot step aside for a project that did not opt in, and a hook-made worktree
 loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS handling.
 
-**A plugin SubagentStop hook that touches no worktree is fine.** Three are wired, all on the
+**A plugin SubagentStop hook that touches no worktree is fine.** Four are wired, all on the
 subagent's stop alone: `review-record` (which also runs on SubagentStart to note the commit
 and branch a review agent starts on, and records the review of that start commit, on that
 branch, at the stop — commits made while it read count as change after the review,
 `src/workflow/review-cover.ts`), `subagent-background` (one block when a subagent ends its
-turn with background work it started still running, `src/hooks/subagent-background.ts`) and
+turn with background work it started still running, `src/hooks/subagent-background.ts`),
+`builder-finish` (one block when a builder hands back while the task its brief names,
+`Your task: #<n>`, still has open blocking steps, `src/hooks/builder-finish.ts`) and
 `agent-usage` (each subagent's cost on record, `src/hooks/agent-usage.ts`: **machine-wide**,
-the person's spend, so it records with no `cc-smart-dev-kit.json` and outside git). The two
+the person's spend, so it records with no `cc-smart-dev-kit.json` and outside git; and
+`builder-finish` is machine-wide too, since it reads only the person's task list). The two
 project-scoped ones can be silent for a project that never opted in, none removes anything,
 and no two answer the same thing: `review-record` writes the review,
-`subagent-background` may continue the agent, and `agent-usage` only appends a line.
+`subagent-background` continues the agent for its running background work, `builder-finish`
+continues it for its open steps, and `agent-usage` only appends a line.
 `entries.test.ts` fails when `hooks.json` wires
 WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
-list it names (`review-record` on SubagentStart; `review-record`, `subagent-background` and
-`agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
+list it names (`review-record` on SubagentStart; `review-record`, `subagent-background`,
+`builder-finish` and `agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
 feeds stops mistakes, not a same-user process set on getting past it
 (`docs/design/workflow.md` § The review record).
 

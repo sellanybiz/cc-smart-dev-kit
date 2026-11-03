@@ -173,6 +173,8 @@ that, so the plugin ships no worktree hook at all.
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read the Agent guard's way through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
+| `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder`) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
+| `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once** when a phase of a plan this Claude process works on is `in_progress`, no background work runs and the last answer has no `Waiting for:` line; the reason names the phase and the next ready phase to start. Silent on any read it cannot make. § The keep-going guard. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt. The frame's step 6 turns every other hook's ask into a deny the same way (§ While the person is away). |
 
@@ -389,6 +391,83 @@ stdin, and the command answers one `{"id","content"}` line per row (proved offli
 2.1.308, `docs/claude-code-contract.md`). The command names the launcher, never
 `${CLAUDE_PLUGIN_ROOT}`: a plugin's settings file does not expand that variable (proved: the
 literal string ran, exit 127), and the launcher is the one path an update cannot break.
+
+### The keep-going guard
+
+`keep-going` (Stop, `src/hooks/keep-going.ts`) keeps the main session from stalling in
+subagent-driven work. The main session dispatches each phase's builder and hears it hand back.
+A turn that ends while a phase is `in_progress`, with no builder running and no word on what it
+waits for, leaves the plan stalled until the person notices. Subagents fire SubagentStop, not
+Stop, so the hook is about the main session only.
+
+It blocks the stop **once** when all of these hold, cheapest first:
+
+1. The stop is not the one its own block caused (`stop_hook_active` is not `true`).
+2. No background work runs: `background_tasks` is absent or empty. A subagent or a background
+   command wakes the session when it lands (`docs/claude-code-contract.md` § Hooks).
+3. No line of the turn's last answer starts with `Waiting for:` (any case, after a Markdown
+   mark such as `**`, `>` or `-`). The answer is the input's own `last_assistant_message`, else
+   the transcript's last answer (`lastAssistantText`). With neither, the hook cannot tell, and
+   lets the turn end.
+4. A phase of a plan this Claude process works on is `in_progress`. A plan is the process's own
+   when it holds a task the process has claimed (`openPhasesOf`, `src/tasks/work/phases.ts`): the
+   store's claim is the Claude process from `callerOf`, never the session id, so a `/clear`
+   keeps the plan. A phase in progress in another session's plan does not count.
+
+The reason is one short paragraph. It names each phase in progress as `#n subject`, then the
+next ready phase of the same plan — the lowest-numbered phase that is `pending` with no open
+blocker: "Start #m subject now (dispatch its builder), close #n with `task_done`, or end the
+turn with a `Waiting for: <what>` line". With no ready phase it says to close the phase with
+`task_done`, or to record its blocker with `task_note` and end the turn with a `Waiting for:`
+line. The build skill says the same (`plugin/skills/build/SKILL.md`).
+
+**Fail open everywhere.** The task store is the person's own, so the hook needs no
+cc-smart-dev-kit.json and runs in a project with none; a project that runs its own copy lists
+`keep-going` in `ownHooks`. It is silent outside git, with no task store, with no caller (no
+live session record and so no Claude process to hold a claim), and on any read it cannot make.
+A store it cannot read and a broken or too new project file are one stderr line; a crash is the
+frame's one line. `keepGoingWouldBlockAt` gives the same decision to a sibling Stop hook, the
+way `verifyGateWouldBlockAt` does, so the notifier can wait for the stop that really ends the
+turn.
+
+### A builder's hand-back
+
+`builder-finish` (SubagentStop, `src/hooks/builder-finish.ts`) keeps a builder from handing
+back unfinished work. The build skill launches each builder with the exact line
+`Your task: #<n>` in its brief, where #n is the phase's task in the kit's task list
+(`docs/design/tasks.md`), and the builder keeps its steps as tasks under it. At the builder's
+stop the hook:
+
+1. judges only an `agent_type` that ends in `builder` (`cc-smart-dev-kit:builder`);
+2. reads the brief: the first `user` entry of the agent's own transcript
+   (`agent_transcript_path`), from the file's first 1 MiB — never a later line, so a task
+   number the agent wrote or read later does not count;
+3. takes the first line that is exactly `Your task: #<n>`;
+4. reads task #n under the main checkout's project key, the key the task server uses for
+   every worktree of the repository, so a builder in its own worktree
+   (`.claude/worktrees/<name>`) finds the tasks its caller made;
+5. lists the steps that hold the task's done (`holdingUnder`, the same set `task_done`
+   refuses on): open blocking tasks at any depth under it, reached through blocking tasks
+   only. A non-blocking step holds nothing.
+
+With any step open it answers `decision: "block"` once. The reason names each step as
+`#id subject` and says how to close it: finish it and close it with `task_done` (with
+evidence), or drop it with `task_done` outcome `"dropped"` and a note saying why, then hand
+back. There is no `additionalContext`. The stop that block caused carries
+`stop_hook_active: true`, and the hook is silent there: a step that truly cannot close never
+traps the agent, and the caller sees it open in the task list.
+
+It fails open: another agent type, no transcript, no `Your task:` line, no task list yet, or a
+task that is not there is silence; a task list that cannot be read is one stderr line. It is
+**machine-wide**, like `keep-going`: it reads only the person's own task list, never a project
+setting, so it judges the same with no `cc-smart-dev-kit.json` and with a broken or too new
+one. Outside git it is silent. A project that runs its own copy lists the name in `ownHooks`
+(2.0.0 and later).
+
+It never answers what `subagent-background` answers: that hook blocks for background work the
+agent left running, this one for open steps. Both judge the same first stop, and both may
+block it. The next stop carries `stop_hook_active`, so both pass it: a step still open after
+the agent dealt with its background work is not named a second time.
 
 ### The session-escape guard
 

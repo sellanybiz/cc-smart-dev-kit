@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
 import { claimLive } from "./identity";
-import { allTasks, claimState, isBlocked, isOpen, subtreeProgress } from "./queries";
+import { allTasks, claimState, holdingUnder, isBlocked, isOpen, subtreeProgress } from "./queries";
 import type { Who } from "./types";
 export type ReadState<T> =
   | { state: "ready"; value: T }
@@ -96,4 +96,21 @@ export function statusTask(paths: Paths, project: string, who: Who) {
 
 export function hasOwnTask(paths: Paths, project: string, sessionIds: string[]) {
   return readWorkStore(paths, (db) => own(db, project, sessionIds).some(isOpen));
+}
+
+/**
+ * Task `#number` and the open tasks that hold its done (`holdingUnder`: open blocking tasks at
+ * any depth, reached through blocking tasks only), in progress first: what a builder's
+ * hand-back waits on (`src/hooks/builder-finish.ts`). Null when no task has that number.
+ */
+export function holdingSteps(paths: Paths, project: string, number: number) {
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const task = all.find((t) => t.number === number);
+    if (!task) return null;
+    return {
+      number: task.number,
+      open: holdingUnder(all, task.id).map((t) => ({ number: t.number, subject: t.subject })),
+    };
+  });
 }

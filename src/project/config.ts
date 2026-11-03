@@ -24,12 +24,12 @@ export const PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "builder-finish",
   "verify-gate",
+  "keep-going",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
-  "crew-role",
-  "lead-notes",
   "task-start",
 ] as const;
 
@@ -43,7 +43,13 @@ export type PluginHookName = (typeof PLUGIN_HOOK_NAMES)[number];
  * of a project file written for an older plugin, and then every guard would ask on every call.
  * `doctor` says the name can go (`src/cli/project-checks.ts`).
  */
-export const RETIRED_HOOK_NAMES = ["serena-root"] as const;
+export const RETIRED_HOOK_NAMES = [
+  // 0.6.0: the Serena MCP server went.
+  "serena-root",
+  // 2.0.0: crew sessions and leads went, with their two hooks.
+  "crew-role",
+  "lead-notes",
+] as const;
 
 /**
  * The plugin hooks a project can no longer switch off (`HookSpec.alwaysOn`) whose name a
@@ -125,14 +131,20 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
  * file (`WORKTREE_PREFIX_OPTIONAL_SINCE`). The keys are typed from `PLUGIN_HOOK_NAMES`;
  * `config.test.ts` fails when a new hook name has no entry here.
  */
-export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, string>>> = {
+export const OWN_HOOK_NAMES_SINCE: Readonly<
+  Partial<Record<PluginHookName | (typeof RETIRED_HOOK_NAMES)[number], string>>
+> = {
   "subagent-background": "1.0.0",
+  // Retired in 2.0.0, still accepted (RETIRED_HOOK_NAMES): a file that lists one still needs
+  // the release that first took it.
   "crew-role": "1.0.0",
   "lead-notes": "1.0.0",
   "verify-gate": "1.1.0",
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
   "task-start": "1.10.0",
+  "keep-going": "2.0.0",
+  "builder-finish": "2.0.0",
 };
 
 /**

@@ -18,7 +18,9 @@
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
+ * | builder-finish | SubagentStop | machine-wide: it reads no project setting, so a broken file judges the same; one block when a builder hands back while its brief's task (`Your task: #<n>`) has open blocking steps (`builder-finish.ts`) |
  * | verify-gate | Stop | one block when the session changed files and the project's fast check did not run after the last change |
+ * | keep-going | Stop | machine-wide: it reads no project setting, so a broken file judges the same; one block when a phase of this session's plan is in progress, nothing runs and no `Waiting for:` line says the wait (`keep-going.ts`) |
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
@@ -44,9 +46,10 @@ import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
+import { builderFinish, builderFinishAnswer } from "./builder-finish";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
-import { DEFAULT_PROTECTED_BRANCHES, guardVerdict, pushRulesFor, runsGit } from "./git-guard";
+import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import {
   addContext,
   type HookInput,
@@ -64,6 +67,7 @@ import {
   jobRouteOutsideGit,
   routeFacts,
 } from "./job-route";
+import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { messageGuard, messageGuardConfigProblem } from "./message-guard";
@@ -156,15 +160,13 @@ export const gitGuardHook: HookSpec = {
     if (config === null) return SILENT;
     const command = stringField(toolInput(input).command);
     if (command === null) return SILENT;
-    const verdict = guardVerdict(command, cwd, {
+    const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
-      pushRules: pushRulesFor(env, () => autoPushQuestion(context)),
+      autoPushAsk: () => autoPushQuestion(context),
       sharedStash: config.worktrees !== undefined,
       env,
     });
-    // What the guard refuses is denied; everything else is a question.
-    if (verdict.refuse.length > 0) return toolDecision("deny", verdict.refuse.join("\n"));
-    return verdict.ask.length === 0 ? SILENT : toolDecision("ask", verdict.ask.join("\n"));
+    return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
   },
 };
 
@@ -302,6 +304,24 @@ export const subagentBackgroundHook: HookSpec = {
 };
 
 /**
+ * The builder's hand-back (`builder-finish.ts`): a builder subagent never hands back while the
+ * task its brief names (`Your task: #<n>`) still has open blocking steps — it closes or drops
+ * each, then reports. SubagentStop only, and like `subagent-background` it **touches no
+ * worktree**, the one kind of plugin SubagentStop entry `hooks.md` allows; the two never
+ * answer the same thing (that one blocks for running background work, this one for open
+ * steps). **Machine-wide**, like `keep-going`: it reads only the person's own task list, so it
+ * judges the same with no cc-smart-dev-kit.json and with a broken or too new one, and honors
+ * `ownHooks` where a file lists it. Anything it cannot read lets the builder finish.
+ */
+export const builderFinishHook: HookSpec = {
+  name: "builder-finish",
+  events: ["SubagentStop"],
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    builderFinishAnswer(input, event, checkout, context.paths),
+  run: builderFinish,
+};
+
+/**
  * The verification gate (`verify-gate.ts`): Stop, one **block** when this session changed
  * files and no Bash call ran the project's fast check (`checks.fast`) after the last change.
  * It names the command, and it is silent on the stop its own block caused
@@ -315,6 +335,25 @@ export const verifyGateHook: HookSpec = {
   events: ["Stop"],
   onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
   run: verifyGate,
+};
+
+/**
+ * The keep-going guard (`keep-going.ts`): Stop, one **block** when a phase of a plan this Claude
+ * process works on is `in_progress`, no background work runs (`background_tasks`), and the
+ * turn's last answer has no `Waiting for:` line. It names the phase and the next ready phase of
+ * the same plan. It reads no setting and needs no cc-smart-dev-kit.json: the task store is the
+ * person's own, so it runs in a project with no file and honors `ownHooks` where there is one.
+ * Silent outside git (the frame's default), on the stop its own block caused
+ * (`stop_hook_active`), and on any read it cannot make. A broken or too new file changes
+ * nothing: the hook reads no setting of it, so it judges the same way
+ * (`.claude/rules/hooks-guards.md` § Fail closed).
+ */
+export const keepGoingHook: HookSpec = {
+  name: KEEP_GOING,
+  events: ["Stop"],
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    event === "Stop" ? keepGoingAnswer(input, checkout, context.paths, context.env) : SILENT,
+  run: keepGoing,
 };
 
 /**
@@ -541,7 +580,9 @@ export const HOOKS: readonly HookSpec[] = [
   afterMergeHook,
   reviewRecordHook,
   subagentBackgroundHook,
+  builderFinishHook,
   verifyGateHook,
+  keepGoingHook,
   agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,
@@ -585,7 +626,9 @@ export const USER_HOOKS: readonly string[] = [
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
  * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
  * goes around the limits set for the session), `task-start` (the session's own task list),
- * `tier-view` (what each subagent tier runs), `user-away` (whether the person can answer) and
+ * `keep-going` (whether the session's own plan has a phase in progress), `builder-finish`
+ * (whether a builder's task still has open steps), `tier-view` (what each
+ * subagent tier runs), `user-away` (whether the person can answer) and
  * `agent-usage` (each subagent's cost on record: the person's spend, not a project's policy). `doctor`'s project checks never warn
  * about a project hook that runs beside one of these: it is the person's own business, not a
  * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
@@ -593,6 +636,8 @@ export const USER_HOOKS: readonly string[] = [
 export const MACHINE_WIDE_HOOKS: readonly string[] = [
   ...USER_HOOKS,
   "task-start",
+  "keep-going",
+  "builder-finish",
   "agent-guard",
   "fable-session",
   "tier-view",

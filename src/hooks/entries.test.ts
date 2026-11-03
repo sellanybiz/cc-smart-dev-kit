@@ -192,8 +192,9 @@ esac
     // own worktrees in every project. A `SubagentStop` hook is allowed only when it touches no
     // worktree, so the SubagentStop entries here are checked by name and nothing else:
     // `review-record` (the merge gate's record), `subagent-background` (a subagent's
-    // hand-back with its own background work still running) and `agent-usage` (each subagent's
-    // cost on record). SubagentStart is `review-record`'s own start (it notes the commit a
+    // hand-back with its own background work still running), `builder-finish` (a builder's
+    // hand-back with its brief's task still holding open blocking steps) and `agent-usage`
+    // (each subagent's cost on record). SubagentStart is `review-record`'s own start (it notes the commit a
     // review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
       "Notification",
@@ -211,12 +212,13 @@ esac
     ]);
     const bundlesFor = (event: string) =>
       wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
-    expect(bundlesFor("Stop")).toEqual(["notify", "fable-session", "verify-gate"]);
+    expect(bundlesFor("Stop")).toEqual(["notify", "fable-session", "verify-gate", "keep-going"]);
     expect(bundlesFor("SessionStart")).toContain("task-start");
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([
       "review-record",
       "subagent-background",
+      "builder-finish",
       "agent-usage",
     ]);
   });

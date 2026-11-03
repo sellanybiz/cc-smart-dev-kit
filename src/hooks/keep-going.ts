@@ -1,0 +1,140 @@
+/**
+ * Stop: the main session does not end a turn with a phase of its plan still in progress and
+ * nothing that will wake it.
+ *
+ * In subagent-driven work the main session dispatches each phase's builder and hears it hand
+ * back. A turn that ends while a phase is `in_progress`, with no builder running and no word on
+ * what it waits for, leaves the plan stalled until the person notices. So the hook blocks such a
+ * stop **once**, with one plain paragraph: the phase in progress, and the next ready phase of
+ * the same plan to start now — or how to close the phase, or record why it waits. The build
+ * skill says the same (`plugin/skills/build/SKILL.md`).
+ *
+ * It blocks only when all of these hold, cheapest first:
+ *
+ * 1. **Not the stop its own block caused** (`stop_hook_active`): never a second block.
+ * 2. **No background work** (`background_tasks` absent or empty): a subagent or a background
+ *    command still running wakes the session when it lands (`docs/claude-code-contract.md`).
+ * 3. **No `Waiting for:` line** in the turn's last answer: the input's own
+ *    `last_assistant_message`, else the transcript's last answer (`lastAssistantText`). With
+ *    neither, the hook cannot tell, and lets the turn end.
+ * 4. **A phase in progress** of a plan this Claude process works on: a plan that holds a task
+ *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). Another
+ *    session's plan is not this one's business.
+ *
+ * **Fail open everywhere.** It needs no `cc-smart-dev-kit.json` (the task store is the person's
+ * own), and is silent outside git, with no task store, with no caller, and on any read it
+ * cannot make. A store it cannot read and a broken or too-new project file are one stderr line;
+ * a crash is the frame's one line. A reminder must never hold a person's work.
+ *
+ * **`notify` may ask this module's decision** (`keepGoingWouldBlockAt`), as it asks
+ * `verify-gate`'s: a stop this hook blocks is not the end of the turn.
+ */
+import { COMMAND } from "../build-info/names";
+import { type CliPaths, cliPaths } from "../cli/paths";
+import { locateCheckout, ownHooksOf, type Project } from "../project/resolve";
+import { projectKey } from "../tasks/context";
+import { TASK_TOOL } from "../tasks/words";
+import { callerOf } from "../tasks/work/identity";
+import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
+import { type HookInput, type HookResult, SILENT, stringField } from "./io";
+import type { Env, HookContext } from "./run";
+import { lastAssistantText } from "./transcript";
+
+/** The hook's name: its bundle, its `ownHooks` entry, its stderr prefix. */
+export const KEEP_GOING = "keep-going";
+
+/** The words a line starts with when the turn says what it waits on. */
+export const WAIT_MARK = "Waiting for:";
+
+/**
+ * True when a line of the answer starts with `Waiting for:` (any case), after the marks a
+ * Markdown line may start with: emphasis, a quote, a list dash.
+ */
+export function waitsOnSomething(said: string): boolean {
+  const mark = WAIT_MARK.toLowerCase();
+  return said.split(/\r?\n/).some((line) =>
+    line
+      .trim()
+      .replace(/^[*_>\- ]+/, "")
+      .toLowerCase()
+      .startsWith(mark),
+  );
+}
+
+/** The turn's last answer: the input's own field, else the transcript's; null when neither. */
+function lastSaid(input: HookInput): string | null {
+  if (typeof input.last_assistant_message === "string") return input.last_assistant_message;
+  const transcript = stringField(input.transcript_path);
+  return transcript === null ? null : lastAssistantText(transcript);
+}
+
+function named(phase: PhaseRef): string {
+  return `#${phase.number} ${phase.subject}`;
+}
+
+/** The block's reason: the phases in progress, then the next ready phase or how to close. */
+export function keepGoingReason(
+  inProgress: readonly PhaseRef[],
+  ready: readonly PhaseRef[],
+): string {
+  const one = inProgress.length === 1;
+  const refs = inProgress.map((phase) => `#${phase.number}`).join(", ");
+  const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
+  const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
+  const next = ready[0];
+  return next === undefined
+    ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.`
+    : `${head} Start ${named(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
+}
+
+/**
+ * The answer at a Stop of the project found (`root`, `mainCheckout`): the block, one stderr
+ * line for a store it cannot read, or silence.
+ */
+export function keepGoingAnswer(
+  input: HookInput,
+  project: Pick<Project, "mainCheckout" | "root">,
+  paths: CliPaths,
+  env: Env,
+): HookResult {
+  if (input.stop_hook_active === true) return SILENT;
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return SILENT;
+  const said = lastSaid(input);
+  if (said === null || waitsOnSomething(said)) return SILENT;
+  const cwd = stringField(input.cwd);
+  if (cwd === null) return SILENT;
+  const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir });
+  // A claim is a Claude process: a caller with no process holds none.
+  if (who === null || who.pid === null) return SILENT;
+  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), who);
+  if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
+  if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
+  return {
+    stdout: JSON.stringify({
+      decision: "block",
+      reason: keepGoingReason(view.value.inProgress, view.value.ready),
+    }),
+  };
+}
+
+export function keepGoing(context: HookContext): HookResult {
+  if (context.event !== "Stop") return SILENT;
+  return keepGoingAnswer(context.input, context.project, context.paths, context.env);
+}
+
+/**
+ * `keepGoing`'s decision at the input's own folder, read the way the frame reads it: the
+ * project's `ownHooks` first; its file is never read (a broken one judges the same). For a
+ * sibling Stop hook (the notifier). Never throws: what cannot be read blocks nothing.
+ */
+export function keepGoingWouldBlockAt(input: HookInput, env: Env): boolean {
+  const cwd = stringField(input.cwd);
+  if (cwd === null) return false;
+  try {
+    const checkout = locateCheckout(cwd, { env });
+    if (checkout === null || ownHooksOf(checkout).includes(KEEP_GOING)) return false;
+    return keepGoingAnswer(input, checkout, cliPaths(env), env).stdout !== undefined;
+  } catch {
+    return false;
+  }
+}
