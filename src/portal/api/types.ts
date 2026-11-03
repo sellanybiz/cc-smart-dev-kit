@@ -10,12 +10,7 @@ import {
 } from "../../gateway/history-read";
 import type { BreakerRecord, FallbackRecord, LimitRecord } from "../../gateway/limit-state";
 import type { GuardAsk } from "../../hooks/ask-log";
-import type {
-  JobCeilingState,
-  JobsAnswer,
-  JobWeightState,
-  JobWeightsState,
-} from "../../jobs/status";
+import type { JobsAnswer } from "../../jobs/status";
 import type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
@@ -67,10 +62,7 @@ export type {
   FlowReport,
   GuardAsk,
   HistoryKeys,
-  JobCeilingState,
   JobsAnswer,
-  JobWeightState,
-  JobWeightsState,
   LastCheck,
   LimitRecord,
   LimitRow,
@@ -395,12 +387,24 @@ export interface WorkTaskBlocker {
   subject: string;
 }
 
+/** A phase's steps (`phase-steps.ts`): its blocking work done, of its blocking work. */
+export interface WorkTaskSteps {
+  done: number;
+  total: number;
+}
+
 /** One work task in the Tasks tab's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
 export interface WorkTaskNode {
+  /** The subagent that works on it (its id or name), as the main session set it; null when none. */
+  agent: null | string;
+  /** The commit its work started from; null when none was set. */
+  base: null | string;
   /** Open, and one of `blockedBy` is still open: it cannot start or be done yet. */
   blocked: boolean;
   /** The tasks it waits for, in number order, closed ones too. */
   blockedBy: WorkTaskBlocker[];
+  /** The branch its work is on; null when none was set. */
+  branch: null | string;
   children: WorkTaskNode[];
   /** Its whole subtree: how many tasks are closed (done or dropped), of how many. */
   closed: number;
@@ -414,11 +418,15 @@ export interface WorkTaskNode {
   /** `#12`: the project's own number for it. */
   ref: string;
   status: WorkTaskStatus;
+  /** A phase's steps; null for a plan or a task, and for a phase the store could not count. */
+  steps: null | WorkTaskSteps;
   subject: string;
   total: number;
   type: WorkTaskType;
   /** When it last changed (ISO 8601). */
   updatedAt: string;
+  /** The worktree its work is in (an absolute path); null when none was set. */
+  worktree: null | string;
 }
 
 /** One open project task file (`src/tasks/project/format.ts`), as the Tasks tab lists it. */

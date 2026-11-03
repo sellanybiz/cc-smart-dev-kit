@@ -24,13 +24,8 @@ function world(options: { now?: () => number; recent?: () => unknown[]; routerUp
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
   let jobs: JobsAnswer = {
-    admission: { freeGb: 20, startFreeGb: 4 },
-    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-    lightJobs: { slots: 2, used: 0 },
-    memoryGb: 32,
     route: { on: false, project: null, source: "default" },
     stores: [],
-    weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
   };
   const sources = createLiveSources({
     fetch: async () =>
@@ -155,16 +150,8 @@ describe("the live stream's sources", () => {
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
     world1.setJobs({
-      admission: { freeGb: 20, startFreeGb: 4 },
-      ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-      lightJobs: { slots: 2, used: 0 },
-      memoryGb: 32,
       route: { on: false, project: null, source: "default" },
       stores: [],
-      weights: {
-        cpu: { value: 20 },
-        io: { value: null, why: "the io controller is not delegated" },
-      },
     });
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);

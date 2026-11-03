@@ -273,27 +273,16 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
   };
 }
 
-/** The heavy-job queue: three held jobs of three slots, one waiting test run; nothing at all when empty. */
+/** The heavy-job queue: the machine's one slot held by a type check, three jobs waiting; nothing at all when empty. */
 export function jobsData(now: number, empty: boolean): JobsData {
   const folder = "/home/user/code/my-app/.claude/worktrees/b6b-live-stream";
   return {
-    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-    memoryGb: 32,
     route: { on: !empty, project: null, source: empty ? "default" : "personal" },
-    weights: empty
-      ? {
-          cpu: { value: null, why: "the CPU controller is off for this user's services" },
-          io: { value: null, why: "the io controller is off for this user's services" },
-        }
-      : {
-          cpu: { value: 50 },
-          io: { value: null, why: "a job runs at systemd's own weight (100)." },
-        },
     stores: [
       {
         where: "machine",
-        slots: 3,
-        used: empty ? 0 : 3,
+        slots: 1,
+        used: empty ? 0 : 1,
         held: empty
           ? []
           : [
@@ -304,8 +293,12 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockSessionName("B6b", "live-stream"),
                 since: now - 2 * MINUTE - 10_000,
                 pid: 48211,
-                lane: "heavy",
+                slot: true,
               },
+            ],
+        waiting: empty
+          ? []
+          : [
               {
                 kind: "build",
                 command: "next build",
@@ -313,7 +306,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockSessionName("B6b", "live-stream"),
                 since: now - MINUTE,
                 pid: 48302,
-                lane: "heavy",
+                slot: true,
               },
               {
                 kind: "test",
@@ -322,12 +315,8 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockSessionName("D1", "docs"),
                 since: now - 30_000,
                 pid: 48350,
-                lane: "heavy",
+                slot: true,
               },
-            ],
-        waiting: empty
-          ? []
-          : [
               {
                 kind: "test",
                 command: "bun test",
@@ -335,7 +324,7 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 user: mockSessionName("C2", "skills-agents"),
                 since: now - 20_000,
                 pid: 48390,
-                lane: "heavy",
+                slot: true,
               },
             ],
       },

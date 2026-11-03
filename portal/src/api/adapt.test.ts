@@ -452,63 +452,36 @@ describe("the B6d facts", () => {
     expect(machineOf({ ...answer, doctor: null }, facts).doctorAt).toBe(null);
   });
 
-  test("the heavy jobs: the CPU and I/O weights travel, or why one is not set", () => {
-    const answer: JobsAnswer = {
-      admission: { freeGb: 20, startFreeGb: 4 },
-      ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-      lightJobs: { slots: 2, used: 0 },
-      memoryGb: 32,
-      route: { on: false, project: null, source: "default" },
-      stores: [],
-      weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is off" } },
-    };
-    expect(jobsOf(answer).weights).toEqual({
-      cpu: { value: 20 },
-      io: { value: null, why: "the io controller is off" },
-    });
-  });
-
-  test("the heavy jobs: slots in use, who holds one, and the memory ceiling travel", () => {
+  test("the heavy jobs: the route, the slot in use, who holds it and who waits travel", () => {
     const held = {
       command: "tsc --noEmit",
       folder: "/home/user/my-app",
       kind: "tsc",
-      lane: "heavy" as const,
       pid: 41,
       since: "2026-10-26T10:00:00.000Z",
       slot: true,
       user: "host-a",
     };
     const answer: JobsAnswer = {
-      admission: { freeGb: null, startFreeGb: 4 },
-      ceiling: { gb: null, why: "Windows has no memory group" },
-      lightJobs: { slots: 2, used: 0 },
-      memoryGb: 32,
       route: { on: true, project: null, source: "personal" },
       stores: [
         {
-          held: [
-            held,
-            { ...held, exclusive: "image", lane: "none", pid: 42, slot: false },
-            { ...held, kind: "install", lane: "light", pid: 44 },
-          ],
-          slots: 3,
+          held: [held, { ...held, exclusive: "image", pid: 42, slot: false }],
+          slots: 1,
           used: 1,
           waiting: [{ ...held, pid: 43, since: null }],
           where: "machine",
         },
       ],
-      weights: { cpu: { value: null }, io: { value: null } },
     };
     const data = jobsOf(answer);
-    expect(data.ceiling).toEqual({ gb: null, why: "Windows has no memory group" });
+    expect(Object.keys(data).sort()).toEqual(["route", "stores"]);
     expect(data.route).toEqual({ on: true, project: null, source: "personal" });
     const [store] = data.stores;
-    expect([store?.slots, store?.used]).toEqual([3, 1]);
-    expect(store?.held.map((job) => [job.pid, job.lane, job.exclusive])).toEqual([
-      [41, "heavy", undefined],
-      [42, "none", true],
-      [44, "light", undefined],
+    expect([store?.slots, store?.used]).toEqual([1, 1]);
+    expect(store?.held.map((job) => [job.pid, job.slot, job.exclusive])).toEqual([
+      [41, true, undefined],
+      [42, false, true],
     ]);
     expect(store?.held[0]?.since).toBe(Date.parse("2026-10-26T10:00:00.000Z"));
     expect(store?.waiting[0]?.since).toBe(null);

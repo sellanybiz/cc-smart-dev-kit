@@ -5,7 +5,7 @@ import { portalClient } from "@/api/client";
 import { type Resource, useResource } from "@/api/hooks";
 import type { JobEntry, JobStore, JobsData } from "@/api/types";
 import { EmptyState } from "@/components/states";
-import { StatusMark, TonePill } from "@/components/status";
+import { TonePill } from "@/components/status";
 import {
   Card,
   CardAction,
@@ -44,14 +44,8 @@ function useNow(everyMs: number): number {
   return now;
 }
 
-const gb = (value: number) => `${value.toLocaleString("en", { maximumFractionDigits: 1 })} GB`;
-
-/** What a job holds, by its lane: the words of the table's Holds column. */
-const HOLDS: Record<JobEntry["lane"], string> = {
-  heavy: "a heavy slot",
-  light: "a light slot",
-  none: "a name",
-};
+/** What a job holds: the heavy slot, or a name only (`--exclusive`). The table's Holds column. */
+const holdsOf = (job: JobEntry) => (job.slot ? "the heavy slot" : "a name");
 
 const slotsOf = (count: number) => `${count} ${count === 1 ? "slot" : "slots"}`;
 
@@ -106,7 +100,7 @@ function JobRows({
               {job.exclusive === true && <TonePill tone="info">alone</TonePill>}
             </span>
           </TableCell>
-          <TableCell>{HOLDS[job.lane]}</TableCell>
+          <TableCell>{holdsOf(job)}</TableCell>
           <TableCell className="min-w-40 font-mono text-xs whitespace-normal wrap-anywhere">
             {job.command}
           </TableCell>
@@ -127,42 +121,6 @@ function JobRows({
         </TableRow>
       ))}
     </>
-  );
-}
-
-/**
- * How a heavy job shares the machine under load: the CPU and disk I/O weights its scope gets
- * when `jobs.json` asks for them (systemd's `CPUWeight` and `IOWeight`; a unit that sets none
- * has 100, which is the default here), or why one is not set on this machine.
- */
-function Weights({ weights }: { weights: JobsData["weights"] }) {
-  const rows: { label: string; weight: JobsData["weights"]["cpu"] }[] = [
-    { label: "CPU", weight: weights.cpu },
-    { label: "Disk I/O", weight: weights.io },
-  ];
-  return (
-    <ul className="flex flex-col gap-1">
-      {rows.map(({ label, weight }) => (
-        <li key={label}>
-          <StatusMark tone={weight.value === null ? "info" : "ok"}>
-            {weight.value === null ? (
-              <>
-                {label}: no weight is set ({weight.why ?? "the machine does not say why"}).
-              </>
-            ) : (
-              <>
-                {label} weight <span className="tabular-nums">{weight.value}</span>
-                {weight.value === "idle"
-                  ? ": a heavy job gets the CPU only when nothing else wants it."
-                  : weight.value < 100
-                    ? ": under load a job gives way to the rest of the machine, which runs at 100."
-                    : ", the same as or above the rest of the machine (100)."}
-              </>
-            )}
-          </StatusMark>
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -207,7 +165,7 @@ export function HeavyJobsCard() {
       <CardHeader>
         <CardTitle>Heavy jobs</CardTitle>
         <CardDescription>
-          Type checks, builds and test runs share a few slots: a job waits until a slot is free.
+          Type checks, builds and test runs share one slot: a job waits until it is free.
         </CardDescription>
         {data !== null && (
           <CardAction>
@@ -271,18 +229,7 @@ export function HeavyJobsCard() {
         )}
         {data !== null && (
           <div className="flex flex-col gap-1.5 text-xs text-muted-foreground">
-            <p>
-              This machine has {gb(data.memoryGb)}.{" "}
-              {data.ceiling.gb === null
-                ? `No memory ceiling for heavy jobs: ${data.ceiling.why}`
-                : `All heavy jobs together may use ${gb(data.ceiling.gb)} (${data.ceiling.why}); a job over it is stopped, and the rest stays free.`}
-            </p>
-            <p>
-              How many heavy jobs run at once is your setting:{" "}
-              <code className="font-mono">{KIT_NAME} job set max-jobs &lt;n&gt;</code>.
-            </p>
             <RouteLine route={data.route} />
-            <Weights weights={data.weights} />
           </div>
         )}
       </CardContent>

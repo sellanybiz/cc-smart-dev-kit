@@ -650,12 +650,23 @@ export interface WorkTaskBlocker {
   subject: string;
 }
 
+/** A phase's steps: its blocking work done, of its blocking work (a dropped step left out). */
+export interface WorkTaskSteps {
+  done: number;
+  total: number;
+}
+
 /** One work task in the Tasks tab's tree. */
 export interface WorkTaskNode {
+  /** The subagent working on it (id or name); null when none was set. */
+  agent: null | string;
+  /** The commit its work started from. */
+  base: null | string;
   /** Open, and one of `blockedBy` is still open. */
   blocked: boolean;
   /** In number order, closed ones too. */
   blockedBy: WorkTaskBlocker[];
+  branch: null | string;
   children: WorkTaskNode[];
   /** Its whole subtree: closed (done or dropped) of total. */
   closed: number;
@@ -667,11 +678,15 @@ export interface WorkTaskNode {
   /** `#12`. */
   ref: string;
   status: WorkTaskStatus;
+  /** A phase's steps; null for a plan or a task. */
+  steps: null | WorkTaskSteps;
   subject: string;
   total: number;
   type: WorkTaskType;
   /** ISO 8601. */
   updatedAt: string;
+  /** The worktree's absolute path. */
+  worktree: null | string;
 }
 
 /** One open project task file. */
@@ -858,27 +873,11 @@ export interface JobHolderItem {
   exclusive?: string;
   folder: string;
   kind: string;
-  lane: "heavy" | "light" | "none";
   pid: number;
   since: null | string;
   slot: boolean;
   user: string;
   unknown?: true;
-}
-
-export interface JobCeilingState {
-  gb: null | number;
-  why: string;
-}
-
-export interface JobWeightState {
-  value: null | number | "idle";
-  why?: string;
-}
-
-export interface JobWeightsState {
-  cpu: JobWeightState;
-  io: JobWeightState;
 }
 
 /** `src/jobs/status.ts` › `JobRouteState`: the resolved job route, and where it comes from. */
@@ -889,10 +888,6 @@ export interface JobRouteState {
 }
 
 export interface JobsAnswer {
-  admission: { freeGb: null | number; startFreeGb: number };
-  ceiling: JobCeilingState;
-  lightJobs: { slots: number; used: number };
-  memoryGb: number;
   route: JobRouteState;
   stores: {
     held: JobHolderItem[];
@@ -902,7 +897,6 @@ export interface JobsAnswer {
     waiting: JobHolderItem[];
     where: string;
   }[];
-  weights: JobWeightsState;
 }
 
 // ── The request history (H1) ───────────────────────────────────────────────────────────

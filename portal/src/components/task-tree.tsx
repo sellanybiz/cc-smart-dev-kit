@@ -3,7 +3,7 @@
 import type { WorkTaskNode } from "@/api/types";
 import { TonePill } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
-import { isClosed, type ShownTask } from "@/lib/tasks";
+import { isClosed, ledgerOf, type ShownTask } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 
 /** Each status's glyph, its colour and its words: the glyph's shape carries it without colour. */
@@ -25,13 +25,24 @@ export const LAYER: Record<WorkTaskNode["layer"], { words: string; text: string 
   subtask: { words: "Subtask", text: "text-[0.8125rem]" },
 };
 
-/** How far a subtree is: a thin bar and `closed/total`. The native meter speaks; the SVG draws. */
-export function Progress({ closed, total }: { closed: number; total: number }) {
+/**
+ * How far a subtree is: a thin bar and `closed/total`. The native meter speaks; the SVG draws.
+ * With `steps`, it counts a phase's steps done instead (G3), and says so.
+ */
+export function Progress({
+  closed,
+  total,
+  steps = false,
+}: {
+  closed: number;
+  total: number;
+  steps?: boolean;
+}) {
   const share = total === 0 ? 0 : Math.min(1, closed / total);
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
       <meter className="sr-only" min={0} max={total} value={closed}>
-        {closed} of {total} closed
+        {closed} of {total} {steps ? "steps done" : "closed"}
       </meter>
       <svg className="h-1.5 w-12" aria-hidden="true" preserveAspectRatio="none">
         <rect width="100%" height="100%" rx="3" className="fill-muted" />
@@ -78,16 +89,53 @@ function BlockedBy({ blockers }: { blockers: WorkTaskNode["blockedBy"] }) {
 }
 
 /**
+ * A phase's ledger (G3), its own line under the subject: the steps first, then the agent, branch,
+ * worktree and base the main session set, each only when set. The steps are always there on a
+ * counted phase, so a field that arrives joins a line already drawn: nothing below it moves.
+ * A long value is cut to one line; its title, and for the worktree a screen reader, hold all of it.
+ */
+function PhaseLedger({ task }: { task: WorkTaskNode }) {
+  const fields = ledgerOf(task);
+  if (task.steps === null && fields.length === 0) return null;
+  return (
+    <dl
+      aria-label={`Ledger of phase ${task.phase ?? task.ref}`}
+      className="flex min-w-0 basis-full flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground"
+    >
+      {task.steps !== null && (
+        <div className="inline-flex items-center gap-1.5">
+          <dt>steps</dt>
+          <dd className="leading-5">
+            {task.steps.total === 0 ? (
+              "no steps yet"
+            ) : (
+              <Progress closed={task.steps.done} total={task.steps.total} steps />
+            )}
+          </dd>
+        </div>
+      )}
+      {fields.map((field) => (
+        <div key={field.key} className="inline-flex min-w-0 max-w-full items-baseline gap-1">
+          <dt>{field.label}</dt>
+          <dd className="min-w-0 max-w-64 truncate font-mono text-foreground" title={field.full}>
+            {field.shown}
+            {field.key === "worktree" && <span className="sr-only">, at {field.full}</span>}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/**
  * What a row says beside its subject: its plan or phase, non-blocking, left open under a closed
  * parent, what blocks it, and how far its subtree is. Blocking is the default and says nothing.
+ * A counted phase says how far it is in its ledger's steps instead (`PhaseLedger`).
  */
 export function TaskMarks({ task, leftOpen }: { task: WorkTaskNode; leftOpen: boolean }) {
+  const progress = task.steps === null && task.total > 0;
   const marks =
-    task.kind !== "task" ||
-    task.type === "non-blocking" ||
-    leftOpen ||
-    task.blocked ||
-    task.total > 0;
+    task.kind !== "task" || task.type === "non-blocking" || leftOpen || task.blocked || progress;
   if (!marks) return null;
   return (
     <span className="flex flex-wrap items-center gap-2">
@@ -104,7 +152,7 @@ export function TaskMarks({ task, leftOpen }: { task: WorkTaskNode; leftOpen: bo
       )}
       {leftOpen && <TonePill tone="info">left open</TonePill>}
       {task.blocked && <BlockedBy blockers={task.blockedBy} />}
-      {task.total > 0 && <Progress closed={task.closed} total={task.total} />}
+      {progress && <Progress closed={task.closed} total={task.total} />}
     </span>
   );
 }
@@ -141,6 +189,7 @@ function TaskRow({ shown, parentClosed }: { shown: ShownTask; parentClosed: bool
             {task.subject}
           </span>
           <TaskMarks task={task} leftOpen={parentClosed && !closed} />
+          {task.layer === "phase" && <PhaseLedger task={task} />}
         </div>
       </div>
       {shown.children.length > 0 && (

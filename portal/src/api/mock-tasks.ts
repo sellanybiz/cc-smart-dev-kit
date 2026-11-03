@@ -10,12 +10,26 @@ function iso(ms: number): string {
 }
 
 type NodeExtra = Partial<
-  Pick<WorkTaskNode, "blocked" | "blockedBy" | "kind" | "phase" | "plan" | "type">
+  Pick<
+    WorkTaskNode,
+    | "agent"
+    | "base"
+    | "blocked"
+    | "blockedBy"
+    | "branch"
+    | "kind"
+    | "phase"
+    | "plan"
+    | "type"
+    | "worktree"
+  >
 >;
 
 /**
  * A node, its subtree counted from its children the way the server counts (done or dropped),
  * and its children's layers worked out the way the store does: a task under a task is a subtask.
+ * A phase's steps are counted the way `src/portal/api/phase-steps.ts` counts them: the blocking
+ * work reached through blocking work, a dropped step left out.
  */
 function node(
   number: number,
@@ -28,9 +42,15 @@ function node(
   const kind = extra.kind ?? "task";
   const under = (one: WorkTaskNode): WorkTaskNode[] => [one, ...one.children.flatMap(under)];
   const all = children.flatMap(under);
+  const blocking = (one: WorkTaskNode): WorkTaskNode[] =>
+    one.type === "blocking" ? [one, ...one.children.flatMap(blocking)] : [];
+  const steps = children.flatMap(blocking).filter((one) => one.status !== "dropped");
   return {
+    agent: extra.agent ?? null,
+    base: extra.base ?? null,
     blocked: extra.blocked ?? false,
     blockedBy: extra.blockedBy ?? [],
+    branch: extra.branch ?? null,
     children: children.map((child) =>
       kind === "task" && child.kind === "task" ? { ...child, layer: "subtask" } : child,
     ),
@@ -42,10 +62,15 @@ function node(
     plan: extra.plan ?? null,
     ref: `#${number}`,
     status,
+    steps:
+      kind === "phase"
+        ? { done: steps.filter((one) => one.status === "done").length, total: steps.length }
+        : null,
     subject,
     total: all.length,
     type: extra.type ?? "blocking",
     updatedAt: iso(updatedAt),
+    worktree: extra.worktree ?? null,
   };
 }
 
@@ -78,7 +103,16 @@ function storePhase(now: number): WorkTaskNode {
       node(6, "Migrate the old records in place", "dropped", now - 20 * MINUTE),
       prove,
     ],
-    { kind: "phase", phase: "K", plan: "master-plan" },
+    {
+      // Every field of the ledger set: the agent building it, on its own branch and worktree.
+      agent: "a3f9c2e81b7d4056e",
+      base: "4c1d8e9a7b2f3c6d5e4f3a2b1c0d9e8f7a6b5c4d",
+      branch: "worktree-agent-a3f9c2e81b7d4056e",
+      kind: "phase",
+      phase: "K",
+      plan: "master-plan",
+      worktree: "/home/user/code/my-app/.claude/worktrees/agent-a3f9c2e81b7d4056e",
+    },
   );
 }
 
@@ -97,10 +131,23 @@ function fullTree(now: number): WorkTaskNode[] {
         blockedBy: [schema, prove].flatMap((one) => (one === undefined ? [] : [blocker(one)])),
       }),
     ],
-    { kind: "phase", phase: "L", plan: "master-plan" },
+    // Some of the ledger: an agent named and its branch, no worktree or base yet.
+    {
+      agent: "docs-writer",
+      branch: "docs/store-page",
+      kind: "phase",
+      phase: "L",
+      plan: "master-plan",
+    },
   );
+  // None of the ledger: a phase laid out and not started, with no steps yet.
+  const release = node(16, "Release: ship the store", "pending", now - 55 * MINUTE, [], {
+    kind: "phase",
+    phase: "M",
+    plan: "master-plan",
+  });
   return [
-    node(1, "master-plan", "in_progress", now - 4 * MINUTE, [phase, docs], {
+    node(1, "master-plan", "in_progress", now - 4 * MINUTE, [phase, docs, release], {
       kind: "plan",
       plan: "master-plan",
     }),

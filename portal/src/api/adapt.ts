@@ -441,12 +441,10 @@ export function jobsOf(answer: JobsAnswer): JobsData {
     kind: item.kind,
     pid: item.pid,
     since: item.since === null ? null : Date.parse(item.since),
-    lane: item.lane,
+    slot: item.slot,
     user: item.user,
   });
   return {
-    ceiling: answer.ceiling,
-    memoryGb: answer.memoryGb,
     route: answer.route,
     stores: answer.stores.map((store) => ({
       held: store.held.map((item) => ({
@@ -459,7 +457,6 @@ export function jobsOf(answer: JobsAnswer): JobsData {
       waiting: store.waiting.map(entry),
       where: store.where,
     })),
-    weights: answer.weights,
   };
 }
 

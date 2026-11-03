@@ -3979,8 +3979,8 @@ describe("the JSON API", () => {
       expect(body.error).toBe(null);
       expect((body.slots as unknown[]).length).toBe(5);
       expect(body.switches).toMatchObject({ gateway: false, judge: false, models: false });
-      // Slots in use of the slots there are, and who waits: three slots by default.
-      expect(body.jobs).toEqual({ slots: 3, used: 0, waiting: 0 });
+      // Slots in use of the slots there are, and who waits: one heavy slot per machine.
+      expect(body.jobs).toEqual({ slots: 1, used: 0, waiting: 0 });
       expect((body.router as { up: boolean }).up).toBe(true);
       // The planted key never reaches any answer.
       expect(response.body).not.toContain(KEY);
@@ -4114,19 +4114,12 @@ describe("the JSON API", () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
-      mkdirSync(join(world.home, ".config", "cc-smart-dev-kit"), { recursive: true });
-      writeFileSync(
-        join(world.home, ".config", "cc-smart-dev-kit", "jobs.json"),
-        `${JSON.stringify({ budgetGb: 10 })}\n`,
-      );
       const jobs = join(world.home, ".local", "share", "cc-smart-dev-kit", "jobs");
       mkdirSync(join(jobs, "leases"), { recursive: true });
       mkdirSync(join(jobs, "tickets"), { recursive: true });
       writeFileSync(join(jobs, "leases", "job-1.json"), holderRecord(4, "bunx tsc --noEmit"));
       writeFileSync(join(jobs, "tickets", "job-2.json"), holderRecord(3, "next build"));
       const body = JSON.parse((await world.call("/api/jobs")).body) as {
-        ceiling: { gb: null | number; why: string };
-        memoryGb: number;
         stores: {
           held: Record<string, unknown>[];
           slots: number;
@@ -4135,22 +4128,18 @@ describe("the JSON API", () => {
           where: string;
         }[];
       };
-      // The ceiling is the budget the file names where this machine makes a memory group, and
-      // none (with its reason) where it does not: which one depends on the machine under test.
-      expect([null, 10]).toContain(body.ceiling.gb);
-      expect(body.ceiling.why.length).toBeGreaterThan(0);
-      expect(typeof body.memoryGb).toBe("number");
+      // The route and the machine's one store: no memory, ceiling, weight or admission field.
+      expect(Object.keys(body).sort()).toEqual(["route", "stores"]);
       expect(body.stores).toHaveLength(1);
       expect(body.stores[0]?.where).toBe("machine");
-      // One slot of the three default ones is in use; the waiting job holds none yet.
-      expect(body.stores[0]?.slots).toBe(3);
+      // The machine's one heavy slot is in use; the waiting job holds none yet.
+      expect(body.stores[0]?.slots).toBe(1);
       expect(body.stores[0]?.used).toBe(1);
       expect(body.stores[0]?.held).toEqual([
         {
           command: "bunx tsc --noEmit",
           folder: "/home/user/my-app",
           kind: "build",
-          lane: "heavy",
           pid: process.pid,
           since: "2026-10-22T10:00:00.000Z",
           slot: true,
@@ -4162,7 +4151,6 @@ describe("the JSON API", () => {
           command: "next build",
           folder: "/home/user/my-app",
           kind: "build",
-          lane: "heavy",
           pid: process.pid,
           since: "2026-10-22T10:00:00.000Z",
           slot: true,

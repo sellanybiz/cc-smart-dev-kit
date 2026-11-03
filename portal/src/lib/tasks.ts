@@ -60,6 +60,38 @@ export function isClosed(status: WorkTaskNode["status"]): boolean {
   return status === "done" || status === "dropped";
 }
 
+/** The four fields the main session binds a phase to (G3), in the order its ledger shows them. */
+export const LEDGER_KEYS = ["agent", "branch", "worktree", "base"] as const;
+
+/** One field of a phase's ledger: the word, what the line shows, and the whole value. */
+export interface LedgerField {
+  key: (typeof LEDGER_KEYS)[number];
+  label: string;
+  shown: string;
+  full: string;
+}
+
+/** A path's last folder, a trailing separator left out: `/a/b/wt/` and `C:\a\wt` are `wt`. */
+export function folderName(path: string): string {
+  const parts = path.split(/[\\/]+/).filter((part) => part !== "");
+  return parts[parts.length - 1] ?? path;
+}
+
+/** A commit as git shortens it: a long hex sha to its first seven; anything else as written. */
+export function shortSha(base: string): string {
+  return /^[0-9a-f]{8,}$/i.test(base) ? base.slice(0, 7) : base;
+}
+
+/** The ledger fields a task has set, in `LEDGER_KEYS` order; none set is an empty list. */
+export function ledgerOf(task: WorkTaskNode): LedgerField[] {
+  return LEDGER_KEYS.flatMap((key) => {
+    const full = task[key];
+    if (full === null || full === "") return [];
+    const shown = key === "worktree" ? folderName(full) : key === "base" ? shortSha(full) : full;
+    return [{ full, key, label: key, shown }];
+  });
+}
+
 /** True when the filter narrows the work tasks beyond open or recent. */
 export function narrowsWork(filter: TaskFilter): boolean {
   return filter.blocked || filter.nonBlocking;

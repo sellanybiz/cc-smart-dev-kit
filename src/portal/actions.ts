@@ -38,7 +38,6 @@ import {
   parseTarget,
   slotKeyFromArg,
 } from "../gateway/targets";
-import { realMemoryFacts } from "../jobs/memory";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
 import {
@@ -1972,12 +1971,11 @@ async function runActionByName(
   }
 }
 
-/** What the heavy-job queue reads through: this machine's memory, the portal's paths. */
+/** What the heavy-job queue reads through: the portal's folder and paths. */
 export function jobContext(action: ActionContext): JobContext {
   return {
     cwd: action.cwd,
     execArgv: process.execArgv,
-    memory: realMemoryFacts(),
     paths: action.portal.paths,
     print: () => undefined,
     say: () => undefined,

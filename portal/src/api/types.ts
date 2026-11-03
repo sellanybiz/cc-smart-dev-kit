@@ -7,9 +7,7 @@ import type {
   ClaudeMemSource,
   HistoryAnswer,
   HistoryRequest,
-  JobCeilingState,
   JobRouteState,
-  JobWeightsState,
   MachineAnswer,
   McpServerRow,
   MergeVerdict,
@@ -46,9 +44,7 @@ export type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
-  JobCeilingState,
   JobRouteState,
-  JobWeightsState,
   McpServerRow,
   ModelRow,
   OpenBreaker,
@@ -618,14 +614,14 @@ export interface JobEntry {
   /** Null for a record the queue could not read. */
   since: null | number;
   pid: number;
-  /** Which slots it holds or waits for: a heavy one, a light one, or none (a name only, `--exclusive`). */
-  lane: "heavy" | "light" | "none";
+  /** True when it holds (or waits for) the heavy slot; false for a name only (`--exclusive`). */
+  slot: boolean;
 }
 
-/** One store of slots the queue shares out: the machine, or a container (`where`). */
+/** One store of slots the queue shares out: the machine (`where`). */
 export interface JobStore {
   where: "machine" | (string & {});
-  /** How many heavy jobs run at once here. */
+  /** How many heavy jobs run at once here: the machine's one slot. */
   slots: number;
   /** How many of those slots are in use now. */
   used: number;
@@ -636,9 +632,6 @@ export interface JobStore {
 
 /** `GET /api/jobs`, and the `jobs` event's data: the same shape. */
 export interface JobsData {
-  /** The memory ceiling of all heavy jobs together: its size, or why none is in force. */
-  ceiling: JobCeilingState;
-  memoryGb: number;
   /**
    * Whether heavy Bash commands go through the queue, and where that comes from: the project's
    * `jobs.route`, the person's `switches.jobRoute`, or the default (off). The portal runs in no
@@ -646,8 +639,6 @@ export interface JobsData {
    */
   route: JobRouteState;
   stores: JobStore[];
-  /** The weights a heavy job runs with (off by default), or why one is not set. */
-  weights: JobWeightsState;
 }
 
 // ── Needs you (owner decision D52; planned: `GET /api/needs`) ─────────────────────────

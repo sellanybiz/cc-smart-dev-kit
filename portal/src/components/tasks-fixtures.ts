@@ -24,8 +24,11 @@ export function task(
   more: Partial<WorkTaskNode> = {},
 ): WorkTaskNode {
   return {
+    agent: null,
+    base: null,
     blocked: false,
     blockedBy: [],
+    branch: null,
     children,
     closed: 0,
     id: `w${ref}`,
@@ -35,13 +38,23 @@ export function task(
     plan: null,
     ref: `#${ref}`,
     status,
+    steps: null,
     subject,
     total: 0,
     type: "blocking",
     updatedAt: "2026-11-03T10:00:00.000Z",
+    worktree: null,
     ...more,
   };
 }
+
+/** A phase's ledger with all four fields set (G3): what the main session binds a phase to. */
+export const LEDGER = {
+  agent: "builder-a1c485264ab14f591",
+  base: "21eadc8a0f3b4c5d6e7f8091a2b3c4d5e6f70812",
+  branch: "plan/build-the-store",
+  worktree: "/home/user/my-app/.claude/worktrees/build-the-store",
+} as const;
 
 export const PHASE = task(
   2,
@@ -70,7 +83,17 @@ export const PHASE = task(
       ],
     }),
   ],
-  { closed: 2, kind: "phase", layer: "phase", phase: "K", plan: "plan", total: 5 },
+  {
+    ...LEDGER,
+    closed: 2,
+    kind: "phase",
+    layer: "phase",
+    phase: "K",
+    plan: "plan",
+    // Blocking and not dropped: #3 (done), #5 and #6. The dropped #4 and the non-blocking #7 are no step.
+    steps: { done: 1, total: 3 },
+    total: 5,
+  },
 );
 
 /** A full project: the plan with its phase, a done task with work left open, and files. */
