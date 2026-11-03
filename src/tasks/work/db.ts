@@ -83,8 +83,15 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
     throw error;
   }
 }
-/** All writes share the compatibility check and the same short transaction. */
-export function writeWork<T>(db: WorkDb, body: () => T): Result<T> {
+/**
+ * All writes share the compatibility check and the same short transaction. `rehearse` (a dry
+ * run) makes every write and then rolls them all back, so it meets each rule a real run meets.
+ */
+export function writeWork<T>(
+  db: WorkDb,
+  body: () => T,
+  options: { rehearse?: boolean } = {},
+): Result<T> {
   if (!db.writable) return { ok: false, why: NEWER_STORE };
   let began = false;
   try {
@@ -97,7 +104,7 @@ export function writeWork<T>(db: WorkDb, body: () => T): Result<T> {
     );
     if (min > WORK_SCHEMA_VERSION) throw new Error(NEWER_STORE);
     const value = body();
-    db.sqlite.run("COMMIT");
+    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
     return { ok: true, value };
   } catch (error) {
     if (began) db.sqlite.run("ROLLBACK");

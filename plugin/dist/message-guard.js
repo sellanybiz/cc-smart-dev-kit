@@ -6123,7 +6123,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.10.0",
+  version: "1.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10461,7 +10461,7 @@ function openWorkDb(file, options) {
     throw error;
   }
 }
-function writeWork(db, body) {
+function writeWork(db, body, options = {}) {
   if (!db.writable)
     return { ok: false, why: NEWER_STORE };
   let began = false;
@@ -10472,7 +10472,7 @@ function writeWork(db, body) {
     if (min > WORK_SCHEMA_VERSION)
       throw new Error(NEWER_STORE);
     const value = body();
-    db.sqlite.run("COMMIT");
+    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
     return { ok: true, value };
   } catch (error) {
     if (began)
@@ -10761,20 +10761,21 @@ function insertNote(db, id, text, who, now, reason = null) {
   };
 }
 function systemClose(db, id, status, reason, who, now) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    for (const child of openSubtasks(db, id)) {
-      const before = shape(db, child);
-      db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
-      recordChange(db, before, taskById(db, child.id), who, now, reason);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
-    }
-    const before = shape(db, task);
-    db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
-    recordChange(db, before, taskById(db, id), who, now, reason);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
-    return taskById(db, id);
-  });
+  return writeWork(db, () => applySystemClose(db, id, status, reason, who, now));
+}
+function applySystemClose(db, id, status, reason, who, now) {
+  const task = taskById(db, id);
+  for (const child of openSubtasks(db, id)) {
+    const before = shape(db, child);
+    db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
+    recordChange(db, before, taskById(db, child.id), who, now, reason);
+    insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
+  }
+  const before = shape(db, task);
+  db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
+  recordChange(db, before, taskById(db, id), who, now, reason);
+  insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
+  return taskById(db, id);
 }
 
 // src/crew/phase-task.ts
@@ -14816,29 +14817,37 @@ function onOpusTier(records) {
 function placeFor(input) {
   if (input.unmet.length > 0) {
     const phases = input.unmet.map((wait) => `${wait.phase} (${wait.state ?? "not started yet"})`).join(", ");
-    return { start: false, why: `waits for ${phases}; it starts when each is merged` };
+    return {
+      start: false,
+      hold: "phases",
+      why: `waits for ${phases}; it starts when each is merged`
+    };
   }
   if (input.leadRunning >= input.perLead) {
     return {
       start: false,
+      hold: "lead",
       why: `its lead has ${input.leadRunning} of ${input.perLead} crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.opus && input.leadRunningOpus >= input.perLeadOpus) {
     return {
       start: false,
+      hold: "lead-opus",
       why: `its lead has ${input.leadRunningOpus} of ${input.perLeadOpus} opus crew sessions running; it starts when one of them finishes`
     };
   }
   if (input.running >= input.max) {
     return {
       start: false,
+      hold: "machine",
       why: `${input.running} of ${input.max} crew sessions running on this machine; it starts when one finishes`
     };
   }
   if (input.opus && input.maxOpus !== null && input.runningOpus >= input.maxOpus) {
     return {
       start: false,
+      hold: "machine-opus",
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`
     };
   }
@@ -14848,6 +14857,7 @@ function placeFor(input) {
     if (age < gap) {
       return {
         start: false,
+        hold: "spacing",
         why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`
       };
     }
@@ -14855,6 +14865,7 @@ function placeFor(input) {
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
+      hold: "memory",
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`
     };
   }
@@ -14863,6 +14874,7 @@ function placeFor(input) {
     if (input.load.oneMinute > limit) {
       return {
         start: false,
+        hold: "load",
         why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`
       };
     }
@@ -14870,6 +14882,7 @@ function placeFor(input) {
   if (input.opus && !input.opusFallback && input.usagePercent !== null && input.usagePercent > input.usageHoldPercent) {
     return {
       start: false,
+      hold: "usage",
       why: `the 5-hour usage window is at ${Math.round(input.usagePercent)}%, past ${input.usageHoldPercent}%; it starts when the window resets, or when the opus slot has a fallback chain`
     };
   }

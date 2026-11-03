@@ -85,6 +85,7 @@ describe("D72: the shared place input", () => {
     expect(placeFor({ ...input(paused), max: 2 })).toEqual({ start: true });
     expect(placeFor({ ...input(stopped), max: 2 })).toEqual({
       start: false,
+      hold: "machine",
       why: "2 of 2 crew sessions running on this machine; it starts when one finishes",
     });
   });
@@ -109,6 +110,7 @@ describe("D72: the shared place input", () => {
     );
     expect(placeFor(input)).toEqual({
       start: false,
+      hold: "spacing",
       why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
     });
     const guard = placeInputOf(
@@ -163,6 +165,7 @@ describe("D72: the shared place input", () => {
     expect(input.lastLaunchMs).toBe(1792576800000);
     expect(placeFor(input)).toEqual({
       start: false,
+      hold: "spacing",
       why: "the last crew launch on this machine was 10 s ago; launches are 60 s apart; it starts in 50 s",
     });
   });
@@ -269,8 +272,9 @@ describe("D25: start now, or queued with the reason", () => {
     const recent = { ...free, nowMs: 72_000, lastLaunchMs: 60_000, startGapSeconds: 60 };
     const held = {
       start: false,
+      hold: "spacing",
       why: "the last crew launch on this machine was 12 s ago; launches are 60 s apart; it starts in 48 s",
-    };
+    } as const;
     expect(placeFor(recent)).toEqual(held);
     expect(placeFor({ ...recent, continuation: true })).toEqual(held);
     expect(placeFor({ ...recent, nowMs: 120_000 })).toEqual({ start: true });
@@ -284,6 +288,7 @@ describe("D25: start now, or queued with the reason", () => {
   test("D54: a lead's own cap, across every repository of the machine", () => {
     expect(placeFor({ ...free, leadRunning: 4 })).toEqual({
       start: false,
+      hold: "lead",
       why: "its lead has 4 of 4 crew sessions running; it starts when one of them finishes",
     });
     // Another lead's crew sessions do not count: four running in all, one of them this lead's.
@@ -294,6 +299,7 @@ describe("D25: start now, or queued with the reason", () => {
     const atIt = { ...free, leadRunning: 3, leadRunningOpus: 2 };
     expect(placeFor({ ...atIt, opus: true })).toEqual({
       start: false,
+      hold: "lead-opus",
       why: "its lead has 2 of 2 opus crew sessions running; it starts when one of them finishes",
     });
     expect(placeFor(atIt)).toEqual({ start: true });
@@ -306,6 +312,7 @@ describe("D25: start now, or queued with the reason", () => {
   test("D54: the machine's safety ceiling", () => {
     expect(placeFor({ ...free, running: 24 })).toEqual({
       start: false,
+      hold: "machine",
       why: "24 of 24 crew sessions running on this machine; it starts when one finishes",
     });
     // Under the ceiling, a lead's caps are what hold its crew sessions.
@@ -317,6 +324,7 @@ describe("D25: start now, or queued with the reason", () => {
     expect(placeFor({ ...many, opus: true })).toEqual({ start: true });
     expect(placeFor({ ...many, opus: true, maxOpus: 4 })).toEqual({
       start: false,
+      hold: "machine-opus",
       why: "4 of 4 opus crew sessions running on this machine; it starts when one of them finishes",
     });
     expect(placeFor({ ...many, maxOpus: 4 })).toEqual({ start: true });
@@ -333,6 +341,7 @@ describe("D25: start now, or queued with the reason", () => {
   test("the memory", () => {
     expect(placeFor({ ...free, freeGb: 1.44 })).toEqual({
       start: false,
+      hold: "memory",
       why: "1.4 GB free, a crew session needs 2 GB; it starts when memory frees",
     });
     expect(placeFor({ ...free, freeGb: -3 })).toMatchObject({
@@ -344,6 +353,7 @@ describe("D25: start now, or queued with the reason", () => {
     const busy = { ...free, load: { cores: 16, oneMinute: 85 } };
     expect(placeFor(busy)).toEqual({
       start: false,
+      hold: "load",
       why: "the load is 85 on 16 cores, past 48 (3 for each core); it starts when the load falls",
     });
     // At the limit exactly it starts: past it holds.
@@ -352,6 +362,7 @@ describe("D25: start now, or queued with the reason", () => {
     // A fractional load reads with one decimal; the limit follows the setting.
     expect(placeFor({ ...busy, load: { cores: 4, oneMinute: 7.26 }, loadPerCore: 1.5 })).toEqual({
       start: false,
+      hold: "load",
       why: "the load is 7.3 on 4 cores, past 6 (1.5 for each core); it starts when the load falls",
     });
     // No load average (native Windows): the hold does not apply.
@@ -371,26 +382,32 @@ describe("D25: start now, or queued with the reason", () => {
     // A new phase at the same load still waits.
     expect(placeFor({ ...busy, continuation: false })).toEqual({
       start: false,
+      hold: "load",
       why: "the load is 88.1 on 16 cores, past 48 (3 for each core); it starts when the load falls",
     });
     expect(placeFor({ ...busy, freeGb: 1 })).toEqual({
       start: false,
+      hold: "memory",
       why: "1 GB free, a crew session needs 2 GB; it starts when memory frees",
     });
     expect(placeFor({ ...busy, running: 24 })).toEqual({
       start: false,
+      hold: "machine",
       why: "24 of 24 crew sessions running on this machine; it starts when one finishes",
     });
     expect(placeFor({ ...busy, leadRunning: 4 })).toEqual({
       start: false,
+      hold: "lead",
       why: "its lead has 4 of 4 crew sessions running; it starts when one of them finishes",
     });
     expect(placeFor({ ...busy, opus: true, usagePercent: 90 })).toEqual({
       start: false,
+      hold: "usage",
       why: "the 5-hour usage window is at 90%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
     });
     expect(placeFor({ ...busy, unmet: [{ phase: "B", state: "working" }] })).toEqual({
       start: false,
+      hold: "phases",
       why: "waits for B (working); it starts when each is merged",
     });
   });
@@ -399,6 +416,7 @@ describe("D25: start now, or queued with the reason", () => {
     const past = { ...free, opus: true, usagePercent: 87 };
     expect(placeFor(past)).toEqual({
       start: false,
+      hold: "usage",
       why: "the 5-hour usage window is at 87%, past 85%; it starts when the window resets, or when the opus slot has a fallback chain",
     });
     // At the share exactly, it starts: past it holds.
@@ -418,6 +436,7 @@ describe("D25: start now, or queued with the reason", () => {
     ];
     expect(placeFor({ ...free, leadRunning: 4, unmet })).toEqual({
       start: false,
+      hold: "phases",
       why: "waits for B6c (working), B7 (not started yet); it starts when each is merged",
     });
     const opus = { ...free, opus: true, leadRunning: 1, leadRunningOpus: 1, running: 24 };
@@ -599,6 +618,7 @@ describe("D59: would a crew start from this lead queue now", () => {
     await stored(made.world, "B1", "working");
     expect(await startNow(made)).toEqual({
       start: false,
+      hold: "lead",
       why: "its lead has 1 of 1 crew sessions running; it starts when one of them finishes",
     });
   });
@@ -608,6 +628,7 @@ describe("D59: would a crew start from this lead queue now", () => {
     await stored(made.world, "B1", "working", { leadSessionId: OTHER_SESSION });
     expect(await startNow(made)).toEqual({
       start: false,
+      hold: "machine",
       why: "1 of 1 crew sessions running on this machine; it starts when one finishes",
     });
   });
@@ -617,6 +638,7 @@ describe("D59: would a crew start from this lead queue now", () => {
     await stored(made.world, "B1", "working", ON_OPUS);
     expect(await startNow(made, true)).toEqual({
       start: false,
+      hold: "lead-opus",
       why: "its lead has 1 of 1 opus crew sessions running; it starts when one of them finishes",
     });
     // The same store, for a launch that would not spend the opus tier: a place is free.
@@ -641,6 +663,7 @@ describe("D59: would a crew start from this lead queue now", () => {
     const made = await leadWorld({ memoryGb: 8 });
     expect(await startNow(made, false, linux(3 * 1024 ** 2))).toEqual({
       start: false,
+      hold: "memory",
       why: "3 GB free, a crew session needs 8 GB; it starts when memory frees",
     });
   });
@@ -654,6 +677,7 @@ describe("D59: would a crew start from this lead queue now", () => {
     });
     expect(await startNow(made, false, undefined, load(40))).toEqual({
       start: false,
+      hold: "load",
       why: "the load is 40 on 8 cores, past 16 (2 for each core); it starts when the load falls",
     });
     expect(await startNow(made, false, undefined, load(15))).toEqual({ start: true });

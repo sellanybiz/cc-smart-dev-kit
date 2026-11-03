@@ -21559,7 +21559,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.10.0",
+  version: "1.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -22933,7 +22933,7 @@ function openWorkDb(file, options) {
     throw error;
   }
 }
-function writeWork(db, body) {
+function writeWork(db, body, options = {}) {
   if (!db.writable)
     return { ok: false, why: NEWER_STORE };
   let began = false;
@@ -22944,7 +22944,7 @@ function writeWork(db, body) {
     if (min > WORK_SCHEMA_VERSION)
       throw new Error(NEWER_STORE);
     const value = body();
-    db.sqlite.run("COMMIT");
+    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
     return { ok: true, value };
   } catch (error) {
     if (began)

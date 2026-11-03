@@ -107,7 +107,7 @@ import {
 } from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
-import { runningCrew, unmetWaits } from "./places";
+import { type PlaceHold, runningCrew, unmetWaits } from "./places";
 import { releaseCrewSession } from "./release";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { handoffStopLine, startQueued } from "./start";
@@ -133,6 +133,7 @@ import {
   markNoteDelivered,
   NO_RESUME_STATES,
   readAnswerWatchBeat,
+  readCrew,
   readCrewEvents,
   readLead,
   readReport,
@@ -1120,6 +1121,43 @@ function resumeHoldKey(id: string): string {
   return `resume-hold:${id}`;
 }
 
+/** How many reasons one wait remembers: every kind the launch gate says (8), and a few texts. */
+const WAIT_REASONS_KEPT = 12;
+
+/**
+ * Whether a resume's wait is news, and if so, remembers it under `key` in `said`: each reason is
+ * said once while the wait lasts. The reason is the launch gate's kind (`PlaceHold`) when the
+ * gate held it, since its text holds numbers that move on every pass (the load, a count, the
+ * seconds left); any other reason is its own text. So a wait that flips between two kinds says
+ * each once, not on each flip. The spacing between launches lifts by itself within a minute: it
+ * is never news. The key is forgotten when the wait is over, so a later wait is news again.
+ * The reasons are kept one to a line, the latest `WAIT_REASONS_KEPT`: a reason's own text that
+ * changes (an error with a number in it) never grows the watch's state without end.
+ */
+export function waitIsNews(
+  said: Record<string, string>,
+  key: string,
+  line: string,
+  hold: PlaceHold | undefined,
+): boolean {
+  if (hold === "spacing") return false;
+  const reason = (hold ?? line).replaceAll("\n", " ");
+  const before = said[key]?.split("\n") ?? [];
+  if (before.includes(reason)) return false;
+  said[key] = [...before, reason].slice(-WAIT_REASONS_KEPT).join("\n");
+  return true;
+}
+
+/** The `said` key of a waiting resume's reasons (D72), while the record waits. */
+function resumeWaitKey(id: string): string {
+  return `${id}:resume-wait`;
+}
+
+/** The `said` key of a paused crew session's resume lines (D42), while it is paused. */
+function pausedResumeKey(id: string): string {
+  return `${id}:paused-resume`;
+}
+
 /**
  * Resumes the ready paused crew sessions of one pass (D42): **one at a time**. The first of a
  * wave is the canary. Each further one waits `RESUME_SPACING_MS` after the resume before it,
@@ -1159,12 +1197,8 @@ async function resumePaused(
     ctx,
     now,
     agents,
-    (line) => {
-      const key = `${next.id}:paused-resume`;
-      if (said[key] !== line) {
-        say(line);
-        said[key] = line;
-      }
+    (line, hold) => {
+      if (waitIsNews(said, pausedResumeKey(next.id), line, hold)) say(line);
     },
     held,
   );
@@ -1210,7 +1244,7 @@ export async function resumeOne(
   ctx: CrewContext,
   now: number,
   agents: null | AgentRow[],
-  say: (line: string) => void,
+  say: (line: string, hold?: PlaceHold) => void,
   unnamedNote: null | string = null,
 ): Promise<OneResume> {
   const text = resumeText(record, record.waitingFor, now);
@@ -1242,7 +1276,7 @@ export async function resumeOne(
   const resumed = await resumeSession(ctx, record, text);
   if (!resumed.ok) {
     const note = resumed.unnamed && unnamedNote !== null ? `; ${unnamedNote}` : "";
-    say(`${record.name}: not resumed — ${resumed.why}${note}`);
+    say(`${record.name}: not resumed — ${resumed.why}${note}`, resumed.hold);
     return {
       ...failed,
       ...(resumed.waits === undefined ? {} : { waits: resumed.waits }),
@@ -1886,6 +1920,12 @@ async function runPass(
         !(NO_RESUME_STATES as readonly string[]).includes(one.state),
     )
     .sort((a, b) => (a.resumeWaits?.at ?? "").localeCompare(b.resumeWaits?.at ?? ""));
+  // A wait that is over (resumed, stopped, merged) is forgotten, so a later one is news again;
+  // so is a pause, once its record is no longer paused.
+  for (const one of here) {
+    if (!waiting.includes(one)) delete said[resumeWaitKey(one.id)];
+    if (one.state !== "paused") delete said[pausedResumeKey(one.id)];
+  }
   const drain = [
     ...queued.filter((one) => one.continues != null),
     ...waiting,
@@ -1923,8 +1963,11 @@ async function runPass(
           }),
           ...notes.map((index) => `Your lead's note:\n${record.notes?.[index]?.text ?? ""}`),
         ].join("\n\n") || "Continue your phase.";
-      const resumed = await resumeSession(ctx, record, prompt);
+      // Only while it still waits: a `crew stop` since this pass read it ended the wait.
+      const resumed = await resumeSession(ctx, record, prompt, { needsWait: true });
       if (resumed.ok) {
+        // Over now: a wait an answer arms before the next pass is news again.
+        delete said[resumeWaitKey(record.id)];
         const stored = await markResumed(record, resumed.session, ctx);
         if (!stored) said[resumeHoldKey(record.id)] = "resume was not stored";
         if (stored) {
@@ -1935,10 +1978,10 @@ async function runPass(
         }
       } else {
         if (resumed.unnamed) said[resumeHoldKey(record.id)] = resumed.why;
-        if (said[`${record.id}:resume-wait`] !== resumed.why) {
+        // A wait a `crew stop` ended since this pass read the record is over: nothing to say.
+        const waits = readCrew(ctx.paths.stateDir, repo, record.id)?.resumeWaits !== undefined;
+        if (waits && waitIsNews(said, resumeWaitKey(record.id), resumed.why, resumed.hold))
           say(`${record.name}: waits to come back — ${resumed.why}`);
-          said[`${record.id}:resume-wait`] = resumed.why;
-        }
       }
       continue;
     }

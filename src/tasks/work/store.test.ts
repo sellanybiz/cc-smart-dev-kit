@@ -241,10 +241,19 @@ test("claude-mem folding, deletion, skips, dry run, import markers and schema re
   const { db } = setup();
   const args = { claudeMemDb: file, workDb: db, project: "p", claudeMemProject: "mem", now: 10 };
   const dry = value(importClaudeMem({ ...args, dryRun: true }));
-  expect(dry.length).toBe(2);
+  expect(dry.imported.length).toBe(2);
   expect(listTasks(db, { project: "p", openOnly: true })).toEqual([]);
-  expect(value(importClaudeMem({ ...args, dryRun: false })).length).toBe(2);
-  expect(value(importClaudeMem({ ...args, dryRun: false }))).toEqual([]);
+  expect(value(importClaudeMem({ ...args, dryRun: false })).imported.length).toBe(2);
+  expect(value(importClaudeMem({ ...args, dryRun: false }))).toEqual({
+    imported: [],
+    dropped: [],
+    kept: [],
+    skipped: [],
+    open: 1,
+  });
+  // An older claude-mem has no entry times: the task keeps the time of the import.
+  expect(getTask(db, "p", "1")?.createdAt).toBe(10);
+  expect(getTask(db, "p", "1")?.updatedAt).toBe(10);
   expect(getTask(db, "p", "1")?.description).toBe("keep: yes");
   expect(getTask(db, "p", "2")?.description).toBe("");
   expect(getTask(db, "p", "2")?.status).toBe("in_progress");

@@ -198,9 +198,26 @@ allow entry, denies the five built-in list tools, withdraws its D68 opt-in, and 
 claude-mem work state. claude-mem seeds `"true"` itself, so only a `"true"` set after setup wrote
 `"false"` is the person's, and stays.
 
-Run `cc-smart-dev-kit task import claude-mem` once to move open lists. The import reads
-claude-mem's database read-only, folds its work-state rows as claude-mem does, and refuses
-an unknown schema. `--dry-run` previews it; `--project` selects a stored project.
+Run `cc-smart-dev-kit task import claude-mem` once to move open lists. claude-mem keeps
+lists per project, named for the folder, so the import reads the project named for the
+current folder (`--project` selects another stored one) and writes into that folder's kit
+project. It reads claude-mem's database read-only and refuses an unknown schema. It folds the
+work-state rows as claude-mem 15.5.0 does: in its order (by entry time), with the project
+name matched in any case, an entry with an empty item name as the list's own record, and
+`done`, `dropped`, `completed` and `failed` as closed. Each task keeps claude-mem's first and
+last entry times, so `tasks.staleDays` hides an old one; its history says when the kit
+imported it. A name longer than a subject may be is cut, and kept whole in the description.
+`--dry-run` makes every write and rolls them all back (`writeWork`'s `rehearse`), so it
+refuses what the real run refuses.
+
+claude-mem keeps its own data in work state too: `my-focus`, `my-rules` and
+`agent-lifecycle` (written as each subagent ends), and `owner-goals` with `owner-goals/<start>`
+for each past month. Those are not anyone's work, so the import leaves them out and says so.
+1.10.0 took them in; a later run drops the open tasks an earlier import made from them, with
+what is under them and an automatic note. A task a session made under the same name stays:
+only a task whose history starts with the import counts. A list with an open task a session
+made or changed under it stays open, and the run names those tasks: they may be someone's
+work. The repair runs even when claude-mem's database is gone.
 Doctor checks registration, permissions, the memory switch, work-store schema and
 integrity, and project-file findings. It does not replace the live checks in the contract.
 

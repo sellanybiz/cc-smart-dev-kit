@@ -335,28 +335,40 @@ export function systemClose(
   who: Who,
   now: number,
 ) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    for (const child of openSubtasks(db, id)) {
-      const before = shape(db, child);
-      db.sqlite
-        .query(
-          "UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
-        )
-        .run(now, now, child.id);
-      recordChange(db, before, taskById(db, child.id), who, now, reason);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
-    }
-    const before = shape(db, task);
+  return writeWork(db, () => applySystemClose(db, id, status, reason, who, now));
+}
+/**
+ * `systemClose` inside a transaction the caller holds: the kit closes a task and drops its open
+ * subtasks, each with an automatic note and a history entry that give the reason.
+ */
+export function applySystemClose(
+  db: WorkDb,
+  id: string,
+  status: "done" | "dropped",
+  reason: string,
+  who: Who,
+  now: number,
+): WorkTask {
+  const task = taskById(db, id);
+  for (const child of openSubtasks(db, id)) {
+    const before = shape(db, child);
     db.sqlite
       .query(
-        "UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
+        "UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
       )
-      .run(status, now, now, task.id);
-    recordChange(db, before, taskById(db, id), who, now, reason);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
-    return taskById(db, id);
-  });
+      .run(now, now, child.id);
+    recordChange(db, before, taskById(db, child.id), who, now, reason);
+    insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
+  }
+  const before = shape(db, task);
+  db.sqlite
+    .query(
+      "UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
+    )
+    .run(status, now, now, task.id);
+  recordChange(db, before, taskById(db, id), who, now, reason);
+  insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
+  return taskById(db, id);
 }
 export interface PlanTask {
   project: string;

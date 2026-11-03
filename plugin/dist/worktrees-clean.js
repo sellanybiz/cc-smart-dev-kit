@@ -6183,7 +6183,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.10.0",
+  version: "1.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7831,7 +7831,7 @@ function openWorkDb(file, options) {
     throw error;
   }
 }
-function writeWork(db, body) {
+function writeWork(db, body, options = {}) {
   if (!db.writable)
     return { ok: false, why: NEWER_STORE };
   let began = false;
@@ -7842,7 +7842,7 @@ function writeWork(db, body) {
     if (min > WORK_SCHEMA_VERSION)
       throw new Error(NEWER_STORE);
     const value = body();
-    db.sqlite.run("COMMIT");
+    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
     return { ok: true, value };
   } catch (error) {
     if (began)
@@ -8062,20 +8062,21 @@ function insertNote(db, id, text, who, now, reason = null) {
   };
 }
 function systemClose(db, id, status, reason, who, now) {
-  return writeWork(db, () => {
-    const task = taskById(db, id);
-    for (const child of openSubtasks(db, id)) {
-      const before = shape(db, child);
-      db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
-      recordChange(db, before, taskById(db, child.id), who, now, reason);
-      insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
-    }
-    const before = shape(db, task);
-    db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
-    recordChange(db, before, taskById(db, id), who, now, reason);
-    insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
-    return taskById(db, id);
-  });
+  return writeWork(db, () => applySystemClose(db, id, status, reason, who, now));
+}
+function applySystemClose(db, id, status, reason, who, now) {
+  const task = taskById(db, id);
+  for (const child of openSubtasks(db, id)) {
+    const before = shape(db, child);
+    db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
+    recordChange(db, before, taskById(db, child.id), who, now, reason);
+    insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
+  }
+  const before = shape(db, task);
+  db.sqlite.query("UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(status, now, now, task.id);
+  recordChange(db, before, taskById(db, id), who, now, reason);
+  insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
+  return taskById(db, id);
 }
 
 // src/crew/phase-task.ts

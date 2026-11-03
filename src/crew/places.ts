@@ -153,8 +153,23 @@ export function unmetWaits(
   return unmet;
 }
 
+/**
+ * What holds a start, in one word that stays the same while the numbers in `why` move (the load,
+ * a count, the seconds left). A watch says a wait once for its kind, never on each pass.
+ */
+export type PlaceHold =
+  | "phases"
+  | "lead"
+  | "lead-opus"
+  | "machine"
+  | "machine-opus"
+  | "spacing"
+  | "memory"
+  | "load"
+  | "usage";
+
 /** What a new crew session does: start now, or wait in the queue and why (one short clause). */
-export type Place = { start: true } | { start: false; why: string };
+export type Place = { start: true } | { start: false; hold: PlaceHold; why: string };
 
 /** What a queued crew session with a free place waits for: only its lead's watch. */
 export const PLACE_FREE = "a place is free; its lead's watch starts it";
@@ -224,29 +239,37 @@ export function placeFor(input: PlaceInput): Place {
     const phases = input.unmet
       .map((wait) => `${wait.phase} (${wait.state ?? "not started yet"})`)
       .join(", ");
-    return { start: false, why: `waits for ${phases}; it starts when each is merged` };
+    return {
+      start: false,
+      hold: "phases",
+      why: `waits for ${phases}; it starts when each is merged`,
+    };
   }
   if (input.leadRunning >= input.perLead) {
     return {
       start: false,
+      hold: "lead",
       why: `its lead has ${input.leadRunning} of ${input.perLead} crew sessions running; it starts when one of them finishes`,
     };
   }
   if (input.opus && input.leadRunningOpus >= input.perLeadOpus) {
     return {
       start: false,
+      hold: "lead-opus",
       why: `its lead has ${input.leadRunningOpus} of ${input.perLeadOpus} opus crew sessions running; it starts when one of them finishes`,
     };
   }
   if (input.running >= input.max) {
     return {
       start: false,
+      hold: "machine",
       why: `${input.running} of ${input.max} crew sessions running on this machine; it starts when one finishes`,
     };
   }
   if (input.opus && input.maxOpus !== null && input.runningOpus >= input.maxOpus) {
     return {
       start: false,
+      hold: "machine-opus",
       why: `${input.runningOpus} of ${input.maxOpus} opus crew sessions running on this machine; it starts when one of them finishes`,
     };
   }
@@ -260,6 +283,7 @@ export function placeFor(input: PlaceInput): Place {
     if (age < gap) {
       return {
         start: false,
+        hold: "spacing",
         why: `the last crew launch on this machine was ${Math.floor(age / 1000)} s ago; launches are ${input.startGapSeconds} s apart; it starts in ${Math.ceil((gap - age) / 1000)} s`,
       };
     }
@@ -267,6 +291,7 @@ export function placeFor(input: PlaceInput): Place {
   if (input.freeGb !== null && input.freeGb < input.needGb) {
     return {
       start: false,
+      hold: "memory",
       why: `${oneDecimal(Math.max(0, input.freeGb))} GB free, a crew session needs ${input.needGb} GB; it starts when memory frees`,
     };
   }
@@ -275,6 +300,7 @@ export function placeFor(input: PlaceInput): Place {
     if (input.load.oneMinute > limit) {
       return {
         start: false,
+        hold: "load",
         why: `the load is ${oneDecimal(input.load.oneMinute)} on ${input.load.cores} cores, past ${oneDecimal(limit)} (${input.loadPerCore} for each core); it starts when the load falls`,
       };
     }
@@ -287,6 +313,7 @@ export function placeFor(input: PlaceInput): Place {
   ) {
     return {
       start: false,
+      hold: "usage",
       why: `the 5-hour usage window is at ${Math.round(input.usagePercent)}%, past ${input.usageHoldPercent}%; it starts when the window resets, or when the opus slot has a fallback chain`,
     };
   }

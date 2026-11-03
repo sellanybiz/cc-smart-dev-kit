@@ -3,6 +3,49 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.10.1
+
+Fixes for `task import claude-mem`, the lead's watch and `crew stop`.
+
+**What to run** after the update:
+
+- In each folder where you ran `cc-smart-dev-kit task import claude-mem` before (often your
+  home folder): run it again, first with `--dry-run` to see what it drops, then without.
+- Nothing for the watch: each lead's watch ends by itself once the new version is installed,
+  and says to start it again; the watch you start has the fix.
+
+What changed:
+
+- **The lead's watch stops repeating a crew session that waits to come back.** A resume the
+  launch gate held said its reason again whenever the text changed, and the text holds live
+  numbers (the load, the seconds left), so each waiting crew session said a new line on every
+  pass, and each line woke the lead. Now each kind of wait (the load, the memory, a cap) is
+  said once while the wait lasts, even when it flips between two kinds, the spacing between
+  launches is never said, and a wait is said again only after it ended (the session came back,
+  or was stopped). The same holds for a paused session's `not resumed` line.
+- **`crew stop` ends a resume that waits for room.** A `crew answer`, `crew note` or
+  `crew resume` the launch gate held leaves the resume waiting, and the watch started it once
+  the machine had room, even after the lead stopped that crew session. The stop now ends the
+  wait, also when the watch was about to start it, and its line says so, a failed stop's too.
+- **The import leaves claude-mem's own lists out.** claude-mem keeps its own data (focus
+  areas, rules, owner goals, and a record of each subagent: the lists `my-focus`, `my-rules`,
+  `owner-goals` and its month lists, and `agent-lifecycle`) in work state too. 1.10.0 took
+  them in as open work, so a session started in that folder listed them as its tasks. The
+  import now says it left them out, and a second run drops what an earlier import took from
+  them, each with a note that says why. A list a session added to or changed stays open, and
+  the run names the tasks to look at. The repair works without claude-mem installed.
+- **The import reads claude-mem's lists as claude-mem does:** in its own order, with the
+  project name in any case, and `completed` and `failed` closed too. A list is imported once,
+  whatever the case of the project name; a long name is cut on whole characters, never through
+  an emoji; and a claude-mem database with no work-state table counts as having no lists.
+- **An imported task keeps claude-mem's dates.** An item claude-mem last touched long ago now
+  counts as stale (`tasks.staleDays`), so a session start counts it instead of listing it.
+  This holds for lists imported from 1.10.1 on: a list 1.10.0 imported keeps the import's
+  date.
+- A name longer than a task subject may be is cut, and kept whole in the description.
+- `--dry-run` refuses what the real run refuses: it makes the writes and rolls them back.
+- The import's list shows each item indented under its list again.
+
 ## 1.10.0
 
 The kit's own task list (D75), and leads and crew sessions that keep going. Work had too many
