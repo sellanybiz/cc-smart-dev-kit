@@ -29,7 +29,7 @@ So the body is input for later work, not a courtesy. A summary of the diff is no
 Leave a heading out only when its answer is "none" — and then write "none". A missing
 heading reads as "not considered".
 
-1. **What changes and why** — the behaviour, not the file list. Lead with the effect a user
+1. **What changes and why** — the behaviour, not the file list. Start with the effect a user
    sees. A fix says what the person was seeing.
 2. **Configuration** — every environment variable or setting added, renamed or removed:
    what it is for, where to get its value, and whether the build or only the runtime needs
@@ -40,8 +40,8 @@ heading reads as "not considered".
    database, not only an empty one. Say "no-op in production" only when you checked.
 5. **How it was verified** — the real commands and their results. **Say what was not
    verified** — no browser check, no production data, no load test — and the second
-   opinion's result (or "small fix"). A branch that carries crew sessions' phases lists each phase
-   with its review, then the integration review. "Verified" with nothing behind it is worse
+   opinion's result (or "small fix"). A planned build lists each phase's
+   spec-and-quality verdicts, then the final whole-branch review. "Verified" with nothing behind it is worse
    than an honest gap.
 6. **Still owed after the merge** — open obligations from that same task output, with timing
    and weight. A pull request built on another open one says "stacked on #n — merge after it".
@@ -56,7 +56,7 @@ Task files travel with the change that needs them; closing and staging them is
 GitHub closes an issue only when a pull request that names it merges into the **default
 branch**: a fix merged into a release branch closes nothing, and a `Fixes` line in a pull
 request into any other branch is ignored. Where `workflow.issues.enabled` is on, the kit marked
-each issue a crew merge fixed with the label `fixed-unreleased`; the pull request that ships
+each issue marked fixed with the label `fixed-unreleased`; the pull request that ships
 them lists them. Run
 
 ```

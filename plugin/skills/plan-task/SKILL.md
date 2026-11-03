@@ -19,12 +19,8 @@ design changes.
 The plan is a **file**, not only chat: it survives a compaction, a restart and a hand-off.
 Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md`.
 
-**A plan has its own folder**, beside its file and named as the file without `.md`:
-`<plans dir>/<plan stem>/`. A crew phase's brief goes in it, named as its crew branch:
-`<plans dir>/<plan stem>/briefs/<PHASE>-<slug>.md` (never one flat folder of briefs, never one folder
-per lead session: the plan outlives its leads). Its `runs/` folder holds the kit's record of each
-crew run (`/cc-smart-dev-kit:lead`). The lead registers the plan with `crew lead --plan-file <the plan
-file>`.
+The phase task description holds its brief. Do not copy briefs or progress into a second
+folder or ledger; `/cc-smart-dev-kit:build` reads the tasks to execute the plan.
 
 **No plan file** for a small fix (`/cc-smart-dev-kit:review` defines it) or a change of two files or
 fewer whose design is settled — the task is the plan. Its separable pieces still go to
@@ -36,8 +32,8 @@ read, search and explore, and blocks every edit but its own plan file, so nothin
 before the yes. It keeps that file where the `plansDirectory` setting points: unset, that is
 `~/.claude/plans`, outside the repo; a project that keeps its plans in git sets it to its
 plans folder in `.claude/settings.json`. No plan mode — no `EnterPlanMode` among your tools,
-a session nobody watches, a crew session (`/cc-smart-dev-kit:crew`): write the plan file
-yourself, and ask for approval with `AskUserQuestion` (§ 4).
+write the plan file yourself, then ask for approval with `AskUserQuestion` (§ 4).
+A subagent reports to its caller instead of asking the person.
 
 ## 1. Research and explore first
 
@@ -111,77 +107,46 @@ move a plan kept outside its home there. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 
-After approval, lay the plan out with `task_create`: the plan's own task (`plan`: its slug,
-subject = its title), then one per phase (`phase`: the id `crew start` will give it), so a
-crew start takes that task over instead of making a second (§ 5). Under each phase go its
-steps, each with its done-check in the description; a step's parts are its subtasks, and a
-subtask holds none (phase › task › subtask). A step its phase can be done without is
-`type: non-blocking`; a step that waits for another names it in `blocked_by`.
-Create a project task for every production, database, teammate or follow-up obligation the
-plan finds. Task routing and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
+After approval, use `task_create` for the plan (`plan`: its slug, subject: its title), then
+one phase task per phase (`phase`: its id). Put the complete builder brief in each phase's
+description, in four parts: objective; files and boundaries; patterns and tools; output
+format (`Report:` task note and short status). Include interfaces, edge cases and done-check.
+Put caller rulings up front: commit permission, allowed checks, rephrase a refused read-only
+command once, decide small calls and note them as `Ruling:`.
+The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
+hand-back guard that reads it. Under each phase create steps with their checks. Steps may have subtasks;
+subtasks have none. Set `blocked_by` for real dependencies and shared-file phases.
+Create project tasks for production, database, teammate and follow-up obligations.
+Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
-## 5. Phases and owners — you lead, subagents and crew sessions build
+## 5. Phases, owners and waves
 
-Write the plan for a team. What stays with you is the core instructions' inline list (§ Lead
-the work).
-
-- **Each phase has one owner** — a crew session with its kind (where the project has crew sessions
-  on: `/cc-smart-dev-kit:lead`), a subagent with its type, model and effort, or you. The waves
-  table has a **Crew sessions** column that names each phase's owner.
-- **A phase is about 30 to 90 minutes of work.** A bigger one splits before it starts.
-- **Each phase names its files.** Two phases that might change one file are split instead of
-  run in turn: each takes its own part of it, or both run and you merge the small conflict.
-- **Each phase names what it waits for** — any contract it builds on (a type, an API shape, a
-  shared constant) and any code it calls. Contracts go first, alone.
-- **The plan lists its phases in waves** — a wave is the group that starts together: wave 1
-  holds every phase that waits for nothing, and it starts at once, in one message (crew
-  through `cc-smart-dev-kit crew start`). On each hand-back, check the phases still waiting
-  and start, in that turn, what it unblocked. A phase never waits for a merge or a review it
-  does not use.
-- **The last wave is a heavy cleanup**, run only once everything is verified live: the
-  fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches,
-  worktrees and crew sessions, docs that still name what was removed, and the plan's archive (§ 8).
-- **Each phase has a done-check** — the targeted tests that prove it (§ 3, How we prove it).
-- **A large mechanical change** — the same edit across many files that splits into many
-  independent units: the bundled `/batch` skill plans it and runs each unit in its own
-  worktree, and each unit publishes its own change. Check that against the project's
-  workflow (`cc-smart-dev-kit workflow show`) before you use it.
-- **Shared files stay with you, the integrator:** the plan file, the lockfile and new
-  dependencies, the project's version number, shared index files (a docs index, a barrel, a
-  changelog), environment variables, a schema migration, starting the dev server, full
-  coverage or end-to-end runs. Parallel builders never bump the version or edit a shared
-  index: you do it once, after their work lands, one merge at a time, rebasing and
-  rebuilding as you go. None of it holds a phase back: it is your work, done after.
-
-Brief each owner with its phase, its files, the patterns, its done-check and its limits
-(`/cc-smart-dev-kit:subagent-decision` § How to brief; a crew session's brief: `/cc-smart-dev-kit:lead`
-§ 3). Check each subagent's hand-back yourself: read `git diff -- <its files>` in full, run its
-tests, confirm nothing changed outside its list. That read is your own review pass for those
-files. A crew session's hand-back passes the lead skill's gate instead (§ 6 there). While other
-owners still write, stage by path, never `git add -A`. You update tasks, integrate, commit and
-own the result. Once a subagent's work is merged, remove its worktree and its branch in the same
-step (`git worktree remove`, `git branch -D`): Claude Code keeps a worktree that holds commits,
-and a squash merge never shows its branch as merged.
+- **One fresh subagent owns each phase.** Name its agent type, model and effort using the
+  core instructions' table. Keep shared integration work in the main session.
+- **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
+  those phases. Batch small edits of the same shape into one dispatch, not one agent per line.
+- **Name contracts and dependencies.** Put actual waits in `blocked_by`. Do not hold work for
+  an unrelated review, merge or answer.
+- **List waves.** The first wave contains all phases with no blockers. Execution and the
+  hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
+- **Give each phase a targeted done-check.** The main session owns the final full check.
+- **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
+  shared indexes, migrations, dev servers and whole-project checks. Never assign the same
+  file to parallel builders.
 
 ## 6. Keep tasks live, the design stable
 
 - Start and finish work in the task tree; record evidence and work notes there.
-- New ambiguity: blocking → ask; otherwise decide and note it on the task. If it changes
-  the design, update the plan with the decision and its reason.
+- During execution use the build skill's rulings and stop reasons. Update the plan only
+  when a ruling changes the design.
 - Track a new ask before acting; scope still follows the core instructions' "one plan" rule.
 - After compaction, read the task tree for progress and the file for design.
 
-## 7. Finish the phase, then the plan
+## 7. Execute without check-ins between phases
 
-- **Run each phase to the end of its task list.** No "here is what I did, shall I continue?"
-  on half-built work. The one reason to stop early is a blocking question, asked with
-  `AskUserQuestion`. A part that turns out blocked: finish everything else, then say what you
-  left out and why.
-- **End of a phase:** commit it as `/cc-smart-dev-kit:commit` allows (by default only when the person
-  asks; it also says when to push and ask for merges), close its task with evidence,
-  and start the next phase. A crew merge closes its phase task through the watch.
-- **End of the plan:** a short summary (what shipped, what broke, what you left out), then
-  the one merge question the commit skill describes.
+Run `/cc-smart-dev-kit:build` after approval. Its task gates close phases with evidence and
+start the next ready work. Do not ask whether to continue half-built work.
+At plan end, give a short summary of what shipped, failed and remains.
 
 ## 8. Archive it — yourself, the moment it is finished
 
@@ -189,10 +154,8 @@ A finished plan leaves the live folder in the same turn. Close the plan task wit
 and the commits that shipped it. If parked, leave its work pending and note why and what
 would restart it; if superseded, drop it with a pointer to its replacement.
 
-Move the file **with its folder** to `<plans dir>/archive/`: briefs and run records move to
-`<plans dir>/archive/<plan stem>/`. Never delete run records; `cc-smart-dev-kit crew history`
-reads them there. Commit the move as `/cc-smart-dev-kit:commit` allows. Keep the outcome on
-the task, not in a status history added to the design.
+Move the plan file to `<plans dir>/archive/`. Commit that move as the workflow allows.
+Keep the outcome on its task, not in a status history appended to the design.
 
 Architecture decisions compare at least two approaches and write down why one won. Bug fixes
 find the root cause, by reading the code, before the fix.

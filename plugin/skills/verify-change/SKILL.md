@@ -10,12 +10,12 @@ it differs, the add-on wins (`core.md`, top). It names the project's test, lint 
 type-check commands and what its git hooks run.
 
 Run this after every batch of edits, while you are still building. It is cheap, and it is
-where most mistakes die. The deeper pass — dimensions, edge cases, severity — is
-`/cc-smart-dev-kit:review`, once per commit of finished work.
+where most mistakes die. The main session owns the deeper review; a builder reports evidence
+without reviewing itself (`/cc-smart-dev-kit:build`).
 
 ## 1. Read your own diff — `git diff`
 
-Read it as a reviewer would. Look for:
+Check the edit for accidents, not a review verdict. Look for:
 
 - debug output, `debugger`, commented-out blocks;
 - an accidental deletion, a missing import;
@@ -46,8 +46,7 @@ A bug: write the test that reproduces it first and watch it fail, then fix the c
 that fails: fix the cause (the core instructions' root-cause list). A new test must be able to
 fail: break the code once on purpose and watch it go red, keeping a copy first (`cp path
 path.bak`), copying it back after (`cp path.bak path`) and deleting the copy (`rm path.bak`) —
-never `git checkout -- path`, which a crew session's guard denies. Never lower a coverage floor
-to go green.
+never discard unrelated edits. Never lower a coverage floor to go green.
 
 ## 3. Blast radius — only when you changed shared code
 
@@ -68,10 +67,11 @@ type-aware lint rules), all the tests, the build. A commit hook that passed does
 push hook will. Find them in the project's hook configuration, its CI workflow and its package
 scripts. It runs once, when the work is complete:
 
-- **A crew session:** before its hand-back report to the lead.
-- **The lead, or an ordinary session with no crew:** before the push, after the last merge.
+- **The main session:** before the push, after the final review and its fix pass.
 - **A subagent never runs it** — a builder or any other. The session that launched it runs the
   full check once, after its agents hand back. A subagent runs § 2 and reports what it ran.
+  Whole-project typecheck or lint is allowed when its brief names it; that does not permit
+  the final suite or build.
 
 A check that fails: fix it at the source; never silence it.
 

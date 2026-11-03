@@ -184,7 +184,7 @@ Claude alone. There is no hidden Claude step after a judge chain's targets.
 
 **When the checks fail with nothing standing in**, Claude Code denies every tool call that needs
 a check. The status line, `gateway status` and `doctor` say so with the one fix; a session is
-told once, and a crew session pauses until the checks answer. Tell the person that fix once, then
+told once. Tell the person that fix once, then
 wait: no retry, no workaround.
 
 The person may give the judge slot a chain of their own, which wins (the worker's targets are
@@ -213,104 +213,18 @@ up).
 
 ## Check health
 
-- `cc-smart-dev-kit gateway status`: router health (requests, fallbacks, resting targets, open
-  breakers), each backend, the slots, whether Claude Code points at the gateway. Keys are
-  masked. Its last line is the verdict (`✓` all well, `✗` the config or the router, `!` a
-  backend, `·` not set up or not on), with the next step under it.
-- `cc-smart-dev-kit doctor`: the service, the router copy, the health page, each backend.
-- The log: `journalctl --user -u cc-smart-dev-kit-router -f`. One line per request; never a key.
-  A target that answers 4xx / 5xx (Anthropic too) gets a `WARN` line with the start of
-  its error reason, keys masked: read it first when a slot fails.
-- A backend that refuses a request comes back as a 424, so Claude Code does not send it again
-  without its deferred tools. A refusal about the conversation's length starts "prompt is too
-  long" instead, which starts Claude Code's compaction. Anthropic's own 400 passes unchanged.
-- Every Claude Code request hangs or fails: the router is down. `cc-smart-dev-kit doctor` says
-  which: its socket is open but no router answers (requests wait), or the router failed
-  to start again and again, so systemd closed its socket (requests are refused at once).
-  `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then `cc-smart-dev-kit gateway
-  setup` (it opens both again). Still down: `cc-smart-dev-kit gateway off` — running sessions
-  switch to Anthropic by themselves.
-- `doctor` says "a gateway setup did not finish": the router did not answer after a
-  setup's restart. `journalctl --user -u cc-smart-dev-kit-router -n 30` says why; fix it, then
-  `cc-smart-dev-kit gateway setup` again (it asks before the restart).
+Run `cc-smart-dev-kit gateway status` and `cc-smart-dev-kit doctor` first. Read
+`references/health.md` for logs, refusal codes and recovery. The own-model-path rule below
+still governs any restart or routing change.
 
-## One project, its own state ("use the gateway here", "keep this repo on Claude")
+## Per-project and per-session routing
 
-`gateway on` is every session's default on the machine. One project can choose its own answer
-without touching the others:
-
-- `cc-smart-dev-kit gateway project status [--folder <dir>]`: what a session started in this
-  project gets, and which file says so (its personal file, its team file, the machine's). It
-  also warns when the router has no profile the URL names, or when a project file cannot be
-  read.
-- `cc-smart-dev-kit gateway project on`: this project's sessions go through the router. Add
-  `--profile <name>` when the project has a profile of its own (§ Profiles; its first chain
-  makes it).
-- `cc-smart-dev-kit gateway project off`: Anthropic's own address, on the person's own Claude
-  login. Turning the gateway off never logs them out.
-- `cc-smart-dev-kit gateway project default`: no key of the project's own; the machine's
-  settings decide.
-- `--team` writes the project's `.claude/settings.json` instead of the personal file, and takes
-  `off` or `default` only: a team file never points teammates at one person's router. Commit it
-  for them, and note that a session started in a subfolder does not read it.
-- `cc-smart-dev-kit gateway projects`: every project the portal's Projects page lists, with its
-  state.
-
-The personal file is `.claude/settings.local.json` at the main checkout's root, which Claude Code
-reads for the checkout, its subfolders and its worktrees, before the starting folder's own
-`settings.local.json` (a worktree's copy decides only what the root's file does not set); a managed
-`.git/info/exclude` line keeps it out of git, and `restore` takes back both. A changed value
-reaches a running session within about a second; a removed key moves it, within a few seconds, to the next file
-that still sets it, and only when none does the session keep its old value until it restarts. A
-worktree's copy that still holds the router is named by `status`, `default` and `restore`, never
-changed.
-The command refuses, in one line with the fix: another gateway's URL already in the file, a
-personal file git already tracks (for on), a login key or `apiKeyHelper` anywhere in the project's
-chain (with on or off), `--team` with on, and a profile the config does not have. **For the
-project this session itself runs in, the person runs it** (§ A change to your own model path).
-
-## One session, on a path of its own ("plain Claude just this once")
-
-`cc-smart-dev-kit launch [--no-gateway | --gateway | --profile <name>] [-- <claude args>]` starts
-one session, in the folder it runs in, whatever the machine's and the project's settings say:
-
-- `--no-gateway`: plain Claude at Anthropic, on the person's own claude.ai login. Use it for a
-  task that must not go through an affordable model. A login key or helper in their settings
-  (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) still bills the session in the
-  three modes that pass a file: the launch starts anyway and names each one on stderr, with its
-  file.
-- `--gateway`: this machine's router; `--profile <name>`: the router with one profile's chains.
-- No mode: no `--settings` file, and the settings decide as for `claude`.
-- Everything after `--` goes to Claude Code (`--model`, `-p`, `--resume`). The session is
-  attached to that terminal and its exit code is passed on.
-
-It passes a `--settings` file holding only `env.ANTHROPIC_BASE_URL`, because a settings file
-beats the shell and the project's files for that one session. It refuses an unknown profile,
-`--gateway` or `--profile` on a machine with no gateway or while the router does not answer
-(`gateway setup` is the fix), and running inside a Claude Code session — the person runs it in
-their own terminal.
+Read `references/project-routing.md` for project state, settings precedence and launching
+one session on a separate path. The person's permission still governs routing changes.
 
 ## Profiles: a project's own chains
 
-A profile is a named set of chains and switches over the machine's, reached by the project's URL
-`…/p/<name>`. `gateway project on --profile <name>` points a project at one.
-
-- `cc-smart-dev-kit gateway profile <name> slot <slot> <target>,<target>…`: the profile's own chain
-  for a slot, checked against `gateway models` exactly as `gateway slot` checks the machine's.
-  The first chain makes the profile. A slot the profile does not name keeps the machine's chain.
-  A judge target must already have passed the machine's judge test (`gateway slot judge`), since
-  the proof is machine-wide and an untested target is ignored.
-- `gateway profile <name> slot <slot> off` (`claude` says the same): plain Claude for that slot in
-  this profile. `clear` forgets the entry, so the machine's chain applies there again.
-- `gateway profile <name> fallback <slot> on|off`: may the profile's next target answer when the
-  one before it fails or rests?
-- `gateway profile <name> breaker <slot> on|off`: may the router hold a request while every target
-  of the profile's slot is limited or down? The judge has none. This is the profile's own switch.
-  `gateway breaker` sets the machine's, which a profile that sets none follows; it never changes a
-  profile's own setting.
-- `gateway profile <name> remove`: deletes the profile; a project whose URL still names it answers
-  as plain Claude.
-- The change is live: the router reads the config again within about a second.
+For profile commands and inheritance, read `references/profiles.md` beside this skill.
 
 ## Turn it off
 

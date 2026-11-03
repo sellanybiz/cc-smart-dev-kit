@@ -23,9 +23,8 @@ mode, and the person answers it. If a call is denied anyway, the person types
 ## 2. What was done
 
 - The commits and merges since `since`, in the project: `git log --since=<since> --oneline`, and
-  `--merges` for the merges. Also the other branches and worktrees a crew worked on.
-- The crew runs: `cc-smart-dev-kit crew history` where the installed kit has it, else
-  `cc-smart-dev-kit crew list`.
+  `--merges` for the merges. Read the plan task tree, including closed tasks, for subagent
+  reports, branches and worktrees.
 - The `Summary:` decisions among this session's items (§ 3), first and in the sessions' own
   words. Show them as the report; they need no answer. Clear them once shown.
 
@@ -34,7 +33,7 @@ Say it in a few lines: what shipped, what failed, what waits.
 ## 3. The list
 
 `cc-smart-dev-kit user list --json`: each item has `id`, `kind`, `text`, `command`, `cwd` (the
-folder an action was parked in), `options`, `recommend` (counted from 1), `session`, `crew`,
+folder an action was parked in), `options`, `recommend` (counted from 1), `session`,
 `at`, and `whose` with `waitsIn`. The text view of `user list` is for reading: it shows some
 control characters as spaces (it says so), so a command is taken from the JSON, never copied
 from the text.
@@ -43,8 +42,8 @@ from the text.
 several sessions back at once, and each answers its own, so nothing is asked twice and no
 session acts on another's work. `whose` says, for the session that runs the command:
 
-- `this session`: this session parked it, or it is a crew session's and this session is that
-  crew session's lead, or its session ended in this project. Go through these, below.
+- `this session`: this session parked it, or its session ended in this project. Go through
+  these, below.
 - `another session`: a running session owns it (`waitsIn`: its name and folder). Never ask
   about it, run it or clear it. One line per session: how many wait there, so the person
   answers them in that session.
@@ -60,8 +59,7 @@ This session's items, in three kinds, in this order:
    as the question and its `options` in order, **the recommended one first and marked**. The tool
    takes two to four options a question: with more, keep the recommended one and the likeliest,
    and say the rest in the question; with none or one, put it as the plain question it is. Act on
-   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`). A question for a crew
-   session (`crew` is set): `cc-smart-dev-kit crew answer <name> "<the answer>"`.
+   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`).
 3. **Actions:** show each with its `text`, its `cwd` and its exact `command`, and ask yes or no. A
    yes runs that command, as it is, in its `cwd` (a push or a delete in another folder is another
    action); it is that action's yes and no other's. Check first that it still makes sense (the

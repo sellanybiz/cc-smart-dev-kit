@@ -69,7 +69,7 @@ worktree.
 | Dev servers | Each worktree runs its own, often on another port. Use the address yours printed; never assume the default port, which may be another branch's server. Stop yours when you are done. |
 | The browser (one Chrome, one profile, for the machine) | One login for every session (`/cc-smart-dev-kit:ui-verify` § 4). Each session sees only the windows it opened, so two checks can run at once — but a check that needs two accounts at once does not fit. |
 | The git stash | Never a bare `git stash` or `stash pop`: you may pop another session's work. Use a WIP commit, or `stash push -u -m <tag>`, then `stash apply <sha>`. |
-| The machine's memory and CPU | Where heavy commands go through the job queue (the job route is on), a build, a test run or a type check waits for a free slot by itself (`maxJobs`, 3 by default), and a test run on named files runs at once: prefer it to a full run. Where the queue is off, two heavy jobs at once can stall every session: never start two yourself at once. |
+| Heavy commands | Project `jobs.kinds` identify heavy runs. The job queue allows one full run per machine at a time; checks on named files skip it. Prefer targeted checks while building. |
 
 ## Waiting on long work
 

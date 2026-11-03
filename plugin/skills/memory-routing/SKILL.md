@@ -64,9 +64,17 @@ obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `a
   `add|set|start|done|drop|note|list|show|search|check|release|import|delete`. Never fall back to
   a plan log or a second to-do system. If the CLI is missing too, report the blocker.
 
+For a plan, the phase description is the builder brief. Use work-task fields `agent`,
+`branch`, `worktree` and `base` (the starting commit) to record its execution identity.
+`task_create` and `task_update` set them. Keep them true on hand-back, including after a
+replacement builder. `task_list` with `scope: "plan"` shows each phase's agent, branch,
+state and completed steps. Use `open_only: false` when recovering completed work.
+Builders save a `Report:` note; the main session saves decisions as `Ruling:` notes.
+The build skill owns when to write them; no separate progress file.
+
 ## Saving to memory
 
-**Only the main session saves** — the one the person talks to. A subagent or a crew session
+**Only the main session saves** — the one the person talks to. A subagent
 puts what is worth keeping in its report, and the session it reports to saves it.
 
 **Search before you save.** With claude-mem: `mem_search` first — the fact may be there

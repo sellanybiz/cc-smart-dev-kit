@@ -12,7 +12,7 @@ there.
 A subagent runs in its own context window; only its final report comes back. Every file it
 reads, every search and every dead end stays out of yours. Delegate a job whose reading would
 flood your context and that a self-contained brief can carry; a job a handful of tool calls
-finish is yours. What stays with you is in the core instructions (§ Lead the work). Which model
+finish is yours. What stays with you is in the core instructions (§ Drive the work). Which model
 and effort each agent gets is in the core instructions' model table and in § Model and effort
 below.
 
@@ -24,8 +24,7 @@ below.
 | A file's or a module's structure — its functions, exports, outline | yourself: claude-mem's `smart_outline` for one file, `smart_search` across the repo, `smart_unfold` for one symbol's body; when they are not there or do not answer, `Grep` and `Read` |
 | Text-shaped searches — strings, comments, TODOs, "every file that mentions X" | `Explore` (built-in, read-only); say how thorough |
 | A plan for non-trivial work | `Plan` (built-in, read-only); it returns the text, you write the file |
-| A whole phase of a plan, where the project has crew sessions on | a crew session, not a subagent — `/cc-smart-dev-kit:lead` |
-| A phase the plan already briefed — its files, the pattern to copy and a done-check written down — with crew sessions off | `cc-smart-dev-kit:builder` |
+| A phase with a task brief and done-check | `cc-smart-dev-kit:builder`, or `rules-maintainer` for instruction files; execute through `/cc-smart-dev-kit:build` |
 | A piece of a phase, or a job whose scope is still open that both explores and edits | `general-purpose` |
 | An area swept for one class of defect, not a diff — "audit the hooks", "find every place where X" | the `audit` skill's run: an `auditor` per track, a second one to refute each finding, one `builder` for the report — `/cc-smart-dev-kit:audit` |
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:reviewer` (read-only) — `/cc-smart-dev-kit:review` § Second opinion |
@@ -33,18 +32,19 @@ below.
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
 | Questions about Claude Code, the Agent SDK or the API | `claude-code-guide` (built-in) |
 
-Review is your own job first: an agent is a second reader, never a substitute for your pass.
+The main session owns review. A builder never reviews its own work or starts a reviewer.
 
-**When the project runs crew sessions, the queue comes before a builder subagent.** A
-session registered as a lead that would have to queue a `crew start` cannot put that work into a
-subagent instead: the agent guard refuses one that can change files, with the cap and the start
-step, so the phase waits for its place like any other. A read-only agent — `Explore`, `Plan`, a
-reviewer, an auditor, a `ui-verifier` — is never held back.
+For an approved plan the main session is the orchestrator and all workers are subagents.
+The build skill owns the dispatch size and session cap. A fresh reviewer matters because
+it has not seen the builder's reasoning; delegation alone does not improve an answer.
 
 ## How to brief
 
 A subagent has none of your conversation, and an under-briefed agent costs more than doing the
-work yourself. Treat it as a smart colleague who just walked in:
+work yourself. Every brief has four parts: objective; files and boundaries; patterns/tools;
+output format (`Report:` task note plus short status for a phase). Put the caller's rulings
+first: commit or not, allowed checks, rephrase a refused read-only command once, and decide
+small calls with a `Ruling:` note. Treat the agent as a smart colleague who just walked in:
 
 - **The goal and why it matters**, and whether you want research or code.
 - **Exact paths, symbols and test cases.**
@@ -57,8 +57,9 @@ work yourself. Treat it as a smart colleague who just walked in:
 - **It deletes only files it created.** Never let it clean a shared folder (a scratch
   folder, an output folder, a temp folder another agent uses) — one agent that did removed
   the session's own scripts.
-- **Its limits:** no commit, no push, no new agents, no messages to other sessions, no
-  questions to the person — unless the brief says so. "Your final message is your report."
+- **Its limits:** commit only on its worktree branch if the brief allows it. No push, new
+  agents, self-review, peer messages or questions to the person. Give a phase task number:
+  `task_get` reads the brief; `task_note` holds the report.
 - **Nothing of its own still runs when it reports:** the brief tells it to wait for every
   background command and agent it started, or to stop it, before the final message. One that
   hands back early is blocked once and told to wait or stop it — and Claude Code keeps such an
@@ -88,7 +89,7 @@ judgment for it in the brief; a tier the note says is Claude needs none of this:
 - **A UI check:** the named key screenshots it saved and the measured value per check —
   never a design verdict.
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
-- Two failed tries at the same job → hand it to `opus`; never a third affordable try.
+- A stuck build uses the fix-round limit and escalation in `/cc-smart-dev-kit:build`.
 
 ## Model and effort
 
@@ -105,11 +106,11 @@ The core instructions' model table says which model fits which job; this is the 
   architecture choice, a high-stakes review, a hard design — which you may pick yourself. `max`:
   a `haiku` or `sonnet` task may take it when it wants it, with no restriction; `opus` at `max`
   asks the person. The session's own effort is the person's choice.
-- **Opus builds** architecture and UI/UX, at `high` or `xhigh`; every other build runs on
-  `sonnet`.
+- **Opus builds** architecture and UI/UX, at `high` or `xhigh`; other builds start on
+  `sonnet`, with escalation through the build skill.
 - **A fork** runs on the session's own model, at the effort you pass, or else the session's.
 - **Saying it when you launch** (the core instructions): a fork names the session's model; a
-  Workflow names each `agent()`'s; a subagent that starts agents names them in its report.
+  Workflow names each `agent()`'s; builders never start more agents.
 
 ## UI/UX work
 
@@ -126,14 +127,14 @@ work, hard architecture, a rewrite or a complex UI/UX design, a strong second-op
 refining a plan — and a fresh attempt when the person is not satisfied with your answer.
 
 - **Advice runs on a read-only agent** (Plan, a reviewer, Explore, an auditor). It returns a
-  design, a plan, a review or a fix for you or a crew session to build.
+  design, a plan, a review or a fix for a builder to build.
 - **Fable builds only when the person asks for that build** — an agent that can change files,
   and a fork of a Fable session, which runs on Fable too. Any other build goes to `sonnet`, or to
   `opus` for architecture and UI/UX.
 
 **A fresh attempt's brief** carries: the task; your answer, or the files you changed; what the
-person disliked, in their words; and what it returns — a design, a plan or a fix for you or a
-crew session to build, never a build of its own.
+person disliked, in their words; and what it returns — a design, a plan or a fix for a
+builder to implement, never a build of its own.
 
 ## While agents run
 
@@ -149,6 +150,6 @@ crew session to build, never a build of its own.
 ## Do not
 
 - Read ten files yourself when one `Explore` call would do it.
-- Start an agent for a one-line fix, or a reviewer for a small fix.
+- Split a small fix across several builders, or skip a planned phase's task review.
 - Write one-sentence briefs — they produce shallow work.
 - Delegate a search, then repeat it yourself.

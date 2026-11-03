@@ -73,23 +73,10 @@ At the end of each stretch (a phase done, a wave merged, the work running out) p
 `decision` whose text starts `Summary:`. It says what is done, what is parked and why, what runs
 on, and what the person should look at first. `/cc-smart-dev-kit:user-available` reads it first.
 
-## 5. A lead keeps its crew going
+## 5. Keep independent phases moving
 
-`/cc-smart-dev-kit:lead` applies in full; the person's absence changes only who gets the
-questions.
-
-- **Technical questions** of a crew session: answer them, as always (`lead` § 5).
-- **A question that is the person's:** park it as a `question` with the crew session's options
-  and its recommended one, and `--crew <name>` so the answer goes back to that crew session, then
-  `cc-smart-dev-kit crew answer <name> "parked for the person as #N: go on with what it does not
-  block"`. A crew session's own channel is not a message that needs the person's yes.
-- **A permission prompt in a crew session** is denied and parked by the hook, with the crew
-  session's name. Do not wait on it: start what is unblocked.
-- **Start what is unblocked, and merge what passed its gate** into your own branch. A push, a pull
-  request merge or a merge into the default branch is an `action`, parked with its command.
-
-In a crew session itself nothing changes in how it asks: `crew report --question` goes to the
-lead, and the lead parks what is the person's.
+Use `/cc-smart-dev-kit:build` for subagent work. Resolve technical ambiguities in its task
+ledger. Park only what needs the person's yes; keep unrelated phases and reviews running.
 
 ## Never
 
