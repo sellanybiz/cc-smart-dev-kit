@@ -174,6 +174,8 @@ function removeQuietly(file: string): void {
 export interface LeaseStoreOptions {
   dir: string;
   label: string;
+  /** Read under the acquisition lock, so waiting jobs see limit changes. */
+  capacity?: () => number;
   /** A remark about one file (one this user may not read). Each file is named once. */
   onNote?: (line: string) => void;
   /** The writer of this process's files. Default: this process (`currentFileHolder`). */
@@ -357,6 +359,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
   return {
     dir: options.dir,
     label: options.label,
+    capacity: options.capacity ?? (() => HEAVY_SLOTS),
 
     held: () =>
       Promise.resolve().then(() =>
@@ -396,7 +399,11 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
             if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
               return null;
             }
-            if (slot && slotsUsed(held.map(({ file }) => ({ slot: file.slot }))) >= HEAVY_SLOTS)
+            if (
+              slot &&
+              slotsUsed(held.map(({ file }) => ({ slot: file.slot }))) >=
+                (options.capacity?.() ?? HEAVY_SLOTS)
+            )
               return null;
             const { path } = write(leases, slot, recordText, exclusive);
             return { release: () => letGo(path) };

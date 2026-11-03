@@ -236,7 +236,7 @@ Its task system is the ledger; the optional gateway supplies model choices.
 | The browser | Claude Code's browser tools on **your own** Google Chrome, in a profile of its own: [The browser](#the-browser). |
 | MCP servers | `playwright`, `sequential-thinking` and `tavily-websearch`, registered for your user: [MCP servers](#mcp-servers). |
 | The task system | The kit's own task list: the ledger of plans, phases and steps that the main session and its subagents share: [Tasks](#tasks-1100), [Subagent-driven parallel development](#subagent-driven-parallel-development). |
-| The heavy-job queue | One queue for the machine's type checks, lints, tests and builds, so only one full run goes at a time: [Heavy jobs](#heavy-jobs-one-queue-for-the-machine). |
+| The heavy-job queue | One queue for the machine's type checks, lints, tests and builds, so only the chosen number of full runs go at a time (default 1): [Heavy jobs](#heavy-jobs-one-queue-for-the-machine). |
 | Worktrees and sessions | Claude Code's own worktrees, a command that clears the finished ones, and one that brings a session back: [Worktrees](#worktrees), [Sessions](#sessions). |
 
 ## Subagent-driven parallel development
@@ -293,7 +293,7 @@ differs:
 | The launcher | `~/.local/bin/cc-smart-dev-kit` for Git Bash, and `cc-smart-dev-kit.cmd` beside it for `cmd` and PowerShell. `setup` writes both. |
 | Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
 | The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
-| The heavy-job queue | Works: each job runs as a plain child process, and the one heavy slot keeps full runs apart. Nothing caps a job's memory, here or on Linux. |
+| The heavy-job queue | Works: each job runs as a plain child process, and the machine limit keeps full runs within your chosen concurrency (default 1). Nothing caps a job's memory, here or on Linux. |
 | The guards | Work through Git Bash. The shell judge (`job-route`) is wired on **Bash and PowerShell** and reads each in its own dialect; its queue rewrite stays Bash-only, so with the job route on a heavy PowerShell line is refused with the Bash line to run instead (only where Git Bash is found). |
 | The background clean | Works: the detached clean goes through `cmd /c start` so it outlives the hook, with no console window. |
 | Notifications | A desktop toast through PowerShell (Windows plays the toast's own sound); the terminal route is Claude Code's own. |
@@ -672,6 +672,7 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   read the repository (ask its owner for read access, then accept the invitation) — and keeps
   its old line for anything else;
 - Claude Code's own plugin auto-update is off for this marketplace. It fails when it is on (`autoUpdate: true` in `settings.json`, or Claude Code's own record in `known_marketplaces.json` with no key in the settings): it knows nothing of the major hold, so it would install a major version by itself. For setup's own leftover `true` the fix is `cc-smart-dev-kit setup`; for a `true` you set, remove it by hand, then run setup;
+- the heavy-job limit and its source (default or the new machine file), plus ignored legacy `maxJobs` with its removal step;
 - Claude Code's [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog), as information (`·`), never a failure: on (set by cc-smart-dev-kit), on (your own `CLAUDE_CODE_RETRY_WATCHDOG`), off with the command that turns it on, or off because your own value leaves it off;
 - how many subagents a session runs at once ([Subagent concurrency](#subagent-concurrency)), as
   information (`·`), never a failure: the kit's value (set by cc-smart-dev-kit, with the
@@ -1841,9 +1842,10 @@ in its `cc-smart-dev-kit.json` (`autoMode`), and `cc-smart-dev-kit setup`, run i
 
 When many Claude sessions and subagents run on one machine, type checks, typed lints, test
 runs and builds start together and fight for the same memory and cores.
-`cc-smart-dev-kit job run` takes the machine's **one heavy slot**: one full heavy run at a time
-per machine, with no setting. It waits while the slot is taken (oldest first, saying who holds
-it), runs the job, and gives the slot back however the job ends. A run on named files only (at
+`cc-smart-dev-kit job run` takes one machine slot: **one full heavy run at a time by default**.
+Choose 1–8 with `cc-smart-dev-kit job set max <n>`. The default stays 1 because competing full
+suites starve each other, time out, and then "pass alone", causing false failures.
+It waits while the slots are taken (oldest first, saying who holds them), runs the job, and gives the slot back however the job ends. A run on named files only (at
 most 10, for a kind that allows it) and a run that only prints (`tsc --version`) skip the queue,
 so a targeted check never waits behind a full build. The project's `jobs.kinds` says which
 commands are heavy. How it works, the kinds and the limits: [docs/jobs.md](docs/jobs.md).
@@ -1851,13 +1853,16 @@ commands are heavy. How it works, the kinds and the limits: [docs/jobs.md](docs/
 | Command | What it does |
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits until the heavy slot is free, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone, when it takes no slot). A job inside a job that already holds the slot does not wait again. |
-| `cc-smart-dev-kit job status` | Whether the slot is in use, who holds it and who waits, and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
+| `cc-smart-dev-kit job set max <n>` | Sets your machine limit (1–8, default 1) in the new `~/.config/cc-smart-dev-kit/heavy-jobs.json` as `maxConcurrent`. Backed up and written atomically under setup's lock; `restore` takes back the kit's value. Lowering it never stops running jobs; waiting jobs see changes without a restart. |
+| `cc-smart-dev-kit job status` | The limit and its source (default or new file), slots in use, who holds them and who waits, and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
 | `cc-smart-dev-kit job kinds` | The kinds, the defaults and the project's own, each with its one-line description. |
 
 The queue's state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. There are no
 memory gates, CPU or I/O weights, systemd slices, shared folders or light lane: the slot does
 not cap the memory or the cores one run uses. A machine's old `jobs.json` and its `job set`
-values are ignored since 2.0.
+values are ignored since 2.0. The new file never reads legacy `maxJobs`; `doctor` names that
+leftover with its removal step. `/api/jobs` and the portal's Machine page show the same limit
+and source as `job status`.
 
 Whether a project's heavy commands are sent through the queue is the `switches.jobRoute`
 setting ([The workflow](#the-workflow)): the project's `jobs.route` when it has one, else your

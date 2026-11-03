@@ -67,6 +67,38 @@ function windowsReader(ticks: string | null): StartTimeReader {
   return startTimeReader("win32", { powershell: () => ticks, taskkill: () => 0 });
 }
 
+test("two stores racing for the last of two slots cannot overbook", async () => {
+  const dir = tempDir("store-race");
+  const a = leaseStore({ dir, label: "machine", capacity: () => 2 });
+  const b = leaseStore({ dir, label: "machine", capacity: () => 2 });
+  const first = await a.tryTake(true, record("first"));
+  const raced = await Promise.all([a.tryTake(true, record("a")), b.tryTake(true, record("b"))]);
+  try {
+    expect(first).not.toBeNull();
+    expect(raced.filter((lease) => lease !== null)).toHaveLength(1);
+    expect(await a.held()).toHaveLength(2);
+  } finally {
+    first?.release();
+    for (const lease of raced) lease?.release();
+  }
+});
+test("a crashed holder frees one of several slots without dropping a live holder", async () => {
+  const dir = tempDir("store-crash");
+  const dead = plantLease(dir, { ...currentFileHolder(), pid: await deadPid() }, 1);
+  const live = plantLease(dir, currentFileHolder(), 1);
+  const a = leaseStore({ dir, label: "machine", capacity: () => 2 });
+  const lease = await a.tryTake(true, record("new"));
+  try {
+    expect(lease).not.toBeNull();
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(live)).toBe(true);
+    expect(await a.held()).toHaveLength(2);
+    expect(await a.tryTake(true, record("blocked"))).toBeNull();
+  } finally {
+    lease?.release();
+  }
+});
+
 describe("leaseStore: stale holders are cleaned up", () => {
   const here = () => currentFileHolder();
 

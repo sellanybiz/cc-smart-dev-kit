@@ -19,6 +19,7 @@ import { gatewayChecks } from "../gateway/doctor";
 import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { hasDesktop } from "../hooks/desktop-alert";
+import { heavyJobChecks } from "../jobs/doctor";
 import {
   MEMORY_USE_KEY,
   readStartBlocks,
@@ -1379,6 +1380,7 @@ function doctorGroups(
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths),
         checkMaxSubagents(paths),
+        ...heavyJobChecks(paths),
       ],
     },
     {

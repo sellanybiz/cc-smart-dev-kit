@@ -3,6 +3,20 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 2.1.0
+
+- **Choose the machine's heavy-job limit.** `cc-smart-dev-kit job set max <n>` accepts 1–8;
+  the default stays 1. Competing full suites can starve each other, time out, then pass alone.
+  The new `heavy-jobs.json` file never revives legacy `jobs.json`'s `maxJobs`.
+- **Safe live changes.** Acquisitions count live leases under the existing lock. Waiting jobs
+  see the new limit, crashes free stale leases, and lowering it never kills running jobs.
+  Setup's managed writer backs up the setting; `restore` takes it back.
+- **One visible value.** `job status`, `/api/jobs`, the Machine page and `doctor` show the
+  limit and its source. Doctor names an old `maxJobs` as an ignored leftover.
+
+**What to run:** update, then use `cc-smart-dev-kit job set max 2` only if you want two full
+heavy runs at once. No command is needed to keep the default of one.
+
 ## 2.0.0
 
 Fast parallel work with subagents, in worktrees, with the kit's task system as the ledger. The
