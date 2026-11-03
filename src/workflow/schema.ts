@@ -101,9 +101,9 @@ export interface IssueLabels {
 
 /**
  * Why the three labels cannot work together, or null when they differ (compared lower-cased:
- * GitHub treats a label name that way). The ready label is a person's choice — a phase starts
- * from an issue that carries it, added by someone with write access — so neither of the kit's
- * own labels may be the same word: the kit adds `foundLabel` to every issue it files and
+ * GitHub treats a label name that way). The ready label is a person's choice — it marks an
+ * issue someone with write access chose, whose text the kit then never rewrites — so neither of
+ * the kit's own labels may be the same word: the kit adds `foundLabel` to every issue it files and
  * `fixedLabel` at a merge, through the person's own `gh` login, and would then make an issue
  * ready by itself. The found and fixed labels differ too, or "fixed" could not be told from
  * "found". One home: the schema checks a file with it, and `issue file` and the fixed mark check

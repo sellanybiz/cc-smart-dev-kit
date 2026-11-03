@@ -455,7 +455,7 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if (double !== undefined) {
     if (double.body !== body) {
       // A person labelled it ready after reading its text as it stood: a rewrite under their own
-      // login would be a change they never saw (and the edit check of `pickup.ts` would pass it).
+      // login would be a change they never saw.
       if (double.ready) {
         return refuse(
           `#${double.number} carries the ready label (${ready}), so a person has chosen its text as it stands; the kit does not rewrite it. Remove the label first, or file this as a new finding with another fingerprint`,

@@ -812,13 +812,13 @@ describe("the review gate (CM-1)", () => {
       "set",
       "issues.readyLabel",
       ["ready"],
-      "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose",
+      "names the label that marks a GitHub issue a person chose (D67), whose text the kit then never rewrites; only you choose it",
     ],
     [
       "unset",
       "issues.readyLabel",
       [],
-      "decides which GitHub issues a phase may start from (D67: only an issue the person labelled), which only you choose",
+      "names the label that marks a GitHub issue a person chose (D67), whose text the kit then never rewrites; only you choose it",
     ],
   ] as const)(
     "IX2-2: workflow %s %s refuses inside Claude Code, in both files: a session does not pick what counts as ready",
