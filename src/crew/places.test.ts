@@ -209,16 +209,11 @@ describe("the phases a crew session waits for", () => {
       crew("E", "failed"),
       crew("F", "removed"),
     ];
-    const unmergedF = {
-      phase: "F",
-      state: "removed",
-      removedUnmerged: { id: "F-x-0", name: "C my-app F x" },
-    };
     expect(unmetWaits(["A", "B", "C", "D", "E", "F", "G"], records)).toEqual([
       { phase: "A", state: "done" },
       { phase: "D", state: "working" },
       { phase: "E", state: "failed" },
-      unmergedF,
+      { phase: "F", state: "removed" },
       { phase: "G", state: null },
     ]);
   });
@@ -228,11 +223,7 @@ describe("the phases a crew session waits for", () => {
     expect(unmetWaits(["A"], [merged])).toEqual([]);
     // Removed before its work was merged: the dependent would branch without the work it waits for.
     const unmerged = { ...crew("B", "removed"), mergedBeforeRemoval: false };
-    const waiting = {
-      phase: "B",
-      state: "removed",
-      removedUnmerged: { id: "B-x-0", name: "C my-app B x" },
-    };
+    const waiting = { phase: "B", state: "removed" };
     expect(unmetWaits(["B"], [unmerged])).toEqual([waiting]);
     // A record an older kit wrote carries no fact either way: no proof of a merge, so it still waits.
     expect(unmetWaits(["B"], [crew("B", "removed")])).toEqual([waiting]);

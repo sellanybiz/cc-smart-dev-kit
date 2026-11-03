@@ -102,10 +102,15 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
 - **`--waits-for <phase,...>`** holds a phase until each of those is merged. The
   watch marks a merged branch and starts the waiting session by itself, cut from your branch
   with the merge in it. A phase the plan adds later is started the moment it is written.
-  **A phase whose crew session you removed before merging its work releases nothing**: the
-  watch tells you once, and the dependent stays queued. Start that phase again and merge it, or
-  drop the wait: `cc-smart-dev-kit crew rm "<waiting crew session>"` (a queued one goes at
-  once), then start the waiting phase again without `--waits-for` it.
+  **A phase whose crew session you removed before merging its work releases nothing**, and the
+  dependent stays queued. Start that phase again and merge it, or drop the wait:
+  `cc-smart-dev-kit crew rm "<waiting crew session>"` (a queued one goes at once), then start the
+  waiting phase again without `--waits-for` it.
+- **A `<phase> holds N queued` line is the queue stuck behind that phase.** It names the step
+  that moves it: bring back a failed or stopped crew session, remove and start again one that
+  never had a session, continue a hand-off, merge a done branch, start a phase nobody started, or
+  drop the wait. Take that step in this turn: the line
+  comes back every hour or so until you do, and the queued phases start only after it.
 - **Change a crew session's model or effort later** with
   `cc-smart-dev-kit crew model "<crew session>" [--model <model>] [--effort <effort>]` — when the
   person asks for another model, when a phase turns out harder or easier than its brief said, or

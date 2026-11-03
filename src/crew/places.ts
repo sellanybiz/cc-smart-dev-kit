@@ -117,12 +117,22 @@ export function runningForLead(
 export interface Wait {
   phase: string;
   state: null | string;
-  /**
-   * The phase's newest crew session, when it was removed before the lead merged its work: its id
-   * and its name, so the lead's watch can say which one and that the wait will not lift by
-   * itself. Absent in every other case.
-   */
-  removedUnmerged?: { id: string; name: string };
+}
+
+/**
+ * A phase's newest crew session in `repoRecords` (one repository's), the one a wait is judged by:
+ * a hand-off's next crew session, or a second try. Null when the phase has none yet.
+ */
+export function newestOfPhase(
+  phase: string,
+  repoRecords: readonly CrewRecord[],
+): CrewRecord | null {
+  return repoRecords
+    .filter((one) => one.phase === phase)
+    .reduce<CrewRecord | null>(
+      (last, one) => (last === null || one.createdAt >= last.createdAt ? one : last),
+      null,
+    );
 }
 
 /**
@@ -135,20 +145,9 @@ export function unmetWaits(
 ): Wait[] {
   const unmet: Wait[] = [];
   for (const phase of waitsFor) {
-    const newest = repoRecords
-      .filter((one) => one.phase === phase)
-      .reduce<CrewRecord | null>(
-        (last, one) => (last === null || one.createdAt >= last.createdAt ? one : last),
-        null,
-      );
+    const newest = newestOfPhase(phase, repoRecords);
     if (newest !== null && finishesWait(newest)) continue;
-    unmet.push({
-      phase,
-      state: newest?.state ?? null,
-      ...(newest !== null && newest.state === "removed" && newest.mergedBeforeRemoval !== true
-        ? { removedUnmerged: { id: newest.id, name: newest.name } }
-        : {}),
-    });
+    unmet.push({ phase, state: newest?.state ?? null });
   }
   return unmet;
 }

@@ -107,7 +107,7 @@ import {
 } from "./lifecycle";
 import { memoryMbOf } from "./memory";
 import { applyPendingModels } from "./model";
-import { type PlaceHold, runningCrew, unmetWaits } from "./places";
+import { newestOfPhase, type PlaceHold, runningCrew, unmetWaits } from "./places";
 import { releaseCrewSession } from "./release";
 import { finishParkedWorktrees, runCrewRm } from "./remove";
 import { handoffStopLine, startQueued } from "./start";
@@ -455,23 +455,187 @@ export function phasesWaitingFor(record: CrewRecord, records: readonly CrewRecor
 }
 
 /**
- * The one line for a queued crew session held by a phase that was removed before the lead merged
- * its work; null when no wait of it is such a phase. Nothing releases that wait by itself — the
- * work it waits for is not on the lead's branch — so the line says so once, and gives the way to
- * drop the wait: a queued crew session is removed at once, and the phase starts again without it.
+ * Why a phase that queued crew sessions wait for will not finish by itself, from its newest crew
+ * session: it `failed`, was `stopped`, handed off with no next crew session (`handoff`), was
+ * `removed` or `discarded` before the lead merged its work, is done and its branch waits for the
+ * lead's merge (`unmerged`), or no crew session has started it (`unstarted`). `unlaunched` is a
+ * `failed` or `stopped` one that never had a session: its launch started nothing, so its worktree
+ * and its unchanged branch were taken back, and neither `crew resume` nor `--continue` has
+ * anything to start from.
  */
-export function stuckWaitLine(record: CrewRecord, records: readonly CrewRecord[]): null | string {
-  const stuck = unmetWaits(record.waitsFor, records).filter(
-    (wait) => wait.removedUnmerged !== undefined,
-  );
-  if (stuck.length === 0) return null;
-  const phases = stuck
-    .map(
-      (wait) =>
-        `${wait.phase} (${wait.removedUnmerged?.name ?? wait.phase} was removed before its work was merged)`,
-    )
-    .join(", ");
-  return `${record.name}: still waits for ${phases}; it will not start by itself — to drop the wait: ${COMMAND} crew rm "${record.name}", then start ${record.phase} again`;
+export type StuckKind =
+  | "failed"
+  | "stopped"
+  | "handoff"
+  | "removed"
+  | "discarded"
+  | "unlaunched"
+  | "unmerged"
+  | "unstarted";
+
+/**
+ * The holder states that are stuck as soon as they are seen: none ends by itself, and each needs
+ * the lead's step. A merged phase finishes the wait; a removal after the merge too (`finishesWait`).
+ */
+const STUCK_AT_ONCE: readonly StuckKind[] = [
+  "failed",
+  "stopped",
+  "handoff",
+  "removed",
+  "discarded",
+];
+
+/** A phase that holds queued crew sessions and does not move by itself. */
+export interface StuckPhase {
+  phase: string;
+  kind: StuckKind;
+  /** The phase's newest crew session; null when none has started it. */
+  holder: CrewRecord | null;
+  /** The queued crew sessions that wait for it, oldest first. */
+  waiters: CrewRecord[];
+}
+
+/**
+ * The phases that hold `queued` (one lead's queued crew sessions) and will not move by themselves,
+ * judged in `repoRecords` (the repository's crew sessions) by each phase's newest crew session, as
+ * the queue judges a wait (`unmetWaits`). A phase at work, queued, blocked on a question or paused
+ * moves on its own or has its own line, and is not here. So is a holder whose resume waits for room
+ * (`resumeWaits`, D72): the watch brings it back once the launch gate allows, and says each reason
+ * the gate gives — unless the watch holds that resume (`resumeHeld`: it will not try it again, so
+ * the lead's step is due). Two kinds wait `graceMs` first, because the lead acts on them in its own
+ * turn: a done phase's merge (from the record's last change), and a phase nobody started yet (from
+ * the oldest waiter's queueing).
+ */
+export function stuckPhases(
+  queued: readonly CrewRecord[],
+  repoRecords: readonly CrewRecord[],
+  nowMs: number,
+  graceMs: number,
+  resumeHeld: (record: CrewRecord) => boolean,
+): StuckPhase[] {
+  const waitersOf = new Map<string, CrewRecord[]>();
+  for (const record of queued) {
+    for (const wait of unmetWaits(record.waitsFor, repoRecords)) {
+      waitersOf.set(wait.phase, [...(waitersOf.get(wait.phase) ?? []), record]);
+    }
+  }
+  const waited = (at: string) => nowMs - Date.parse(at) >= graceMs;
+  const stuck: StuckPhase[] = [];
+  for (const [phase, waiting] of waitersOf) {
+    const waiters = [...waiting].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const holder = newestOfPhase(phase, repoRecords);
+    const comesBack =
+      holder !== null &&
+      holder.resumeWaits !== undefined &&
+      !(NO_RESUME_STATES as readonly string[]).includes(holder.state) &&
+      !resumeHeld(holder);
+    const atOnce = STUCK_AT_ONCE.find((one) => one === holder?.state);
+    const kind: StuckKind | undefined =
+      holder === null
+        ? waiters.some((one) => waited(one.createdAt))
+          ? "unstarted"
+          : undefined
+        : comesBack
+          ? undefined
+          : holder.state === "done"
+            ? waited(holder.updatedAt)
+              ? "unmerged"
+              : undefined
+            : (atOnce === "failed" || atOnce === "stopped") && holder.shortId === null
+              ? "unlaunched"
+              : atOnce;
+    if (kind !== undefined) stuck.push({ phase, kind, holder, waiters });
+  }
+  return stuck.sort((a, b) => a.phase.localeCompare(b.phase));
+}
+
+/** How many waiting crew sessions a stuck phase's line names before it counts the rest. */
+const STUCK_NAMES_SHOWN = 4;
+
+/**
+ * The one line for a stuck phase (`stuckPhases`): which queued crew sessions it holds, why it does
+ * not move, and the exact step that moves it. A holder another lead started is named as such: its
+ * commands are that lead's.
+ */
+export function stuckPhaseLine(stuck: StuckPhase, leadSessionId: string): string {
+  const { phase, holder, waiters } = stuck;
+  const shown = waiters.slice(0, STUCK_NAMES_SHOWN).map((one) => one.name);
+  const more = waiters.length - shown.length;
+  const names = more > 0 ? `${shown.join(", ")} and ${String(more)} more` : shown.join(", ");
+  const head = `${phase} holds ${String(waiters.length)} queued (${names})`;
+  const name = holder?.name ?? "";
+  const who =
+    holder !== null && holder.leadSessionId !== leadSessionId
+      ? `${name} (another lead's crew session)`
+      : name;
+  const only = waiters.length === 1 ? waiters[0] : undefined;
+  const drop =
+    only === undefined
+      ? `drop the wait: ${COMMAND} crew rm each of them, then start their phases again`
+      : `drop the wait: ${COMMAND} crew rm "${only.name}", then start ${only.phase} again`;
+  const never =
+    only === undefined ? "they will not start by themselves" : "it will not start by itself";
+  switch (stuck.kind) {
+    case "failed":
+      return `${head} — ${who} failed: read its report, then bring it back with ${COMMAND} crew resume "${name}", or start it over with ${COMMAND} crew start ${phase} --continue "${name}"`;
+    case "stopped":
+      return `${head} — ${who} was stopped: bring it back with ${COMMAND} crew resume "${name}"`;
+    case "handoff":
+      return `${head} — ${who} handed off and no crew session continues it: ${COMMAND} crew start ${phase} --continue "${name}"`;
+    case "removed":
+      return `${head} — ${who} was removed before its work was merged, so ${never}: start ${phase} again, or ${drop}`;
+    case "discarded":
+      return `${head} — ${who} was discarded, so ${never}: start ${phase} again, or ${drop}`;
+    case "unlaunched": {
+      const ended = holder?.state === "stopped" ? "was stopped" : "failed";
+      const waits =
+        holder === null || holder.waitsFor.length === 0
+          ? ""
+          : ` --waits-for ${holder.waitsFor.join(",")}`;
+      return `${head} — ${who} ${ended} before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${name}", then start it again with ${COMMAND} crew start ${phase} --slug ${holder?.slug ?? ""} --kind ${holder?.kind ?? ""}${waits}, and any --brief, --files, --model or --effort you gave it first`;
+    }
+    case "unmerged":
+      return `${head} — ${who} is done and waits for your merge: merge ${holder?.branch ?? "its branch"}, and ${only === undefined ? "they start" : "it starts"}`;
+    case "unstarted":
+      return `${head} — no crew session has started ${phase}: start it (${COMMAND} crew start ${phase} …), or ${drop}`;
+  }
+}
+
+/** The start of the `said` key of a stuck phase's line (`stuckPhaseLine`). */
+const STUCK_KEY = "stuck:";
+
+/**
+ * Says each stuck phase of this pass (`stuckPhases`) when it becomes stuck, at once when what holds
+ * it changes (its kind or its crew session), and again every `QUIET_LONG_FACTOR` times
+ * `quietMinutes` while it stays stuck: a lead that read the line and went on hears it again until
+ * it acts. The said value is `<kind>:<holder id>@<when it was said>`. A phase that moves again is
+ * forgotten, and so are the per-crew-session wait keys (`<id>:wait`) an older kit kept.
+ */
+export function sayStuckPhases(
+  stuck: readonly StuckPhase[],
+  said: Record<string, string>,
+  leadSessionId: string,
+  nowMs: number,
+  quietMinutes: number,
+  say: (line: string) => void,
+): void {
+  const repeatMs = QUIET_LONG_FACTOR * quietMinutes * 60_000;
+  const keys = new Set<string>();
+  for (const one of stuck) {
+    const key = `${STUCK_KEY}${one.phase}`;
+    keys.add(key);
+    const what = `${one.kind}:${one.holder?.id ?? ""}`;
+    const before = said[key];
+    const at = before?.startsWith(`${what}@`) ? Number(before.slice(what.length + 1)) : Number.NaN;
+    // A time it cannot read (NaN fails both tests), or one ahead of the clock (the clock was set
+    // back, or the text said Infinity), never keeps it silent.
+    if (at <= nowMs && nowMs - at < repeatMs) continue;
+    say(stuckPhaseLine(one, leadSessionId));
+    said[key] = `${what}@${String(nowMs)}`;
+  }
+  for (const key of Object.keys(said)) {
+    if ((key.startsWith(STUCK_KEY) && !keys.has(key)) || key.endsWith(":wait")) delete said[key];
+  }
 }
 
 /** True when `record` holds a place: its session lives and its phase is open. */
@@ -1990,18 +2154,30 @@ async function runPass(
     if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
       await startQueued(record, ctx, resolved, scope.mergeInto);
     }
-    // A phase that was removed before its work was merged releases nothing, so this one never
-    // starts by itself: say it once, with the way to drop the wait (a phase that was merged
-    // before its removal started it, and the start's own state event is its line).
-    const waitKey = `${record.id}:wait`;
-    const stuck = stuckWaitLine(record, here);
-    if (stuck !== null && said[waitKey] !== stuck) {
-      say(stuck);
-      said[waitKey] = stuck;
-    } else if (stuck === null) {
-      delete said[waitKey];
-    }
   }
+
+  // The phases that hold this lead's queue and will not move by themselves: one line each, with
+  // the step that moves it, said again until the lead takes it. Read after the starts, so a
+  // phase that just started is not named.
+  const stillQueued = listCrew(ctx.paths.stateDir, repo).records;
+  const quietMinutes = resolved.crew.quietMinutes.value;
+  sayStuckPhases(
+    stuckPhases(
+      stillQueued.filter(
+        (one) => one.leadSessionId === scope.leadSessionId && one.state === "queued",
+      ),
+      stillQueued,
+      ctx.now(),
+      quietMinutes * 60_000,
+      // A resume this watch holds (it will not try it again): the lead's step is due.
+      (one) => said[resumeHoldKey(one.id)] !== undefined,
+    ),
+    said,
+    scope.leadSessionId,
+    ctx.now(),
+    quietMinutes,
+    say,
+  );
 
   // Model or effort changes the lead asked for that a cap held back (`crew model`, MC1): applied
   // once the caps allow, by the watch that holds its lead's lease like any start.

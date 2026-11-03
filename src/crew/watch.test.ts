@@ -78,6 +78,10 @@ import {
   PARKED_PASS_MS,
   PassFailed,
   STOP_SETTLE_MS,
+  type StuckPhase,
+  sayStuckPhases,
+  stuckPhaseLine,
+  stuckPhases,
   WATCH_MONITOR_COMMAND,
   WatchEnd,
   type WatchScope,
@@ -3124,7 +3128,7 @@ describe("crew watch", () => {
     expect(world.out).toContain("C my-app B6b portal-live: starting — started from the queue");
   });
 
-  test("F3: a phase removed before its work was merged holds its dependent, and the lead is told once", async () => {
+  test("F3: a phase removed before its work was merged holds its dependent, and the lead is told until it acts", async () => {
     const world = await leadWorld();
     // B6a's crew session was removed with nothing merged: `crew rm` removes a queued or failed
     // phase too, and that removal proves nothing about the work.
@@ -3142,16 +3146,43 @@ describe("crew watch", () => {
 
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
-    expect(world.out).toEqual([
-      'C my-app B6b portal-live: still waits for B6a (C my-app B6a x was removed before its work was merged); it will not start by itself — to drop the wait: cc-smart-dev-kit crew rm "C my-app B6b portal-live", then start B6b again',
-    ]);
+    const stuck = `B6a holds 1 queued (C my-app B6b portal-live) — C my-app B6a x was removed before its work was merged, so it will not start by itself: start B6a again, or drop the wait: ${COMMAND} crew rm "C my-app B6b portal-live", then start B6b again`;
+    expect(world.out).toEqual([stuck]);
     const queued = listCrew(world.paths.stateDir, world.repo).records.find(
       (one) => one.id === QUEUED_ID,
     );
     expect(queued?.state).toBe("queued");
 
-    // Once, not on every pass.
+    // Not on every pass: the next pass says nothing new.
     world.out.length = 0;
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([]);
+    // Three times the quiet minutes later (20 by default), the lead hears it again.
+    const later = T0 + 3 * 20 * 60_000;
+    expect(
+      await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ now: () => later - 1 })),
+    ).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(
+      await runCrew(["watch", "--once", "--timeout", "0"], world.ctx({ now: () => later })),
+    ).toBe(0);
+    expect(world.out).toEqual([stuck]);
+  });
+
+  test("F3: a lead's watch names only its own queue's stuck phases", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "removed", {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: "C my-app B6a x",
+      phase: "B6a",
+      sessionId: null,
+      shortId: null,
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+    });
+    // Another lead's crew session waits for it: that lead's watch says so, not this one.
+    await queuedCrew(world, { leadSessionId: OTHER_SESSION, waitsFor: ["B6a"] });
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
     expect(world.out).toEqual([]);
   });
@@ -5921,5 +5952,326 @@ describe("a running session with no self-watch is told to the lead", () => {
       await runCrew(["watch", "--once", "--timeout", "0"], withView(world, [row]));
       expect(world.out).not.toContain(LINE);
     }
+  });
+});
+
+describe("stuck phases: what holds the queue and the step that moves it (1.11.2)", () => {
+  /** `crew.quietMinutes` in these tests, and the grace it gives in milliseconds. */
+  const QUIET = 20;
+  const GRACE = QUIET * 60_000;
+  const B6A = "C my-app B6a x";
+  /** No resume this watch holds. */
+  const NOT_HELD = () => false;
+  const B6A_FAILED = `B6a holds 1 queued (${NAME}) — ${B6A} failed: read its report, then bring it back with ${COMMAND} crew resume "${B6A}", or start it over with ${COMMAND} crew start B6a --continue "${B6A}"`;
+  const B6A_STOPPED = `B6a holds 1 queued (${NAME}) — ${B6A} was stopped: bring it back with ${COMMAND} crew resume "${B6A}"`;
+
+  /** B6a's crew session, in `state`. */
+  async function holder(
+    world: Awaited<ReturnType<typeof leadWorld>>,
+    state: string,
+    changes: Partial<CrewRecord> = {},
+  ): Promise<CrewRecord> {
+    return await addCrew(world, state, {
+      branch: "crew/B6a-x",
+      id: "B6a-x-111111",
+      name: B6A,
+      phase: "B6a",
+      shortId: "bbbb2222",
+      sessionId: "bbbb2222-2222-3333-4444-555555555555",
+      slug: "x",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B6a-x"),
+      ...changes,
+    });
+  }
+
+  /** The repository's crew sessions, and the queued ones among them. */
+  function storeOf(world: Awaited<ReturnType<typeof leadWorld>>) {
+    const here = listCrew(world.paths.stateDir, world.repo).records;
+    return { here, queued: here.filter((one) => one.state === "queued") };
+  }
+
+  test("each holder that will not move by itself is stuck at once, with the step that moves it", async () => {
+    const lines: Record<string, string> = {
+      failed: B6A_FAILED,
+      stopped: B6A_STOPPED,
+      handoff: `B6a holds 1 queued (${NAME}) — ${B6A} handed off and no crew session continues it: ${COMMAND} crew start B6a --continue "${B6A}"`,
+      removed: `B6a holds 1 queued (${NAME}) — ${B6A} was removed before its work was merged, so it will not start by itself: start B6a again, or drop the wait: ${COMMAND} crew rm "${NAME}", then start B6b again`,
+      discarded: `B6a holds 1 queued (${NAME}) — ${B6A} was discarded, so it will not start by itself: start B6a again, or drop the wait: ${COMMAND} crew rm "${NAME}", then start B6b again`,
+    };
+    for (const [state, line] of Object.entries(lines)) {
+      const world = await leadWorld();
+      await holder(world, state);
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      const stuck = stuckPhases(queued, here, T0, GRACE, NOT_HELD);
+      expect(
+        stuck.map((one) => [
+          one.phase,
+          one.kind,
+          one.holder?.id,
+          one.waiters.map((waiter) => waiter.id),
+        ]),
+      ).toEqual([["B6a", state, "B6a-x-111111", [QUEUED_ID]]]);
+      expect(stuck.map((one) => stuckPhaseLine(one, LEAD_SESSION))).toEqual([line]);
+    }
+  });
+
+  test("a holder that never had a session is removed and started again, keeping its own waits", async () => {
+    const lines: Record<string, string> = {
+      failed: `B6a holds 1 queued (${NAME}) — ${B6A} failed before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build --waits-for B5,B4, and any --brief, --files, --model or --effort you gave it first`,
+      stopped: `B6a holds 1 queued (${NAME}) — ${B6A} was stopped before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build --waits-for B5,B4, and any --brief, --files, --model or --effort you gave it first`,
+    };
+    for (const [state, line] of Object.entries(lines)) {
+      const world = await leadWorld();
+      // A launch that started nothing: no session, and its worktree and branch taken back.
+      await holder(world, state, { sessionId: null, shortId: null, waitsFor: ["B5", "B4"] });
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      expect(
+        stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((one) => [
+          one.kind,
+          stuckPhaseLine(one, LEAD_SESSION),
+        ]),
+      ).toEqual([["unlaunched", line]]);
+    }
+    // With no waits of its own, the start has none either.
+    const world = await leadWorld();
+    await holder(world, "failed", { sessionId: null, shortId: null });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(
+      stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((one) =>
+        stuckPhaseLine(one, LEAD_SESSION),
+      ),
+    ).toEqual([
+      `B6a holds 1 queued (${NAME}) — ${B6A} failed before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build, and any --brief, --files, --model or --effort you gave it first`,
+    ]);
+  });
+
+  test("a holder whose resume waits for room comes back by itself, unless the watch holds that resume", async () => {
+    const resumeWaits = { at: new Date(T0).toISOString(), answer: null };
+    for (const state of ["failed", "stopped", "handoff"]) {
+      const world = await leadWorld();
+      const one = await holder(world, state, { resumeWaits });
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      // The watch's drain brings it back once the launch gate allows, and says the gate's reasons.
+      expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
+      // A resume the watch holds is not tried again: the lead's step is due, for that record only.
+      const held = (record: CrewRecord) => record.id === one.id;
+      expect(
+        stuckPhases(queued, here, T0, GRACE, held).map((stuck) => [stuck.phase, stuck.kind]),
+      ).toEqual([["B6a", state]]);
+      expect(stuckPhases(queued, here, T0, GRACE, (record) => record.id === QUEUED_ID)).toEqual([]);
+    }
+    // A record the resume refuses (removed before its merge) never comes back, whatever it waits for.
+    const world = await leadWorld();
+    await holder(world, "removed", { resumeWaits });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(
+      stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((stuck) => [stuck.phase, stuck.kind]),
+    ).toEqual([["B6a", "removed"]]);
+  });
+
+  test("a watch pass names a holder whose resume it holds, since it will not try that resume again", async () => {
+    const world = await leadWorld();
+    const stopped = await holder(world, "stopped", {
+      resumeWaits: { at: new Date(T0).toISOString(), answer: null },
+    });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const state: WatchState = {
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [`resume-hold:${stopped.id}`]: "resume was not stored" },
+      noted: true,
+      parkedAt: T0,
+      stoppedRemindedAt: { [stopped.id]: T0 },
+    };
+    await watchPass(state, world.ctx({}, { FAKE_AGENTS_JSON: "[]" }), scope);
+    expect(world.out.filter((line) => line.startsWith("B6a holds"))).toEqual([B6A_STOPPED]);
+  });
+
+  test("a done phase is stuck once its branch has waited the quiet minutes for the merge", async () => {
+    const world = await leadWorld();
+    await holder(world, "done");
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE, NOT_HELD)).toEqual([]);
+    expect(
+      stuckPhases(queued, here, T0 + GRACE, GRACE, NOT_HELD).map((one) =>
+        stuckPhaseLine(one, LEAD_SESSION),
+      ),
+    ).toEqual([
+      `B6a holds 1 queued (${NAME}) — ${B6A} is done and waits for your merge: merge crew/B6a-x, and it starts`,
+    ]);
+  });
+
+  test("a phase nobody started is stuck once a crew session has waited the quiet minutes for it", async () => {
+    const world = await leadWorld();
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE, NOT_HELD)).toEqual([]);
+    const stuck = stuckPhases(queued, here, T0 + GRACE, GRACE, NOT_HELD);
+    expect(stuck.map((one) => [one.kind, one.holder])).toEqual([["unstarted", null]]);
+    expect(stuck.map((one) => stuckPhaseLine(one, LEAD_SESSION))).toEqual([
+      `B6a holds 1 queued (${NAME}) — no crew session has started B6a: start it (${COMMAND} crew start B6a …), or drop the wait: ${COMMAND} crew rm "${NAME}", then start B6b again`,
+    ]);
+  });
+
+  test("a phase that moves on its own, or was merged, holds nothing stuck, even a day later", async () => {
+    for (const state of ["starting", "working", "blocked", "paused", "quiet", "queued", "merged"]) {
+      const world = await leadWorld();
+      await holder(world, state);
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
+    }
+    // A removal after the merge released its wait already.
+    const world = await leadWorld();
+    const merged = await holder(world, "merged");
+    await updateCrew(world.paths.stateDir, world.repo, merged.id, { state: "removed" }, T0);
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
+  });
+
+  test("the phase's newest crew session decides: a second try at work holds nothing stuck", async () => {
+    const world = await leadWorld();
+    await holder(world, "failed");
+    await createCrew(
+      world.paths.stateDir,
+      {
+        ...(storeOf(world).here[0] as CrewRecord),
+        id: "B6a-x-222222",
+        name: "C my-app B6a x 2",
+        state: "working",
+      },
+      T0 + 1000,
+    );
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
+  });
+
+  test("one line per stuck phase, by phase, naming the crew sessions it holds oldest first", async () => {
+    const world = await leadWorld();
+    await holder(world, "failed");
+    await addCrew(world, "removed", {
+      branch: "crew/B5-y",
+      id: "B5-y-333333",
+      name: "C my-app B5 y",
+      phase: "B5",
+      slug: "y",
+      worktree: join(world.repo, ".claude", "worktrees", "crew-B5-y"),
+    });
+    const first = await queuedCrew(world, { waitsFor: ["B6a", "B5"] });
+    // Queued later, the higher numbers first.
+    for (const n of [5, 4, 3, 2, 1]) {
+      await createCrew(
+        world.paths.stateDir,
+        {
+          ...first,
+          branch: `crew/B7-w${String(n)}`,
+          id: `B7-w${String(n)}-44444${String(n)}`,
+          name: `C my-app B7 w${String(n)}`,
+          phase: "B7",
+          waitsFor: n === 1 ? ["B6a", "B5"] : ["B6a"],
+        },
+        T0 + (6 - n) * 1000,
+      );
+    }
+    const { here, queued } = storeOf(world);
+    // In any order the caller gives them: the oldest first, whatever the store's order.
+    for (const given of [queued, [...queued].reverse()]) {
+      expect(
+        stuckPhases(given, here, T0 + 60_000, GRACE, NOT_HELD).map((one) =>
+          stuckPhaseLine(one, LEAD_SESSION),
+        ),
+      ).toEqual([
+        `B5 holds 2 queued (${NAME}, C my-app B7 w1) — C my-app B5 y was removed before its work was merged, so they will not start by themselves: start B5 again, or drop the wait: ${COMMAND} crew rm each of them, then start their phases again`,
+        `B6a holds 6 queued (${NAME}, C my-app B7 w5, C my-app B7 w4, C my-app B7 w3 and 2 more) — ${B6A} failed: read its report, then bring it back with ${COMMAND} crew resume "${B6A}", or start it over with ${COMMAND} crew start B6a --continue "${B6A}"`,
+      ]);
+    }
+  });
+
+  test("a holder another lead started is named as that lead's", async () => {
+    const world = await leadWorld();
+    await holder(world, "stopped", { leadSessionId: OTHER_SESSION });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here } = storeOf(world);
+    // Only this lead's queued crew session waits: the holder is not one of them.
+    const mine = here.filter((one) => one.id === QUEUED_ID);
+    expect(
+      stuckPhases(mine, here, T0, GRACE, NOT_HELD).map((one) => stuckPhaseLine(one, LEAD_SESSION)),
+    ).toEqual([
+      `B6a holds 1 queued (${NAME}) — ${B6A} (another lead's crew session) was stopped: bring it back with ${COMMAND} crew resume "${B6A}"`,
+    ]);
+  });
+
+  test("said when it sticks, again every three times the quiet minutes, and at once when its holder changes", async () => {
+    const world = await leadWorld();
+    const failed = await holder(world, "failed");
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const said: Record<string, string> = {
+      [`${QUEUED_ID}:wait`]: "the line an older kit said once",
+      [`${QUEUED_ID}:resume-wait`]: "load",
+    };
+    const heard: string[] = [];
+    const pass = (now: number) => {
+      const { here, queued } = storeOf(world);
+      sayStuckPhases(
+        stuckPhases(queued, here, now, GRACE, NOT_HELD),
+        said,
+        LEAD_SESSION,
+        now,
+        QUIET,
+        (line) => heard.push(line),
+      );
+    };
+    pass(T0);
+    expect(heard).toEqual([B6A_FAILED]);
+    // The older kit's per-crew-session key goes; another wait's key stays.
+    expect(said).toEqual({
+      [`${QUEUED_ID}:resume-wait`]: "load",
+      "stuck:B6a": `failed:B6a-x-111111@${String(T0)}`,
+    });
+    pass(T0 + 3 * GRACE - 1);
+    expect(heard).toEqual([B6A_FAILED]);
+    pass(T0 + 3 * GRACE);
+    expect(heard).toEqual([B6A_FAILED, B6A_FAILED]);
+    // The lead stopped it instead: a new reason is news at once.
+    await updateCrew(world.paths.stateDir, world.repo, failed.id, { state: "stopped" }, T0);
+    pass(T0 + 3 * GRACE + 1);
+    expect(heard).toEqual([B6A_FAILED, B6A_FAILED, B6A_STOPPED]);
+    // It moves again: forgotten, so the next time it sticks is news.
+    await updateCrew(world.paths.stateDir, world.repo, failed.id, { state: "working" }, T0);
+    pass(T0 + 3 * GRACE + 2);
+    expect(heard).toHaveLength(3);
+    expect(said).toEqual({ [`${QUEUED_ID}:resume-wait`]: "load" });
+    await updateCrew(world.paths.stateDir, world.repo, failed.id, { state: "stopped" }, T0);
+    pass(T0 + 3 * GRACE + 3);
+    expect(heard).toEqual([B6A_FAILED, B6A_FAILED, B6A_STOPPED, B6A_STOPPED]);
+  });
+
+  test("a said time it cannot read, or one ahead of the clock, is said again, never kept silent", () => {
+    const stuckOne: StuckPhase = { phase: "B6a", kind: "unstarted", holder: null, waiters: [] };
+    for (const at of ["soon", "Infinity", String(T0 + 1)]) {
+      const said: Record<string, string> = { "stuck:B6a": `unstarted:@${at}` };
+      const heard: string[] = [];
+      sayStuckPhases([stuckOne], said, LEAD_SESSION, T0, QUIET, (line) => heard.push(line));
+      expect(heard).toHaveLength(1);
+      expect(said).toEqual({ "stuck:B6a": `unstarted:@${String(T0)}` });
+    }
+    // Said this very moment: silent.
+    const said: Record<string, string> = { "stuck:B6a": `unstarted:@${String(T0)}` };
+    const heard: string[] = [];
+    sayStuckPhases([stuckOne], said, LEAD_SESSION, T0, QUIET, (line) => heard.push(line));
+    expect(heard).toEqual([]);
   });
 });
