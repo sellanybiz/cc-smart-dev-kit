@@ -92,6 +92,7 @@ import {
   readJsonObject,
   samePath,
 } from "../setup/managed-json";
+import { planMaxSubagents } from "../setup/max-subagents";
 import {
   planRemoteControl,
   REMOTE_CONTROL_KEY,
@@ -161,6 +162,11 @@ export interface SetupOptions {
    * default (D56), unless a "no" is on file or the person set a key of their own.
    */
   retryWatchdog: boolean | null;
+  /**
+   * `--max-subagents <n>`: the kit's value for Claude Code's own subagent cap
+   * (`src/setup/max-subagents.ts`). `null`: the default. A value of the person's own stays.
+   */
+  maxSubagents: number | null;
   /** The environment: the Tavily key may come from it (`TAVILY_API_KEY`). */
   env: Record<string, string | undefined>;
   /**
@@ -232,6 +238,8 @@ interface Managed {
    * "no", `null` leaves everything as it is (a "no" on file, or a key of the person's own).
    */
   retryWatchdog: "off" | "on" | null;
+  /** The kit's subagent cap to plan, or `null` for the default (`SetupOptions.maxSubagents`). */
+  maxSubagents: number | null;
   /**
    * What the settings' own `env.TAVILY_API_KEY` gets — the ONE decision, from where the key
    * was found (`readTavilyKey`):
@@ -378,6 +386,14 @@ function applySetup(
   }
   if (managed.statusline) set.push([STATUSLINE_KEY, statuslineSetting(paths)]);
   if (managed.retryWatchdog === "on") set.push(...RETRY_WATCHDOG_SETTINGS);
+  // Claude Code's own subagent cap (10 by default): an owned key, never a person's own value.
+  const maxSubagents = planMaxSubagents({
+    settingsFile: paths.settingsFile,
+    stateDir: paths.stateDir,
+    ...(managed.maxSubagents === null ? {} : { maxSubagents: managed.maxSubagents }),
+    dryRun,
+  });
+  set.push(...maxSubagents.set);
   if (managed.tavilyKeyPlan.kind === "write") {
     set.push([TAVILY_KEY_PATH, managed.tavilyKeyPlan.value]);
   }
@@ -452,6 +468,7 @@ function applySetup(
   if (managed.retryWatchdog === "on" && watchdogTurnedOn) {
     add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
   }
+  if (maxSubagents.note !== null) add("settings", "info", maxSubagents.note);
   if (
     managed.retryWatchdog === null &&
     retryWatchdogDeclined(paths.stateDir) &&
@@ -1069,6 +1086,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     },
     statusline: options.statusline,
     retryWatchdog: options.retryWatchdog === null ? null : options.retryWatchdog ? "on" : "off",
+    maxSubagents: options.maxSubagents,
     tavilyKeyPlan:
       tavily.source === "file"
         ? { kind: "write", value: tavily.value }

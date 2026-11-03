@@ -27,6 +27,11 @@ import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import {
+  DEFAULT_MAX_SUBAGENTS,
+  MAX_SUBAGENTS_ENV,
+  MAX_SUBAGENTS_FLAG,
+} from "../setup/max-subagents";
+import {
   NO_RETRY_WATCHDOG_FLAG,
   RETRY_WATCHDOG_ENV,
   RETRY_WATCHDOG_FLAG,
@@ -88,7 +93,7 @@ not a project hook: it needs no settings from a project, and it works in every f
 
 const SETUP_HELP = `Usage: ${COMMAND} setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
        [--no-instructions | --instructions] [--statusline] [${RETRY_WATCHDOG_FLAG} | ${NO_RETRY_WATCHDOG_FLAG}]
-       [--tavily-key-stdin]
+       [${MAX_SUBAGENTS_FLAG} <n>] [--tavily-key-stdin]
 
 Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-update off (the
 kit's background update is the one updater, so a major version waits for you), installs the
@@ -119,6 +124,9 @@ prints a section per part, one verdict line, and the next steps to run, in order
                        (${RETRY_WATCHDOG_ENV} in your settings); a usage limit that
                        resets more than 24 hours away ends the wait
   ${NO_RETRY_WATCHDOG_FLAG}  take it out again, and keep it out
+  ${MAX_SUBAGENTS_FLAG} <n>   how many subagents a session runs at once, 1 to 100
+                       (default ${DEFAULT_MAX_SUBAGENTS}, ${MAX_SUBAGENTS_ENV} in your
+                       settings); a value you set yourself is kept
   --dry-run            print what would change, and write, run and check nothing`;
 
 const DOCTOR_HELP = `Usage: ${COMMAND} doctor [--verbose] [--json] [--live]

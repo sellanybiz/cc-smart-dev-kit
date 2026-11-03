@@ -1,18 +1,11 @@
 /**
  * Claude Code's own subagent cap, written as an owned settings key.
- * The caller holds setup's lock for a real write. Restore removes our key through
- * the normal managed JSON record; a value the person changed or removed stays theirs.
+ * Setup merges `planMaxSubagents(...).set` into its one managed JSON write, under its lock.
+ * Restore removes our key through the normal managed JSON record; a value the person changed
+ * or removed stays theirs.
  */
 import { COMMAND } from "../build-info";
-import {
-  applyManagedJson,
-  getKey,
-  type KeyPath,
-  type ManagedJsonResult,
-  ownedRecords,
-  ownership,
-  readJsonObject,
-} from "./managed-json";
+import { getKey, type KeyPath, ownedRecords, ownership, readJsonObject } from "./managed-json";
 import { realTarget } from "./write";
 
 export const DEFAULT_MAX_SUBAGENTS = 10;
@@ -34,6 +27,35 @@ export function parseMaxSubagents(value: string | undefined): number {
   return validateMaxSubagents(Number(value));
 }
 
+/**
+ * Whose the key is now:
+ *   - `ours`: it holds the value cc-smart-dev-kit wrote;
+ *   - `yours`: it holds a value cc-smart-dev-kit did not write (set by hand, or changed since);
+ *   - `removed`: cc-smart-dev-kit wrote it and the person deleted it since — their choice;
+ *   - `unset`: it was never there.
+ */
+export type MaxSubagentsState =
+  | { kind: "ours"; value: unknown }
+  | { kind: "yours"; value: unknown }
+  | { kind: "removed" }
+  | { kind: "unset" };
+
+/** Read-only. Throws when the settings file is not a JSON object. */
+export function maxSubagentsState(settingsFile: string, stateDir: string): MaxSubagentsState {
+  const current = getKey(readJsonObject(settingsFile).data, MAX_SUBAGENTS_KEY);
+  const whose = ownership(
+    ownedRecords(stateDir, realTarget(settingsFile)),
+    MAX_SUBAGENTS_KEY,
+    current,
+  );
+  if (current.found) {
+    return whose === "ours"
+      ? { kind: "ours", value: current.value }
+      : { kind: "yours", value: current.value };
+  }
+  return whose === "none" ? { kind: "unset" } : { kind: "removed" };
+}
+
 export interface MaxSubagentsOptions {
   settingsFile: string;
   stateDir: string;
@@ -52,11 +74,9 @@ export interface MaxSubagentsPlan {
 /** Read-only, including in a real run. Does not create settings, state or a lock. */
 export function planMaxSubagents(options: MaxSubagentsOptions): MaxSubagentsPlan {
   const value = String(validateMaxSubagents(options.maxSubagents ?? DEFAULT_MAX_SUBAGENTS));
-  const current = getKey(readJsonObject(options.settingsFile).data, MAX_SUBAGENTS_KEY);
-  const records = ownedRecords(options.stateDir, realTarget(options.settingsFile));
-  const whose = ownership(records, MAX_SUBAGENTS_KEY, current);
+  const state = maxSubagentsState(options.settingsFile, options.stateDir);
   // A key removed after we wrote it is the person's choice too.
-  if (current.found ? whose !== "ours" : whose !== "none") {
+  if (state.kind === "yours" || state.kind === "removed") {
     return {
       set: [],
       note: `max subagents: your own ${MAX_SUBAGENTS_ENV} in ${options.settingsFile} is kept; change it by hand to use another value`,
@@ -65,7 +85,7 @@ export function planMaxSubagents(options: MaxSubagentsOptions): MaxSubagentsPlan
   return {
     set: [[MAX_SUBAGENTS_KEY, value]],
     note:
-      current.found && current.value === value
+      state.kind === "ours" && state.value === value
         ? null
         : options.dryRun
           ? `would set max subagents: ${value}; ${CHANGE}`
@@ -73,16 +93,21 @@ export function planMaxSubagents(options: MaxSubagentsOptions): MaxSubagentsPlan
   };
 }
 
-/** Apply through the owned-key writer. The caller holds the lock unless dryRun is true. */
-export function applyMaxSubagents(
-  options: MaxSubagentsOptions,
-): ManagedJsonResult & { note: string | null } {
-  const plan = planMaxSubagents(options);
-  const result = applyManagedJson({
-    file: options.settingsFile,
-    stateDir: options.stateDir,
-    set: plan.set,
-    dryRun: options.dryRun ?? false,
-  });
-  return { ...result, note: plan.note };
+/** A string as it is; anything else a person wrote (a number, null) as JSON. */
+function shown(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+/** `doctor`'s one information line: how many subagents a session runs at once, and whose value. */
+export function maxSubagentsLine(state: MaxSubagentsState, settingsFile: string): string {
+  switch (state.kind) {
+    case "ours":
+      return `max subagents: ${shown(state.value)} at once (set by ${COMMAND}); ${CHANGE}`;
+    case "yours":
+      return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile})`;
+    case "removed":
+      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand to use another value)`;
+    case "unset":
+      return `max subagents: Claude Code's own default; to use the kit's ${DEFAULT_MAX_SUBAGENTS}, run: ${COMMAND} setup`;
+  }
 }

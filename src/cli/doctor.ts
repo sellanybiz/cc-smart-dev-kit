@@ -66,6 +66,7 @@ import {
   marketplaceSource,
   redactUrl,
 } from "../setup/marketplace-access";
+import { maxSubagentsLine, maxSubagentsState } from "../setup/max-subagents";
 import { retryWatchdogLine, retryWatchdogState } from "../setup/retry-watchdog";
 import { TASK_ALLOW_PATH, TASK_DENY_PATH } from "../setup/task-tools";
 import {
@@ -474,6 +475,27 @@ function checkAutoUpdate(paths: CliPaths): Check {
         text: `Claude Code's own plugin auto-update is on (its own record, ${tildify(paths.knownMarketplacesFile, paths.home)}, says so): ${risk}`,
         fix: SETUP_FIX,
       };
+  }
+}
+
+/**
+ * Claude Code's own subagent cap (`src/setup/max-subagents.ts`) is a choice, never a failure:
+ * one `·` line says how many subagents a session runs at once, and whose value that is.
+ */
+function checkMaxSubagents(paths: CliPaths): Check {
+  const file = tildify(paths.settingsFile, paths.home);
+  try {
+    return {
+      ok: true,
+      info: true,
+      text: maxSubagentsLine(maxSubagentsState(paths.settingsFile, paths.stateDir), file),
+    };
+  } catch (error) {
+    return {
+      ok: true,
+      info: true,
+      text: `max subagents: not checked, ${file} cannot be read: ${messageOf(error)}`,
+    };
   }
 }
 
@@ -1356,6 +1378,7 @@ function doctorGroups(
         ...(await checkTmux(paths, env, machine, readCommand)),
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths),
+        checkMaxSubagents(paths),
       ],
     },
     {
