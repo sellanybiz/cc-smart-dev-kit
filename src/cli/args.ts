@@ -1,9 +1,9 @@
 /**
- * The arguments of a `crew` command, read one way: `--name value` and `--name=value` for an
+ * The arguments of a subcommand, read one way: `--name value` and `--name=value` for an
  * option, `--name` alone for a flag, only the names the command knows, and everything else is a
  * positional.
  *
- * One home for it, so every `crew` subcommand refuses an unknown option, a repeated one and a
+ * One home for it, so every subcommand refuses an unknown option, a repeated one and a
  * missing value in the same words, and reads a comma list the same way (`commaList`).
  *
  * Each option is given at most once, except the names a command lists as `repeatable` (`--option`

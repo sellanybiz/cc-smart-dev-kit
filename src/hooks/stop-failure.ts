@@ -51,8 +51,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { claudeLimitHolds, targetsNow } from "../crew/wait";
 import { fallbackOn, type GatewayConfig } from "../gateway/config";
+import { claudeLimitHolds, targetsNow } from "../gateway/limit-holds";
 import {
   type BreakerRecord,
   currentBreakers,

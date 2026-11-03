@@ -15,10 +15,10 @@
  */
 
 import { COMMAND } from "../build-info/names";
+import { parseOptions } from "../cli/args";
 import { usageError } from "../cli/help";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
-import { parseOptions } from "../crew/args";
 import { formatClock } from "../gateway/limit-state";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";

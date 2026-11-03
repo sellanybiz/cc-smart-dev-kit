@@ -218,7 +218,6 @@ async function parkCall(
       paths.stateDir,
       {
         command,
-        crew: "",
         cwd: stringField(input.cwd) ?? "",
         kind: "action",
         options: [],

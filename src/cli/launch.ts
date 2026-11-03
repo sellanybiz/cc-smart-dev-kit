@@ -37,7 +37,6 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
-import { claudeArgv, findClaude } from "../crew/claude";
 import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
 import {
   type HealthFetch,
@@ -48,6 +47,7 @@ import {
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
+import { claudeArgv, findClaude } from "../machine/claude";
 import { atomicWrite } from "../setup/write";
 import { tildify } from "./paths";
 

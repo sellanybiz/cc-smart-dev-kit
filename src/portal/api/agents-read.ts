@@ -1,5 +1,5 @@
 /** The shared agent-view parsers, with an asynchronous child so reads never freeze the portal. */
-import { CLAUDE_TIMEOUT_MS, claudeArgv, findClaude } from "../../crew/claude";
+import { CLAUDE_TIMEOUT_MS, claudeArgv, findClaude } from "../../machine/claude";
 import { sessionAgentRows } from "../../sessions/finished";
 import { commandContext } from "../../update/apply";
 import { PAGE_READ_FRESH_MS, shortCache } from "../cli-child";

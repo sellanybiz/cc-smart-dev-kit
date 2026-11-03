@@ -1,5 +1,5 @@
 /**
- * The arguments of a `crew` command (`args.ts`): values, flags, and every mistake a person
+ * The arguments of a subcommand (`args.ts`): values, flags, and every mistake a person
  * can make, each with the line that tells them what to fix.
  */
 import { describe, expect, test } from "bun:test";

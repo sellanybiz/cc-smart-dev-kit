@@ -5,7 +5,6 @@ import { type TaskOperation, taskSchemas } from "./schemas";
 export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
-import { isPhase, PHASE_RULE } from "../crew/names";
 import { runGit } from "../hooks/git";
 import { taskContext } from "./context";
 import {
@@ -44,6 +43,21 @@ import {
   updateTask,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
+
+/** The longest phase id (`K`, `W1a`, `D17b`, `E1a-E1b`): short enough for a branch and a list. */
+const MAX_PHASE = 8;
+
+/** The phase id's rule, in the words a refusal says it. */
+const PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+
+/** True when `value` is a phase id as written: `PHASE_RULE`, never changed into one. */
+function isPhaseId(value: string): boolean {
+  return (
+    value.length <= MAX_PHASE &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) &&
+    !value.includes("--")
+  );
+}
 
 function bindings(input: {
   agent?: string | undefined;
@@ -247,7 +261,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             };
           }
           const phaseId = input.phase;
-          if (!isPhase(phaseId))
+          if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const laid = value(
             writeWork(store, () =>

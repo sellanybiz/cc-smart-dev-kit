@@ -2,12 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
-import { isSessionId, namesDir, namingNote, recordSessionName } from "./session-name";
+import {
+  cleanSessionName,
+  isSessionId,
+  namesDir,
+  namingNote,
+  recordSessionName,
+} from "./session-name";
 import { sessionNameHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-// `cleanSessionName` lives in `src/crew/names.ts`, and its tests beside it.
 describe("names", () => {
   test("only a UUID is a session id", () => {
     expect(isSessionId(SESSION)).toBe(true);
@@ -86,5 +91,22 @@ describe("the hook", () => {
     const { repo, env } = setup(false);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, start(makeRepo("plain")), env)).toEqual({});
+  });
+});
+
+describe("cleanSessionName", () => {
+  test.each([
+    ["Fix the login page", "Fix the login page"],
+    ["  two\tspaces  \nsecond line", "two spaces"],
+    ["\u001b]0;evil\u0007title", "]0;evil title"],
+    ["\u009bx", "x"],
+    ["   ", null],
+    ["x".repeat(70), "x".repeat(60)],
+  ])("cleanSessionName(%j) is %j", (raw, expected) => {
+    expect(cleanSessionName(raw)).toBe(expected);
+  });
+
+  test("never splits an emoji at the cut", () => {
+    expect(cleanSessionName(`${"a".repeat(59)}😀😀`)).toBe(`${"a".repeat(59)}😀`);
   });
 });

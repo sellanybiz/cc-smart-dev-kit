@@ -1,5 +1,4 @@
 import { cliPaths } from "../../cli/paths";
-import { realProcessFacts } from "../../crew/session";
 import { isRunning, liveSessions, sessionIdentityProved } from "../../hooks/sessions";
 import {
   ancestorPids,
@@ -7,7 +6,24 @@ import {
   readProcStat,
   type StatReader,
 } from "../../jobs/ancestry";
+import { type RunningProgram, runningPrograms } from "../../worktrees/machine-facts";
 import type { Who, WorkClaim } from "./types";
+
+/**
+ * The parent of a process off Linux, from one listing of the running processes, made on the
+ * first question (`runningPrograms`); a listing that fails answers null for every pid. Linux
+ * reads `/proc` instead (`ancestorPids`).
+ */
+function listedParentOf(platform: NodeJS.Platform): ParentReader {
+  let listed: Map<number, RunningProgram> | null = null;
+  return (pid) => {
+    if (listed === null) {
+      const found = runningPrograms(platform);
+      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
+    }
+    return listed.get(pid)?.parentPid ?? null;
+  };
+}
 
 export interface ClaimFacts {
   platform?: NodeJS.Platform;
@@ -72,7 +88,7 @@ export function callerOf(
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent =
-      platform === "linux" ? null : (facts.parentOf ?? realProcessFacts(platform).parentOf)(parent);
+      platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
     const pids =
       platform === "linux"
         ? ancestorPids(pid, readStat)

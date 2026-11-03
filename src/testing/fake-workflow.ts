@@ -58,27 +58,6 @@ export function defaultResolved(): ResolvedWorkflow {
       statusLine: at(false),
       updateHold: at(false),
     },
-    crew: {
-      archiveDays: at(7),
-      deleteDays: at(30),
-      enabled: at(false),
-      handoffPercent: at(70),
-      handoffTokens: at(400_000),
-      idleStopMinutes: at(10),
-      keep: at<string[]>([]),
-      loadPerCore: at(1.5),
-      startGapSeconds: at(60),
-      max: at(12),
-      maxOpus: at<null | number>(null),
-      maxHours: at(4),
-      memoryGb: at(6),
-      perLead: at(4),
-      perLeadOpus: at(2),
-      quietMinutes: at(20),
-      softHours: at(2),
-      tag: at<null | string>(null),
-      usagePercent: at(85),
-    },
   };
 }
 

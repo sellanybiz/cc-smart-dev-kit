@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
-import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
+import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../machine/claude";
 /** A finished session is offered only after a full day in a terminal state. */
 export const FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 

@@ -50,7 +50,6 @@ function draft(over: Partial<ParkDraft> = {}): ParkDraft {
     options: [],
     recommend: null,
     session: SESSION,
-    crew: "",
     cwd: "/work/app",
     ...over,
   };
@@ -192,7 +191,6 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
         options: [],
         recommend: null,
         session: SESSION,
-        crew: "",
         cwd: "/work/app",
         at: "2026-10-25T01:00:05.000Z",
       },
@@ -400,7 +398,6 @@ describe("a guard that would ask: the frame turns it into a deny and parks the c
         options: [],
         recommend: null,
         session: SESSION,
-        crew: "",
         cwd: "/work/app",
         at: "2026-10-25T01:00:01.000Z",
       },

@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
+import { parseOptions } from "../cli/args";
 import { usageError } from "../cli/help";
 import { cliPaths } from "../cli/paths";
 import { createOut, dryRunEnding, plural } from "../cli/ui/out";
 import { currentTerminal } from "../cli/ui/terminal";
-import { parseOptions } from "../crew/args";
 import { locateCheckout } from "../project/resolve";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
