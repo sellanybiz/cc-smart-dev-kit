@@ -71,6 +71,18 @@ test("removed set and gb options are rejected", async () => {
   expect(await runJobCommand(["set", "max-jobs", "2"], ctx)).toBe(2);
   expect(await runJobCommand(["run", "--kind", "tsc", "--gb", "2", "--", "true"], ctx)).toBe(2);
 });
+test("set max chooses a machine limit and validates bounds", async () => {
+  const { ctx, lines } = world();
+  expect(await runJobCommand(["set", "max", "2"], ctx)).toBe(0);
+  expect(await runJobCommand(["status"], ctx)).toBe(0);
+  expect(lines.join("\n")).toContain("Heavy jobs: 0 of 2 slots in use");
+  expect(lines.join("\n")).toContain("heavy-jobs.json");
+  for (const value of ["0", "9", "1.5", "NaN", ""]) {
+    expect(await runJobCommand(["set", "max", value], ctx)).toBe(2);
+  }
+  expect(await runJobCommand(["set", "max", "8"], ctx)).toBe(0);
+  expect(await runJobCommand(["set", "max", "1"], ctx)).toBe(0);
+});
 test("bad kind and missing command never launch", async () => {
   const { ctx } = world();
   expect(await runJobCommand(["run", "--kind", "absent", "--", "true"], ctx)).toBe(2);

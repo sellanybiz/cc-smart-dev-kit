@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.0.0",
+  version: "2.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -25539,6 +25539,56 @@ var init_classify = __esm(() => {
   };
 });
 
+// src/jobs/config.ts
+import { readFileSync as readFileSync33 } from "fs";
+import { join as join33 } from "path";
+function jobsPaths(home) {
+  const configDir = join33(home, ".config", COMMAND);
+  return {
+    stateDir: join33(home, ".local", "share", COMMAND, "jobs"),
+    configFile: join33(configDir, "heavy-jobs.json"),
+    legacyFile: join33(configDir, "jobs.json")
+  };
+}
+function readHeavyLimit(home) {
+  const file = jobsPaths(home).configFile;
+  let text;
+  try {
+    text = readFileSync33(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { slots: HEAVY_SLOTS, source: "default" };
+    throw error;
+  }
+  const parsed = configSchema.safeParse(parseUserJson(text));
+  if (!parsed.success)
+    throw new Error(`${file}: maxConcurrent must be an integer from ${HEAVY_SLOTS} to ${MAX_HEAVY_SLOTS}`);
+  return parsed.data.maxConcurrent === undefined ? { slots: HEAVY_SLOTS, source: "default" } : { slots: parsed.data.maxConcurrent, source: file };
+}
+function heavyLimitLine(limit) {
+  return `Heavy-job limit: ${limit.slots} (${limit.source})`;
+}
+async function setHeavyLimit(paths, slots) {
+  heavySlotsSchema.parse(slots);
+  await withLock(paths.stateDir, () => withLock(jobsPaths(paths.home).stateDir, () => {
+    applyManagedJson({
+      file: jobsPaths(paths.home).configFile,
+      stateDir: paths.stateDir,
+      set: [[["maxConcurrent"], slots]]
+    });
+  }, { waitMs: 2000 }));
+}
+var HEAVY_SLOTS = 1, MAX_HEAVY_SLOTS = 8, heavySlotsSchema, configSchema;
+var init_config3 = __esm(() => {
+  init_zod();
+  init_names();
+  init_lock();
+  init_managed_json();
+  init_user_json();
+  heavySlotsSchema = number2().int().min(HEAVY_SLOTS).max(MAX_HEAVY_SLOTS);
+  configSchema = object({ maxConcurrent: heavySlotsSchema.optional() });
+});
+
 // src/jobs/windows.ts
 import { spawnSync } from "child_process";
 function exitCode(argv) {
@@ -25710,14 +25760,6 @@ var init_launch = __esm(() => {
   FORWARDED = ["SIGINT", "SIGTERM", "SIGHUP"];
 });
 
-// src/jobs/config.ts
-import { join as join33 } from "path";
-function jobsPaths(home) {
-  return { stateDir: join33(home, ".local", "share", "cc-smart-dev-kit", "jobs") };
-}
-var HEAVY_SLOTS = 1;
-var init_config3 = () => {};
-
 // src/jobs/queue.ts
 function wireOfSlot(slot) {
   return slot ? 1 : 0;
@@ -25795,8 +25837,8 @@ function decide2(input) {
     return { wait: { kind: "exclusive", name: input.exclusive } };
   if (input.line.some((entry) => !entry.mine && isBefore(entry, me) && (entry.exclusive !== null && entry.exclusive === input.exclusive || input.slot && entry.slot && !(entry.exclusive !== null && heldNames.has(entry.exclusive)))))
     return { wait: { kind: "behind" } };
-  if (input.slot && slotsUsed(input.held) >= HEAVY_SLOTS)
-    return { wait: { kind: "no-room", capacity: HEAVY_SLOTS } };
+  if (input.slot && slotsUsed(input.held) >= (input.capacity ?? HEAVY_SLOTS))
+    return { wait: { kind: "no-room", capacity: input.capacity ?? HEAVY_SLOTS } };
   return { take: true };
 }
 function twoDigits(value) {
@@ -25827,7 +25869,7 @@ function reasonText(reason) {
     case "exclusive":
       return `another job holds --exclusive ${reason.name}`;
     case "no-room":
-      return "this machine's only slot is taken";
+      return reason.capacity === 1 ? "this machine's only slot is taken" : `all ${reason.capacity} heavy slots are taken`;
     case "no-ticket":
       return "the line cannot be joined right now";
   }
@@ -25884,13 +25926,19 @@ async function acquireFrom(stores, job, options) {
         holder: parseHolder(unit.text),
         slot: unit.slot
       }));
-      const decision = decide2({ exclusive: job.exclusive ?? null, held, line, slot: job.slot });
+      const decision = decide2({
+        capacity: store.capacity?.() ?? HEAVY_SLOTS,
+        exclusive: job.exclusive ?? null,
+        held,
+        line,
+        slot: job.slot
+      });
       let reason;
       if ("take" in decision) {
         const units = await store.tryTake(job.slot, text(now()), job.exclusive);
         if (units !== null)
           return { release: once(() => units.release()), waitedSince };
-        reason = { kind: "no-room", capacity: HEAVY_SLOTS };
+        reason = { kind: "no-room", capacity: store.capacity?.() ?? HEAVY_SLOTS };
       } else
         reason = decision.wait;
       const at = now();
@@ -26026,7 +26074,7 @@ import {
   chmodSync as chmodSync2,
   mkdirSync as mkdirSync13,
   readdirSync as readdirSync10,
-  readFileSync as readFileSync33,
+  readFileSync as readFileSync34,
   renameSync as renameSync2,
   statSync as statSync11,
   unlinkSync as unlinkSync5,
@@ -26174,7 +26222,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync33(path, "utf8");
+        text = readFileSync34(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -26220,6 +26268,7 @@ function leaseStore(options) {
   return {
     dir: options.dir,
     label: options.label,
+    capacity: options.capacity ?? (() => HEAVY_SLOTS),
     held: () => Promise.resolve().then(() => readLive(leases).map(({ file }) => ({ slot: file.slot, text: file.record }))),
     waiting: () => Promise.resolve().then(() => readLive(tickets).map(({ file }) => ({ slot: file.slot, text: file.record }))),
     enqueue: (recordText) => Promise.resolve().then(() => {
@@ -26241,7 +26290,7 @@ function leaseStore(options) {
           if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
             return null;
           }
-          if (slot && slotsUsed(held.map(({ file }) => ({ slot: file.slot }))) >= HEAVY_SLOTS)
+          if (slot && slotsUsed(held.map(({ file }) => ({ slot: file.slot }))) >= (options.capacity?.() ?? HEAVY_SLOTS))
             return null;
           const { path } = write(leases, slot, recordText, exclusive);
           return { release: () => letGo(path) };
@@ -26263,11 +26312,17 @@ var init_store = __esm(() => {
 });
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync14, readdirSync as readdirSync11, statSync as statSync12 } from "fs";
+import { mkdirSync as mkdirSync14, readdirSync as readdirSync11, readFileSync as readFileSync35, statSync as statSync12 } from "fs";
 function openStores(ctx) {
   const dir = jobsPaths(ctx.paths.home).stateDir;
   mkdirSync14(dir, { recursive: true });
-  return { machine: leaseStore({ dir, label: "this machine" }) };
+  return {
+    machine: leaseStore({
+      dir,
+      label: "this machine",
+      capacity: () => readHeavyLimit(ctx.paths.home).slots
+    })
+  };
 }
 async function readJobs(ctx) {
   const notes = [];
@@ -26280,10 +26335,12 @@ async function readJobs(ctx) {
   const route = resolveJobRoute(ctx.paths, project?.config ?? null);
   const { machine } = openStores(ctx);
   const parsed = (units) => units.map((unit) => ({ holder: parseHolder(unit.text), slot: unit.slot })).sort((a, b) => (a.holder?.since ?? 0) - (b.holder?.since ?? 0));
+  const limit = readHeavyLimit(ctx.paths.home);
   const store = {
     dir: machine.dir,
     label: machine.label,
-    slots: HEAVY_SLOTS,
+    slots: limit.slots,
+    note: heavyLimitLine(limit),
     held: [],
     waiting: []
   };
@@ -26307,7 +26364,7 @@ function statusLines(read, home, now) {
     routeLine2(read.route, home),
     ...read.notes,
     ...read.stores.flatMap((s) => [
-      `Heavy jobs: ${slotsUsed(s.held)} of ${HEAVY_SLOTS} slot in use`,
+      `Heavy jobs: ${slotsUsed(s.held)} of ${s.slots} ${s.slots === 1 ? "slot" : "slots"} in use`,
       ...s.note === undefined ? [] : [s.note],
       ...holderLines(s.held, s.label, now),
       ...s.waiting.map(({ holder }) => holder === null ? "  waiting: unknown holder" : `  waiting: ${shownHolder(holder)}, since ${formatSince(holder.since, now)} (pid ${holder.pid})`)
@@ -26508,6 +26565,22 @@ async function runJobCommand(args, ctx) {
   switch (command) {
     case "run":
       return jobRun(rest, ctx);
+    case "set": {
+      const [key, value, ...extra] = rest;
+      const parsed = heavySlotsSchema.safeParse(Number(value));
+      if (key !== "max" || value === undefined || extra.length > 0 || !parsed.success) {
+        ctx.say(USAGE2);
+        return 2;
+      }
+      try {
+        await setHeavyLimit(ctx.paths, parsed.data);
+        ctx.print(heavyLimitLine(readHeavyLimit(ctx.paths.home)));
+        return 0;
+      } catch (error) {
+        ctx.say(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+    }
     case "status":
       return jobStatus(ctx);
     case "kinds":
@@ -26531,6 +26604,7 @@ var init_commands2 = __esm(() => {
   init_resolve();
   init_ancestry();
   init_classify();
+  init_config3();
   init_kinds();
   init_launch();
   init_queue();
@@ -26540,10 +26614,11 @@ var init_commands2 = __esm(() => {
 
 Commands:
   run [--kind <kind>] [--exclusive <name>] -- <command...>
-                 Wait for this machine's single heavy slot, then run the command.
+                 Wait for a free heavy slot on this machine, then run the command.
                  Named-file and print-only runs skip the queue.
                  Output, exit code and signals pass through.
-  status         Who holds the slot and who waits.
+  status         Limit, its source, running jobs and waiting jobs.
+  set max <n>    Set the machine limit (${HEAVY_SLOTS}..${MAX_HEAVY_SLOTS}); default ${HEAVY_SLOTS}.
   kinds          The kinds of heavy job.
 
 How it works: docs/jobs.md in the plugin's repo.`;
@@ -26556,7 +26631,7 @@ import {
   constants as constants2,
   existsSync as existsSync28,
   readdirSync as readdirSync13,
-  readFileSync as readFileSync34,
+  readFileSync as readFileSync36,
   realpathSync as realpathSync5
 } from "fs";
 import { dirname as dirname11, join as join35 } from "path";
@@ -26632,7 +26707,7 @@ function userUnits(dir) {
     const file = join35(dir, name);
     let argv;
     try {
-      argv = unitExecStart(readFileSync34(file, "utf8"));
+      argv = unitExecStart(readFileSync36(file, "utf8"));
     } catch {
       continue;
     }
@@ -26643,7 +26718,7 @@ function userUnits(dir) {
 }
 function versionOf(folder, name) {
   try {
-    const manifest = JSON.parse(readFileSync34(join35(folder, "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync36(join35(folder, "package.json"), "utf8"));
     const wanted = manifest;
     if (wanted.name !== name || typeof wanted.version !== "string")
       return null;
@@ -26849,7 +26924,7 @@ var init_registry = __esm(() => {
 });
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync29, readFileSync as readFileSync35 } from "fs";
+import { existsSync as existsSync29, readFileSync as readFileSync37 } from "fs";
 function emptyState() {
   return { previous: null, version: 1 };
 }
@@ -26879,7 +26954,7 @@ function parseState(text) {
 }
 function readState(file) {
   try {
-    return parseState(readFileSync35(file, "utf8")) ?? emptyState();
+    return parseState(readFileSync37(file, "utf8")) ?? emptyState();
   } catch {
     return emptyState();
   }
@@ -26892,7 +26967,7 @@ function stateFile(paths) {
 }
 function readOrNull(path) {
   try {
-    return readFileSync35(path, "utf8");
+    return readFileSync37(path, "utf8");
   } catch {
     return null;
   }
@@ -27456,7 +27531,7 @@ import {
   existsSync as existsSync30,
   mkdirSync as mkdirSync15,
   readdirSync as readdirSync14,
-  readFileSync as readFileSync36,
+  readFileSync as readFileSync38,
   renameSync as renameSync3,
   rmSync as rmSync9,
   writeFileSync as writeFileSync7
@@ -27469,7 +27544,7 @@ function listFiles(folder) {
   return readdirSync14(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative(folder, join36(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
 }
 function hashFile(file) {
-  return createHash5("sha256").update(readFileSync36(file)).digest("base64");
+  return createHash5("sha256").update(readFileSync38(file)).digest("base64");
 }
 function sameFolder(target, source, files) {
   if (!existsSync30(target) || !markedOwned(target))
@@ -27487,7 +27562,7 @@ function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
   if (!existsSync30(file))
     return [];
-  const parsed = JSON.parse(readFileSync36(file, "utf8"));
+  const parsed = JSON.parse(readFileSync38(file, "utf8"));
   const folders = parsed?.folders;
   if (!Array.isArray(folders) || !folders.every((one) => typeof one === "string")) {
     throw new Error(`Invalid ${file}: expected { "folders": [<path>, \u2026] }`);
@@ -27516,7 +27591,7 @@ function copyFolder(source, into, files) {
   for (const file of files) {
     const to = join36(into, ...file.split("/"));
     mkdirSync15(dirname12(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync7(to, readFileSync36(join36(source, ...file.split("/"))), { mode: FILE_MODE2 });
+    writeFileSync7(to, readFileSync38(join36(source, ...file.split("/"))), { mode: FILE_MODE2 });
     setFileMode(to, FILE_MODE2);
   }
   mkdirSync15(into, { recursive: true, mode: DIR_MODE });
@@ -27577,7 +27652,7 @@ var init_managed_folder = __esm(() => {
 });
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync31, readFileSync as readFileSync37, rmSync as rmSync10 } from "fs";
+import { existsSync as existsSync31, readFileSync as readFileSync39, rmSync as rmSync10 } from "fs";
 import { join as join37 } from "path";
 function portalServerArgv(bunPath, copy, pluginDir) {
   return [
@@ -27597,7 +27672,7 @@ function refreshPortalCopy(paths, pluginFolder) {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync37(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync39(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
@@ -27733,7 +27808,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync37(paths.portalHeldFile, "utf8");
+    const text = readFileSync39(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -27993,7 +28068,7 @@ var init_notify_types = __esm(() => {
 });
 
 // src/setup/managed-hook.ts
-import { existsSync as existsSync32, readFileSync as readFileSync38 } from "fs";
+import { existsSync as existsSync32, readFileSync as readFileSync40 } from "fs";
 import { join as join38 } from "path";
 function isHookHandler(value) {
   return isObject(value) && typeof value.type === "string" && typeof value.command === "string" && (value.timeout === undefined || typeof value.timeout === "number");
@@ -28020,7 +28095,7 @@ function readOwnedHooks(stateDir) {
   const file = join38(stateDir, OWNED_HOOKS_FILE);
   if (!existsSync32(file))
     return {};
-  const parsed = JSON.parse(readFileSync38(file, "utf8"));
+  const parsed = JSON.parse(readFileSync40(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((events) => isObject(events) && Object.values(events).every(isOwnedHookRecord));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <event>: { entry, created } } }`);
@@ -28268,7 +28343,7 @@ var init_user_notify_hook = __esm(() => {
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash6 } from "crypto";
-import { mkdirSync as mkdirSync16, readFileSync as readFileSync39 } from "fs";
+import { mkdirSync as mkdirSync16, readFileSync as readFileSync41 } from "fs";
 import { dirname as dirname13, join as join39 } from "path";
 function autoCleanLog(stateDir) {
   return join39(stateDir, "worktrees-auto-clean.log");
@@ -28284,7 +28359,7 @@ function autoCleanFiles(stateDir, repo) {
 }
 function readJson2(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync39(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync41(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -28368,7 +28443,7 @@ function holdPort(port) {
 var init_hold_port = () => {};
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync15, readFileSync as readFileSync40, readlinkSync as readlinkSync4 } from "fs";
+import { lstatSync as lstatSync2, readdirSync as readdirSync15, readFileSync as readFileSync42, readlinkSync as readlinkSync4 } from "fs";
 import { join as join40 } from "path";
 function parseIgnored(porcelain) {
   return porcelain.split("\x00").filter((entry) => entry.startsWith("!! ")).map((entry) => entry.slice(3));
@@ -28389,7 +28464,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync15(here).every((entry) => same(join40(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync40(here).equals(readFileSync40(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync42(here).equals(readFileSync42(there));
     } catch {
       return false;
     }
@@ -28473,7 +28548,7 @@ var init_local_files = __esm(() => {
 });
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync34, readdirSync as readdirSync16, readFileSync as readFileSync41, statSync as statSync14 } from "fs";
+import { existsSync as existsSync34, readdirSync as readdirSync16, readFileSync as readFileSync43, statSync as statSync14 } from "fs";
 import { uptime } from "os";
 import { join as join41 } from "path";
 function parseSessionRecord(json) {
@@ -28530,7 +28605,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
     try {
       if (statSync14(join41(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync41(join41(dir, file), "utf8");
+      text = readFileSync43(join41(dir, file), "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         continue;
@@ -28608,12 +28683,12 @@ var init_auto_start = __esm(() => {
 });
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync35, readFileSync as readFileSync42, statSync as statSync15 } from "fs";
+import { existsSync as existsSync35, readFileSync as readFileSync44, statSync as statSync15 } from "fs";
 import { basename as basename7, isAbsolute as isAbsolute3, join as join43, resolve as resolve9 } from "path";
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync42(join43(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync44(join43(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
@@ -28768,7 +28843,7 @@ var init_worktree_leftovers = __esm(() => {
 });
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync17, readFileSync as readFileSync43, readlinkSync as readlinkSync5 } from "fs";
+import { readdirSync as readdirSync17, readFileSync as readFileSync45, readlinkSync as readlinkSync5 } from "fs";
 import { platform } from "os";
 function parseContainerMounts(output) {
   const containers = [];
@@ -29030,7 +29105,7 @@ function mountPoints(on = platform()) {
   if (on !== "linux")
     return "unknown";
   try {
-    return parseMountPoints(readFileSync43("/proc/self/mountinfo", "utf8")) ?? "unknown";
+    return parseMountPoints(readFileSync45("/proc/self/mountinfo", "utf8")) ?? "unknown";
   } catch {
     return "unknown";
   }
@@ -29610,7 +29685,7 @@ var init_clean = __esm(() => {
 });
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync37, lstatSync as lstatSync3, readdirSync as readdirSync19, readFileSync as readFileSync44, rmSync as rmSync12 } from "fs";
+import { existsSync as existsSync37, lstatSync as lstatSync3, readdirSync as readdirSync19, readFileSync as readFileSync46, rmSync as rmSync12 } from "fs";
 import { dirname as dirname14, join as join45, relative as relative2 } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
@@ -29718,7 +29793,7 @@ function gitEntryWhy(folder) {
   if (!stat.isFile())
     return "its .git entry is neither a file nor a folder";
   try {
-    const target = readFileSync44(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
+    const target = readFileSync46(dotGit, "utf8").trim().replace(/^gitdir:\s*/, "");
     return target !== "" && existsSync37(target) ? `git still has an administrative folder for it: ${target}` : null;
   } catch {
     return "its .git file cannot be read";
@@ -30089,7 +30164,7 @@ var init_format = __esm(() => {
 });
 
 // src/tasks/project/files.ts
-import { existsSync as existsSync38, mkdirSync as mkdirSync17, readdirSync as readdirSync20, readFileSync as readFileSync45, rmSync as rmSync13 } from "fs";
+import { existsSync as existsSync38, mkdirSync as mkdirSync17, readdirSync as readdirSync20, readFileSync as readFileSync47, rmSync as rmSync13 } from "fs";
 import { basename as basename10, dirname as dirname15, isAbsolute as isAbsolute4, join as join46, relative as relative3, resolve as resolve11, sep as sep4 } from "path";
 function projectTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
@@ -30112,7 +30187,7 @@ function scanProjectTasks(dir, options) {
       if (!entry.isFile() || !isTaskFile(entry.name))
         continue;
       const file = join46(folder, entry.name);
-      const result = parseProjectTask(readFileSync45(file, "utf8"), file);
+      const result = parseProjectTask(readFileSync47(file, "utf8"), file);
       if (result.ok)
         tasks.push(result.task);
       else
@@ -31198,7 +31273,7 @@ var init_store2 = __esm(() => {
 });
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync46, rmSync as rmSync14 } from "fs";
+import { readFileSync as readFileSync48, rmSync as rmSync14 } from "fs";
 import { relative as relative5 } from "path";
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
@@ -31448,7 +31523,7 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = input.task.startsWith("T-") ? (() => {
           const file = project(input.task).file;
-          const body = readFileSync46(file, "utf8");
+          const body = readFileSync48(file, "utf8");
           if (!ctx.checkoutRoot)
             return body;
           const head = runGit(ctx.checkoutRoot, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
@@ -31593,7 +31668,7 @@ var init_ops = __esm(() => {
 });
 
 // src/tasks/project/branch.ts
-import { existsSync as existsSync41, readFileSync as readFileSync47 } from "fs";
+import { existsSync as existsSync41, readFileSync as readFileSync49 } from "fs";
 import { isAbsolute as isAbsolute7, join as join48, relative as relative6, resolve as resolve13, sep as sep6 } from "path";
 function taskGit(repo, args) {
   const result = runGit(repo, args, process.env, RESOLVE_GIT_TIMEOUT_MS, {
@@ -31682,7 +31757,7 @@ function branchTaskChanges(checkoutRoot, dir, base) {
       changes.push({ file, change: "deleted" });
       continue;
     }
-    const parsed = parseProjectTask(readFileSync47(absolute, "utf8"), absolute);
+    const parsed = parseProjectTask(readFileSync49(absolute, "utf8"), absolute);
     const change = status === "A" ? "added" : "changed";
     changes.push(parsed.ok ? { file, change: parsed.task.status === "open" ? change : "closed", task: parsed.task } : { file, change, why: parsed.why });
   }
@@ -31714,7 +31789,7 @@ var init_branch = __esm(() => {
 });
 
 // src/tasks/project/import-notes.ts
-import { mkdirSync as mkdirSync19, readdirSync as readdirSync22, readFileSync as readFileSync48 } from "fs";
+import { mkdirSync as mkdirSync19, readdirSync as readdirSync22, readFileSync as readFileSync50 } from "fs";
 import { basename as basename11, join as join49 } from "path";
 function importNotes(options) {
   const { folder, dir, kind, dryRun, since } = options;
@@ -31737,7 +31812,7 @@ function importNotes(options) {
     }
     if (!created)
       result.noDate.push(file);
-    const body = readFileSync48(file, "utf8");
+    const body = readFileSync50(file, "utf8");
     const title = /^# (.+)\r?$/m.exec(body)?.[1]?.trim() || basename11(file, ".md").replace(/[-_]+/g, " ");
     const task = planProjectTask(dir, { title, kind, from, body, ...created ? { created } : {} }, options, used);
     if (!dryRun) {
@@ -31967,7 +32042,7 @@ var init_import_claude_mem = __esm(() => {
 });
 
 // src/tasks/command.ts
-import { readFileSync as readFileSync49 } from "fs";
+import { readFileSync as readFileSync51 } from "fs";
 import { basename as basename12, dirname as dirname17, join as join50, relative as relative7 } from "path";
 async function runTaskCommand(argv) {
   const out = createOut(currentTerminal());
@@ -31987,7 +32062,7 @@ async function runTaskCommand(argv) {
     return bad(`Wrong arguments for task ${command}`);
   const get = (key) => options.get(`--${key}`);
   const has = (key) => flags.has(`--${key}`);
-  const fileText = async () => get("file") === "-" ? await Bun.stdin.text() : readFileSync49(get("file") ?? "", "utf8");
+  const fileText = async () => get("file") === "-" ? await Bun.stdin.text() : readFileSync51(get("file") ?? "", "utf8");
   const ops = createTaskOps();
   try {
     let projectCommand = function() {
@@ -32417,7 +32492,7 @@ var init_clashes = __esm(() => {
 });
 
 // src/hooks/settings-hooks.ts
-import { existsSync as existsSync43, readFileSync as readFileSync50 } from "fs";
+import { existsSync as existsSync43, readFileSync as readFileSync52 } from "fs";
 import { join as join51 } from "path";
 function retiredEngineHookOf(command) {
   return RETIRED_ENGINE_LINE.exec(command)?.[3] ?? null;
@@ -32442,7 +32517,7 @@ function hooksOf(file) {
   if (!existsSync43(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync50(file, "utf8"));
+    const parsed = JSON.parse(readFileSync52(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const hooks = parsed.hooks;
@@ -34380,7 +34455,7 @@ code is passed on. It starts nothing inside a Claude Code session.`;
 });
 
 // src/cli/project-init.ts
-import { existsSync as existsSync46, readFileSync as readFileSync51 } from "fs";
+import { existsSync as existsSync46, readFileSync as readFileSync53 } from "fs";
 import { join as join56, relative as relative9 } from "path";
 async function runGh2(ghPath, args, env) {
   try {
@@ -34510,7 +34585,7 @@ function defaultFastCheck(root) {
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync51(file, "utf8"));
+    const parsed = parseUserJson(readFileSync53(file, "utf8"));
     scripts = isObject(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -34780,7 +34855,7 @@ function printPlan(plan, context) {
   return (plan.changed ? 1 : 0) + settings.length;
 }
 function readText(file) {
-  return existsSync46(file) ? readFileSync51(file, "utf8") : null;
+  return existsSync46(file) ? readFileSync53(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText(file);
@@ -34959,10 +35034,10 @@ The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
 });
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync52 } from "fs";
+import { readFileSync as readFileSync54 } from "fs";
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync52(file, "utf8"));
+    return parseSafetyCheckState(readFileSync54(file, "utf8"));
   } catch {
     return null;
   }
@@ -34972,7 +35047,7 @@ var init_safety_checks_read = __esm(() => {
 });
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync21, readFileSync as readFileSync53, statSync as statSync18 } from "fs";
+import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync21, readFileSync as readFileSync55, statSync as statSync18 } from "fs";
 import { dirname as dirname19 } from "path";
 function cutBack(file) {
   let size;
@@ -34983,7 +35058,7 @@ function cutBack(file) {
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync53(file, "utf8");
+  const text = readFileSync55(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
@@ -35000,7 +35075,7 @@ var init_jsonl_log = __esm(() => {
 });
 
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync54 } from "fs";
+import { readFileSync as readFileSync56 } from "fs";
 import { join as join57 } from "path";
 function agentUsageFile(stateDir) {
   return join57(stateDir, AGENT_USAGE_FILE);
@@ -35148,7 +35223,7 @@ function agentKey2(one) {
 function readAgentUsage(file, sinceMs) {
   let text;
   try {
-    text = readFileSync54(file, "utf8");
+    text = readFileSync56(file, "utf8");
   } catch {
     return [];
   }
@@ -35178,7 +35253,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync54(transcript, "utf8");
+    text = readFileSync56(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -35200,7 +35275,7 @@ var init_agent_usage = __esm(() => {
 });
 
 // src/cli/transcripts.ts
-import { readdirSync as readdirSync23, readFileSync as readFileSync55, statSync as statSync19 } from "fs";
+import { readdirSync as readdirSync23, readFileSync as readFileSync57, statSync as statSync19 } from "fs";
 import { join as join58 } from "path";
 function listed(path) {
   try {
@@ -35247,7 +35322,7 @@ function transcriptTree(projectsDir) {
 }
 function transcriptBytes(ref) {
   try {
-    return readFileSync55(ref.path);
+    return readFileSync57(ref.path);
   } catch {
     return null;
   }
@@ -35661,7 +35736,7 @@ function transcriptTree2(projectsDir) {
 var init_transcripts2 = () => {};
 
 // src/sessions/flow.ts
-import { closeSync as closeSync7, mkdirSync as mkdirSync22, openSync as openSync7, readFileSync as readFileSync56, readSync as readSync3, statSync as statSync20 } from "fs";
+import { closeSync as closeSync7, mkdirSync as mkdirSync22, openSync as openSync7, readFileSync as readFileSync58, readSync as readSync3, statSync as statSync20 } from "fs";
 import { dirname as dirname20, join as join60 } from "path";
 function isJsonObject16(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -35886,7 +35961,7 @@ function readAskLog(file) {
   let skipped = 0;
   let text;
   try {
-    text = readFileSync56(file, "utf8");
+    text = readFileSync58(file, "utf8");
   } catch {
     return { asks, skipped };
   }
@@ -36588,7 +36663,7 @@ function readFlow(paths, options) {
     const cacheFile = join60(paths.stateDir, "flow", `${project}.json`);
     let cache = { project, sessions: {}, version: CACHE_VERSION };
     try {
-      cache = parseCache(readFileSync56(cacheFile, "utf8"), project);
+      cache = parseCache(readFileSync58(cacheFile, "utf8"), project);
     } catch {}
     let dirty = false;
     for (const [id, found] of ids) {
@@ -36916,7 +36991,7 @@ waiting on you now. Read only; no message text. The window is at most ${FLOW_DAY
 });
 
 // src/sessions/finished.ts
-import { readFileSync as readFileSync57 } from "fs";
+import { readFileSync as readFileSync59 } from "fs";
 import { join as join61 } from "path";
 function finishedSessions(rows, excluded, terminalAt, now) {
   const sessions = [];
@@ -36958,7 +37033,7 @@ function sessionTerminalAt(paths, row) {
   if (!/^[0-9a-f]{8}$/.test(row.id))
     return null;
   try {
-    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync57(join61(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
+    const parsed = terminalSchema.safeParse(JSON.parse(readFileSync59(join61(paths.claudeConfigDir, "jobs", row.id, "state.json"), "utf8")));
     if (!parsed.success || parsed.data.sessionId !== row.sessionId || parsed.data.state !== row.state)
       return null;
     return Math.max(Date.parse(parsed.data.lastTerminalAt), Date.parse(parsed.data.updatedAt));
@@ -37229,7 +37304,7 @@ import {
   mkdirSync as mkdirSync23,
   openSync as openSync8,
   readdirSync as readdirSync25,
-  readFileSync as readFileSync58,
+  readFileSync as readFileSync60,
   readSync as readSync4,
   rmSync as rmSync16,
   statSync as statSync21,
@@ -37337,7 +37412,7 @@ function saveWarpTabs(dir, sessions, mainCheckout, command) {
     const path = join63(dir, name);
     let text;
     try {
-      text = readFileSync58(path, "utf8");
+      text = readFileSync60(path, "utf8");
     } catch {
       continue;
     }
@@ -37372,7 +37447,7 @@ function openedRecently(stateDir, id, now, minutes = OPENED_AGAIN_MINUTES) {
     return false;
   let text;
   try {
-    text = readFileSync58(file, "utf8").trim();
+    text = readFileSync60(file, "utf8").trim();
   } catch {
     return false;
   }
@@ -37617,7 +37692,7 @@ var init_command6 = __esm(() => {
 });
 
 // src/update/retired-repos.ts
-import { existsSync as existsSync48, readFileSync as readFileSync59 } from "fs";
+import { existsSync as existsSync48, readFileSync as readFileSync61 } from "fs";
 import { join as join64, relative as relative10 } from "path";
 function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
@@ -37651,7 +37726,7 @@ function retiredPartsOf(repo, mainCheckout = null) {
   let error = null;
   if (existsSync48(config)) {
     try {
-      fields = retiredFieldsOf(parseUserJson(readFileSync59(config, "utf8"))).map((field) => `worktrees.${field}`);
+      fields = retiredFieldsOf(parseUserJson(readFileSync61(config, "utf8"))).map((field) => `worktrees.${field}`);
     } catch (cause) {
       error = messageOf3(cause);
     }
@@ -40735,7 +40810,7 @@ async function runClaudeMem(argv, deps) {
 init_doctor();
 init_build_info();
 init_config();
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync70, readFileSync as readFileSync78 } from "fs";
+import { accessSync as accessSync2, constants as constants3, existsSync as existsSync70, readFileSync as readFileSync81 } from "fs";
 import { dirname as dirname30, join as join81 } from "path";
 
 // src/gateway/doctor.ts
@@ -40743,7 +40818,7 @@ init_build_info();
 init_paths2();
 init_backends();
 init_checks_down();
-import { existsSync as existsSync51, readFileSync as readFileSync60 } from "fs";
+import { existsSync as existsSync51, readFileSync as readFileSync62 } from "fs";
 
 // src/gateway/claude-defaults.ts
 init_build_info();
@@ -40996,7 +41071,7 @@ async function gatewayChecks(options) {
   }
   if (!existsSync51(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync51(options.bundle) && readFileSync60(paths.routerCopy, "utf8") !== readFileSync60(options.bundle, "utf8")) {
+  } else if (existsSync51(options.bundle) && readFileSync62(paths.routerCopy, "utf8") !== readFileSync62(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -41306,7 +41381,7 @@ async function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (readFileSync60(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+  if (readFileSync62(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
       check: {
         ok: false,
@@ -41348,13 +41423,51 @@ async function socketCheck(options, port) {
 init_health();
 init_desktop_alert();
 
+// src/jobs/doctor.ts
+init_names();
+init_user_json();
+init_config3();
+import { readFileSync as readFileSync63 } from "fs";
+function heavyJobChecks(paths) {
+  const checks = [];
+  try {
+    checks.push({ ok: true, info: true, text: heavyLimitLine(readHeavyLimit(paths.home)) });
+  } catch (error) {
+    checks.push({
+      ok: false,
+      text: `Heavy-job limit cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+      fix: `Run ${COMMAND} job set max <n> with a valid limit, or remove maxConcurrent from the new file`
+    });
+  }
+  const file = jobsPaths(paths.home).legacyFile;
+  try {
+    const old = parseUserJson(readFileSync63(file, "utf8"));
+    if (typeof old === "object" && old !== null && "maxJobs" in old)
+      checks.push({
+        ok: true,
+        info: true,
+        text: `${file}: legacy maxJobs is ignored`,
+        fix: `Remove maxJobs from that old file; use ${COMMAND} job set max <n> to choose the new limit`
+      });
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      checks.push({
+        ok: true,
+        info: true,
+        text: `${file}: unreadable legacy job settings are ignored`,
+        fix: "Remove the old file if it is no longer needed"
+      });
+  }
+  return checks;
+}
+
 // src/machine/warp.ts
 init_names();
 init_paths2();
 init_config();
 init_installed_plugins();
 init_write();
-import { chmodSync as chmodSync4, existsSync as existsSync52, mkdirSync as mkdirSync24, readFileSync as readFileSync61, rmSync as rmSync17, writeFileSync as writeFileSync9 } from "fs";
+import { chmodSync as chmodSync4, existsSync as existsSync52, mkdirSync as mkdirSync24, readFileSync as readFileSync64, rmSync as rmSync17, writeFileSync as writeFileSync9 } from "fs";
 import { join as join66 } from "path";
 var WARP_PLUGIN_ID = "warp@claude-code-warp";
 var WARP_MARKETPLACE = "claude-code-warp";
@@ -41660,7 +41773,7 @@ function warpPluginSteps(paths) {
 }
 function otherPluginFrom(paths, marketplace, except) {
   try {
-    const parsed = JSON.parse(readFileSync61(paths.installedPluginsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync64(paths.installedPluginsFile, "utf8"));
     return Object.keys(parsed.plugins ?? {}).some((id) => id !== except && id.endsWith(`@${marketplace}`));
   } catch {
     return false;
@@ -41738,7 +41851,7 @@ init_paths2();
 
 // src/mcp/records.ts
 init_write();
-import { existsSync as existsSync53, readFileSync as readFileSync62 } from "fs";
+import { existsSync as existsSync53, readFileSync as readFileSync65 } from "fs";
 import { join as join67 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
@@ -41753,7 +41866,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync53(file))
     return {};
-  const parsed = JSON.parse(readFileSync62(file, "utf8"));
+  const parsed = JSON.parse(readFileSync65(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -41799,12 +41912,12 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 init_paths2();
 init_launcher();
 init_user_json();
-import { existsSync as existsSync54, readFileSync as readFileSync63 } from "fs";
+import { existsSync as existsSync54, readFileSync as readFileSync66 } from "fs";
 import { dirname as dirname23, join as join68, resolve as resolve17 } from "path";
 function readUserServers(file) {
   let text;
   try {
-    text = readFileSync63(file, "utf8");
+    text = readFileSync66(file, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? {} : null;
   }
@@ -42107,7 +42220,7 @@ import {
   existsSync as existsSync55,
   lstatSync as lstatSync4,
   readdirSync as readdirSync26,
-  readFileSync as readFileSync64,
+  readFileSync as readFileSync67,
   rmdirSync,
   rmSync as rmSync18,
   statSync as statSync22
@@ -42298,7 +42411,7 @@ function mentions2(value, text) {
 function registrationsNaming(userConfigFile, file, takenBack) {
   let text;
   try {
-    text = readFileSync64(userConfigFile, "utf8");
+    text = readFileSync67(userConfigFile, "utf8");
   } catch (error) {
     return error.code === "ENOENT" ? [] : null;
   }
@@ -42444,7 +42557,7 @@ function retiredChecks(paths) {
 init_file_mode();
 init_managed_json();
 init_user_json();
-import { existsSync as existsSync56, readFileSync as readFileSync65, statSync as statSync23 } from "fs";
+import { existsSync as existsSync56, readFileSync as readFileSync68, statSync as statSync23 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
 function settingsEnvValue(file, name) {
@@ -42491,7 +42604,7 @@ function readKeyFile(paths, platform) {
   let text;
   try {
     mode = statSync23(paths.tavilyKeyFile).mode & 4095;
-    text = readFileSync65(paths.tavilyKeyFile, "utf8");
+    text = readFileSync68(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
       source: "none",
@@ -42668,12 +42781,12 @@ init_path_compare();
 init_check2();
 init_installed_plugins();
 init_lock();
-import { existsSync as existsSync60, readdirSync as readdirSync28, readFileSync as readFileSync69, rmSync as rmSync19 } from "fs";
+import { existsSync as existsSync60, readdirSync as readdirSync28, readFileSync as readFileSync72, rmSync as rmSync19 } from "fs";
 import { join as join71, relative as relative11, sep as sep7 } from "path";
 
 // src/setup/managed-markdown.ts
 init_write();
-import { existsSync as existsSync57, readFileSync as readFileSync66 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync69 } from "fs";
 var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
 var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
@@ -42735,7 +42848,7 @@ function renderWithoutBlock(current, file = "the file") {
 function writeMarkdown(options, render) {
   const file = realTarget(options.file);
   return retryOnConcurrentChange(file, () => {
-    const text = existsSync57(file) ? readFileSync66(file, "utf8") : null;
+    const text = existsSync57(file) ? readFileSync69(file, "utf8") : null;
     const next = render(text ?? "", file);
     if (text === null && next === "")
       return { outcome: "unchanged", backup: null };
@@ -42758,13 +42871,13 @@ function removeManagedMarkdown(options) {
 
 // src/setup/restore.ts
 init_path_compare();
-import { existsSync as existsSync59, readdirSync as readdirSync27, readFileSync as readFileSync68, rmdirSync as rmdirSync2 } from "fs";
+import { existsSync as existsSync59, readdirSync as readdirSync27, readFileSync as readFileSync71, rmdirSync as rmdirSync2 } from "fs";
 import { dirname as dirname24 } from "path";
 
 // src/setup/managed-entries.ts
 init_managed_json();
 init_write();
-import { existsSync as existsSync58, readFileSync as readFileSync67 } from "fs";
+import { existsSync as existsSync58, readFileSync as readFileSync70 } from "fs";
 import { join as join70 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -42778,7 +42891,7 @@ function readOwnedEntries(stateDir) {
   const file = join70(stateDir, OWNED_ENTRIES_FILE);
   if (!existsSync58(file))
     return {};
-  const parsed = JSON.parse(readFileSync67(file, "utf8"));
+  const parsed = JSON.parse(readFileSync70(file, "utf8"));
   const valid = isObject(parsed) && Object.values(parsed).every((lists) => isObject(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -42977,7 +43090,7 @@ function restoreWholeFile(file, entry, stateDir) {
       return { file, action: "unchanged", details: [] };
     return { file, action: "removed", details: [], savedAs: removeManagedFile(stateDir, file) };
   }
-  const result = writeManagedFile(file, readFileSync68(baseline.path, "utf8"), {
+  const result = writeManagedFile(file, readFileSync71(baseline.path, "utf8"), {
     stateDir,
     kind: "whole-file",
     mode: baseline.mode
@@ -42994,7 +43107,7 @@ function restoreWholeFile(file, entry, stateDir) {
 function isEmpty(file) {
   if (!existsSync59(file))
     return false;
-  const text = readFileSync68(file, "utf8").trim();
+  const text = readFileSync71(file, "utf8").trim();
   return text === "" || text === "{}";
 }
 function restorePartly(file, entry, stateDir, options) {
@@ -43123,7 +43236,7 @@ function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
   if (!existsSync60(file))
     return null;
-  const version = readFileSync69(file, "utf8").trim();
+  const version = readFileSync72(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
@@ -43208,7 +43321,7 @@ function copyDifferences(paths) {
     const copy = join71(paths.target, name);
     if (!existsSync60(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync69(copy, "utf8") !== readFileSync69(join71(paths.source, name), "utf8")) {
+    else if (readFileSync72(copy, "utf8") !== readFileSync72(join71(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
@@ -43264,7 +43377,7 @@ function installCopy(paths, dryRun, version) {
   for (const name of files) {
     const file = join71(paths.target, name);
     wanted.add(realTarget(file));
-    const result = writeManagedFile(file, readFileSync69(join71(paths.source, name), "utf8"), {
+    const result = writeManagedFile(file, readFileSync72(join71(paths.source, name), "utf8"), {
       stateDir: paths.stateDir,
       kind: "whole-file",
       mode: 420,
@@ -43291,7 +43404,7 @@ function installCopy(paths, dryRun, version) {
 }
 function installInstructions(paths, dryRun, version) {
   const lines = installCopy(paths, dryRun, version);
-  const before = existsSync60(paths.claudeMd) ? readFileSync69(paths.claudeMd, "utf8") : null;
+  const before = existsSync60(paths.claudeMd) ? readFileSync72(paths.claudeMd, "utf8") : null;
   const block = applyManagedMarkdown({
     file: paths.claudeMd,
     stateDir: paths.stateDir,
@@ -43317,7 +43430,7 @@ function installInstructions(paths, dryRun, version) {
 function removeInstructions(paths, dryRun) {
   const lines = [];
   const claudeMd = realTarget(paths.claudeMd);
-  const text = existsSync60(claudeMd) ? readFileSync69(claudeMd, "utf8") : null;
+  const text = existsSync60(claudeMd) ? readFileSync72(claudeMd, "utf8") : null;
   const entry = readChanged(paths.stateDir)[claudeMd];
   if (text?.includes(BLOCK_BEGIN)) {
     if (dryRun) {
@@ -43475,13 +43588,13 @@ function applyTaskPermissions(paths, allow, dryRun) {
 
 // src/setup/tmux.ts
 init_managed_line();
-import { readFileSync as readFileSync70 } from "fs";
+import { readFileSync as readFileSync73 } from "fs";
 var TMUX_LINE = "set -g allow-passthrough all";
 var TMUX_NOW_COMMAND = "tmux set -g allow-passthrough all";
 var TMUX_MIN_VERSION = "3.3";
 function tmuxLineIn(file) {
   try {
-    return readFileSync70(file, "utf8").split(`
+    return readFileSync73(file, "utf8").split(`
 `).includes(TMUX_LINE);
   } catch {
     return false;
@@ -43607,7 +43720,7 @@ import {
   existsSync as existsSync62,
   mkdirSync as mkdirSync26,
   mkdtempSync as mkdtempSync6,
-  readFileSync as readFileSync72,
+  readFileSync as readFileSync75,
   realpathSync as realpathSync8,
   rmSync as rmSync20,
   writeFileSync as writeFileSync10
@@ -43638,7 +43751,7 @@ init_command2();
 init_zod();
 init_lock();
 init_write();
-import { mkdirSync as mkdirSync25, readFileSync as readFileSync71 } from "fs";
+import { mkdirSync as mkdirSync25, readFileSync as readFileSync74 } from "fs";
 import { join as join73 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
@@ -43681,7 +43794,7 @@ function readAway(stateDir) {
   const file = awayStateFile(stateDir);
   let text;
   try {
-    text = readFileSync71(file, "utf8");
+    text = readFileSync74(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return freshState();
@@ -44101,7 +44214,7 @@ function liveRecordFile(stateDir) {
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync72(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync75(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -44114,7 +44227,7 @@ var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then ru
 function readLog(file) {
   if (!existsSync62(file))
     return [];
-  return readFileSync72(file, "utf8").split(`
+  return readFileSync75(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -44239,7 +44352,7 @@ init_paths2();
 init_build_info();
 init_git();
 init_settings_hooks();
-import { existsSync as existsSync69, readFileSync as readFileSync77 } from "fs";
+import { existsSync as existsSync69, readFileSync as readFileSync80 } from "fs";
 import { join as join80 } from "path";
 
 // src/hooks/specs.ts
@@ -45936,7 +46049,7 @@ import { dirname as dirname27, join as join77 } from "path";
 // src/hooks/session-name.ts
 init_names();
 init_io();
-import { existsSync as existsSync65, mkdirSync as mkdirSync28, readFileSync as readFileSync73, renameSync as renameSync4, writeFileSync as writeFileSync12 } from "fs";
+import { existsSync as existsSync65, mkdirSync as mkdirSync28, readFileSync as readFileSync76, renameSync as renameSync4, writeFileSync as writeFileSync12 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { join as join76 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -45955,7 +46068,7 @@ function namesDir(env) {
 }
 function readName(file) {
   try {
-    return existsSync65(file) ? cleanSessionName(readFileSync73(file, "utf8")) : null;
+    return existsSync65(file) ? cleanSessionName(readFileSync76(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -46284,12 +46397,12 @@ init_classify();
 init_kinds();
 
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync74 } from "fs";
+import { readFileSync as readFileSync77 } from "fs";
 import { join as join78 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync74(join78(folder, "package.json"), "utf8");
+    text = readFileSync77(join78(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -47841,7 +47954,7 @@ function inEscapeDomain(input) {
 // src/hooks/subagent-background.ts
 init_agent_guard();
 init_io();
-import { readFileSync as readFileSync75 } from "fs";
+import { readFileSync as readFileSync78 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -47939,7 +48052,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync75(transcript, "utf8");
+    text = readFileSync78(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -48004,7 +48117,7 @@ function taskStart(input, paths, env, now = Date.now) {
 init_names();
 init_checks_down();
 init_limit_state();
-import { existsSync as existsSync68, mkdirSync as mkdirSync30, readFileSync as readFileSync76, writeFileSync as writeFileSync14 } from "fs";
+import { existsSync as existsSync68, mkdirSync as mkdirSync30, readFileSync as readFileSync79, writeFileSync as writeFileSync14 } from "fs";
 import { dirname as dirname29, join as join79 } from "path";
 
 // src/models/tier-view.ts
@@ -48064,7 +48177,7 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync76(mark, "utf8");
+    return readFileSync79(mark, "utf8");
   } catch {
     return null;
   }
@@ -48762,7 +48875,7 @@ function baseRefOf(sources) {
     if (!existsSync69(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync77(file, "utf8"));
+      const parsed = JSON.parse(readFileSync80(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -48776,7 +48889,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync77(file, "utf8"));
+  const parsed = JSON.parse(readFileSync80(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -49093,7 +49206,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync78(launcher, "utf8");
+  const script = readFileSync81(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -49129,7 +49242,7 @@ async function checkLauncherCmd(paths, shLauncher, read) {
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync78(cmd, "utf8");
+  const script = readFileSync81(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -49505,7 +49618,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync70(where.claudeMd) ? readFileSync78(where.claudeMd, "utf8") : "";
+  const text = existsSync70(where.claudeMd) ? readFileSync81(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -49568,7 +49681,7 @@ function checkProjectImports(paths, cwd) {
         continue;
       let text;
       try {
-        text = readFileSync78(from, "utf8");
+        text = readFileSync81(from, "utf8");
       } catch {
         continue;
       }
@@ -49898,7 +50011,8 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
         ...await checkTmux(paths, env, machine, readCommand),
         ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths),
-        checkMaxSubagents(paths)
+        checkMaxSubagents(paths),
+        ...heavyJobChecks(paths)
       ]
     },
     {
@@ -50056,7 +50170,7 @@ init_config();
 init_health();
 init_service();
 init_settings();
-import { existsSync as existsSync71, readdirSync as readdirSync29, readFileSync as readFileSync79, renameSync as renameSync5, rmSync as rmSync21, statSync as statSync24 } from "fs";
+import { existsSync as existsSync71, readdirSync as readdirSync29, readFileSync as readFileSync82, renameSync as renameSync5, rmSync as rmSync21, statSync as statSync24 } from "fs";
 import { basename as basename15, dirname as dirname31, join as join82 } from "path";
 init_path_compare();
 init_file_mode();
@@ -50202,7 +50316,7 @@ function progressFile(stateDir) {
 }
 function readProgress(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync79(progressFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync82(progressFile(stateDir), "utf8"));
     if (!isObject(parsed) || !Array.isArray(parsed.steps))
       return null;
     const steps = parsed.steps.filter((step) => MIGRATE_STEPS.includes(String(step)));
@@ -50255,7 +50369,7 @@ function oldStateFolder(old) {
 }
 function readText2(file) {
   try {
-    return readFileSync79(file, "utf8");
+    return readFileSync82(file, "utf8");
   } catch {
     return null;
   }
@@ -50356,7 +50470,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     const file = join82(stateDir, name);
     if (!existsSync71(file))
       return;
-    const text = readFileSync79(file, "utf8");
+    const text = readFileSync82(file, "utf8");
     const next = `${JSON.stringify(rewrite(JSON.parse(text)), null, 2)}
 `;
     if (next === text)
@@ -50421,7 +50535,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   const kept = [];
   if (!existsSync71(settingsFile))
     return { set, remove, kept };
-  const parsed = JSON.parse(readFileSync79(settingsFile, "utf8"));
+  const parsed = JSON.parse(readFileSync82(settingsFile, "utf8"));
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -50451,7 +50565,7 @@ function readOldConfig(file, platform = hostPlatform()) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
   try {
-    const parsed = JSON.parse(readFileSync79(file, "utf8"));
+    const parsed = JSON.parse(readFileSync82(file, "utf8"));
     if (!isObject(parsed))
       throw new Error("not an object");
     return parsed;
@@ -50497,7 +50611,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
     return 0;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync79(file, "utf8"));
+    parsed = JSON.parse(readFileSync82(file, "utf8"));
   } catch {
     return 0;
   }
@@ -50532,7 +50646,7 @@ function migrateInstructions(paths, stateDir, options) {
     });
     return lines;
   }
-  const text = existsSync71(claudeMd) ? readFileSync79(claudeMd, "utf8") : null;
+  const text = existsSync71(claudeMd) ? readFileSync82(claudeMd, "utf8") : null;
   if (text === null || !text.includes(OLD.blockBegin))
     return lines;
   const block = text.replaceAll(OLD.blockBegin, BLOCK_BEGIN).replaceAll(OLD.blockEnd, BLOCK_END);
@@ -50598,7 +50712,7 @@ ${parsed.error}` };
   const stateDir = oldStateFolder(old);
   if (existsSync71(paths.settingsFile)) {
     try {
-      const parsed = JSON.parse(readFileSync79(paths.settingsFile, "utf8"));
+      const parsed = JSON.parse(readFileSync82(paths.settingsFile, "utf8"));
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`
@@ -52076,12 +52190,12 @@ init_checks_down();
 init_limit_state();
 init_targets();
 init_agent_guard();
-import { readFileSync as readFileSync82 } from "fs";
+import { readFileSync as readFileSync85 } from "fs";
 
 // src/machine/claude-settings.ts
 init_targets();
 init_user_json();
-import { readFileSync as readFileSync80, statSync as statSync25 } from "fs";
+import { readFileSync as readFileSync83, statSync as statSync25 } from "fs";
 import { basename as basename18, dirname as dirname34, join as join87, resolve as resolve22 } from "path";
 var AUTOCOMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 var AUTOCOMPACT_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
@@ -52210,7 +52324,7 @@ function checkoutRootAt(dir) {
   try {
     if (statSync25(entry).isDirectory())
       return dir;
-    const line = readFileSync80(entry, "utf8").split(`
+    const line = readFileSync83(entry, "utf8").split(`
 `, 1)[0] ?? "";
     if (!line.startsWith("gitdir:"))
       return dir;
@@ -52305,7 +52419,7 @@ function pinnedEffortOf(config, model, state, profile, nowMs) {
 // src/cli/usage-window.ts
 init_zod();
 init_write();
-import { existsSync as existsSync75, readFileSync as readFileSync81 } from "fs";
+import { existsSync as existsSync75, readFileSync as readFileSync84 } from "fs";
 import { join as join88 } from "path";
 var FIVE_HOUR_WINDOW = "five_hour";
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
@@ -52340,7 +52454,7 @@ function readStored(file) {
   if (!existsSync75(file))
     return null;
   try {
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync81(file, "utf8")));
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync84(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -52477,7 +52591,7 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   }
   let state = null;
   try {
-    state = parseLimitState(readFileSync82(paths.gatewayStateFile, "utf8"));
+    state = parseLimitState(readFileSync85(paths.gatewayStateFile, "utf8"));
   } catch {
     state = null;
   }
@@ -52635,7 +52749,7 @@ init_desktop_alert();
 // src/hooks/notify.ts
 init_plain_text();
 init_apply();
-import { existsSync as existsSync76, readFileSync as readFileSync83, rmSync as rmSync24, statSync as statSync26, writeFileSync as writeFileSync15 } from "fs";
+import { existsSync as existsSync76, readFileSync as readFileSync86, rmSync as rmSync24, statSync as statSync26, writeFileSync as writeFileSync15 } from "fs";
 import { tmpdir as tmpdir10 } from "os";
 import { basename as basename19, join as join90 } from "path";
 init_alerts();
@@ -52745,7 +52859,7 @@ function isWarpTerminal(env) {
 }
 function warpPluginOn(claudeConfigDir) {
   try {
-    const settings = JSON.parse(readFileSync83(join90(claudeConfigDir, "settings.json"), "utf8"));
+    const settings = JSON.parse(readFileSync86(join90(claudeConfigDir, "settings.json"), "utf8"));
     if (!isJsonObject22(settings) || !isJsonObject22(settings.enabledPlugins))
       return false;
     if (settings.enabledPlugins[WARP_PLUGIN_ID2] !== true)
@@ -52754,7 +52868,7 @@ function warpPluginOn(claudeConfigDir) {
     return false;
   }
   try {
-    const installed = JSON.parse(readFileSync83(join90(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
+    const installed = JSON.parse(readFileSync86(join90(claudeConfigDir, "plugins", "installed_plugins.json"), "utf8"));
     if (!isJsonObject22(installed) || !isJsonObject22(installed.plugins))
       return false;
     const entries = installed.plugins[WARP_PLUGIN_ID2];
@@ -52931,7 +53045,7 @@ function waitThenLastAnswer(transcript) {
 }
 function readFailed(file) {
   try {
-    const text = readFileSync83(file, "utf8").trim();
+    const text = readFileSync86(file, "utf8").trim();
     return text === "" ? null : text;
   } catch {
     return null;
@@ -52983,7 +53097,7 @@ var DEFAULT_NOTIFY_CONFIG = {
 function readNotifyConfig(file) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync83(file, "utf8"));
+    parsed = JSON.parse(readFileSync86(file, "utf8"));
   } catch {
     return DEFAULT_NOTIFY_CONFIG;
   }
@@ -53258,14 +53372,14 @@ init_command();
 init_commands2();
 
 // src/machine/machine.ts
-import { existsSync as existsSync78, readFileSync as readFileSync84 } from "fs";
+import { existsSync as existsSync78, readFileSync as readFileSync87 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function hostFacts(env) {
   const real = {
     exists: (path) => existsSync78(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync78("/etc/os-release") ? readFileSync84("/etc/os-release", "utf8") : null,
+    osRelease: () => existsSync78("/etc/os-release") ? readFileSync87("/etc/os-release", "utf8") : null,
     macApp: "/Applications/Warp.app"
   };
   const text = env[TEST_HOST_VAR];
@@ -53361,7 +53475,7 @@ init_propose();
 init_resolve2();
 init_schema();
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync79, mkdirSync as mkdirSync32, readFileSync as readFileSync85 } from "fs";
+import { existsSync as existsSync79, mkdirSync as mkdirSync32, readFileSync as readFileSync88 } from "fs";
 import { basename as basename21, dirname as dirname35, join as join94, relative as relative14 } from "path";
 
 // src/portal/facts.ts
@@ -53537,7 +53651,7 @@ async function mapLimit(items, atOnce, read) {
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync85(paths.portalProjectsFile, "utf8");
+    text = readFileSync88(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }

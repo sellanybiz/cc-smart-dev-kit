@@ -30,7 +30,16 @@ test("status ignores even a malformed old jobs.json", async () => {
   writeFileSync(join(config, "jobs.json"), "{");
   expect(jobsAnswer(await readJobs(ctx))).toEqual({
     route: { on: false, source: "default", project: null },
-    stores: [{ where: "machine", slots: 1, used: 0, held: [], waiting: [] }],
+    stores: [
+      {
+        where: "machine",
+        slots: 1,
+        used: 0,
+        held: [],
+        waiting: [],
+        note: "Heavy-job limit: 1 (default)",
+      },
+    ],
   });
 });
 test("status and fingerprint show the holder and waiting job", async () => {

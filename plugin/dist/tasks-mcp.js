@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.0.0",
+  version: "2.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

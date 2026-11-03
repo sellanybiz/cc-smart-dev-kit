@@ -1,8 +1,20 @@
 # Heavy jobs
 
-`src/jobs/` owns one machine-wide slot for a heavy run. A project's `jobs.kinds` classifies
-heavy commands. A run on named files bypasses the queue. The limit is fixed: no setting,
-resource estimate, second lane or shared-folder coordination.
+`src/jobs/` owns the machine's heavy-job slots, one by default. A project's `jobs.kinds`
+classifies heavy commands. A run on named files bypasses the queue. `config.ts` owns the
+new `heavy-jobs.json` file, its `maxConcurrent` schema (1–8) and the default. It never reads
+legacy `jobs.json` as configuration. No resource estimate, second lane or shared-folder coordination.
+
+`job set max <n>` writes through setup's managed JSON writer under the setup lock, so backups,
+atomic writes, ownership and restore work as for other managed keys. Status and doctor show the
+value and its source. The shared store note carries that source to the existing Machine page.
+
+Each acquisition counts live leases and reads the limit under the same store lock before writing
+its own lease. Concurrent takers cannot exceed it. Waiting jobs reread it, so a raised limit
+needs no restart. Lowering the limit leaves existing leases alone and blocks new heavy jobs until
+the count falls below it. Stale-process recovery is unchanged. Invalid new settings fail closed.
+The default stays 1: competing full suites starved each other, timed out, then passed alone,
+causing false failures. The upper bound limits accidental fan-out, not machine resources.
 
 `job run` waits in ticket order, acquires the slot, starts the command and returns its exit
 code. The lease covers the child process group until the run ends. Signals reach the

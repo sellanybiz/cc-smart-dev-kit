@@ -1,7 +1,24 @@
 # Heavy jobs
 
-One heavy run at a time per machine. There is no concurrency setting. Small runs on named
-files bypass the queue, so a targeted check need not wait behind a full build.
+One heavy run at a time per machine by default. You can choose a higher machine limit with
+`cc-smart-dev-kit job set max <n>` (1–8). Small runs on named files bypass the queue, so a
+targeted check need not wait behind a full build.
+
+The default stays 1 because several full suites at once starve each other, time out, and then
+"pass alone". That caused false failures before. Eight is a small upper bound against accidental
+fan-out, not a measure of your machine's resources. Raise it only when your full runs coexist well.
+
+The setting is `maxConcurrent` in `~/.config/cc-smart-dev-kit/heavy-jobs.json`, for your user on
+this machine, never a project setting. The command uses setup's managed JSON writer, backup,
+atomic write and lock. `restore` removes the value the kit wrote and leaves unrelated keys alone.
+`job status`, `/api/jobs`, the portal's Machine page and `doctor` show the limit and its source
+(the default or the new file). Legacy `jobs.json` and its `maxJobs` are never read as settings;
+`doctor` names an old `maxJobs` as a leftover to remove.
+
+A new acquisition reads the current limit under the lease lock. Raising it lets waiting jobs
+use new slots without restarting. Lowering it does not stop running jobs: new jobs wait until
+the number running falls below the new limit. Invalid new settings fail closed: no heavy job
+starts until the file is fixed.
 
 A **heavy job** is a command that can use many gigabytes: a TypeScript type check, a
 type-aware lint, a test run, a production build, a container image build. When many Claude
@@ -25,8 +42,9 @@ cc-smart-dev-kit job kinds
 
 | Command | What it does |
 |---|---|
-| `job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits for the machine's one slot, runs the command, and gives the slot back when it ends. The command keeps its stdin, stdout, stderr and exit code, and signals reach its child processes too. `--kind`, `--exclusive`, or both. |
-| `job status` | Who holds the slot and who waits, and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
+| `job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits for a free machine slot, runs the command, and gives the slot back when it ends. The command keeps its stdin, stdout, stderr and exit code, and signals reach its child processes too. `--kind`, `--exclusive`, or both. |
+| `job set max <n>` | Sets the machine limit (1–8); default 1. No running job is stopped. |
+| `job status` | The limit, its source, who holds slots and who waits, and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `job kinds` | Every kind: where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
 
 ## How a job runs
@@ -38,7 +56,7 @@ cc-smart-dev-kit job kinds
    parent processes (`/proc/<pid>/stat`) and, when one of them holds a lease on this machine,
    runs its command directly. Linux only. An inner job with `--exclusive` still takes its name,
    unless an ancestor holds that name already (§ One job per name).
-3. **Take the slot.** A job with a kind takes the one slot, and waits until it is free
+3. **Take the slot.** A job with a kind takes one slot, and waits until it is free
    (§ Waiting). A job with a name only (`--exclusive` without `--kind`) takes no slot.
 4. **Run.** The job starts in a process group of its own (§ The job's own process group).
 5. **End.** `job run` ends with the job's exit code: the code itself, 128 + n for a job killed
@@ -323,12 +341,13 @@ the hook, in `src/hooks/bash-judge.test.ts`.
 ## What 2.0 took out
 
 There are no memory checks, CPU or I/O weights, systemd slices, `choom`, shared folders,
-fair-share rules, light lane or `job set`. The queue never changes process priority. An old
+fair-share rules, light lane or old resource-setting commands. Since 2.1, `job set max` chooses
+only the heavy-job count. The queue never changes process priority. An old
 `jobs` setting or machine `jobs.json` file is ignored since 2.0; no file is cleaned up.
 
 ## Limits
 
-- **The slot prevents two full heavy runs from competing.** It does not cap the memory or CPU
+- **The limit caps concurrent full heavy runs (one by default).** It does not cap the memory or CPU
   one run uses: one job alone may use all the machine's memory and every core.
 - **It is machine-local**, not a distributed lock.
 - **A `job run` killed with SIGKILL** frees its lease at the next look, but its job keeps

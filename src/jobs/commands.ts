@@ -6,6 +6,14 @@ import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
 import { toolCallOfArgv } from "./classify";
+import {
+  HEAVY_SLOTS,
+  heavyLimitLine,
+  heavySlotsSchema,
+  MAX_HEAVY_SLOTS,
+  readHeavyLimit,
+  setHeavyLimit,
+} from "./config";
 import { isPrintOnly, type Kinds, mergeKinds, namesOnlyFiles } from "./kinds";
 import { exitCodeOf, spawnAndWait } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
@@ -18,10 +26,11 @@ export const USAGE = `Usage: ${COMMAND} job <command>
 
 Commands:
   run [--kind <kind>] [--exclusive <name>] -- <command...>
-                 Wait for this machine's single heavy slot, then run the command.
+                 Wait for a free heavy slot on this machine, then run the command.
                  Named-file and print-only runs skip the queue.
                  Output, exit code and signals pass through.
-  status         Who holds the slot and who waits.
+  status         Limit, its source, running jobs and waiting jobs.
+  set max <n>    Set the machine limit (${HEAVY_SLOTS}..${MAX_HEAVY_SLOTS}); default ${HEAVY_SLOTS}.
   kinds          The kinds of heavy job.
 
 How it works: docs/jobs.md in the plugin's repo.`;
@@ -237,6 +246,22 @@ export async function runJobCommand(args: readonly string[], ctx: JobContext): P
   switch (command) {
     case "run":
       return jobRun(rest, ctx);
+    case "set": {
+      const [key, value, ...extra] = rest;
+      const parsed = heavySlotsSchema.safeParse(Number(value));
+      if (key !== "max" || value === undefined || extra.length > 0 || !parsed.success) {
+        ctx.say(USAGE);
+        return 2;
+      }
+      try {
+        await setHeavyLimit(ctx.paths, parsed.data);
+        ctx.print(heavyLimitLine(readHeavyLimit(ctx.paths.home)));
+        return 0;
+      } catch (error) {
+        ctx.say(error instanceof Error ? error.message : String(error));
+        return 1;
+      }
+    }
     case "status":
       return jobStatus(ctx);
     case "kinds":

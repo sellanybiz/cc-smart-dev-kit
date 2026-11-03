@@ -1,9 +1,9 @@
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { resolveProject } from "../project/resolve";
 import { resolveJobRoute, type WorkflowSource } from "../workflow/resolve";
-import { HEAVY_SLOTS, jobsPaths } from "./config";
+import { heavyLimitLine, jobsPaths, readHeavyLimit } from "./config";
 import {
   formatSince,
   holderLines,
@@ -67,7 +67,13 @@ export interface JobsRead {
 export function openStores(ctx: JobContext): { machine: LeaseStore } {
   const dir = jobsPaths(ctx.paths.home).stateDir;
   mkdirSync(dir, { recursive: true });
-  return { machine: leaseStore({ dir, label: "this machine" }) };
+  return {
+    machine: leaseStore({
+      dir,
+      label: "this machine",
+      capacity: () => readHeavyLimit(ctx.paths.home).slots,
+    }),
+  };
 }
 
 export async function readJobs(ctx: JobContext): Promise<JobsRead> {
@@ -86,10 +92,12 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
     units
       .map((unit) => ({ holder: parseHolder(unit.text), slot: unit.slot }))
       .sort((a, b) => (a.holder?.since ?? 0) - (b.holder?.since ?? 0));
+  const limit = readHeavyLimit(ctx.paths.home);
   const store: JobStoreRead = {
     dir: machine.dir,
     label: machine.label,
-    slots: HEAVY_SLOTS,
+    slots: limit.slots,
+    note: heavyLimitLine(limit),
     held: [],
     waiting: [],
   };
@@ -151,7 +159,7 @@ export function statusLines(read: JobsRead, home: string, now: number): string[]
     routeLine(read.route, home),
     ...read.notes,
     ...read.stores.flatMap((s) => [
-      `Heavy jobs: ${slotsUsed(s.held)} of ${HEAVY_SLOTS} slot in use`,
+      `Heavy jobs: ${slotsUsed(s.held)} of ${s.slots} ${s.slots === 1 ? "slot" : "slots"} in use`,
       ...(s.note === undefined ? [] : [s.note]),
       ...holderLines(s.held, s.label, now),
       ...s.waiting.map(({ holder }) =>
@@ -165,6 +173,11 @@ export function statusLines(read: JobsRead, home: string, now: number): string[]
 export function jobsFingerprint(home: string): string {
   const dir = jobsPaths(home).stateDir;
   const parts: string[] = [];
+  try {
+    parts.push(readFileSync(jobsPaths(home).configFile, "utf8"));
+  } catch (error) {
+    parts.push(`config:${(error as NodeJS.ErrnoException).code}`);
+  }
   for (const sub of ["leases", "tickets"]) {
     const folder = join(dir, sub);
     let names: string[];

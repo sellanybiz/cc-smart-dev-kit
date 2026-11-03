@@ -171,6 +171,7 @@ export interface Store {
   /** Leases held right now. */
   held(): Promise<readonly StoreHeld[]>;
   readonly label: string;
+  capacity?: () => number;
   /** The slot and optional name are checked under the store lock. */
   tryTake(slot: boolean, recordText: string, exclusive?: string): Promise<StoreUnits | null>;
 }
@@ -220,6 +221,7 @@ export type WaitReason =
   | { kind: "no-ticket" };
 export type Decision = { take: true } | { wait: WaitReason };
 export interface DecideInput {
+  capacity?: number;
   exclusive: string | null;
   held: readonly ParsedHeld[];
   line: readonly ParsedEntry[];
@@ -244,8 +246,8 @@ export function decide(input: DecideInput): Decision {
     )
   )
     return { wait: { kind: "behind" } };
-  if (input.slot && slotsUsed(input.held) >= HEAVY_SLOTS)
-    return { wait: { kind: "no-room", capacity: HEAVY_SLOTS } };
+  if (input.slot && slotsUsed(input.held) >= (input.capacity ?? HEAVY_SLOTS))
+    return { wait: { kind: "no-room", capacity: input.capacity ?? HEAVY_SLOTS } };
   return { take: true };
 }
 
@@ -294,7 +296,9 @@ function reasonText(reason: WaitReason): string {
     case "exclusive":
       return `another job holds --exclusive ${reason.name}`;
     case "no-room":
-      return "this machine's only slot is taken";
+      return reason.capacity === 1
+        ? "this machine's only slot is taken"
+        : `all ${reason.capacity} heavy slots are taken`;
     case "no-ticket":
       return "the line cannot be joined right now";
   }
@@ -360,7 +364,7 @@ function once(release: () => void): () => void {
   };
 }
 
-/** Acquire the machine's single slot and optional exclusive name. Errors fail closed. */
+/** Acquire a machine slot and optional exclusive name. Errors fail closed. */
 export async function acquireFrom(
   stores: readonly Store[],
   job: QueuedJob,
@@ -401,12 +405,18 @@ export async function acquireFrom(
         holder: parseHolder(unit.text),
         slot: unit.slot,
       }));
-      const decision = decide({ exclusive: job.exclusive ?? null, held, line, slot: job.slot });
+      const decision = decide({
+        capacity: store.capacity?.() ?? HEAVY_SLOTS,
+        exclusive: job.exclusive ?? null,
+        held,
+        line,
+        slot: job.slot,
+      });
       let reason: WaitReason;
       if ("take" in decision) {
         const units = await store.tryTake(job.slot, text(now()), job.exclusive);
         if (units !== null) return { release: once(() => units.release()), waitedSince };
-        reason = { kind: "no-room", capacity: HEAVY_SLOTS };
+        reason = { kind: "no-room", capacity: store.capacity?.() ?? HEAVY_SLOTS };
       } else reason = decision.wait;
       const at = now();
       if (at - lastLine >= (options.waitingLineEveryMs ?? WAITING_LINE_EVERY_MS)) {
