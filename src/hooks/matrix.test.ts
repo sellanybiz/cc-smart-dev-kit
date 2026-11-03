@@ -15,19 +15,11 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV, CREW_QUESTION_STEP } from "../crew/session";
-import {
-  createCrew,
-  crewEventsFile,
-  leadFile,
-  notesStateFile,
-  writeStoreFile,
-} from "../crew/store";
-import { PLUGIN_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
+import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import { locateCheckout } from "../project/resolve";
-import { projectKey } from "../tasks/context";
-import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { ensurePhaseTask } from "../tasks/work/store";
+import { projectKey, taskContext } from "../tasks/context";
+import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
+import { createTask, layPhase, updateTask } from "../tasks/work/store";
 import {
   hookEnv,
   makeClone,
@@ -36,22 +28,20 @@ import {
   writeClaudeFile,
   writeSessionRecord,
 } from "../testing/hooks";
+import { sessionProcessIdentity } from "../testing/session-record";
 import { git, tempDir } from "../testing/temp";
-import { CREW_PUSH_REFUSAL, CREW_STEPS } from "./git-guard";
 import type { HookResult } from "./io";
-import { CREW_MERGE_REFUSAL, CREW_PR_REFUSAL } from "./merge-guard";
 import type { HookSpec } from "./run";
-import { CREW_KIT_REFUSAL } from "./session-escape-guard";
 import {
   afterMergeHook,
   agentGuardHook,
   agentUsageHook,
-  crewRoleHook,
+  builderFinishHook,
   fableSessionHook,
   gitGuardHook,
   HOOKS,
   jobRouteHook,
-  leadNotesHook,
+  keepGoingHook,
   mainFolderGuardHook,
   mergeGuardHook,
   messageGuardHook,
@@ -74,55 +64,107 @@ const FULL_CONFIG = {
   sessionNames: true,
 };
 
-/** The crew session a hook test runs as; `crew-role` is silent without one. */
-const CREW_ID = "W2-x-1a2b3c";
-/** What a `step` event carries, so its watch line ends with the short sha. */
-const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
 const AT = "2026-10-21T10:00:00.000Z";
 
 /**
- * A lead record, a crew step event, a notes cursor before it, and one task in the lead's own
- * list: the files that make `lead-notes` speak its news. Written by hand, so the note's
- * expected line is not computed by the code under test. The task file is what keeps this row
- * about the news: a lead with no list also gets the D23 reminder at each prompt
- * (`src/hooks/lead-notes.test.ts`).
+ * This test's own process as the session's Claude process: `keep-going` judges only a phase its
+ * caller holds, and finds that caller among the hook's ancestors (as `keep-going.test.ts` does).
  */
-function seedLeadNotes(stateDir: string, repo: string, claudeConfigDir: string): void {
-  writeStoreFile(
-    leadFile(stateDir, repo, SESSION),
-    `${JSON.stringify({
-      cwd: repo,
-      createdAt: AT,
-      name: "LEAD app plan",
-      plan: "plan",
-      repo,
-      sessionId: SESSION,
-      tag: "app",
-      updatedAt: AT,
-      version: 1,
-    })}\n`,
-  );
-  writeStoreFile(notesStateFile(stateDir, repo, SESSION), `${JSON.stringify({ offset: 0 })}\n`);
-  mkdirSync(join(claudeConfigDir, "tasks", SESSION), { recursive: true });
-  writeFileSync(
-    join(claudeConfigDir, "tasks", SESSION, "1.json"),
-    `${JSON.stringify({ id: "1", subject: "the plan", description: "x", status: "pending", blocks: [], blockedBy: [] })}\n`,
-  );
-  writeStoreFile(
-    crewEventsFile(stateDir, repo),
-    `${JSON.stringify({
-      at: AT,
-      crew: CREW_ID,
-      lead: SESSION,
-      name: "C app W2 hooks",
-      sha: SHA,
-      state: "working",
-      text: "tests-green",
-      type: "step",
-      version: 1,
-    })}\n`,
-  );
+const ME = {
+  sessionId: SESSION,
+  pid: process.ppid,
+  procStart: sessionProcessIdentity(process.ppid).procStart ?? null,
+};
+
+/**
+ * One phase of a plan, in progress by this session's process, and no subagent running: what
+ * makes `keep-going` block a stop. The plan's own task is #1, the phase #2.
+ */
+function seedBusyPhase(env: Record<string, string>, repo: string): void {
+  writeSessionRecord(env, { sessionId: SESSION, cwd: repo, name: "main", pid: process.ppid });
+  const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+  try {
+    const laid = writeWork(
+      db,
+      () =>
+        layPhase(
+          db,
+          {
+            project: projectKey(repo),
+            plan: "plan-a",
+            phase: "G1",
+            subject: "G1 the guard",
+            blockedBy: [],
+          },
+          { sessionId: null, pid: null, procStart: null },
+          1,
+        ).task,
+    );
+    if (!laid.ok) throw new Error(laid.why);
+    const started = updateTask(db, laid.value.id, { status: "in_progress" }, ME, 2);
+    if (!started.ok) throw new Error(started.why);
+  } finally {
+    db.close();
+  }
 }
+
+/** The block `keep-going` gives that phase, written by hand. */
+const KEEP_GOING_BLOCK = JSON.stringify({
+  decision: "block",
+  reason:
+    "Phase #2 G1 the guard is still in progress, and no subagent runs. Close #2 with `task_done`, or record its blocker with `task_note` and end the turn with a `Waiting for: <what>` line.",
+});
+
+/**
+ * A builder's task (#1) with one open blocking step (#2), under the project key the task server
+ * gives `repo`, and the builder's transcript, whose brief names that task: what makes
+ * `builder-finish` block its hand-back. Returns the transcript's path.
+ */
+function seedOpenStep(env: Record<string, string>, repo: string): string {
+  const context = taskContext(repo, env);
+  if (!context.ok) throw new Error(context.why);
+  const who = { sessionId: SESSION, pid: 12, procStart: "34" };
+  const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+  try {
+    const phase = createTask(
+      db,
+      { project: context.project, subject: "G2 the phase", kind: "phase" },
+      who,
+      1,
+    );
+    if (!phase.ok) throw new Error(phase.why);
+    const step = createTask(
+      db,
+      { project: context.project, subject: "Write the test", parentId: phase.value.id },
+      who,
+      2,
+    );
+    if (!step.ok) throw new Error(step.why);
+  } finally {
+    db.close();
+  }
+  const transcript = join(tempDir("builder-transcript"), "agent.jsonl");
+  writeFileSync(
+    transcript,
+    `${JSON.stringify({
+      parentUuid: null,
+      isSidechain: true,
+      agentId: AGENT,
+      type: "user",
+      message: { role: "user", content: "Build phase G2.\nYour task: #1\n" },
+    })}\n`,
+  );
+  return transcript;
+}
+
+/** The block `builder-finish` gives that step, written by hand. */
+const BUILDER_FINISH_BLOCK = JSON.stringify({
+  decision: "block",
+  reason: [
+    "Task #1 still has open blocking steps. Close each one, then hand back:",
+    '- #2 Write the test: finish it and close it with `task_done` (task "#2", with evidence), or drop it with `task_done` (task "#2", outcome "dropped") and a note saying why.',
+  ].join("\n"),
+});
 
 interface Case {
   spec: HookSpec;
@@ -337,8 +379,8 @@ const CASES: Case[] = [
       expect(result.exitCode ?? 0).toBe(0);
       const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
       expect(output.permissionDecision).toBe("ask");
-      expect(output.permissionDecisionReason).toContain(
-        "crew start <phase> --slug <slug> --kind <kind> --brief <file|->",
+      expect(output.permissionDecisionReason).toStartWith(
+        "This starts a raw background session (`claude --bg`): it runs beside this session, nobody watches it, and it reports to nobody.\nBuild the work with subagents instead (the Agent tool):",
       );
     },
   },
@@ -620,54 +662,53 @@ const CASES: Case[] = [
     },
   },
   {
-    spec: crewRoleHook,
-    own: { event: "PreToolUse", matcher: "AskUserQuestion|ExitPlanMode" },
-    // Machine-wide: the ask is denied the same way with no file, a broken one, or one from a
-    // newer plugin, because the answer reads no store at all.
-    machineWide: true,
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "AskUserQuestion",
-        tool_input: { questions: [] },
-      },
-      env: { ...hookEnv(), [CREW_ENV]: CREW_ID },
-    }),
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-      expect(output.permissionDecision).toBe("deny");
-      expect(output.permissionDecisionReason).toBe(
-        'cc-smart-dev-kit crew report --question "<q>" --option "<a>" --option "<b>" --recommend <n>',
-      );
-    },
-  },
-  {
-    spec: leadNotesHook,
-    own: { event: "UserPromptSubmit" },
-    // Machine-wide: a registered lead hears its news with no file and with a broken one alike.
+    spec: keepGoingHook,
+    own: { event: "Stop" },
+    // Machine-wide: it reads only the person's own task list, never a project setting, so no
+    // file, a broken one and a newer one judge the same.
     machineWide: true,
     setup: (config) => {
       const repo = project(config);
       const env = hookEnv();
-      const paths = cliPaths(env);
-      seedLeadNotes(paths.stateDir, repo, paths.claudeConfigDir);
+      seedBusyPhase(env, repo);
       return {
         input: {
-          hook_event_name: "UserPromptSubmit",
+          hook_event_name: "Stop",
           session_id: SESSION,
           cwd: repo,
-          prompt: "go on",
+          stop_hook_active: false,
+          last_assistant_message: "The reader is in. Next I build the hook.",
         },
         env,
       };
     },
     failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
-      expect(text).toBe("C app W2 hooks: tests-green · a1b2c3d");
+      expect(result).toEqual({ stdout: KEEP_GOING_BLOCK });
+    },
+  },
+  {
+    spec: builderFinishHook,
+    own: { event: "SubagentStop" },
+    // Machine-wide, like keep-going: the task list is the person's, and no project setting is read.
+    machineWide: true,
+    setup: (config) => {
+      const repo = project(config);
+      const env = hookEnv();
+      return {
+        input: {
+          hook_event_name: "SubagentStop",
+          session_id: SESSION,
+          cwd: repo,
+          agent_id: AGENT,
+          agent_type: "cc-smart-dev-kit:builder",
+          agent_transcript_path: seedOpenStep(env, repo),
+          stop_hook_active: false,
+        },
+        env,
+      };
+    },
+    failsClosed: (result) => {
+      expect(result).toEqual({ stdout: BUILDER_FINISH_BLOCK });
     },
   },
   {
@@ -705,48 +746,6 @@ const CASES: Case[] = [
     },
   },
 ];
-
-describe("lead-notes Stop ownHooks", () => {
-  test.each([false, true])("listed = %s", async (listed) => {
-    const repo = project({ ...FULL_CONFIG, ownHooks: listed ? ["lead-notes"] : [] });
-    const env = hookEnv();
-    const paths = cliPaths(env);
-    seedLeadNotes(paths.stateDir, repo, paths.claudeConfigDir);
-    writeFileSync(
-      join(paths.claudeConfigDir, "tasks", SESSION, "1.json"),
-      JSON.stringify({
-        id: "1",
-        subject: "the plan",
-        description: "x",
-        status: "in_progress",
-        blocks: [],
-        blockedBy: [],
-      }),
-    );
-    wireProjectHook(mainOf({ cwd: repo }), "Stop");
-    const result = await runHook(
-      leadNotesHook,
-      {
-        hook_event_name: "Stop",
-        session_id: SESSION,
-        cwd: repo,
-        last_assistant_message: "Next I'll push the PRs.",
-      },
-      env,
-    );
-    expect(result).toEqual(
-      listed
-        ? {}
-        : {
-            stdout: JSON.stringify({
-              decision: "block",
-              reason:
-                'Your task "Claude Code task 1 the plan" is still in progress. Continue it now, and mark it done the moment it is: `TaskUpdate` with status "completed". If it really waits for something — a crew session, the person, CI — end your turn with one line: Waiting for: <what>.',
-            }),
-          },
-    );
-  });
-});
 
 test("the table covers every hook", () => {
   expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
@@ -803,10 +802,11 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     else expect(result).toEqual({});
   });
 
-  test("a retired name in ownHooks (serena-root): the file still reads, and this hook still speaks", async () => {
-    // A project file written for an older plugin may still list it. Refused, the strict parse
+  test("the retired names in ownHooks (serena-root, crew-role, lead-notes): the file still reads, and this hook still speaks", async () => {
+    // A project file written for an older plugin may still list one. Refused, the strict parse
     // would fail and every guard would ask about every call; accepted, it silences nothing.
-    const { input, env } = c.setup({ ...FULL_CONFIG, ownHooks: ["serena-root"] });
+    expect([...RETIRED_HOOK_NAMES]).toEqual(["serena-root", "crew-role", "lead-notes"]);
+    const { input, env } = c.setup({ ...FULL_CONFIG, ownHooks: [...RETIRED_HOOK_NAMES] });
     const result = await runHook(c.spec, input, env);
     expect(speaks(result)).toBe(true);
     expect(`${result.stdout ?? ""}${result.stderr ?? ""}`).not.toContain("ownHooks");
@@ -860,119 +860,6 @@ describe("no cc-smart-dev-kit.json", () => {
       c.failsClosed(await runHook(c.spec, input, env));
     },
   );
-
-  /**
-   * D55, and the reason the row above is not enough: the person's prompt is the one answer of
-   * `crew-role` made from the store alone, with no answer from the project's file. A crew
-   * session exists only where `crew start` recorded one, and its project may never have opted
-   * in, so the record — never the file — is what this answer is made from.
-   */
-  test("crew-role records the person's prompt to a crew session with no cc-smart-dev-kit.json", async () => {
-    const { repo } = makeClone();
-    const crewId = "W2-y-7a8b9c";
-    const env = { ...hookEnv(), [CREW_ENV]: crewId };
-    const stateDir = cliPaths(env).stateDir;
-    await createCrew(
-      stateDir,
-      {
-        base: null,
-        baseRef: "main",
-        branch: "crew/W2-y",
-        effort: "high",
-        files: [],
-        id: crewId,
-        kind: "build",
-        lastLine: null,
-        leadName: "LEAD app plan",
-        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
-        memoryMb: null,
-        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
-        name: "C app W2 y",
-        permissionMode: "auto",
-        phase: "W2",
-        plan: "plan",
-        pr: null,
-        questions: [],
-        repo,
-        reportPath: null,
-        sessionId: null,
-        shortId: null,
-        slug: "y",
-        startedAt: null,
-        state: "working",
-        waitsFor: [],
-        worktree: join(repo, ".claude", "worktrees", "crew-W2-y"),
-      },
-      Date.parse("2026-10-21T10:00:00.000Z"),
-    );
-    const result = await runHook(
-      crewRoleHook,
-      {
-        hook_event_name: "UserPromptSubmit",
-        session_id: SESSION,
-        cwd: repo,
-        prompt: "just the config change, please",
-      },
-      env,
-    );
-    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toStartWith(
-      "The person wrote to you directly:",
-    );
-  });
-});
-
-/**
- * D23, through the frame: `crew-role` answers a crew session's first edit with the task-list
- * step on the same terms as its other answers — machine-wide, so no file, a broken one and a
- * newer one change nothing (`crew-role.test.ts`); and a project that runs its own copy lists the
- * name in `ownHooks`, which silences it like every plugin hook.
- */
-describe("the crew-role edit gate, through the frame", () => {
-  const edit = (repo: string): Record<string, unknown> => ({
-    hook_event_name: "PreToolUse",
-    session_id: SESSION,
-    cwd: repo,
-    tool_name: "Write",
-    tool_input: { file_path: join(repo, "a.ts"), content: "x\n" },
-  });
-
-  test("a crew session's first edit is denied with the step; listed in ownHooks, the plugin's copy is silent", async () => {
-    const env = { ...hookEnv(), [CREW_ENV]: CREW_ID };
-    const repo = project(FULL_CONFIG);
-    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
-    const phase = ensurePhaseTask(
-      db,
-      {
-        project: projectKey(repo),
-        plan: "plan",
-        phase: "a",
-        subject: "Phase",
-        description: "",
-        crewId: CREW_ID,
-        waitsForPhases: [],
-      },
-      { sessionId: SESSION, crewId: CREW_ID, pid: null, procStart: null },
-      1,
-    );
-    db.close();
-    if (!phase.ok) throw new Error(phase.why);
-    const denied = await runHook(crewRoleHook, edit(repo), env);
-    const output = JSON.parse(denied.stdout ?? "{}").hookSpecificOutput;
-    expect(output.permissionDecision).toBe("deny");
-    expect(output.permissionDecisionReason).toContain(
-      "Your phase has no subtasks yet, so this edit waits.",
-    );
-    const listed = await runHook(
-      crewRoleHook,
-      edit(project({ ...FULL_CONFIG, ownHooks: ["crew-role"] })),
-      env,
-    );
-    expect(listed).toEqual({});
-  });
-
-  test("a plain session is never denied, with the same project file", async () => {
-    expect(await runHook(crewRoleHook, edit(project(FULL_CONFIG)), hookEnv())).toEqual({});
-  });
 });
 
 describe("the guard matrix", () => {
@@ -1012,248 +899,6 @@ describe("the guard matrix", () => {
       expect(Number(pluginAnswered) + Number(wired)).toBe(expected);
     },
   );
-});
-
-/**
- * A crew session's refusals (D24, D47) hold in a project that never opted in, and in one whose
- * `ownHooks` names its own copy of the guard: the frame runs each guard's crew part before
- * `ownHooks` and before the project's file (`HookSpec.crewLimits`, `run.ts`). The same rows
- * prove a plain session keeps the old behaviour: silent with no file, and the project's own
- * guard alone when it is listed.
- */
-describe("a crew session's refusals: no file, and whatever ownHooks says (F2b-1, F2b-2)", () => {
-  const SELF = { id: "B1-lookup-1a2b3c", name: "C app B1 lookup", phase: "B1" };
-  const PEER = { id: "B2-api-4d5e6f", name: "C app B2 api", phase: "B2" };
-  const LEAD = "LEAD app lead";
-
-  /** One crew session's record, as `crew start` writes it. */
-  async function record(
-    stateDir: string,
-    repo: string,
-    one: { id: string; name: string; phase: string },
-  ): Promise<void> {
-    await createCrew(
-      stateDir,
-      {
-        base: null,
-        baseRef: "main",
-        branch: `crew/${one.phase}-${one.id}`,
-        effort: "high",
-        files: [],
-        id: one.id,
-        kind: "build",
-        lastLine: null,
-        leadName: LEAD,
-        leadSessionId: "c00f9bb5-1111-2222-3333-444444444444",
-        memoryMb: null,
-        model: { named: "sonnet", resolved: "sonnet", slot: null, tier: null },
-        name: one.name,
-        permissionMode: "auto",
-        phase: one.phase,
-        plan: "lead",
-        pr: null,
-        questions: [],
-        repo,
-        reportPath: null,
-        sessionId: null,
-        shortId: null,
-        slug: one.id,
-        state: "working",
-        waitsFor: [],
-        worktree: join(repo, ".claude", "worktrees", one.id),
-      },
-      Date.parse("2026-10-21T10:00:00.000Z"),
-    );
-  }
-
-  /** A repo (with the project's file only when `config` is given) and the two crew records. */
-  async function world(config?: unknown): Promise<{
-    crew: Record<string, string>;
-    env: Record<string, string>;
-    repo: string;
-  }> {
-    const { repo } = makeClone();
-    if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
-    const env = hookEnv();
-    const root = locateCheckout(repo)?.root ?? repo;
-    const stateDir = cliPaths(env).stateDir;
-    for (const one of [SELF, PEER]) await record(stateDir, root, one);
-    return { crew: { ...env, [CREW_ENV]: SELF.id }, env, repo };
-  }
-
-  /** The shell call a crew session may not run. */
-  function shell(repo: string, command: string): Record<string, unknown> {
-    return {
-      hook_event_name: "PreToolUse",
-      session_id: SESSION,
-      cwd: repo,
-      tool_name: "Bash",
-      tool_input: { command },
-    };
-  }
-
-  /** The message a crew session sends. */
-  function message(repo: string, to: string, text: string): Record<string, unknown> {
-    return {
-      hook_event_name: "PreToolUse",
-      session_id: SESSION,
-      cwd: repo,
-      tool_name: "SendMessage",
-      tool_input: { message: text, to },
-    };
-  }
-
-  /** An Agent launch the Agent guard would ask the person about: the opus tier at `max`. */
-  function launch(repo: string): Record<string, unknown> {
-    return {
-      hook_event_name: "PreToolUse",
-      session_id: SESSION,
-      cwd: repo,
-      tool_name: "Agent",
-      tool_input: {
-        effort: "max",
-        model: "opus",
-        prompt: "build it",
-        subagent_type: "general-purpose",
-      },
-    };
-  }
-
-  /** An edit of the project's own file: one the session-escape guard asks about. */
-  function edit(repo: string): Record<string, unknown> {
-    return {
-      hook_event_name: "PreToolUse",
-      session_id: SESSION,
-      cwd: repo,
-      tool_name: "Edit",
-      tool_input: { file_path: join(repo, ".claude", "cc-smart-dev-kit.json") },
-    };
-  }
-
-  /** A denial, checked as the guard's answer: the reason is written by hand, never computed. */
-  function denied(result: HookResult, reason: string): void {
-    expect(result.exitCode ?? 0).toBe(0);
-    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-    expect(output.permissionDecision).toBe("deny");
-    expect(output.permissionDecisionReason).toBe(reason);
-  }
-
-  /** The refusal of an untagged message to the peer, in the guard's own words. */
-  const UNTAGGED = [
-    `"C app B2 api" is a crew session too, and one crew session messages another only with a contract note or a contract question.`,
-    `Fix: cc-smart-dev-kit crew tell "C app B2 api" --kind contract "<what changed: file:symbol, commit>", or --kind question "<the ask>"`,
-    `It writes the first line the note must carry ("[B1] CONTRACT: …"), and records the note for your lead.`,
-    `That the phase is done, or how it goes, goes to the lead: cc-smart-dev-kit crew report --status done --file - (with the JSON part).`,
-  ].join("\n");
-
-  /** The refusal of a message to the lead, in the guard's own words. */
-  const TO_LEAD = [
-    `"LEAD app lead" is your lead, and a crew session reaches its lead through crew report, not a message.`,
-    `Fix: cc-smart-dev-kit crew report --status done --file - (with the JSON part), or cc-smart-dev-kit crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>`,
-    "The report is recorded for the lead, and its watch wakes the lead on the line.",
-  ].join("\n");
-
-  /** The Agent guard's refusal of an opus-tier launch at `max`, in the guard's own words. */
-  const CREW_LAUNCH = [
-    "A launch on Claude Opus at effort `max` is approved by the person, one by one, and this session has nobody to answer.",
-    "Run it at `medium`, `high` or `xhigh`.",
-    CREW_QUESTION_STEP,
-  ].join("\n");
-
-  async function expectRefused(crew: Record<string, string>, repo: string): Promise<void> {
-    denied(
-      await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), crew),
-      CREW_PUSH_REFUSAL,
-    );
-    // CC8: a work-destroying git command is denied with its own step too, with no file.
-    denied(
-      await runHook(gitGuardHook, shell(repo, "git reset --hard"), crew),
-      CREW_STEPS.resetHard,
-    );
-    denied(
-      await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), crew),
-      CREW_PR_REFUSAL,
-    );
-    // CC8: the merge guard's every question is the same refusal for a crew session.
-    denied(await runHook(mergeGuardHook, shell(repo, "gh pr merge 7"), crew), CREW_MERGE_REFUSAL);
-    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
-    denied(await runHook(messageGuardHook, message(repo, LEAD, "done"), crew), TO_LEAD);
-    // CC8: a launch the Agent guard would ask about is refused with the crew step, and a write
-    // into the kit's own files is refused by the session-escape guard.
-    denied(await runHook(agentGuardHook, launch(repo), crew), CREW_LAUNCH);
-    denied(await runHook(sessionEscapeGuardHook, edit(repo), crew), CREW_KIT_REFUSAL);
-  }
-
-  test("no cc-smart-dev-kit.json: every crew refusal holds", async () => {
-    const { crew, repo } = await world(undefined);
-    await expectRefused(crew, repo);
-  });
-
-  test('ownHooks: ["git-guard", "merge-guard"] silences none of the crew refusals', async () => {
-    const { crew, repo } = await world({ ownHooks: ["git-guard", "merge-guard"] });
-    await expectRefused(crew, repo);
-  });
-
-  test("ownHooks listing message-guard silences no crew message refusal", async () => {
-    const { crew, repo } = await world({ ownHooks: ["message-guard"] });
-    denied(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), crew), UNTAGGED);
-  });
-
-  test("ownHooks listing agent-guard silences no crew launch refusal", async () => {
-    const { crew, repo } = await world({ ownHooks: ["agent-guard"] });
-    denied(await runHook(agentGuardHook, launch(repo), crew), CREW_LAUNCH);
-  });
-
-  test("a file that needs a newer plugin does not soften them either", async () => {
-    const { crew, env, repo } = await world({ requires: ">=99" });
-    await expectRefused(crew, repo);
-    // CC8: a heavy command beside that same file is refused, not asked (`job-route`'s own
-    // answer, which is `alwaysOn` and reads the file only for the route).
-    const result = await runHook(jobRouteHook, shell(repo, "bunx vitest run src/a.test.ts"), crew);
-    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-    expect(output.permissionDecision).toBe("deny");
-    expect(output.permissionDecisionReason).toContain(
-      "cannot check whether this project routes heavy commands",
-    );
-    expect(output.permissionDecisionReason).toContain(CREW_QUESTION_STEP);
-    // A line the merge guard leaves alone (a `--disable-auto` lands nothing) gets silence: it
-    // is no merge request for either answer, so no question goes to anyone.
-    const disable = shell(repo, "gh pr merge 7 --disable-auto");
-    expect(await runHook(mergeGuardHook, disable, crew)).toEqual({});
-    expect(await runHook(mergeGuardHook, disable, env)).toEqual({});
-  });
-
-  test("a computed `$GH pr create` and `$GIT push` are denied too: no file, and whatever ownHooks says (F5-1)", async () => {
-    // The reader marks a program named at run time `computed`, so its words are all the guard
-    // has. A crew session never opens a pull request or pushes (D24): the crew part denies,
-    // and no file and no ownHooks list can soften it.
-    for (const config of [undefined, { ownHooks: ["git-guard", "merge-guard"] }]) {
-      const { crew, repo } = await world(config);
-      for (const command of ["$GH pr create --fill", "$(which gh) pr create --fill"]) {
-        denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_PR_REFUSAL);
-      }
-      // A computed merge's words name a merge, the refusal that says the lead merges.
-      for (const command of ["$GH pr merge 7", "$(which gh) pr merge 7"]) {
-        denied(await runHook(mergeGuardHook, shell(repo, command), crew), CREW_MERGE_REFUSAL);
-      }
-      for (const command of ["$GIT push origin fix/x", "$(which git) push origin fix/x"]) {
-        denied(await runHook(gitGuardHook, shell(repo, command), crew), CREW_PUSH_REFUSAL);
-      }
-    }
-  });
-
-  test("a plain session with no file keeps today's silence; a crew session's other git work is not judged", async () => {
-    const { crew, env, repo } = await world(undefined);
-    expect(await runHook(gitGuardHook, shell(repo, "git push origin fix/x"), env)).toEqual({});
-    expect(await runHook(mergeGuardHook, shell(repo, "gh pr create --fill"), env)).toEqual({});
-    expect(await runHook(messageGuardHook, message(repo, PEER.name, "done!"), env)).toEqual({});
-    // The computed forms are the crew part's business: a plain session with no file stays
-    // silent about them too (F5-1).
-    expect(await runHook(mergeGuardHook, shell(repo, "$GH pr create --fill"), env)).toEqual({});
-    expect(await runHook(gitGuardHook, shell(repo, "$GIT push origin fix/x"), env)).toEqual({});
-    // A crew session's other git work is not refused either: this part judges a push only.
-    expect(await runHook(gitGuardHook, shell(repo, "git status"), crew)).toEqual({});
-  });
 });
 
 test("an input that is not JSON: a guard asks, any other hook says one line; for another event: nothing", async () => {

@@ -300,14 +300,12 @@ describe("keep-going: silent", () => {
     });
   });
 
-  test("a broken project file: one stderr line, no block", async () => {
+  test("a broken project file: it reads no setting of it, so it judges the same", async () => {
     const w = world();
     busyPlan(w);
     w.db.close();
     writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { worktree: {} });
-    const result = await runHook(keepGoingHook, stop(w.repo), w.env);
-    expect(result.stdout).toBeUndefined();
-    expect(result.stderr).toStartWith("cc-smart-dev-kit keep-going: ");
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({ stdout: BLOCK_WITH_NEXT });
   });
 
   test("the project runs its own copy: ownHooks silences it", async () => {
@@ -355,7 +353,8 @@ describe("keepGoingWouldBlockAt: what the notifier asks", () => {
     expect(keepGoingWouldBlockAt(stop(w.repo, { stop_hook_active: true }), w.env)).toBe(false);
     writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { ownHooks: ["keep-going"] });
     expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(false);
+    // A broken file judges the same as the hook does: it reads no setting of it.
     writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { worktree: {} });
-    expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(false);
+    expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(true);
   });
 });
