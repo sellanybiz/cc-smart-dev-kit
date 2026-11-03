@@ -49,29 +49,118 @@ export interface OwnerFacts {
   project: string | null;
   /** The running sessions; null when their records cannot be read. */
   live: readonly SessionRecord[] | null;
-  /** Every session of a crew session's lead (the crew by its id or name); null when no record says. */
-  crewLead: (crew: string) => readonly string[] | null;
+  /** Who leads the crew session an item is for (`crew`, by its id or name), `parkedBy` the item's session. */
+  crewLead: (crew: string, parkedBy: string) => CrewLead;
   /** A folder's project key; null when it cannot be told. */
   projectOf: (cwd: string) => string | null;
 }
 
+/**
+ * Who leads the crew session an item is for: its lead's sessions (`lead`), the crew session's own
+ * (`own`), and whether every lead record that could add to `lead` was read (`complete`);
+ * `none` when no crew record has that id or name; `unknown` when the records cannot tell which.
+ */
+export type CrewLead =
+  | { lead: readonly string[]; own: readonly string[]; complete: boolean }
+  | "none"
+  | "unknown";
+
+/** The fields of a crew record the lookup reads. */
+export interface CrewFacts {
+  id: string;
+  name: string;
+  leadSessionId: string;
+  sessionId: null | string;
+  earlierSessions?: readonly { sessionId: string }[] | undefined;
+}
+
+/** What the crew store gave: its records and how many it could not read; null when it threw. */
+export interface Read<T> {
+  records: readonly T[];
+  broken: number;
+}
+
+/**
+ * The crew session `wanted` names (an item's `crew`: the id a crew session parks with, or the name
+ * a lead gives with `--crew`), and who leads it. An id is one crew session. A name is not: a phase
+ * started again keeps its name, and two repositories may share a tag, so a name counts only when
+ * one record fits — the one tied to `parkedBy` (it is that crew session, or its lead), else the only
+ * one by that name. Several, or records it could not read where none fits, are `unknown`: the first
+ * match would hand the item to the wrong lead. `leads` is every lead record's sessions
+ * (`leadSessions`): an adopted lead's record holds the ones before it.
+ */
+export function crewLeadOf(
+  wanted: string,
+  parkedBy: string,
+  crew: Read<CrewFacts> | null,
+  leads: Read<readonly string[]> | null,
+): CrewLead {
+  if (crew === null) return "unknown";
+  const own = (one: CrewFacts) =>
+    [one.sessionId, ...(one.earlierSessions ?? []).map((earlier) => earlier.sessionId)].filter(
+      (id): id is string => id !== null && id !== "",
+    );
+  const leadOf = (one: CrewFacts) => {
+    const sessions = new Set([one.leadSessionId]);
+    for (const set of leads?.records ?? [])
+      if (set.includes(one.leadSessionId)) for (const id of set) sessions.add(id);
+    return [...sessions];
+  };
+  const byId = crew.records.filter((one) => one.id === wanted);
+  const named = crew.records.filter((one) => one.name === wanted);
+  const tied = named.filter(
+    (one) => parkedBy !== "" && (own(one).includes(parkedBy) || leadOf(one).includes(parkedBy)),
+  );
+  const record =
+    byId.length === 1
+      ? byId[0]
+      : byId.length > 1
+        ? undefined
+        : tied.length === 1
+          ? tied[0]
+          : tied.length === 0 && named.length === 1
+            ? named[0]
+            : undefined;
+  if (record === undefined) {
+    return byId.length === 0 && named.length === 0 && crew.broken === 0 ? "none" : "unknown";
+  }
+  return {
+    lead: leadOf(record),
+    own: own(record),
+    complete: leads !== null && leads.broken === 0,
+  };
+}
+
 const THIS: Owned = { whose: "this session", waitsIn: null };
 const NOBODY: Owned = { whose: "no session", waitsIn: null };
+const UNSEEN: Owned = { whose: "another session", waitsIn: null };
 
 export function ownerOf(item: ParkedItem, facts: OwnerFacts): Owned {
   const asker = facts.session;
   const isAsker = (id: string) => asker !== null && id === asker;
   if (isAsker(item.session)) return THIS;
-  // A crew session never asks the person: its lead answers for it (`crew answer`).
-  const lead = item.crew === "" ? null : facts.crewLead(item.crew);
-  const owners = lead ?? (item.session === "" ? [] : [item.session]);
+  const parker = item.session === "" ? [] : [item.session];
+  let owners = parker;
+  let complete = true;
+  if (item.crew !== "") {
+    const crew = facts.crewLead(item.crew, item.session);
+    if (crew === "unknown") return UNSEEN;
+    if (crew !== "none") {
+      // A crew session never asks the person: its lead answers for it (`crew answer`). A lead that
+      // parked the item for it (`--crew`) owns it too, whatever lead the crew record names now.
+      owners = [...crew.lead, ...parker.filter((id) => !crew.own.includes(id))];
+      complete = crew.complete;
+    }
+  }
   if (owners.some(isAsker)) return THIS;
   if (owners.length > 0) {
-    if (facts.live === null) return { whose: "another session", waitsIn: null };
+    if (facts.live === null) return UNSEEN;
     const running = facts.live.find((one) => owners.includes(one.sessionId));
     if (running !== undefined) {
       return { whose: "another session", waitsIn: { name: running.name, cwd: running.cwd } };
     }
+    // A lead record it could not read may name the session that leads it now, and it may run.
+    if (!complete) return UNSEEN;
   }
   const project = item.cwd === "" ? null : facts.projectOf(item.cwd);
   return project !== null && project === facts.project ? THIS : NOBODY;
@@ -129,21 +218,20 @@ export function ownerFacts(asker: Asker, sources: OwnerSources = {}): OwnerFacts
     projects.set(cwd, key);
     return key;
   };
-  let crew: null | { id: string; name: string; leadSessionId: string }[] = null;
-  let leadSets: string[][] = [];
-  const crewLead = (wanted: string): readonly string[] | null => {
-    if (crew === null) {
-      crew = orNull(() => listAllCrew(asker.paths.stateDir).records) ?? [];
-      leadSets = (orNull(() => listAllLeads(asker.paths.stateDir).records) ?? []).map(leadSessions);
-    }
-    const record = crew.find((one) => one.id === wanted || one.name === wanted);
-    if (record === undefined) return null;
-    // An adopted lead's record holds the sessions before it, so every record that names the
-    // crew session's lead session leads to the one that leads it now.
-    const sessions = new Set([record.leadSessionId]);
-    for (const set of leadSets)
-      if (set.includes(record.leadSessionId)) for (const id of set) sessions.add(id);
-    return [...sessions];
+  // Read once, and only when an item names a crew session: a machine may hold hundreds.
+  let stores: null | { crew: Read<CrewFacts> | null; leads: Read<readonly string[]> | null } = null;
+  const crewLead = (wanted: string, parkedBy: string): CrewLead => {
+    stores ??= {
+      crew: orNull(() => {
+        const listed = listAllCrew(asker.paths.stateDir);
+        return { records: listed.records, broken: listed.broken.length };
+      }),
+      leads: orNull(() => {
+        const listed = listAllLeads(asker.paths.stateDir);
+        return { records: listed.records.map(leadSessions), broken: listed.broken.length };
+      }),
+    };
+    return crewLeadOf(wanted, parkedBy, stores.crew, stores.leads);
   };
   return {
     session: asker.session,

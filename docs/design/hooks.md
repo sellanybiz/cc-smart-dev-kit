@@ -699,9 +699,17 @@ goes through its own items only:
 - `no session`: no running session owns it, and it was parked in another project. The skill asks
   once whether to take those here.
 
+An item's `crew` is the crew session's id (a crew session parks with it) or its name (a lead's
+`--crew`). An id is one crew record. A name is not: a phase started again keeps its name, and two
+repositories may share a tag. So a name counts only when one record fits: the one tied to the
+session that parked the item (it is that crew session, or its lead), else the only record by that
+name. A lead that parked an item for a crew session owns it as well as the crew record's lead.
+
 A fact it cannot read never makes an item this session's: session records it cannot read keep
-another session's item there, and a project it cannot tell (git did not answer, or had no time
-left) is another project. `user available` and the hook's "available again" note count the same
+another session's item there; crew records that cannot tell which crew session it is (several fit,
+or some could not be read) keep a crew item in another session, and so do lead records that could
+not be read when no lead session it knows runs; and a project it cannot tell (git did not answer,
+or had no time left) is another project. `user available` and the hook's "available again" note count the same
 way: how many items are this session's, and how many wait in which other session. The note's git
 calls share the hook's budget (`SHORT_GUARD_BUDGET_MS`). The person's own terminal has no
 session, so only the running owners and its folder's project decide there.

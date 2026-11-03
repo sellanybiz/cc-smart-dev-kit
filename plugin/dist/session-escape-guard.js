@@ -11504,24 +11504,62 @@ Commands:
 Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
 
 // src/user-away/whose.ts
+function crewLeadOf(wanted, parkedBy, crew, leads) {
+  if (crew === null)
+    return "unknown";
+  const own = (one) => [one.sessionId, ...(one.earlierSessions ?? []).map((earlier) => earlier.sessionId)].filter((id) => id !== null && id !== "");
+  const leadOf = (one) => {
+    const sessions = new Set([one.leadSessionId]);
+    for (const set of leads?.records ?? [])
+      if (set.includes(one.leadSessionId))
+        for (const id of set)
+          sessions.add(id);
+    return [...sessions];
+  };
+  const byId = crew.records.filter((one) => one.id === wanted);
+  const named = crew.records.filter((one) => one.name === wanted);
+  const tied = named.filter((one) => parkedBy !== "" && (own(one).includes(parkedBy) || leadOf(one).includes(parkedBy)));
+  const record = byId.length === 1 ? byId[0] : byId.length > 1 ? undefined : tied.length === 1 ? tied[0] : tied.length === 0 && named.length === 1 ? named[0] : undefined;
+  if (record === undefined) {
+    return byId.length === 0 && named.length === 0 && crew.broken === 0 ? "none" : "unknown";
+  }
+  return {
+    lead: leadOf(record),
+    own: own(record),
+    complete: leads !== null && leads.broken === 0
+  };
+}
 var THIS = { whose: "this session", waitsIn: null };
 var NOBODY = { whose: "no session", waitsIn: null };
+var UNSEEN = { whose: "another session", waitsIn: null };
 function ownerOf(item, facts) {
   const asker = facts.session;
   const isAsker = (id) => asker !== null && id === asker;
   if (isAsker(item.session))
     return THIS;
-  const lead = item.crew === "" ? null : facts.crewLead(item.crew);
-  const owners = lead ?? (item.session === "" ? [] : [item.session]);
+  const parker = item.session === "" ? [] : [item.session];
+  let owners = parker;
+  let complete = true;
+  if (item.crew !== "") {
+    const crew = facts.crewLead(item.crew, item.session);
+    if (crew === "unknown")
+      return UNSEEN;
+    if (crew !== "none") {
+      owners = [...crew.lead, ...parker.filter((id) => !crew.own.includes(id))];
+      complete = crew.complete;
+    }
+  }
   if (owners.some(isAsker))
     return THIS;
   if (owners.length > 0) {
     if (facts.live === null)
-      return { whose: "another session", waitsIn: null };
+      return UNSEEN;
     const running = facts.live.find((one) => owners.includes(one.sessionId));
     if (running !== undefined) {
       return { whose: "another session", waitsIn: { name: running.name, cwd: running.cwd } };
     }
+    if (!complete)
+      return UNSEEN;
   }
   const project = item.cwd === "" ? null : facts.projectOf(item.cwd);
   return project !== null && project === facts.project ? THIS : NOBODY;
@@ -11552,22 +11590,19 @@ function ownerFacts(asker, sources = {}) {
     projects.set(cwd, key);
     return key;
   };
-  let crew = null;
-  let leadSets = [];
-  const crewLead = (wanted) => {
-    if (crew === null) {
-      crew = orNull(() => listAllCrew(asker.paths.stateDir).records) ?? [];
-      leadSets = (orNull(() => listAllLeads(asker.paths.stateDir).records) ?? []).map(leadSessions);
-    }
-    const record = crew.find((one) => one.id === wanted || one.name === wanted);
-    if (record === undefined)
-      return null;
-    const sessions = new Set([record.leadSessionId]);
-    for (const set of leadSets)
-      if (set.includes(record.leadSessionId))
-        for (const id of set)
-          sessions.add(id);
-    return [...sessions];
+  let stores = null;
+  const crewLead = (wanted, parkedBy) => {
+    stores ??= {
+      crew: orNull(() => {
+        const listed = listAllCrew(asker.paths.stateDir);
+        return { records: listed.records, broken: listed.broken.length };
+      }),
+      leads: orNull(() => {
+        const listed = listAllLeads(asker.paths.stateDir);
+        return { records: listed.records.map(leadSessions), broken: listed.broken.length };
+      })
+    };
+    return crewLeadOf(wanted, parkedBy, stores.crew, stores.leads);
   };
   return {
     session: asker.session,
