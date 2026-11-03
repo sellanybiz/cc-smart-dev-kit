@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import {
   awayDir,
   awayStateFile,
@@ -13,6 +15,7 @@ import {
   setAvailable,
   setUnavailable,
 } from "../user-away/state";
+import type { OwnerSources } from "../user-away/whose";
 import { askLogFile } from "./ask-log";
 import { BUDGET_MARGIN_MS } from "./budget";
 import { toolDecision } from "./io";
@@ -22,7 +25,12 @@ import { askedWhileAway, userAwayAnswer } from "./user-away";
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const T0 = Date.parse("2026-10-25T01:00:00.000Z");
 const UNTIL = "2026-10-25T07:00:00.000Z";
-const OPTIONS = { timeZone: "UTC" };
+/** No session runs, and a folder under /work/<name> is project <name>: nothing reads this machine. */
+const NO_OWNERS: OwnerSources = {
+  sessions: () => [],
+  projectOf: (cwd) => /^\/work\/([^/]+)/.exec(cwd)?.[1] ?? cwd,
+};
+const OPTIONS = { timeZone: "UTC", owners: NO_OWNERS };
 const SKILL = "/cc-smart-dev-kit:user-unavailable";
 
 /** A machine with the person away since `T0` (back about 07:00), and the paths a hook reads. */
@@ -619,9 +627,69 @@ describe("the note at each prompt", () => {
     await note("go", state);
     await setAvailable(state.paths.stateDir);
     expect(await note("next", state)).toBe(
-      "The person is available again: ask your questions as usual. 1 item still waits for them (/cc-smart-dev-kit:user-available).",
+      "The person is available again: ask your questions as usual. 1 item waits for this session: go through it with /cc-smart-dev-kit:user-available.",
     );
     expect(await note("next", state)).toBeNull();
+  });
+
+  test("back: the note counts this session's items, and names the sessions the others wait in", async () => {
+    const state = await away();
+    await parkItem(state.paths.stateDir, draft(), T0);
+    await parkItem(
+      state.paths.stateDir,
+      draft({ session: "sess-peer", cwd: "/work/shop", text: "Ship the build?" }),
+      T0,
+    );
+    await note("go", state);
+    await setAvailable(state.paths.stateDir);
+    const result = await userAwayAnswer(
+      prompt("next"),
+      "UserPromptSubmit",
+      state.env,
+      state.paths,
+      T0,
+      {
+        ...OPTIONS,
+        owners: {
+          ...NO_OWNERS,
+          sessions: () => [{ pid: 7, sessionId: "sess-peer", cwd: "/work/shop", name: "shop fix" }],
+        },
+      },
+    );
+    expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
+      "The person is available again: ask your questions as usual. 1 item waits for this session: go through it with /cc-smart-dev-kit:user-available. 1 item waits in other sessions, which go through their own: shop fix (1).",
+    );
+  });
+
+  test("back: the note's git calls stay inside the hook's budget, and a project it had no time for is never this session's", async () => {
+    const repo = join(tempDir("away-repo"), "app");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    // `startedAt` is the frame's clock at the hook's start, which the budget counts from.
+    const backWith = async (budget: Record<string, string>, startedAt: number) => {
+      const state = await away();
+      // A session that ended parked it in this repo: this session's, when the repo can be read.
+      await parkItem(state.paths.stateDir, draft({ session: "sess-ended", cwd: repo }), T0);
+      await note("go", state);
+      await setAvailable(state.paths.stateDir);
+      const result = await userAwayAnswer(
+        { ...prompt("next"), cwd: repo },
+        "UserPromptSubmit",
+        { ...state.env, ...budget },
+        state.paths,
+        startedAt,
+        { timeZone: "UTC", owners: { sessions: () => [] } },
+      );
+      return JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+    };
+    const mine =
+      "The person is available again: ask your questions as usual. 1 item waits for this session: go through it with /cc-smart-dev-kit:user-available.";
+    const noTime =
+      "The person is available again: ask your questions as usual. 1 item was parked in another project by a session that ended: /cc-smart-dev-kit:user-available asks whether to take it here.";
+    expect(await backWith({}, Date.now())).toBe(mine);
+    expect(await backWith({ CC_SMART_DEV_KIT_GUARD_BUDGET_MS: "1" }, Date.now())).toBe(noTime);
+    // A hook that already spent its time (a long wait for the state's lock) makes no git call.
+    expect(await backWith({}, Date.now() - 20_000)).toBe(noTime);
   });
 
   test("back, with nothing left on the list", async () => {

@@ -26,7 +26,7 @@ mode, and the person answers it. If a call is denied anyway, the person types
   `--merges` for the merges. Also the other branches and worktrees a crew worked on.
 - The crew runs: `cc-smart-dev-kit crew history` where the installed kit has it, else
   `cc-smart-dev-kit crew list`.
-- The `Summary:` decisions of `cc-smart-dev-kit user list --json`, first and in the sessions' own
+- The `Summary:` decisions among this session's items (§ 3), first and in the sessions' own
   words. Show them as the report; they need no answer. Clear them once shown.
 
 Say it in a few lines: what shipped, what failed, what waits.
@@ -34,10 +34,24 @@ Say it in a few lines: what shipped, what failed, what waits.
 ## 3. The list
 
 `cc-smart-dev-kit user list --json`: each item has `id`, `kind`, `text`, `command`, `cwd` (the
-folder an action was parked in), `options`, `recommend` (counted from 1), `session`, `crew` and
-`at`. The text view of `user list` is for reading: it shows some control characters as spaces
-(it says so), so a command is taken from the JSON, never copied from the text. Three kinds, in
-this order:
+folder an action was parked in), `options`, `recommend` (counted from 1), `session`, `crew`,
+`at`, and `whose` with `waitsIn`. The text view of `user list` is for reading: it shows some
+control characters as spaces (it says so), so a command is taken from the JSON, never copied
+from the text.
+
+**The list is the machine's; you go through this session's items only.** The person may bring
+several sessions back at once, and each answers its own, so nothing is asked twice and no
+session acts on another's work. `whose` says, for the session that runs the command:
+
+- `this session`: this session parked it, or it is a crew session's and this session is that
+  crew session's lead, or its session ended in this project. Go through these, below.
+- `another session`: a running session owns it (`waitsIn`: its name and folder). Never ask
+  about it, run it or clear it. One line per session: how many wait there, so the person
+  answers them in that session.
+- `no session`: its session ended, in another project. Name its folder in one line and ask once
+  whether to go through those here; a yes makes them this session's.
+
+This session's items, in three kinds, in this order:
 
 1. **Decisions** (taken for the person): show what was chosen, why and how to undo it. Ask keep or
    undo, one question each, `keep` first, in `AskUserQuestion` calls of at most four. An undo is
@@ -56,8 +70,9 @@ this order:
 
 ## 4. Clear what was answered
 
-`cc-smart-dev-kit user clear <n>…` for each item that was answered, undone, run or declined.
-Never `--all` unless every item was dealt with. An action that failed stays on the list, with
-what went wrong said to the person.
+`cc-smart-dev-kit user clear <n>…` for each item of this session's that was answered, undone, run
+or declined. Never `--all`: other sessions' items are on the same list. An action that failed
+stays on the list, with what went wrong said to the person.
 
-Last, say what is left, and that sessions may ask as usual again.
+Last, say what is left here, which sessions still hold items, and that sessions may ask as
+usual again.

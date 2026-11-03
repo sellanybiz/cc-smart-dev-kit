@@ -7,6 +7,7 @@ import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { runUser, type UserContext } from "./command";
 import { readAway } from "./state";
+import type { OwnerSources } from "./whose";
 
 const NOW = Date.parse("2026-10-25T01:00:00.000Z");
 
@@ -16,10 +17,22 @@ interface Run {
   out: string;
 }
 
+/** No session runs, and a folder under /work/<name> is project <name>: nothing reads this machine. */
+const NO_OWNERS: OwnerSources = {
+  sessions: () => [],
+  projectOf: (cwd) => /^\/work\/([^/]+)/.exec(cwd)?.[1] ?? cwd,
+};
+
 /** One `user` command in this process: plain output, UTC, a fixed clock, a home of its own. */
 async function user(
   args: string[],
-  options: { env?: Record<string, string>; home?: string; nowMs?: number } = {},
+  options: {
+    cwd?: string;
+    env?: Record<string, string>;
+    home?: string;
+    nowMs?: number;
+    owners?: OwnerSources;
+  } = {},
 ): Promise<Run & { ctx: UserContext }> {
   const home = options.home ?? tempDir("user-cmd");
   const env = { HOME: home, CLAUDE_CONFIG_DIR: `${home}/.claude`, ...options.env };
@@ -27,7 +40,7 @@ async function user(
   let err = "";
   const term = detectTerminal({ isTTY: false, env: {}, platform: "linux" });
   const ctx: UserContext = {
-    cwd: "/work/app",
+    cwd: options.cwd ?? "/work/app",
     env,
     nowMs: options.nowMs ?? NOW,
     out: createOut(
@@ -42,6 +55,7 @@ async function user(
       err += `${line}\n`;
     },
     timeZone: "UTC",
+    owners: options.owners ?? NO_OWNERS,
   };
   const code = await runUser(args, ctx);
   return { code, ctx, err, out };
@@ -49,6 +63,31 @@ async function user(
 
 function stateOf(run: { ctx: UserContext }) {
   return readAway(run.ctx.paths.stateDir);
+}
+
+/** The asking session, a peer that still runs in another project, and one that ended. */
+const ME = { CLAUDE_CODE_SESSION_ID: "sess-me" };
+const PEER_RUNS: OwnerSources = {
+  ...NO_OWNERS,
+  sessions: () => [{ pid: 7, sessionId: "sess-peer", cwd: "/work/shop", name: "shop fix" }],
+};
+
+/** Three items: this session's in /work/app, the peer's in /work/shop, an ended one's in /work/old. */
+async function threeSessions(): Promise<string> {
+  const home = tempDir("user-cmd");
+  await user(["unavailable"], { home });
+  await user(["park", "--kind", "question", "Mine?"], { home, env: ME });
+  await user(["park", "--kind", "question", "Ship the build?"], {
+    home,
+    cwd: "/work/shop",
+    env: { CLAUDE_CODE_SESSION_ID: "sess-peer" },
+  });
+  await user(["park", "--kind", "decision", "Chose A. Undo: B."], {
+    home,
+    cwd: "/work/old",
+    env: { CLAUDE_CODE_SESSION_ID: "sess-ended" },
+  });
+  return home;
 }
 
 describe("user unavailable, status, available", () => {
@@ -120,6 +159,20 @@ describe("user unavailable, status, available", () => {
     );
     expect(stateOf(run).unavailable).toBe(false);
     expect(stateOf(run).items).toHaveLength(1);
+  });
+
+  test("available in a session counts its own items and names where the rest wait", async () => {
+    const home = await threeSessions();
+    const run = await user(["available"], { home, env: ME, owners: PEER_RUNS });
+    expect(run.out).toBe(
+      [
+        "✓ The person is available again.",
+        "· 1 item waits for this session: go through it with /cc-smart-dev-kit:user-available.",
+        "· 1 item waits in other sessions, which go through their own: shop fix (1).",
+        "· 1 item was parked in another project by a session that ended: /cc-smart-dev-kit:user-available asks whether to take it here.",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("available with nothing parked", async () => {
@@ -322,6 +375,54 @@ describe("user list and clear", () => {
     const items = JSON.parse(run.out);
     expect(items.map((item: { id: number }) => item.id)).toEqual([1, 2]);
     expect(items[1].command).toBe("git push origin x");
+  });
+
+  test("list --json says whose each item is, for the session that asks", async () => {
+    const home = await threeSessions();
+    const run = await user(["list", "--json"], { home, env: ME, owners: PEER_RUNS });
+    const items = JSON.parse(run.out);
+    expect(
+      items.map((one: { id: number; whose: string; waitsIn: unknown }) => [
+        one.id,
+        one.whose,
+        one.waitsIn,
+      ]),
+    ).toEqual([
+      [1, "this session", null],
+      [2, "another session", { name: "shop fix", cwd: "/work/shop" }],
+      [3, "no session", null],
+    ]);
+    // The peer asks: the first item is now another session's, and its own is its own.
+    const peer = await user(["list", "--json"], {
+      home,
+      cwd: "/work/shop",
+      env: { CLAUDE_CODE_SESSION_ID: "sess-peer" },
+      owners: {
+        ...NO_OWNERS,
+        sessions: () => [{ pid: 8, sessionId: "sess-me", cwd: "/work/app", name: "kit session" }],
+      },
+    });
+    expect(JSON.parse(peer.out).map((one: { whose: string }) => one.whose)).toEqual([
+      "another session",
+      "this session",
+      "no session",
+    ]);
+  });
+
+  test("the list's view says who answers each item", async () => {
+    const home = await threeSessions();
+    const run = await user(["list"], { home, env: ME, owners: PEER_RUNS });
+    expect(run.out).toBe(
+      [
+        "#1 question · session sess-me · 01:00 · for this session",
+        "   Mine?",
+        "#2 question · session sess-peer · 01:00 · waits in shop fix",
+        "   Ship the build?",
+        "#3 decision · session sess-ended · 01:00 · its session ended",
+        "   Chose A. Undo: B.",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("list with nothing parked says so", async () => {

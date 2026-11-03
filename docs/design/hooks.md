@@ -681,6 +681,31 @@ the item says so. Only a guard's own reason text goes through `maskedLine`. The 
 (`src/user-away/command.ts`) is `unavailable [--until]`, `available`, `status`, `park`, `list`
 and `clear`; `available` keeps the list.
 
+**Whose an item is** (`src/user-away/whose.ts`, 1.11.1). The list is the machine's, but the
+person brings each session back on its own, and two sessions that each went through every item
+asked the person each other's questions. So `user list --json` gives each item `whose`, judged
+for the session that runs it (`CLAUDE_CODE_SESSION_ID`), and `/cc-smart-dev-kit:user-available`
+goes through its own items only:
+
+- `this session`: it parked the item; or the item is a crew session's (`crew`: that crew session
+  parked it, or a lead parked it for it) and this session leads that crew session, by the crew
+  record's `leadSessionId` and every session its lead record lists (`leadSessions`); or no running
+  session owns it and it was parked in this session's project (a session that ended, or this one
+  before a `/clear`; the project is the work store's key, `folderProject`, read from the nearest
+  folder that is still there).
+- `another session`: a running session owns it (Claude Code's session records, `liveSessions`),
+  and `waitsIn` names it and its folder. The skill names it in one line and never asks about it,
+  runs it or clears it.
+- `no session`: no running session owns it, and it was parked in another project. The skill asks
+  once whether to take those here.
+
+A fact it cannot read never makes an item this session's: session records it cannot read keep
+another session's item there, and a project it cannot tell (git did not answer, or had no time
+left) is another project. `user available` and the hook's "available again" note count the same
+way: how many items are this session's, and how many wait in which other session. The note's git
+calls share the hook's budget (`SHORT_GUARD_BUDGET_MS`). The person's own terminal has no
+session, so only the running owners and its folder's project decide there.
+
 **Four answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
 where there was a question, never an allow.
 

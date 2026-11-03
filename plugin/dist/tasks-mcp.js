@@ -21559,7 +21559,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "1.11.0",
+  version: "1.11.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -22830,18 +22830,26 @@ function taskContext(cwd, env = process.env) {
   }
   return contextOf(checkout, cwd, env);
 }
+function keyOf(checkout, cwd) {
+  return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
+}
 function contextOf(checkout, cwd, env) {
   if (checkout === null) {
     return {
       ok: true,
-      project: projectKey(realpathSync3(cwd)),
+      project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" }
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
-  const base = { ok: true, project: projectKey(repo), repo, checkoutRoot: checkout.root };
+  const base = {
+    ok: true,
+    project: keyOf(checkout, cwd),
+    repo,
+    checkoutRoot: checkout.root
+  };
   let settings;
   try {
     settings = loadProjectConfig(checkout).config?.tasks;

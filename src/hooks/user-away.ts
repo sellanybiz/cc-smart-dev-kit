@@ -55,8 +55,15 @@ import {
   readAway,
   sayOnce,
 } from "../user-away/state";
-import { AVAILABLE_SKILL, COMMAND_MAX, TEXT_MAX, UNAVAILABLE_SKILL } from "../user-away/words";
-import { BUDGET_MARGIN_MS } from "./budget";
+import { type OwnerSources, ownedItems, waitingLines } from "../user-away/whose";
+import {
+  AVAILABLE_SKILL,
+  COMMAND_MAX,
+  plural,
+  TEXT_MAX,
+  UNAVAILABLE_SKILL,
+} from "../user-away/words";
+import { BUDGET_MARGIN_MS, SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import {
   addContext,
   askReason,
@@ -107,16 +114,14 @@ const REASON_MAX = 600;
 export interface AwayOptions {
   /** The zone the times show in; undefined: the machine's. */
   timeZone?: string;
+  /** Where whose an item is gets read from (`src/user-away/whose.ts`); the tests hand in their own. */
+  owners?: OwnerSources;
 }
 
 /** True for the calls this hook judges on PreToolUse: the two that ask the person. */
 export function inAwayDomain(input: HookInput): boolean {
   const tool = stringField(input.tool_name);
   return tool !== null && (AWAY_ASK_TOOLS as readonly string[]).includes(tool);
-}
-
-function plural(count: number, one: string, many: string): string {
-  return `${String(count)} ${count === 1 ? one : many}`;
 }
 
 /** ` since 01:00, back about 07:00` — what the state says about the time. */
@@ -342,12 +347,18 @@ async function noteAnswer(
   const state = readAway(paths.stateDir);
   const count = state.items.length;
   if (!state.unavailable) {
-    // The state is back: a session that heard "unavailable" hears that it is over, once.
+    // The state is back: a session that heard "unavailable" hears that it is over, once, with
+    // what is its own to go through: the other sessions' items are theirs (`whose.ts`).
     if (!(await forgetSaid(paths.stateDir, session))) return SILENT;
+    // Its git calls share the hook's 10 s, counted from the hook's start (the frame's `nowMs`),
+    // so a wait for the state's lock above counts too: a call that would not fit is not made,
+    // and the item's project is then unknown, which never makes it this session's.
+    const { timeFor } = startBudget(env, Date.now, SHORT_GUARD_BUDGET_MS, nowMs);
+    const asker = { session, cwd: stringField(input.cwd) ?? "", env, paths, timeFor };
     const left =
       count === 0
         ? "Nothing is left parked."
-        : `${plural(count, "item still waits", "items still wait")} for them (${AVAILABLE_SKILL}).`;
+        : waitingLines(ownedItems(state.items, asker, options.owners)).join(" ");
     return addContext(
       "UserPromptSubmit",
       `The person is available again: ask your questions as usual. ${left}`,
