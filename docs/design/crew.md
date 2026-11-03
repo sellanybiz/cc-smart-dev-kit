@@ -1211,10 +1211,26 @@ the store records — a session the kit does not know is the person's own:
   could read is no licence to start a session. A queued crew session is cut from its `baseRef` when it starts, so a phase that waited for
   another starts from the merged result, and the folder `claude -w` opens is the record's own
   worktree, so a hand-off's numbered folder is the right one. A queued crew session held by a
-  phase that was **removed before its work was merged** never starts by itself, and the watch
-  says so **once**, with the way to drop the wait (`crew rm` the queued crew session, then start
-  its phase again): the work it waits for is not on the lead's branch, so pretending it is
-  merged would build the next phase on nothing;
+  phase that was **removed before its work was merged** never starts by itself: the work it
+  waits for is not on the lead's branch, so pretending it is merged would build the next phase on
+  nothing;
+- it **names every phase that holds the queue and will not move by itself** (`stuckPhases`,
+  1.11.2), one line per phase with the queued crew sessions it holds and the exact step that
+  moves it. The phase's newest crew session decides, as it does for the wait itself
+  (`unmetWaits`): it `failed` (read its report, then `crew resume` it, or `crew start <phase>
+  --continue` it), was `stopped` (`crew resume`), handed off with no next crew session (`crew
+  start <phase> --continue`), was removed or discarded before its work was merged (start the
+  phase again, or drop the wait: `crew rm` the queued crew session, then start it again), **is
+  done and waits for the lead's merge** (merge its branch), or no crew session has started it.
+  The last two wait `crew.quietMinutes` first (from the done record's last change, and from the
+  oldest waiter's queueing), because the lead acts on them in its own turn. A line is said when
+  the phase sticks, at once when what holds it changes, and **again every
+  `QUIET_LONG_FACTOR` times `quietMinutes`** (an hour by default) while it stays stuck, so a lead
+  that read it and went on hears it until it acts; the `said` key is the phase, and its value
+  the kind, the holder and the time it was said. Said once, as before 1.11.2, a lead on a
+  backend model read it and went on, and a server's queue sat behind failed, stopped and
+  unmerged phases while two crew sessions ran. A holder another lead started is named as that
+  lead's, since its commands are that lead's;
 - it **resumes the paused crew sessions** of this lead once the gateway answers again (D42): one
   first (the canary), the others `RESUME_SPACING_MS` (30 s) apart and only after the router
   answered a request since, and never while a slot's breaker is open or a Claude limit is

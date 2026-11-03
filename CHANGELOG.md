@@ -3,6 +3,27 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.11.2
+
+The lead's watch names what holds the queue, until the lead acts.
+
+**What to run** after the update: nothing. A running watch ends by itself when the update lands;
+start it again with the `Monitor` tool, as its last line says.
+
+What changed:
+
+- **One line per phase that holds the queue and will not move by itself**, with the exact step
+  that moves it: `B6a holds 3 queued (…) — C my-app B6a x failed: read its report, then bring it
+  back with cc-smart-dev-kit crew resume "…"`. It covers a phase whose newest crew session
+  failed, was stopped, handed off with no next crew session, or was removed or discarded before
+  its work was merged. After `crew.quietMinutes` it also covers a phase that is done and waits
+  for your merge, and a phase nobody has started. Before, only a phase removed before its merge
+  was named, once per queued crew session. A queue could sit behind failed, stopped and
+  unmerged phases while only two crew sessions ran.
+- **The line comes back while the phase stays stuck**: every three times `crew.quietMinutes`
+  (an hour by default), and at once when what holds it changes. A lead that read it once and
+  went on used to hear nothing more.
+
 ## 1.11.1
 
 Each session goes through its own parked items.
