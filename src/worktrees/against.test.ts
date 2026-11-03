@@ -1,11 +1,4 @@
-/**
- * Judging a worktree against another ref than `origin/<base>` (`scan.ts`): a crew session's branch is
- * merged into its lead's branch and never pushed (D24), so `crew rm` asks whether the lead has
- * every commit, not whether the remote has.
- *
- * Real git repos in temp folders, with the machine's facts given (no Docker, no processes, no
- * sessions), as `worktrees.test.ts` does.
- */
+/** Local-ref comparisons also work for ordinary and subagent worktrees before a push. */
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,8 +33,8 @@ function withWork(): { main: string; worktree: string } {
 describe("scanWorktrees against a ref of the caller's", () => {
   test("every commit must be on the given ref; a local merge counts although nothing was pushed", () => {
     const { main, worktree } = withWork();
-    const lead = () => ({
-      label: "main, the lead's branch",
+    const local = () => ({
+      label: "main, the local branch",
       ref: git(main, "rev-parse", "HEAD").trim(),
     });
     const options = (against: { label: string; ref: string }) => ({
@@ -52,15 +45,15 @@ describe("scanWorktrees against a ref of the caller's", () => {
       facts: quiet,
       idleLimit: 0,
     });
-    expect(scanWorktrees(main, options(lead()))[1]?.state).toEqual({
+    expect(scanWorktrees(main, options(local()))[1]?.state).toEqual({
       finished: false,
       held: false,
-      why: "1 commit not on main, the lead's branch",
+      why: "1 commit not on main, the local branch",
     });
 
-    // The lead merges locally. origin/main does not have the commit, and does not need to.
+    // Merge locally. origin/main does not have the commit, and does not need to.
     git(main, "merge", "--ff-only", "fix/login");
-    expect(scanWorktrees(main, options(lead()))[1]?.state).toEqual({
+    expect(scanWorktrees(main, options(local()))[1]?.state).toEqual({
       finished: true,
       note: null,
     });
@@ -81,13 +74,13 @@ describe("scanWorktrees against a ref of the caller's", () => {
     const { main } = withWork();
     expect(() =>
       scanWorktrees(main, {
-        against: { label: "the lead's branch", ref: "no-such-branch" },
+        against: { label: "the local branch", ref: "no-such-branch" },
         base: "main",
         claudeConfigDir: tempDir("against-config"),
         env,
         facts: quiet,
       }),
-    ).toThrow("the lead's branch is not known here");
+    ).toThrow("the local branch is not known here");
   });
 });
 
@@ -95,11 +88,11 @@ describe("deleting a branch that a given ref holds", () => {
   test("it goes only when the ref has all of it, and the reason names that ref", () => {
     const { main, worktree } = withWork();
     git(main, "worktree", "remove", "--force", worktree);
-    expect(deleteBranchOnRef(main, "main", "the lead's branch", "fix/login", env)).toBe(
-      "kept branch fix/login: it has commits that are not on the lead's branch",
+    expect(deleteBranchOnRef(main, "main", "the local branch", "fix/login", env)).toBe(
+      "kept branch fix/login: it has commits that are not on the local branch",
     );
     git(main, "merge", "--ff-only", "fix/login");
-    expect(deleteBranchOnRef(main, "main", "the lead's branch", "fix/login", env)).toBe(
+    expect(deleteBranchOnRef(main, "main", "the local branch", "fix/login", env)).toBe(
       "deleted branch fix/login",
     );
     expect(git(main, "branch", "--list", "fix/login")).toBe("");

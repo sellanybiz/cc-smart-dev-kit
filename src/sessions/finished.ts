@@ -1,43 +1,12 @@
 /**
  * Finished background sessions: one reader for the command and the portal, never an automatic
- * removal. What crew sessions left in `/resume` is the timeline's (`readCrewLeftovers`, `archive.ts`).
+ * removal.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
-import { agentRows, listsAnySession } from "../crew/agents";
 import { type ClaudeDeps, callClaude, findClaude, realRunProgram } from "../crew/claude";
-import type { CrewContext } from "../crew/context";
-import { RELEASE_STATES } from "../crew/lifecycle";
-import { CREW_ROLE, LEAD_ROLE } from "../crew/names";
-import {
-  type CrewRecord,
-  crewSessions,
-  listAllCrew,
-  listAllLeads,
-  watchIsAlive,
-} from "../crew/store";
-
-/**
- * Finished crew records no watch releases (D69): no live watch of their lead holds its lease
- * (`watchIsAlive`) — the lead is stopped or gone, or alive with no watch running. A live watch
- * releases its own, and a lease no one can read holds nothing. One released already is listed
- * again while agent view still lists a row of it: its `claude rm` failed.
- */
-export async function releasableCrewSessions(ctx: CrewContext): Promise<CrewRecord[]> {
-  const crew = listAllCrew(ctx.paths.stateDir);
-  if (crew.broken.length > 0 || crew.records.length === 0) return [];
-  const rows = agentRows(ctx);
-  if (rows === null) return [];
-  return crew.records.filter(
-    (record) =>
-      (record.released === undefined || listsAnySession(rows, record)) &&
-      RELEASE_STATES.includes(record.state) &&
-      !watchIsAlive(ctx.paths.stateDir, record.repo, record.leadSessionId),
-  );
-}
-
 /** A finished session is offered only after a full day in a terminal state. */
 export const FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -94,8 +63,6 @@ export function finishedSessions(
       row.waitingFor ||
       excluded.has(row.sessionId) ||
       excluded.has(row.id) ||
-      (row.name != null &&
-        [LEAD_ROLE, CREW_ROLE].includes(row.name.trim().split(/\s+/)[0] ?? "")) ||
       seen.has(row.sessionId)
     )
       continue;
@@ -154,30 +121,12 @@ export interface FinishedSessionsDeps {
   agents: () => SessionAgentRow[] | null;
 }
 
-/** Read-only machine-wide view. A damaged crew/lead store fails closed, including for the portal. */
+/** Read-only machine-wide view of Claude Code background sessions. */
 export function readFinishedSessions(
   paths: CliPaths,
   deps: FinishedSessionsDeps,
 ): FinishedSessionsResult {
   try {
-    const crew = listAllCrew(paths.stateDir);
-    const leads = listAllLeads(paths.stateDir);
-    if (crew.broken.length || leads.broken.length)
-      return {
-        sessions: [],
-        error:
-          "Could not read every crew and lead record; repair the crew store before removing sessions.",
-      };
-    const excluded = new Set<string>();
-    for (const record of crew.records) {
-      // Every session of the record is the crew's own to remove (`crew rm`), not a finished one.
-      for (const one of crewSessions(record)) {
-        if (one.sessionId !== null) excluded.add(one.sessionId);
-        excluded.add(one.shortId);
-      }
-      excluded.add(record.leadSessionId);
-    }
-    for (const lead of leads.records) excluded.add(lead.sessionId);
     const rows = deps.agents();
     if (rows === null)
       return {
@@ -185,7 +134,7 @@ export function readFinishedSessions(
         error: "Could not read Claude Code's agent list; check claude agents --json --all.",
       };
     return {
-      sessions: finishedSessions(rows, excluded, (row) => sessionTerminalAt(paths, row), deps.now),
+      sessions: finishedSessions(rows, new Set(), (row) => sessionTerminalAt(paths, row), deps.now),
       error: null,
     };
   } catch (error) {

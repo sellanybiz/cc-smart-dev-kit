@@ -1,30 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { runCrew } from "../crew/command";
-import { leadFile, listCrew, writeLead } from "../crew/store";
 import type { SessionRecord } from "../hooks/sessions";
-import { crewWorld, LEAD_SESSION, OTHER_SESSION } from "../testing/crew-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import type { ParkedItem } from "./state";
-import {
-  type CrewFacts,
-  crewLeadOf,
-  type OwnerFacts,
-  ownedItems,
-  ownerFacts,
-  ownerOf,
-  type Read,
-  waitingLines,
-} from "./whose";
-
-/** The session the fake `claude --bg` of the crew world starts. */
-const CREW_SESSION = "a1b2c3d4-0000-1111-2222-333333333333";
+import { type OwnerFacts, ownedItems, ownerFacts, ownerOf, waitingLines } from "./whose";
 
 const ME = "aaaaaaaa-0000-0000-0000-000000000001";
 const PEER = "bbbbbbbb-0000-0000-0000-000000000002";
 const GONE = "cccccccc-0000-0000-0000-000000000003";
-const LEAD = "dddddddd-0000-0000-0000-000000000004";
 
 function item(over: Partial<ParkedItem> = {}): ParkedItem {
   return {
@@ -36,7 +20,6 @@ function item(over: Partial<ParkedItem> = {}): ParkedItem {
     options: [],
     recommend: null,
     session: ME,
-    crew: "",
     cwd: "/work/app",
     at: "2026-11-03T00:00:00.000Z",
     ...over,
@@ -48,16 +31,13 @@ function record(sessionId: string, name: string, cwd: string): SessionRecord {
 }
 
 /**
- * The asker is ME in project "app"; PEER runs in "shop"; the crew session UA1-x-1 runs as PEER
- * and its lead is LEAD.
+ * The asker is ME in project "app"; PEER runs in "shop".
  */
 function facts(over: Partial<OwnerFacts> = {}): OwnerFacts {
   return {
     session: ME,
     project: "app",
     live: [record(ME, "kit session", "/work/app"), record(PEER, "shop fix", "/work/shop")],
-    crewLead: (crew) =>
-      crew === "UA1-x-1" ? { lead: [LEAD], own: [PEER], complete: true } : "none",
     projectOf: (cwd) =>
       cwd.startsWith("/work/app") ? "app" : cwd.startsWith("/work/shop") ? "shop" : null,
     ...over,
@@ -92,93 +72,6 @@ describe("ownerOf", () => {
     expect(ownerOf(item({ session: "", cwd: "/elsewhere" }), facts())).toEqual({
       whose: "no session",
       waitsIn: null,
-    });
-  });
-
-  test("a crew session's item is its lead's, even while the crew session runs", () => {
-    const crewItem = item({ session: PEER, crew: "UA1-x-1", cwd: "/work/app" });
-    // The asking lead runs, as an asker always does, and so does its crew session.
-    const leadAsks = facts({
-      session: LEAD,
-      live: [record(LEAD, "LEAD app plan", "/work/app"), record(PEER, "C UA1", "/work/app")],
-    });
-    expect(ownerOf(crewItem, leadAsks)).toEqual({ whose: "this session", waitsIn: null });
-    // Its lead runs elsewhere: the item waits there, not in the crew session or in this one.
-    const live = [record(LEAD, "LEAD app plan", "/work/app"), record(PEER, "C UA1", "/work/app")];
-    expect(ownerOf(crewItem, facts({ live }))).toEqual({
-      whose: "another session",
-      waitsIn: { name: "LEAD app plan", cwd: "/work/app" },
-    });
-    // Its lead ended: the project's sessions answer it, through `crew answer`.
-    expect(ownerOf(crewItem, facts())).toEqual({ whose: "this session", waitsIn: null });
-  });
-
-  test("an item this session parked for a crew session stays its own, whoever leads that crew", () => {
-    const live = [
-      record(ME, "kit session", "/work/app"),
-      record(LEAD, "LEAD app plan", "/work/app"),
-    ];
-    expect(ownerOf(item({ session: ME, crew: "UA1-x-1" }), facts({ live }))).toEqual({
-      whose: "this session",
-      waitsIn: null,
-    });
-    // Crew records that cannot tell change nothing: this session parked it.
-    expect(
-      ownerOf(item({ session: ME, crew: "UA1-x-1" }), facts({ crewLead: () => "unknown" })),
-    ).toEqual({ whose: "this session", waitsIn: null });
-  });
-
-  test("a crew session no record names is judged by the session that parked it", () => {
-    expect(ownerOf(item({ session: PEER, crew: "UA9-gone-1" }), facts())).toEqual({
-      whose: "another session",
-      waitsIn: { name: "shop fix", cwd: "/work/shop" },
-    });
-  });
-
-  test("a lead that parked an item for a crew session owns it too, whoever leads that crew now", () => {
-    // PEER is not the crew session (it runs as GONE): PEER parked it with `--crew`.
-    const crewLead = () => ({ lead: [LEAD], own: [GONE], complete: true });
-    expect(ownerOf(item({ session: PEER, crew: "UA1-x-1" }), facts({ crewLead }))).toEqual({
-      whose: "another session",
-      waitsIn: { name: "shop fix", cwd: "/work/shop" },
-    });
-    // The crew record's lead runs too: the item waits in either, and the first running one is named.
-    const live = [
-      record(LEAD, "LEAD app plan", "/work/app"),
-      record(PEER, "shop fix", "/work/shop"),
-    ];
-    expect(ownerOf(item({ session: PEER, crew: "UA1-x-1" }), facts({ crewLead, live }))).toEqual({
-      whose: "another session",
-      waitsIn: { name: "LEAD app plan", cwd: "/work/app" },
-    });
-  });
-
-  test("a crew session the records cannot tell keeps the item in another session", () => {
-    // GONE ended and the item is in this project: without the crew lookup it would be this session's.
-    expect(
-      ownerOf(item({ session: GONE, crew: "UA1-x-1" }), facts({ crewLead: () => "unknown" })),
-    ).toEqual({ whose: "another session", waitsIn: null });
-  });
-
-  test("a lead record that could not be read keeps a crew item in another session", () => {
-    const crewItem = item({ session: PEER, crew: "UA1-x-1", cwd: "/work/app" });
-    // Every lead record read, and none of its sessions runs: the project's sessions answer it.
-    const complete = () => ({ lead: [LEAD], own: [PEER], complete: true });
-    expect(ownerOf(crewItem, facts({ crewLead: complete }))).toEqual({
-      whose: "this session",
-      waitsIn: null,
-    });
-    // A lead record it could not read may name the session that leads it now.
-    const partial = () => ({ lead: [LEAD], own: [PEER], complete: false });
-    expect(ownerOf(crewItem, facts({ crewLead: partial }))).toEqual({
-      whose: "another session",
-      waitsIn: null,
-    });
-    // A running lead is still found, and named.
-    const live = [record(LEAD, "LEAD app plan", "/work/app")];
-    expect(ownerOf(crewItem, facts({ crewLead: partial, live }))).toEqual({
-      whose: "another session",
-      waitsIn: { name: "LEAD app plan", cwd: "/work/app" },
     });
   });
 
@@ -266,182 +159,6 @@ describe("ownerFacts", () => {
     );
     const facts = ownerFacts(asker("/work/app", home), { projectOf: (cwd) => cwd });
     expect(facts.live?.map((one) => one.sessionId)).toEqual([PEER]);
-  });
-
-  test("a crew session's lead, by the crew session's id or name, and the lead's later session", async () => {
-    const world = crewWorld();
-    await writeLead(
-      world.paths.stateDir,
-      {
-        cwd: world.repo,
-        name: "LEAD my-app plan",
-        plan: "plan",
-        repo: world.repo,
-        sessionId: LEAD_SESSION,
-        tag: "my-app",
-      },
-      Date.parse("2026-11-03T00:00:00Z"),
-    );
-    const brief = join(world.paths.home, "brief.md");
-    writeFileSync(brief, "# Build it\n");
-    expect(
-      await runCrew(
-        ["start", "P1", "--slug", "store", "--kind", "build", "--brief", brief],
-        world.ctx(),
-      ),
-    ).toBe(0);
-    const crew = listCrew(world.paths.stateDir, world.repo).records[0];
-    if (!crew) throw new Error("no crew record");
-    const factsOf = () =>
-      ownerFacts(
-        {
-          session: OTHER_SESSION,
-          cwd: world.repo,
-          env: cleanGitEnv(),
-          paths: world.paths,
-        },
-        { sessions: () => [], projectOf: (cwd) => cwd },
-      );
-    const started = { lead: [LEAD_SESSION], own: [CREW_SESSION], complete: true };
-    expect(factsOf().crewLead(crew.id, "")).toEqual(started);
-    expect(factsOf().crewLead(crew.name, "")).toEqual(started);
-    expect(factsOf().crewLead("UA9-none-1", "")).toBe("none");
-    await writeLead(
-      world.paths.stateDir,
-      {
-        cwd: world.repo,
-        name: "LEAD my-app plan",
-        plan: "plan",
-        repo: world.repo,
-        sessionId: OTHER_SESSION,
-        tag: "my-app",
-      },
-      Date.parse("2026-11-03T01:00:00Z"),
-    );
-    // A lead that moved to a new session lists the one before it, which the crew record may
-    // still name: the new session leads it too.
-    const file = leadFile(world.paths.stateDir, world.repo, OTHER_SESSION);
-    const moved = JSON.parse(readFileSync(file, "utf8"));
-    moved.earlierSessions = [{ sessionId: LEAD_SESSION, shortId: LEAD_SESSION.slice(0, 8) }];
-    writeFileSync(file, JSON.stringify(moved));
-    expect(factsOf().crewLead(crew.id, "")).toEqual({
-      lead: [LEAD_SESSION, OTHER_SESSION],
-      own: [CREW_SESSION],
-      complete: true,
-    });
-  });
-});
-
-describe("crewLeadOf", () => {
-  const OLD = "eeeeeeee-0000-0000-0000-000000000005";
-  const crewRecord = (over: Partial<CrewFacts> = {}): CrewFacts => ({
-    id: "UA1-x-1",
-    name: "C UA1 x",
-    leadSessionId: LEAD,
-    sessionId: PEER,
-    ...over,
-  });
-  const read = <T>(records: readonly T[], broken = 0): Read<T> => ({ records, broken });
-  const noLeads = read<readonly string[]>([]);
-
-  test("an id is one crew session: its lead, its own sessions, every lead record read", () => {
-    expect(crewLeadOf("UA1-x-1", "", read([crewRecord()]), noLeads)).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: true,
-    });
-    // An id wins over a record that only shares it as a name.
-    const both = read([
-      crewRecord({ id: "UA2-y-1", name: "UA1-x-1", leadSessionId: GONE }),
-      crewRecord(),
-    ]);
-    expect(crewLeadOf("UA1-x-1", "", both, noLeads)).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: true,
-    });
-    // Two records with one id cannot tell which lead it is.
-    const twice = read([crewRecord(), crewRecord({ leadSessionId: GONE })]);
-    expect(crewLeadOf("UA1-x-1", "", twice, noLeads)).toBe("unknown");
-  });
-
-  test("its own sessions are the one it runs as and the ones before, never an empty one", () => {
-    const resumed = crewRecord({
-      sessionId: null,
-      earlierSessions: [{ sessionId: GONE }, { sessionId: "" }, { sessionId: PEER }],
-    });
-    expect(crewLeadOf("UA1-x-1", "", read([resumed]), noLeads)).toEqual({
-      lead: [LEAD],
-      own: [GONE, PEER],
-      complete: true,
-    });
-  });
-
-  test("its lead is every session of the lead record that names the crew record's lead", () => {
-    const leads = read<readonly string[]>([
-      [ME, ME],
-      [OLD, LEAD, ME],
-    ]);
-    expect(crewLeadOf("UA1-x-1", "", read([crewRecord()]), leads)).toEqual({
-      lead: [LEAD, OLD, ME],
-      own: [PEER],
-      complete: true,
-    });
-  });
-
-  test("lead records it could not read leave the lead incomplete", () => {
-    const one = read([crewRecord()]);
-    expect(crewLeadOf("UA1-x-1", "", one, null)).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: false,
-    });
-    expect(crewLeadOf("UA1-x-1", "", one, read<readonly string[]>([], 1))).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: false,
-    });
-  });
-
-  test("a name counts only when one record fits it", () => {
-    // A phase started again keeps its name: the record tied to the parker is the one.
-    const first = crewRecord({ id: "UA1-x-1", sessionId: GONE, leadSessionId: OLD });
-    const again = crewRecord({ id: "UA1-x-2", sessionId: PEER, leadSessionId: LEAD });
-    const reused = read([first, again]);
-    expect(crewLeadOf("C UA1 x", PEER, reused, noLeads)).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: true,
-    });
-    // Tied through its lead: the lead parked it with `--crew`.
-    expect(crewLeadOf("C UA1 x", OLD, reused, noLeads)).toEqual({
-      lead: [OLD],
-      own: [GONE],
-      complete: true,
-    });
-    // Neither is tied to the parker, or no parker is known: the first match would guess.
-    expect(crewLeadOf("C UA1 x", ME, reused, noLeads)).toBe("unknown");
-    expect(crewLeadOf("C UA1 x", "", reused, noLeads)).toBe("unknown");
-    // An item parked with no session ties nothing, not even a record whose lead is not known.
-    const noLead = crewRecord({ id: "UA1-x-3", leadSessionId: "", sessionId: null });
-    expect(crewLeadOf("C UA1 x", "", read([first, noLead]), noLeads)).toBe("unknown");
-    // Both are tied to it: still a guess.
-    const bothMine = read([first, crewRecord({ id: "UA1-x-2", sessionId: GONE })]);
-    expect(crewLeadOf("C UA1 x", GONE, bothMine, noLeads)).toBe("unknown");
-    // One record by that name, tied or not, is that crew session.
-    expect(crewLeadOf("C UA1 x", ME, read([again]), noLeads)).toEqual({
-      lead: [LEAD],
-      own: [PEER],
-      complete: true,
-    });
-  });
-
-  test("no record by that id or name is none, unless a record could not be read", () => {
-    expect(crewLeadOf("UA9-none-1", PEER, read([crewRecord()]), noLeads)).toBe("none");
-    expect(crewLeadOf("UA9-none-1", PEER, read([crewRecord()], 1), noLeads)).toBe("unknown");
-    expect(crewLeadOf("UA9-none-1", PEER, null, noLeads)).toBe("unknown");
-    // A crew store that throws tells nothing, even for an id that would have matched.
-    expect(crewLeadOf("UA1-x-1", PEER, null, noLeads)).toBe("unknown");
   });
 });
 

@@ -4,8 +4,7 @@
  * item asked the person each other's questions. So each session goes through its own items
  * only, and names the others. Judged for the session that asks:
  *
- * - `this session`: it parked the item; or the item is a crew session's (it parked it, or a lead
- *   parked it for it) and this session is that crew session's lead; or the session that owns it
+ * - `this session`: it parked the item; or the session that owns it
  *   no longer runs and it was parked in this session's project (a session that ended, or this
  *   one before a `/clear`), so nobody else would answer it.
  * - `another session`: another running session owns it, and answers it there (`waitsIn`).
@@ -17,7 +16,6 @@
  */
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { leadSessions, listAllCrew, listAllLeads } from "../crew/store";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
@@ -49,86 +47,8 @@ export interface OwnerFacts {
   project: string | null;
   /** The running sessions; null when their records cannot be read. */
   live: readonly SessionRecord[] | null;
-  /** Who leads the crew session an item is for (`crew`, by its id or name), `parkedBy` the item's session. */
-  crewLead: (crew: string, parkedBy: string) => CrewLead;
   /** A folder's project key; null when it cannot be told. */
   projectOf: (cwd: string) => string | null;
-}
-
-/**
- * Who leads the crew session an item is for: its lead's sessions (`lead`), the crew session's own
- * (`own`), and whether every lead record that could add to `lead` was read (`complete`);
- * `none` when no crew record has that id or name; `unknown` when the records cannot tell which.
- */
-export type CrewLead =
-  | { lead: readonly string[]; own: readonly string[]; complete: boolean }
-  | "none"
-  | "unknown";
-
-/** The fields of a crew record the lookup reads. */
-export interface CrewFacts {
-  id: string;
-  name: string;
-  leadSessionId: string;
-  sessionId: null | string;
-  earlierSessions?: readonly { sessionId: string }[] | undefined;
-}
-
-/** What the crew store gave: its records and how many it could not read; null when it threw. */
-export interface Read<T> {
-  records: readonly T[];
-  broken: number;
-}
-
-/**
- * The crew session `wanted` names (an item's `crew`: the id a crew session parks with, or the name
- * a lead gives with `--crew`), and who leads it. An id is one crew session. A name is not: a phase
- * started again keeps its name, and two repositories may share a tag, so a name counts only when
- * one record fits — the one tied to `parkedBy` (it is that crew session, or its lead), else the only
- * one by that name. Several, or records it could not read where none fits, are `unknown`: the first
- * match would hand the item to the wrong lead. `leads` is every lead record's sessions
- * (`leadSessions`): an adopted lead's record holds the ones before it.
- */
-export function crewLeadOf(
-  wanted: string,
-  parkedBy: string,
-  crew: Read<CrewFacts> | null,
-  leads: Read<readonly string[]> | null,
-): CrewLead {
-  if (crew === null) return "unknown";
-  const own = (one: CrewFacts) =>
-    [one.sessionId, ...(one.earlierSessions ?? []).map((earlier) => earlier.sessionId)].filter(
-      (id): id is string => id !== null && id !== "",
-    );
-  const leadOf = (one: CrewFacts) => {
-    const sessions = new Set([one.leadSessionId]);
-    for (const set of leads?.records ?? [])
-      if (set.includes(one.leadSessionId)) for (const id of set) sessions.add(id);
-    return [...sessions];
-  };
-  const byId = crew.records.filter((one) => one.id === wanted);
-  const named = crew.records.filter((one) => one.name === wanted);
-  const tied = named.filter(
-    (one) => parkedBy !== "" && (own(one).includes(parkedBy) || leadOf(one).includes(parkedBy)),
-  );
-  const record =
-    byId.length === 1
-      ? byId[0]
-      : byId.length > 1
-        ? undefined
-        : tied.length === 1
-          ? tied[0]
-          : tied.length === 0 && named.length === 1
-            ? named[0]
-            : undefined;
-  if (record === undefined) {
-    return byId.length === 0 && named.length === 0 && crew.broken === 0 ? "none" : "unknown";
-  }
-  return {
-    lead: leadOf(record),
-    own: own(record),
-    complete: leads !== null && leads.broken === 0,
-  };
 }
 
 const THIS: Owned = { whose: "this session", waitsIn: null };
@@ -139,28 +59,12 @@ export function ownerOf(item: ParkedItem, facts: OwnerFacts): Owned {
   const asker = facts.session;
   const isAsker = (id: string) => asker !== null && id === asker;
   if (isAsker(item.session)) return THIS;
-  const parker = item.session === "" ? [] : [item.session];
-  let owners = parker;
-  let complete = true;
-  if (item.crew !== "") {
-    const crew = facts.crewLead(item.crew, item.session);
-    if (crew === "unknown") return UNSEEN;
-    if (crew !== "none") {
-      // A crew session never asks the person: its lead answers for it (`crew answer`). A lead that
-      // parked the item for it (`--crew`) owns it too, whatever lead the crew record names now.
-      owners = [...crew.lead, ...parker.filter((id) => !crew.own.includes(id))];
-      complete = crew.complete;
-    }
-  }
-  if (owners.some(isAsker)) return THIS;
-  if (owners.length > 0) {
+  if (item.session !== "") {
     if (facts.live === null) return UNSEEN;
-    const running = facts.live.find((one) => owners.includes(one.sessionId));
+    const running = facts.live.find((one) => one.sessionId === item.session);
     if (running !== undefined) {
       return { whose: "another session", waitsIn: { name: running.name, cwd: running.cwd } };
     }
-    // A lead record it could not read may name the session that leads it now, and it may run.
-    if (!complete) return UNSEEN;
   }
   const project = item.cwd === "" ? null : facts.projectOf(item.cwd);
   return project !== null && project === facts.project ? THIS : NOBODY;
@@ -206,38 +110,21 @@ function projectOnDisk(cwd: string, asker: Asker): string {
   });
 }
 
-/** The facts for `asker`, each read once and only when an item needs it. */
+/** The facts for `asker`, read once for this list. */
 export function ownerFacts(asker: Asker, sources: OwnerSources = {}): OwnerFacts {
   const projects = new Map<string, string | null>();
   const projectOf = (cwd: string): string | null => {
-    const known = projects.get(cwd);
-    if (known !== undefined) return known;
+    if (projects.has(cwd)) return projects.get(cwd) ?? null;
     const key = orNull(() =>
       sources.projectOf ? sources.projectOf(cwd) : projectOnDisk(cwd, asker),
     );
     projects.set(cwd, key);
     return key;
   };
-  // Read once, and only when an item names a crew session: a machine may hold hundreds.
-  let stores: null | { crew: Read<CrewFacts> | null; leads: Read<readonly string[]> | null } = null;
-  const crewLead = (wanted: string, parkedBy: string): CrewLead => {
-    stores ??= {
-      crew: orNull(() => {
-        const listed = listAllCrew(asker.paths.stateDir);
-        return { records: listed.records, broken: listed.broken.length };
-      }),
-      leads: orNull(() => {
-        const listed = listAllLeads(asker.paths.stateDir);
-        return { records: listed.records.map(leadSessions), broken: listed.broken.length };
-      }),
-    };
-    return crewLeadOf(wanted, parkedBy, stores.crew, stores.leads);
-  };
   return {
     session: asker.session,
     project: asker.cwd === "" ? null : projectOf(asker.cwd),
     live: orNull(() => (sources.sessions ?? (() => liveSessions(asker.paths.claudeConfigDir)))()),
-    crewLead,
     projectOf,
   };
 }

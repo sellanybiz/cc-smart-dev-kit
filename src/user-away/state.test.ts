@@ -26,7 +26,7 @@ function draft(over: Partial<ParkDraft> = {}): ParkDraft {
     options: [],
     recommend: null,
     session: "s1",
-    crew: "",
+
     cwd: "/work/app",
     ...over,
   };
@@ -93,7 +93,7 @@ describe("parking", () => {
     await setUnavailable(stateDir, T0, null);
     const question = await parkItem(
       stateDir,
-      draft({ options: ["A", "B"], recommend: 2, session: "s1", crew: "UA1-x-1" }),
+      draft({ options: ["A", "B"], recommend: 2, session: "s1" }),
       T0 + 1000,
     );
     const action = await parkItem(
@@ -101,7 +101,7 @@ describe("parking", () => {
       draft({
         kind: "action",
         text: "Push the branch",
-        command: "git push origin crew/x",
+        command: "git push origin fix/x",
         tool: "Bash",
         session: "s2",
       }),
@@ -121,12 +121,12 @@ describe("parking", () => {
       options: ["A", "B"],
       recommend: 2,
       session: "s1",
-      crew: "UA1-x-1",
+
       cwd: "/work/app",
       at: "2026-10-25T01:00:01.000Z",
     });
     expect(action.item.id).toBe(2);
-    expect(action.item.command).toBe("git push origin crew/x");
+    expect(action.item.command).toBe("git push origin fix/x");
     expect(action.item.tool).toBe("Bash");
     expect(decision.item.id).toBe(3);
     expect(readAway(stateDir).items.map((item) => item.kind)).toEqual([
@@ -178,15 +178,6 @@ describe("parking", () => {
       "/work/app-wt-a",
       "/work/app-wt-b",
     ]);
-  });
-
-  test("the same words from two crew sessions are two items, each for its own crew", async () => {
-    const stateDir = tempDir("away");
-    await parkItem(stateDir, draft({ text: "Which name?", crew: "RX1" }), T0);
-    await parkItem(stateDir, draft({ text: "Which name?", crew: "RX2" }), T0 + 5);
-    const again = await parkItem(stateDir, draft({ text: "Which name?", crew: "RX2" }), T0 + 9);
-    expect(again.added).toBe(false);
-    expect(readAway(stateDir).items.map((item) => item.crew)).toEqual(["RX1", "RX2"]);
   });
 
   test("a decision with the same words as an action is another item", async () => {

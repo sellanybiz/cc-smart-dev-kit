@@ -11,15 +11,15 @@ const QUIET = { containers: [], programs: [], sessions: [], mounts: [] };
 
 describe("leftover folder marks", () => {
   test("recognizes only 13-digit move times and repeated marks", () => {
-    const good = `${ROOT}/crew-B1-help-removing-1761300000000`;
+    const good = `${ROOT}/agent-B1-help-removing-1761300000000`;
     expect(isParkedWorktree(good)).toBe(true);
-    expect(parkedOriginal(good)).toBe(`${ROOT}/crew-B1-help`);
-    expect(parkedOriginal(`${good}-removing-1761300090000`)).toBe(`${ROOT}/crew-B1-help`);
+    expect(parkedOriginal(good)).toBe(`${ROOT}/agent-B1-help`);
+    expect(parkedOriginal(`${good}-removing-1761300090000`)).toBe(`${ROOT}/agent-B1-help`);
     for (const path of [
-      `${ROOT}/crew-B1-removing-2`,
+      `${ROOT}/agent-B1-removing-2`,
       "/work/app-wt-x-removing-3",
-      `${ROOT}/crew-B1-help-removing-176130000000`,
-      `${ROOT}/crew-B1-help-removing-17613000000000`,
+      `${ROOT}/agent-B1-help-removing-176130000000`,
+      `${ROOT}/agent-B1-help-removing-17613000000000`,
     ]) {
       expect(isParkedWorktree(path)).toBe(false);
       expect(parkedOriginal(path)).toBeNull();
@@ -30,8 +30,8 @@ describe("leftover folder marks", () => {
     const repo = tempDir("leftover-repo");
     git(repo, "init", "-b", "main");
     mkdirSync(join(repo, ".claude", "worktrees"), { recursive: true });
-    const unsafe = join(repo, ".claude", "worktrees", "crew-B1-removing-2");
-    const safe = join(repo, ".claude", "worktrees", "crew-B1-help-removing-1761300000000");
+    const unsafe = join(repo, ".claude", "worktrees", "agent-B1-removing-2");
+    const safe = join(repo, ".claude", "worktrees", "agent-B1-help-removing-1761300000000");
     mkdirSync(unsafe);
     mkdirSync(safe);
     expect(strayParkedFolders(repo, cleanGitEnv()).map((one) => one.path)).toEqual([safe]);
@@ -45,8 +45,8 @@ describe("mount points", () => {
     writeFileSync(join(repo, "file.txt"), "x\n");
     git(repo, "add", ".");
     git(repo, "commit", "-m", "initial");
-    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
-    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const parked = join(repo, ".claude", "worktrees", "agent-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "fix/x", parked);
     const pass = finishParked(
       repo,
       [parked],
@@ -76,8 +76,8 @@ describe("mount points", () => {
     writeFileSync(join(repo, "file.txt"), "x\n");
     git(repo, "add", ".");
     git(repo, "commit", "-m", "initial");
-    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
-    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const parked = join(repo, ".claude", "worktrees", "agent-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "fix/x", parked);
     const said: string[] = [];
     const pass = finishParked(
       repo,
@@ -107,8 +107,8 @@ describe("mount points", () => {
     writeFileSync(join(repo, "file.txt"), "x\n");
     git(repo, "add", ".");
     git(repo, "commit", "-m", "initial");
-    const parked = join(repo, ".claude", "worktrees", "crew-x-removing-1761300000000");
-    git(repo, "worktree", "add", "-b", "crew/x", parked);
+    const parked = join(repo, ".claude", "worktrees", "agent-x-removing-1761300000000");
+    git(repo, "worktree", "add", "-b", "fix/x", parked);
     const pass = finishParked(
       repo,
       [parked],

@@ -64,8 +64,6 @@ const itemSchema = z.object({
   recommend: z.number().int().positive().nullable(),
   /** The Claude Code session that parked it; empty when it could not be told. */
   session: z.string(),
-  /** The crew session that parked it (`CC_SMART_DEV_KIT_CREW`); empty for a plain session. */
-  crew: z.string(),
   cwd: z.string(),
   at: z.string(),
 });
@@ -178,23 +176,19 @@ export async function setAvailable(stateDir: string): Promise<AwayState> {
 
 /**
  * The item with the same kind, the same command (or, with none, the same words), the same folder
- * and the same crew session, if any. The session is not part of the key: a retry from the same
+ * too. The session is not part of the key: a retry from the same
  * folder is the same thing. The folder is: a yes runs an action in its `cwd` only, so the same
- * command from two worktrees is two actions. The crew is: an answer goes to that crew session.
+ * command from two worktrees is two actions.
  */
 function sameItem(items: readonly ParkedItem[], draft: ParkDraft): ParkedItem | undefined {
   const what = (item: { command: null | string; text: string }) => item.command ?? item.text;
   return items.find(
-    (item) =>
-      item.kind === draft.kind &&
-      what(item) === what(draft) &&
-      item.cwd === draft.cwd &&
-      item.crew === draft.crew,
+    (item) => item.kind === draft.kind && what(item) === what(draft) && item.cwd === draft.cwd,
   );
 }
 
 /**
- * Adds one item to the list. A kind, a command (or words), a folder and a crew that already wait
+ * Adds one item to the list. A kind, a command (or words), and a folder that already wait
  * stay one item: a session denied the same command again is not a second thing for the person
  * to answer. Throws `AwayStateError` when the list is full, and `LockBusyError` when the lock
  * stays held for `waitMs`.

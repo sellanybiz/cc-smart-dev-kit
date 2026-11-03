@@ -1,5 +1,5 @@
 /**
- * What a crew merge leaves on an issue, and what the release reads back (D67): the comment and
+ * What a merge leaves on an issue, and what the release reads back (D67): the comment and
  * the `fixed-unreleased` label (`markFixed`), the list of `Fixes #n` lines (`listFixed`) and the
  * hidden marker between them. Every test runs against a temp checkout and the fake `gh`.
  */
@@ -21,7 +21,7 @@ const MERGE = "b".repeat(40);
 
 const MARK: FixedMark = {
   base: "release-1.3.0",
-  branch: "crew/GI2-issues",
+  branch: "fix/GI2-issues",
   issue: 1,
   merge: MERGE,
   tip: TIP,
@@ -44,14 +44,14 @@ async function gateOf(setup: Parameters<typeof issuesWorld>[0] = {}) {
 describe("the comment", () => {
   test("says the branch, the short commit and the base, and carries no closing keyword", () => {
     const text = fixedComment(MARK);
-    expect(text).toContain("Fixed on `crew/GI2-issues` at `aaaaaaa`, merged into `release-1.3.0`");
+    expect(text).toContain("Fixed on `fix/GI2-issues` at `aaaaaaa`, merged into `release-1.3.0`");
     expect(text).toContain("it closes when `release-1.3.0` ships");
     expect(text).not.toMatch(/\b(close[sd]?|fix(es|ed)?|resolve[sd]?) #\d/i);
   });
 
   test("the marker round-trips the branch, the tip and the merge commit", () => {
-    const [read] = fixedMarkers(fixedComment({ ...MARK, branch: "crew/a-->b" }));
-    expect(read).toEqual({ branch: "crew/a-->b", merge: MERGE, tip: TIP });
+    const [read] = fixedMarkers(fixedComment({ ...MARK, branch: "fix/a-->b" }));
+    expect(read).toEqual({ branch: "fix/a-->b", merge: MERGE, tip: TIP });
   });
 
   test("a comment without a marker, or with a forged one, reads as none", () => {
@@ -119,7 +119,7 @@ describe("markFixed", () => {
     const { gate, gh } = await gateOf({ gh: { issues: [openIssue()] } });
     if (gate.kind !== "ready") throw new Error(`gate: ${gate.kind}`);
     await markFixed(gate, MARK);
-    const second = await markFixed(gate, { ...MARK, branch: "crew/x-2", tip: "c".repeat(40) });
+    const second = await markFixed(gate, { ...MARK, branch: "fix/x-2", tip: "c".repeat(40) });
     expect(second).toEqual({ commented: false, kind: "marked", labeled: false });
     expect(gh.issues[0]?.comments).toHaveLength(1);
   });

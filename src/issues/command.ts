@@ -11,10 +11,11 @@ import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { fileIssue, type IssueRequest, issueLine } from "./file";
-import { listFixed, openGate } from "./fixed";
+import { listFixed, markFixed, openGate } from "./fixed";
 
 export const ISSUE_USAGE = `Usage: ${COMMAND} issue file --title <title> --body-file <file|-> --fingerprint <key> [--label <label>…]
        ${COMMAND} issue fixed --base <branch> --head <branch>
+       ${COMMAND} issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]
 
 Files one finding as a GitHub issue in this project's own repository (the one \`origin\` names,
 on github.com), and prints one line: filed #<n> <url>, updated #<n> <url>, or refused: <why>.
@@ -29,6 +30,9 @@ too. A title or body that holds a home path (in any spelling of it), a key or to
 shape or a value after key, token, secret or password, or a URL with credentials is refused with
 its line and column, and nothing is sent. The screen knows those shapes only: read a text before
 you file it.
+
+After merging a fix, the main session runs issue mark-fixed to write its comment and label.
+It never closes the issue. --tip and --merge are full commit ids; omit --merge when unknown.
 
 issue fixed prints one \`Fixes #<n>\` line for each open issue the kit marked fixed (it carries the
 label issues.fixedLabel) whose fix is in <base>..<head>: the lines a release's pull request body
@@ -136,9 +140,70 @@ async function runFixed(rest: string[], context: IssueContext): Promise<number> 
   return 0;
 }
 
+/** Records a merged fix without closing the issue. The release reads this mark. */
+async function runMarkFixed(rest: string[], context: IssueContext): Promise<number> {
+  const read = parseOptions(rest, ["--issue", "--base", "--branch", "--tip", "--merge"]);
+  if (!read.ok) {
+    context.error(`${read.why}\n\n${ISSUE_USAGE}`);
+    return 2;
+  }
+  const missing = onceEach(read.given, ["--issue", "--base", "--branch", "--tip"]);
+  const one = (name: string) => read.given[name]?.[0] ?? "";
+  const issue = Number(one("--issue"));
+  const sha = /^[0-9a-f]{40}$/;
+  const merge = one("--merge") || null;
+  if (
+    missing !== null ||
+    !Number.isSafeInteger(issue) ||
+    issue <= 0 ||
+    !/^\d+$/.test(one("--issue")) ||
+    !sha.test(one("--tip")) ||
+    (read.given["--merge"]?.length ?? 0) > 1 ||
+    (merge !== null && !sha.test(merge)) ||
+    one("--base").trim() === "" ||
+    one("--branch").trim() === ""
+  ) {
+    context.error(
+      `${missing ?? "A mark needs a positive issue number, branch names and full commit ids"}\n\n${ISSUE_USAGE}`,
+    );
+    return 2;
+  }
+  const gate = await openGate({
+    cwd: context.cwd,
+    env: context.env,
+    gh: context.gh ?? runGh,
+    home: context.paths.home,
+    paths: context.paths,
+  });
+  if (gate.kind !== "ready") {
+    context.error(`issue mark-fixed: ${gate.why}`);
+    return 1;
+  }
+  const result = await markFixed(gate, {
+    base: one("--base"),
+    branch: one("--branch"),
+    issue,
+    merge,
+    tip: one("--tip"),
+  });
+  if (result.kind === "failed" || result.kind === "refused") {
+    context.error(`issue mark-fixed: ${result.why}`);
+    return 1;
+  }
+  if (result.kind === "gone") {
+    context.error(`issue mark-fixed: #${issue} does not exist`);
+    return 1;
+  }
+  context.print(
+    result.kind === "closed" ? `#${issue} is already closed` : `marked #${issue} fixed`,
+  );
+  return 0;
+}
+
 /** `cc-smart-dev-kit issue …`; the exit code. */
 export async function runIssue(argv: string[], context: IssueContext): Promise<number> {
   const [sub, ...rest] = argv;
+  if (sub === "mark-fixed") return runMarkFixed(rest, context);
   if (sub === "fixed") return runFixed(rest, context);
   if (sub !== "file") {
     context.error(

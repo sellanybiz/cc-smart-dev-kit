@@ -51,9 +51,7 @@ export interface ParkedPass {
  * a parked folder asks for no idle hour and no commits on `options.against`: its branch keeps
  * them (`WorktreeFacts.parked`).
  *
- * `paths` names the folders to finish; the caller passes only those it is entitled to (`crew rm`
- * its own record's, the watch the rest). A folder that does not look finished stays. A folder
- * whose record is gone is finished just the same: this pass needs no store.
+ * `paths` names the folders to finish. A folder that does not look finished stays.
  */
 export function finishParked(
   repo: string,

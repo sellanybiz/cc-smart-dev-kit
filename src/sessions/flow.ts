@@ -5,9 +5,7 @@
  *
  * **Where the records are.** A session is `<config>/projects/<project folder>/<session id>.jsonl`;
  * each subagent of it is `<project folder>/<session id>/subagents/agent-<id>.jsonl`
- * (the same layout `usage.ts` reads, and the same file walk and project match: `transcriptTree`
- * in `src/crew/archive-read.ts`, which adds the kit's crew archive, where a removed crew
- * session's conversation moves, gzipped file by file: its flow still counts). Claude Code
+ * (the same layout `usage.ts` reads). Claude Code
  * appends one JSON object per line; a line's `type` says what it holds. The fields this reader
  * relies on are **undocumented**: their contract rows are marked "seen, may change"
  * (`docs/claude-code-contract.md`). Every read is defensive: a missing, renamed or wrongly
@@ -59,8 +57,8 @@
 import { closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { matches } from "../cli/usage";
-import { type TranscriptRef, transcriptBytes, transcriptTree } from "../crew/archive-read";
 import { atomicWrite } from "../setup/write";
+import { type TranscriptRef, transcriptTree } from "./transcripts";
 
 /** The paths the report reads and writes; `CliPaths` satisfies it. */
 export interface FlowPaths {
@@ -899,11 +897,7 @@ function resetSession(session: CachedSession): void {
   }
 }
 
-/**
- * Whether a transcript this cache already read is not the same file any more. An archived copy
- * (`ref.gz`) is written once and never grows: only another file (a new inode) replaces it, and
- * its offset counts the unzipped bytes, so its own size says nothing.
- */
+/** Whether a cached transcript was replaced or shrank. */
 function replaced(ref: TranscriptRef, transcript: CachedTranscript): boolean {
   if (transcript.inode === 0) return false;
   let stat: ReturnType<typeof statSync>;
@@ -913,7 +907,7 @@ function replaced(ref: TranscriptRef, transcript: CachedTranscript): boolean {
     return false;
   }
   if (Number(stat.ino) !== transcript.inode) return true;
-  return !ref.gz && stat.size < transcript.offset;
+  return stat.size < transcript.offset;
 }
 
 /** Applies each whole line of `text` to the session: what one read of a transcript does. */
@@ -944,9 +938,7 @@ function applyLines(
 /**
  * Reads one transcript from its cached offset, applying each whole line. Returns whether
  * anything was read (the cache needs writing then). The caller has already reset the session
- * when a transcript was replaced. An archived copy (`ref.gz`, `src/crew/archive-read.ts`) is
- * unzipped whole and read from the same offset, counted in its unzipped bytes; its own size,
- * time and inode say whether it changed, so an unchanged copy is never unzipped again.
+ * when a transcript was replaced.
  */
 function readTranscriptFile(
   ref: TranscriptRef,
@@ -968,19 +960,6 @@ function readTranscriptFile(
     stat.size === transcript.size &&
     stat.mtimeMs === transcript.mtimeMs;
   if (unchanged) return false;
-  if (ref.gz) {
-    const bytes = transcriptBytes(ref);
-    // Not readable now (being written, or not whole): the position stays, and the next run tries again.
-    if (bytes === null) return false;
-    const data = bytes.subarray(Math.min(transcript.offset, bytes.length));
-    const whole = data.lastIndexOf(10) + 1;
-    applyLines(data.subarray(0, whole).toString("utf8"), session, transcript, subagent, context);
-    transcript.offset += whole;
-    transcript.inode = Number(stat.ino);
-    transcript.size = stat.size;
-    transcript.mtimeMs = stat.mtimeMs;
-    return whole > 0;
-  }
   let fd: number;
   try {
     fd = openSync(file, "r");
@@ -1384,10 +1363,7 @@ export function readFlow(paths: FlowPaths, options: FlowOptions): FlowReport {
   const sessions: SessionFlow[] = [];
   const open: OpenWait[] = [];
   const seenSessions: CachedSession[] = [];
-  // The projects folder, and the kit's crew archive beside it: a removed crew session's
-  // conversation moves there (AR1), and its flow still counts. Its first read from the archive
-  // is a replaced file (another inode), so its session is read again whole, from the copy.
-  const tree = transcriptTree(projectsFolder(paths), paths.stateDir);
+  const tree = transcriptTree(projectsFolder(paths));
   for (const [project, ids] of tree) {
     const cacheFile = join(paths.stateDir, "flow", `${project}.json`);
     let cache: FlowCache = { project, sessions: {}, version: CACHE_VERSION };
