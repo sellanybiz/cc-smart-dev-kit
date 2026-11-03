@@ -117,7 +117,12 @@ function PhaseLedger({ task }: { task: WorkTaskNode }) {
       {fields.map((field) => (
         <div key={field.key} className="inline-flex min-w-0 max-w-full items-baseline gap-1">
           <dt>{field.label}</dt>
-          <dd className="min-w-0 max-w-64 truncate font-mono text-foreground" title={field.full}>
+          {/* `relative` holds the worktree's screen-reader text (an absolute span) inside the cut
+              cell; without it that span sits past the cut and widens a narrow page. */}
+          <dd
+            className="relative min-w-0 max-w-64 truncate font-mono text-foreground"
+            title={field.full}
+          >
             {field.shown}
             {field.key === "worktree" && <span className="sr-only">, at {field.full}</span>}
           </dd>
