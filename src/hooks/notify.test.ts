@@ -20,7 +20,6 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { writeLead } from "../crew/store";
 import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
@@ -366,38 +365,6 @@ describe("what is notified, and with which words", () => {
     expect(runs).toEqual([]);
     notifyHook({ ...first, stop_hook_active: true }, "Stop", deps);
     // The check ran (or the reminder was already given): this is the real end.
-    expect(runs.length).toBeGreaterThan(0);
-  });
-
-  test("the stop lead-notes will block: the finished alert waits for the stop that ends the turn", async () => {
-    const made = machine();
-    const env = {
-      ...made.env,
-      PATH: `${dirname(Bun.which("git") ?? "/usr/bin/git")}:${made.env.PATH}`,
-    };
-    const repo = makeRepo();
-    const session = "11111111-2222-3333-4444-555555555555";
-    await writeLead(
-      cliPaths(env).stateDir,
-      { cwd: repo, name: "LEAD app plan", plan: "plan", repo, sessionId: session, tag: "app" },
-      Date.now(),
-    );
-    // A lead whose task is still in progress, and a last message that only promises the next step.
-    const tasks = join(cliPaths(env).claudeConfigDir, "tasks", session);
-    mkdirSync(tasks, { recursive: true });
-    writeFileSync(
-      join(tasks, "1.json"),
-      JSON.stringify({ id: "1", subject: "Merge the wave", status: "in_progress" }),
-    );
-    const first = {
-      ...stopInput(made.home, { last_assistant_message: "Next I'll push the PRs." }),
-      cwd: repo,
-    };
-    const { deps, runs } = setup(env);
-    notifyHook(first, "Stop", deps);
-    // lead-notes continues this turn: it is no "finished".
-    expect(runs).toEqual([]);
-    notifyHook({ ...first, stop_hook_active: true }, "Stop", deps);
     expect(runs.length).toBeGreaterThan(0);
   });
 

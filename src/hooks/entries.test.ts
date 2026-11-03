@@ -14,13 +14,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { CREW_ENV } from "../crew/session";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
-import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS } from "./crew-role";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
@@ -104,9 +102,7 @@ describe("hooks.json", () => {
       const guard = event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler));
       expect(handler.onFailure).toBe(guard ? "block" : undefined);
     }
-    // And the list is not empty: every guard's PreToolUse entry blocks, and one guard may have
-    // more than one (crew-role judges the two tools that ask the person, and the three edits
-    // that wait for its task list).
+    // And the list is not empty: every guard's PreToolUse entry blocks.
     expect(wired.filter(({ handler }) => handler.onFailure === "block").length).toBe(
       wired.filter(
         ({ event, handler }) => event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler)),
@@ -215,13 +211,7 @@ esac
     ]);
     const bundlesFor = (event: string) =>
       wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
-    expect(bundlesFor("Stop")).toEqual([
-      "notify",
-      "fable-session",
-      "crew-role",
-      "lead-notes",
-      "verify-gate",
-    ]);
+    expect(bundlesFor("Stop")).toEqual(["notify", "fable-session", "verify-gate"]);
     expect(bundlesFor("SessionStart")).toContain("task-start");
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([
@@ -252,15 +242,6 @@ esac
     // Both of Claude Code's shell tools, so a raw `claude --bg` or a polling loop is judged in
     // PowerShell too — a limit a session steps around by changing tools is not a limit.
     expect(matcher).toBe("Bash|PowerShell");
-  });
-
-  test("the crew-role matchers are exactly the tools it judges: the two that ask, and the three edits", () => {
-    const matchers = wired
-      .filter(({ event, handler }) => event === "PreToolUse" && bundleOf(handler) === "crew-role")
-      .map(({ matcher }) => matcher);
-    expect(matchers).toEqual([CREW_ASK_TOOLS.join("|"), CREW_EDIT_TOOLS.join("|")]);
-    // Written by hand too, so a changed list is seen here and not only in the constant.
-    expect(matchers).toEqual(["AskUserQuestion|ExitPlanMode", "Edit|Write|NotebookEdit"]);
   });
 
   test("the user-away hook: the two tools that ask the person on PreToolUse, a permission prompt, and each prompt", () => {
@@ -298,16 +279,6 @@ esac
     ).toHaveLength(1);
   });
 
-  test("the lead's start note comes at a start, a resume and a compaction — never a clear (D61)", () => {
-    // `lead-notes` and the texts that describe it (its header, `specs.ts`, `docs/design/hooks.md`,
-    // `docs/design/crew.md`) say these three sources and no other: a `clear` starts a new
-    // conversation, and `crew-role` reads it that way. The wiring is the one place that decides.
-    const matcher = wired.find(
-      ({ event, handler }) => event === "SessionStart" && bundleOf(handler) === "lead-notes",
-    )?.matcher;
-    expect(matcher).toBe("startup|resume|compact");
-  });
-
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
@@ -316,8 +287,6 @@ esac
     expect(timeout("message-guard")).toBe(10);
     expect(timeout("agent-guard")).toBe(10);
     expect(timeout("session-escape-guard")).toBe(10);
-    // The crew session's ask is denied by a guard too, on the two tools that ask the person.
-    expect(timeout("crew-role")).toBe(10);
     expect(timeout("job-route")).toBe(10);
   });
 
@@ -381,7 +350,6 @@ describe("the entries, run as Claude Code runs them", () => {
   // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
   const CANNOT_CHECK: Record<string, string> = {
     "agent-guard": "the model this launch runs on",
-    "crew-role": "whether this crew session asks the person itself",
     "git-guard": "this git command",
     "job-route": "whether this launch or heavy command may run",
     "main-folder-guard": "whether this edit belongs in a worktree",
@@ -408,16 +376,10 @@ describe("the entries, run as Claude Code runs them", () => {
     });
   });
 
-  // A guard that is silent outside its own sessions (crew-role is silent unless a crew session's
-  // environment names it) is proved as a guard where it IS one: the crew env is part of the input.
-  const GUARD_ENV: Record<string, Record<string, string>> = {
-    "crew-role": { [CREW_ENV]: "W2-x-1a2b3c" },
-  };
-
   test.each([...GUARD_BUNDLES])(
     "%s: input that is not JSON is an ask, never a pass: a guard that cannot read a call does not let it through",
     (name) => {
-      const run = runEntry(name, "not json", { ...hookEnv(), ...(GUARD_ENV[name] ?? {}) });
+      const run = runEntry(name, "not json", hookEnv());
       expect(run).toEqual({
         exitCode: 0,
         stdout: JSON.stringify({

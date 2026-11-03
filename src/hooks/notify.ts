@@ -101,7 +101,6 @@ import {
 } from "./desktop-alert";
 import { startDetached } from "./detached";
 import { type HookResult, SILENT } from "./io";
-import { leadStopWouldBlockAt } from "./lead-notes";
 import { AGENT_VIEW_TYPES, NOTIFY_TYPES } from "./notify-types";
 import type { Env } from "./run";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
@@ -493,7 +492,7 @@ export function alertFor(
     case "Stop": {
       forget(ctx.mark);
       forget(ctx.failed);
-      // The stop `verify-gate` or `lead-notes` is about to block is not the end of the turn: this alert waits
+      // The stop `verify-gate` is about to block is not the end of the turn: this alert waits
       // for the stop that really ends it — the one carrying `stop_hook_active`, where the
       // check has run (or the reminder's own feedback said it was already given).
       if (ctx.stopWouldBlock) return null;
@@ -883,12 +882,9 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
           which: deps.which,
         })
       : false;
-  // Asked only when this stop could be the one `verify-gate` or `lead-notes` blocks: the
-  // finished alert must land at the real end of the turn, not where a sibling hook continues it.
-  const stopWouldBlock =
-    event === "Stop"
-      ? verifyGateWouldBlockAt(input, deps.env) || leadStopWouldBlockAt(input, deps.env)
-      : false;
+  // Asked only when this stop could be the one `verify-gate` blocks: the finished alert must
+  // land at the real end of the turn, not where a sibling hook continues it.
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) : false;
   const alert = alertFor(input, event, {
     failed,
     finished,

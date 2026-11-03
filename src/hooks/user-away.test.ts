@@ -280,20 +280,6 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
     expect(readAway(paths.stateDir).items).toEqual([]);
   });
 
-  test("a crew session's same call is still denied and parked with its name: it never asks the person", async () => {
-    const { env, paths } = await away();
-    const result = await userAwayAnswer(
-      permissionRequest("Bash", { command: "cc-smart-dev-kit user status --json" }),
-      "PermissionRequest",
-      { ...env, CC_SMART_DEV_KIT_CREW: "RX2" },
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(decisionOf(result.stdout).decision.behavior).toBe("deny");
-    expect(readAway(paths.stateDir).items.map((item) => item.crew)).toEqual(["RX2"]);
-  });
-
   test("nothing gets looser: a line that holds more than the three reads is still parked", async () => {
     const { env, paths } = await away();
     for (const command of [
@@ -304,7 +290,7 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
       "cc-smart-dev-kit user clear --all",
       "cc-smart-dev-kit user park --kind action x --command y",
       "cc-smart-dev-kit user unavailable",
-      "cc-smart-dev-kit crew list",
+      "cc-smart-dev-kit doctor",
       "echo cc-smart-dev-kit user available",
       "FOO=1 cc-smart-dev-kit user available",
       // Another program that holds the kit's name among its arguments runs that program, not the kit.
@@ -419,19 +405,6 @@ describe("a guard that would ask: the frame turns it into a deny and parks the c
         at: "2026-10-25T01:00:01.000Z",
       },
     ]);
-  });
-
-  test("a crew session's park names its crew session", async () => {
-    const { env, paths } = await away();
-    await askedWhileAway(
-      preToolUse("Bash", { command: "git push" }),
-      ASK,
-      { ...env, CC_SMART_DEV_KIT_CREW: "UA1-x-1" },
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(readAway(paths.stateDir).items[0]?.crew).toBe("UA1-x-1");
   });
 
   test("never looser: a deny stays a deny, an allow stays an allow, silence stays silence", async () => {
@@ -606,21 +579,6 @@ describe("the note at each prompt", () => {
     }
   });
 
-  test("a crew session's bare prompt is its lead's, never the person's", async () => {
-    const state = await away();
-    const env = { ...state.env, CC_SMART_DEV_KIT_CREW: "UA1-x-1" };
-    const result = await userAwayAnswer(
-      prompt("You are the crew session UA1"),
-      "UserPromptSubmit",
-      env,
-      state.paths,
-      T0,
-      OPTIONS,
-    );
-    const text = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
-    expect(text).toStartWith("The person is unavailable since");
-  });
-
   test("back: a session that heard 'unavailable' is told once that the person is available again", async () => {
     const state = await away();
     await parkItem(state.paths.stateDir, draft(), T0);
@@ -769,35 +727,6 @@ describe("what the review found", () => {
     cwd: "/work/app",
     tool_name: tool,
     tool_input: toolInput,
-  });
-
-  test("a crew session's question goes to its lead, not to the person's list", async () => {
-    const { env, paths } = await away();
-    const crewEnv = { ...env, CC_SMART_DEV_KIT_CREW: "UA1-x-1" };
-    for (const tool of ["AskUserQuestion", "ExitPlanMode"]) {
-      const denied = await userAwayAnswer(
-        preToolUse(tool),
-        "PreToolUse",
-        crewEnv,
-        paths,
-        T0,
-        OPTIONS,
-      );
-      const reason = decisionOf(denied.stdout).permissionDecisionReason;
-      expect(decisionOf(denied.stdout).permissionDecision).toBe("deny");
-      expect(reason).toContain("crew report --question");
-      expect(reason).not.toContain("user park");
-    }
-    // An ordinary session still reads the park step.
-    const plain = await userAwayAnswer(
-      preToolUse("AskUserQuestion"),
-      "PreToolUse",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(decisionOf(plain.stdout).permissionDecisionReason).toContain("user park");
   });
 
   test("two prompts of one tool for different targets are two items, each naming its target", async () => {

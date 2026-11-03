@@ -14,7 +14,7 @@
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges or opens a pull request, or writes to GitHub's issues (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch, a crew start and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
+ * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
@@ -22,8 +22,6 @@
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | crew-role | SessionStart (startup, resume, compact), UserPromptSubmit, PreToolUse (AskUserQuestion, ExitPlanMode; Edit, Write, NotebookEdit), Stop, StopFailure | machine-wide: the card and the folder check at a start, the person's own prompt recorded and answered, the ask refused, the first edit held until the task list exists, the report block, the pause at a limit (`crew-role.ts`) |
- * | lead-notes | SessionStart, UserPromptSubmit, Stop | machine-wide: the lead's missed crew news, task-list reminder, start rule, and one Stop block for an in-progress task without a waiting line (`lead-notes.ts`) |
  * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change (`user-away.ts`) |
  *
  * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
@@ -38,42 +36,17 @@
  * Every hook here is wired by the plugin, in `plugin/hooks/hooks.json`. The worktree engine
  * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
  * (`src/hooks/settings-hooks.ts`).
- *
- * Four guards — `git-guard`, `merge-guard`, `agent-guard` and `message-guard` — also carry a
- * **crew part** (`HookSpec.crewLimits`): a crew session never pushes, never runs a git command
- * that would throw work away without reading the step that replaces it, opens no pull request
- * and merges none, is never asked about a launch (each question is a denial naming the step
- * that reaches its lead), its peer messages carry the `crew tell` tag, and its message to
- * another repo is refused with that same step (D24, D36, D47). The
- * frame runs that part **before `ownHooks` and before the project's file is read**, so a
- * project with no `cc-smart-dev-kit.json`, and one whose `ownHooks` lists its own copy of the
- * guard, cannot lose it. Each part is the guard's own detector (`crewGitAnswer`,
- * `crewPullRequestAnswer`, `crewAgentAnswer`, `crewMessageAnswer`), never a copy.
  */
 
-import { crewIdOf } from "../crew/session";
 import { programsOf } from "../shell/command";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
-import {
-  AGENT_TOOLS,
-  agentGuard,
-  crewAgentAnswer,
-  guardFacts,
-  WORKFLOW_TOOLS,
-} from "./agent-guard";
+import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
-import { CREW_ASK_TOOLS, CREW_EDIT_TOOLS, crewRoleAnswer } from "./crew-role";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
-import {
-  crewGitAnswer,
-  DEFAULT_PROTECTED_BRANCHES,
-  guardVerdict,
-  pushRulesFor,
-  runsGit,
-} from "./git-guard";
+import { DEFAULT_PROTECTED_BRANCHES, guardVerdict, pushRulesFor, runsGit } from "./git-guard";
 import {
   addContext,
   type HookInput,
@@ -91,10 +64,9 @@ import {
   jobRouteOutsideGit,
   routeFacts,
 } from "./job-route";
-import { leadNotesAnswer } from "./lead-notes";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
-import { crewPullRequestAnswer, mergeGuard } from "./merge-guard";
-import { crewMessageAnswer, messageGuard, messageGuardConfigProblem } from "./message-guard";
+import { mergeGuard } from "./merge-guard";
+import { messageGuard, messageGuardConfigProblem } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
@@ -160,12 +132,7 @@ function commandOf(input: HookInput | null): string {
 export const gitGuardHook: HookSpec = {
   name: "git-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input, _event, _checkout, context) => {
-    // A crew session is never asked: nobody is at the machine, and its answer does not depend
-    // on the project's file — with the crew rule on, no project value is read. The crew part
-    // has already denied what the file could never allow, and everything else goes through,
-    // so a broken file cannot stall the session at its checkpoint commit.
-    if (crewIdOf(context.env) !== null) return SILENT;
+  onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     return command !== null && runsGit(command)
       ? toolDecision("ask", cannotCheck("this git command", message))
@@ -183,11 +150,6 @@ export const gitGuardHook: HookSpec = {
     const command = stringField(toolInput(input).command);
     return command === null ? {} : { programs: programsOf(command) };
   },
-  // A crew session's push is denied, and so is every work-destroying ask, with the step that
-  // replaces it — whatever the project's file says, and with no file (`crewGitAnswer`: the
-  // same detector as `run`, with only the crew rule on).
-  crewLimits: (input, _checkout, { env }) =>
-    crewGitAnswer(input, env, stringField(input.cwd) ?? ""),
   run: (context): HookResult => {
     const { project, input, cwd, env } = context;
     const config = project.config;
@@ -200,8 +162,7 @@ export const gitGuardHook: HookSpec = {
       sharedStash: config.worktrees !== undefined,
       env,
     });
-    // A crew session's push, and every command that would destroy work, is denied (D24);
-    // everything else is a question.
+    // What the guard refuses is denied; everything else is a question.
     if (verdict.refuse.length > 0) return toolDecision("deny", verdict.refuse.join("\n"));
     return verdict.ask.length === 0 ? SILENT : toolDecision("ask", verdict.ask.join("\n"));
   },
@@ -216,12 +177,7 @@ export const gitGuardHook: HookSpec = {
 export const mergeGuardHook: HookSpec = {
   name: "merge-guard",
   events: ["PreToolUse"],
-  onConfigProblem: (message, input, _event, _checkout, context) => {
-    // A crew session is never asked (D36). Its crew part has already refused every merge and
-    // opening it can read; a line left over may run (a `--disable-auto`, which merges
-    // nothing), and no merge this guard would stop can be silent there. So a broken or too
-    // new file gives a crew session silence, never a question nobody answers.
-    if (crewIdOf(context.env) !== null) return SILENT;
+  onConfigProblem: (message, input) => {
     const command = stringField(toolInput(input).command);
     if (command === null) return SILENT;
     if (requestsPullRequestChange(command)) {
@@ -244,10 +200,6 @@ export const mergeGuardHook: HookSpec = {
     const command = commandOf(input);
     return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
   }),
-  // A crew session opens no pull request and merges none, whatever the project's file says, and
-  // with no file (`crewPullRequestAnswer`: the same reader as `run`, aliases included).
-  crewLimits: (input, _checkout, { env }) =>
-    crewPullRequestAnswer(input, env, stringField(input.cwd) ?? ""),
   run: mergeGuard,
 };
 
@@ -288,17 +240,6 @@ export const messageGuardHook: HookSpec = {
     "whether this message may go to that session",
     (input) => toolOf(input) === "SendMessage",
   ),
-  // The D47 crew rule, whatever the project's file says, and with no file: a peer message
-  // carries the `crew tell` tag, a message to its own lead goes through `crew report`, and a
-  // message to another repo is refused with the step to the lead.
-  crewLimits: (input, checkout, { env, paths }) =>
-    crewMessageAnswer(
-      input,
-      env,
-      checkout.mainCheckout ?? checkout.root,
-      paths.stateDir,
-      paths.claudeConfigDir,
-    ),
   run: messageGuard,
 };
 
@@ -364,7 +305,7 @@ export const subagentBackgroundHook: HookSpec = {
  * The verification gate (`verify-gate.ts`): Stop, one **block** when this session changed
  * files and no Bash call ran the project's fast check (`checks.fast`) after the last change.
  * It names the command, and it is silent on the stop its own block caused
- * (`stop_hook_active`), in a crew session (its report gate is `crew-role`), on a turn that
+ * (`stop_hook_active`), on a turn that
  * still waits on background work, with no `checks.fast`, and when it cannot read the
  * transcript. Project-scoped: with no cc-smart-dev-kit.json it stays silent. A broken or too
  * new file is one stderr line — an informational hook never stops a person's work.
@@ -411,97 +352,6 @@ export const sessionNameHook: HookSpec = {
 };
 
 /**
- * The crew session's own hook (`crew-role.ts`): the role card at a start, a resume or a compaction,
- * with the session's own `cwd` checked against its worktree — a `starting` record becomes `working`
- * inside it, and an open one is `failed` with the reason outside it (H101; `updateCrewIfState`
- * reads the state again under the store's lock);
- * `AskUserQuestion` and `ExitPlanMode` denied with the report step (D36); an edit denied with the
- * task-list step until the session's list has one (D23, its own cache in
- * `src/crew/tasks.ts`); the person's own prompt
- * recorded as one `person` event with one line of context (D55); the last line recorded at
- * a stop, and one block when the turn ended on a step with no report; the crew session marked
- * `paused` when a model limit ended its turn (D42). **Machine-wide**: it is silent
- * unless `CC_SMART_DEV_KIT_CREW` names a crew session, and its answer never depends on the project's
- * file — the two PreToolUse answers read no project file, and the edit gate the store only for
- * its own cache, so a broken or too new file, and a folder outside git, are judged the same way. It is in `PLUGIN_HOOK_NAMES`, so a project that runs its own
- * copy silences it through `ownHooks`. A crash asks about the calls in its domain (the two tools
- * that ask the person, and the three edits that wait for the task list),
- * and is silent outside a crew session: a plain session must never be asked because of this hook.
- * A StopFailure pauses the record and answers nothing: Claude Code ignores that hook's output, so
- * the pause is fail-open like the Stop block.
- */
-export const crewRoleHook: HookSpec = {
-  name: "crew-role",
-  events: ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "StopFailure"],
-  onConfigProblem: (_message, input, event, checkout, context) =>
-    crewRoleAnswer(
-      input,
-      event,
-      context.env,
-      context.paths,
-      checkout.mainCheckout ?? checkout.root,
-    ),
-  outsideGit: (input, event, _why, context) =>
-    crewRoleAnswer(input, event, context.env, context.paths, null),
-  onCrash: (why, input, event, context) => {
-    if (crewIdOf(context.env) === null) return SILENT;
-    if (event !== "" && event !== "PreToolUse") return SILENT;
-    const tool = input === null ? null : stringField(input.tool_name);
-    const edits = tool !== null && (CREW_EDIT_TOOLS as readonly string[]).includes(tool);
-    if (
-      input !== null &&
-      !edits &&
-      (tool === null || !(CREW_ASK_TOOLS as readonly string[]).includes(tool))
-    ) {
-      return SILENT;
-    }
-    return toolDecision(
-      "ask",
-      cannotCheck(
-        edits
-          ? "whether this crew session keeps its task list"
-          : "whether this crew session asks the person itself",
-        why,
-      ),
-    );
-  },
-  run: ({ input, event, project, env, paths }) =>
-    crewRoleAnswer(input, event, env, paths, project.mainCheckout ?? project.root),
-};
-
-/**
- * The lead's notes (`lead-notes.ts`): on a turn a registered lead starts, one line about what
- * changed among its crew sessions since its last turn — the store's events from a per-lead cursor,
- * rendered by the watch's own `eventLine`, said once. **Machine-wide**: it is silent unless the
- * input's `session_id` is a lead recorded in this repository, and it reads no project file. At a
- * SessionStart — a start, a resume, a compaction — it adds one line first: the lead's
- * crew sessions build the work (D61). At a prompt it also adds one reminder line while the lead's
- * own task folder holds no task file (D23); never a block. At every start and prompt it adds one
- * line while the lead's watch is not running and a crew session of its open plan can still talk:
- * run the lead skill, or — when the watch ran and ended — start the same command with Claude
- * Code's `Monitor` tool (`watchNote`). On Stop it blocks once while a task is in progress,
- * unless the last message has a `Waiting for:` line. Crew sessions, follow-up stops and config
- * problems never block. A crash is one line on stderr and exit 0: a broken note never stops work.
- */
-export const leadNotesHook: HookSpec = {
-  name: "lead-notes",
-  events: ["SessionStart", "UserPromptSubmit", "Stop"],
-  onConfigProblem: (_message, input, event, checkout, context) =>
-    event === "Stop"
-      ? SILENT
-      : leadNotesAnswer(
-          input,
-          event,
-          context.paths,
-          checkout.mainCheckout ?? checkout.root,
-          context.env,
-        ),
-  outsideGit: () => SILENT,
-  run: ({ input, event, project, paths, env }) =>
-    leadNotesAnswer(input, event, paths, project.mainCheckout ?? project.root, env),
-};
-
-/**
  * While the person cannot answer (`cc-smart-dev-kit user unavailable`): the two tools that ask
  * them are denied with the step that parks the question, Claude Code's own permission prompt is
  * denied and the call parked, and one note per change is said at the prompt (`user-away.ts`). A
@@ -537,13 +387,10 @@ export const userAwayHook: HookSpec = {
  * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
  * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
  * `update-check`), and its answer never depends on the project's file — it judges the model
- * and effort a launch names (§ `agent-guard.ts`) — save its D59 queue rule, which needs the
- * project's caps and this repository's store, so `run` is handed the frame's checkout for it. A
- * project that runs its own Agent guard
+ * and effort a launch names (§ `agent-guard.ts`). A project that runs its own Agent guard
  * lists `"agent-guard"` in `ownHooks`, and this one stays silent there. `onConfigProblem` and
- * `outsideGit` judge the model and effort alone: a broken or too new cc-smart-dev-kit.json, or a
- * folder that is not in git, does not change which model a launch runs on, and with no caps to
- * read a lead's building launch is never held.
+ * `outsideGit` judge the same way: a broken or too new cc-smart-dev-kit.json, or a folder that
+ * is not in git, does not change which model a launch runs on.
  *
  * PostToolUse is the **record**: a launch the guard asked about on PreToolUse, and the person
  * allowed, ran, and is recorded there (`RAN_EVENT` in `agent-guard.ts`). Claude Code runs
@@ -558,22 +405,13 @@ export const agentGuardHook: HookSpec = {
     agentGuard(input, context.env, context.paths, cwdOf(input)),
   outsideGit: (input, _event, _why, context) =>
     agentGuard(input, context.env, context.paths, cwdOf(input)),
-  // A crew session is a background session nobody watches: the guard judges it as unattended,
-  // so every launch it would ask the person about is refused with the step that reaches the
-  // lead — whatever `ownHooks` says and before the file (`crewAgentAnswer` judges, records
-  // nothing).
-  crewLimits: (input, _checkout, { env, paths }) =>
-    crewAgentAnswer(input, env, paths, cwdOf(input)),
   // A crash must not let a launch through unchecked: the guard asks about the launch it was
   // asked to judge. On PostToolUse (the record) it says nothing: the launch already ran.
   onCrash: guardCrash("the model this launch runs on", (input) =>
     ([...AGENT_TOOLS, ...WORKFLOW_TOOLS] as readonly string[]).includes(toolOf(input)),
   ),
   logFacts: guardFacts,
-  // The frame's own checkout finds the repository's lead record, so a recorded lead's building
-  // launch can be held by the crew queue (D59); the paths without one judge model and effort.
-  run: ({ input, env, paths, cwd, nowMs, project }) =>
-    agentGuard(input, env, paths, cwd, nowMs, project),
+  run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
 };
 
 /**
@@ -586,26 +424,20 @@ export const agentGuardHook: HookSpec = {
  * broken or too new file, and a folder outside git, are judged the same way. And **`alwaysOn`**:
  * `ownHooks` cannot switch it off (it does not even accept the name), because the project's
  * file is one of the things this guard guards. A crash asks about the calls in its domain.
- *
- * A crew session is never asked (D36): each ask is a denial naming the step that reaches its
- * lead, and the crew flag is passed into every path this guard answers through (`run`,
- * `onConfigProblem`, `outsideGit`) — `alwaysOn` already makes them all reach a crew session,
- * so no crew part is needed and no call is judged twice.
  */
 export const sessionEscapeGuardHook: HookSpec = {
   name: "session-escape-guard",
   events: ["PreToolUse"],
   alwaysOn: true,
   onConfigProblem: (_message, input, _event, _checkout, context) =>
-    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+    sessionEscapeGuard(input, context.paths, process.platform),
   outsideGit: (input, _event, _why, context) =>
-    sessionEscapeGuard(input, context.paths, process.platform, crewIdOf(context.env) !== null),
+    sessionEscapeGuard(input, context.paths, process.platform),
   onCrash: guardCrash(
     "whether this call goes around the limits set for the session",
     inEscapeDomain,
   ),
-  run: ({ input, paths, env }) =>
-    sessionEscapeGuard(input, paths, process.platform, crewIdOf(env) !== null),
+  run: ({ input, paths }) => sessionEscapeGuard(input, paths, process.platform),
 };
 
 /**
@@ -635,8 +467,8 @@ export const fableSessionHook: HookSpec = {
  * The tier note (`tier-view.ts`): at every SessionStart, and at a UserPromptSubmit when it
  * changed, one note to Claude of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`)
  * runs now and the effort rule that follows, read the Agent guard's way. **Machine-wide**, like
- * `agent-guard`: it runs with or without cc-smart-dev-kit.json and in a folder outside git, a
- * crew session included, and never a question or a block. Its SessionStart entry carries **no
+ * `agent-guard`: it runs with or without cc-smart-dev-kit.json and in a folder outside git, and
+ * never a question or a block. Its SessionStart entry carries **no
  * matcher**, so a start, a resume, a clear and a compaction each say it. A project that runs its
  * own copy silences it through `ownHooks`.
  */
@@ -654,17 +486,15 @@ export const tierViewHook: HookSpec = {
  * `alwaysOn` (`ownHooks` cannot switch it off). Two parts, and only one reads the project:
  *
  * - **The launch judge** (`bash-judge.ts`) ignores the project's file, broken or not, and runs
- *   outside git: a raw `claude --bg` asks the person (and is refused in `claude -p`) showing the
- *   `crew start` line, `claude -p` is judged by the launch policy every Agent launch meets, a crew
- *   session's `crew start` is denied, and a polling loop over `crew list|status` or
+ *   outside git: a raw `claude --bg` asks the person (and is refused in `claude -p`), `claude -p`
+ *   is judged by the launch policy every Agent launch meets, and a polling loop over
  *   `claude agents --json` is denied. It is always on because it limits what the session itself
  *   may launch: a session must not switch it off by editing a file it owns.
  * - **The route** is the `switches.jobRoute` switch (the project's `"jobs": { "route": true }`
  *   over the person's machine-wide default, one resolver, off until one says on): a heavy command
  *   is rewritten to run through `cc-smart-dev-kit job run` (or refused with that command line),
  *   and a heavy PowerShell line is refused, naming the Bash tool, where Git Bash lets that tool
- *   run. Off, a heavy command runs raw. In a session recorded as a lead, a CI
- *   watch, a queued job and the full check are moved to the background instead.
+ *   run. Off, a heavy command runs raw.
  *
  * It is the one guard that changes the call rather than asking about it.
  */
@@ -715,8 +545,6 @@ export const HOOKS: readonly HookSpec[] = [
   agentUsageHook,
   worktreeLeftoversHook,
   sessionNameHook,
-  crewRoleHook,
-  leadNotesHook,
   userAwayHook,
 ];
 
@@ -756,10 +584,9 @@ export const USER_HOOKS: readonly string[] = [
  * (no project file is needed for them to act) and the plugin hooks whose answer does not
  * depend on the project's file either — `agent-guard` (the model a launch runs on),
  * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
- * goes around the limits set for the session), `crew-role` (a crew session's own card, ask and
- * report), `lead-notes` (a lead's missed crew news and task-list reminder), `user-away` (whether the
- * person can answer) and `agent-usage` (each subagent's cost on
- * record: the person's spend, not a project's policy). `doctor`'s project checks never warn
+ * goes around the limits set for the session), `task-start` (the session's own task list),
+ * `tier-view` (what each subagent tier runs), `user-away` (whether the person can answer) and
+ * `agent-usage` (each subagent's cost on record: the person's spend, not a project's policy). `doctor`'s project checks never warn
  * about a project hook that runs beside one of these: it is the person's own business, not a
  * second copy of a project piece, and `USER_HOOKS` cannot be listed in `ownHooks` in any case.
  */
@@ -770,8 +597,6 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   "fable-session",
   "tier-view",
   "session-escape-guard",
-  "crew-role",
-  "lead-notes",
   "agent-usage",
   "user-away",
 ];
