@@ -6123,7 +6123,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.11.2",
+  version: "1.11.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -11363,6 +11363,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  fyi: object({ dropped: count, lines: array(string2()) }).optional(),
   summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
@@ -20756,6 +20757,10 @@ function reportDetail(record) {
   }
   return null;
 }
+function questionOf(event, record) {
+  const number = event.question ?? Math.max(1, (record?.questions.findIndex((one) => one.askedAt === event.at && one.question === event.text) ?? -1) + 1);
+  return { asked: record?.questions[number - 1], number };
+}
 function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
   const name = event.name;
   switch (event.type) {
@@ -20792,8 +20797,7 @@ function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
       return parts.join(" \xB7 ");
     }
     case "question": {
-      const number = event.question ?? Math.max(1, (record?.questions.findIndex((one) => one.askedAt === event.at && one.question === event.text) ?? -1) + 1);
-      const asked = record?.questions[number - 1];
+      const { asked, number } = questionOf(event, record);
       const head = `${name}: question ${number} \xB7 ${clip(event.text ?? "")}`;
       if (asked?.answeredAt != null)
         return `${head} \xB7 answered ${agoText(asked.answeredAt, nowMs)}`;
@@ -20813,6 +20817,7 @@ function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
     case "issue":
       return quotesGitHub(event) ? `${ISSUE_DATA_FRAME} \u2014 ${event.text}` : event.text;
     case "clash":
+      return null;
     case "merge":
       return event.text === null || event.text === "" ? null : event.text;
     default:

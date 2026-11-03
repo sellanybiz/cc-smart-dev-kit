@@ -244,11 +244,13 @@ test("D69: the watch releases an over session with no process at once", async ()
     const record = await world.addCrew({ state });
     commitIn(record, "result");
     const { scope, state: watch } = watchOf(world);
-    await watchPass(watch, world.ctx(), scope);
+    const pass = await watchPass(watch, world.ctx(), scope);
     expect(existsSync(record.worktree)).toBe(false);
     expect(stored(world, record).released).toBeDefined();
     expect(git(world.repo, "show", `${record.branch}:result`).trim()).toBe("kept");
-    expect(world.out).toEqual([
+    // The release needs nothing from the lead: its line waits for the next one that does.
+    expect(world.out).toEqual([]);
+    expect(pass.state.fyi?.lines).toEqual([
       `C my-app B1 help: released: worktree and agent-view rows removed; branch ${record.branch} kept`,
     ]);
   }
@@ -272,7 +274,9 @@ test("D69: a hand-off whose session is still in agent view is stopped, then rele
   const { scope, state } = watchOf(world);
   const first = await watchPass(state, world.ctx({}, agentsWith("idle")), scope);
   expect(world.claudeVerbs()).toEqual(["agents", "stop"]);
-  expect(world.out).toEqual([
+  // The watch ended it as planned: news that waits for the next line that needs the lead.
+  expect(world.out).toEqual([]);
+  expect(first.state.fyi?.lines).toEqual([
     "C my-app B1 help: session stopped — it handed off; its branch and its record stay",
   ]);
   expect(existsSync(record.worktree)).toBe(true);
@@ -297,6 +301,9 @@ test("D69: a claude rm that fails leaves the record released; the watch runs it 
   expect(resumePlace(released).ok).toBe(true);
   expect(world.out).toEqual([
     `C my-app B1 help: not released yet — claude rm ${SHORT_ID} failed (exit 1): could not delete\nFix: nothing to do; the worktree is gone, ${record.branch} is kept, and the watch tries claude rm ${SHORT_ID} again by itself (or run it by hand)`,
+  ]);
+  // The removal's own step says the same: news, held.
+  expect(first.state.fyi?.lines).toEqual([
     `C my-app B1 help: the worktree is gone; claude rm ${SHORT_ID} failed (exit 1): could not delete`,
   ]);
   const rms = () => world.claudeVerbs().filter((verb) => verb === "rm").length;
@@ -304,15 +311,21 @@ test("D69: a claude rm that fails leaves the record released; the watch runs it 
   // The folder went, so the next pass tries again; the same refusal is not said twice.
   const second = await watchPass(first.state, world.ctx({}, failing), scope);
   expect(rms()).toBe(2);
-  expect(world.out).toHaveLength(2);
+  expect(world.out).toHaveLength(1);
   // Nothing changed since: not again before the interval.
   const third = await watchPass(second.state, world.ctx({}, failing), scope);
   expect(rms()).toBe(2);
   const ctx = world.ctx({}, stopped);
-  await watchPass(third.state, { ...ctx, now: () => ctx.now() + PARKED_PASS_MS }, scope);
+  const fourth = await watchPass(
+    third.state,
+    { ...ctx, now: () => ctx.now() + PARKED_PASS_MS },
+    scope,
+  );
   expect(rms()).toBe(3);
   expect(stored(world, record).sessionEndedAt).toBeDefined();
-  expect(world.out.at(-1)).toBe(
+  // The release that worked needs nothing from the lead: held, and nothing more said.
+  expect(world.out).toHaveLength(1);
+  expect(fourth.state.fyi?.lines?.at(-1)).toBe(
     `C my-app B1 help: released: its agent-view rows are removed now; branch ${record.branch} kept`,
   );
 });
@@ -390,13 +403,17 @@ test("D69: a merged record left for the lead's crew rm is released; that crew rm
   expect(after.released).toBeDefined();
   expect(existsSync(record.worktree)).toBe(false);
   expect(git(world.repo, "branch", "--list", record.branch).trim()).not.toBe("");
+  // Its removal is the lead's own `crew rm` (D62): that line wakes the lead (1.11.3). The release
+  // needs nothing more, so it waits.
   expect(world.out).toEqual([
     "C my-app B1 help: merged — the lead merged its branch; it was stopped, so `crew rm` removes it",
+  ]);
+  expect(first.state.fyi?.lines).toEqual([
     `C my-app B1 help: released: worktree and agent-view rows removed; branch ${record.branch} kept`,
   ]);
   // Later passes say nothing more; the lead's own crew rm deletes the branch and ends it.
   await watchPass(first.state, world.ctx(), scope);
-  expect(world.out).toHaveLength(2);
+  expect(world.out).toHaveLength(1);
   expect(await runCrewRm(record.id, world.ctx())).toBe(0);
   expect(stored(world, record).state).toBe("removed");
   expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe("");

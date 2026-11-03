@@ -3,6 +3,31 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.11.3
+
+The lead's watch wakes the lead only for what needs it.
+
+**What to run** after the update: nothing. A running watch ends by itself when the update lands;
+start it again with the `Monitor` tool, as its last line says.
+
+What changed:
+
+- **Only a line that needs the lead wakes it.** Every watch line is a notification, and every
+  notification is a turn of the lead's model. On a server with seven leads, two wakes in three
+  carried nothing to act on. Now a report, an open question, a permission wait, a failure, a
+  stop, a pause, a quiet crew session, a stuck phase, the person's words and a note from another
+  session wake the lead, as before, and so does a stopped crew session you merged, whose `crew rm`
+  is yours. The rest waits: a step, a start, a phase you merged or removed, an answered question,
+  another lead's merge into the base, a session the watch ended as planned, a cleanup, a pass
+  that failed and runs again. It comes as **one** line, `FYI, no action needed (<n>): …`, just
+  before the next line that needs the lead, so both arrive as one notification.
+- **A file clash is said at your own `crew start` only.** The other lead's watch no longer says
+  it: the merge settles a shared file, and that line named the other lead's own crew session, not
+  the one it shares the files with.
+- **A busy conversation archive says nothing.** Several leads' watches ran the same hourly sweep,
+  and the one that found the archive locked told its lead `the conversation timeline could not
+  run`. Another watch was running that sweep.
+
 ## 1.11.2
 
 The lead's watch names what holds the queue, until the lead acts.

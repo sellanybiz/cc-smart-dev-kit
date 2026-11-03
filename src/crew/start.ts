@@ -1356,9 +1356,10 @@ export function fileClashSessions(
 }
 
 /**
- * Says a new crew session's file clashes, and records each as an event for the other lead's
- * watch (D55). A store that cannot be read, or an event that cannot be written, costs one line
- * at most: the start goes on.
+ * Says a new crew session's file clashes to the lead that starts it, and records each pair as an
+ * event, so a later start does not say it again (D55). No lead's watch says the event (1.11.3):
+ * the merge settles a shared file. A store that cannot be read, or an event that cannot be
+ * written, costs one line at most: the start goes on.
  */
 async function sayClashes(record: CrewRecord, ctx: CrewContext): Promise<string[]> {
   // The glob warning needs no store: it is said even when the store cannot be read.
@@ -1604,9 +1605,10 @@ function specOf(planned: Plan): LaunchSpec {
  * only the base is resolved now, because a queued crew session is cut from its `baseRef` when it
  * starts — so a phase that waited for another starts from the merged result.
  *
- * It prints nothing: the lead's watch is the caller, and says the start, or its failure, from
- * the state event the launch writes — once. Nothing happens while there is still no place for
- * the crew session (the caps, the free memory, or a phase it waits for).
+ * It prints only its phase task's notes (`writePhaseTask`), which the lead's own `crew start`
+ * said already; the lead's watch is the caller, holds them as news that needs no action, and says
+ * the start, or its failure, from the state event the launch writes — once. Nothing happens while
+ * there is still no place for the crew session (the caps, the free memory, or a phase it waits for).
  */
 export async function startQueued(
   listed: CrewRecord,

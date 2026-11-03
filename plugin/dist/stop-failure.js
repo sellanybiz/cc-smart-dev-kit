@@ -6800,7 +6800,7 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.11.2",
+  version: "1.11.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8180,6 +8180,7 @@ var handBackReportSchema = reportFields.loose().superRefine((report, context) =>
 });
 var RESUME_CLAIM_MS = 2 * 60000;
 var watchStateFields = object({
+  fyi: object({ dropped: count, lines: array(string2()) }).optional(),
   summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),

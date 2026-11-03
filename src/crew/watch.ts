@@ -119,6 +119,7 @@ import {
   type CrewRecord,
   crewBriefFile,
   crewStoreDir,
+  type FyiHeld,
   ISSUE_DATA_NOTE,
   ISSUE_EVENT_CREW,
   isEarlierCopy,
@@ -316,6 +317,45 @@ function clip(text: string): string {
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}…`;
 }
 
+/**
+ * The most lines that need no action a watch holds for the lead's next wake (`holdFyi`); older ones
+ * are let go and counted.
+ */
+export const FYI_HELD_MAX = 30;
+
+/** The longest `FYI` line (`fyiLine`): the newest held lines that fit, the earlier ones counted. */
+export const FYI_LINE_CHARS = 1500;
+
+/** Holds `line` for the lead's next wake; past `FYI_HELD_MAX` the oldest goes, counted. */
+export function holdFyi(held: FyiHeld, line: string): void {
+  held.lines.push(line);
+  while (held.lines.length > FYI_HELD_MAX) {
+    held.lines.shift();
+    held.dropped += 1;
+  }
+}
+
+/**
+ * The one line that says what the watch held (`holdFyi`), oldest first: the newest that fit in
+ * `FYI_LINE_CHARS`, each clipped, after a count of the earlier ones. One line, because a monitor
+ * hands a long burst over a few lines at a time, and each part could wake the lead again. Null when
+ * nothing is held.
+ */
+export function fyiLine(held: FyiHeld): null | string {
+  if (held.lines.length === 0) return null;
+  const total = held.dropped + held.lines.length;
+  const items: string[] = [];
+  let length = 0;
+  for (const line of [...held.lines].reverse()) {
+    const item = clip(line);
+    if (items.length > 0 && length + item.length > FYI_LINE_CHARS) break;
+    items.unshift(item);
+    length += item.length + " | ".length;
+  }
+  const earlier = total - items.length;
+  return `FYI, no action needed (${total}): ${earlier > 0 ? `${earlier} earlier, then ` : ""}${items.join(" | ")}`;
+}
+
 /** The crew session's report; null when there is none or it cannot be read (the line then says its status alone). */
 function reportOfRecord(record: null | CrewRecord): ReturnType<typeof readReport> {
   if (record === null || record.reportPath === null) return null;
@@ -341,6 +381,61 @@ function reportDetail(record: null | CrewRecord): null | string {
     return why === null ? null : `why: ${clip(why)}`;
   }
   return null;
+}
+
+/** The question an event asks, by its number, and the record's copy of it when there is one. */
+function questionOf(
+  event: CrewEvent,
+  record: null | CrewRecord,
+): { asked: CrewRecord["questions"][number] | undefined; number: number } {
+  const number =
+    event.question ??
+    Math.max(
+      1,
+      (record?.questions.findIndex(
+        (one) => one.askedAt === event.at && one.question === event.text,
+      ) ?? -1) + 1,
+    );
+  return { asked: record?.questions[number - 1], number };
+}
+
+/** The states a crew session reaches with nothing for the lead to do: a start, its merge, its removal. */
+const NO_ACTION_STATES: readonly string[] = [
+  "queued",
+  "starting",
+  "working",
+  "merged",
+  "removed",
+  "discarded",
+];
+
+/**
+ * Whether the line of `event` needs nothing from the lead: a step, a start, the end of a phase the
+ * lead merged or removed, a question already answered, or another lead's merge into the base, which
+ * the lead takes at its next stop. The watch holds such a line for the next one that needs the
+ * lead (`fyiLine`), so it never wakes the lead on its own. A report, an open question, a failure,
+ * a stop, a pause, a block, the person's words and a note from another session do wake it. So
+ * does the merge of a session the lead stopped, while its record waits: its removal is the lead's
+ * own `crew rm` (D62, `mergedWhileStopped`), and nothing else does it.
+ */
+export function eventNeedsNoAction(event: CrewEvent, record: null | CrewRecord): boolean {
+  switch (event.type) {
+    case "step":
+    case "merge":
+      return true;
+    case "state":
+      if (
+        event.state === "merged" &&
+        record?.state === "merged" &&
+        record.mergedWhileStopped === true
+      )
+        return false;
+      return NO_ACTION_STATES.includes(event.state);
+    case "question":
+      return questionOf(event, record).asked?.answeredAt != null;
+    default:
+      return false;
+  }
 }
 
 /**
@@ -395,15 +490,7 @@ export function eventLine(
       return parts.join(" · ");
     }
     case "question": {
-      const number =
-        event.question ??
-        Math.max(
-          1,
-          (record?.questions.findIndex(
-            (one) => one.askedAt === event.at && one.question === event.text,
-          ) ?? -1) + 1,
-        );
-      const asked = record?.questions[number - 1];
+      const { asked, number } = questionOf(event, record);
       const head = `${name}: question ${number} · ${clip(event.text ?? "")}`;
       if (asked?.answeredAt != null)
         return `${head} · answered ${agoText(asked.answeredAt, nowMs)}`;
@@ -432,9 +519,13 @@ export function eventLine(
       // the data frame here, the one place both the watch and the lead's hook take a line from.
       return quotesGitHub(event) ? `${ISSUE_DATA_FRAME} — ${event.text}` : event.text;
     case "clash":
+      // The start's file clash (D55) is said to the lead that starts the phase, in its own turn.
+      // The event only keeps the pair, so a later start does not say it again: two phases that
+      // share a file is what the merge settles, and the other lead has nothing to do about it.
+      return null;
     case "merge":
-      // Both carry their whole line, written where it happened: the start's file clash (D55)
-      // and a pull request merged into the base, for the other leads (D55).
+      // Its whole line, written where it happened: a pull request merged into the base, for the
+      // other leads (D55).
       return event.text === null || event.text === "" ? null : event.text;
     default:
       return null;
@@ -1211,6 +1302,7 @@ function sayEvents(
   scope: WatchScope,
   ctx: CrewContext,
   say: (line: string) => void,
+  note: (line: string) => void,
 ): number {
   const read = readCrewEvents(ctx.paths.stateDir, scope.repo, from);
   if (read.events.length === 0) return read.offset;
@@ -1259,7 +1351,7 @@ function sayEvents(
       reviewed,
       ctx.now(),
     );
-    if (line !== null) say(line);
+    if (line !== null) (eventNeedsNoAction(event, record) ? note : say)(line);
   }
   return read.offset;
 }
@@ -1512,6 +1604,8 @@ async function sayResumed(
  * the next pass goes on from there and says nothing twice (`PassFailed`).
  */
 interface PassDraft {
+  /** The lines that need no action, held for the next line that does (`fyiLine`). */
+  fyi: FyiHeld;
   lines: number;
   offset: number;
   parkedAt: number | undefined;
@@ -1537,6 +1631,7 @@ function stateAfter(before: WatchState, draft: PassDraft): WatchState {
     ...(resumedAt === undefined ? {} : { resumedAt }),
     ...(routerRequests === undefined ? {} : { routerRequests }),
     ...(draft.parkedAt === undefined ? {} : { parkedAt: draft.parkedAt }),
+    ...(draft.fyi.lines.length === 0 ? {} : { fyi: draft.fyi }),
   };
 }
 
@@ -1551,6 +1646,7 @@ export async function watchPass(
   scope: WatchScope,
 ): Promise<{ lines: number; state: WatchState }> {
   const draft: PassDraft = {
+    fyi: { dropped: state.fyi?.dropped ?? 0, lines: [...(state.fyi?.lines ?? [])] },
     lines: 0,
     offset: state.offset,
     parkedAt: state.parkedAt,
@@ -1580,11 +1676,21 @@ async function runPass(
   draft: PassDraft,
 ): Promise<void> {
   const { repo, resolved } = scope;
-  const { removals, said, stoppedRemindedAt } = draft;
+  const { fyi, removals, said, stoppedRemindedAt } = draft;
+  // A line that needs the lead: what was held for it goes first, in the same breath, so the
+  // monitor hands both over as one notification and the lead wakes once.
   const say = (line: string): void => {
+    const held = fyiLine(fyi);
+    if (held !== null) {
+      ctx.print(held);
+      fyi.lines = [];
+      fyi.dropped = 0;
+    }
     ctx.print(line);
     draft.lines += 1;
   };
+  /** A line that needs nothing from the lead: held for the next line that does. */
+  const note = (line: string): void => holdFyi(fyi, line);
 
   if (
     ctx.now() - (conversationSweepAt.get(ctx.paths.stateDir) ?? -Infinity) >=
@@ -1593,19 +1699,23 @@ async function runPass(
     conversationSweepAt.set(ctx.paths.stateDir, ctx.now());
     // A sweep that fails is said once while the reason stays the same, not every hour.
     try {
-      await sweepCrewConversations(ctx.paths, ctx.env, ctx.now());
+      // Never waits for the archive: a watch that held it would stall this pass for up to
+      // `ARCHIVE_LOCK_WAIT_MS`, and the run that holds it does this same sweep.
+      await sweepCrewConversations(ctx.paths, ctx.env, ctx.now(), { lockWaitMs: 0 });
       delete said[SWEEP_SAID_KEY];
     } catch (error) {
+      // Another watch holds the archive: it runs the same sweep now, so there is nothing to say.
+      // Any other failure is the watch's own housekeeping: the lead can do nothing about it now.
       const line = `crew watch: the conversation timeline could not run: ${reasonOf(error)}`;
-      if (said[SWEEP_SAID_KEY] !== line) {
-        say(line);
+      if (!(error instanceof LockBusyError) && said[SWEEP_SAID_KEY] !== line) {
+        note(line);
         said[SWEEP_SAID_KEY] = line;
       }
     }
   }
 
   // What happened since the last pass.
-  draft.offset = sayEvents(draft.offset, scope, ctx, say);
+  draft.offset = sayEvents(draft.offset, scope, ctx, say, note);
 
   // What the sessions are doing now.
   const agents = agentRows(ctx);
@@ -1670,6 +1780,7 @@ async function runPass(
         if (!isEarlierCopy(record, earlier.sessionId)) continue;
         const key = `${record.id}:earlier-copy:${earlier.sessionId}`;
         const lines: string[] = [];
+        let refused = false;
         for (const stale of agents.filter(
           (one) =>
             one.sessionId === earlier.sessionId &&
@@ -1678,6 +1789,7 @@ async function runPass(
         )) {
           const shortId = stale.id ?? earlier.shortId ?? null;
           const why = await stopSession({ ...record, sessionId: earlier.sessionId, shortId }, ctx);
+          if (why !== null) refused = true;
           lines.push(
             why ??
               `${record.name}: an earlier copy (${shortId}) came back; stopped it — its current session is ${record.shortId}`,
@@ -1685,7 +1797,7 @@ async function runPass(
         }
         if (lines.length > 0) {
           const mark = lines.join("\n");
-          if (said[key] !== mark) for (const line of new Set(lines)) say(line);
+          if (said[key] !== mark) for (const line of new Set(lines)) (refused ? say : note)(line);
           said[key] = mark;
         }
       }
@@ -1706,7 +1818,7 @@ async function runPass(
       row?.state === "working" &&
       (record.state === "working" || record.state === "starting")
     ) {
-      say(`${record.name}: going again — the wait is answered`);
+      note(`${record.name}: going again — the wait is answered`);
     }
     // A watch state written before WN1 holds the alert's whole line, not its key: the same alert
     // is already said, so its key is taken in silently (one repeated line per open alert on the
@@ -1832,7 +1944,7 @@ async function runPass(
                   ]
                 : [],
             );
-          if (brought.length) say(`brought project tasks: ${brought.join("; ")}`);
+          if (brought.length) note(`brought project tasks: ${brought.join("; ")}`);
         } catch (error) {
           ctx.error(
             `note: project tasks brought by ${record.name} could not be read: ${reasonOf(error)}`,
@@ -1914,7 +2026,7 @@ async function runPass(
       if (continuations.length > 0) {
         const line = `${record.name}: merged — waiting for its continuation ${continuations[0]?.name ?? "a continuation"} to merge`;
         if (said[stopKey] !== line) {
-          say(line);
+          note(line);
           said[stopKey] = line;
         }
         if (releasable(record, agents)) await releaseOnce(record, ctx, draft, say, listed);
@@ -1977,7 +2089,7 @@ async function runPass(
       // the lead needs to know, and the rest of the removal's own lines stay captured.
       const stopped = captured.find((line) => line.includes(LEFTOVER_STOP_MARK));
       if (code === 0 && stopped !== undefined && said[stopKey] !== stopped) {
-        say(stopped);
+        note(stopped);
         said[stopKey] = stopped;
       }
     } else if (RELEASE_STATES.includes(record.state) && !listed && releasable(record, agents)) {
@@ -2038,7 +2150,8 @@ async function runPass(
     // announced again.
     const saidLine = refusal ?? news;
     if (saidLine !== null && said[stopKey] !== saidLine) {
-      say(saidLine);
+      // A stop that failed is the lead's; a session the watch ended as planned is news only.
+      (refusal !== null ? say : note)(saidLine);
       said[stopKey] = saidLine;
     } else if (saidLine === null && !STOP_MARK_STATES.includes(record.state)) {
       delete said[stopKey];
@@ -2054,7 +2167,7 @@ async function runPass(
   if (draft.parkedAt === undefined || ctx.now() - draft.parkedAt >= PARKED_PASS_MS) {
     draft.parkedAt = ctx.now();
     try {
-      await finishParkedWorktrees(repo, ctx, scope.base ?? null, say);
+      await finishParkedWorktrees(repo, ctx, scope.base ?? null, note);
     } catch (error) {
       // A look that fails never ends the watch: it is said once, and tried again later.
       const line = `crew watch: could not look for folders a removal left half done: ${reasonOf(error)}`;
@@ -2152,7 +2265,8 @@ async function runPass(
     // Only the watch that holds its lead's lease starts a session (WF1), asked before each one:
     // a start launches Claude, and a newer watch may have taken over during the one before.
     if (scope.mayStart !== false && (await scope.goesOn?.()) !== false) {
-      await startQueued(record, ctx, resolved, scope.mergeInto);
+      // Its phase task's notes repeat what the lead's own `crew start` said: news, held.
+      await startQueued(record, { ...ctx, print: note }, resolved, scope.mergeInto);
     }
   }
 
@@ -2255,7 +2369,7 @@ async function runPass(
   if ((await scope.goesOn?.()) !== false) {
     // The crew's news first: what this pass itself wrote (a start, a removal) is said before any
     // call to GitHub, so a slow `gh` never holds it.
-    draft.offset = sayEvents(draft.offset, scope, ctx, say);
+    draft.offset = sayEvents(draft.offset, scope, ctx, say, note);
     // One budget for all the pass's work on GitHub (`passBudget`).
     const budget = passBudget(ctx.now);
     // The look at GitHub first (it is news, and bounded by the same budget), then the marks.
@@ -2289,7 +2403,7 @@ async function runPass(
   }
 
   // What this pass itself wrote is said now, in the same pass — once.
-  draft.offset = sayEvents(draft.offset, scope, ctx, say);
+  draft.offset = sayEvents(draft.offset, scope, ctx, say, note);
 }
 
 /**
@@ -2658,7 +2772,11 @@ async function watchLoop(
         );
       }
       if (!failureSaid) {
-        ctx.print(
+        // Nothing for the lead to do: the watch tries again by itself, and its end line wakes the
+        // lead if it gives up. So the line waits for the next one that needs the lead.
+        state.fyi ??= { dropped: 0, lines: [] };
+        holdFyi(
+          state.fyi,
           `crew watch: a pass failed (${why}); the watch goes on and tries again in ${WATCH_POLL_MS / 1000} s`,
         );
         failureSaid = true;

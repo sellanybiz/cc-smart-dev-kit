@@ -428,8 +428,10 @@ run) adds `brief: <path> (the plan's folder)` before it. In order:
    two paths count as shared when one fixed prefix holds the other — a guess the person can
    ignore. Each clash is one line after the `started`/`queued` line, naming
    the other lead, its crew session and the files they share, and one `clash` event on that crew
-   session, so the other lead's watch says the same line. Two leads may mean to share a file, so
-   nothing is refused, delayed or queued. **A phase that already has a live crew session of the
+   session, which keeps the pair. Two leads may mean to share a file, so nothing is refused,
+   delayed or queued, and **the other lead is not told** (1.11.3): the merge settles a shared file,
+   and the line cost that lead a wake with nothing to do — it named that lead's own crew session,
+   not the one it shares the files with. **A phase that already has a live crew session of the
    same lead**, under another slug, adds one line too (`phaseLine`): it names that crew session and
    says to remove it first — two crew sessions on one phase is a mistake (the bug of 2026-10-23).
    The record this start continues (`--continue`) is not named: a hand-off is the same phase on
@@ -1154,7 +1156,28 @@ store, not the name, says what is a crew session.
 
 **The watch** — `cc-smart-dev-kit crew watch [--lead <session>] [--once] [--timeout
 <seconds>]` (`src/crew/watch.ts`) — is the lead's window. It prints **one line per change and
-nothing else**, from two readers:
+nothing else**, from two readers (below), and **only a line that needs the lead wakes it**
+(1.11.3). Each printed line is a monitor notification, and each notification a turn of the lead's
+model: on 2026-11-03 a server's seven leads woke 66 times an hour, and two wakes in three carried
+nothing to act on. So a line that needs nothing from the lead — a step, a start (`queued`,
+`starting`, `working`), a phase it merged or removed, a question already answered, another lead's
+merge into the base (taken at the lead's next stop), a session the watch ended as planned, an
+earlier copy it stopped, `going again`, the project tasks a merge brought, the cleanup of a
+half-done removal, a conversation sweep or a pass that failed and runs again
+(`eventNeedsNoAction`, and the pass's own `note`) — is **held** in the watch's state (`holdFyi`:
+at most `FYI_HELD_MAX`, the oldest let go and counted) and goes out as **one** line, `FYI, no
+action needed (<n>): …` (`fyiLine`: the newest that fit `FYI_LINE_CHARS`, each clipped, after a
+count of the earlier ones), right before the next line that needs the lead, in the same breath:
+the monitor hands both over as one notification, and the lead wakes once. One line, because a
+monitor hands a long burst over a few lines at a time, and each part could wake the lead again. A
+report, an open question, a permission wait, a failure, a stop, a pause, a block, a quiet crew
+session, a stuck phase, the person's words, a note from another session, and a stop or a removal
+that was refused wake it as before. So does the merge of a crew session the lead stopped, while
+its record waits: its removal is the lead's own `crew rm` (D62, `mergedWhileStopped`). The watch's conversation sweep (D69) **never waits for the
+archive's lock** (`lockWaitMs: 0`) and says nothing when another run holds it: that run is another
+watch's sweep doing the same work, and waiting stalled each pass for up to `ARCHIVE_LOCK_WAIT_MS`
+(30 s) when every lead's watch started at once after an update. The `lead-notes` hook still adds the newest
+event line at each of the lead's turns.
 
 - **the store's events log** (`events.jsonl`), read from the byte after the last whole line the
   last pass read (the store's own reader, `readCrewEvents`; a line a writer has not finished is
@@ -1728,9 +1751,10 @@ record that agrees with the merging lead's own in repository, plan, name and fol
 alone would drop another lead of the same name in another folder). A name is listed once, though
 another lead that restarted has two records (WN1).
 
-**A file clash reaches the other lead** (D55, `src/crew/start.ts`): a new phase's `--files`
+**A file clash is said at the start only** (D55, `src/crew/start.ts`): a new phase's `--files`
 compared with a running or queued crew session of another lead — see § The lead and the launch,
-step 3 — prints one line at the start and records one `clash` event, which that lead's watch says.
+step 3 — prints one line at the start and records one `clash` event, which keeps the pair; no
+lead's watch says it (1.11.3).
 **Each pair is said once, for its whole life** (WN1): the event carries the pair's key
 (`clashPairKey`: the two leads' session ids and phases, sorted, so it is the same from either
 side), and a start that meets a pair already in the events log says nothing. The key names the
