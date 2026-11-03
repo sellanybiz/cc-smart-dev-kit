@@ -17,7 +17,7 @@
  * (`atomicWrite`), and removed
  * when the session ends.
  *
- * **What the file leaves in place, it says** (the lead's choice, RV3): `env` merges one variable
+ * **What the file leaves in place, it says** (RV3's choice): `env` merges one variable
  * at a time, so a login key or helper in the person's settings still applies, and a retired
  * `ANTHROPIC_DEFAULT_*_MODEL` that names a slot still goes to Anthropic in a plain session. The
  * launch starts anyway and names each such key with its file and the fix (`settingsNotes`),

@@ -126,7 +126,7 @@ import {
   profileView,
 } from "../gateway/config";
 import { urlMeaning } from "../gateway/project-state";
-import { baseUrlPointsAtGateway, routerBaseUrl, settingsReport } from "../gateway/settings";
+import { baseUrlPointsAtGateway, routerBaseUrl } from "../gateway/settings";
 import {
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
@@ -1299,29 +1299,6 @@ export function sessionModelOf(input: HookInput, env: Env): null | string {
   const transcript = stringField(input.transcript_path);
   const answered = transcript === null ? null : lastClaudeModel(transcript);
   return answered ?? stringField(env.ANTHROPIC_MODEL);
-}
-
-/**
- * True when Claude Code's settings send its requests to the router (`ANTHROPIC_BASE_URL` set
- * to something other than Anthropic's own address — `gateway off` leaves that address in the
- * file, GP5); false when they do not, or cannot be read.
- */
-export function gatewayOnOf(paths: CliPaths): boolean {
-  try {
-    return baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl);
-  } catch {
-    // Settings that cannot be read send nothing anywhere the guard can prove: off.
-    return false;
-  }
-}
-
-/**
- * The gateway as the machine's own files see it: its config, and whether the user's settings
- * point at the router. A command outside a session (the usage guard) reads this;
- * a hook reads the session's own gateway instead (`sessionGatewayOf`).
- */
-export function gatewayFactsOf(paths: CliPaths): GatewayFacts {
-  return { config: gatewayConfigOf(paths), gatewayOn: gatewayOnOf(paths) };
 }
 
 /** The gateway one session runs on: `GatewayFacts`, and the profile its URL names. */

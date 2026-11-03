@@ -1,7 +1,7 @@
 /**
  * The merge check: may this merge happen, or does the person decide? One judgment, made for a
  * pull request (the merge guard's, D17 and D31) and for a local branch against a base (D22, the
- * lead's hand-back gate). The merge guard hook calls it before a merge
+ * check before a phase's branch merges locally). The merge guard hook calls it before a merge
  * (`src/hooks/merge-guard.ts`); `cc-smart-dev-kit workflow merge-check` prints its verdicts.
  *
  * **A pull request** is judged with the policy committed on its base (`resolveGate`), never a
@@ -14,8 +14,8 @@
  * read", never a guess.
  *
  * **A local branch** is judged against a base without gh: the review gate's `reviewBeforePush`
- * and the record alone, the same limits. It is what a lead checks before merging a branch
- * locally (D22), and it never speaks for a merge the guard would make.
+ * and the record alone, the same limits. It is what the main session checks before it merges a
+ * phase's branch locally (D22), and it never speaks for a merge the guard would make.
  *
  * **What it never decides:** which command is a merge, whether it names this project's own
  * repository, and whether it carries `--admin` — the guard's rules about the command line. It
