@@ -50,6 +50,7 @@ import { ignoredFieldsOf } from "../jobs/kinds";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
+  CcSmartDevKitVersionError,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -491,7 +492,11 @@ export async function projectChecks(
       {
         ok: false,
         text: `project: ${error.message}`,
-        fix: `correct the file as this line says, or run: ${COMMAND} project init`,
+        // `project init` never changes which plugin versions a `requires` range lets in.
+        fix:
+          error instanceof CcSmartDevKitVersionError
+            ? "do what this line says"
+            : `correct the file as this line says, or run: ${COMMAND} project init`,
       },
       ...engine,
     ];

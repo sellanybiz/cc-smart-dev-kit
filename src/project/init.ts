@@ -51,6 +51,7 @@ import {
   WORKTREE_PREFIX_OPTIONAL_SINCE,
   WORKTREE_REBUILDABLE_SINCE,
 } from "./config";
+import { lowestAllowed } from "./version-range";
 
 /** One question's answer, as the flags and the terminal gave it. */
 export interface ProjectInitAnswers {
@@ -211,29 +212,6 @@ export function requiresTooLow(existing: unknown, floorVersion: string): boolean
   if (typeof existing !== "string") return false;
   const lowest = lowestAllowed(existing);
   return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
-}
-
-/** One alternative of a range: its first comparator and version (`>=1.1`, `^1.1`, `~1.1.0`, `1.1`). */
-const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-
-/**
- * The lowest plugin version a `requires` range lets in, or null when the range's form is not
- * one read here (the floor then replaces it). Each `||` alternative is read by its first
- * comparator: `>=`, `>`, `^`, `~`, `=` or a bare version start at the version written; one that
- * starts with `<` lets in 0.0.0. So `~1.1.0`, `^1.1` and `>=1.1 <2` all start at 1.1.0, and a
- * write that needs 1.0 keeps them as they are.
- */
-function lowestAllowed(range: string): null | string {
-  let lowest: null | string = null;
-  for (const part of range.split("||")) {
-    const match = RANGE_START.exec(part);
-    if (match === null) return null;
-    const version = match[1]?.startsWith("<")
-      ? "0.0.0"
-      : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
-    if (lowest === null || Bun.semver.order(version, lowest) < 0) lowest = version;
-  }
-  return lowest;
 }
 
 /**

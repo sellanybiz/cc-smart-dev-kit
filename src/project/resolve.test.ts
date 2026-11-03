@@ -230,6 +230,36 @@ describe("resolveProject", () => {
     expect(() => resolveProject(repo)).toThrow("worktree: unknown field");
   });
 
+  test("a plugin past the top of `requires`: widen the range, never update", () => {
+    const repo = makeRepo();
+    const file = writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "^1.4" }));
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      CcSmartDevKitVersionError,
+    );
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      `${file}: this project's requires ^1.4 does not let in cc-smart-dev-kit 2.0.0, which is newer; widen requires in that file (for example >=1.4)`,
+    );
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: ">=1.4 <2" }));
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      `${file}: this project's requires >=1.4 <2 does not let in cc-smart-dev-kit 2.0.0, which is newer; widen requires in that file (for example >=1.4)`,
+    );
+    // Below a range with a top, an update is still the fix.
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "^1.4" }));
+    expect(() => resolveProject(repo, { pluginVersion: "1.3.0" })).toThrow(
+      `${file}: this project needs cc-smart-dev-kit ^1.4; you have 1.3.0; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`,
+    );
+    // A range with no top starts above the plugin: an update, even at the version it names.
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: ">2.0.0" }));
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      `${file}: this project needs cc-smart-dev-kit >2.0.0; you have 2.0.0; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`,
+    );
+    // A range that starts at 0.0.0 gets no example: ">=0.0" would say nothing.
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "<1" }));
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      `${file}: this project's requires <1 does not let in cc-smart-dev-kit 2.0.0, which is newer; widen requires in that file`,
+    );
+  });
+
   test("a plugin too old for `requires`: the update message, even with a field it does not know", () => {
     const repo = makeRepo();
     const file = writeCcSmartDevKitJson(

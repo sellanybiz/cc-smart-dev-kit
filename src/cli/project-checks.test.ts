@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { VERSION } from "../build-info";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir, withGitVersion } from "../testing/temp";
 import { checkLine } from "./doctor";
@@ -501,10 +502,20 @@ describe("a requires below what the file's fields need", () => {
   test("a requires at or above the floor, a range read as a newer one, or none: nothing to say", async () => {
     const repo = makeRepo();
     ignoreWorktrees(repo);
-    for (const requires of [">=1.4", ">=1.5", "^1.4", undefined]) {
+    for (const requires of [">=1.4", ">=1.5", "^1.4 || >=2", undefined]) {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { ...LOW, requires });
       expect(await check(repo)).toEqual([]);
     }
+  });
+
+  test("a requires that stops below this plugin: one ✗ line, and project init is not the fix", async () => {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: "<1" });
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    expect(await check(repo)).toEqual([
+      `✗ project: ${file}: this project's requires <1 does not let in cc-smart-dev-kit ${VERSION}, which is newer; widen requires in that file Fix: do what this line says`,
+    ]);
   });
 });
 

@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { isValidRange, satisfiesRange } from "./version-range";
+import { isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
+
+describe("lowestAllowed", () => {
+  test.each([
+    [">=1.4", "1.4.0"],
+    ["^1.4", "1.4.0"],
+    ["~1.4.2", "1.4.2"],
+    [">=1.4 <2", "1.4.0"],
+    ["1.x", "1.0.0"],
+    ["^1.4 || ^2", "1.4.0"],
+    ["^3 || >=2.1", "2.1.0"],
+    ["<2", "0.0.0"],
+    ["*", null],
+  ])("%p starts at %p", (range, lowest) => {
+    expect(lowestAllowed(range)).toBe(lowest);
+  });
+});
 
 describe("isValidRange", () => {
   test.each([
