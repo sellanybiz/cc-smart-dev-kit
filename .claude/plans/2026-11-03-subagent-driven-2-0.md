@@ -103,6 +103,16 @@ frontmatter `skills`, `isolation`, `effort`, `maxTurns`.
 
 Research: `.claude/research/2026-11-03-subagent-driven-development.md`.
 
+**Wave 1b: task guards (the owner, 2026-11-03). They start once T, H2 and P are merged.**
+
+| Phase | What | Done when |
+|---|---|---|
+| **G1 keep-going guard** | A Stop hook for the main session. It blocks once per stop when a phase of a plan this session works on is `in_progress`, no subagent of the session is still running, and the turn's last text has no `Waiting for:` line. The block names the next phase that is ready (pending, no open blockers) and says to start it, or to close the phase. Reuse the 1.x detection of background work (backup branch, `src/hooks/lead-notes.ts`); never copy crew code. | tests: a phase in progress with no subagent (blocked, next phase named); a subagent running (passes); `Waiting for:` (passes); a second stop (passes) |
+| **G2 builder finish guard** | A SubagentStop hook. For a builder (`agent_type` ends with `builder`) whose brief's first message holds `Your task: #n`, it blocks while that task has open blocking subtasks, and names them with the `task_done` call. It fails open when no line is found. | tests: open steps (blocked, named); all done (passes); no line (passes); another agent type (passes) |
+| **G3 portal ledger view** | The portal's Tasks page shows each phase's agent, branch, worktree and steps done (from T's fields), live. | the portal's tests; a ui-verify check |
+
+The `build` skill and every brief carry the line `Your task: #n` (D1 knows).
+
 **Wave 2 (the main session):**
 
 - merge all phases;
