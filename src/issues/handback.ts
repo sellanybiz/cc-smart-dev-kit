@@ -14,7 +14,7 @@
  * and it never makes the hand-back fail:
  * when GitHub cannot be reached the answer says why, and the report goes on without a comment.
  */
-import type { HandBackReport } from "../crew/store";
+import { type HandBackReport, suiteRun } from "../crew/store";
 import { GH_TIMEOUT_MS, GH_WRITE_TIMEOUT_MS } from "../workflow/merge-check";
 import { issuesOff, publicIssuesOff } from "../workflow/pr-switches";
 import {
@@ -84,11 +84,12 @@ function findingsLine(findings: readonly { finding: string; fix: string }[]): st
 /** Every string of the report's own words that the comment can carry, whole and uncut. */
 function wordsOf(report: HandBackReport): string[] {
   const findings = [...(report.review?.findings ?? []), ...(report.ownReview?.findings ?? [])];
+  const full = suiteRun(report.tests.full);
   return [
     report.phase,
     report.branch.name,
     ...report.tests.targeted.map((run) => run.command),
-    ...(report.tests.full === null ? [] : [report.tests.full.command]),
+    ...(full === null ? [] : [full.command]),
     ...report.checks.flatMap((check) => [check.name, check.note ?? ""]),
     ...(report.review === null
       ? []
@@ -112,9 +113,10 @@ export function handBackComment(report: HandBackReport, crewId: string): string 
   const lines = [
     `- Branch ${code(report.branch.name)} at ${code(sha)}: ${report.changed.files} files changed (+${report.changed.insertions}, -${report.changed.deletions}).`,
   ];
+  const full = suiteRun(report.tests.full);
   const runs = [
     ...report.tests.targeted.map((run) => runLine("", run)),
-    ...(report.tests.full === null ? [] : [runLine("the whole suite ", report.tests.full)]),
+    ...(full === null ? [] : [runLine("the whole suite ", full)]),
   ];
   lines.push(`- Tests: ${runs.length === 0 ? "none recorded" : runs.join("; ")}.`);
   if (report.checks.length > 0) {

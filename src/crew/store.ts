@@ -805,6 +805,61 @@ export type NewCrewEvent = Omit<CrewEvent, "at" | "version">;
 /** One test command a crew session ran, and its counts. */
 const testRun = z.looseObject({ command: text, passed: count, failed: count, ok: z.boolean() });
 
+/**
+ * The whole suite as a report gives it (1.12.0): a run, which may name the files whose tests
+ * only timed out (`timeouts`, proved by `tests.rerun`); or `{ notRun }`, why a phase that changed
+ * no code did not run it. The done gate (`doneReportRefusal`, `report.ts`) judges both.
+ */
+export const fullSuiteSchema = z.union([
+  testRun.extend({ timeouts: z.array(text).optional() }),
+  z.looseObject({ notRun: text }),
+]);
+
+/** The whole suite as a report gives it. */
+export type FullSuite = z.infer<typeof fullSuiteSchema>;
+
+/** The whole suite was not run, and the report says why. */
+export function suiteNotRun(full: FullSuite | null | undefined): full is { notRun: string } {
+  return full != null && "notRun" in full && typeof full.notRun === "string";
+}
+
+/**
+ * The whole suite's run, or null when there is none to count: no suite given, or `notRun`. A
+ * reader that shows the suite says `notRun` itself (`suiteNotRun`); one that counts uses this.
+ */
+export function suiteRun(
+  full: FullSuite | null | undefined,
+): Exclude<FullSuite, { notRun: string }> | null {
+  if (full == null || suiteNotRun(full)) return null;
+  return full as Exclude<FullSuite, { notRun: string }>;
+}
+
+/**
+ * What a diagnosis found (1.12.0). `not-reproduced` and `not-a-code-bug` are concluded answers
+ * (`CONCLUDED_DIAGNOSES`): `crew start` refuses to start the same diagnosis again.
+ */
+export const DIAGNOSIS_OUTCOMES = [
+  "not-reproduced",
+  "not-a-code-bug",
+  "root-cause",
+  "fixed",
+] as const;
+
+/** One of `DIAGNOSIS_OUTCOMES`. */
+export type DiagnosisOutcome = (typeof DIAGNOSIS_OUTCOMES)[number];
+
+/** The outcomes that close a question: another phase on it would find the same. */
+export const CONCLUDED_DIAGNOSES: readonly DiagnosisOutcome[] = [
+  "not-reproduced",
+  "not-a-code-bug",
+];
+
+/** A diagnostic phase's answer: its outcome, and the detail in a few words. */
+export const diagnosisSchema = z.looseObject({ outcome: z.enum(DIAGNOSIS_OUTCOMES), detail: text });
+
+/** A diagnostic phase's answer. */
+export type Diagnosis = z.infer<typeof diagnosisSchema>;
+
 /** The fields of a hand-back report: what a crew session hands the lead when its phase ends. */
 const reportFields = z.object({
   version,
@@ -820,8 +875,17 @@ const reportFields = z.object({
   changed: z.looseObject({ files: count, insertions: count, deletions: count }),
   /** Files it changed that its brief did not name. */
   outsideBrief: z.array(text),
-  /** The done-check commands, and the whole suite once (null when it never ran). */
-  tests: z.looseObject({ targeted: z.array(testRun), full: testRun.nullable() }),
+  /**
+   * The done-check commands; the whole suite once (null when the report gives none, `notRun` when
+   * a no-code phase says why); and the rerun of the files the whole suite only timed out in.
+   */
+  tests: z.looseObject({
+    targeted: z.array(testRun),
+    full: fullSuiteSchema.nullable(),
+    rerun: testRun.nullable().optional(),
+  }),
+  /** A diagnostic phase's answer; absent on older reports and on phases that diagnose nothing. */
+  diagnosis: diagnosisSchema.nullable().optional(),
   /** The other checks (type check, lint, the neutrality and duplicate checks). */
   checks: z.array(z.looseObject({ name: text, ok: z.boolean(), note: z.string().nullable() })),
   /** The one review: who ran it, on which model and effort, the commit it read, each finding and its fix. */

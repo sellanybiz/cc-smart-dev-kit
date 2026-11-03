@@ -36,9 +36,12 @@ import { headSha } from "./step";
 import {
   addCrewQuestion,
   type CrewRecord,
+  diagnosisSchema,
+  fullSuiteSchema,
   type HandBackReport,
   isQuestionOpen,
   recordCrewReport,
+  suiteRun,
 } from "./store";
 import { taskListId } from "./tasks";
 import { contextUseOf, transcriptFile } from "./transcript";
@@ -107,9 +110,14 @@ export const modelReportSchema = z.looseObject({
   tests: z
     .looseObject({
       targeted: z.array(testRunFields).default([]),
-      full: testRunFields.nullable().default(null),
+      /** A run (with its `timeouts` files, if that is all it failed on), or `{ notRun }` (1.12.0). */
+      full: fullSuiteSchema.nullable().default(null),
+      /** The rerun of the `timeouts` files alone, which proves them (1.12.0). */
+      rerun: testRunFields.nullable().default(null),
     })
-    .default({ targeted: [], full: null }),
+    .default({ targeted: [], full: null, rerun: null }),
+  /** A diagnostic phase's answer (1.12.0): `crew start` refuses to repeat a concluded one. */
+  diagnosis: diagnosisSchema.nullable().default(null),
   checks: z.array(checkFields).default([]),
   review: modelReviewFields.nullable().default(null),
   ownReview: ownReviewFields.nullable().default(null),
@@ -331,7 +339,7 @@ export function doneReportRefusal(
   extra: Record<string, unknown> = {},
 ): ReportRefusal | null {
   const red: string[] = [];
-  const full = model.tests.full;
+  const full = suiteRun(model.tests.full);
   if (full !== null && (!full.ok || full.failed > 0)) {
     red.push(`the whole suite failed (${runLine(full)})`);
   }
@@ -429,6 +437,7 @@ export function buildReport(
     status,
     summary: summary ?? model.summary,
     tests: model.tests,
+    ...(model.diagnosis === null ? {} : { diagnosis: model.diagnosis }),
     version: 1,
     ...(Object.keys(extra).length === 0 ? {} : { extra }),
   };

@@ -692,7 +692,18 @@ export interface CrewReport {
   };
   status: string;
   summary?: string | null | undefined;
-  tests: { full: null | TestRun; targeted: TestRun[] };
+  tests: {
+    /** A run, or `{ notRun }` when a no-code phase says why it ran none (1.12.0). */
+    full:
+      | null
+      | (TestRun & { timeouts?: string[] | undefined })
+      | { notRun: string; [key: string]: unknown };
+    /** The rerun of the files the whole suite only timed out in (1.12.0). */
+    rerun?: null | TestRun | undefined;
+    targeted: TestRun[];
+  };
+  /** A diagnostic phase's answer (1.12.0). */
+  diagnosis?: null | { detail: string; outcome: string; [key: string]: unknown } | undefined;
 }
 
 /** One test command a report ran: the command, and how many tests passed and failed. */

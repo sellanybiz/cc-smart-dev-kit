@@ -30,7 +30,13 @@ import { z } from "zod";
 import type { CliPaths } from "../cli/paths";
 import { atomicWrite } from "../setup/write";
 import { describeIssues } from "../zod-issues";
-import type { CrewEvent, CrewRecord, HandBackReport, LeadRecord } from "./store";
+import {
+  type CrewEvent,
+  type CrewRecord,
+  type HandBackReport,
+  type LeadRecord,
+  suiteRun,
+} from "./store";
 
 /** The folders of a plan's own folder. */
 export const BRIEFS_DIR = "briefs";
@@ -388,11 +394,11 @@ function eventsOf(change: RunChange): RunEvent[] {
         status: report.status,
         testsFailed:
           report.tests.targeted.reduce((sum, one) => sum + one.failed, 0) +
-          (report.tests.full?.failed ?? 0),
+          (suiteRun(report.tests.full)?.failed ?? 0),
         testsPassed:
           report.tests.targeted.reduce((sum, one) => sum + one.passed, 0) +
-          (report.tests.full?.passed ?? 0),
-        wholeSuite: report.tests.full === null ? null : report.tests.full.ok,
+          (suiteRun(report.tests.full)?.passed ?? 0),
+        wholeSuite: suiteRun(report.tests.full)?.ok ?? null,
       },
       kind: "report",
       text: report.status,
