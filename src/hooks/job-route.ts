@@ -14,7 +14,7 @@
  *
  * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
  * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
- * one command away, and a judge that read only Bash would let a launch or a poll through
+ * one command away, and a judge that read only Bash would let a launch through
  * there. The queue's rewrite stays Bash-only: the rewritten line names the launcher and, for
  * anything but one plain command, a `sh -c` line, which the PowerShell tool cannot run, and a
  * wrong rewrite is worse than none. So where the route is on, a PowerShell line that runs a

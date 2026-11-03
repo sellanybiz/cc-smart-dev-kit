@@ -19,7 +19,7 @@ export interface JobEnd {
   code: number;
   /**
    * The signal that ended the job's own process, or null when it exited by itself. Another
-   * process may have sent it: the kernel's OOM killer sends SIGKILL (`killedForMemoryLine`).
+   * process may have sent it: the kernel's OOM killer sends SIGKILL.
    */
   signal: NodeJS.Signals | null;
   /**
