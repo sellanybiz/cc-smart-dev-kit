@@ -16658,7 +16658,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
-  fyi: object({ dropped: count, lines: array(string2()) }).optional(),
+  fyi: object({ dropped: count, kept: array(string2()).optional(), lines: array(string2()) }).optional(),
   summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
@@ -22347,8 +22347,11 @@ var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (time
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
+function firstLine(text) {
+  return (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+}
 function clip(text) {
-  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+  const one = firstLine(text);
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
 function reportOfRecord(record) {

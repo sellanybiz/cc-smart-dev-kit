@@ -326,6 +326,14 @@ function heldLines(
   return readWatchState(world.paths.stateDir, world.repo, lead)?.fyi?.lines ?? [];
 }
 
+/** The lines a lead's watch holds whole (`HoldOptions.whole`), from its state file. */
+function keptLines(
+  world: { paths: { stateDir: string }; repo: string },
+  lead: string = LEAD_SESSION,
+): string[] {
+  return readWatchState(world.paths.stateDir, world.repo, lead)?.fyi?.kept ?? [];
+}
+
 /** The line the watch says for the person's word to the world's crew session (D55). */
 function personLine(text: string): string {
   return `${NAME}: the person wrote · ${text} · read its next report against the brief before the merge`;
@@ -1579,9 +1587,10 @@ describe("crew watch", () => {
     ).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.out).toEqual([]);
-    expect(heldLines(world)).toContain(
+    // What the lead's pull request and release carry: held whole, never clipped to one task.
+    expect(keptLines(world)).toEqual([
       'brought project tasks: T-abc234 (database, next-release) "Run the backfill"',
-    );
+    ]);
   });
 
   test("D35: a branch the lead merged is removed by the watch's next pass", async () => {
@@ -5692,6 +5701,23 @@ describe("a watch never dies silently", () => {
     expect(world.err.at(-1)).toBe("crew watch: nobody reads its output any more; this watch ends");
   }, 60_000);
 
+  test("a failed pass's line is written with the state at once, not only kept in memory", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const base = withView(world, []);
+    const ctx: CrewContext = {
+      ...base,
+      runProgram: (argv, options) => {
+        if (argv[1] === "agents") throw new LockBusyError(BUSY);
+        return base.runProgram(argv, options);
+      },
+    };
+    // One round: a state read again from the file (a new lead generation) must still hold it.
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([FAILED]);
+  });
+
   test("a start that cannot name its lead says why on stdout, not only on stderr", async () => {
     const world = await leadWorld();
     // No session above this command and no --lead: the watch cannot tell whose crew it is.
@@ -6637,6 +6663,108 @@ describe("1.11.3: only a line that needs the lead wakes it", () => {
     });
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+  });
+
+  /** Another lead's merge line, 201 characters: longer than a clipped item may be. */
+  const MERGED = `LEAD my-app other-plan merged #7 (${"t".repeat(100)}) into main — at your next stop, merge origin/main into your branch`;
+
+  test("holdFyi: a line held again moves to the newest place, never a second copy", () => {
+    const held: Parameters<typeof holdFyi>[0] = { dropped: 0, lines: [] };
+    holdFyi(held, "C a: kept 1 folder");
+    holdFyi(held, "C a: tests-green");
+    holdFyi(held, "C a: kept 1 folder");
+    expect(held).toEqual({ dropped: 0, lines: ["C a: tests-green", "C a: kept 1 folder"] });
+    expect(fyiLine(held)).toBe("FYI, no action needed (2): C a: tests-green | C a: kept 1 folder");
+  });
+
+  test("a line held whole comes first and whole, and the lines after it never crowd it out", () => {
+    expect(MERGED.length).toBe(201);
+    const held: Parameters<typeof holdFyi>[0] = { dropped: 0, lines: [] };
+    holdFyi(held, MERGED, { whole: true });
+    // Forty lines of 100 characters after it: 30 are held, 10 let go and counted.
+    const step = (n: number) => `s${String(n).padStart(2, "0")}${"x".repeat(97)}`;
+    for (let n = 1; n <= 40; n += 1) holdFyi(held, step(n));
+    expect(held.kept).toEqual([MERGED]);
+    expect(held.dropped).toBe(10);
+    // The merge line is whole and first; then the newest 12 steps fit in 1500, after the count of
+    // the 28 earlier ones (18 held, 10 let go).
+    expect(fyiLine(held)).toBe(
+      `FYI, no action needed (41): ${MERGED} | 28 earlier, then ${[29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40].map(step).join(" | ")}`,
+    );
+  });
+
+  test("another lead's merge is held whole, and said first with the next line that needs the lead", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: "other-lead-session",
+        lead: LEAD_SESSION,
+        name: "LEAD my-app other-plan",
+        state: "working",
+        text: MERGED,
+        type: "merge",
+      },
+      T0,
+    );
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "tests-green",
+        type: "step",
+      },
+      T0 + 1000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toEqual({
+      dropped: 0,
+      kept: [MERGED],
+      lines: [STEP],
+    });
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "stop here",
+        type: "person",
+      },
+      T0 + 2000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `FYI, no action needed (2): ${MERGED} | ${STEP}`,
+      personLine("stop here"),
+    ]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+  });
+
+  test("the watch's own line that needs the lead says what was held first", async () => {
+    const world = await leadWorld();
+    // No crew session left: the watch says so, and what it held goes first, in the same breath.
+    await writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      fyi: { dropped: 0, lines: [STEP] },
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `FYI, no action needed (1): ${STEP}`,
+      "crew watch: this lead has no crew sessions",
+    ]);
     expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
   });
 });

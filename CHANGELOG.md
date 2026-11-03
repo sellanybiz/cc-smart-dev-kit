@@ -20,7 +20,8 @@ What changed:
   is yours. The rest waits: a step, a start, a phase you merged or removed, an answered question,
   another lead's merge into the base, a session the watch ended as planned, a cleanup, a pass
   that failed and runs again. It comes as **one** line, `FYI, no action needed (<n>): …`, just
-  before the next line that needs the lead, so both arrive as one notification.
+  before the next line that needs the lead, so both arrive as one notification. Another lead's
+  merge into the base and the project tasks a merge brought come first in it, whole.
 - **A file clash is said at your own `crew start` only.** The other lead's watch no longer says
   it: the merge settles a shared file, and that line named the other lead's own crew session, not
   the one it shares the files with.

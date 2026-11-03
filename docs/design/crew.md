@@ -1173,7 +1173,14 @@ monitor hands a long burst over a few lines at a time, and each part could wake 
 report, an open question, a permission wait, a failure, a stop, a pause, a block, a quiet crew
 session, a stuck phase, the person's words, a note from another session, and a stop or a removal
 that was refused wake it as before. So does the merge of a crew session the lead stopped, while
-its record waits: its removal is the lead's own `crew rm` (D62, `mergedWhileStopped`). The watch's conversation sweep (D69) **never waits for the
+its record waits: its removal is the lead's own `crew rm` (D62, `mergedWhileStopped`). Two held
+lines carry a step for the lead's next stop — another lead's merge into the base, the project
+tasks a merge brought: they are held **whole** (`HoldOptions.whole`, the state's `fyi.kept`), come
+first in the `FYI` line, and are never clipped or counted away among the earlier ones. A line
+already held moves to the newest place instead of taking a second one, so a look that repeats
+itself cannot crowd out the rest; and the watch's own lines that need the lead (a lead with no crew
+sessions left, an adoption, a lead that is not running) take what was held first, as a pass's
+lines do. The watch's conversation sweep (D69) **never waits for the
 archive's lock** (`lockWaitMs: 0`) and says nothing when another run holds it: that run is another
 watch's sweep doing the same work, and waiting stalled each pass for up to `ARCHIVE_LOCK_WAIT_MS`
 (30 s) when every lead's watch started at once after an update. The `lead-notes` hook still adds the newest
@@ -1403,9 +1410,10 @@ resumed five sessions at once), and each writing the same state file over the ot
   **logged and the watch goes on** with the next pass, as the folders-left-half-done look already
   did. A failed pass keeps what it had done (`PassFailed` carries its state: the lines it said and
   the byte of the log it read to), so a failure late in a pass never says the lines of its early
-  part twice. Each failure is a line on stderr; the **first of a run** is also a line on stdout —
-  `crew watch: a pass failed (<why>); the watch goes on and tries again in 20 s` — and a pass
-  that works ends the run, so a later failure is said again. Only `WATCH_FAILED_PASSES_MAX` (60
+  part twice. Each failure is a line on stderr; the **first of a run** is also held for the lead
+  (1.11.3: it needs nothing from the lead, which waits for the next line that does) —
+  `crew watch: a pass failed (<why>); the watch goes on and tries again in 20 s`, written with the
+  watch's state at once — and a pass that works ends the run, so a later failure is held again. Only `WATCH_FAILED_PASSES_MAX` (60
   passes, about twenty minutes) in a row end the watch, with exit 1 and one line on stdout:
   `crew watch ended: <n> passes in a row failed, the last with: <why> — start the watch again with
   Claude Code's Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew

@@ -157,7 +157,11 @@ describe("crew through the CLI", () => {
     }
     // The way back for a watch that ended is named where the lead reads it: the watch's own
     // help. Telemetry off is no case of its own any more (Claude Code 2.1.310 runs monitors there).
-    expect(run.out).toContain("Monitor\n                 tool (persistent)");
+    // The Monitor tool has no `persistent` input (the contract's Monitor row): the help names none.
+    expect(run.out).toContain(
+      "a monitor that ended is started\n                 again with Claude Code's Monitor tool, on the same command, as\n                 its last line says.",
+    );
+    expect(run.out).not.toContain("persistent");
     expect(run.out).not.toContain("telemetry off");
   });
 });

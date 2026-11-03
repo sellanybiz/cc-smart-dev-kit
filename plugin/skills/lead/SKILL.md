@@ -181,7 +181,7 @@ session the watch ended as planned, its cleanups — waits, and comes as one `FY
 | `needs you` (a permission wait) | give the person `claude attach <name>` |
 | `needs you … (paused: the watch resumes it …)` | nothing: a model limit ended its turn, and the watch wakes it once a model answers. Never `claude attach` |
 | a `SendMessage {…}` line (the watch woke a paused crew session whose process lives) | send it as printed. `SendMessage` is a deferred tool: `ToolSearch` with `select:SendMessage` first |
-| `FYI, no action needed (<n>): …` | read it; nothing to do now. It holds what happened since your last wake (steps, starts, merges, cleanups, `going again` after the person answered a wait), oldest first, and how many earlier ones it left out. A `merged #<n> … into <base>` in it: at your next stop, merge `origin/<base>` into the branch your folder is on, and run your install if a lock file changed. A crew session's branch never takes the base in: its lead's branch already has it |
+| `FYI, no action needed (<n>): …` | read it; nothing to do now. It holds what happened since your last wake (steps, starts, merges, cleanups, `going again` after the person answered a wait), oldest first, and how many earlier ones it left out. Another lead's merge and the project tasks a merge brought come first, whole. A `merged #<n> … into <base>` in it: at your next stop, merge `origin/<base>` into the branch your folder is on, and run your install if a lock file changed. A crew session's branch never takes the base in: its lead's branch already has it |
 | `told` (one crew session told another a contract change or question) | nothing, unless it changes the plan or the two cannot settle it: then `crew answer` both |
 | the person wrote to a crew session | read its next report against the brief before you merge it. Their word wins over the brief, so the phase it hands back may no longer be the phase it started (§ 6) |
 | `contract from another lead` (a note from another lead of this repository) | read it; a contract note needs no reply. If it changes your plan, act in this turn |
@@ -217,7 +217,7 @@ In a session that never ran this skill, run the skill
 instead. One watch acts for a lead, the newest: a restarted watch ends the older one, and
 `crew watch: a newer watch of this lead runs (pid …); this one ends` needs nothing from you.
 `cc-smart-dev-kit crew watch --once` with `run_in_background: true` is one look: it ends on the
-next change and never takes the lease from a live watch. **On native Windows** the plugin's
+next line that needs you and never takes the lease from a live watch. **On native Windows** the plugin's
 monitors run through Git Bash, as everywhere else.
 
 **A line the monitor could not deliver reaches you at your next turn**: the `lead-notes` hook
