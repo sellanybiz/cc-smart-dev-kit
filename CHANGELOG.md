@@ -16,8 +16,10 @@ What changed:
   that moves it: `B6a holds 3 queued (…) — C my-app B6a x failed: read its report, then bring it
   back with cc-smart-dev-kit crew resume "…"`. It covers a phase whose newest crew session
   failed, was stopped, handed off with no next crew session, or was removed or discarded before
-  its work was merged. After `crew.quietMinutes` it also covers a phase that is done and waits
-  for your merge, and a phase nobody has started. Before, only a phase removed before its merge
+  its work was merged. One that failed before its session started gets `crew rm`, then a fresh
+  `crew start` with its own waits: there is nothing to resume. After `crew.quietMinutes` it also
+  covers a phase that is done and waits for your merge, and a phase nobody has started. A crew
+  session whose resume already waits for room is left out: the watch brings it back by itself. Before, only a phase removed before its merge
   was named, once per queued crew session. A queue could sit behind failed, stopped and
   unmerged phases while only two crew sessions ran.
 - **The line comes back while the phase stays stuck**: every three times `crew.quietMinutes`

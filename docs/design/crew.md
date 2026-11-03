@@ -1219,9 +1219,16 @@ the store records — a session the kit does not know is the person's own:
   moves it. The phase's newest crew session decides, as it does for the wait itself
   (`unmetWaits`): it `failed` (read its report, then `crew resume` it, or `crew start <phase>
   --continue` it), was `stopped` (`crew resume`), handed off with no next crew session (`crew
-  start <phase> --continue`), was removed or discarded before its work was merged (start the
-  phase again, or drop the wait: `crew rm` the queued crew session, then start it again), **is
-  done and waits for the lead's merge** (merge its branch), or no crew session has started it.
+  start <phase> --continue`), failed or was stopped **before its session started** (its launch
+  started nothing, and took its worktree and unchanged branch back, so neither `crew resume` nor
+  `--continue` has anything to start from: `crew rm` it, then `crew start` it again with its own
+  `--slug`, `--kind` and `--waits-for`), was removed or discarded before its work was merged
+  (start the phase again, or drop the wait: `crew rm` the queued crew session, then start it
+  again), **is done and waits for the lead's merge** (merge its branch), or no crew session has
+  started it. A holder whose resume already waits for room (`resumeWaits`, D72) is not named: the
+  watch brings it back once the launch gate allows, and says each reason the gate gives. It is
+  named again when the watch holds that resume (`resume-hold:`), since the watch will not try it
+  again.
   The last two wait `crew.quietMinutes` first (from the done record's last change, and from the
   oldest waiter's queueing), because the lead acts on them in its own turn. A line is said when
   the phase sticks, at once when what holds it changes, and **again every

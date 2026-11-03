@@ -107,8 +107,9 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   `cc-smart-dev-kit crew rm "<waiting crew session>"` (a queued one goes at once), then start the
   waiting phase again without `--waits-for` it.
 - **A `<phase> holds N queued` line is the queue stuck behind that phase.** It names the step
-  that moves it: bring back a failed or stopped crew session, continue a hand-off, merge a done
-  branch, start a phase nobody started, or drop the wait. Take that step in this turn: the line
+  that moves it: bring back a failed or stopped crew session, remove and start again one that
+  never had a session, continue a hand-off, merge a done branch, start a phase nobody started, or
+  drop the wait. Take that step in this turn: the line
   comes back every hour or so until you do, and the queued phases start only after it.
 - **Change a crew session's model or effort later** with
   `cc-smart-dev-kit crew model "<crew session>" [--model <model>] [--effort <effort>]` — when the

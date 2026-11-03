@@ -5960,6 +5960,8 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
   const QUIET = 20;
   const GRACE = QUIET * 60_000;
   const B6A = "C my-app B6a x";
+  /** No resume this watch holds. */
+  const NOT_HELD = () => false;
   const B6A_FAILED = `B6a holds 1 queued (${NAME}) — ${B6A} failed: read its report, then bring it back with ${COMMAND} crew resume "${B6A}", or start it over with ${COMMAND} crew start B6a --continue "${B6A}"`;
   const B6A_STOPPED = `B6a holds 1 queued (${NAME}) — ${B6A} was stopped: bring it back with ${COMMAND} crew resume "${B6A}"`;
 
@@ -6001,7 +6003,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
       await holder(world, state);
       await queuedCrew(world, { waitsFor: ["B6a"] });
       const { here, queued } = storeOf(world);
-      const stuck = stuckPhases(queued, here, T0, GRACE);
+      const stuck = stuckPhases(queued, here, T0, GRACE, NOT_HELD);
       expect(
         stuck.map((one) => [
           one.phase,
@@ -6014,14 +6016,97 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     }
   });
 
+  test("a holder that never had a session is removed and started again, keeping its own waits", async () => {
+    const lines: Record<string, string> = {
+      failed: `B6a holds 1 queued (${NAME}) — ${B6A} failed before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build --waits-for B5,B4, and any --brief, --files, --model or --effort you gave it first`,
+      stopped: `B6a holds 1 queued (${NAME}) — ${B6A} was stopped before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build --waits-for B5,B4, and any --brief, --files, --model or --effort you gave it first`,
+    };
+    for (const [state, line] of Object.entries(lines)) {
+      const world = await leadWorld();
+      // A launch that started nothing: no session, and its worktree and branch taken back.
+      await holder(world, state, { sessionId: null, shortId: null, waitsFor: ["B5", "B4"] });
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      expect(
+        stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((one) => [
+          one.kind,
+          stuckPhaseLine(one, LEAD_SESSION),
+        ]),
+      ).toEqual([["unlaunched", line]]);
+    }
+    // With no waits of its own, the start has none either.
+    const world = await leadWorld();
+    await holder(world, "failed", { sessionId: null, shortId: null });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(
+      stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((one) =>
+        stuckPhaseLine(one, LEAD_SESSION),
+      ),
+    ).toEqual([
+      `B6a holds 1 queued (${NAME}) — ${B6A} failed before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${B6A}", then start it again with ${COMMAND} crew start B6a --slug x --kind build, and any --brief, --files, --model or --effort you gave it first`,
+    ]);
+  });
+
+  test("a holder whose resume waits for room comes back by itself, unless the watch holds that resume", async () => {
+    const resumeWaits = { at: new Date(T0).toISOString(), answer: null };
+    for (const state of ["failed", "stopped", "handoff"]) {
+      const world = await leadWorld();
+      const one = await holder(world, state, { resumeWaits });
+      await queuedCrew(world, { waitsFor: ["B6a"] });
+      const { here, queued } = storeOf(world);
+      // The watch's drain brings it back once the launch gate allows, and says the gate's reasons.
+      expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
+      // A resume the watch holds is not tried again: the lead's step is due, for that record only.
+      const held = (record: CrewRecord) => record.id === one.id;
+      expect(
+        stuckPhases(queued, here, T0, GRACE, held).map((stuck) => [stuck.phase, stuck.kind]),
+      ).toEqual([["B6a", state]]);
+      expect(stuckPhases(queued, here, T0, GRACE, (record) => record.id === QUEUED_ID)).toEqual([]);
+    }
+    // A record the resume refuses (removed before its merge) never comes back, whatever it waits for.
+    const world = await leadWorld();
+    await holder(world, "removed", { resumeWaits });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const { here, queued } = storeOf(world);
+    expect(
+      stuckPhases(queued, here, T0, GRACE, NOT_HELD).map((stuck) => [stuck.phase, stuck.kind]),
+    ).toEqual([["B6a", "removed"]]);
+  });
+
+  test("a watch pass names a holder whose resume it holds, since it will not try that resume again", async () => {
+    const world = await leadWorld();
+    const stopped = await holder(world, "stopped", {
+      resumeWaits: { at: new Date(T0).toISOString(), answer: null },
+    });
+    await queuedCrew(world, { waitsFor: ["B6a"] });
+    const scope: WatchScope = {
+      leadSessionId: LEAD_SESSION,
+      mergeInto: world.repo,
+      repo: world.repo,
+      resolved: resolveWorkflow(world.paths, null),
+    };
+    const state: WatchState = {
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: { [`resume-hold:${stopped.id}`]: "resume was not stored" },
+      noted: true,
+      parkedAt: T0,
+      stoppedRemindedAt: { [stopped.id]: T0 },
+    };
+    await watchPass(state, world.ctx({}, { FAKE_AGENTS_JSON: "[]" }), scope);
+    expect(world.out.filter((line) => line.startsWith("B6a holds"))).toEqual([B6A_STOPPED]);
+  });
+
   test("a done phase is stuck once its branch has waited the quiet minutes for the merge", async () => {
     const world = await leadWorld();
     await holder(world, "done");
     await queuedCrew(world, { waitsFor: ["B6a"] });
     const { here, queued } = storeOf(world);
-    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE)).toEqual([]);
+    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE, NOT_HELD)).toEqual([]);
     expect(
-      stuckPhases(queued, here, T0 + GRACE, GRACE).map((one) => stuckPhaseLine(one, LEAD_SESSION)),
+      stuckPhases(queued, here, T0 + GRACE, GRACE, NOT_HELD).map((one) =>
+        stuckPhaseLine(one, LEAD_SESSION),
+      ),
     ).toEqual([
       `B6a holds 1 queued (${NAME}) — ${B6A} is done and waits for your merge: merge crew/B6a-x, and it starts`,
     ]);
@@ -6031,8 +6116,8 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     const world = await leadWorld();
     await queuedCrew(world, { waitsFor: ["B6a"] });
     const { here, queued } = storeOf(world);
-    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE)).toEqual([]);
-    const stuck = stuckPhases(queued, here, T0 + GRACE, GRACE);
+    expect(stuckPhases(queued, here, T0 + GRACE - 1, GRACE, NOT_HELD)).toEqual([]);
+    const stuck = stuckPhases(queued, here, T0 + GRACE, GRACE, NOT_HELD);
     expect(stuck.map((one) => [one.kind, one.holder])).toEqual([["unstarted", null]]);
     expect(stuck.map((one) => stuckPhaseLine(one, LEAD_SESSION))).toEqual([
       `B6a holds 1 queued (${NAME}) — no crew session has started B6a: start it (${COMMAND} crew start B6a …), or drop the wait: ${COMMAND} crew rm "${NAME}", then start B6b again`,
@@ -6045,7 +6130,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
       await holder(world, state);
       await queuedCrew(world, { waitsFor: ["B6a"] });
       const { here, queued } = storeOf(world);
-      expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE)).toEqual([]);
+      expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
     }
     // A removal after the merge released its wait already.
     const world = await leadWorld();
@@ -6053,7 +6138,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     await updateCrew(world.paths.stateDir, world.repo, merged.id, { state: "removed" }, T0);
     await queuedCrew(world, { waitsFor: ["B6a"] });
     const { here, queued } = storeOf(world);
-    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE)).toEqual([]);
+    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
   });
 
   test("the phase's newest crew session decides: a second try at work holds nothing stuck", async () => {
@@ -6071,7 +6156,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     );
     await queuedCrew(world, { waitsFor: ["B6a"] });
     const { here, queued } = storeOf(world);
-    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE)).toEqual([]);
+    expect(stuckPhases(queued, here, T0 + 86_400_000, GRACE, NOT_HELD)).toEqual([]);
   });
 
   test("one line per stuck phase, by phase, naming the crew sessions it holds oldest first", async () => {
@@ -6105,7 +6190,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     // In any order the caller gives them: the oldest first, whatever the store's order.
     for (const given of [queued, [...queued].reverse()]) {
       expect(
-        stuckPhases(given, here, T0 + 60_000, GRACE).map((one) =>
+        stuckPhases(given, here, T0 + 60_000, GRACE, NOT_HELD).map((one) =>
           stuckPhaseLine(one, LEAD_SESSION),
         ),
       ).toEqual([
@@ -6123,7 +6208,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     // Only this lead's queued crew session waits: the holder is not one of them.
     const mine = here.filter((one) => one.id === QUEUED_ID);
     expect(
-      stuckPhases(mine, here, T0, GRACE).map((one) => stuckPhaseLine(one, LEAD_SESSION)),
+      stuckPhases(mine, here, T0, GRACE, NOT_HELD).map((one) => stuckPhaseLine(one, LEAD_SESSION)),
     ).toEqual([
       `B6a holds 1 queued (${NAME}) — ${B6A} (another lead's crew session) was stopped: bring it back with ${COMMAND} crew resume "${B6A}"`,
     ]);
@@ -6141,7 +6226,7 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     const pass = (now: number) => {
       const { here, queued } = storeOf(world);
       sayStuckPhases(
-        stuckPhases(queued, here, now, GRACE),
+        stuckPhases(queued, here, now, GRACE, NOT_HELD),
         said,
         LEAD_SESSION,
         now,

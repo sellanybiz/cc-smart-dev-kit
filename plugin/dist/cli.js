@@ -29336,7 +29336,7 @@ function phasesWaitingFor(record, records) {
   }
   return [...phases].sort();
 }
-function stuckPhases(queued, repoRecords, nowMs, graceMs) {
+function stuckPhases(queued, repoRecords, nowMs, graceMs, resumeHeld) {
   const waitersOf = new Map;
   for (const record of queued) {
     for (const wait of unmetWaits(record.waitsFor, repoRecords)) {
@@ -29348,7 +29348,9 @@ function stuckPhases(queued, repoRecords, nowMs, graceMs) {
   for (const [phase, waiting] of waitersOf) {
     const waiters = [...waiting].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const holder = newestOfPhase(phase, repoRecords);
-    const kind = holder === null ? waiters.some((one) => waited(one.createdAt)) ? "unstarted" : undefined : holder.state === "done" ? waited(holder.updatedAt) ? "unmerged" : undefined : STUCK_AT_ONCE.find((one) => one === holder.state);
+    const comesBack = holder !== null && holder.resumeWaits !== undefined && !NO_RESUME_STATES.includes(holder.state) && !resumeHeld(holder);
+    const atOnce = STUCK_AT_ONCE.find((one) => one === holder?.state);
+    const kind = holder === null ? waiters.some((one) => waited(one.createdAt)) ? "unstarted" : undefined : comesBack ? undefined : holder.state === "done" ? waited(holder.updatedAt) ? "unmerged" : undefined : (atOnce === "failed" || atOnce === "stopped") && holder.shortId === null ? "unlaunched" : atOnce;
     if (kind !== undefined)
       stuck.push({ phase, kind, holder, waiters });
   }
@@ -29376,6 +29378,11 @@ function stuckPhaseLine(stuck, leadSessionId) {
       return `${head} \u2014 ${who} was removed before its work was merged, so ${never}: start ${phase} again, or ${drop}`;
     case "discarded":
       return `${head} \u2014 ${who} was discarded, so ${never}: start ${phase} again, or ${drop}`;
+    case "unlaunched": {
+      const ended = holder?.state === "stopped" ? "was stopped" : "failed";
+      const waits = holder === null || holder.waitsFor.length === 0 ? "" : ` --waits-for ${holder.waitsFor.join(",")}`;
+      return `${head} \u2014 ${who} ${ended} before its session started, so there is nothing to resume: remove it with ${COMMAND} crew rm "${name}", then start it again with ${COMMAND} crew start ${phase} --slug ${holder?.slug ?? ""} --kind ${holder?.kind ?? ""}${waits}, and any --brief, --files, --model or --effort you gave it first`;
+    }
     case "unmerged":
       return `${head} \u2014 ${who} is done and waits for your merge: merge ${holder?.branch ?? "its branch"}, and ${only === undefined ? "they start" : "it starts"}`;
     case "unstarted":
@@ -30163,7 +30170,7 @@ ${record.notes?.[index]?.text ?? ""}`)
   }
   const stillQueued = listCrew(ctx.paths.stateDir, repo).records;
   const quietMinutes = resolved.crew.quietMinutes.value;
-  sayStuckPhases(stuckPhases(stillQueued.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued"), stillQueued, ctx.now(), quietMinutes * 60000), said, scope.leadSessionId, ctx.now(), quietMinutes, say);
+  sayStuckPhases(stuckPhases(stillQueued.filter((one) => one.leadSessionId === scope.leadSessionId && one.state === "queued"), stillQueued, ctx.now(), quietMinutes * 60000, (one) => said[resumeHoldKey(one.id)] !== undefined), said, scope.leadSessionId, ctx.now(), quietMinutes, say);
   if (scope.mayStart !== false && await scope.goesOn?.() !== false) {
     await applyPendingModels(here.filter((one) => one.leadSessionId === scope.leadSessionId && one.pendingLaunch), ctx, resolved, say);
   }
