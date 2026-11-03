@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.11.2",
+  version: "1.11.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -16658,6 +16658,7 @@ function readReport(file) {
   return readRecord(handBackReportSchema, file);
 }
 var watchStateFields = object({
+  fyi: object({ dropped: count, kept: array(string2()).optional(), lines: array(string2()) }).optional(),
   summarizedGeneration: count.optional(),
   missingSince: record(string2(), number2()).optional(),
   removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
@@ -22346,8 +22347,11 @@ var WATCH_RESTART = `start the watch again with Claude Code's Monitor tool (time
 var WORKTREE_CONFIRM_MS = 3 * 60000;
 var PARKED_PASS_MS = 5 * 60000;
 var CLIP_CHARS = 120;
+function firstLine(text) {
+  return (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+}
 function clip(text) {
-  const one = (text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "").trim();
+  const one = firstLine(text);
   return one.length <= CLIP_CHARS ? one : `${one.slice(0, CLIP_CHARS - 1)}\u2026`;
 }
 function reportOfRecord(record) {
@@ -22371,6 +22375,10 @@ function reportDetail(record) {
     return why === null ? null : `why: ${clip(why)}`;
   }
   return null;
+}
+function questionOf(event, record) {
+  const number = event.question ?? Math.max(1, (record?.questions.findIndex((one) => one.askedAt === event.at && one.question === event.text) ?? -1) + 1);
+  return { asked: record?.questions[number - 1], number };
 }
 function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
   const name = event.name;
@@ -22408,8 +22416,7 @@ function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
       return parts.join(" \xB7 ");
     }
     case "question": {
-      const number = event.question ?? Math.max(1, (record?.questions.findIndex((one) => one.askedAt === event.at && one.question === event.text) ?? -1) + 1);
-      const asked = record?.questions[number - 1];
+      const { asked, number } = questionOf(event, record);
       const head = `${name}: question ${number} \xB7 ${clip(event.text ?? "")}`;
       if (asked?.answeredAt != null)
         return `${head} \xB7 answered ${agoText(asked.answeredAt, nowMs)}`;
@@ -22429,6 +22436,7 @@ function eventLine(event, record, waits, reviewed, nowMs = Date.now()) {
     case "issue":
       return quotesGitHub(event) ? `${ISSUE_DATA_FRAME} \u2014 ${event.text}` : event.text;
     case "clash":
+      return null;
     case "merge":
       return event.text === null || event.text === "" ? null : event.text;
     default:

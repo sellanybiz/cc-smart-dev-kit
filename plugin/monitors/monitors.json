@@ -2,7 +2,7 @@
   {
     "name": "crew-events",
     "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" crew watch",
-    "description": "One line per change in the lead's crew sessions: their steps, their reports, their questions, what they need from you.",
+    "description": "The lines that need the lead: its crew sessions' reports, questions, waits, failures and stops; what needs nothing comes with them as one FYI line.",
     "when": "on-skill-invoke:cc-smart-dev-kit:lead"
   },
   {

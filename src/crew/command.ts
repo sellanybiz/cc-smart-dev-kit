@@ -159,14 +159,16 @@ Commands:
                  line per receiver, after the step that loads that deferred tool.
                  Status goes to the lead, never a peer.
   watch [--lead <session>] [--once] [--timeout <seconds>]
-                 One line per change in this lead's crew sessions: their steps, their
-                 reports, their questions, what they need from you. It also
-                 starts the queued crew sessions when a place frees, and ends the
-                 ones whose work is done. The lead skill's monitor runs it; a
-                 monitor that ended is started again with Claude Code's Monitor
-                 tool (persistent), on the same command. --once ends on the next
-                 change, and ends at once while a watch already runs for the
-                 lead. --timeout bounds the wait.
+                 The lines that need you from this lead's crew sessions: their
+                 reports, their questions, their waits, failures and stops. What
+                 needs nothing (a step, a start, a cleanup) comes with the next
+                 one, as one FYI line. It also starts the queued crew sessions
+                 when a place frees, and ends the ones whose work is done. The
+                 lead skill's monitor runs it; a monitor that ended is started
+                 again with Claude Code's Monitor tool, on the same command, as
+                 its last line says. --once ends on the next line that needs you,
+                 and ends at once while a watch already runs for the lead.
+                 --timeout bounds the wait.
   self-watch [--once]
                  The crew session's own line about its context and its time: hand off
                  at the token cap or the context share, whichever comes first, and

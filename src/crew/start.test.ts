@@ -29,6 +29,7 @@ import {
   crewSettingsFile,
   listCrew,
   readCrewEvents,
+  readWatchState,
   updateCrew,
   writeLead,
 } from "./store";
@@ -1746,7 +1747,7 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
     ).toEqual({ files: ["src/crew/diff.ts", "src/crew/start.ts"], patterns: null });
   });
 
-  test("the other lead's watch says the clash as one line, once", async () => {
+  test("the other lead's watch says nothing of it: the event only keeps the pair (1.11.3)", async () => {
     const world = await ledWorld();
     await writeLead(
       world.paths.stateDir,
@@ -1771,13 +1772,13 @@ describe("D55: a file clash between two leads, warned at crew start", () => {
     expect(
       await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
     ).toBe(0);
-    expect(world.out).toEqual([CLASH_LINE]);
-    // Once: the next pass says nothing new.
-    world.out.length = 0;
-    expect(
-      await runCrew(["watch", "--lead", OTHER_SESSION, "--once", "--timeout", "0"], world.ctx()),
-    ).toBe(0);
+    // The merge settles a shared file, so the other lead has nothing to do: no line, held or said.
     expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, OTHER_SESSION)?.fyi).toBeUndefined();
+    const clashes = readCrewEvents(world.paths.stateDir, world.repo).events.filter(
+      (one) => one.type === "clash",
+    );
+    expect(clashes.map((one) => [one.lead, one.text])).toEqual([[OTHER_SESSION, CLASH_LINE]]);
   });
 });
 

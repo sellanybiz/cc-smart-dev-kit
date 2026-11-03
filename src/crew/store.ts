@@ -2165,9 +2165,30 @@ export interface WatchState {
   removals?: Record<string, { at: number; signature: string }> | undefined;
   /** The last daily stopped-session reminder per crew id. */
   stoppedRemindedAt?: Record<string, number> | undefined;
+  /**
+   * The lines that need no action, held for the next line that does (`fyiLine`, `watch.ts`): they
+   * reach the lead with it, so they never wake the lead on their own. Absent when none is held.
+   */
+  fyi?: FyiHeld | undefined;
+}
+
+/** The lines a lead's watch holds until a line that needs the lead (`holdFyi`, `watch.ts`). */
+export interface FyiHeld {
+  /** How many older lines were let go to keep the lists short. */
+  dropped: number;
+  /** The held lines, oldest first. */
+  lines: string[];
+  /**
+   * The held lines that carry a step for the lead's next stop (`HoldOptions.whole`), oldest
+   * first: said first and whole. Absent when none is held.
+   */
+  kept?: string[] | undefined;
 }
 
 const watchStateFields = z.object({
+  fyi: z
+    .object({ dropped: count, kept: z.array(z.string()).optional(), lines: z.array(z.string()) })
+    .optional(),
   summarizedGeneration: count.optional(),
   missingSince: z.record(z.string(), z.number()).optional(),
   removals: z.record(z.string(), z.object({ at: z.number(), signature: z.string() })).optional(),

@@ -22,7 +22,7 @@ import { type FeedMemory, newFeedMemory } from "../issues/feed";
 import { MARKS_PER_PASS, queueMarks, readPending } from "../issues/pending";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import { projectFolderName } from "../sessions/saved-sessions";
-import { currentHolder, LockBusyError } from "../setup/lock";
+import { currentHolder, LockBusyError, withLock } from "../setup/lock";
 import { crewWorld, LEAD_SESSION, OTHER_SESSION, writeSessionRecord } from "../testing/crew-world";
 import { fakeGh } from "../testing/fake-gh";
 import { commitConfig } from "../testing/hooks";
@@ -74,6 +74,10 @@ import type { GatewayNow } from "./wait";
 import {
   crewAlert,
   eventLine,
+  eventNeedsNoAction,
+  FYI_HELD_MAX,
+  fyiLine,
+  holdFyi,
   issueMarksFile,
   PARKED_PASS_MS,
   PassFailed,
@@ -311,6 +315,30 @@ async function startProgram(cwd: string, crew: null | string): Promise<Bun.Subpr
   return child;
 }
 
+/**
+ * The lines a lead's watch holds for its next wake (1.11.3: a line that needs no action waits for
+ * one that does, `FYI, no action needed`), oldest first, from the state file `crew watch` wrote.
+ */
+function heldLines(
+  world: { paths: { stateDir: string }; repo: string },
+  lead: string = LEAD_SESSION,
+): string[] {
+  return readWatchState(world.paths.stateDir, world.repo, lead)?.fyi?.lines ?? [];
+}
+
+/** The lines a lead's watch holds whole (`HoldOptions.whole`), from its state file. */
+function keptLines(
+  world: { paths: { stateDir: string }; repo: string },
+  lead: string = LEAD_SESSION,
+): string[] {
+  return readWatchState(world.paths.stateDir, world.repo, lead)?.fyi?.kept ?? [];
+}
+
+/** The line the watch says for the person's word to the world's crew session (D55). */
+function personLine(text: string): string {
+  return `${NAME}: the person wrote · ${text} · read its next report against the brief before the merge`;
+}
+
 /** One row for the crew session of the world. */
 function agentRowOf(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -411,7 +439,9 @@ describe("watch adoption regressions", () => {
       ["watch", "--lead", LEAD_SESSION, "--once", "--timeout", "0"],
       world.ctx({ now: () => T0 + 120000 }, { FAKE_AGENTS_JSON: "[]" }),
     );
-    expect(world.out).toContain(`${NAME}: question 1 · which route? · answered 2 min ago`);
+    // An answered question needs nothing from the lead: it waits for the next line that does.
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(`${NAME}: question 1 · which route? · answered 2 min ago`);
   });
 
   for (const nullId of [false, true]) {
@@ -535,10 +565,17 @@ describe("watch adoption regressions", () => {
       const line = fails
         ? `${NAME}: not stopped — claude stop bbbb2222 failed`
         : `${NAME}: an earlier copy (bbbb2222) came back; stopped it — its current session is aaaa1111`;
-      expect(world.out).toContain(line);
+      // A stop that failed is the lead's; one that worked needs nothing and waits (1.11.3).
+      if (fails) {
+        expect(world.out).toContain(line);
+      } else {
+        expect(world.out).not.toContain(line);
+        expect(first.state.fyi?.lines).toEqual([line]);
+      }
       world.out.length = 0;
-      await watchPass(first.state, ctx, scope);
+      const second = await watchPass(first.state, ctx, scope);
       expect(world.out).not.toContain(line);
+      expect(second.state.fyi?.lines ?? []).toEqual(fails ? [] : [line]);
       expect(stops.every((args) => args[1] === "bbbb2222")).toBe(true);
     });
   }
@@ -584,7 +621,7 @@ describe("crew watch", () => {
     expect(line).toContain("answered");
     expect(line).not.toContain("answer it");
   });
-  test("D55: a note from another lead, a file clash and a merge are one line each", () => {
+  test("D55: a note from another lead and a merge are one line each; a file clash is none (1.11.3)", () => {
     const base = {
       at: "2026-10-21T10:00:00.000Z",
       crew: "x",
@@ -606,7 +643,8 @@ describe("crew watch", () => {
         false,
       ),
     ).toBe("LEAD my-app alpha: question from another lead · does your branch take the merge?");
-    // A clash and a merge carry their whole line, written where it happened.
+    // A clash was said at the start that met it; the event only keeps the pair. A merge carries
+    // its whole line, written where it happened.
     expect(
       eventLine(
         {
@@ -618,7 +656,7 @@ describe("crew watch", () => {
         [],
         false,
       ),
-    ).toBe("clash: C a (LEAD b) may change src/a.ts — not blocked");
+    ).toBeNull();
     expect(
       eventLine({ ...base, text: "LEAD b merged #7 into main", type: "merge" }, null, [], false),
     ).toBe("LEAD b merged #7 into main");
@@ -643,7 +681,9 @@ describe("crew watch", () => {
     const code = await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.err).toEqual([]);
     expect(code).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    // A step needs nothing from the lead: its one line waits for the next line that does.
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual(["C my-app B6b portal-live: tests-green"]);
   });
 
   test("two leads of one repo: each lead's watch reads its own crew only, with no --lead", async () => {
@@ -700,11 +740,17 @@ describe("crew watch", () => {
     });
     expect(await runCrew(["watch", "--once", "--timeout", "0"], underBeta)).toBe(0);
     expect(world.err).toEqual([]);
-    expect(world.out).toEqual(["C my-app B7 api: the beta lead's step"]);
+    // A step waits for a line that needs the lead (1.11.3), in that lead's own state.
+    expect(world.out).toEqual([]);
+    expect(heldLines(world, OTHER_SESSION)).toEqual(["C my-app B7 api: the beta lead's step"]);
+    expect(heldLines(world, LEAD_SESSION)).toEqual([]);
     // And the other one under the first lead's session: its own crew only.
-    world.out.length = 0;
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: the alpha lead's step"]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world, LEAD_SESSION)).toEqual([
+      "C my-app B6b portal-live: the alpha lead's step",
+    ]);
+    expect(heldLines(world, OTHER_SESSION)).toEqual(["C my-app B7 api: the beta lead's step"]);
   });
 
   test("D55: the person's line says whose word it was, and what the lead does with it", async () => {
@@ -733,23 +779,25 @@ describe("crew watch", () => {
   test("D25: --once twice prints nothing the second time", async () => {
     const world = await leadWorld();
     await addCrew(world, "working");
-    await appendCrewEvent(
-      world.paths.stateDir,
-      world.repo,
-      {
-        lead: LEAD_SESSION,
-        name: NAME,
-        state: "working",
-        text: "tests-green",
-        type: "step",
-        crew: ID,
-      },
-      T0,
-    );
+    for (const [type, text] of [
+      ["step", "tests-green"],
+      ["person", "stop here"],
+    ] as const)
+      await appendCrewEvent(
+        world.paths.stateDir,
+        world.repo,
+        { lead: LEAD_SESSION, name: NAME, state: "working", text, type, crew: ID },
+        T0,
+      );
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "FYI, no action needed (1): C my-app B6b portal-live: tests-green",
+      "C my-app B6b portal-live: the person wrote · stop here · read its next report against the brief before the merge",
+    ]);
     world.out.length = 0;
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
     expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([]);
     expect(
       readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.offset ?? 0,
     ).toBeGreaterThan(0);
@@ -761,7 +809,7 @@ describe("crew watch", () => {
     // Nothing to say yet: the wait ends when the timeout is up, with no line.
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
     expect(world.out).toEqual([]);
-    // A change ends it at once.
+    // A step needs nothing from the lead: it is held, and the look ends when its time is up.
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
@@ -776,7 +824,26 @@ describe("crew watch", () => {
       T0,
     );
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: committed"]);
+    expect(world.out).toEqual([]);
+    // A change that needs the lead ends it at once, with the held step before it.
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "stop here",
+        type: "person",
+        crew: ID,
+      },
+      T0,
+    );
+    expect(await runCrew(["watch", "--once"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "FYI, no action needed (1): C my-app B6b portal-live: committed",
+      "C my-app B6b portal-live: the person wrote · stop here · read its next report against the brief before the merge",
+    ]);
   });
 
   test("D25: a question is one line, and it says how to answer it", async () => {
@@ -929,8 +996,8 @@ describe("crew watch", () => {
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "failed" })]) }),
     );
     // One line from the state event (the session is dead, so nothing is stopped), and the release.
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: failed — its session failed",
+    expect(world.out).toEqual(["C my-app B6b portal-live: failed — its session failed"]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: agent-view rows removed",
     ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
@@ -947,8 +1014,8 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "stopped" })]) }),
     );
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: stopped — its session was stopped",
+    expect(world.out).toEqual(["C my-app B6b portal-live: stopped — its session was stopped"]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: agent-view rows removed",
     ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
@@ -1081,10 +1148,15 @@ describe("crew watch", () => {
     // The person answered: agent view says it works again.
     const going = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], going);
-    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
-    world.out.length = 0;
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: going again — the wait is answered",
+    ]);
     await runCrew(["watch", "--once", "--timeout", "0"], going);
     expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: going again — the wait is answered",
+    ]);
   });
 
   test("WN1: a quiet stretch first seen past 3x is said once, as the long one", async () => {
@@ -1127,7 +1199,10 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: going again — the wait is answered",
+    ]);
   });
 
   test("WN1: a start-time wait of a starting record is said going again too", async () => {
@@ -1148,7 +1223,10 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: going again — the wait is answered"]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: going again — the wait is answered",
+    ]);
   });
 
   test("WN1: a session that was never waiting is not said going again", async () => {
@@ -1165,7 +1243,8 @@ describe("crew watch", () => {
     await addCrew(world, "done");
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: its session stopped — its turn ended; the record stays done",
     ]);
     const calls = world.claudeCalls();
@@ -1175,9 +1254,9 @@ describe("crew watch", () => {
     // record keeps its outcome, so the watch can still remove it once the lead merges.
     expect(record?.state).toBe("done");
     // A pass while agent view still lists the session stops it no second time, and says nothing.
-    world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([]);
+    expect(heldLines(world)).toHaveLength(1);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(1);
   });
 
@@ -1260,7 +1339,10 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "done", pid: null })]) }),
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: released: agent-view rows removed"]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: released: agent-view rows removed",
+    ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
     expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -1275,16 +1357,17 @@ describe("crew watch", () => {
     await addCrew(world, "failed");
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: its session stopped — it failed; the record stays failed",
     ]);
     expect(world.claudeCalls()).toContainEqual(["stop", "aaaa1111"]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("failed");
     // A pass while agent view still lists the session stops it no second time, and says nothing.
-    world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([]);
+    expect(heldLines(world)).toHaveLength(1);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(1);
   });
 
@@ -1328,8 +1411,8 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf({ state: "failed" })]) }),
     );
-    expect(world.out).toEqual([
-      "C my-app B6b portal-live: failed — its session failed",
+    expect(world.out).toEqual(["C my-app B6b portal-live: failed — its session failed"]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: agent-view rows removed",
     ]);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toHaveLength(0);
@@ -1419,7 +1502,10 @@ describe("crew watch", () => {
     expect(record?.mergedWhileStopped).toBe(false);
     expect(record?.stoppedByWatch).toBeUndefined();
     expect(existsSync(worktree)).toBe(false);
-    expect(world.out[0]).toBe(
+    expect(world.out).not.toContain(
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    );
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
   });
@@ -1500,9 +1586,11 @@ describe("crew watch", () => {
       ),
     ).toBe(0);
     expect(world.err).toEqual([]);
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    // What the lead's pull request and release carry: held whole, never clipped to one task.
+    expect(keptLines(world)).toEqual([
       'brought project tasks: T-abc234 (database, next-release) "Run the backfill"',
-    );
+    ]);
   });
 
   test("D35: a branch the lead merged is removed by the watch's next pass", async () => {
@@ -1519,7 +1607,8 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -1577,8 +1666,8 @@ describe("crew watch", () => {
       scope,
     );
     expect(world.err).toEqual([]);
-    expect(world.out).toEqual([
-      "crew rm: git worktree list failed: injected list failure",
+    expect(world.out).toEqual(["crew rm: git worktree list failed: injected list failure"]);
+    expect(first.state.fyi?.lines).toEqual([
       "C my-app later check: its session stopped — it failed; the record stays failed",
     ]);
     expect(readFileSync(log, "utf8")).toBe("list\nlist\n");
@@ -1605,7 +1694,8 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -1691,8 +1781,8 @@ describe("crew watch", () => {
     const ctx = world.ctx({ scanFacts: quietScan() });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(existsSync(folder)).toBe(false);
-    expect(world.out).toEqual([
-      "crew watch: this lead has no crew sessions",
+    expect(world.out).toEqual(["crew watch: this lead has no crew sessions"]);
+    expect(heldLines(world)).toEqual([
       `removed ${folder} (left by a removal that stopped halfway; git no longer lists it)`,
     ]);
   });
@@ -1758,7 +1848,8 @@ describe("crew watch", () => {
         },
       });
       await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-      expect(world.out).toContain(
+      expect(world.out).toEqual([]);
+      expect(heldLines(world)).toContain(
         "C my-app B6b portal-live: stopped its own leftover programs (check.sh)",
       );
       const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -1889,6 +1980,7 @@ describe("crew watch", () => {
     await pass();
     counts(3); // Dirty work refuses before stop/unlock, proving this retry stays harmless.
     expect(world.out).toEqual([
+      `FYI, no action needed (1): ${NAME}: merged — the lead merged its branch; the watch removes it`,
       `crew rm: ${record.worktree} has changes that are not committed (or git cannot read it)`,
       "Fix: commit or discard them there, then run crew rm again; it never forces",
     ]);
@@ -1929,17 +2021,19 @@ describe("crew watch", () => {
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.mergedWhileStopped).toBe(true);
     // Its record and branch stay for the lead's `crew rm`; its worktree and row leave at once (D69).
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    const held = [
       "C my-app B6b portal-live: merged — the lead merged its branch; it was stopped",
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
-    ]);
+    ];
+    expect(heldLines(world)).toEqual(held);
     expect(existsSync(record.worktree)).toBe(false);
     expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe(record.branch);
     expect(world.claudeCalls().filter((call) => call[0] === "stop")).toEqual([]);
     expect(world.claudeCalls().filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
-    world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual(held);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
     expect(git(world.repo, "branch", "--list", record.branch).trim()).toBe(record.branch);
   });
@@ -1995,9 +2089,12 @@ describe("crew watch", () => {
       ["watch", "--once", "--timeout", "0"],
       world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) }),
     );
-    expect(world.out).toContain(
+    expect(world.out).not.toContain(
       "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
+    ]);
     expect(world.out.some((line) => line.includes("changes that are not committed"))).toBe(true);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
@@ -2045,7 +2142,8 @@ describe("crew watch", () => {
     });
     const ctx = world.ctx({}, { FAKE_AGENTS_JSON: agentsJson([agentRowOf()]) });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b portal-live 2 to merge",
     );
     const kept = listCrew(world.paths.stateDir, world.repo).records.find(
@@ -2054,7 +2152,7 @@ describe("crew watch", () => {
     expect(kept?.state).toBe("merged");
     // Held for its chain, it leaves agent view all the same (D69): its live session is stopped, its
     // worktree and row go, and its branch stays for the chain's removal.
-    expect(world.out).toContain(
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     );
     expect(world.claudeCalls().filter((call) => call[0] === "stop" || call[0] === "rm")).toEqual([
@@ -2068,7 +2166,10 @@ describe("crew watch", () => {
     // The waiting line is said once.
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).not.toContain("waiting for its continuation");
+    expect(world.out).toEqual([]);
+    expect(
+      heldLines(world).filter((one) => one.includes("waiting for its continuation")),
+    ).toHaveLength(1);
     // Starting is not enough: the original stays until the continuation merges.
     await updateCrew(
       world.paths.stateDir,
@@ -2148,11 +2249,12 @@ describe("crew watch", () => {
     });
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(readCrew(world.paths.stateDir, world.repo, original.id)?.state).toBe("merged");
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — waiting for its continuation C my-app B6b next to merge",
     );
     // Its record and branch stay for the chain; its worktree and row go (D69).
-    expect(world.out).toContain(
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     );
     expect(existsSync(worktree)).toBe(false);
@@ -2196,7 +2298,8 @@ describe("crew watch", () => {
     // Nothing is merged yet: the hand-off's record and branch stay; only its worktree and its
     // agent-view row go (D69).
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     ]);
     const stateOf = (id: string) =>
@@ -2208,7 +2311,8 @@ describe("crew watch", () => {
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live-2");
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toContain(
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
       "C my-app B6b portal-live: merged — the lead merged its branch; the watch removes it",
     );
     expect(stateOf(original.id)).toBe("removed");
@@ -2264,11 +2368,11 @@ describe("crew watch", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     for (const record of chain.slice(0, 2)) {
       expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("merged");
-      expect(world.out).toContain(
+      expect(heldLines(world)).toContain(
         `${record.name}: merged — waiting for its continuation C my-app chain 2 to merge`,
       );
       // Released while the chain waits (D69): the branch stays, the worktree goes.
-      expect(world.out).toContain(
+      expect(heldLines(world)).toContain(
         `${record.name}: released: worktree and agent-view rows removed; branch ${record.branch} kept`,
       );
       expect(existsSync(record.worktree)).toBe(false);
@@ -2300,7 +2404,8 @@ describe("crew watch", () => {
     await addCrew(world, "failed");
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     // Released (D69), never reported merged.
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
@@ -2334,7 +2439,8 @@ describe("crew watch", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     // The base is main, which does not hold the branch: the lead's folder is not the judge. It is
     // released (D69), never reported merged.
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
     ]);
     expect(git(world.repo, "branch", "--merged", "main")).not.toContain("crew/B6b-portal-live");
@@ -2373,24 +2479,23 @@ describe("crew watch", () => {
     const ctx = world.ctx({
       sleep: async (ms: number) => {
         polls.push(ms);
+        // The first poll brings a step, which needs nothing from the lead and ends nothing; the
+        // second the person's word, which does.
+        const [type, text] = polls.length === 1 ? ["step", "committed"] : ["person", "stop here"];
         await appendCrewEvent(
           world.paths.stateDir,
           world.repo,
-          {
-            lead: LEAD_SESSION,
-            name: NAME,
-            state: "working",
-            text: "committed",
-            type: "step",
-            crew: ID,
-          },
+          { lead: LEAD_SESSION, name: NAME, state: "working", text, type, crew: ID },
           T0,
         );
       },
     });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
-    expect(polls).toEqual([20_000]);
-    expect(world.out).toEqual(["C my-app B6b portal-live: committed"]);
+    expect(polls).toEqual([20_000, 20_000]);
+    expect(world.out).toEqual([
+      "FYI, no action needed (1): C my-app B6b portal-live: committed",
+      "C my-app B6b portal-live: the person wrote · stop here · read its next report against the brief before the merge",
+    ]);
   });
 
   test("D25: a step line carries its commit and its note", async () => {
@@ -2412,7 +2517,8 @@ describe("crew watch", () => {
       T0,
     );
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
       "C my-app B6b portal-live: tests-red · abcdef0 · the new test fails without the fix",
     ]);
   });
@@ -2513,17 +2619,22 @@ describe("crew watch", () => {
     git(world.repo, "merge", "--no-ff", "-q", "-m", "merge", "crew/B6b-portal-live");
     const ctx = world.ctx();
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    // The mark is said, with who removes it: stopping it was the lead's call, and so is this.
-    // It still leaves agent view (D69): released, so its branch and its record stay.
-    expect(world.out).toEqual([
+    // The mark is said, with who removes it: stopping it was the lead's call, and so is this, so
+    // it wakes the lead (1.11.3). It still leaves agent view (D69): released, so its branch and
+    // its record stay; that release needs nothing more, so it waits.
+    const said = [
       "C my-app B6b portal-live: merged — the lead merged its branch; it was stopped, so `crew rm` removes it",
+    ];
+    const held = [
       "C my-app B6b portal-live: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept",
-    ]);
+    ];
+    expect(world.out).toEqual(said);
+    expect(heldLines(world)).toEqual(held);
     // Later passes remove nothing, however often they look, and say nothing more.
-    world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([]);
+    expect(world.out).toEqual(said);
+    expect(heldLines(world)).toEqual(held);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("merged");
     expect(record?.mergedWhileStopped).toBe(true);
@@ -2576,7 +2687,10 @@ describe("crew watch", () => {
     expect(code).toBe(0);
     // One line, from the state event the launch writes: not the launcher's line as well. The
     // crew session is `starting`: its own SessionStart hook says when it is in its worktree.
-    expect(world.out).toEqual(["C my-app B6b portal-live: starting — started from the queue"]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([
+      "C my-app B6b portal-live: starting — started from the queue",
+    ]);
     const [record] = listCrew(world.paths.stateDir, world.repo).records;
     expect(record?.state).toBe("starting");
     expect(record?.sessionId).toBe("a1b2c3d4-0000-1111-2222-333333333333");
@@ -2665,7 +2779,8 @@ describe("crew watch", () => {
       T0 + 1000,
     );
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
-    expect(world.out).toEqual([`${NAME}: starting — started from the queue`]);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([`${NAME}: starting — started from the queue`]);
     expect(
       listCrew(world.paths.stateDir, world.repo).records.find((one) => one.id === QUEUED_ID)?.state,
     ).toBe("starting");
@@ -2717,8 +2832,11 @@ describe("crew watch", () => {
     });
   }
 
-  /** A step event of the lead's crew session, so a pass that says it ends a `--once`. */
-  async function stepEvent(world: Awaited<ReturnType<typeof leadWorld>>): Promise<void> {
+  /**
+   * The person's word to the lead's crew session, so a pass that says it ends a `--once`: a line
+   * that needs the lead (a step no longer is one, 1.11.3).
+   */
+  async function wakeEvent(world: Awaited<ReturnType<typeof leadWorld>>): Promise<void> {
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
@@ -2726,13 +2844,16 @@ describe("crew watch", () => {
         lead: LEAD_SESSION,
         name: NAME,
         state: "working",
-        text: "committed",
-        type: "step",
+        text: "go on",
+        type: "person",
         crew: ID,
       },
       T0,
     );
   }
+
+  /** The line `wakeEvent` makes the watch say. */
+  const WOKEN = `${NAME}: the person wrote · go on · read its next report against the brief before the merge`;
 
   /** The state of the queued crew session of the world. */
   function queuedState(world: Awaited<ReturnType<typeof leadWorld>>): string | undefined {
@@ -2836,15 +2957,15 @@ describe("crew watch", () => {
         // second pass must start nothing. On the value read once, it would start on max 2.
         world.writePersonal({ max: 1 });
         await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
-        await stepEvent(world);
+        await wakeEvent(world);
       },
     });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
     expect(world.err).toEqual([]);
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
-    // The step is what ended it: the watch ran a second pass.
-    expect(world.out).toEqual([`${NAME}: committed`]);
+    // The person's word is what ended it: the watch ran a second pass.
+    expect(world.out).toEqual([WOKEN]);
   });
 
   test("D60: a cap the person raises reaches the next pass of the same watch", async () => {
@@ -2860,13 +2981,14 @@ describe("crew watch", () => {
         await updateCrew(world.paths.stateDir, world.repo, queued.id, { waitsFor: [] }, T0);
         // A line for the second pass to say either way, so the `--once` ends on it: what is
         // asserted is the start itself, not the line.
-        await stepEvent(world);
+        await wakeEvent(world);
       },
     });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
     expect(queuedState(world)).toBe("starting");
-    expect(world.out).toEqual([`${NAME}: committed`, `${NAME}: starting — started from the queue`]);
+    expect(world.out).toEqual([WOKEN]);
+    expect(heldLines(world)).toEqual([`${NAME}: starting — started from the queue`]);
   });
 
   test("D60: a workflow that cannot be read keeps the last good caps, and says so once", async () => {
@@ -2882,7 +3004,7 @@ describe("crew watch", () => {
       sleep: async () => {
         passes += 1;
         if (passes > 1) {
-          await stepEvent(world);
+          await wakeEvent(world);
           return;
         }
         writeFileSync(join(world.repo, ".claude", "cc-smart-dev-kit.json"), "{ not json");
@@ -2895,7 +3017,7 @@ describe("crew watch", () => {
     expect(world.err[0]).toStartWith("crew watch: ");
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
-    expect(world.out).toEqual([`${NAME}: committed`]);
+    expect(world.out).toEqual([WOKEN]);
   });
 
   test("D60: a failed read is said once, and a good read starts saying it again", async () => {
@@ -2921,7 +3043,7 @@ describe("crew watch", () => {
           return;
         }
         writeFileSync(configFile, "{ not json");
-        await stepEvent(world);
+        await wakeEvent(world);
       },
     });
     expect(await runCrew(["watch", "--once"], ctx)).toBe(0);
@@ -2930,7 +3052,7 @@ describe("crew watch", () => {
     expect(world.err[1]).toStartWith("crew watch: ");
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(0);
     expect(queuedState(world)).toBe("queued");
-    expect(world.out).toEqual([`${NAME}: committed`]);
+    expect(world.out).toEqual([WOKEN]);
   });
 
   test("D69: a stopped unmerged session is released at once and still reminded once a day", async () => {
@@ -2960,6 +3082,8 @@ describe("crew watch", () => {
     );
     expect(world.out).toEqual([
       `${NAME}: stopped 2 days ago; 1 unmerged commit — crew resume "${NAME}", crew start B6b --continue "${NAME}", or crew rm "${NAME}"`,
+    ]);
+    expect(first.state.fyi?.lines).toEqual([
       `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
     ]);
     expect(first.state.stoppedRemindedAt?.[stopped.id]).toBe(T0);
@@ -3012,7 +3136,8 @@ describe("crew watch", () => {
           resolved: resolveWorkflow(world.paths, null),
         },
       );
-      expect(world.out).toEqual([
+      expect(world.out).toEqual([]);
+      expect(pass.state.fyi?.lines).toEqual([
         `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
       ]);
       expect(existsSync(original.worktree)).toBe(false);
@@ -3063,7 +3188,8 @@ describe("crew watch", () => {
     // The ordinary merge detection still runs once; no second replay for the hidden reminder,
     // and none for the release (D69) either.
     expect(readFileSync(log, "utf8")).toBe("replay\n");
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(throttled.state.fyi?.lines).toEqual([
       `${NAME}: released: worktree and agent-view rows removed; branch crew/B6b-portal-live kept`,
     ]);
     writeFileSync(log, "");
@@ -3085,7 +3211,7 @@ describe("crew watch", () => {
       sleep: async () => {
         passes += 1;
         if (passes > 1) {
-          await stepEvent(world);
+          await wakeEvent(world);
           return;
         }
         // Crew sessions are turned off, and the wait clears: only the switch holds it back now.
@@ -3100,7 +3226,7 @@ describe("crew watch", () => {
       "crew watch: crew sessions are off in this project: turn them on with workflow.crew.enabled",
       "Fix: cc-smart-dev-kit workflow set crew.enabled true --project (this project), or the same without --project (every project of yours)",
     ]);
-    expect(world.out).toEqual([`${NAME}: committed`]);
+    expect(world.out).toEqual([WOKEN]);
   });
 
   test("D25: a queued crew session waits for the merge of its phase, not for its report", async () => {
@@ -3125,7 +3251,14 @@ describe("crew watch", () => {
     world.out.length = 0;
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
-    expect(world.out).toContain("C my-app B6b portal-live: starting — started from the queue");
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
+      "C my-app B6b portal-live: starting — started from the queue",
+    );
+    // The note the lead's own `crew start` said already: held, never a wake of its own.
+    expect(heldLines(world)).toContain(
+      "note: phase task dependencies skipped: no task yet for B6a",
+    );
   });
 
   test("F3: a phase removed before its work was merged holds its dependent, and the lead is told until it acts", async () => {
@@ -3209,7 +3342,14 @@ describe("crew watch", () => {
 
     await runCrew(["watch", "--once", "--timeout", "0"], world.ctx());
     expect(world.claudeCalls().filter((call) => call[0] === "--bg")).toHaveLength(1);
-    expect(world.out).toContain("C my-app B6b portal-live: starting — started from the queue");
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toContain(
+      "C my-app B6b portal-live: starting — started from the queue",
+    );
+    // The note the lead's own `crew start` said already: held, never a wake of its own.
+    expect(heldLines(world)).toContain(
+      "note: phase task dependencies skipped: no task yet for B6a",
+    );
   });
 
   test("D25: a queued next crew session of a hand-off is launched in its own numbered worktree", async () => {
@@ -3795,13 +3935,15 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(world.out).toEqual([]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("paused");
 
-    // Closed: the watch sends the message line (only a session holds SendMessage), and the
-    // record is working again, with one state event.
+    // Closed: the watch says the message line (only a session holds SendMessage), and the
+    // record is working again, with one state event. That state needs nothing more: it waits.
     const done = await pass(world, resolved, facts(), fresh(world));
-    expect(done.lines).toBe(3);
+    expect(done.lines).toBe(2);
     expect(world.out).toEqual([
       sendMessageHint(),
       `SendMessage {"to":"${NAME}","message":"The wait is over: worker answers again. Go on with phase B6b, then hand it back as usual."}`,
+    ]);
+    expect(done.state.fyi?.lines).toEqual([
       `${NAME}: working — the wait is over; the message to it wakes it`,
     ]);
     expect(done.state.resumedAt).toBe(T0);
@@ -3857,8 +3999,10 @@ describe("D42: the watch resumes a paused crew session", () => {
     ]);
     // Resumed in its own worktree, never the main checkout.
     expect(world.cwdCalls().at(-1)).toBe(record.worktree);
-    expect(done.lines).toBe(1);
-    expect(world.out).toEqual([`${NAME}: working — the wait is over; it was resumed`]);
+    // The watch did the resume itself: nothing for the lead, so the line waits.
+    expect(done.lines).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(done.state.fyi?.lines).toEqual([`${NAME}: working — the wait is over; it was resumed`]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)?.state).toBe("working");
   });
 
@@ -3893,13 +4037,20 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(0);
     expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("paused");
 
-    // 31 s later, and the router answered: the next one goes, one line for its state event.
+    // 31 s later, and the router answered: the next one goes. The watch resumed it itself, so its
+    // state event needs nothing from the lead: it waits with the first one's. The only lines said
+    // are still the first one's message, which the lead sends.
     done = await pass(world, resolved, facts({ requests: 11 }), done.state, T0 + 31_000);
-    expect(done.lines).toBe(1);
+    expect(done.lines).toBe(0);
     expect(readCrew(world.paths.stateDir, world.repo, second.id)?.state).toBe("working");
-    expect(world.out).toContain(
+    expect(world.out).toEqual([
+      sendMessageHint(),
+      `SendMessage {"to":"${NAME}","message":"The wait is over: worker answers again. Go on with phase B6b, then hand it back as usual."}`,
+    ]);
+    expect(done.state.fyi?.lines).toEqual([
+      `${NAME}: working — the wait is over; the message to it wakes it`,
       "C my-app B6c api-live: working — the wait is over; it was resumed",
-    );
+    ]);
   });
 
   test("failing safety checks: never while their record is current; then one message that says they answer", async () => {
@@ -3932,6 +4083,8 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(world.out).toEqual([
       sendMessageHint(),
       `SendMessage {"to":"${NAME}","message":"The wait is over: auto mode's safety checks answer again. Go on with phase B6b, then hand it back as usual."}`,
+    ]);
+    expect(done.state.fyi?.lines).toEqual([
       `${NAME}: working — the wait is over; the message to it wakes it`,
     ]);
     const after = readCrew(world.paths.stateDir, world.repo, record.id);
@@ -3990,12 +4143,14 @@ describe("D42: the watch resumes a paused crew session", () => {
     // The router dropped it, but the reset time plus the jitter is still ahead.
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
     expect(done.lines).toBe(0);
-    // Both are past: it goes, with the same three lines as any resume (the hint, the message,
-    // the state).
+    // Both are past: it goes, with the same two lines as any resume (the hint, the message); its
+    // state waits.
     done = await pass(world, resolved, facts(), done.state, T0 + 6 * MINUTE);
-    expect(done.lines).toBe(3);
+    expect(done.lines).toBe(2);
     expect(world.out[0]).toBe(sendMessageHint());
-    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
+    expect(done.state.fyi?.lines).toEqual([
+      `${NAME}: working — the wait is over; the message to it wakes it`,
+    ]);
     expect(readCrew(world.paths.stateDir, world.repo, limited.id)?.state).toBe("working");
   });
 
@@ -4010,9 +4165,11 @@ describe("D42: the watch resumes a paused crew session", () => {
     expect(done.lines).toBe(0);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("paused");
     done = await pass(world, resolved, facts(), done.state, T0 + 5 * MINUTE);
-    expect(done.lines).toBe(3);
+    expect(done.lines).toBe(2);
     expect(world.out[0]).toBe(sendMessageHint());
-    expect(world.out[2]).toBe(`${NAME}: working — the wait is over; the message to it wakes it`);
+    expect(done.state.fyi?.lines).toEqual([
+      `${NAME}: working — the wait is over; the message to it wakes it`,
+    ]);
     expect(readCrew(world.paths.stateDir, world.repo, again.id)?.state).toBe("working");
   });
 
@@ -4095,7 +4252,8 @@ describe("D42: the watch resumes a paused crew session", () => {
       ),
       scope,
     );
-    expect(world.out).toEqual([
+    expect(world.out).toEqual([]);
+    expect(first.state.fyi?.lines).toEqual([
       `${NAME}: working — the wait is over; it was resumed as session a1b2c3d4 (a copy of c7186986)`,
     ]);
     expect(readCrew(world.paths.stateDir, world.repo, record.id)).toMatchObject({
@@ -4303,12 +4461,15 @@ describe("D42: the watch resumes a paused crew session", () => {
  * crew sessions and writing the same state file.
  */
 describe("WF1: one acting watch per lead", () => {
-  /** A step of the crew session in the log: news a watch that acts would say. */
+  /**
+   * The person's word to the crew session, in the log: news a watch that acts would say, and that
+   * needs the lead (a step no longer does, 1.11.3).
+   */
   async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
-      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "person" },
       T0,
     );
   }
@@ -4412,7 +4573,7 @@ describe("WF1: one acting watch per lead", () => {
     });
     expect(await runCrew(["watch"], ctx)).toBe(0);
     // It went on: the news is its line, and no "a newer watch runs" end.
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(world.out).toEqual([personLine("tests-green")]);
     const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
     expect(held?.token).not.toBe("a-once-look");
     expect(held?.once).toBeUndefined();
@@ -4432,7 +4593,7 @@ describe("WF1: one acting watch per lead", () => {
       },
     });
     expect(await runCrew(["watch"], ctx)).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    expect(world.out).toEqual([personLine("tests-red")]);
     const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
     expect(held?.pid).toBe(process.pid);
     expect(held?.token).not.toBe("an-older-watch");
@@ -4447,7 +4608,7 @@ describe("WF1: one acting watch per lead", () => {
       await step(world, "committed");
     });
     expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: committed"]);
+    expect(world.out).toEqual([personLine("committed")]);
     expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.pid).toBe(process.pid);
   });
 
@@ -4504,13 +4665,12 @@ describe("WF1: one acting watch per lead", () => {
     expect(await runCrew(["watch", "--once", "--timeout", "86400"], ctx)).toBe(1);
     // 60 passes in a row failed: the 60th ended it, and it slept before each of the 59 others.
     expect(sleeps).toBe(60);
-    expect(world.out).toHaveLength(2);
-    expect(world.out[0]).toStartWith("crew watch: a pass failed (");
-    expect(world.out[0]).toEndWith("); the watch goes on and tries again in 20 s");
-    expect(world.out[1]).toStartWith(
+    // The failure itself needs nothing from the lead and waits; the end of the watch does.
+    expect(world.out).toHaveLength(1);
+    expect(world.out[0]).toStartWith(
       "crew watch ended: 60 passes in a row failed, the last with: ",
     );
-    expect(world.out[1]).toEndWith(
+    expect(world.out[0]).toEndWith(
       ' — start the watch again with Claude Code\'s Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch',
     );
     // Every failure is also a line on stderr, for the log nobody has to open.
@@ -4542,7 +4702,7 @@ describe("WF1: one acting watch per lead", () => {
     expect(await runCrew(["watch", "--once", "--timeout", "60", "--lead", LEAD_SESSION], ctx)).toBe(
       0,
     );
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(world.out).toEqual([personLine("tests-green")]);
     expect(watchLeaseFile(world.paths.stateDir, world.repo, LEAD_SESSION)).not.toBe(
       watchLeaseFile(world.paths.stateDir, world.repo, OTHER_SESSION),
     );
@@ -4635,7 +4795,7 @@ describe("WF1: one acting watch per lead", () => {
     expect(await runCrew(["watch", "--once", "--timeout", "60"], ctx)).toBe(0);
     // The busy pass said nothing and ended nothing; the next one said the news.
     expect(world.err).toEqual([]);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(world.out).toEqual([personLine("tests-green")]);
     expect(waits).toBe(2);
   }, 15_000);
 });
@@ -4946,7 +5106,7 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
         tip: "a".repeat(40),
       })),
     );
-    // A line of the pass's own news, written before it starts.
+    // A line of the pass's own news that needs the lead, written before it starts.
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
@@ -4956,7 +5116,7 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
         name: NAME,
         state: "working",
         text: "tests-green",
-        type: "step",
+        type: "person",
       },
       T0,
     );
@@ -4965,7 +5125,7 @@ describe("GI2: a crew merge marks the issues the phase fixes (D67)", () => {
     expect(marked).toHaveLength(MARKS_PER_PASS);
     expect(queue()).toHaveLength(30 - MARKS_PER_PASS);
     // The news came before the first call to GitHub.
-    const news = world.out.findIndex((line) => line.endsWith("tests-green"));
+    const news = world.out.indexOf(personLine("tests-green"));
     expect(news).toBeGreaterThanOrEqual(0);
     expect(news).toBeLessThan(world.out.indexOf("<gh>"));
     // The next pass takes the next ones.
@@ -5423,12 +5583,12 @@ describe("a watch never dies silently", () => {
   const RESTART =
     'start the watch again with Claude Code\'s Monitor tool (timeout_ms: 1800000; re-arm at once on expiry), command: "$HOME/.local/bin/cc-smart-dev-kit" crew watch';
 
-  /** A step of the crew session in the log. */
+  /** The person's word to the crew session, in the log: a line that needs the lead (1.11.3). */
   async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
-      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "person" },
       T0,
     );
   }
@@ -5462,10 +5622,9 @@ describe("a watch never dies silently", () => {
     };
     expect(await runCrew(["watch"], ctx)).toBe(0);
     expect(world.out).toEqual([
-      "C my-app B6b portal-live: tests-green",
-      FAILED,
-      "C my-app B6b portal-live: committed",
-      FAILED,
+      personLine("tests-green"),
+      `FYI, no action needed (1): ${FAILED}`,
+      personLine("committed"),
     ]);
     // Each failure is a line on stderr as well; the end is the lead's closed output.
     expect(world.err).toEqual([
@@ -5507,7 +5666,7 @@ describe("a watch never dies silently", () => {
     expect(failure.message).toBe(BUSY);
     expect(failure.lines).toBe(1);
     expect(failure.state.offset).toBe(eventsEndOffset(world.paths.stateDir, world.repo));
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-green"]);
+    expect(world.out).toEqual([personLine("tests-green")]);
   });
 
   test("a pass that works starts the count again: 59 failures, a good pass and one more do not end it", async () => {
@@ -5534,11 +5693,30 @@ describe("a watch never dies silently", () => {
     // Had the count not started again, the 60th failure (the 61st pass) would have ended it.
     expect(await runCrew(["watch"], ctx)).toBe(0);
     expect(sleeps).toBe(61);
-    // The failure was said at the first pass and again after the good one: two runs of failures.
-    expect(world.out).toEqual([FAILED, FAILED]);
+    // The failure was held at the first pass and again after the good one: two runs of failures,
+    // and nothing that needed the lead, so nothing was said. The good pass kept the first one.
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([FAILED]);
     expect(world.err).toHaveLength(61);
     expect(world.err.at(-1)).toBe("crew watch: nobody reads its output any more; this watch ends");
   }, 60_000);
+
+  test("a failed pass's line is written with the state at once, not only kept in memory", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const base = withView(world, []);
+    const ctx: CrewContext = {
+      ...base,
+      runProgram: (argv, options) => {
+        if (argv[1] === "agents") throw new LockBusyError(BUSY);
+        return base.runProgram(argv, options);
+      },
+    };
+    // One round: a state read again from the file (a new lead generation) must still hold it.
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(heldLines(world)).toEqual([FAILED]);
+  });
 
   test("a start that cannot name its lead says why on stdout, not only on stderr", async () => {
     const world = await leadWorld();
@@ -5589,12 +5767,15 @@ describe("a watch never dies silently", () => {
 });
 
 describe("a --once is the lead's one look, never a restart", () => {
-  /** A step of the crew session in the log: news a watch that acts would say. */
+  /**
+   * The person's word to the crew session, in the log: news a watch that acts would say, and that
+   * needs the lead (a step no longer does, 1.11.3).
+   */
   async function step(world: Awaited<ReturnType<typeof leadWorld>>, text: string): Promise<void> {
     await appendCrewEvent(
       world.paths.stateDir,
       world.repo,
-      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "step" },
+      { crew: ID, lead: LEAD_SESSION, name: NAME, state: "working", text, type: "person" },
       T0,
     );
   }
@@ -5642,7 +5823,7 @@ describe("a --once is the lead's one look, never a restart", () => {
     );
     await step(world, "tests-red");
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    expect(world.out).toEqual([personLine("tests-red")]);
     const held = readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION);
     expect(held?.once).toBe(true);
     expect(held?.token).not.toBe("the-older-once");
@@ -5660,7 +5841,7 @@ describe("a --once is the lead's one look, never a restart", () => {
     );
     await step(world, "tests-red");
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    expect(world.out).toEqual([personLine("tests-red")]);
     expect(readWatchLease(world.paths.stateDir, world.repo, LEAD_SESSION)?.pid).toBe(process.pid);
   });
 
@@ -5675,7 +5856,7 @@ describe("a --once is the lead's one look, never a restart", () => {
     );
     await step(world, "tests-red");
     expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
-    expect(world.out).toEqual(["C my-app B6b portal-live: tests-red"]);
+    expect(world.out).toEqual([personLine("tests-red")]);
   });
 });
 
@@ -5717,7 +5898,8 @@ describe("a backend's refusal is not a final failure", () => {
     const world = await leadWorld();
     const { calls, ctx } = await refused(world, { class: "unknown" });
     expect(await runCrew(["watch", "--once", "--timeout", "0"], ctx)).toBe(0);
-    expect(world.out).toEqual([QUESTION, STOPPED, RELEASED]);
+    expect(world.out).toEqual([QUESTION, STOPPED]);
+    expect(heldLines(world)).toEqual([RELEASED]);
     expect(calls.filter((call) => call[0] === "rm")).toEqual([["rm", "aaaa1111"]]);
     const after = record(world);
     expect(after?.state).toBe("stopped");
@@ -5776,7 +5958,8 @@ describe("a backend's refusal is not a final failure", () => {
       const world = await leadWorld();
       const { ctx } = await refused(world, { class: errorClass });
       await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-      expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
+      expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+      expect(heldLines(world)).toEqual([RELEASED]);
       expect(record(world)?.state).toBe("failed");
       expect(record(world)?.questions).toEqual([]);
     }
@@ -5789,7 +5972,8 @@ describe("a backend's refusal is not a final failure", () => {
       agentRowOf({ pid: null, state: "failed", status: "idle", waitingFor: "API error" }),
     ]);
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(heldLines(world)).toEqual([RELEASED]);
     expect(record(world)?.state).toBe("failed");
   });
 
@@ -5797,7 +5981,8 @@ describe("a backend's refusal is not a final failure", () => {
     const world = await leadWorld();
     const { ctx } = await refused(world, { class: "unknown" }, { waitingFor: "crashed" });
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
-    expect(world.out).toEqual([`${NAME}: failed — its session failed`, RELEASED]);
+    expect(world.out).toEqual([`${NAME}: failed — its session failed`]);
+    expect(heldLines(world)).toEqual([RELEASED]);
     expect(record(world)?.state).toBe("failed");
   });
 
@@ -5815,8 +6000,8 @@ describe("a backend's refusal is not a final failure", () => {
     await runCrew(["watch", "--once", "--timeout", "0"], ctx);
     expect(world.out).toEqual([
       `${NAME}: stopped — its backend refused the turn (unknown: ${TEXT}); your answer to question 1 resumes it`,
-      RELEASED,
     ]);
+    expect(heldLines(world)).toEqual([RELEASED]);
     expect(record(world)?.questions).toEqual([open]);
   });
 
@@ -6273,5 +6458,313 @@ describe("stuck phases: what holds the queue and the step that moves it (1.11.2)
     const heard: string[] = [];
     sayStuckPhases([stuckOne], said, LEAD_SESSION, T0, QUIET, (line) => heard.push(line));
     expect(heard).toEqual([]);
+  });
+});
+
+describe("1.11.3: only a line that needs the lead wakes it", () => {
+  const STEP = "C my-app B6b portal-live: tests-green";
+  const event = (change: Partial<Parameters<typeof eventLine>[0]>) => ({
+    at: "2026-10-21T10:00:00.000Z",
+    crew: ID,
+    lead: LEAD_SESSION,
+    name: NAME,
+    state: "working" as const,
+    text: null,
+    type: "step" as const,
+    version: 1,
+    ...change,
+  });
+
+  test("fyiLine: nothing held says nothing; what is held is one line, oldest first", () => {
+    expect(fyiLine({ dropped: 0, lines: [] })).toBeNull();
+    const held = { dropped: 0, lines: [] as string[] };
+    holdFyi(held, "C a: working — started in its worktree");
+    holdFyi(held, "C a: tests-green · 1234567\nsecond line of its note");
+    expect(fyiLine(held)).toBe(
+      "FYI, no action needed (2): C a: working — started in its worktree | C a: tests-green · 1234567",
+    );
+  });
+
+  test("holdFyi keeps the newest FYI_HELD_MAX and counts the rest; fyiLine keeps to its length", () => {
+    expect(FYI_HELD_MAX).toBe(30);
+    const held = { dropped: 0, lines: [] as string[] };
+    for (let index = 1; index <= 32; index += 1) holdFyi(held, `line ${index} ${"x".repeat(110)}`);
+    expect(held.dropped).toBe(2);
+    expect(held.lines.length).toBe(30);
+    expect(held.lines[0]).toBe(`line 3 ${"x".repeat(110)}`);
+    // Each item is 118 characters and the line holds 1500: the newest 12 fit, 20 are counted.
+    const line = fyiLine(held) ?? "";
+    expect(
+      line.startsWith(
+        `FYI, no action needed (32): 20 earlier, then line 21 ${"x".repeat(110)} | line 22 `,
+      ),
+    ).toBe(true);
+    expect(line.endsWith(`line 32 ${"x".repeat(110)}`)).toBe(true);
+    expect(line.split(" | ").length).toBe(12);
+  });
+
+  test("eventNeedsNoAction: steps, starts, ends the lead made, answered questions and merges wait", async () => {
+    for (const state of [
+      "queued",
+      "starting",
+      "working",
+      "merged",
+      "removed",
+      "discarded",
+    ] as const)
+      expect([state, eventNeedsNoAction(event({ state, text: "x", type: "state" }), null)]).toEqual(
+        [state, true],
+      );
+    for (const state of [
+      "blocked",
+      "paused",
+      "quiet",
+      "done",
+      "failed",
+      "stopped",
+      "handoff",
+    ] as const)
+      expect([state, eventNeedsNoAction(event({ state, text: "x", type: "state" }), null)]).toEqual(
+        [state, false],
+      );
+    expect(eventNeedsNoAction(event({ text: "tests-green" }), null)).toBe(true);
+    expect(
+      eventNeedsNoAction(event({ text: "LEAD b merged #7 into main", type: "merge" }), null),
+    ).toBe(true);
+    for (const type of ["report", "person", "tell", "lead-tell", "issue", "adopted"] as const)
+      expect([type, eventNeedsNoAction(event({ text: "x", type }), null)]).toEqual([type, false]);
+    const world = await leadWorld();
+    const record = await addCrew(world, "working");
+    const asked = await addCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      { question: "which port?", options: ["8080", "9090"], recommended: 1 },
+      T0,
+    );
+    const question = event({ question: 1, text: "which port?", type: "question" });
+    expect(eventNeedsNoAction(question, asked)).toBe(false);
+    const answered = await answerCrewQuestion(
+      world.paths.stateDir,
+      world.repo,
+      record.id,
+      0,
+      "8080",
+      T0 + 1,
+    );
+    expect(eventNeedsNoAction(question, answered)).toBe(true);
+    // The merge of a session the lead stopped waits for the lead's own `crew rm` (D62): it wakes
+    // the lead while the record waits for it, and is news once the record moved on.
+    const merged = event({
+      state: "merged",
+      text: "the lead merged its branch; it was stopped, so `crew rm` removes it",
+      type: "state",
+    });
+    const waiting: CrewRecord = { ...record, mergedWhileStopped: true, state: "merged" };
+    expect(eventNeedsNoAction(merged, waiting)).toBe(false);
+    expect(eventNeedsNoAction(merged, { ...waiting, mergedWhileStopped: false })).toBe(true);
+    expect(eventNeedsNoAction(merged, { ...waiting, state: "removed" })).toBe(true);
+  });
+
+  test("a step alone wakes nobody; it comes with the next line that needs the lead, once", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "tests-green",
+        type: "step",
+      },
+      T0,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.err).toEqual([]);
+    expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toEqual({
+      dropped: 0,
+      lines: [STEP],
+    });
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "stop here",
+        type: "person",
+      },
+      T0 + 1000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `FYI, no action needed (1): ${STEP}`,
+      "C my-app B6b portal-live: the person wrote · stop here · read its next report against the brief before the merge",
+    ]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+    // Said once: the next line that needs the lead comes alone.
+    world.out.length = 0;
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "and this",
+        type: "person",
+      },
+      T0 + 2000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      "C my-app B6b portal-live: the person wrote · and this · read its next report against the brief before the merge",
+    ]);
+  });
+
+  test("a file clash is no line for the lead it names", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        pair: "a|b",
+        state: "working",
+        text: `clash: ${NAME} (LEAD my-app master-plan) may change the same files: src/a.ts — not blocked; two leads may mean to share a file`,
+        type: "clash",
+      },
+      T0,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+  });
+
+  test("the conversation sweep never waits for a busy archive, and says nothing about it", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    const { crewArchiveRoot } = await import("./archive-read");
+    mkdirSync(crewArchiveRoot(world.paths.stateDir), { recursive: true });
+    const started = Date.now();
+    // Another run holds the archive while the watch's first pass sweeps (this process: alive).
+    await withLock(crewArchiveRoot(world.paths.stateDir), async () => {
+      expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+  });
+
+  /** Another lead's merge line, 201 characters: longer than a clipped item may be. */
+  const MERGED = `LEAD my-app other-plan merged #7 (${"t".repeat(100)}) into main — at your next stop, merge origin/main into your branch`;
+
+  test("holdFyi: a line held again moves to the newest place, never a second copy", () => {
+    const held: Parameters<typeof holdFyi>[0] = { dropped: 0, lines: [] };
+    holdFyi(held, "C a: kept 1 folder");
+    holdFyi(held, "C a: tests-green");
+    holdFyi(held, "C a: kept 1 folder");
+    expect(held).toEqual({ dropped: 0, lines: ["C a: tests-green", "C a: kept 1 folder"] });
+    expect(fyiLine(held)).toBe("FYI, no action needed (2): C a: tests-green | C a: kept 1 folder");
+  });
+
+  test("a line held whole comes first and whole, and the lines after it never crowd it out", () => {
+    expect(MERGED.length).toBe(201);
+    const held: Parameters<typeof holdFyi>[0] = { dropped: 0, lines: [] };
+    holdFyi(held, MERGED, { whole: true });
+    // Forty lines of 100 characters after it: 30 are held, 10 let go and counted.
+    const step = (n: number) => `s${String(n).padStart(2, "0")}${"x".repeat(97)}`;
+    for (let n = 1; n <= 40; n += 1) holdFyi(held, step(n));
+    expect(held.kept).toEqual([MERGED]);
+    expect(held.dropped).toBe(10);
+    // The merge line is whole and first; then the newest 12 steps fit in 1500, after the count of
+    // the 28 earlier ones (18 held, 10 let go).
+    expect(fyiLine(held)).toBe(
+      `FYI, no action needed (41): ${MERGED} | 28 earlier, then ${[29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40].map(step).join(" | ")}`,
+    );
+  });
+
+  test("another lead's merge is held whole, and said first with the next line that needs the lead", async () => {
+    const world = await leadWorld();
+    await addCrew(world, "working");
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: "other-lead-session",
+        lead: LEAD_SESSION,
+        name: "LEAD my-app other-plan",
+        state: "working",
+        text: MERGED,
+        type: "merge",
+      },
+      T0,
+    );
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "tests-green",
+        type: "step",
+      },
+      T0 + 1000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toEqual({
+      dropped: 0,
+      kept: [MERGED],
+      lines: [STEP],
+    });
+    await appendCrewEvent(
+      world.paths.stateDir,
+      world.repo,
+      {
+        crew: ID,
+        lead: LEAD_SESSION,
+        name: NAME,
+        state: "working",
+        text: "stop here",
+        type: "person",
+      },
+      T0 + 2000,
+    );
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `FYI, no action needed (2): ${MERGED} | ${STEP}`,
+      personLine("stop here"),
+    ]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
+  });
+
+  test("the watch's own line that needs the lead says what was held first", async () => {
+    const world = await leadWorld();
+    // No crew session left: the watch says so, and what it held goes first, in the same breath.
+    await writeWatchState(world.paths.stateDir, world.repo, LEAD_SESSION, {
+      fyi: { dropped: 0, lines: [STEP] },
+      noted: true,
+      offset: eventsEndOffset(world.paths.stateDir, world.repo),
+      said: {},
+    });
+    expect(await runCrew(["watch", "--once", "--timeout", "0"], world.ctx())).toBe(0);
+    expect(world.out).toEqual([
+      `FYI, no action needed (1): ${STEP}`,
+      "crew watch: this lead has no crew sessions",
+    ]);
+    expect(readWatchState(world.paths.stateDir, world.repo, LEAD_SESSION)?.fyi).toBeUndefined();
   });
 });

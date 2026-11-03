@@ -859,12 +859,15 @@ export function deleteDaysOf(paths: CliPaths, env: Env): (repo: null | string) =
  * The timeline's one sweep (D69): every conversation due for the archive goes through the same
  * reader `sessions --finished` lists from, then every archive past its delete date goes.
  * `outcomes` holds one entry per conversation it tried (moved, kept or failed); `kept` the ones
- * the reader kept before trying, with why.
+ * the reader kept before trying, with why. `options.lockWaitMs` is how long each move and the prune
+ * wait for another run that holds the archive (`ARCHIVE_LOCK_WAIT_MS` when left out): the lead's
+ * watch passes 0, because the run that holds it is another watch's sweep doing the same work.
  */
 export async function sweepCrewConversations(
   paths: CliPaths,
   env: Env,
   now: number,
+  options: { lockWaitMs?: number } = {},
 ): Promise<{
   outcomes: Array<{ record: CrewRecord; outcome: ArchiveOutcome }>;
   kept: CrewLeftovers["kept"];
@@ -883,11 +886,12 @@ export async function sweepCrewConversations(
       neverTaken,
       running,
       only: new Set(one.sessionIds),
+      ...(options.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }),
     });
     outcomes.push({ record: one.record, outcome });
   }
   for (const folder of left.emptyFolders) removeEmptyFolder(folder);
-  const pruned = await pruneCrewArchives(paths.stateDir, deleteDaysOf(paths, env), now);
+  const pruned = await pruneCrewArchives(paths.stateDir, deleteDaysOf(paths, env), now, options);
   return { outcomes, kept: left.kept, deleted: pruned.pruned };
 }
 
