@@ -8,12 +8,15 @@ import { TASK_TOOL } from "./words";
 
 export const TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.
 An obligation for production, the database, a teammate or later is a project task: commit its file with your branch.
-A crew session's work goes under its phase task. Finish or drop every subtask before marking its parent done.
+A crew session's work goes under its phase task. Finish or drop every blocking subtask before marking its parent done.
+Three layers: phase › task › subtask. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
-  create: "Create a work task, or a project task file to commit with this branch.",
-  update: "Update a task. Starting work claims it for this Claude process.",
-  done: "Finish or drop a task. Open subtasks must be finished or dropped first.",
+  create:
+    "Create a work task, or a project task file to commit with this branch. A lead also lays out its plan's phases here (phase).",
+  update:
+    "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
+  done: "Finish or drop a task. Its open blocking subtasks must be finished or dropped first.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",

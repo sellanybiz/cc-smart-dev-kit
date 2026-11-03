@@ -1,16 +1,24 @@
 "use client";
 
 /**
- * The kit's task list on the portal (D75), read-only: a project's Tasks card (its work tree on
- * this machine and the task files its repository keeps) and a crew page's phase tree. A session
- * changes a task with its task tools, a person with `cc-smart-dev-kit task`; the page only
- * shows them, and reads again when the work store changes (the `tasks` event).
+ * The kit's task list on the portal (D75, D76), read-only. The Tasks tab draws each project with
+ * `TasksBody`: its work tree on this machine, then the task files its repository keeps. A
+ * project's page has one card that counts them and opens the tab on that project (one home), and
+ * a crew page keeps its phase tree, drawn by the same row (`task-tree.tsx`). A session changes a
+ * task with its task tools, a person with `cc-smart-dev-kit task`; the page only shows them, and
+ * reads again when the work store changes (the `tasks` event).
  */
 
-import { InfoIcon, ListChecksIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  FilterXIcon,
+  InfoIcon,
+  ListChecksIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useId } from "react";
 import { useResource } from "@/api/hooks";
-import { TASKS_CARD_REFRESH } from "@/api/refresh";
+import { TASKS_REFRESH } from "@/api/refresh";
 import type {
   CrewPhaseTasks,
   ProjectListRow,
@@ -18,120 +26,39 @@ import type {
   ProjectTaskRow,
   ProjectTasksData,
   ProjectWorkTasks,
-  WorkTaskNode,
 } from "@/api/types";
+import { AppLink } from "@/components/router";
 import { EmptyState } from "@/components/states";
 import { TonePill } from "@/components/status";
+import { TaskList, TaskMarks } from "@/components/task-tree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KIT_NAME } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import {
+  DEFAULT_FILTER,
+  fileCountsOf,
+  filterTasks,
+  isClosed,
+  narrowsWork,
+  narrowWords,
+  SHOW_ALL,
+  type TaskFilter,
+  tasksHref,
+  workCountsOf,
+} from "@/lib/tasks";
 
-// ── Work tasks: the tree ───────────────────────────────────────────────────────────────
-
-/** Each status's glyph, its colour and its words: the glyph's shape carries it without colour. */
-const STATUS: Record<WorkTaskNode["status"], { glyph: string; tone: string; words: string }> = {
-  pending: { glyph: "○", tone: "text-muted-foreground", words: "pending" },
-  in_progress: { glyph: "◐", tone: "text-primary", words: "in progress" },
-  done: { glyph: "✓", tone: "text-ok", words: "done" },
-  dropped: { glyph: "–", tone: "text-muted-foreground", words: "dropped" },
-};
-
-function closedStatus(status: WorkTaskNode["status"]): boolean {
-  return status === "done" || status === "dropped";
-}
-
-/** How far a subtree is: a thin bar and `closed/total`. The native meter speaks; the SVG draws. */
-function Progress({ closed, total }: { closed: number; total: number }) {
-  const share = total === 0 ? 0 : Math.min(1, closed / total);
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-      <meter className="sr-only" min={0} max={total} value={closed}>
-        {closed} of {total} closed
-      </meter>
-      <svg className="h-1.5 w-12" aria-hidden="true" preserveAspectRatio="none">
-        <rect width="100%" height="100%" rx="3" className="fill-muted" />
-        <rect width={`${share * 100}%`} height="100%" rx="3" className="fill-ok" />
-      </svg>
-      <span aria-hidden="true">
-        {closed}/{total}
-      </span>
-    </span>
-  );
-}
-
-function TaskRow({ task }: { task: WorkTaskNode }) {
-  const status = STATUS[task.status];
-  const closed = closedStatus(task.status);
-  return (
-    <li>
-      <div className="flex items-start gap-2 py-1">
-        <span
-          className={cn("w-3.5 shrink-0 text-center font-semibold", status.tone)}
-          aria-hidden="true"
-          title={status.words}
-        >
-          {status.glyph}
-        </span>
-        <span className="w-9 shrink-0 font-mono text-xs leading-5 text-muted-foreground tabular-nums">
-          {task.ref}
-        </span>
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
-          <span
-            className={cn(
-              "min-w-0 text-sm wrap-any",
-              closed && "text-muted-foreground",
-              task.status === "dropped" && "line-through decoration-muted-foreground/60",
-            )}
-          >
-            <span className="sr-only">{status.words}: </span>
-            {task.subject}
-          </span>
-          {(task.kind !== "task" || task.total > 0) && (
-            <span className="flex flex-wrap items-center gap-2">
-              {task.kind === "plan" && <Badge variant="outline">plan</Badge>}
-              {task.kind === "phase" && <Badge variant="outline">phase {task.phase ?? ""}</Badge>}
-              {task.total > 0 && <Progress closed={task.closed} total={task.total} />}
-            </span>
-          )}
-        </div>
-      </div>
-      {task.children.length > 0 && <TaskList tasks={task.children} nested />}
-    </li>
-  );
-}
-
-function TaskList({
-  tasks,
-  nested = false,
-  label,
-}: {
-  tasks: WorkTaskNode[];
-  nested?: boolean;
-  label?: string;
-}) {
-  return (
-    <ul
-      aria-label={label}
-      className={cn("flex flex-col", nested && "ml-1.5 border-l border-border pl-4")}
-    >
-      {tasks.map((task) => (
-        <TaskRow key={task.id} task={task} />
-      ))}
-    </ul>
-  );
-}
-
-function openCount(tasks: WorkTaskNode[]): number {
-  return tasks.reduce(
-    (sum, task) => sum + (closedStatus(task.status) ? 0 : 1) + openCount(task.children),
-    0,
-  );
-}
+// ── Work tasks ─────────────────────────────────────────────────────────────────────────
 
 function CannotRead({ title, why }: { title: string; why: string }) {
   return (
@@ -143,8 +70,29 @@ function CannotRead({ title, why }: { title: string; why: string }) {
   );
 }
 
-function WorkSection({ work }: { work: ProjectWorkTasks }) {
+/** Where a task comes from: the words every empty state ends with. */
+function WhereTasksComeFrom() {
+  return (
+    <>
+      A session makes one with its task tools (<code className="font-mono">task_create</code>), you
+      with <code className="font-mono">{KIT_NAME} task add</code>. Every worktree of the project
+      shares the list.
+    </>
+  );
+}
+
+function WorkSection({
+  work,
+  filter,
+  onFilter,
+}: {
+  work: ProjectWorkTasks;
+  filter: TaskFilter;
+  onFilter?: (filter: TaskFilter) => void;
+}) {
   const titleId = useId();
+  const shown = work.state === "ready" ? filterTasks(work.tasks, filter) : [];
+  const counts = workCountsOf(work);
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -153,7 +101,16 @@ function WorkSection({ work }: { work: ProjectWorkTasks }) {
         </h3>
         {work.state === "ready" && work.tasks.length > 0 && (
           <span className="text-xs text-muted-foreground">
-            {openCount(work.tasks)} open · closed ones stay {work.recentDays} days
+            {[
+              `${counts.open} open`,
+              counts.blocked > 0 && `${counts.blocked} blocked`,
+              counts.nonBlocking > 0 && `${counts.nonBlocking} non-blocking`,
+              filter.show === "open"
+                ? "closed ones hidden"
+                : `closed ones stay ${work.recentDays} days`,
+            ]
+              .filter((part) => part !== false)
+              .join(" · ")}
           </span>
         )}
       </div>
@@ -167,17 +124,50 @@ function WorkSection({ work }: { work: ProjectWorkTasks }) {
           title="No work tasks here yet"
           icon={<ListChecksIcon className="size-6 text-muted-foreground" aria-hidden="true" />}
         >
-          A session's tasks show here once it makes one, with its task tools or{" "}
-          <code className="font-mono">{KIT_NAME} task add</code>. Every worktree of this project
-          shares the list.
+          The kit's task list has nothing for this project on this machine. <WhereTasksComeFrom />
         </EmptyState>
       ) : work.tasks.length === 0 ? (
         <EmptyState title="Nothing open">
-          No work task is open, and none closed in the last {work.recentDays} days.
+          No work task is open, and none closed in the last {work.recentDays} days.{" "}
+          <WhereTasksComeFrom />
         </EmptyState>
+      ) : shown.length === 0 ? (
+        narrowsWork(filter) ? (
+          <EmptyState title="Nothing matches the filters">
+            <p>No {narrowWords(filter)} task here.</p>
+            {onFilter !== undefined && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => onFilter({ ...filter, blocked: false, nonBlocking: false })}
+              >
+                <FilterXIcon data-icon="inline-start" aria-hidden="true" />
+                Clear the filters
+              </Button>
+            )}
+          </EmptyState>
+        ) : (
+          <EmptyState title="Nothing open">
+            <p>
+              Every task here is closed: recent shows those closed in the last {work.recentDays}{" "}
+              days.
+            </p>
+            {onFilter !== undefined && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-3"
+                onClick={() => onFilter({ ...filter, show: "recent" })}
+              >
+                Show recent
+              </Button>
+            )}
+          </EmptyState>
+        )
       ) : (
         <>
-          <TaskList tasks={work.tasks} label="Work tasks" />
+          <TaskList tasks={shown} label="Work tasks" />
           {work.more > 0 && (
             <p className="text-xs text-muted-foreground">
               {work.more} more not shown:{" "}
@@ -327,63 +317,94 @@ function FilesSection({ files }: { files: ProjectTaskFiles }) {
 
 // ── The cards ──────────────────────────────────────────────────────────────────────────
 
-/** The Tasks card's body once its answer is there: the work tree, then the task files. */
-export function TasksBody({ data }: { data: ProjectTasksData }) {
+/** One project's tasks on the Tasks tab: the work tree as the filter shows it, then the files. */
+export function TasksBody({
+  data,
+  filter = DEFAULT_FILTER,
+  onFilter,
+}: {
+  data: ProjectTasksData;
+  filter?: TaskFilter;
+  onFilter?: (filter: TaskFilter) => void;
+}) {
   return (
     <>
-      <WorkSection work={data.work} />
+      <WorkSection
+        work={data.work}
+        filter={filter}
+        {...(onFilter === undefined ? {} : { onFilter })}
+      />
       <Separator />
       <FilesSection files={data.files} />
     </>
   );
 }
 
-/** A project's Tasks card: what is being worked on, and what the project still owes. */
-export function TasksCard({ project }: { project: ProjectListRow }) {
-  const tasks = useResource(
-    (client) => client.projectTasks(project.id),
-    project.id,
-    TASKS_CARD_REFRESH,
-  );
+/** The project page's line: what is open and owed, counted, and the way to the Tasks tab. */
+function TasksSummary({ data }: { data: ProjectTasksData }) {
+  if (data.work.state === "unreadable" && data.files.state === "unavailable") {
+    return <>The tasks cannot be read: {data.work.why}</>;
+  }
+  const work = workCountsOf(data.work);
+  const files = fileCountsOf(data.files);
+  const workWords =
+    data.work.state === "unreadable"
+      ? "The task list cannot be read"
+      : data.work.state === "none"
+        ? "No work tasks yet"
+        : [
+            `${work.open} open`,
+            work.inProgress > 0 && `${work.inProgress} in progress`,
+            work.blocked > 0 && `${work.blocked} blocked`,
+          ]
+            .filter((part) => part !== false)
+            .join(", ");
+  const fileWords =
+    data.files.state !== "ready"
+      ? "the task files cannot be read"
+      : files.open === 0
+        ? "nothing owed"
+        : `${files.open} owed${files.blocksRelease > 0 ? `, ${files.blocksRelease} blocking the release` : ""}`;
   return (
-    <Card>
+    <>
+      {workWords} · {fileWords}
+    </>
+  );
+}
+
+/** A project's Tasks card: one line that counts its tasks and opens the Tasks tab on it. */
+export function TasksCard({ project }: { project: ProjectListRow }) {
+  const tasks = useResource((client) => client.projectTasks(project.id), project.id, TASKS_REFRESH);
+  return (
+    <Card size="sm">
       <CardHeader>
         <CardTitle>Tasks</CardTitle>
-        <CardDescription className="text-pretty">
-          What is being worked on, and what is still owed. Work tasks stay on this machine and every
-          worktree shares them; task files live in the repository and travel with their branch. A
-          session changes them with its task tools, you with{" "}
-          <code className="font-mono">{KIT_NAME} task</code>.
+        <CardDescription aria-live="polite" className="text-pretty">
+          {tasks.status === "loading" ? (
+            <>
+              <span className="sr-only">Reading the project's tasks…</span>
+              <Skeleton className="mt-1 h-4 w-48" />
+            </>
+          ) : tasks.status === "error" ? (
+            <>The tasks could not be read: {tasks.message}</>
+          ) : (
+            <TasksSummary data={tasks.data} />
+          )}
         </CardDescription>
+        <CardAction>
+          <Button asChild variant="outline" size="sm">
+            <AppLink href={tasksHref(project.id)} aria-label={`Open ${project.name} in Tasks`}>
+              Open in Tasks
+              <ArrowRightIcon data-icon="inline-end" aria-hidden="true" />
+            </AppLink>
+          </Button>
+        </CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-6">
-        {tasks.status === "loading" ? (
-          <div role="status" aria-live="polite" className="flex flex-col gap-3">
-            <span className="sr-only">Loading the project's tasks…</span>
-            <Skeleton className="h-6 w-2/3" />
-            <Skeleton className="h-6 w-1/2" />
-            <Skeleton className="h-6 w-3/5" />
-            <Skeleton className="h-20 w-full" />
-          </div>
-        ) : tasks.status === "error" ? (
-          <div role="alert" className="flex flex-col items-start gap-3">
-            <p className="text-sm text-pretty text-bad">
-              The project's tasks could not be read: {tasks.message}
-            </p>
-            <Button variant="outline" size="sm" onClick={tasks.reload}>
-              <RotateCwIcon data-icon="inline-start" aria-hidden="true" />
-              Try again
-            </Button>
-          </div>
-        ) : (
-          <TasksBody data={tasks.data} />
-        )}
-      </CardContent>
     </Card>
   );
 }
 
-/** A crew page's card: its phase task, how far it is, and every subtask. */
+/** A crew page's card: its phase task, how far it is, and every task under it. */
 export function PhaseTasksCard({ tasks }: { tasks: CrewPhaseTasks }) {
   const phase = tasks.state === "ready" ? tasks.phase : null;
   return (
@@ -391,8 +412,8 @@ export function PhaseTasksCard({ tasks }: { tasks: CrewPhaseTasks }) {
       <CardHeader>
         <CardTitle>Tasks</CardTitle>
         <CardDescription className="text-pretty">
-          Its phase task and the subtasks it broke the phase into. It hands back once each is done
-          or dropped.
+          Its phase task and the tasks it broke the phase into. It hands back once each blocking one
+          is done or dropped; a non-blocking one may stay open.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -413,14 +434,18 @@ export function PhaseTasksCard({ tasks }: { tasks: CrewPhaseTasks }) {
                 <span className="mr-2 font-mono text-xs text-muted-foreground">{phase.ref}</span>
                 {phase.subject}
               </span>
-              {phase.total > 0 && <Progress closed={phase.closed} total={phase.total} />}
+              <TaskMarks task={phase} leftOpen={false} />
             </div>
             {phase.children.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                No subtask yet: its first edit waits until it has one.
+                No task under it yet: its first edit waits until it has one.
               </p>
             ) : (
-              <TaskList tasks={phase.children} label="Its subtasks" />
+              <TaskList
+                tasks={filterTasks(phase.children, SHOW_ALL)}
+                label="Its tasks"
+                parentClosed={isClosed(phase.status)}
+              />
             )}
             {tasks.state === "ready" && tasks.more > 0 && (
               <p className="text-xs text-muted-foreground">{tasks.more} more not shown.</p>

@@ -1,0 +1,3 @@
+import { TasksView } from "@/views/tasks";
+
+export default TasksView;

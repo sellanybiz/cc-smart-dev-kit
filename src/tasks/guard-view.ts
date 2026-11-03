@@ -107,8 +107,13 @@ export interface CrewTaskView {
   phase: WorkTask | null;
   /** A list exists to judge by: the phase task has a subtask, or Claude Code's list a task file. */
   listed: boolean;
-  /** Every open task, in progress first: the phase task's subtasks, then Claude Code's list. */
+  /**
+   * Every open task that holds the hand-back, in progress first: the phase task's blocking
+   * subtasks (`holdingUnder`), then Claude Code's list.
+   */
   open: OpenTaskLine[];
+  /** The phase's other open tasks, which hold nothing (non-blocking work, D76): the card lists them. */
+  aside: OpenTaskLine[];
   /** What could not be read, one line each; empty when everything was read. */
   unreadable: string[];
 }
@@ -126,6 +131,7 @@ export function crewTaskView(where: Where & { crewId: string }): CrewTaskView {
     phase: ready?.phase ?? null,
     listed: (ready?.total ?? 0) > 0 || legacy.files > 0,
     open: [...(ready?.openSubtasks ?? []).map(kitLine), ...legacy.open],
+    aside: (ready?.aside ?? []).map(kitLine),
     unreadable,
   };
 }

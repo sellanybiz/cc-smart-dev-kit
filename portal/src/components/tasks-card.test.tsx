@@ -1,113 +1,36 @@
 /**
- * The Tasks card and a crew page's phase card, drawn from data alone: every state says what it
- * is in words, and the markup holds no `style` attribute (the portal's policy refuses one).
+ * One project's tasks and a crew page's phase card, drawn from data alone: every state says what
+ * it is in words, each row its layer, its type and what blocks it, and the markup holds no
+ * `style` attribute (the portal's policy refuses one).
  */
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ProjectTasksData, WorkTaskNode } from "@/api/types";
 import { PhaseTasksCard, TasksBody } from "@/components/tasks-card";
+import { FULL, PHASE, words } from "@/components/tasks-fixtures";
+import { DEFAULT_FILTER, SHOW_ALL } from "@/lib/tasks";
 
-/** The words a person reads: the tags gone, the entities React writes turned back. */
-function words(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
+/** The `data-layer` of every row, in the order the tree draws them. */
+function layers(html: string): string[] {
+  return [...html.matchAll(/data-layer="([a-z]+)"/g)].map((match) => match[1] ?? "");
 }
 
-function task(
-  ref: number,
-  subject: string,
-  status: WorkTaskNode["status"],
-  children: WorkTaskNode[] = [],
-  more: Partial<WorkTaskNode> = {},
-): WorkTaskNode {
-  return {
-    children,
-    closed: 0,
-    id: `w${ref}`,
-    kind: "task",
-    phase: null,
-    plan: null,
-    ref: `#${ref}`,
-    status,
-    subject,
-    total: 0,
-    updatedAt: "2026-11-03T10:00:00.000Z",
-    ...more,
-  };
-}
-
-const PHASE = task(
-  2,
-  "Build the store",
-  "in_progress",
-  [
-    task(3, "Write the schema", "done"),
-    task(4, "Migrate the old rows", "dropped"),
-    task(5, "Prove two writers", "in_progress"),
-  ],
-  { closed: 2, kind: "phase", phase: "K", plan: "plan", total: 3 },
-);
-
-const FULL: ProjectTasksData = {
-  files: {
-    broken: 1,
-    closed: 4,
-    dir: ".claude/tasks",
-    staleDays: 30,
-    state: "ready",
-    tasks: [
-      {
-        created: "2026-10-30",
-        file: ".claude/tasks/T-7k2m4q-live-key.md",
-        flags: ["needs-yes", "a-flag-of-its-own"],
-        id: "T-7k2m4q",
-        kind: "production",
-        stale: false,
-        title: "Set the live key",
-        weight: "blocks-release",
-        when: "next-release",
-      },
-      {
-        created: "2026-09-01",
-        file: ".claude/tasks/T-z5h8ks-retire.md",
-        flags: [],
-        id: "T-z5h8ks",
-        kind: "follow-up",
-        stale: true,
-        title: "Retire the old service",
-        weight: null,
-        when: null,
-      },
-    ],
-  },
-  work: {
-    more: 2,
-    recentDays: 7,
-    state: "ready",
-    tasks: [
-      task(1, "plan", "in_progress", [PHASE], { closed: 2, kind: "plan", plan: "plan", total: 4 }),
-    ],
-  },
-};
-
-describe("the Tasks card", () => {
-  test("a full answer: the tree with each status in words, the files by kind with their pills", () => {
+describe("one project's tasks", () => {
+  test("open only (the default): the tree by layer, each status in words, the files by kind", () => {
     const html = renderToStaticMarkup(<TasksBody data={FULL} />);
     expect(html).not.toContain("style=");
     const text = words(html);
     expect(text).toContain("Work on this machine");
-    // Every open task counts, at every depth: the plan, the phase and one subtask.
-    expect(text).toContain("3 open · closed ones stay 7 days");
+    // Every open task counts, at every depth; closed ones are hidden by default.
+    expect(text).toContain("6 open · 1 blocked · 2 non-blocking · closed ones hidden");
+    // Plan › Phase › Task › Subtask, and the done parent kept as the place of its open subtask.
+    expect(layers(html)).toEqual(["plan", "phase", "task", "subtask", "task", "task", "subtask"]);
     expect(text).toContain("in progress: plan");
     expect(text).toContain("phase K");
-    expect(text).toContain("done: Write the schema");
-    expect(text).toContain("dropped: Migrate the old rows");
-    expect(text).toContain("2 of 4 closed");
+    expect(text).toContain("Task, in progress: Prove two writers");
+    expect(text).toContain("Subtask, pending: Time the lock");
+    expect(text).not.toContain("Write the schema ");
+    expect(text).not.toContain("Migrate the old rows");
+    expect(text).toContain("2 of 6 closed");
     expect(text).toContain("2 more not shown: cc-smart-dev-kit task list --scope all");
     expect(text).toContain("2 open in .claude/tasks · 4 closed");
     expect(text).toContain("1 file does not read as a task");
@@ -121,6 +44,61 @@ describe("the Tasks card", () => {
     expect(text).toContain("a-flag-of-its-own");
     expect(text).toContain("open over 30 days");
     expect(text).toContain(".claude/tasks/T-z5h8ks-retire.md · written 2026-09-01");
+  });
+
+  test("a non-blocking task is marked, blocking says nothing, and work left open says so", () => {
+    const html = renderToStaticMarkup(<TasksBody data={FULL} />);
+    const text = words(html);
+    // Two non-blocking rows each carry the mark; the blocking default is never written out.
+    expect(html.match(/>non-blocking<\/span>/g)?.length).toBe(2);
+    expect(text).not.toMatch(/ blocking /);
+    // The open subtask under the done task was left open when its parent closed.
+    expect(text).toContain("Say it in the changelog non-blocking · left open");
+    expect(text.match(/left open/g)?.length).toBe(1);
+  });
+
+  test("a blocked task names each task it waits for, with that task's state, closed ones too", () => {
+    const text = words(renderToStaticMarkup(<TasksBody data={FULL} />));
+    expect(text).toContain(
+      "Write the docs page ! blocked by #3 ✓ (done: Write the schema) #5 ◐ (in progress: Prove two writers)",
+    );
+    expect(text.match(/blocked by/g)?.length).toBe(1);
+  });
+
+  test("recent shows the closed tasks too, and says how long they stay", () => {
+    const text = words(renderToStaticMarkup(<TasksBody data={FULL} filter={SHOW_ALL} />));
+    expect(text).toContain("closed ones stay 7 days");
+    expect(text).toContain("done: Write the schema");
+    expect(text).toContain("dropped: Migrate the old rows");
+  });
+
+  test("blocked only: the blocked task with the tasks above it as its place", () => {
+    const html = renderToStaticMarkup(
+      <TasksBody data={FULL} filter={{ ...DEFAULT_FILTER, blocked: true }} />,
+    );
+    expect(layers(html)).toEqual(["plan", "phase", "task"]);
+    expect(words(html)).toContain("Write the docs page");
+    // Its blocker is named on its row, but is no row of its own: it is not blocked.
+    expect(words(html)).not.toContain("Task, in progress: Prove two writers");
+  });
+
+  test("non-blocking only: the two noted tasks, and nothing that matches says so", () => {
+    const html = renderToStaticMarkup(
+      <TasksBody data={FULL} filter={{ ...DEFAULT_FILTER, nonBlocking: true }} />,
+    );
+    expect(layers(html)).toEqual(["plan", "phase", "task", "subtask", "task", "subtask"]);
+    const none = words(
+      renderToStaticMarkup(
+        <TasksBody
+          data={FULL}
+          filter={{ ...DEFAULT_FILTER, blocked: true, nonBlocking: true }}
+          onFilter={() => {}}
+        />,
+      ),
+    );
+    expect(none).toContain("Nothing matches the filters");
+    expect(none).toContain("No blocked, non-blocking task here.");
+    expect(none).toContain("Clear the filters");
   });
 
   test("each empty and unreadable state says what it is and what makes it change", () => {
@@ -142,6 +120,7 @@ describe("the Tasks card", () => {
       ),
     );
     expect(none).toContain("No work tasks here yet");
+    expect(none).toContain("task_create");
     expect(none).toContain("cc-smart-dev-kit task add");
     expect(none).toContain("Nothing owed");
     const quiet = words(
@@ -158,6 +137,19 @@ describe("the Tasks card", () => {
     expect(quiet).toContain("none closed in the last 7 days");
     expect(quiet).toContain("The task files cannot be read");
     expect(quiet).toContain("the project file is broken");
+    const allClosed = words(
+      renderToStaticMarkup(
+        <TasksBody
+          data={{
+            ...FULL,
+            work: { more: 0, recentDays: 7, state: "ready", tasks: [PHASE.children[0] ?? PHASE] },
+          }}
+          onFilter={() => {}}
+        />,
+      ),
+    );
+    expect(allClosed).toContain("Every task here is closed");
+    expect(allClosed).toContain("Show recent");
     const broken = words(
       renderToStaticMarkup(
         <TasksBody
@@ -174,18 +166,22 @@ describe("the Tasks card", () => {
 });
 
 describe("a crew page's phase card", () => {
-  test("its phase with its progress, and the subtasks under it", () => {
+  test("its phase with its progress, and every task under it with the same row details", () => {
     const html = renderToStaticMarkup(
       <PhaseTasksCard tasks={{ more: 0, phase: PHASE, state: "ready" }} />,
     );
     expect(html).not.toContain("style=");
     const text = words(html);
-    expect(text).toContain("#2 Build the store");
-    expect(text).toContain("2 of 3 closed");
-    expect(text).toContain("in progress: Prove two writers");
+    expect(text).toContain("#2 Build the store phase K");
+    expect(text).toContain("2 of 5 closed");
+    // The whole phase, closed tasks too.
+    expect(text).toContain("done: Write the schema");
+    expect(text).toContain("Task, in progress: Prove two writers");
+    expect(text).toContain("Subtask, pending: Time the lock non-blocking");
+    expect(text).toContain("! blocked by #3 ✓ (done: Write the schema) #5 ◐");
   });
 
-  test("a session from before the task list, a phase with no subtask yet, and no store", () => {
+  test("a session from before the task list, a phase with no task yet, and no store", () => {
     expect(
       words(
         renderToStaticMarkup(<PhaseTasksCard tasks={{ more: 0, phase: null, state: "ready" }} />),
@@ -203,7 +199,7 @@ describe("a crew page's phase card", () => {
           />,
         ),
       ),
-    ).toContain("No subtask yet: its first edit waits until it has one.");
+    ).toContain("No task under it yet: its first edit waits until it has one.");
     expect(words(renderToStaticMarkup(<PhaseTasksCard tasks={{ state: "none" }} />))).toContain(
       "The kit's task list has no store on this machine yet.",
     );

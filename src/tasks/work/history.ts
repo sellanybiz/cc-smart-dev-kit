@@ -13,10 +13,11 @@ const FIELDS: readonly [key: string, label: string][] = [
   ["phase", "phase"],
   ["subject", "subject"],
   ["status", "status"],
+  ["type", "type"],
   ["parent", "parent"],
   ["crew", "crew"],
   ["claim", "claimed by"],
-  ["waitsFor", "waits for"],
+  ["waitsFor", "blocked by"],
   ["description", "description"],
   ["note", "note"],
 ];

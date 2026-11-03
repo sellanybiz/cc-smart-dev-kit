@@ -37,6 +37,7 @@ import type {
   RouterHealth,
   SettingsData,
   SettingsRow,
+  TasksData,
   UpdateData,
   WorkData,
   WorktreesData,
@@ -61,6 +62,7 @@ import type {
   ProjectWorkflowAnswer,
   RecentEntry,
   RouterFacts,
+  TasksAnswer,
   UpdateAnswer,
   ProjectInitAnswers as WireProjectInitAnswers,
   WorkAnswer,
@@ -213,6 +215,17 @@ function projectRowOf(project: ProjectSummary): ProjectListRow {
 /** The project list, in the server's order (newest use first), and its note. */
 export function projectsOf(answer: ProjectsAnswer): ProjectList {
   return { note: answer.note, rows: answer.projects.map(projectRowOf) };
+}
+
+/** The Tasks tab (D76): each project's row as the list draws it, its tasks as the server sent. */
+export function tasksOf(answer: TasksAnswer): TasksData {
+  return {
+    note: answer.note,
+    projects: answer.projects.map((one) => ({
+      project: projectRowOf(one.project),
+      tasks: one.tasks,
+    })),
+  };
 }
 
 /** The form's four fields: the opaque `workflow` object stays on the server's side. */

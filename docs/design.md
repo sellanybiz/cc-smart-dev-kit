@@ -50,7 +50,7 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [The kit's task list](design/tasks.md) | D75: local SQLite work tasks, project Markdown tasks, one tool surface, setup and guards; replaces D68's split, denies Claude Code's list tools and keeps claude-mem for memory only. |
+| [The kit's task list](design/tasks.md) | D75: local SQLite work tasks, project Markdown tasks, one tool surface, setup and guards; replaces D68's split, denies Claude Code's list tools and keeps claude-mem for memory only. D76: three layers (phase › task › subtask), blocking or non-blocking, blocked-by, and phases a lead lays out ahead of its crew. |
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
 | [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, a phase started from an issue (only one the person labelled, its text kept as data, the hand-back comment), and what the later issue parts add. |
 | [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, a plan's own folder with its briefs and the record of each crew run, a phase from an issue, the board and the end of a crew session, the crew session's steps and its report, the lead's watch and fork adoption, numbered questions and lead notes, the crew talks, and the crew's own hooks. |

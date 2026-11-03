@@ -3,7 +3,12 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import type { Result } from "./types";
-export const WORK_SCHEMA_VERSION = 1;
+/**
+ * The schema this code writes. Each step is additive (`MIGRATIONS`), so `min_compatible` stays 1:
+ * code from an older version folder still reads and writes the store, and a column it does not
+ * know takes its default.
+ */
+export const WORK_SCHEMA_VERSION = 2;
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
 export const NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -37,6 +42,13 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
 CREATE INDEX task_event_task ON task_events(task_id,id);
 CREATE INDEX task_event_number ON task_events(project,number);
 `;
+/**
+ * The steps after schema 1, in order: step n moves a store at n to n + 1. Never edit a step that
+ * shipped; add one. Schema 2 (D76): a task's type, blocking unless set.
+ */
+const MIGRATIONS = [
+  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
+];
 // `task_events` has no foreign key on purpose: a task's history outlives the task.
 export function openWorkDb(file: string, options: { mode: "write" | "hook" }): WorkDb {
   const hook = options.mode === "hook";
@@ -59,6 +71,12 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
         if (version < 1) {
           sqlite.run(SCHEMA);
           sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1); at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined) throw new Error(`no migration from task schema ${at}`);
+          sqlite.run(step);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
         sqlite.run("COMMIT");
       } catch (error) {

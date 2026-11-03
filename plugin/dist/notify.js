@@ -123,7 +123,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.10.1",
+  version: "1.11.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7529,7 +7529,7 @@ function projectKey(repo) {
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
 import { dirname as dirname2, join as join8 } from "path";
-var WORK_SCHEMA_VERSION = 1;
+var WORK_SCHEMA_VERSION = 2;
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -7558,6 +7558,9 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
 CREATE INDEX task_event_task ON task_events(task_id,id);
 CREATE INDEX task_event_number ON task_events(project,number);
 `;
+var MIGRATIONS = [
+  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))"
+];
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
   const fresh = !existsSync5(file);
@@ -7580,6 +7583,13 @@ function openWorkDb(file, options) {
         if (version < 1) {
           sqlite.run(SCHEMA);
           sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined)
+            throw new Error(`no migration from task schema ${at}`);
+          sqlite.run(step);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
         sqlite.run("COMMIT");
       } catch (error) {
@@ -7641,8 +7651,12 @@ function allTasks(db, project) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
-    waitsFor: dependencies.get(row.id) ?? []
+    waitsFor: dependencies.get(row.id) ?? [],
+    type: row.blocking === 0 ? "non-blocking" : "blocking"
   }));
+}
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
 }
 
 // src/tasks/work/read.ts
@@ -7661,13 +7675,27 @@ function readWorkStore(paths, body) {
     db?.close();
   }
 }
+function inOpenPhase(task, byId) {
+  const seen = new Set;
+  for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
+    if (t.kind === "phase")
+      return isOpen(t);
+    seen.add(t.id);
+  }
+  return false;
+}
 function own2(db, project, sessionIds, plan) {
   return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
 }
 function leadOwnState(paths, project, plan, sessionIds) {
   return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const byId = new Map(all.map((t) => [t.id, t]));
     const tasks = own2(db, project, sessionIds, plan);
-    return { inProgress: tasks.filter((t) => t.status === "in_progress"), total: tasks.length };
+    return {
+      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId)),
+      total: tasks.length
+    };
   });
 }
 

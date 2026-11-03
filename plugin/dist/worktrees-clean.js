@@ -6183,7 +6183,7 @@ function duration2(params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "1.10.1",
+  version: "1.11.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7760,7 +7760,7 @@ function projectKey(repo) {
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
 import { dirname as dirname3, join as join9 } from "path";
-var WORK_SCHEMA_VERSION = 1;
+var WORK_SCHEMA_VERSION = 2;
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -7789,6 +7789,9 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
 CREATE INDEX task_event_task ON task_events(task_id,id);
 CREATE INDEX task_event_number ON task_events(project,number);
 `;
+var MIGRATIONS = [
+  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))"
+];
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
   const fresh = !existsSync5(file);
@@ -7811,6 +7814,13 @@ function openWorkDb(file, options) {
         if (version < 1) {
           sqlite.run(SCHEMA);
           sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined)
+            throw new Error(`no migration from task schema ${at}`);
+          sqlite.run(step);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
         sqlite.run("COMMIT");
       } catch (error) {
@@ -7967,7 +7977,8 @@ function allTasks(db, project) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
-    waitsFor: dependencies.get(row.id) ?? []
+    waitsFor: dependencies.get(row.id) ?? [],
+    type: row.blocking === 0 ? "non-blocking" : "blocking"
   }));
 }
 function getTask(db, project, ref) {
@@ -8005,8 +8016,37 @@ function descendantsIn(tasks, id) {
   }
   return result;
 }
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
 function openSubtasks(db, id) {
-  return descendants(db, id).filter(isOpen).sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number);
+  return descendants(db, id).filter(isOpen).sort(inProgressFirst);
+}
+function holdingUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id) || child.type === "non-blocking")
+        continue;
+      seen.add(child.id);
+      if (isOpen(child))
+        result.push(child);
+      walk(child.id);
+    }
+  };
+  walk(id);
+  return result.sort(inProgressFirst);
 }
 
 // src/tasks/work/types.ts
@@ -8020,6 +8060,7 @@ function shape(db, task) {
     subject: task.subject,
     description: task.description,
     status: task.status,
+    type: task.type,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     crew: task.crewId,
     claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
@@ -8066,8 +8107,18 @@ function systemClose(db, id, status, reason, who, now) {
 }
 function applySystemClose(db, id, status, reason, who, now) {
   const task = taskById(db, id);
-  for (const child of openSubtasks(db, id)) {
+  const open = status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  const laidOut = (t) => status === "dropped" && task.kind === "phase" && t.crewId === null;
+  for (const child of open) {
     const before = shape(db, child);
+    if (laidOut(child)) {
+      if (child.status === "pending" && child.claim === null)
+        continue;
+      db.sqlite.query("UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, child.id);
+      recordChange(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Back to pending: ${reason}. The phase's next crew session takes it.`, who, now, reason);
+      continue;
+    }
     db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
     recordChange(db, before, taskById(db, child.id), who, now, reason);
     insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);

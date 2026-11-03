@@ -22,6 +22,15 @@ command, its folders and its slots were `anymodel` in 0.2.x, and are
 `cc-smart-dev-kit` now. `cc-smart-dev-kit migrate` moves a machine that still has the
 old names (`README.md` § Moving from anymodel).
 
+## 1.11.0 — three task layers, blocking or not, and a Tasks tab (D76)
+
+In progress: work tasks get three layers under a plan (phase › task › subtask), a type
+(blocking holds its parent, non-blocking holds nothing) and a blocked-by list that holds a
+task's start and done. A lead lays out its phases ahead of its crew, and `crew start` adopts
+them. The guards wait only for blocking work, and a merge leaves non-blocking work open. The
+portal shows every project's tasks on a Tasks tab of its own. [The task design](design/tasks.md)
+§ Layers, types and blocked-by (D76) holds the rules.
+
 ## 1.10.0 — keep going, with the kit's task list (D75)
 
 In progress: the release joins the lead and crew keep-going guards with one task system.

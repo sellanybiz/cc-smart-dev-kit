@@ -7,6 +7,14 @@ const subject = z.string().trim().min(1).max(SUBJECT_LIMIT);
 const description = z.string().max(DESCRIPTION_LIMIT);
 const note = z.string().trim().min(1).max(NOTE_LIMIT);
 const ref = z.string().min(1);
+const type = z
+  .enum(["blocking", "non-blocking"])
+  .describe(
+    "blocking (the default): its parent cannot be done, and a crew session cannot hand back, while it is open. non-blocking: noted work that holds nothing.",
+  );
+const blockedBy = z
+  .array(ref)
+  .describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
 const projectFields = {
   when: fields.when,
   weight: fields.weight,
@@ -20,9 +28,30 @@ export const taskSchemas = {
       subject,
       description: description.optional(),
       kind: z.enum(["work", ...fields.kind.options]).default("work"),
-      parent: ref.optional(),
+      parent: ref
+        .optional()
+        .describe(
+          "The task (#n) it goes under. Three layers: phase › task › subtask; a subtask holds no subtasks. A crew session's tasks go under its phase by themselves.",
+        ),
       status: z.enum(["pending", "in_progress"]).optional(),
-      waits_for: z.array(ref).optional(),
+      type: type.optional(),
+      blocked_by: blockedBy.optional(),
+      phase: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Lay out a phase of the plan by its id (as `crew start` names it): its task is made once, and `crew start` for that phase takes it over.",
+        ),
+      plan: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "The plan's slug (as `crew lead --plan` names it); a lead's own plan when left out. With no phase, it makes the plan's own task, subject its title.",
+        ),
       ...projectFields,
     })
     .strict(),
@@ -33,8 +62,9 @@ export const taskSchemas = {
       description: description.optional(),
       status: z.enum(["pending", "in_progress", "done", "dropped"]).optional(),
       parent: ref.nullable().optional(),
-      waits_for_add: z.array(ref).optional(),
-      waits_for_remove: z.array(ref).optional(),
+      type: type.optional(),
+      blocked_by_add: blockedBy.optional(),
+      blocked_by_remove: z.array(ref).optional(),
       ...projectFields,
     })
     .strict(),

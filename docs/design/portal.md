@@ -304,7 +304,7 @@ the server publishes them when it has them.
 
 **`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
 `health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`,
-`projects/<id>/tasks`, `work`, `crew/<id>`, `flow`, `needs`,
+`projects/<id>/tasks`, `tasks`, `work`, `crew/<id>`, `flow`, `needs`,
 `guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
 through the door. Each answer is built from the same readers the server-rendered pages use
 (`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
@@ -681,23 +681,48 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
   reaches every project whose address names that profile. A project that is no git project
   shows its state and no form.
-- **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`; the answer is
-  `projects/<id>/tasks`, `src/portal/api/project-tasks.ts`): read-only, on every project's page.
-  *Work on this machine* is the kit's work store for the project as one tree (`tree.ts`
-  › `projectTaskTree`): open work, and what closed in the last seven days
-  (`TASKS_CARD_RECENT_DAYS`), at most `TREE_TASK_LIMIT` tasks with the rest counted. Each task
-  shows its status as a glyph and its word (never colour alone), plan and phase badges, and its
-  subtree's progress as a meter drawn by an SVG `<rect>` with a native `<meter>` for screen
-  readers. *Owed by the project* lists the open task files of the main checkout by kind
-  (production, database, teammates, follow-ups), what blocks a release first, each with its
-  weight, its when, its flags in words and a mark when it is open past `tasks.staleDays`; a file
-  that does not read as a task is counted, with `task check` to name it. Each side has its own
-  empty and unreadable state in words. The card reads again on the `tasks` event, a crew event
-  or result, and a `project.*` result (`TASKS_CARD_REFRESH`).
+- **Tasks** (D76, `/tasks`, `portal/src/views/tasks.tsx`; the answer is `tasks`, built in
+  `src/portal/api/project-tasks.ts`): read-only, the one home of the kit's task list on the
+  portal, in the sidebar under Now after Work. `tasks` is every project of `projects`, in its
+  order, each with the same answer `projects/<id>/tasks` gives (one reading, `tasksOf`, read
+  `PROJECT_GIT_AT_ONCE` projects at a time). The tab opens with four counts over the projects in
+  view (open work with how much is in progress, blocked, non-blocking, task files owed with how
+  many block the release), then the filters, then a key to the tree, then a card per project.
+  - *The filters* live in the address, so a link opens the tab as it was: `project=<id>` (a
+    picker when there is more than one project, each with its open count), `show=recent` (open
+    only is the default; recent adds what closed in the last seven days,
+    `TASKS_CARD_RECENT_DAYS`), `blocked=1` and `type=non-blocking`. The rules are
+    `portal/src/lib/tasks.ts`: a filter keeps each task it asks for and the tasks above it as its
+    place (drawn in the muted colour), never a task cut from its parent. An id no project has
+    says so and shows every project.
+  - *Work on this machine* is the project's tree (`tree.ts` › `projectTaskTree`, at most
+    `TREE_TASK_LIMIT` tasks with the rest counted) as Plan › Phase › Task › Subtask: the layer
+    reads from the indent and the subject's weight, a plan and a phase carry a badge, and a screen
+    reader hears the layer and the status before the subject. Each row (`task-tree.tsx`, the one
+    row) shows its status as a glyph and its word (never colour alone), a dashed `non-blocking`
+    mark (blocking is the default and says nothing), `left open` for an open task under a closed
+    parent, `blocked by` with each blocker's number and its state's glyph while it is blocked
+    (closed blockers too, the subject on hover and for screen readers), and its subtree's
+    progress as a meter drawn by an SVG `<rect>` with a native `<meter>` for screen readers.
+  - *Owed by the project* lists the open task files of the main checkout by kind (production,
+    database, teammates, follow-ups), what blocks a release first, each with its weight, its
+    when, its flags in words and a mark when it is open past `tasks.staleDays`; a file that does
+    not read as a task is counted, with `task check` to name it.
+  - Every state has its words: loading is the page skeleton; no project at all points at
+    Settings; a store with nothing yet, nothing open, nothing matching the filters (with a way to
+    clear them or show recent) and no task file each say what makes tasks appear (a session's
+    `task_create`, or `cc-smart-dev-kit task add`); a store or a folder that cannot be read says
+    why. With every project in view, one with nothing to show (or, under a filter, nothing that
+    matches) is named in one line at the end instead of an empty card. The tab reads again on the
+    `tasks` event, a crew event or result, and a `project.*` result (`TASKS_REFRESH`).
+- **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`): one line on every
+  project's page that counts its open, in-progress and blocked work and the task files it owes
+  (from `projects/<id>/tasks`), and opens the Tasks tab on that project (`/tasks?project=<id>`).
 - **Crew, the phase card** (D75): a crew page's `tasks` (`crew/<id>`, `tree.ts` ›
-  `crewPhaseTree`) is its phase task with every subtask, closed ones too, drawn by the same tree.
-  A session started before 1.10.0 has no phase task, and the card says so. The page reads again
-  on the `tasks` event too (`CREW_PAGE_REFRESH`); Work does not.
+  `crewPhaseTree`) is its phase task with every task under it, closed ones too, drawn by the
+  Tasks tab's row with the same details. A session started before 1.10.0 has no phase task, and
+  the card says so. The page reads again on the `tasks` event too (`CREW_PAGE_REFRESH`); Work
+  does not.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the

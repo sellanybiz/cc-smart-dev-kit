@@ -111,9 +111,12 @@ move a plan kept outside its home there. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 
-After approval, use `task_create` for one plan task, subject = the plan's title. Each phase
-is its subtask; each phase's steps are subtasks with their done-check in the description.
-For crew phases, let `crew start` create the phase task (§ 5); do not make a duplicate.
+After approval, lay the plan out with `task_create`: the plan's own task (`plan`: its slug,
+subject = its title), then one per phase (`phase`: the id `crew start` will give it), so a
+crew start takes that task over instead of making a second (§ 5). Under each phase go its
+steps, each with its done-check in the description; a step's parts are its subtasks, and a
+subtask holds none (phase › task › subtask). A step its phase can be done without is
+`type: non-blocking`; a step that waits for another names it in `blocked_by`.
 Create a project task for every production, database, teammate or follow-up obligation the
 plan finds. Task routing and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 

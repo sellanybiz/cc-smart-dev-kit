@@ -5,6 +5,8 @@ import {
   allTasks,
   claimState,
   countedUnder,
+  holdingUnder,
+  isBlocked,
   isOpen,
   openSubtasks,
   subtreeProgress,
@@ -37,14 +39,36 @@ export function crewPhaseState(paths: Paths, project: string, crewId: string) {
   return readWorkStore(paths, (db) => {
     const tasks = allTasks(db, project);
     const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const holding = phase ? holdingUnder(tasks, phase.id) : [];
+    const held = new Set(holding.map((t) => t.id));
     return {
       phase,
-      openSubtasks: phase ? openSubtasks(db, phase.id) : [],
+      // What holds the hand-back (D76): non-blocking work is noted, never waited for.
+      openSubtasks: holding,
+      // The rest of the phase's open work, which holds nothing: the role card lists it too.
+      aside: phase ? openSubtasks(db, phase.id).filter((t) => !held.has(t.id)) : [],
       // Only what counts: an earlier crew session's closed subtasks never meet this one's gates.
       total: phase ? countedUnder(tasks, phase.id).length : 0,
     };
   });
 }
+/**
+ * True when the task sits in an open phase (or is one): then it is that phase's work, its crew
+ * session's. Under a closed phase it is anyone's again: what a merge left open, or what a
+ * removal handed back to pending.
+ */
+function inOpenPhase(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): boolean {
+  const seen = new Set<string>();
+  for (let t: WorkTask | undefined = task; t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
+    if (t.kind === "phase") return isOpen(t);
+    seen.add(t.id);
+  }
+  return false;
+}
+/**
+ * A lead's own tasks: the ones its sessions made, in its plan when one is given, the steps it
+ * laid out inside a phase (D76) too. They answer the reminder ("you have no task of your own").
+ */
 function own(db: WorkDb, project: string, sessionIds: string[], plan?: string) {
   return allTasks(db, project).filter(
     (t) =>
@@ -56,13 +80,22 @@ function own(db: WorkDb, project: string, sessionIds: string[], plan?: string) {
 }
 export function leadOwnState(paths: Paths, project: string, plan: string, sessionIds: string[]) {
   return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const byId = new Map(all.map((t) => [t.id, t]));
     const tasks = own(db, project, sessionIds, plan);
-    return { inProgress: tasks.filter((t) => t.status === "in_progress"), total: tasks.length };
+    return {
+      // What holds a lead's stop (D76): its own blocking work in progress, outside an open phase.
+      // A step it laid out inside one is that phase's crew session's to work.
+      inProgress: tasks.filter(
+        (t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId),
+      ),
+      total: tasks.length,
+    };
   });
 }
 /**
- * What a session start shows: the project's open work outside every crew phase (a phase and
- * its subtasks are the crew session's own, on the board), this process's claimed tasks first,
+ * What a session start shows: the project's open work outside every open crew phase (a phase
+ * and its subtasks are the crew session's own, on the board), this process's claimed tasks first,
  * then those in progress, then the most recently touched. A task untouched since `staleBefore`
  * is left out and counted, unless it is this process's own: an old list must not bury the
  * work in hand.
@@ -76,20 +109,10 @@ export function startView(
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    const inPhase = (task: WorkTask): boolean => {
-      const seen = new Set<string>();
-      for (
-        let t: WorkTask | undefined = task;
-        t && !seen.has(t.id);
-        t = byId.get(t.parentId ?? "")
-      ) {
-        if (t.kind === "phase") return true;
-        seen.add(t.id);
-      }
-      return false;
-    };
+    // An open phase's work is its crew session's; what a merge left open under a closed phase
+    // (non-blocking work, D76), or a removal handed back, is anyone's now, so it shows.
     const open = all
-      .filter((t) => isOpen(t) && !inPhase(t))
+      .filter((t) => isOpen(t) && !inOpenPhase(t, byId))
       .map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
     const shown = open.filter(
       ({ task, claim }) =>
@@ -112,6 +135,8 @@ export function startView(
         subject: task.subject,
         status: task.status,
         claim,
+        type: task.type,
+        blocked: isBlocked(task, byId),
       })),
       more: Math.max(0, shown.length - limit),
       stale: open.length - shown.length,

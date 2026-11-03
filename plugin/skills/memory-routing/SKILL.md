@@ -47,19 +47,21 @@ state, dated history or rollout status is not a rule. New rules, and where they 
 ## Using tasks
 
 Use server `cc-smart-dev-kit-tasks`: its tools are always loaded, with no lookup step.
-`task_create` takes a subject, a free-form description, an optional parent and kind. Put
+`task_create` takes a subject, a free-form description, an optional parent and kind, and for
+a work task its `type` (`blocking`, the default: it holds its parent; or `non-blocking`) and
+`blocked_by` (the tasks it waits for: it cannot start or be done while one is open). Put
 obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `after-deploy`,
 `owner`), safety flags and file refs on the project task, not in a separate ledger.
 
 - `task_update` keeps fields and status true: work is `pending`, `in_progress`, `done` or
   `dropped`; project tasks are `open`, `done` or `dropped`. Use `task_done` with evidence to
-  finish; subtasks must be done or dropped first. Record work notes with `task_note`.
+  finish; its blocking subtasks must be done or dropped first. Record work notes with `task_note`.
 - `task_list` reads `mine`, `plan`, `project` or `all` (open by default); `task_get` reads a task,
   with an offset for long text; `task_search` finds text. IDs look like `#12` or `T-7k2m4q`.
 - A teammate task's `task_done` means done on this machine; `for_everyone` closes it for all.
   `task_delete` removes only a mistake that has no notes or subtasks; otherwise drop it.
 - Without the tools, use `cc-smart-dev-kit task`:
-  `add|start|done|drop|note|list|show|search|check|release|import|delete`. Never fall back to
+  `add|set|start|done|drop|note|list|show|search|check|release|import|delete`. Never fall back to
   a plan log or a second to-do system. If the CLI is missing too, report the blocker.
 
 ## Saving to memory

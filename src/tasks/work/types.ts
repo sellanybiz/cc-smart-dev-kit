@@ -1,5 +1,15 @@
 export type WorkStatus = "pending" | "in_progress" | "done" | "dropped";
 export type WorkKind = "task" | "plan" | "phase";
+/**
+ * Where a task sits (D76): a plan holds phases, a phase holds tasks, a task holds subtasks, and a
+ * subtask holds nothing. Worked out from the parent chain (`layerOf`), never stored.
+ */
+export type WorkLayer = "plan" | "phase" | "task" | "subtask";
+/**
+ * Whether an open task holds what is above it (D76). A blocking one holds its parent's done, a
+ * crew session's hand-back and a lead's stop; a non-blocking one is noted work that holds nothing.
+ */
+export type WorkType = "blocking" | "non-blocking";
 export const SUBJECT_LIMIT = 200;
 export const DESCRIPTION_LIMIT = 200_000;
 export const NOTE_LIMIT = 64_000;
@@ -53,7 +63,10 @@ export interface WorkTask {
   createdAt: number;
   updatedAt: number;
   closedAt: number | null;
+  /** The ids of the tasks it is blocked by (`task_deps`): it cannot start or be done while one is open. */
   waitsFor: string[];
+  /** `WorkType`; a store from before schema 2 reads as blocking. */
+  type: WorkType;
 }
 export interface WorkTree extends WorkTask {
   children: WorkTree[];

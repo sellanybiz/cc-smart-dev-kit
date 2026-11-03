@@ -692,7 +692,7 @@ export interface MockData {
   projectPages: Record<string, ProjectData>;
   gatewayPages: ProjectMocks["gatewayPages"];
   workflowPages: ProjectMocks["workflowPages"];
-  /** Each project's Tasks card (D75), by project id. */
+  /** Each project's tasks (D75), by project id: the Tasks tab and the project page's card. */
   tasksPages: Record<string, ProjectTasksData>;
   /** A `project.*` action's mock answer; null: the generic "sent nothing" line. */
   act: ProjectMocks["act"];

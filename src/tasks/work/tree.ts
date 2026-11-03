@@ -1,12 +1,13 @@
 /**
- * A project's work tasks as one tree, for a person's view (the portal's Tasks card, D75): the
- * plan tasks, their phase tasks and every subtask, the open ones and those closed within a
- * recent window. Read-only, through the hook reader's mode: it never creates or migrates the
- * store, and a store it cannot read is said, never shown as an empty list.
+ * A project's work tasks as one tree, for a person's view (the portal's Tasks tab, D75, D76): the
+ * plan tasks, their phase tasks and every task under them, each with its layer, type and
+ * blockers, the open ones and those closed within a recent window. Read-only, through the hook
+ * reader's mode: it never creates or migrates the store, and a store it cannot read is said,
+ * never shown as an empty list.
  */
-import { allTasks, countsToward, isOpen, listTasks } from "./queries";
+import { allTasks, countsToward, isBlocked, isOpen, layerOf, listTasks } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
-import type { WorkKind, WorkStatus, WorkTree } from "./types";
+import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } from "./types";
 
 /** At most this many tasks in one answer: the rest are counted, not sent. */
 export const TREE_TASK_LIMIT = 300;
@@ -18,6 +19,14 @@ export interface TaskTreeNode {
   subject: string;
   status: WorkStatus;
   kind: WorkKind;
+  /** Plan, phase, task or subtask (D76). */
+  layer: WorkLayer;
+  /** Blocking holds its parent while open; non-blocking holds nothing (D76). */
+  type: WorkType;
+  /** The tasks it is blocked by, in number order, closed ones too: an open one blocks it. */
+  blockedBy: { ref: string; subject: string; status: WorkStatus }[];
+  /** Open, and one of `blockedBy` is still open. */
+  blocked: boolean;
   plan: string | null;
   phase: string | null;
   /** Its whole subtree: how many tasks are closed (done or dropped), of how many. */
@@ -74,7 +83,13 @@ function keptCount(task: WorkTree, keep: (task: WorkTree) => boolean): number {
  * rest counted in `more`. Open work first, newest change first: what a person looks for is at
  * the top of each level.
  */
-function shapeTrees(roots: readonly WorkTree[], keep: (task: WorkTree) => boolean): TaskTree {
+function shapeTrees(
+  roots: readonly WorkTree[],
+  all: readonly WorkTask[],
+  keep: (task: WorkTree) => boolean,
+): TaskTree {
+  // A blocker may sit outside the shown tree (closed long ago, or in another phase).
+  const byId = new Map(all.map((t) => [t.id, t]));
   let sent = 0;
   let more = 0;
   const byOpenThenNewest = (a: WorkTree, b: WorkTree) =>
@@ -93,6 +108,14 @@ function shapeTrees(roots: readonly WorkTree[], keep: (task: WorkTree) => boolea
       subject: task.subject,
       status: task.status,
       kind: task.kind,
+      layer: layerOf(task, byId),
+      type: task.type,
+      blockedBy: task.waitsFor
+        .map((id) => byId.get(id))
+        .filter((t) => t !== undefined)
+        .sort((a, b) => a.number - b.number)
+        .map((t) => ({ ref: `#${t.number}`, subject: t.subject, status: t.status })),
+      blocked: isBlocked(task, byId),
       plan: task.plan,
       phase: task.phase,
       closed: count.closed,
@@ -121,7 +144,9 @@ export function projectTaskTree(
 ): ReadState<TaskTree> {
   const since = options.now - options.recentMs;
   return readWorkStore(paths, (db) =>
-    shapeTrees(listTasks(db, { project, openOnly: false }), (task) => recent(task, since)),
+    shapeTrees(listTasks(db, { project, openOnly: false }), allTasks(db, project), (task) =>
+      recent(task, since),
+    ),
   );
 }
 
@@ -135,10 +160,12 @@ export function crewPhaseTree(
   crewId: string,
 ): ReadState<{ phase: TaskTreeNode | null; more: number }> {
   return readWorkStore(paths, (db) => {
-    const phase = allTasks(db, project).find((t) => t.kind === "phase" && t.crewId === crewId);
+    const all = allTasks(db, project);
+    const phase = all.find((t) => t.kind === "phase" && t.crewId === crewId);
     if (phase === undefined) return { phase: null, more: 0 };
     const tree = shapeTrees(
       listTasks(db, { project, root: phase.id, openOnly: false }),
+      all,
       () => true,
     );
     return { phase: tree.roots[0] ?? null, more: tree.more };

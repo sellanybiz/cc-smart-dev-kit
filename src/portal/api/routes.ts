@@ -21,7 +21,7 @@ import {
   updateAnswer,
 } from "./data";
 import { projectGatewayAnswerFor } from "./project-gateway";
-import { projectTasksAnswerFor } from "./project-tasks";
+import { projectTasksAnswerFor, tasksAnswer } from "./project-tasks";
 import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
@@ -108,6 +108,8 @@ export const API_READS: Readonly<
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
   "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
+  // The Tasks tab (D76): every project's work tree and task files at once.
+  "/api/tasks": async (deps) => ok(await tasksAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),
   "/api/worktrees": async (deps) => ok(await worktreesAnswer(deps)),

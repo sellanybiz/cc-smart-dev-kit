@@ -1,12 +1,13 @@
 /**
- * The kit's task list in mock data (D75): each project's Tasks card and a crew page's phase
- * tree. Every name is a placeholder. The projects cover each state the card draws: a full tree
- * with every kind of task file (one stale, one broken file), a project with nothing open, one
- * whose store has nothing yet, and a folder git cannot read.
+ * The kit's task list in mock data (D75, D76): the Tasks tab's projects and a crew page's phase
+ * tree. Every name is a placeholder. The projects cover each state the tab draws: a full tree
+ * with every layer (Plan › Phase › Task › Subtask), a non-blocking task, a blocked one, a task
+ * left open under a done parent, and every kind of task file (one stale, one broken file); a
+ * project with nothing open; one whose store has nothing yet; and a folder git cannot read.
  */
 
 import type { ProjectListRow, ProjectTasksData } from "./types";
-import type { CrewPhaseTasks, ProjectTaskRow, WorkTaskNode } from "./wire";
+import type { CrewPhaseTasks, ProjectTaskRow, WorkTaskBlocker, WorkTaskNode } from "./wire";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -16,34 +17,65 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/** A node, its subtree counted from its children the way the server counts (done or dropped). */
+type NodeExtra = Partial<
+  Pick<WorkTaskNode, "blocked" | "blockedBy" | "kind" | "phase" | "plan" | "type">
+>;
+
+/**
+ * A node, its subtree counted from its children the way the server counts (done or dropped),
+ * and its children's layers worked out the way the store does: a task under a task is a subtask.
+ */
 function node(
   number: number,
   subject: string,
   status: WorkTaskNode["status"],
   updatedAt: number,
   children: WorkTaskNode[] = [],
-  extra: Partial<Pick<WorkTaskNode, "kind" | "phase" | "plan">> = {},
+  extra: NodeExtra = {},
 ): WorkTaskNode {
+  const kind = extra.kind ?? "task";
   const under = (one: WorkTaskNode): WorkTaskNode[] => [one, ...one.children.flatMap(under)];
   const all = children.flatMap(under);
   return {
-    children,
+    blocked: extra.blocked ?? false,
+    blockedBy: extra.blockedBy ?? [],
+    children: children.map((child) =>
+      kind === "task" && child.kind === "task" ? { ...child, layer: "subtask" } : child,
+    ),
     closed: all.filter((one) => one.status === "done" || one.status === "dropped").length,
     id: `w${number.toString(36).padStart(10, "0")}`,
-    kind: extra.kind ?? "task",
+    kind,
+    layer: kind,
     phase: extra.phase ?? null,
     plan: extra.plan ?? null,
     ref: `#${number}`,
     status,
     subject,
     total: all.length,
+    type: extra.type ?? "blocking",
     updatedAt: iso(updatedAt),
   };
 }
 
-/** The phase a mock crew session builds: two subtasks done, one in progress, one dropped. */
+function blocker(one: WorkTaskNode): WorkTaskBlocker {
+  return { ref: one.ref, status: one.status, subject: one.subject };
+}
+
+/** The phase a mock crew session builds: two tasks done, one in progress, one dropped. */
 function storePhase(now: number): WorkTaskNode {
+  const prove = node(
+    7,
+    "Prove two writers at once lose no record: ten processes, one store, every write read back",
+    "in_progress",
+    now - 4 * MINUTE,
+    [
+      node(12, "Start the ten writers from one script", "done", now - 10 * MINUTE),
+      node(13, "Read every record back and compare", "in_progress", now - 4 * MINUTE),
+      node(14, "Note how long a write waits for the lock", "pending", now - 9 * MINUTE, [], {
+        type: "non-blocking",
+      }),
+    ],
+  );
   return node(
     3,
     "Contracts: the store's record shapes",
@@ -53,40 +85,43 @@ function storePhase(now: number): WorkTaskNode {
       node(4, "Write the record schema with its version field", "done", now - 40 * MINUTE),
       node(5, "Reject a record written by a newer version", "done", now - 25 * MINUTE),
       node(6, "Migrate the old records in place", "dropped", now - 20 * MINUTE),
-      node(
-        7,
-        "Prove two writers at once lose no record: ten processes, one store, every write read back",
-        "in_progress",
-        now - 4 * MINUTE,
-      ),
+      prove,
     ],
     { kind: "phase", phase: "K", plan: "master-plan" },
   );
 }
 
 function fullTree(now: number): WorkTaskNode[] {
+  const phase = storePhase(now);
+  const prove = phase.children.find((one) => one.ref === "#7");
+  const schema = phase.children.find((one) => one.ref === "#4");
+  const docs = node(
+    8,
+    "Docs: the store's page",
+    "pending",
+    now - 50 * MINUTE,
+    [
+      node(9, "Write the page from the record schema", "pending", now - 50 * MINUTE, [], {
+        blocked: true,
+        blockedBy: [schema, prove].flatMap((one) => (one === undefined ? [] : [blocker(one)])),
+      }),
+    ],
+    { kind: "phase", phase: "L", plan: "master-plan" },
+  );
   return [
-    node(
-      1,
-      "master-plan",
-      "in_progress",
-      now - 4 * MINUTE,
-      [
-        storePhase(now),
-        node(
-          8,
-          "Docs: the store's page",
-          "pending",
-          now - 50 * MINUTE,
-          [node(9, "Wait for the contracts phase", "pending", now - 50 * MINUTE)],
-          { kind: "phase", phase: "L", plan: "master-plan" },
-        ),
-      ],
-      { kind: "plan", plan: "master-plan" },
-    ),
+    node(1, "master-plan", "in_progress", now - 4 * MINUTE, [phase, docs], {
+      kind: "plan",
+      plan: "master-plan",
+    }),
     node(10, "Answer the person's question about the release date", "in_progress", now - MINUTE),
-    node(11, "Look at the flaky upload test", "pending", now - 3 * HOUR),
-    node(2, "Rename the old setting", "done", now - 2 * DAY),
+    node(11, "Look at the flaky upload test", "pending", now - 3 * HOUR, [], {
+      type: "non-blocking",
+    }),
+    node(2, "Rename the old setting", "done", now - 2 * DAY, [
+      node(15, "Say the new name in the changelog", "pending", now - 2 * DAY, [], {
+        type: "non-blocking",
+      }),
+    ]),
   ];
 }
 
@@ -145,7 +180,7 @@ const FULL_FILES: ProjectTaskRow[] = [
   }),
 ];
 
-/** Each project's Tasks card, by project id. */
+/** Each project's tasks, by project id. */
 export function tasksPagesFor(
   rows: ProjectListRow[],
   now: number,
@@ -181,7 +216,12 @@ export function tasksPagesFor(
           state: "ready",
           tasks: [],
         },
-        work: { more: 0, recentDays: 7, state: "ready", tasks: [] },
+        work: {
+          more: 0,
+          recentDays: 7,
+          state: "ready",
+          tasks: [node(1, "Fix the broken link on the home page", "done", now - DAY)],
+        },
       };
     } else {
       pages[row.id] = {
@@ -204,11 +244,18 @@ export function tasksPagesFor(
 export function phaseTasksFor(now: number, merged: boolean): CrewPhaseTasks {
   const phase = storePhase(now);
   if (!merged) return { more: 0, phase, state: "ready" };
-  const close = (one: WorkTaskNode): WorkTaskNode => ({
-    ...one,
-    children: one.children.map(close),
-    closed: one.total,
-    status: one.status === "dropped" ? "dropped" : "done",
-  });
+  // A merge closes the blocking tasks it finds open; non-blocking work stays open (D76).
+  const close = (one: WorkTaskNode): WorkTaskNode => {
+    const children = one.children.map(close);
+    const open = (task: WorkTaskNode): number =>
+      (task.status === "done" || task.status === "dropped" ? 0 : 1) +
+      task.children.reduce((sum, child) => sum + open(child), 0);
+    return {
+      ...one,
+      children,
+      closed: one.total - children.reduce((sum, child) => sum + open(child), 0),
+      status: one.type === "non-blocking" || one.status === "dropped" ? one.status : "done",
+    };
+  };
   return { more: 0, phase: close(phase), state: "ready" };
 }

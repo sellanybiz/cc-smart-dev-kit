@@ -98,7 +98,7 @@ export const PROJECT_GIT_AT_ONCE = 8;
  * Runs `read` over `items`, at most `atOnce` at a time, and answers in the items' own order:
  * a slow read never holds up the others, and the cap keeps the children from flooding.
  */
-async function mapLimit<T, R>(
+export async function mapLimit<T, R>(
   items: readonly T[],
   atOnce: number,
   read: (item: T) => Promise<R>,

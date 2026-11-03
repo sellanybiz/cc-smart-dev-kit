@@ -3,6 +3,48 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.11.0
+
+Three task layers, a type on each task, blocked-by, and a Tasks tab in the portal (D76).
+
+**What to run** after the update: restart Claude Code, so each session's task server is the new
+one. Nothing else: the task store takes its new column by itself on the first write, and a
+session still on 1.10.x keeps reading and writing it. Until it restarts, such a session (and a
+lead's watch started there) treats every task as blocking: its merge drops non-blocking work
+too, and its crew gates wait for it. That is the 1.10.x rule, stricter, never looser.
+
+What changed:
+
+- **Three layers: phase › task › subtask.** A task's layer comes from where it sits: under a
+  phase or at the top it is a task, under a task it is a subtask. Nothing goes under a subtask,
+  and a task with subtasks cannot move under another task; each refusal says where the task
+  fits instead. A store an older version nested deeper still reads.
+- **Blocking or non-blocking.** `task_create` and `task_update` take `type`. A blocking task
+  (the default, and every task from before) must be done or dropped before its parent is done.
+  A non-blocking one holds nothing: the crew session's Stop and its done report, the lead's
+  Stop and `task_done` wait only for blocking work. A crew merge leaves non-blocking work open,
+  for whoever picks it up, and a session start lists it. A removal drops the crew session's own
+  open work and hands the steps its lead laid out back to pending, for the next `crew start`.
+- **Blocked by.** `blocked_by` on create, `blocked_by_add` and `blocked_by_remove` on update
+  (they were `waits_for`): a task cannot start or be done while a task it is blocked by is
+  open. A cycle is refused, and so is a task blocked by a task above it, or by a task that
+  waits for one, which could never finish. `crew start --waits-for` fills the phase's
+  blocked-by list, as before.
+- **A lead lays out its phases ahead of its crew.** `task_create` with `phase` (and `plan`, the
+  lead's own when left out) makes the phase under the plan task, once; `crew start` for that phase
+  takes it over with the tasks the lead put under it, and the crew session's card lists them.
+  They answer the lead's reminder, but never hold its Stop while the phase is open: they are the
+  crew session's to work. A phase id `crew start` would refuse is refused here too.
+- **The command:** `task add` takes `--type`, `--blocked-by`, `--phase` and `--plan`; the new
+  `task set <ref>` changes a task's type, its blockers (`--block`, `--unblock`) or its parent
+  (`--parent`, `--top`).
+- **The lists say it:** `task_list`, `task_get` and the session-start block mark a
+  non-blocking task and a blocked one (`[pending · non-blocking · blocked by #3]`); `task_get`
+  names the layer and lists the blockers with their status; a task's history records a change
+  of type.
+- **The portal's Tasks tab** shows every project's work as phase › task › subtask, each with
+  its layer, its type and what it is blocked by, beside the project task files.
+
 ## 1.10.1
 
 Fixes for `task import claude-mem`, the lead's watch and `crew stop`.

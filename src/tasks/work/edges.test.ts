@@ -13,6 +13,7 @@ import {
   openSubtasks,
   searchTasks,
   subtreeProgress,
+  taskById,
 } from "./queries";
 import { crewPhaseState, hasOwnTask, leadOwnState, startView, statusTask } from "./read";
 import {
@@ -45,12 +46,13 @@ test("all mutation limits, foreign projects, dependency removal and transaction 
   expect(updateTask(db, root.id, { parentId: other.id }, who, 4).ok).toBe(false);
   expect(updateTask(db, root.id, { waitsFor: { add: [other.id] } }, who, 4).ok).toBe(false);
   expect(updateTask(db, root.id, { waitsFor: { add: [root.id] } }, who, 4).ok).toBe(false);
-  ok(updateTask(db, child.id, { waitsFor: { add: [root.id] } }, who, 5));
+  const blocker = ok(createTask(db, { project: "p", subject: "Blocker" }, who, 4));
+  ok(updateTask(db, child.id, { waitsFor: { add: [blocker.id] } }, who, 5));
   expect(
-    updateTask(db, child.id, { subject: "", waitsFor: { remove: [root.id] } }, who, 6).ok,
+    updateTask(db, child.id, { subject: "", waitsFor: { remove: [blocker.id] } }, who, 6).ok,
   ).toBe(false);
-  expect(getTask(db, "p", child.id)?.waitsFor).toEqual([root.id]);
-  ok(updateTask(db, child.id, { waitsFor: { remove: [root.id] } }, who, 7));
+  expect(getTask(db, "p", child.id)?.waitsFor).toEqual([blocker.id]);
+  ok(updateTask(db, child.id, { waitsFor: { remove: [blocker.id] } }, who, 7));
   expect(getTask(db, "p", child.id)?.waitsFor).toEqual([]);
   expect(updateTask(db, child.id, { description: "x".repeat(200001) }, who, 8).ok).toBe(false);
   expect(deleteTask(db, root.id, who, 9).ok).toBe(false);
@@ -139,23 +141,39 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
     expect(state.value.total).toBe(2);
     expect(state.value.openSubtasks.map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
   }
+  // The lead's session made Alpha and Beta, so they are its own for the reminder (D76); inside an
+  // open phase they are its crew's to work, so Beta in progress never holds the lead's stop.
   const lead = leadOwnState(paths, "p", "plan", ["lead"]);
   if (lead.state !== "ready") throw Error("not ready");
   expect(lead.value.total).toBe(2);
-  expect(lead.value.inProgress.map((t) => t.subject)).toEqual(["Beta"]);
+  expect(lead.value.inProgress).toEqual([]);
   // The phase and its subtasks are the crew session's own: a session start shows the plan alone.
   const view = startView(paths, "p", who, { limit: 1 });
   expect(view).toEqual({
     state: "ready",
     value: {
-      tasks: [{ id: plan.id, number: 1, subject: "Plan", status: "pending", claim: "free" }],
+      tasks: [
+        {
+          id: plan.id,
+          number: 1,
+          subject: "Plan",
+          status: "pending",
+          claim: "free",
+          type: "blocking",
+          blocked: false,
+        },
+      ],
       more: 0,
       stale: 0,
     },
   });
   ok(systemClose(db, phase.id, "dropped", "removed", who, 20));
   expect(notesOf(db, b.id)[0]?.text).toBe("Automatically dropped: removed");
-  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: false });
+  // Beta was the crew session's (its crew id): dropped. Alpha was laid out (no crew id): it stays
+  // pending for the phase's next session, untouched, so it is still the lead's own.
+  expect(taskById(db, a.id).status).toBe("pending");
+  expect(notesOf(db, a.id)).toEqual([]);
+  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: true });
   db.close();
 });
 test("the start view leaves crew phases out, puts this process's claims first, and counts stale work it hides", () => {
@@ -221,9 +239,33 @@ test("the start view leaves crew phases out, puts this process's claims first, a
     state: "ready",
     value: {
       tasks: [
-        { id: mine.id, number: 5, subject: "Old but mine", status: "in_progress", claim: "mine" },
-        { id: theirs.id, number: 6, subject: "Theirs", status: "in_progress", claim: "free" },
-        { id: plan.id, number: 1, subject: "Plan", status: "pending", claim: "free" },
+        {
+          id: mine.id,
+          number: 5,
+          subject: "Old but mine",
+          status: "in_progress",
+          claim: "mine",
+          type: "blocking",
+          blocked: false,
+        },
+        {
+          id: theirs.id,
+          number: 6,
+          subject: "Theirs",
+          status: "in_progress",
+          claim: "free",
+          type: "blocking",
+          blocked: false,
+        },
+        {
+          id: plan.id,
+          number: 1,
+          subject: "Plan",
+          status: "pending",
+          claim: "free",
+          type: "blocking",
+          blocked: false,
+        },
       ],
       more: 1,
       stale: 1,
@@ -247,7 +289,9 @@ test("progress counts done and dropped at every depth, the same in the status li
     createTask(db, { project: "p", subject: "Dropped", parentId: top.id }, who, 3),
   );
   const open = ok(createTask(db, { project: "p", subject: "Open", parentId: top.id }, who, 4));
-  ok(createTask(db, { project: "p", subject: "Under open", parentId: open.id }, who, 5));
+  const under = ok(createTask(db, { project: "p", subject: "Under open" }, who, 5));
+  // An older kit nested deeper than three layers; the counts still reach every depth.
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(open.id, under.id);
   ok(updateTask(db, done.id, { status: "done" }, who, 6));
   ok(updateTask(db, dropped.id, { status: "dropped" }, who, 7));
   expect(subtreeProgress(allTasks(db, "p"), top.id)).toEqual({ closed: 2, total: 4 });
@@ -263,7 +307,7 @@ test("hook failures return unreadable, query-only blocks writes, schema versions
   writeFileSync(workDbFile(paths), "garbage");
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("unreadable");
   const fresh = setup();
-  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
   expect(fresh.db.sqlite.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
   fresh.db.close();
   const hook = openWorkDb(workDbFile(fresh.paths), { mode: "hook" });

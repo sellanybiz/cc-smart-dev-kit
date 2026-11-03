@@ -656,13 +656,31 @@ export interface ProjectGatewayAnswer {
 /** A work task's status in the kit's store. */
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
-/** One work task in the Tasks card's tree. */
+/** Plan › Phase › Task › Subtask (D76). */
+export type WorkTaskLayer = "phase" | "plan" | "subtask" | "task";
+
+/** Blocking holds its parent while open; non-blocking holds nothing (D76). */
+export type WorkTaskType = "blocking" | "non-blocking";
+
+/** One task another waits for, closed ones too. */
+export interface WorkTaskBlocker {
+  ref: string;
+  status: WorkTaskStatus;
+  subject: string;
+}
+
+/** One work task in the Tasks tab's tree. */
 export interface WorkTaskNode {
+  /** Open, and one of `blockedBy` is still open. */
+  blocked: boolean;
+  /** In number order, closed ones too. */
+  blockedBy: WorkTaskBlocker[];
   children: WorkTaskNode[];
   /** Its whole subtree: closed (done or dropped) of total. */
   closed: number;
   id: string;
   kind: "phase" | "plan" | "task";
+  layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
   /** `#12`. */
@@ -670,6 +688,7 @@ export interface WorkTaskNode {
   status: WorkTaskStatus;
   subject: string;
   total: number;
+  type: WorkTaskType;
   /** ISO 8601. */
   updatedAt: string;
 }
@@ -711,6 +730,18 @@ export type ProjectTaskFiles =
 export interface ProjectTasksAnswer {
   files: ProjectTaskFiles;
   work: ProjectWorkTasks;
+}
+
+/** One project on the Tasks tab. */
+export interface TasksProject {
+  project: ProjectSummary;
+  tasks: ProjectTasksAnswer;
+}
+
+/** `GET /api/tasks` (D76): every project with its tasks, in the projects list's order. */
+export interface TasksAnswer {
+  note: null | string;
+  projects: TasksProject[];
 }
 
 // ── Work, crew, needs ──────────────────────────────────────────────────────────────────

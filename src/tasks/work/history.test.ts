@@ -184,7 +184,7 @@ test("task_get prints a work task's history with the caller's session name", () 
     expect(ops.call("get", { task: "#1" })).toEqual({
       ok: true,
       text: [
-        '#1 "Ship" [pending]',
+        '#1 "Ship" [task · pending]',
         "",
         "Do it",
         "",

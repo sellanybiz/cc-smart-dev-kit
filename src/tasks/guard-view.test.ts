@@ -62,6 +62,7 @@ test("a crew with no phase task and no Claude Code list: nothing listed, nothing
     phase: null,
     listed: false,
     open: [],
+    aside: [],
     unreadable: [],
   });
 });
@@ -136,6 +137,7 @@ test("once setup denies TaskUpdate, a task left on Claude Code's list holds no o
     phase: null,
     listed: false,
     open: [],
+    aside: [],
     unreadable: [],
   });
   expect(
