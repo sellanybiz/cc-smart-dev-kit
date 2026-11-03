@@ -1,30 +1,4 @@
-/**
- * The kinds of job: which commands the queue counts.
- *
- * A heavy job is a command that can use many gigabytes: a type check, a type-aware lint,
- * a test run, a production build, a container image build. The queue (`queue.ts`) counts
- * jobs, not gigabytes: up to `maxJobs` heavy jobs run at once on this machine, and one job
- * alone may use all the memory and every core. So a kind has no size. It only says which
- * commands it counts (`match`), which options only print and stop (`printOnly`: such a run
- * takes no slot), whether every run of it is light (`light`: an install), whether a run on a
- * few named files is light (`noSlotForFiles`, read with `skipWords` and `valuedFlags`), and
- * one line for `cc-smart-dev-kit job kinds` (`about`). A light run takes one of this machine's
- * light slots instead of a heavy one (`queue.ts` › TWO LANES).
- *
- * WHY THE SIZES WENT
- *   A fixed size per kind made work slow: on a 32 GB machine one type check at a time ran
- *   across every session and agent, and a live free-memory check added more waiting. The
- *   memory is kept safe another way now: all heavy jobs together run under one ceiling
- *   (`MemoryMax` of their systemd slice, `launch.ts`), so a job over it dies inside the
- *   slice and never takes the memory kept for the desktop and the sessions.
- *
- * OLD PROJECT FILES STILL PARSE
- *   A project's `.claude/cc-smart-dev-kit.json` may still set the fields the sizes used
- *   (`IGNORED_KIND_FIELDS`). They are accepted and ignored, and `doctor` says once that they
- *   can go. Two fields of that time came back in 1.5.0 with the meaning they had then:
- *   `skipWords` and `valuedFlags` tell `noSlotForFiles` where a run's files are.
- */
-
+/** Project commands that need the heavy slot. */
 import { z } from "zod";
 
 /** How the classifier knows a kind in a Bash command (`classify.ts`). */
@@ -49,24 +23,19 @@ export const matchRuleSchema = z.union([
 
 export type MatchRule = z.infer<typeof matchRuleSchema>;
 
-/** The most named files a run may name and still be light (`noSlotForFiles`). */
+/** The most named files a run may name and skip the queue (`noSlotForFiles`). */
 export const LIGHT_FILE_LIMIT = 10;
 
 export const kindSpecSchema = z.strictObject({
-  /**
-   * Every run of this kind that does not only print takes a light slot, never a heavy one (an
-   * install). Came with 1.8.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`).
-   */
-  light: z.boolean().optional(),
   /** Options that only print and stop (`--version`): such a run takes no slot. */
   printOnly: z.array(z.string().min(1)).optional(),
   /**
    * A run of this kind that names only existing files (`vitest run src/a.test.ts`, `bun run
-   * test:run src/a.test.ts`), at most `LIGHT_FILE_LIMIT` of them, takes a light slot: it never
+   * test:run src/a.test.ts`), at most `LIGHT_FILE_LIMIT` of them, takes no slot: it never
    * waits behind full runs. More files, a folder, a filter that is no file, or no file at all:
    * a heavy slot. The operands are read past `skipWords` and the values of `valuedFlags`.
    * Came with 1.5.0 (`JOB_KIND_KEYS_SINCE` in `src/project/config.ts`); until 1.8.0 such a
-   * run took no slot at all, and many of them at once froze a machine.
+   * run also took no slot.
    */
   noSlotForFiles: z.boolean().optional(),
   /** Leading words that are the tool's own command, not files (`vitest run`): `noSlotForFiles` reads past them. */
@@ -81,22 +50,16 @@ export const kindSpecSchema = z.strictObject({
   /** One line for `cc-smart-dev-kit job kinds`. */
   about: z.string().min(1).optional(),
 
-  // The fields below sized a job. The queue counts jobs now and ignores every one of them;
-  // they stay in the schema only so a project file written for an older plugin still parses.
-  /** Ignored: what a full run reserved, in GB. */
-  gb: z.number().int().min(0).max(1024).optional(),
-  /** Ignored: what a run given only existing files reserved. */
-  filesGb: z.number().int().min(0).max(1024).optional(),
-  /** Ignored: how many files still counted as a small run. */
-  maxFiles: z.number().int().min(1).optional(),
-  /** Ignored: a worker-count option the queue added to a test runner. */
-  workers: z
-    .strictObject({
-      flag: z.string().min(1),
-      aliases: z.array(z.string().min(1)).optional(),
-      gbEach: z.number().positive(),
-    })
-    .optional(),
+  /** ignored since 2.0 */
+  gb: z.unknown().optional(),
+  /** ignored since 2.0 */
+  filesGb: z.unknown().optional(),
+  /** ignored since 2.0 */
+  maxFiles: z.unknown().optional(),
+  /** ignored since 2.0 */
+  workers: z.unknown().optional(),
+  /** ignored since 2.0 */
+  light: z.unknown().optional(),
 });
 
 export type KindSpec = z.infer<typeof kindSpecSchema>;
@@ -111,6 +74,7 @@ export const IGNORED_KIND_FIELDS = [
   "filesGb",
   "maxFiles",
   "workers",
+  "light",
 ] as const satisfies readonly (keyof KindSpec)[];
 
 /** A kind's name: letters, digits, and `:` `-` `_` `.` inside (`tsc`, `test:run`). */
@@ -232,17 +196,6 @@ export const DEFAULT_KINDS: Kinds = {
     about: "A framework production build (next build).",
     match: [{ tool: "next", sub: ["build"] }],
   },
-  install: {
-    about: "Install dependencies in the light lane.",
-    light: true,
-    printOnly: TEST_PRINT_ONLY,
-    match: ["bun", "npm", "pnpm", "yarn"].flatMap((tool) =>
-      ["install", "i", "add", ...(tool === "npm" ? ["ci"] : [])].map((sub) => ({
-        tool,
-        sub: [sub],
-      })),
-    ),
-  },
   "image:build": {
     about: "A container image build (docker, podman, compose).",
     match: [
@@ -288,7 +241,7 @@ export function isPrintOnly(kind: KindSpec, args: readonly string[]): boolean {
 
 /**
  * Does a run of `kind`, given `args` (the tool's own arguments, or the words after a script's
- * name), name only existing files, at most `LIGHT_FILE_LIMIT`? Such a run takes a light slot
+ * name), name only existing files, at most `LIGHT_FILE_LIMIT`? Such a run takes no slot
  * when the kind says `noSlotForFiles`. The leading `skipWords` are read past, and every word after `--` is an
  * operand. An option is read past only when its reading is certain: written with `=`
  * (`--reporter=dot`), a known option with a value (`TEST_VALUED_FLAGS` and the kind's own

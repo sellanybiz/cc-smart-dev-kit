@@ -250,12 +250,11 @@ describe("the note at a session start", () => {
     expect(said(result)).toBe(ALL_CLAUDE);
   });
 
-  it("machine-wide: a folder outside git, and a crew session, get the same note", async () => {
+  it("machine-wide: a folder outside git gets the same note as a project", async () => {
     const env = hookEnv();
     const outside = tempDir("tier-view-outside");
     expect(said(await runHook(tierViewHook, event("SessionStart", outside), env))).toBe(ALL_CLAUDE);
-    const crew = { ...env, CC_SMART_DEV_KIT_CREW: "W2-x-1a2b3c" };
-    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), crew))).toBe(
+    expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), env))).toBe(
       ALL_CLAUDE,
     );
   });

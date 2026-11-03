@@ -46,7 +46,6 @@ import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
   type AlertEvent,
-  MACHINE_CREW_KEYS,
   type PersonalWorkflow,
   personalWorkflowSchema,
   type Workflow,
@@ -82,9 +81,6 @@ export interface ResolvedWorkflow {
   issues: {
     enabled: ResolvedValue<boolean>;
     allowPublic: ResolvedValue<boolean>;
-    /** The lead hears new issues and comments (1.4.0): the watch looks at GitHub now and then. */
-    watch: ResolvedValue<boolean>;
-    watchMinutes: ResolvedValue<number>;
     foundLabel: ResolvedValue<string>;
     fixedLabel: ResolvedValue<string>;
     readyLabel: ResolvedValue<string>;
@@ -93,31 +89,6 @@ export interface ResolvedWorkflow {
     events: ResolvedValue<AlertEvent[]>;
     sound: ResolvedValue<boolean>;
     usagePercent: ResolvedValue<number>;
-  };
-  crew: {
-    enabled: ResolvedValue<boolean>;
-    /** The plugins and servers a crew session keeps (`plugin:<id>`, `server:<name>`). */
-    keep: ResolvedValue<string[]>;
-    idleStopMinutes: ResolvedValue<number>;
-    max: ResolvedValue<number>;
-    /** Null: no machine-wide opus count is set (D54). */
-    maxOpus: ResolvedValue<null | number>;
-    memoryGb: ResolvedValue<number>;
-    loadPerCore: ResolvedValue<number>;
-    startGapSeconds: ResolvedValue<number>;
-    perLead: ResolvedValue<number>;
-    perLeadOpus: ResolvedValue<number>;
-    usagePercent: ResolvedValue<number>;
-    quietMinutes: ResolvedValue<number>;
-    handoffPercent: ResolvedValue<number>;
-    handoffTokens: ResolvedValue<number>;
-    softHours: ResolvedValue<number>;
-    maxHours: ResolvedValue<number>;
-    /** Days a removed crew session's conversation stays in the kit's archive. */
-    archiveDays: ResolvedValue<number>;
-    deleteDays: ResolvedValue<number>;
-    /** Null: no tag is set, and the main checkout's folder name stands in. */
-    tag: ResolvedValue<null | string>;
   };
   switches: {
     statusLine: ResolvedValue<boolean>;
@@ -177,7 +148,7 @@ function mergedGroup<T extends object>(personal: T | undefined, project: T | und
 
 /**
  * The project's workflow object and the person's, the project's over it, field by field — a
- * group's fields too (`alerts`, `fixesAfterReview`, `crew`).
+ * group's fields too (`alerts`, `fixesAfterReview`).
  */
 export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
   const merged: Workflow = { ...personal, ...project };
@@ -185,15 +156,6 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (alerts !== undefined) merged.alerts = alerts;
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
-  // The crew limits are the machine's (D71): a project's value never reaches the merge.
-  const projectCrew = project.crew === undefined ? undefined : { ...project.crew };
-  for (const key of MACHINE_CREW_KEYS) {
-    if (projectCrew !== undefined) {
-      delete projectCrew[key.slice("crew.".length) as keyof typeof projectCrew];
-    }
-  }
-  const crew = mergedGroup(personal.crew, projectCrew);
-  if (crew !== undefined) merged.crew = crew;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined) merged.issues = issues;
   return merged;
@@ -201,11 +163,7 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
 
 /** Where the merged value of one key came from. */
 function sourceOf(personal: Workflow, project: Workflow, key: WorkflowKey): WorkflowSource {
-  if (
-    !(MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(key) &&
-    workflowValue(project, key) !== undefined
-  )
-    return "project";
+  if (workflowValue(project, key) !== undefined) return "project";
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
 
@@ -413,33 +371,12 @@ const RESOLVED: {
   clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
   "issues.enabled": (r) => r.issues.enabled,
   "issues.allowPublic": (r) => r.issues.allowPublic,
-  "issues.watch": (r) => r.issues.watch,
-  "issues.watchMinutes": (r) => r.issues.watchMinutes,
   "issues.foundLabel": (r) => r.issues.foundLabel,
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.events": (r) => r.alerts.events,
   "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
-  "crew.enabled": (r) => r.crew.enabled,
-  "crew.keep": (r) => r.crew.keep,
-  "crew.idleStopMinutes": (r) => r.crew.idleStopMinutes,
-  "crew.max": (r) => r.crew.max,
-  "crew.maxOpus": (r) => r.crew.maxOpus,
-  "crew.memoryGb": (r) => r.crew.memoryGb,
-  "crew.loadPerCore": (r) => r.crew.loadPerCore,
-  "crew.startGapSeconds": (r) => r.crew.startGapSeconds,
-  "crew.perLead": (r) => r.crew.perLead,
-  "crew.perLeadOpus": (r) => r.crew.perLeadOpus,
-  "crew.usagePercent": (r) => r.crew.usagePercent,
-  "crew.quietMinutes": (r) => r.crew.quietMinutes,
-  "crew.handoffPercent": (r) => r.crew.handoffPercent,
-  "crew.handoffTokens": (r) => r.crew.handoffTokens,
-  "crew.softHours": (r) => r.crew.softHours,
-  "crew.maxHours": (r) => r.crew.maxHours,
-  "crew.archiveDays": (r) => r.crew.archiveDays,
-  "crew.deleteDays": (r) => r.crew.deleteDays,
-  "crew.tag": (r) => r.crew.tag,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
@@ -473,13 +410,6 @@ export function resolveWorkflow(
     source: sourceOf(personal, project, key),
   });
   const fixes = merged.fixesAfterReview ?? {};
-  const crew = merged.crew ?? {};
-  // Deletion never comes before archiving (D69). One file that sets both lower is refused by the
-  // schema; a `deleteDays` left out, or lower in the other file, rises to `archiveDays`. Before
-  // 1.7.0 `archiveDays` was how long the archive kept a conversation: a file that set it above 30
-  // still has the conversation kept that long.
-  const archiveDays = of("crew.archiveDays", crew.archiveDays ?? workflowDefaults.crew.archiveDays);
-  const deleteDays = of("crew.deleteDays", crew.deleteDays ?? workflowDefaults.crew.deleteDays);
   const issues = merged.issues ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
@@ -511,57 +441,12 @@ export function resolveWorkflow(
         "issues.allowPublic",
         issues.allowPublic ?? workflowDefaults.issues.allowPublic,
       ),
-      watch: of("issues.watch", issues.watch ?? workflowDefaults.issues.watch),
-      watchMinutes: of(
-        "issues.watchMinutes",
-        issues.watchMinutes ?? workflowDefaults.issues.watchMinutes,
-      ),
       foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
       fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel),
     },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
-    crew: {
-      enabled: of("crew.enabled", crew.enabled ?? workflowDefaults.crew.enabled),
-      // A list is one value: the project's whole list wins, like `alerts.events`.
-      keep: of("crew.keep", crew.keep ?? [...workflowDefaults.crew.keep]),
-      idleStopMinutes: of(
-        "crew.idleStopMinutes",
-        crew.idleStopMinutes ?? workflowDefaults.crew.idleStopMinutes,
-      ),
-      max: of("crew.max", crew.max ?? workflowDefaults.crew.max),
-      maxOpus: of("crew.maxOpus", crew.maxOpus ?? workflowDefaults.crew.maxOpus),
-      memoryGb: of("crew.memoryGb", crew.memoryGb ?? workflowDefaults.crew.memoryGb),
-      loadPerCore: of("crew.loadPerCore", crew.loadPerCore ?? workflowDefaults.crew.loadPerCore),
-      startGapSeconds: of(
-        "crew.startGapSeconds",
-        crew.startGapSeconds ?? workflowDefaults.crew.startGapSeconds,
-      ),
-      perLead: of("crew.perLead", crew.perLead ?? workflowDefaults.crew.perLead),
-      perLeadOpus: of("crew.perLeadOpus", crew.perLeadOpus ?? workflowDefaults.crew.perLeadOpus),
-      usagePercent: of(
-        "crew.usagePercent",
-        crew.usagePercent ?? workflowDefaults.crew.usagePercent,
-      ),
-      quietMinutes: of(
-        "crew.quietMinutes",
-        crew.quietMinutes ?? workflowDefaults.crew.quietMinutes,
-      ),
-      handoffPercent: of(
-        "crew.handoffPercent",
-        crew.handoffPercent ?? workflowDefaults.crew.handoffPercent,
-      ),
-      handoffTokens: of(
-        "crew.handoffTokens",
-        crew.handoffTokens ?? workflowDefaults.crew.handoffTokens,
-      ),
-      softHours: of("crew.softHours", crew.softHours ?? workflowDefaults.crew.softHours),
-      maxHours: of("crew.maxHours", crew.maxHours ?? workflowDefaults.crew.maxHours),
-      archiveDays,
-      deleteDays: deleteDays.value < archiveDays.value ? archiveDays : deleteDays,
-      tag: of("crew.tag", crew.tag ?? workflowDefaults.crew.tag),
-    },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

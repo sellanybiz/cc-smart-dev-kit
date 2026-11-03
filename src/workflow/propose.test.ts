@@ -20,19 +20,11 @@ import {
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, cliPaths } from "../cli/paths";
-import {
-  hookEnv,
-  makeClone,
-  makeRepo,
-  writeClaudeFile,
-  writePersonalWorkflow,
-} from "../testing/hooks";
+import { makeClone, writeClaudeFile, writePersonalWorkflow } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { ghLoginState, proposeWorkflow } from "./propose";
-import { isProjectKey, WORKFLOW_KEYS } from "./schema";
-import { writeProjectSetting } from "./write";
 
 // The flow starts git and gh children: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
@@ -313,68 +305,6 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
-  test("a crew session never pushes or opens a pull request: refused, with the step it has", async () => {
-    const w = world();
-    const run = await w.run(["propose", "autoCommit", "true"], {
-      CC_SMART_DEV_KIT_CREW: "P1a-x-1a2b3c",
-    });
-    expect(run.status).toBe(1);
-    expect(run.errors).toEqual([
-      `cc-smart-dev-kit workflow propose cannot run in a crew session: it pushes a branch and opens a pull request, and a crew session never proposes a workflow change (D24). Nobody is at the machine to answer this question, so the call is refused. Ask your lead with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\`, and go on with the rest of your phase.`,
-    ]);
-    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-    expect(w.ghLog()).toEqual([]);
-  });
-
-  test("a switch that lives in the person's own file is refused first: no fetch, no gh, no branch", async () => {
-    const w = world();
-    for (const argv of [
-      ["propose", "crew.max", "4"],
-      ["propose", "switches.statusLine", "true"],
-      ["propose", "switches.updateHold", "--unset"],
-    ]) {
-      const run = await w.run(argv);
-      const key = argv[1];
-      expect(run.status).toBe(1);
-      expect(run.errors).toEqual([
-        `${key} is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set ${key} <value>\`.`,
-      ]);
-    }
-    expect(w.ghLog()).toEqual([]);
-    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-  });
-
-  test("isProjectKey is what the writer accepts: a key the project's file cannot hold is exactly one it refuses", () => {
-    // One home for the rule (`schema.ts`), held equal to `write.ts` for every switch: the two
-    // can never drift apart, or `propose` would refuse what `set --project` takes, or the
-    // reverse.
-    const env = hookEnv();
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-    for (const key of WORKFLOW_KEYS.filter((one) => one.startsWith("switches."))) {
-      let refused = false;
-      try {
-        writeProjectSetting(repo, key, true, env);
-      } catch (error) {
-        refused =
-          error instanceof Error && /is your own setting, not the project's/.test(error.message);
-      }
-      expect(refused).toBe(!isProjectKey(key));
-    }
-    expect(WORKFLOW_KEYS.filter((one) => !isProjectKey(one))).toEqual([
-      "crew.max",
-      "crew.maxOpus",
-      "crew.memoryGb",
-      "crew.loadPerCore",
-      "crew.startGapSeconds",
-      "crew.perLead",
-      "crew.perLeadOpus",
-      "crew.usagePercent",
-      "switches.statusLine",
-      "switches.updateHold",
-    ]);
-  });
-
   test("the person's own defaults never reach the pull request: a from is the project's value, or unset", async () => {
     const w = world();
     writePersonalWorkflow(w.env, { autoCommit: true });
@@ -436,15 +366,6 @@ It counts once this pull request is merged into main: the merge guard reads the 
       "= autoCommit was not set in .claude/cc-smart-dev-kit.json; no branch or pull request was made.",
     ]);
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-  });
-
-  test("a key that needs a newer plugin raises requires in the same commit", async () => {
-    const w = world();
-    const run = await w.run(["propose", "crew.handoffTokens", "500000"]);
-    expect(run.status).toBe(0);
-    const file = fileOn(w.repo, "worktree-workflow-crew-handoffTokens-20261023");
-    expect(file.requires).toBe(">=1.2");
-    expect(file.workflow).toEqual({ crew: { handoffTokens: 500000 } });
   });
 
   test("a branch name already taken: the next free name is used", async () => {

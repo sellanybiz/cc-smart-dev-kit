@@ -2,26 +2,22 @@
 
 import {
   CircleCheckIcon,
-  CircleHelpIcon,
+  type CircleHelpIcon,
   KeyRoundIcon,
   PackageIcon,
   ShieldAlertIcon,
   StethoscopeIcon,
 } from "lucide-react";
-import { type ReactNode, useCallback, useId, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import type { ActionResult } from "@/api/client";
 import type { NeedsItem } from "@/api/types";
-import { ActionButton, ActionResultLine } from "@/components/action-button";
+import { ActionResultLine } from "@/components/action-button";
 import { CommandLine } from "@/components/copy-button";
 import { HeldMajorActions } from "@/components/held-major";
-import { AppLink } from "@/components/router";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { ago, count, slotName, until } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const KIND: Record<NeedsItem["kind"], { icon: typeof CircleHelpIcon; label: string }> = {
-  question: { icon: CircleHelpIcon, label: "A question" },
   permission: { icon: KeyRoundIcon, label: "A permission prompt" },
   update: { icon: PackageIcon, label: "A held update" },
   doctor: { icon: StethoscopeIcon, label: "A doctor check fails" },
@@ -31,101 +27,6 @@ const KIND: Record<NeedsItem["kind"], { icon: typeof CircleHelpIcon; label: stri
 /** Called when an item's action ends: the list keeps its result after the item is gone. */
 type OnSettled = (result: ActionResult) => void;
 
-function CrewLink({ id, name }: { id: string; name: string }) {
-  return (
-    <AppLink
-      href={`/work/crew?id=${encodeURIComponent(id)}`}
-      className="font-medium underline-offset-4 hover:underline focus-visible:underline"
-    >
-      {name}
-    </AppLink>
-  );
-}
-
-/** What the page asks before an answer goes: the answer itself, and that the session goes on. */
-function answerConfirm(item: Extract<NeedsItem, { kind: "question" }>, answer: string) {
-  return {
-    title: `Answer question ${item.ask.number} from ${item.crew.name}?`,
-    body: (
-      <>
-        <span className="block font-medium text-foreground">“{answer}”</span>
-        <span className="mt-2 block">
-          It goes to the crew session as the lead's answer. Other open questions still wait for an
-          answer.
-        </span>
-      </>
-    ),
-    yes: "Send the answer",
-  };
-}
-
-/** A crew session's question: each option sends it as the answer; a free answer can be typed. */
-function QuestionActions({
-  item,
-  onSettled,
-}: {
-  item: Extract<NeedsItem, { kind: "question" }>;
-  onSettled: OnSettled;
-}) {
-  const [text, setText] = useState("");
-  const inputId = useId();
-  const own = text.trim();
-  return (
-    <div className="flex flex-col gap-3">
-      <ul aria-label={`Answers to ${item.crew.name}`} className="flex flex-col gap-2">
-        {item.ask.options.map((option, index) => {
-          const recommended = item.ask.recommended === index + 1;
-          return (
-            <li key={option} className="flex flex-wrap items-start gap-2">
-              <ActionButton
-                action="crew.answer"
-                body={{ answer: option, crew: item.crew.id, question: item.ask.number }}
-                variant={recommended ? "default" : "outline"}
-                className="h-auto min-h-8 max-w-full justify-start py-1.5 text-left whitespace-normal"
-                confirm={answerConfirm(item, option)}
-                onDone={onSettled}
-              >
-                <span className="mr-1 tabular-nums opacity-70" aria-hidden="true">
-                  {index + 1}.
-                </span>
-                {option}
-              </ActionButton>
-              {recommended && (
-                <Badge variant="outline" className="mt-1.5 text-muted-foreground">
-                  recommended
-                </Badge>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      <div className="flex max-w-xl flex-wrap items-start gap-2">
-        <label htmlFor={inputId} className="sr-only">
-          Your own answer to {item.crew.name}
-        </label>
-        <Input
-          id={inputId}
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="Or write your own answer"
-          className="h-8 min-w-0 flex-1 basis-56"
-        />
-        <ActionButton
-          action="crew.answer"
-          body={{ answer: own, crew: item.crew.id, question: item.ask.number }}
-          variant="outline"
-          disabled={own === ""}
-          confirm={answerConfirm(item, own)}
-          onDone={onSettled}
-        >
-          Send
-        </ActionButton>
-      </div>
-    </div>
-  );
-}
-
-/** The targets of an open breaker, each with its status and how long it still rests. */
 function BreakerTargets({ item }: { item: Extract<NeedsItem, { kind: "breaker" }> }) {
   if (item.breaker.targets.length === 0) return null;
   return (
@@ -147,34 +48,18 @@ function Body({ item, onSettled }: { item: NeedsItem; onSettled: OnSettled }): {
   action: ReactNode;
 } {
   switch (item.kind) {
-    case "question":
-      return {
-        who: <CrewLink id={item.crew.id} name={item.crew.name} />,
-        what: (
-          <>
-            Question {item.ask.number}: {item.ask.question}
-          </>
-        ),
-        action: <QuestionActions item={item} onSettled={onSettled} />,
-      };
     case "permission": {
-      const crew = item.crew;
       return {
-        who:
-          crew === null ? (
-            <span className="font-medium">{item.project === "" ? "A session" : item.project}</span>
-          ) : (
-            <CrewLink id={crew.id} name={crew.name} />
-          ),
+        who: (
+          <span className="font-medium">{item.project === "" ? "A session" : item.project}</span>
+        ),
         what: (
           <>
             It waits on a <span className="font-medium">{item.tool}</span> prompt ({item.detail}).
-            {item.attach === null
-              ? " Answer it in the terminal it runs in."
-              : " Open it in a terminal to answer it:"}
+            Answer it in its own terminal.
           </>
         ),
-        action: item.attach === null ? null : <CommandLine command={item.attach} label="Copy" />,
+        action: null,
       };
     }
     case "update":
@@ -259,8 +144,7 @@ export function NeedsItemView({
 /** An item the person acted on and the list no longer holds: what it was, and the result. */
 function SettledItemView({ item, result }: { item: NeedsItem; result: ActionResult }) {
   const { label } = KIND[item.kind];
-  const who =
-    item.kind === "question" ? item.crew.name : item.kind === "update" ? item.held.version : "";
+  const who = item.kind === "update" ? item.held.version : "";
   return (
     <li className="flex gap-3 py-4">
       <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-ok/30 text-ok">

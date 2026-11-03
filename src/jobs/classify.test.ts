@@ -23,26 +23,9 @@ function expectKind(kind: string, commands: string[]): void {
   }
 }
 
-test("dependency installs use the install kind, not script names", () => {
-  expectKind("install", [
-    "bun install",
-    "bun i",
-    "bun add zod",
-    "npm install",
-    "npm i",
-    "npm ci",
-    "npm add zod",
-    "pnpm install",
-    "pnpm i",
-    "pnpm add zod",
-    "yarn install",
-    "yarn add zod",
-    "yarn",
-    "bun install --frozen-lockfile",
-    "pnpm install --frozen-lockfile",
-  ]);
-  expect(kindOf("bun run install-hooks")).toBeNull();
-  expect(kindOf("echo bun install")).toBeNull();
+test("dependency installs have no heavy kind", () => {
+  for (const line of ["bun install", "bun add zod", "npm ci", "pnpm install", "yarn"])
+    expect(kindOf(line)).toBeNull();
 });
 
 test("a line that installs and then runs a heavy job is named by the heavy one, so it takes a heavy slot", () => {
@@ -51,7 +34,7 @@ test("a line that installs and then runs a heavy job is named by the heavy one, 
   expect(kindOf("pnpm i && pnpm exec next build")).toBe("build");
   expect(kindOf("bunx tsc && bun install")).toBe("tsc");
   // Light kinds alone keep the light one.
-  expect(kindOf("bun install && bun add zod")).toBe("install");
+  expect(kindOf("bun install && bun add zod")).toBeNull();
 });
 
 describe("classifyHeavyCommand: type checks", () => {

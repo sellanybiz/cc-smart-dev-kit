@@ -5,7 +5,8 @@
  * - **Work tasks**: the kit's work store for the project (`src/tasks/work/tree.ts`): Plan ›
  *   Phase › Task › Subtask as one tree, each with its type and what blocks it — the open ones,
  *   and those closed in the last `TASKS_CARD_RECENT_DAYS` days. Every worktree of the repo
- *   shares the one list.
+ *   shares the one list. Each phase carries its ledger (G3): the agent, branch, worktree and
+ *   base the main session set on it, and its steps (`phase-steps.ts`).
  * - **Project task files**: the open ones in the main checkout's task folder
  *   (`src/tasks/project/`), what blocks a release first. Stale is `task check`'s own rule
  *   (`checkProjectTasks`), never a second copy of it. A task on a branch not merged yet is not in
@@ -20,8 +21,11 @@ import { taskContextAsync } from "../../tasks/context";
 import { checkProjectTasks, DAY_MS } from "../../tasks/project/check";
 import { scanProjectTasks } from "../../tasks/project/files";
 import type { ProjectTask } from "../../tasks/project/format";
+import { allTasks } from "../../tasks/work/queries";
+import { readWorkStore } from "../../tasks/work/read";
 import { projectTaskTree, type TaskTreeNode } from "../../tasks/work/tree";
 import type { PageDataDeps } from "../page-data";
+import { type PhaseSteps, phaseSteps } from "./phase-steps";
 import { mapLimit, PROJECT_GIT_AT_ONCE, projectsList, projectsWorldOf } from "./projects";
 import type {
   ProjectSummary,
@@ -46,16 +50,26 @@ const WEIGHT_ORDER: Readonly<Record<string, number>> = {
 /** Now before the next release, before any time. */
 const WHEN_ORDER: Readonly<Record<string, number>> = { now: 0, "next-release": 1, any: 2 };
 
-/** A tree node as the wire carries it: its change time as ISO 8601. */
-export function workTaskNodeOf(node: TaskTreeNode): WorkTaskNode {
+/**
+ * A tree node as the wire carries it: its change time as ISO 8601, and a phase's steps from
+ * `steps` (`phaseSteps`; a phase it does not hold has none to show).
+ */
+export function workTaskNodeOf(
+  node: TaskTreeNode,
+  steps: ReadonlyMap<string, PhaseSteps>,
+): WorkTaskNode {
+  const counted = node.layer === "phase" ? steps.get(node.id) : undefined;
   return {
+    agent: node.agent,
+    base: node.base,
     blocked: node.blocked,
     blockedBy: node.blockedBy.map((one) => ({
       ref: one.ref,
       status: one.status,
       subject: one.subject,
     })),
-    children: node.children.map(workTaskNodeOf),
+    branch: node.branch,
+    children: node.children.map((child) => workTaskNodeOf(child, steps)),
     closed: node.closed,
     id: node.id,
     kind: node.kind,
@@ -64,10 +78,12 @@ export function workTaskNodeOf(node: TaskTreeNode): WorkTaskNode {
     plan: node.plan,
     ref: node.ref,
     status: node.status,
+    steps: counted === undefined ? null : { done: counted.done, total: counted.total },
     subject: node.subject,
     total: node.total,
     type: node.type,
     updatedAt: new Date(node.updatedAt).toISOString(),
+    worktree: node.worktree,
   };
 }
 
@@ -173,15 +189,22 @@ async function tasksOf(deps: PageDataDeps, project: ProjectSummary): Promise<Pro
     now: at,
     recentMs: TASKS_CARD_RECENT_DAYS * DAY_MS,
   });
-  const work: ProjectWorkTasks =
-    tree.state === "ready"
-      ? {
-          more: tree.value.more,
-          recentDays: TASKS_CARD_RECENT_DAYS,
-          state: "ready",
-          tasks: tree.value.roots.map(workTaskNodeOf),
-        }
-      : tree;
+  let work: ProjectWorkTasks;
+  if (tree.state === "ready") {
+    // The steps count every task under a phase, closed long ago too: the tree leaves those out,
+    // so they are read from the project's whole list. A list that cannot be read now shows no
+    // steps, and the next `tasks` event reads both again.
+    const all = readWorkStore(paths, (db) => phaseSteps(allTasks(db, context.project)));
+    const steps = all.state === "ready" ? all.value : new Map<string, PhaseSteps>();
+    work = {
+      more: tree.value.more,
+      recentDays: TASKS_CARD_RECENT_DAYS,
+      state: "ready",
+      tasks: tree.value.roots.map((root) => workTaskNodeOf(root, steps)),
+    };
+  } else {
+    work = tree;
+  }
   const files: ProjectTaskFiles =
     context.projectTasks.ok && context.checkoutRoot !== null
       ? filesOf(context.checkoutRoot, context.projectTasks, new Date(at))

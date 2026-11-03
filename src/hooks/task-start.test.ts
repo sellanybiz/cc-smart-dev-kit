@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV } from "../crew/session";
 import { mcpRecordsFile } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { projectKey } from "../tasks/context";
@@ -175,17 +174,6 @@ test("a project with no file gets the machine's setup note on every source", asy
       ),
     ).toEqual(addContext("SessionStart", SETUP));
   }
-});
-
-test("a crew session gets its list from its role card, not this hook", async () => {
-  const { repo } = makeClone();
-  expect(
-    await runHook(
-      taskStartHook,
-      { hook_event_name: "SessionStart", source: "resume", cwd: repo },
-      { ...hookEnv(), [CREW_ENV]: "crew-a" },
-    ),
-  ).toEqual({});
 });
 
 test("ownHooks can silence the machine-wide start note", async () => {

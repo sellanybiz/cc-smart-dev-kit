@@ -115,4 +115,4 @@ Summary: <facts only — each pass with its measured value, each failure with fi
 the steps to reproduce, what you could not reproduce>
 ```
 
-Lead with blockers. Do not narrate tool calls.
+Put blockers first. Do not narrate tool calls.

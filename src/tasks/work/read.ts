@@ -3,15 +3,14 @@ import { openWorkDb, type WorkDb, workDbFile } from "./db";
 import { claimLive } from "./identity";
 import {
   allTasks,
+  claimHeldBy,
   claimState,
-  countedUnder,
   holdingUnder,
   isBlocked,
   isOpen,
-  openSubtasks,
   subtreeProgress,
 } from "./queries";
-import type { Who, WorkTask } from "./types";
+import type { Who } from "./types";
 export type ReadState<T> =
   | { state: "ready"; value: T }
   | { state: "none" }
@@ -35,40 +34,6 @@ export function readWorkStore<T>(paths: Paths, body: (db: WorkDb) => T): ReadSta
     db?.close();
   }
 }
-export function crewPhaseState(paths: Paths, project: string, crewId: string) {
-  return readWorkStore(paths, (db) => {
-    const tasks = allTasks(db, project);
-    const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
-    const holding = phase ? holdingUnder(tasks, phase.id) : [];
-    const held = new Set(holding.map((t) => t.id));
-    return {
-      phase,
-      // What holds the hand-back (D76): non-blocking work is noted, never waited for.
-      openSubtasks: holding,
-      // The rest of the phase's open work, which holds nothing: the role card lists it too.
-      aside: phase ? openSubtasks(db, phase.id).filter((t) => !held.has(t.id)) : [],
-      // Only what counts: an earlier crew session's closed subtasks never meet this one's gates.
-      total: phase ? countedUnder(tasks, phase.id).length : 0,
-    };
-  });
-}
-/**
- * True when the task sits in an open phase (or is one): then it is that phase's work, its crew
- * session's. Under a closed phase it is anyone's again: what a merge left open, or what a
- * removal handed back to pending.
- */
-function inOpenPhase(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): boolean {
-  const seen = new Set<string>();
-  for (let t: WorkTask | undefined = task; t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
-    if (t.kind === "phase") return isOpen(t);
-    seen.add(t.id);
-  }
-  return false;
-}
-/**
- * A lead's own tasks: the ones its sessions made, in its plan when one is given, the steps it
- * laid out inside a phase (D76) too. They answer the reminder ("you have no task of your own").
- */
 function own(db: WorkDb, project: string, sessionIds: string[], plan?: string) {
   return allTasks(db, project).filter(
     (t) =>
@@ -78,28 +43,6 @@ function own(db: WorkDb, project: string, sessionIds: string[], plan?: string) {
       (!plan || t.plan === plan),
   );
 }
-export function leadOwnState(paths: Paths, project: string, plan: string, sessionIds: string[]) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const byId = new Map(all.map((t) => [t.id, t]));
-    const tasks = own(db, project, sessionIds, plan);
-    return {
-      // What holds a lead's stop (D76): its own blocking work in progress, outside an open phase.
-      // A step it laid out inside one is that phase's crew session's to work.
-      inProgress: tasks.filter(
-        (t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId),
-      ),
-      total: tasks.length,
-    };
-  });
-}
-/**
- * What a session start shows: the project's open work outside every open crew phase (a phase
- * and its subtasks are the crew session's own, on the board), this process's claimed tasks first,
- * then those in progress, then the most recently touched. A task untouched since `staleBefore`
- * is left out and counted, unless it is this process's own: an old list must not bury the
- * work in hand.
- */
 export function startView(
   paths: Paths,
   project: string,
@@ -109,10 +52,8 @@ export function startView(
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    // An open phase's work is its crew session's; what a merge left open under a closed phase
-    // (non-blocking work, D76), or a removal handed back, is anyone's now, so it shows.
     const open = all
-      .filter((t) => isOpen(t) && !inOpenPhase(t, byId))
+      .filter((t) => isOpen(t))
       .map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
     const shown = open.filter(
       ({ task, claim }) =>
@@ -143,60 +84,36 @@ export function startView(
     };
   });
 }
-/** The board's one read: each crew session's phase progress, keyed `<project>:<crew id>`. */
-export function phaseProgressByCrew(paths: Paths, projects: Iterable<string>) {
-  return readWorkStore(paths, (db) => {
-    const progress = new Map<string, { closed: number; total: number }>();
-    for (const project of new Set(projects)) {
-      const tasks = allTasks(db, project);
-      for (const phase of tasks)
-        if (phase.kind === "phase" && phase.crewId !== null)
-          progress.set(`${project}:${phase.crewId}`, subtreeProgress(tasks, phase.id));
-    }
-    return progress;
-  });
-}
-/**
- * One query for the status line: the claimed task (or crew phase) and its subtree's counts, by
- * `subtreeProgress`'s rule (closed is done or dropped; `countsToward` says what counts). `pass`
- * is the crew id of the nearest crew phase, handed down; `above` is the one a row is judged by.
- */
+/** The latest task claimed by this process and its progress. */
 export function statusTask(paths: Paths, project: string, who: Who) {
-  return readWorkStore(paths, (db) =>
-    db.sqlite
-      .query<
-        {
-          number: number;
-          subject: string;
-          closed: number;
-          total: number;
-        },
-        [string, string | null, string | null, number | null, string | null]
-      >(`
-    WITH RECURSIVE chosen AS (
-      SELECT id, number, subject, CASE WHEN kind = 'phase' THEN crew_id END AS pass
-      FROM tasks WHERE project = ? AND
-        ((? IS NOT NULL AND kind = 'phase' AND crew_id = ?) OR
-         (kind = 'task' AND status = 'in_progress' AND claim_pid = ? AND claim_start = ?))
-      ORDER BY CASE WHEN kind = 'phase' THEN 0 ELSE 1 END, updated_at DESC LIMIT 1
-    ), tree AS (
-      SELECT t.id, t.status, t.crew_id, c.pass AS above,
-        CASE WHEN t.kind = 'phase' THEN t.crew_id ELSE c.pass END AS pass
-        FROM tasks t JOIN chosen c ON t.parent_id = c.id
-      UNION ALL SELECT t.id, t.status, t.crew_id, p.pass,
-        CASE WHEN t.kind = 'phase' THEN t.crew_id ELSE p.pass END
-        FROM tasks t JOIN tree p ON t.parent_id = p.id
-    ), counted AS (
-      SELECT status FROM tree WHERE above IS NULL OR status NOT IN ('done', 'dropped')
-        OR crew_id IS NULL OR crew_id = above
-    ) SELECT number, subject,
-      (SELECT COUNT(*) FROM counted WHERE status IN ('done', 'dropped')) AS closed,
-      (SELECT COUNT(*) FROM counted) AS total FROM chosen
-  `)
-      .get(project, who.crewId, who.crewId, who.pid, who.procStart),
-  );
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const task = all
+      .filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who))
+      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    if (!task) return null;
+    const count = subtreeProgress(all, task.id);
+    return { number: task.number, subject: task.subject, closed: count.closed, total: count.total };
+  });
 }
 
 export function hasOwnTask(paths: Paths, project: string, sessionIds: string[]) {
   return readWorkStore(paths, (db) => own(db, project, sessionIds).some(isOpen));
+}
+
+/**
+ * Task `#number` and the open tasks that hold its done (`holdingUnder`: open blocking tasks at
+ * any depth, reached through blocking tasks only), in progress first: what a builder's
+ * hand-back waits on (`src/hooks/builder-finish.ts`). Null when no task has that number.
+ */
+export function holdingSteps(paths: Paths, project: string, number: number) {
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const task = all.find((t) => t.number === number);
+    if (!task) return null;
+    return {
+      number: task.number,
+      open: holdingUnder(all, task.id).map((t) => ({ number: t.number, subject: t.subject })),
+    };
+  });
 }

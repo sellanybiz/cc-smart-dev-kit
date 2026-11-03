@@ -41,14 +41,14 @@ function writeSettings(env: Record<string, string>, value: unknown): string {
 }
 
 describe("the workflow schema", () => {
-  test("D69: deleteDays is accepted and cannot precede archiveDays", () => {
-    expect(workflowSchema.safeParse({ crew: { archiveDays: 7, deleteDays: 30 } }).success).toBe(
-      true,
-    );
-    expect(workflowSchema.safeParse({ crew: { archiveDays: 8, deleteDays: 7 } }).success).toBe(
-      false,
-    );
+  test("2.0 removed the crew: an old project or personal crew object loads and is ignored", () => {
+    const env = hookEnv();
+    const crew = { enabled: true, max: 0, futureKey: "ignored" };
+    writePersonal(env, { crew });
+    const config = ccSmartDevKitConfigSchema.parse({ workflow: { crew } });
+    expect(resolveWorkflow(pathsFor(env), config)).not.toHaveProperty("crew");
   });
+
   test("an empty object is every field left out", () => {
     expect(workflowSchema.parse({})).toEqual({});
   });
@@ -74,72 +74,6 @@ describe("the workflow schema", () => {
     expect(workflowSchema.safeParse({ alerts: { events: ["finished", "failed"] } }).success).toBe(
       true,
     );
-  });
-
-  test("D34: workflow.crew takes the switch, the limits, the tag and what to keep, and nothing else", () => {
-    const every = {
-      crew: {
-        archiveDays: 3,
-        enabled: true,
-        handoffPercent: 70,
-        handoffTokens: 400000,
-        idleStopMinutes: 10,
-        keep: ["plugin:acme-tools@acme", "server:sequential-thinking"],
-        loadPerCore: 2.5,
-        max: 4,
-        maxOpus: 2,
-        maxHours: 4,
-        memoryGb: 0.5,
-        quietMinutes: 20,
-        softHours: 1.5,
-        tag: "my-app",
-      },
-    };
-    expect(workflowSchema.parse(every)).toEqual(every);
-    const refused = (crew: Record<string, unknown>) => workflowSchema.safeParse({ crew }).success;
-    expect(refused({ count: 3 })).toBe(false);
-    expect(refused({ enabled: "yes" })).toBe(false);
-    // A keep entry is `plugin:<id>` or `server:<name>`, and nothing else: an unknown shape is
-    // refused where the file is read, not at the next `crew start`.
-    expect(refused({ keep: "plugin:acme-tools@acme" })).toBe(false);
-    for (const bad of [
-      ["widget"],
-      ["plugin:"],
-      ["plugin:acme-tools"],
-      ["plugin:@acme"],
-      ["server:"],
-      ["server:Sequential-Thinking"],
-      ["server:two words"],
-      ["PLUGIN:acme-tools@acme"],
-    ]) {
-      expect(`${bad.join(",")}: ${refused({ keep: bad })}`).toBe(`${bad.join(",")}: false`);
-    }
-    for (const [field, bad] of [
-      ["max", 0],
-      ["max", 1.5],
-      ["maxOpus", 0],
-      ["maxOpus", 2.5],
-      ["idleStopMinutes", 0],
-      ["quietMinutes", -1],
-      ["handoffPercent", 0],
-      ["handoffPercent", 101],
-      ["handoffTokens", 0],
-      ["handoffTokens", -5],
-      ["handoffTokens", 1.5],
-      ["softHours", 0],
-      ["maxHours", -2],
-      ["archiveDays", 0],
-      ["archiveDays", 1.5],
-      ["memoryGb", 0],
-      ["loadPerCore", 0],
-      ["loadPerCore", -1],
-      ["tag", "My App"],
-      ["tag", "a-very-long-tag"],
-      ["tag", "kit]"],
-      ["tag", ""],
-    ] as const) {
-      expect(`${field}=${bad}: ${refused({ [field]: bad })}`).toBe(`${field}=${bad}: false`);
-    }
   });
 
   test("D17: fixesAfterReview takes lines, files and percent, each a whole number 0 or more", () => {
@@ -202,89 +136,6 @@ describe("one value, as a person types it", () => {
     expect(parseWorkflowValue("alerts.events", " ")).toEqual({
       ok: false,
       why: "alerts.events is a list of needs-you, question, finished, failed",
-    });
-  });
-
-  test("D34: the crew sessions' numbers, each with its own range", () => {
-    expect(parseWorkflowValue("crew.enabled", "true")).toEqual({ ok: true, value: true });
-    expect(parseWorkflowValue("crew.max", "3")).toEqual({ ok: true, value: 3 });
-    expect(parseWorkflowValue("crew.max", "0")).toEqual({
-      ok: false,
-      why: "crew.max is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.idleStopMinutes", "2.5")).toEqual({
-      ok: false,
-      why: "crew.idleStopMinutes is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.maxOpus", "1")).toEqual({ ok: true, value: 1 });
-    expect(parseWorkflowValue("crew.maxOpus", "0")).toEqual({
-      ok: false,
-      why: "crew.maxOpus is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.perLead", "4")).toEqual({ ok: true, value: 4 });
-    expect(parseWorkflowValue("crew.perLead", "0")).toEqual({
-      ok: false,
-      why: "crew.perLead is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.loadPerCore", "2.5")).toEqual({ ok: true, value: 2.5 });
-    expect(parseWorkflowValue("crew.loadPerCore", "0")).toEqual({
-      ok: false,
-      why: "crew.loadPerCore is a number above 0",
-    });
-    expect(parseWorkflowValue("crew.perLeadOpus", "2")).toEqual({ ok: true, value: 2 });
-    expect(parseWorkflowValue("crew.usagePercent", "85")).toEqual({ ok: true, value: 85 });
-    expect(parseWorkflowValue("crew.usagePercent", "101")).toEqual({
-      ok: false,
-      why: "crew.usagePercent is a whole number 1-100",
-    });
-    expect(parseWorkflowValue("crew.handoffPercent", "70")).toEqual({ ok: true, value: 70 });
-    expect(parseWorkflowValue("crew.handoffPercent", "101")).toEqual({
-      ok: false,
-      why: "crew.handoffPercent is a whole number 1-100",
-    });
-    expect(parseWorkflowValue("crew.handoffTokens", "400000")).toEqual({ ok: true, value: 400000 });
-    expect(parseWorkflowValue("crew.handoffTokens", "0")).toEqual({
-      ok: false,
-      why: "crew.handoffTokens is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.handoffTokens", "400k")).toEqual({
-      ok: false,
-      why: "crew.handoffTokens is a whole number, 1 or more",
-    });
-    expect(parseWorkflowValue("crew.softHours", "1.5")).toEqual({ ok: true, value: 1.5 });
-    expect(parseWorkflowValue("crew.memoryGb", "0")).toEqual({
-      ok: false,
-      why: "crew.memoryGb is a number above 0",
-    });
-    expect(parseWorkflowValue("crew.maxHours", "four")).toEqual({
-      ok: false,
-      why: "crew.maxHours is a number above 0",
-    });
-  });
-
-  test("D26: the crew sessions' tag is refused unless it is already clean", () => {
-    expect(parseWorkflowValue("crew.tag", "kit")).toEqual({ ok: true, value: "kit" });
-    expect(parseWorkflowValue("crew.tag", "My App")).toEqual({
-      ok: false,
-      why: 'crew.tag is 1-12 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
-    });
-  });
-
-  test("crew.keep is a comma list of plugin:<id> and server:<name>, without doubles", () => {
-    expect(
-      parseWorkflowValue("crew.keep", "plugin:acme-tools@acme, server:sequential-thinking"),
-    ).toEqual({ ok: true, value: ["plugin:acme-tools@acme", "server:sequential-thinking"] });
-    expect(parseWorkflowValue("crew.keep", "server:playwright server:playwright")).toEqual({
-      ok: true,
-      value: ["server:playwright"],
-    });
-    expect(parseWorkflowValue("crew.keep", "widget")).toEqual({
-      ok: false,
-      why: 'crew.keep: unknown widget (an entry is "plugin:<id>" or "server:<name>")',
-    });
-    expect(parseWorkflowValue("crew.keep", "")).toEqual({
-      ok: false,
-      why: 'crew.keep is a list of "plugin:<id>" or "server:<name>"',
     });
   });
 
@@ -353,35 +204,24 @@ describe("resolveWorkflow: the order", () => {
       fixedLabel: { source: "default", value: "fixed-unreleased" },
       foundLabel: { source: "default", value: "kit:found" },
       readyLabel: { source: "default", value: "kit:ready" },
-      watch: { source: "default", value: false },
-      watchMinutes: { source: "default", value: 5 },
     });
   });
 
-  test("GI4: the watch is off by default, even with the issue switch on", () => {
+  test("2.0 removed the issue watch: an old watch and watchMinutes load and are ignored", () => {
+    const issues = { watch: true, watchMinutes: 30, enabled: true };
+    // The person's file alone: it loads, and only `enabled` comes out of it.
     const env = hookEnv();
-    const file = pathsFor(env).workflowConfigFile;
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ issues: { enabled: true } }));
-    const { issues } = resolveWorkflow(pathsFor(env), null);
-    expect(issues.enabled.value).toBe(true);
-    expect(issues.watch).toEqual({ source: "default", value: false });
-  });
-
-  test("GI4: watch and watchMinutes resolve field by field; the minutes have a floor of 2", () => {
-    const project = ccSmartDevKitConfigSchema.parse({
-      workflow: { issues: { watch: true, watchMinutes: 2 } },
-    });
-    const { issues } = resolveWorkflow(pathsFor(hookEnv()), project);
-    expect(issues.watch).toEqual({ source: "project", value: true });
-    expect(issues.watchMinutes).toEqual({ source: "project", value: 2 });
-    const parse = (watchMinutes: unknown) =>
-      ccSmartDevKitConfigSchema.safeParse({ workflow: { issues: { watchMinutes } } }).success;
-    expect(parse(1)).toBe(false);
-    expect(parse(0)).toBe(false);
-    expect(parse(2.5)).toBe(false);
-    expect(parse(1441)).toBe(false);
-    expect(parse(1440)).toBe(true);
+    writePersonal(env, { issues });
+    const personal = resolveWorkflow(pathsFor(env), null);
+    expect(personal.issues.enabled).toEqual({ source: "personal", value: true });
+    expect(personal.issues).not.toHaveProperty("watch");
+    expect(personal.issues).not.toHaveProperty("watchMinutes");
+    // The project's file: it parses, and the same.
+    const config = ccSmartDevKitConfigSchema.parse({ workflow: { issues } });
+    const project = resolveWorkflow(pathsFor(hookEnv()), config);
+    expect(project.issues.enabled).toEqual({ source: "project", value: true });
+    expect(project.issues).not.toHaveProperty("watch");
+    expect(project.issues).not.toHaveProperty("watchMinutes");
   });
 
   test("D67: the project's issues fields win field by field over the person's", () => {
@@ -454,97 +294,6 @@ describe("resolveWorkflow: the order", () => {
     expect(() => resolveWorkflow(pathsFor(env), null)).toThrow(
       `Invalid ${file}: autoCommit: Invalid input: expected boolean, received string`,
     );
-  });
-
-  test("D34, D35, D37: crew sessions are off by default, with the lead's limits; D17's limits 200/10/20", () => {
-    const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
-    expect(resolved.crew).toEqual({
-      archiveDays: { value: 7, source: "default" },
-      deleteDays: { value: 30, source: "default" },
-      enabled: { value: false, source: "default" },
-      handoffPercent: { value: 70, source: "default" },
-      handoffTokens: { value: 400000, source: "default" },
-      idleStopMinutes: { value: 10, source: "default" },
-      keep: { value: [], source: "default" },
-      loadPerCore: { value: 1.5, source: "default" },
-      startGapSeconds: { value: 60, source: "default" },
-      max: { value: 12, source: "default" },
-      maxOpus: { value: null, source: "default" },
-      maxHours: { value: 4, source: "default" },
-      memoryGb: { value: 6, source: "default" },
-      perLead: { value: 4, source: "default" },
-      perLeadOpus: { value: 2, source: "default" },
-      quietMinutes: { value: 20, source: "default" },
-      softHours: { value: 2, source: "default" },
-      tag: { value: null, source: "default" },
-      usagePercent: { value: 85, source: "default" },
-    });
-    expect(resolved.fixesAfterReview).toEqual({
-      files: { value: 10, source: "default" },
-      lines: { value: 200, source: "default" },
-      percent: { value: 20, source: "default" },
-    });
-  });
-
-  test("D34: the person's switch is every project's default; a project's value wins, field by field", () => {
-    const env = hookEnv();
-    writePersonal(env, {
-      fixesAfterReview: { lines: 50 },
-      crew: {
-        enabled: true,
-        keep: ["server:sequential-thinking"],
-        loadPerCore: 4,
-        max: 2,
-        tag: "mine",
-      },
-    });
-    const config = ccSmartDevKitConfigSchema.parse({
-      workflow: {
-        fixesAfterReview: { files: 0 },
-        crew: { archiveDays: 14, keep: ["plugin:acme-tools@acme"], max: 3 },
-      },
-    });
-    const resolved = resolveWorkflow(pathsFor(env), config);
-    expect(resolved.crew.archiveDays).toEqual({ value: 14, source: "project" });
-    expect(resolved.crew.enabled).toEqual({ value: true, source: "personal" });
-    expect(resolved.crew.max).toEqual({ value: 2, source: "personal" });
-    expect(resolved.crew.loadPerCore).toEqual({ value: 4, source: "personal" });
-    // A list is one value: the project's list wins whole, never merged entry by entry.
-    expect(resolved.crew.keep).toEqual({
-      value: ["plugin:acme-tools@acme"],
-      source: "project",
-    });
-    expect(resolved.crew.tag).toEqual({ value: "mine", source: "personal" });
-    expect(resolved.crew.quietMinutes).toEqual({ value: 20, source: "default" });
-    expect(resolved.fixesAfterReview).toEqual({
-      files: { value: 0, source: "project" },
-      lines: { value: 50, source: "personal" },
-      percent: { value: 20, source: "default" },
-    });
-    const off = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { enabled: false } } });
-    expect(resolveWorkflow(pathsFor(env), off).crew.enabled).toEqual({
-      value: false,
-      source: "project",
-    });
-  });
-
-  test("D69: a deleteDays left out, or lower in the other file, rises to archiveDays", () => {
-    const env = hookEnv();
-    // Set before 1.7.0, when it meant how long the archive kept a conversation.
-    writePersonal(env, { crew: { archiveDays: 40 } });
-    const alone = resolveWorkflow(pathsFor(env), null);
-    expect(alone.crew.archiveDays).toEqual({ value: 40, source: "personal" });
-    expect(alone.crew.deleteDays).toEqual({ value: 40, source: "personal" });
-    const lower = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 35 } } });
-    expect(resolveWorkflow(pathsFor(env), lower).crew.deleteDays).toEqual({
-      value: 40,
-      source: "personal",
-    });
-    const higher = ccSmartDevKitConfigSchema.parse({ workflow: { crew: { deleteDays: 60 } } });
-    expect(resolveWorkflow(pathsFor(env), higher).crew.deleteDays).toEqual({
-      value: 60,
-      source: "project",
-    });
   });
 
   test("a personal file that is not JSON throws, naming the file", () => {
@@ -764,15 +513,4 @@ describe("autoMergeAllowed", () => {
     });
     expect(autoMergeAllowed(resolved, withProtection, "dev", "main")).toBe(true);
   });
-});
-
-test("D71: project limits are ignored, but enabled and tag still win", () => {
-  const env = hookEnv();
-  const config = ccSmartDevKitConfigSchema.parse({
-    workflow: { crew: { max: 99, enabled: true, tag: "my-app" } },
-  });
-  const resolved = resolveWorkflow(pathsFor(env), config);
-  expect(resolved.crew.max).toEqual({ value: 12, source: "default" });
-  expect(resolved.crew.enabled).toEqual({ value: true, source: "project" });
-  expect(resolved.crew.tag).toEqual({ value: "my-app", source: "project" });
 });

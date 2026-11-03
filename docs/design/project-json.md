@@ -48,13 +48,14 @@ refuse the whole file, and every guard in that project fails closed. `requiresFl
 (`src/project/init.ts`) picks the lowest plugin version that reads everything the file holds,
 and `project init` and `workflow set --project` write it as `requires`. Each version has one
 home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
-file), `WORKFLOW_CREW_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
-`WORKFLOW_CREW_KEYS_SINCE` (the `workflow.crew` keys: `perLead`, `perLeadOpus`, `usagePercent`
-and `keep` in 1.1.0, `handoffTokens` in 1.2.0, `loadPerCore` and `archiveDays` in 1.3.0,
-`deleteDays` in 1.7.0) and
-`OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background`, `crew-role` and
-`lead-notes` in 1.0.0, `verify-gate` and `agent-usage` in 1.1.0, `tier-view` in 1.3.0). The
-retired and unswitchable names (`serena-root`, `job-route`) are older than 0.5.2, so they
+file), `WORKFLOW_FIXES_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
+`WORKFLOW_ISSUES_SINCE` (1.4.0), `WORKTREE_REBUILDABLE_SINCE` (1.9.0), `TASKS_SINCE` (1.10.0),
+`JOB_KIND_KEYS_SINCE` (a kind's `noSlotForFiles` in 1.5.0; `light`, ignored since 2.0 like the
+old size fields and `workflow.crew`, raises no floor, and `doctor` says it can go) and
+`OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background` in 1.0.0, `verify-gate` and
+`agent-usage` in 1.1.0, `tier-view` in 1.3.0, `task-start` in 1.10.0, `keep-going` and
+`builder-finish` in 2.0.0; the retired `crew-role` and `lead-notes` keep their 1.0.0). The
+older retired and unswitchable names (`serena-root`, `job-route`) are older than 0.5.2, so they
 raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
 the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the
 schema or `PLUGIN_HOOK_NAMES` gains one that is in neither, and when a since-table does not
@@ -83,11 +84,15 @@ accepts: a project file that sets a retired field fails closed until `project in
   that does not answer** (5 s a call): `GitTimedOutError`, never "outside git", because a hung
   git says nothing about the folder. Its message is one plain line with its fix ("git did not
   answer in time: run `git status` in this folder; …"). Every command that finds the checkout
-  prints it that way and no stack (`project init`, `workflow`, `worktrees`, `crew`); `doctor`
+  prints it that way and no stack (`project init`, `workflow`, `worktrees`); `doctor`
   says the reason alone and prints the fix on its own line; a guard's question names the
   reason alone (`checkoutFailure`, `src/project/resolve.ts`).
 - **`requires` is checked before the strict parse.** A project may use a field newer
-  than a user's plugin; that user is told to update, not that the field is unknown.
+  than a user's plugin; that user is told to update, not that the field is unknown. A plugin
+  past the top of a range (`^1.4` or `>=1.4 <2` under 2.0.0) is told to widen `requires`
+  instead, since an update cannot help: `checkRequires` tells the two apart with
+  `allowsNewer` (`src/project/version-range.ts`): when some version newer than the plugin is in
+  the range (`^1.4 || ^2.1` on 2.0.0), an update helps; else only a wider range does.
 - **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay
   silent. A project that never opted in does not notice the plugin.
 - **The retired engine's hook lines fail, and `project init` takes them out:** a line in the
@@ -107,3 +112,12 @@ A general skill reads the project's own additions when they exist. For example,
 `/cc-smart-dev-kit:review` also follows the project's `.claude/cc-smart-dev-kit/review.md`, and where they disagree,
 the project's text wins. The plugin stays general; each project keeps its own rules in
 its own repo.
+
+
+## Compatibility in 2.0
+
+Crew was removed in 2.0. Old `workflow.crew` values still load and are ignored, as are old
+job resource settings (`IGNORED_KIND_FIELDS`, `src/jobs/kinds.ts`, which `doctor` names as
+fields that can go). `workflow.issues.watch` and `workflow.issues.watchMinutes` are accepted and
+ignored since 2.0: nothing reads them, so an older file still loads. The update does not clean
+old stores, branches or worktrees.

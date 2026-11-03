@@ -1,38 +1,8 @@
-/**
- * The CLI's own command, in a child process: the portal's one spawn of `dist/cli.js`.
- *
- * Three callers need it, for one reason: the work is the CLI's own code, and it is too slow for
- * the server's event loop. An action (`runCliChild`) runs a command that changes something; the
- * flow report and the worktrees scan (`runCliChildText`) each read an answer the CLI already
- * builds. The crew commands, `worktrees --clean` and `workflow propose` run git, `claude` and the
- * worktree scan with **synchronous** spawns (`Bun.spawnSync`), and a propose pushes a branch and
- * opens a pull request; `readFlow` reads every saved session's transcript
- * with synchronous file reads (about 200 ms warm and 10 s on a cold cache, measured 2026-10-23);
- * the worktree scan runs git and the machine's own readers. Run inside the portal's server, one
- * of them froze every page, every other action and the live stream for up to 30 s per call —
- * and `crew rm` makes several. So nothing here runs the CLI's functions in the server: the
- * portal runs the same command the CLI runs (`dist/cli.js`) in a child, spawned with
- * `Bun.spawn` (never `spawnSync`). The work is still the CLI's own code — the same functions,
- * the same checks, the same words — and the server stays free while it runs.
- *
- * The child gets the plugin's two bun flags (`--no-env-file`, the plugin's own `--config`), the
- * portal's own `HOME` and `CLAUDE_CONFIG_DIR` (whatever its environment says), and no
- * `CC_SMART_DEV_KIT_CREW` and no `CLAUDECODE`: the person at the portal is the caller, not the
- * crew session whose session start may have started the portal (D52), and not a Claude Code
- * session either (D9) — a command that refuses a session (a review-gate setting, D57) must not
- * refuse the person's own click.
- */
 import { join } from "node:path";
 import { bunConfigArg } from "../setup/bun-config";
 import { commandContext } from "../update/apply";
 import type { PortalContext } from "./context";
 
-/**
- * How long one CLI child may take. `crew rm` runs several calls with 30 s limits each (git, a
- * stop, a scan); `worktrees --clean` fetches, scans and removes. Well inside a page's patience,
- * and far longer than any single call it makes. The readers pass their own (`flow-read.ts`'s
- * 2 minutes, `worktrees-read.ts`'s own): this is the actions' default.
- */
 export const CLI_CHILD_TIMEOUT_MS = 180_000;
 
 /** What one CLI child came to: its lines in arrival order, its exit code, or why it did not run. */
@@ -74,19 +44,12 @@ function cliChildArgv(folder: string, args: readonly string[]): string[] {
   ];
 }
 
-/**
- * The environment one CLI child gets: the portal's own paths, whatever the portal's environment
- * says, so the child reads the same store, settings and gateway config the server does — and no
- * `CC_SMART_DEV_KIT_CREW` and no `CLAUDECODE`: the person's click is neither a crew session (D52)
- * nor a Claude Code session (D57), whatever process started the portal.
- */
 function cliChildEnv(ctx: PortalContext): Record<string, string> {
   const env: Record<string, string> = {
     ...commandContext(ctx.env, ctx.paths.home).env,
     CLAUDE_CONFIG_DIR: ctx.paths.claudeConfigDir,
     HOME: ctx.paths.home,
   };
-  delete env.CC_SMART_DEV_KIT_CREW;
   // …and it is not a Claude Code session either (D9, D57). The portal usually starts from a
   // SessionStart hook, so it inherits `CLAUDECODE=1` and hands it to every child; a command that
   // refuses inside a session — a review-gate setting above all — would then refuse the person's
@@ -96,11 +59,6 @@ function cliChildEnv(ctx: PortalContext): Record<string, string> {
   return env;
 }
 
-/**
- * Starts `dist/cli.js <args>` in `cwd` (the portal's folder unless the caller asks for another:
- * the crew record's repository, or the worktrees scan's folder), asynchronously. Never throws:
- * a folder that is gone, or a spawn Bun refuses (a `cwd` that does not exist), is `error`.
- */
 function spawnCliChild(
   ctx: PortalContext,
   args: readonly string[],
@@ -110,7 +68,7 @@ function spawnCliChild(
   if ("error" in folder) return { error: folder.error, kind: "folder" };
   try {
     // Inside the `try`: a `cwd` that does not exist makes `Bun.spawn` throw before a child
-    // exists (a worktree a crew session's folder was in and is not any more).
+    // exists (a former worktree folder and is not any more).
     const child = Bun.spawn(cliChildArgv(folder.folder, args), {
       cwd: options.cwd ?? commandContext(ctx.env, ctx.paths.home).cwd,
       env: cliChildEnv(ctx),
@@ -173,11 +131,6 @@ async function readLines(
   if (rest !== "") push(rest);
 }
 
-/**
- * Runs `dist/cli.js <args>` in `cwd` (the crew record's repository, or the portal's folder),
- * collecting every line as it is printed and handing each to `onLine` while it runs (the live
- * stream shows an action's progress). Never throws: a failure is `error` in words.
- */
 export async function runCliChild(
   ctx: PortalContext,
   args: string[],

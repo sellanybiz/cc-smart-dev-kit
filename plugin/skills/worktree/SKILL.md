@@ -62,6 +62,11 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
 
 ## Clear it after the merge
 
+Builder worktrees belong to the build skill's local integration loop. Once their commits
+are preserved on the plan branch and no process uses them, remove those clean checkouts
+and merged branches. The workflow below covers the main session's worktree after its PR.
+
+
 **The workflow says who clears it.** `cc-smart-dev-kit workflow show` prints
 `clearWorktreeAfterMerge`: with it on, clear the worktree in the same turn as the merge, unless
 the person wants more work on that branch. Left off — the default — say in one line that the

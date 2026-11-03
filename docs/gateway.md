@@ -345,13 +345,13 @@ the command's.
   file whose `ANTHROPIC_BASE_URL` alone is malformed is still read for its other keys. A launch
   with no mode passes no file and says nothing.
 - **Where the file is:** `<stateDir>/launch/<mode>-<pid>.json` (`no-gateway-<pid>.json`,
-  `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600 in a 0700 folder, written by the
-  kit's one JSON writer (`writeJsonFile`, `src/crew/store.ts`), which `crew start` uses for its
-  own `--settings` file too. **Two launches at once never clash**: they are two processes, so
-  each has its own name, and a second launch cannot rewrite a running session's URL — a settings
-  file that changes reaches a running session within about a second (P7), so one shared file
-  would. It is removed when the session ends. A launch that is killed leaves its file behind;
-  nothing reads it again (the next launch has its own name), and it holds one URL at mode 0600.
+  `gateway-<pid>.json`, `profile-<name>-<pid>.json`), mode 0600, written by the kit's one
+  atomic writer (`atomicWrite`, `src/setup/write.ts`). **Two launches at once never clash**:
+  they are two processes, so each has its own name, and a second launch cannot rewrite a
+  running session's URL — a settings file that changes reaches a running session within about
+  a second (P7), so one shared file would. It is removed when the session ends. A launch that
+  is killed leaves its file behind; nothing reads it again (the next launch has its own name),
+  and it holds one URL at mode 0600.
 - **While it runs, that one session beats the project's own state**, because `--settings` is
   earlier in the chain (P3). `gateway project status` says so: it cannot see a launch's file.
 - **Refused, one line each with the fix:** `--profile` with a name `gateway.json` does not have
@@ -665,13 +665,6 @@ was (`config.ts`, tested in `config.test.ts`).
   does not know the field ignores it. `currentBreakers` counts a record for 15 minutes after
   `lastAt`, the way a limit without a reset time counts, so a record a stopped router left
   behind goes stale.
-- **In a worker's record** (`src/crew/store.ts`, § Lead and the crew in `docs/design/crew.md`) a
-  `paused` worker may carry `waitingFor`, either `{kind: "slot", slot, since}` (`slot` is the
-  state key: `<profile>/<slot>` for a worker in a project on a profile), `{kind:
-  "claude-limit", model, resetsAt}`, or `{kind: "unknown", since, slot?}` (the same state key,
-  so the watch asks the session's own breaker before it resumes it, never the machine's), and a
-  lead's record may carry `pausedAgents`, the ids of its
-  own subagents waiting to be woken. Both are optional.
 
 ## The breaker
 
@@ -1218,9 +1211,9 @@ stays for the notifier's own alerts that wait for a click (`docs/design/hooks.md
 notifier).
 
 A Claude limit that does not hold the session gets no reset date (TV1): the alert asks
-`claudeLimitHolds` (`src/crew/wait.ts`, the one reading the crew wait uses) against the chain in
-use, and when the slot's first target is another model it says the limit "does not hold this
-session" and names that target, so the date of a limit that cannot stop the session is never told.
+`claudeLimitHolds` (`src/gateway/limit-holds.ts`) against the chain in use, and when the
+slot's first target is another model it says the limit "does not hold this session" and names
+that target, so the date of a limit that cannot stop the session is never told.
 
 The one thing it adds is a plain fact about the slot that answers the model, when that fact
 explains a stop that should not have happened (`slotFact`): the slot's chain starts with a
@@ -1460,10 +1453,11 @@ reaches Claude Code**.
   the last one misses it, the answer is a 504 `timeout_error` in Anthropic's shape.
 - **The stream idle limit (SC1).** `timeouts.firstByteMs` bounds the wait for a backend's
   headers and, for a held stream, its first real event (a backend that is not last, the judge,
-  a breaker probe). A stream that went silent after that, or that no deadline held, had no bound: on 2026-10-24, 12 of
-  4,957 answers from one OmniRoute target in 3 hours sent a 200 and then nothing, and one crew
-  session waited 21 minutes, until Claude Code gave up. Claude Code ended no stalled stream by
-  itself in the 179 s a probe watched (`docs/claude-code-contract.md` § The gateway). So
+  a breaker probe). A stream that went silent after that, or that no deadline held, had no
+  bound: on 2026-10-24, 12 of 4,957 answers from one OmniRoute target in 3 hours sent a 200 and
+  then nothing, and one session waited 21 minutes, until Claude Code gave up. Claude Code ended
+  no stalled stream by itself in the 179 s a probe watched (`docs/claude-code-contract.md` §
+  The gateway). So
   `"timeouts": {"streamIdleMs": <ms>}` is how long **any streaming answer the router relays**
   (a `/v1/messages` 2xx event stream: an affordable backend's, a Claude target's in a chain,
   and one sent straight to Anthropic; the owner, 2026-10-25) may send **no byte**, counted from
@@ -1474,42 +1468,42 @@ reaches Claude Code**.
   once their headers are in. **Before the headers, neither has any bound**: a target that
   never sends them is still waited on.
   At most 2147483647 (the longest a timer waits; above it the wait would be 1 ms and every
-  stream would be cut; `firstByteMs` has the same cap). Absent, it is **120000** (120 s, `DEFAULT_STREAM_IDLE_MS`),
-  **a judgment, not a measurement**: the request history is metadata only and its `ms` is the
-  time to the answer's headers (the first real event, for a held stream), never the gaps
-  between events. On 88,926 rows that time is at most 60 s for 99 of 100 answers on the
-  slowest target and 102 s at most; a pause inside an answer is likely of the same size, so
-  120 s sits above the longest wait seen and still ends a stall in two minutes. When it passes, the
-  router cancels the upstream and fails the body (`endIfSilent`), the way a cut connection
-  does: Claude Code then sends the same request again within a second, as a stream (proved on
-  2.1.310, P14 and P15). The router logs `WARN <target> sent no byte for <ms> ms
-  (timeouts.streamIdleMs); its stream was ended`, with `and the target rests` for a backend
-  (`anthropic` names a request sent straight to Anthropic). **A backend's stall rests it** like
-  any failure (30 s, the cooldown below, never a second timer), so the retry goes to the next
-  target when the fallback switch is on; with it off, or a chain of one, the retry asks the
-  same target again: the last target is always tried. **A Claude target's stall rests
+  stream would be cut; `firstByteMs` has the same cap). Absent, it is **120000** (120 s,
+  `DEFAULT_STREAM_IDLE_MS`), **a judgment, not a measurement**: the request history is metadata
+  only and its `ms` is the time to the answer's headers (the first real event, for a held
+  stream), never the gaps between events. On 88,926 rows that time is at most 60 s for 99 of
+  100 answers on the slowest target and 102 s at most; a pause inside an answer is likely of
+  the same size, so 120 s sits above the longest wait seen and still ends a stall in two
+  minutes. When it passes, the router cancels the upstream and fails the body (`endIfSilent`),
+  the way a cut connection does: Claude Code then sends the same request again within a second,
+  as a stream (proved on 2.1.310, P14 and P15). The router logs `WARN <target> sent no byte for
+  <ms> ms (timeouts.streamIdleMs); its stream was ended`, with `and the target rests` for a
+  backend (`anthropic` names a request sent straight to Anthropic). **A backend's stall rests
+  it** like any failure (30 s, the cooldown below, never a second timer), so the retry goes to
+  the next target when the fallback switch is on; with it off, or a chain of one, the retry
+  asks the same target again: the last target is always tried. **A Claude target's stall rests
   nothing, and is no capacity failure for the breaker or the fallback**: it fails in the
-  middle of an answer, which the router already treats so (a stream that breaks after its first
-  byte rests nothing; a plan limit is read from headers only; the breaker and the fallback act
-  before an answer reaches Claude Code), so Claude Code's retry asks the same chain again.
-  The cost: with a chain of a Claude target and then a backend, fallback on, during an
-  Anthropic incident that hangs streams after their headers, every retry goes back to the
-  Claude target and waits another `streamIdleMs`; it never reaches the backend. (A Claude
-  429, 5xx or network error before the headers does rest the target; a stall after them is
-  not that.) The 120 s default for Anthropic rests on its ping events, which keep a live
-  stream moving; Anthropic's docs give no interval, and one third-party measurement of a direct
-  stream saw about 30 s between events, with the first content 235 s in. Not measured here. To
-  turn the bound off in effect, set `streamIdleMs` to 2147483647.
-  Until the stream is ended, an Anthropic answer's status, headers and bytes pass as they came;
-  an error status or a JSON answer is never bounded. The clock runs only while the router
-  waits for the upstream (a client slow to read pauses it), and a client that hangs up cancels
-  the upstream and rests nothing. The history records a cut answer as the 200 its headers
-  were, with the tokens read before the cut; the `WARN` line is the only mark. Bun logs the
-  failed body as an `error:` stack on the router's stderr beside the `WARN` line; it is that
-  same cut, not a second failure. A keep-alive comment or `ping` sent forever by a stalled
-  upstream would count as bytes and never be cut: the 2026-10-24 stalls sent nothing at all,
-  and whether OmniRoute keeps its keep-alives going after a real event is not known; a rule
-  that counts only real events waits for a stall that shows it.
+  middle of an answer, which the router already treats so (a stream that breaks after its
+  first byte rests nothing; a plan limit is read from headers only; the breaker and the
+  fallback act before an answer reaches Claude Code), so Claude Code's retry asks the same
+  chain again. The cost: with a chain of a Claude target and then a backend, fallback on,
+  during an Anthropic incident that hangs streams after their headers, every retry goes back
+  to the Claude target and waits another `streamIdleMs`; it never reaches the backend. (A
+  Claude 429, 5xx or network error before the headers does rest the target; a stall after
+  them is not that.) The 120 s default for Anthropic rests on its ping events, which keep a
+  live stream moving; Anthropic's docs give no interval, and one third-party measurement of a
+  direct stream saw about 30 s between events, with the first content 235 s in. Not measured
+  here. To turn the bound off in effect, set `streamIdleMs` to 2147483647.
+  Until the stream is ended, an Anthropic answer's status, headers and bytes pass as they
+  came; an error status or a JSON answer is never bounded. The clock runs only while the
+  router waits for the upstream (a client slow to read pauses it), and a client that hangs up
+  cancels the upstream and rests nothing. The history records a cut answer as the 200 its
+  headers were, with the tokens read before the cut; the `WARN` line is the only mark. Bun
+  logs the failed body as an `error:` stack on the router's stderr beside the `WARN` line; it
+  is that same cut, not a second failure. A keep-alive comment or `ping` sent forever by a
+  stalled upstream would count as bytes and never be cut: the 2026-10-24 stalls sent nothing
+  at all, and whether OmniRoute keeps its keep-alives going after a real event is not known;
+  a rule that counts only real events waits for a stall that shows it.
 - **Cooldown.** A target that answered 429 rests for its `retry-after` (default 60 s); a
   408, 5xx, 529, network error or timeout rests `retry-after` or 30 s; at most 600 s, in
   memory. A resting target is skipped unless it is the last (and, with an open breaker, a
@@ -2121,12 +2115,10 @@ waits for each session's next restart harmlessly.
 - If the router is down, every Claude Code request fails. The service restarts itself;
   `gateway off` is the way out, and running sessions switch to Anthropic by themselves.
 - **A model's context window can disagree** in three places: what Claude Code assumes for
-  the Claude model it thinks it talks to (the window its status line reports, which
-  `cc-smart-dev-kit statusline` records and `crew self-watch` measures a crew session
-  against), what OmniRoute's catalog says (it refuses a bigger request itself — and the
-  window `crew self-watch` uses once a backend answers), and what the provider serves. Check all three before a model goes into
-  a slot; with the fallback on, keep a target with a larger window after one with a smaller
-  one.
+  the Claude model it thinks it talks to (the window its status line reports), what
+  OmniRoute's catalog says (it refuses a bigger request itself), and what the provider serves.
+  Check all three before a model goes into a slot; with the fallback on, keep a target with a
+  larger window after one with a smaller one.
 - **Images:** OmniRoute leaves an image in a request only when its catalog marks the
   model vision-capable; otherwise another model describes the image and the slot's model
   answers from that caption. Check a new model's image support before it goes in a slot.

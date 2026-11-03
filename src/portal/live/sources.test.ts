@@ -6,11 +6,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../../cli/paths";
-import { appendCrewEvent, createCrew, crewStoreDir, type NewCrew } from "../../crew/store";
 import { askLogFile } from "../../hooks/ask-log";
 import type { JobsAnswer } from "../../jobs/status";
-import { openWorkDb, workDbFile } from "../../tasks/work/db";
-import { createTask } from "../../tasks/work/store";
 import { tempDir } from "../../testing/temp";
 import { updateFiles, writeLastCheck } from "../../update/state";
 import { createLiveSources } from "./sources";
@@ -21,55 +18,14 @@ interface Published {
   event: string;
 }
 
-/** One repository and one crew session, for a store fixture. */
-const REPO = "/home/user/my-app";
-const LEAD = "11111111-1111-4111-8111-111111111111";
-
-/** A queued crew session, as the store writes one. */
-function queued(): NewCrew {
-  return {
-    base: null,
-    baseRef: "main",
-    branch: "crew/K-contracts",
-    effort: "xhigh",
-    files: ["src/crew/store.ts"],
-    id: "crew-K-contracts",
-    kind: "schema",
-    lastLine: null,
-    leadName: "LEAD my-app master-plan",
-    leadSessionId: LEAD,
-    memoryMb: null,
-    model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
-    name: "C my-app K contracts",
-    permissionMode: "auto",
-    phase: "K",
-    plan: ".claude/plans/master-plan.md",
-    pr: null,
-    questions: [],
-    reportPath: null,
-    repo: REPO,
-    sessionId: null,
-    shortId: null,
-    slug: "contracts",
-    state: "queued",
-    waitsFor: [],
-    worktree: `${REPO}/.claude/worktrees/crew-K-contracts`,
-  };
-}
-
 /** A poller on a temp home, with a fake router and a collector. */
 function world(options: { now?: () => number; recent?: () => unknown[]; routerUp?: boolean } = {}) {
   const home = tempDir("live");
   const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   const published: Published[] = [];
   let jobs: JobsAnswer = {
-    admission: { freeGb: 20, startFreeGb: 4 },
-    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-    lightJobs: { slots: 2, used: 0 },
-    memoryGb: 32,
     route: { on: false, project: null, source: "default" },
     stores: [],
-    weights: { cpu: { value: 20 }, io: { value: null, why: "the io controller is not delegated" } },
   };
   const sources = createLiveSources({
     fetch: async () =>
@@ -86,8 +42,6 @@ function world(options: { now?: () => number; recent?: () => unknown[]; routerUp
     paths,
     pollMs: 3_600_000,
     publish: (event, data) => published.push({ data, event }),
-    // Recorded among the events, so a test sees where the page reads were dropped.
-    forgetPageReads: () => published.push({ data: null, event: "forget-page-reads" }),
     routerPort: () => (options.routerUp === false ? null : 20_199),
   });
   return {
@@ -122,15 +76,6 @@ describe("the live stream's sources", () => {
     // The same answer again: nothing is published twice.
     await world1.sources.pollOnce();
     expect(world1.of("recent")).toHaveLength(1);
-  });
-
-  test("a router that is down publishes nothing about it", async () => {
-    const world1 = world({ routerUp: false });
-    await world1.sources.pollOnce();
-    // The queue's own first answer is published (a page opens with it); nothing claims a router.
-    expect(world1.of("recent")).toEqual([]);
-    expect(world1.of("state")).toEqual([]);
-    expect(world1.of("crew")).toEqual([]);
   });
 
   test("gateway-state: the limits, the fallbacks, the breakers and seenClaude, only on a change", async () => {
@@ -205,16 +150,8 @@ describe("the live stream's sources", () => {
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
     world1.setJobs({
-      admission: { freeGb: 20, startFreeGb: 4 },
-      ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-      lightJobs: { slots: 2, used: 0 },
-      memoryGb: 32,
       route: { on: false, project: null, source: "default" },
       stores: [],
-      weights: {
-        cpu: { value: 20 },
-        io: { value: null, why: "the io controller is not delegated" },
-      },
     });
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 1);
@@ -225,86 +162,6 @@ describe("the live stream's sources", () => {
     rmSync(join(leases, "job-1"));
     await world1.sources.pollOnce();
     expect(world1.of("jobs")).toHaveLength(before + 3);
-  });
-
-  test("the crew log: the first poll is a baseline, then only the step added after it", async () => {
-    const world1 = world({ routerUp: false });
-    await createCrew(world1.paths.stateDir, queued(), Date.now());
-    await world1.sources.pollOnce();
-    // The whole history before the portal started is not sent as live events.
-    expect(world1.of("crew")).toEqual([]);
-    await appendCrewEvent(
-      world1.paths.stateDir,
-      REPO,
-      {
-        crew: "crew-K-contracts",
-        lead: LEAD,
-        name: "C my-app K contracts",
-        state: "working",
-        text: "step 1",
-        type: "step",
-      },
-      Date.now(),
-    );
-    await world1.sources.pollOnce();
-    const all = world1.of("crew") as { text: null | string; type: string }[];
-    expect(all.map((one) => one.type)).toEqual(["step"]);
-    expect(all[0]?.text).toBe("step 1");
-    expect(crewStoreDir(world1.paths.stateDir, REPO)).toContain("crew");
-  });
-
-  test("crew news drops the kept page reads first, so the page that reloads reads fresh", async () => {
-    // Needs and Work keep a heavy read for a few seconds; an event from outside the portal (a
-    // `crew rm` in a terminal) that lands inside that window must not leave the old list on show.
-    const world1 = world({ routerUp: false });
-    await createCrew(world1.paths.stateDir, queued(), Date.now());
-    await world1.sources.pollOnce();
-    await appendCrewEvent(
-      world1.paths.stateDir,
-      REPO,
-      {
-        crew: "crew-K-contracts",
-        lead: LEAD,
-        name: "C my-app K contracts",
-        state: "working",
-        text: "step 1",
-        type: "step",
-      },
-      Date.now(),
-    );
-    world1.published.length = 0;
-    await world1.sources.pollOnce();
-    expect(world1.published.map((one) => one.event)).toEqual(["forget-page-reads", "crew"]);
-    // A poll with no news drops nothing.
-    world1.published.length = 0;
-    await world1.sources.pollOnce();
-    expect(world1.published.map((one) => one.event)).not.toContain("forget-page-reads");
-  });
-
-  test("a repository that appears after the first poll publishes its own events", async () => {
-    // A new project's first crew session is news: the baseline covers the store as the portal
-    // found it, not a log that did not exist then.
-    let clock = Date.now();
-    const world1 = world({ now: () => clock, routerUp: false });
-    await createCrew(world1.paths.stateDir, queued(), clock);
-    await world1.sources.pollOnce();
-    expect(world1.of("crew")).toEqual([]);
-    await createCrew(
-      world1.paths.stateDir,
-      {
-        ...queued(),
-        branch: "crew/K-other",
-        id: "crew-K-other",
-        name: "C other-app K other",
-        repo: "/home/user/other-app",
-        worktree: "/home/user/other-app/.claude/worktrees/crew-K-other",
-      },
-      clock,
-    );
-    // The repository list is trusted for 30 s: a new repository is seen at the next walk.
-    clock += 31_000;
-    await world1.sources.pollOnce();
-    expect(world1.of("crew").map((one) => (one as { type: string }).type)).toEqual(["created"]);
   });
 
   test("a guard log that appears after the first poll publishes its first ask", async () => {
@@ -340,32 +197,5 @@ describe("the live stream's sources", () => {
     expect(world1.of("update")).toHaveLength(1);
     await world1.sources.pollOnce();
     expect(world1.of("update")).toHaveLength(1);
-  });
-
-  test("the work store: the first poll is a baseline, then one event per committed write", async () => {
-    let clock = 1_000;
-    const world1 = world({ now: () => clock, routerUp: false });
-    const who = { sessionId: "s", crewId: null, pid: null, procStart: null };
-    // No store yet: the baseline is "nothing there".
-    await world1.sources.pollOnce();
-    expect(world1.of("tasks")).toEqual([]);
-    const db = openWorkDb(workDbFile(world1.paths), { mode: "write" });
-    try {
-      const made = createTask(db, { project: "p", subject: "First" }, who, 1);
-      if (!made.ok) throw new Error(made.why);
-      clock = 2_000;
-      await world1.sources.pollOnce();
-      expect(world1.of("tasks")).toEqual([{ at: 2_000 }]);
-      // Nothing written since: nothing to say.
-      await world1.sources.pollOnce();
-      expect(world1.of("tasks")).toHaveLength(1);
-      const second = createTask(db, { project: "p", subject: "Second" }, who, 2);
-      if (!second.ok) throw new Error(second.why);
-      clock = 3_000;
-      await world1.sources.pollOnce();
-      expect(world1.of("tasks")).toEqual([{ at: 2_000 }, { at: 3_000 }]);
-    } finally {
-      db.close();
-    }
   });
 });

@@ -252,7 +252,7 @@ export function resolveSwitch(
     });
     if (!read.ok) {
       // Not "off": the policy may be committed and not yet pushed, or git may have failed once.
-      // A caller that can wait (the watch's queue) waits; `retry` says so.
+      // `retry` says so: the caller may try again once the policy is pushed.
       return {
         retry: true,
         why: `the policy committed on ${base} cannot be read (${read.why}); a policy counts once it is committed, pushed and fetched`,
@@ -363,9 +363,9 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   const clash = labelsProblem(policy.resolved);
   if (clash !== null) return refuse(clash);
 
-  // The ready label is the person's choice: a phase starts from an issue that carries it, added by
-  // someone with write access (`pickup.ts`). The kit files under that person's login, so it must
-  // never add the label itself, nor let the found label be the same word.
+  // The ready label is the person's choice: it marks an issue someone with write access chose.
+  // The kit files under that person's login, so it must never add the label itself, nor let the
+  // found label be the same word.
   const ready = policy.resolved.issues.readyLabel.value;
   const readyHit = [policy.resolved.issues.foundLabel.value, ...request.labels].find(
     (label) => label.toLowerCase() === ready.toLowerCase(),
@@ -455,7 +455,7 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   if (double !== undefined) {
     if (double.body !== body) {
       // A person labelled it ready after reading its text as it stood: a rewrite under their own
-      // login would be a change they never saw (and the edit check of `pickup.ts` would pass it).
+      // login would be a change they never saw.
       if (double.ready) {
         return refuse(
           `#${double.number} carries the ready label (${ready}), so a person has chosen its text as it stands; the kit does not rewrite it. Remove the label first, or file this as a new finding with another fingerprint`,

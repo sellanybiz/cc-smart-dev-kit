@@ -15,7 +15,6 @@
  */
 import { basename, join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { CREW_ENV } from "../crew/session";
 import { isAttended } from "../hooks/attended";
 import { startDetached } from "../hooks/detached";
 import type { HookContext } from "../hooks/run";
@@ -97,8 +96,6 @@ export function startAutoClean(
   // In the home folder, without the git variables of the session's repo: the process names
   // the repo itself. Its stdio is closed, so nothing keeps Claude Code waiting.
   const env = gitEnv(context.env);
-  // This detached daemon is not the crew session that triggered it; it has its own keep path.
-  delete env[CREW_ENV];
   (context.start ?? startDetached)(process.platform, argv, {
     cwd: context.paths.home,
     env,

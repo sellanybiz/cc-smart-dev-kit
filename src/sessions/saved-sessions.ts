@@ -54,7 +54,7 @@ const PROJECT_FOLDER_NAME_MAX = 200;
 /**
  * Claude Code's hash of a folder's path, in base 36: the 32-bit `hash * 31 + code` over the
  * path's UTF-16 units, as a positive number (seen live, 2.1.310: the suffix of three cut names,
- * `docs/claude-code-contract.md` § Lead and the crew).
+ * `docs/claude-code-contract.md`).
  */
 function pathHash(path: string): string {
   let hash = 0;

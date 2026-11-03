@@ -12,7 +12,7 @@ import type { Result } from "./types";
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
-const who = { sessionId: "session", crewId: null, pid: 12, procStart: "34" };
+const who = { sessionId: "session", pid: 12, procStart: "34" };
 
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);

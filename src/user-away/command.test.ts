@@ -211,7 +211,7 @@ describe("user park", () => {
         "--recommend",
         "2",
       ],
-      { env: { CLAUDE_CODE_SESSION_ID: "sess-1", CC_SMART_DEV_KIT_CREW: "UA1-x-1" } },
+      { env: { CLAUDE_CODE_SESSION_ID: "sess-1" } },
     );
     expect(run.code).toBe(0);
     expect(run.out).toBe("✓ Parked as #1: a question for the person.\n");
@@ -225,7 +225,7 @@ describe("user park", () => {
         options: ["alpha", "beta"],
         recommend: 2,
         session: "sess-1",
-        crew: "UA1-x-1",
+
         cwd: "/work/app",
         at: "2026-10-25T01:00:00.000Z",
       },
@@ -233,7 +233,7 @@ describe("user park", () => {
   });
 
   test("an action keeps its exact command, quotes and new lines included", async () => {
-    const command = "git push origin 'crew/x'\ngh pr create --title \"a b\"";
+    const command = "git push origin 'fix/x'\ngh pr create --title \"a b\"";
     const run = await user([
       "park",
       "--kind",
@@ -272,19 +272,6 @@ describe("user park", () => {
     ).toEqual(["one", "two"]);
   });
 
-  test("--crew names the crew session an item is for, over the session that parks it", async () => {
-    const own = await user(["park", "--kind", "question", "Which name?", "--crew", "UA1-x-2"]);
-    expect(stateOf(own).items[0]?.crew).toBe("UA1-x-2");
-    const over = await user(["park", "--kind", "question", "Which name?", "--crew", "UA1-x-2"], {
-      env: { CC_SMART_DEV_KIT_CREW: "UA1-x-1" },
-    });
-    expect(stateOf(over).items[0]?.crew).toBe("UA1-x-2");
-    const none = await user(["park", "--kind", "question", "Which name?"], {
-      env: { CC_SMART_DEV_KIT_CREW: "UA1-x-1" },
-    });
-    expect(stateOf(none).items[0]?.crew).toBe("UA1-x-1");
-  });
-
   test("the same action parked again says it is already parked", async () => {
     const home = tempDir("user-cmd");
     await user(["park", "--kind", "action", "push", "--command", "git push"], { home });
@@ -303,8 +290,6 @@ describe("user park", () => {
     [["park", "--kind", "decision", "   "], "What is parked needs its words"],
     [["park", "--kind", "action", "x", "--command", ""], "--command needs a value"],
     [["park", "--kind", "action", "x", "--command", "  "], "--command needs the exact command"],
-    [["park", "--kind", "question", "x", "--crew", ""], "--crew needs a value"],
-    [["park", "--kind", "question", "x", "--crew", "  "], "--crew needs a crew session's name"],
     [["park", "--kind", "question", "a", "b"], "What is parked takes one text"],
     [["park", "--kind", "question", "x", "--command", "ls"], "--command is for an action"],
     [
@@ -341,7 +326,7 @@ describe("user list and clear", () => {
         "--recommend",
         "2",
       ],
-      { home, env: { CLAUDE_CODE_SESSION_ID: "sess-1", CC_SMART_DEV_KIT_CREW: "UA1-x-1" } },
+      { home, env: { CLAUDE_CODE_SESSION_ID: "sess-1" } },
     );
     await user(["park", "--kind", "action", "Push the branch", "--command", "git push origin x"], {
       home,
@@ -356,7 +341,7 @@ describe("user list and clear", () => {
     expect(run.code).toBe(0);
     expect(run.out).toBe(
       [
-        "#1 question · crew UA1-x-1 · session sess-1 · 01:00",
+        "#1 question · session sess-1 · 01:00",
         "   Which name?",
         "   1. alpha",
         "   2. beta (recommended)",

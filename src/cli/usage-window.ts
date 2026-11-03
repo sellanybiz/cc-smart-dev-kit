@@ -6,15 +6,15 @@
  * on stdin, filled from Anthropic's `anthropic-ratelimit-unified-5h-*` headers
  * (`docs/claude-code-contract.md` § The status line). Nothing else on the machine is told it —
  * not the router's state file, not a transcript — so the status line writes it down when it
- * reads it, and the commands that need it read it back: `crew start`'s opus guard and
- * `crew list` (`src/crew/usage-guard.ts`).
+ * reads it, and the portal reads it back for its plan-usage numbers (`planWindow`,
+ * `src/portal/facts.ts`).
  *
  * The file is `<stateDir>/usage-window.json`, mode 600, the kit's own state:
  * `{"fiveHour": {"percent": 87, "resetsAt": 1792600800}, "readAt": "2026-10-23T…"}`. It is
  * written only when the numbers change, so `readAt` is when they were last seen. A window whose
  * `resetsAt` has passed measured a window that is over: it reads as unknown — never as its old
- * number — and the guard does not hold on it. A reading with no reset time at all is unknown
- * once it is older than the 5-hour window itself: that is the longest it could describe.
+ * number. A reading with no reset time at all is unknown once it is older than the 5-hour
+ * window itself: that is the longest it could describe.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

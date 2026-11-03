@@ -20,7 +20,6 @@ import {
   PLUGIN_HOOK_NAMES,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
-  WORKFLOW_CREW_KEYS_SINCE,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
 import { requiresFloor } from "./init";
@@ -47,9 +46,6 @@ const ACCEPTED_BY_0_5_2 = [
   "jobs.kinds.*.skipWords",
   "jobs.kinds.*.valuedFlags",
   "jobs.kinds.*.workers",
-  "jobs.kinds.*.workers.flag",
-  "jobs.kinds.*.workers.aliases",
-  "jobs.kinds.*.workers.gbEach",
   "jobs.kinds.*.match",
   "jobs.kinds.*.match.tool",
   "jobs.kinds.*.match.sub",
@@ -82,38 +78,24 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.lines": "1.0.0",
   "workflow.fixesAfterReview.files": "1.0.0",
   "workflow.fixesAfterReview.percent": "1.0.0",
-  "workflow.crew": "1.0.0",
-  "workflow.crew.enabled": "1.0.0",
-  "workflow.crew.idleStopMinutes": "1.0.0",
-  "workflow.crew.max": "1.0.0",
-  "workflow.crew.maxOpus": "1.0.0",
-  "workflow.crew.memoryGb": "1.0.0",
-  "workflow.crew.quietMinutes": "1.0.0",
-  "workflow.crew.handoffPercent": "1.0.0",
-  "workflow.crew.softHours": "1.0.0",
-  "workflow.crew.maxHours": "1.0.0",
-  "workflow.crew.tag": "1.0.0",
+  // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
+  "workflow.crew": "0.5.2",
   checks: "1.1.0",
   "checks.fast": "1.1.0",
-  "workflow.crew.keep": "1.1.0",
-  "workflow.crew.perLead": "1.1.0",
-  "workflow.crew.perLeadOpus": "1.1.0",
-  "workflow.crew.usagePercent": "1.1.0",
-  "workflow.crew.handoffTokens": "1.2.0",
-  "workflow.crew.loadPerCore": "1.3.0",
-  "workflow.crew.archiveDays": "1.3.0",
-  "workflow.crew.deleteDays": "1.7.0",
-  "workflow.crew.startGapSeconds": "1.8.0",
   "workflow.issues": "1.4.0",
   "workflow.issues.enabled": "1.4.0",
   "workflow.issues.allowPublic": "1.4.0",
+  // Accepted and ignored since 2.0: the issue feed and the lead's watch are gone. The keys stay
+  // in the schema, so an old file still needs the release that first took them.
   "workflow.issues.watch": "1.4.0",
   "workflow.issues.watchMinutes": "1.4.0",
   "workflow.issues.foundLabel": "1.4.0",
   "workflow.issues.fixedLabel": "1.4.0",
   "workflow.issues.readyLabel": "1.4.0",
   "jobs.kinds.*.noSlotForFiles": "1.5.0",
-  "jobs.kinds.*.light": "1.8.0",
+  // Ignored since 2.0 (`IGNORED_KIND_FIELDS`): the key stays in the schema so an old file loads,
+  // and it raises no floor, like `workflow.crew`.
+  "jobs.kinds.*.light": "0.5.2",
   tasks: "1.10.0",
   "tasks.dir": "1.10.0",
   "tasks.staleDays": "1.10.0",
@@ -146,6 +128,8 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
   "task-start": "1.10.0",
+  "keep-going": "2.0.0",
+  "builder-finish": "2.0.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
@@ -332,7 +316,6 @@ describe("tasks", () => {
 describe("the since-tables", () => {
   test("each entry names a real release: a plain version, not newer than this build", () => {
     const versions = [
-      ...Object.values(WORKFLOW_CREW_KEYS_SINCE),
       ...Object.values(OWN_HOOK_NAMES_SINCE),
       ...Object.values(JOB_KIND_KEYS_SINCE),
     ];

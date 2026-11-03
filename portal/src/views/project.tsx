@@ -309,17 +309,8 @@ const BRANCH_COLUMNS = column.columns([
       <span className="flex flex-wrap items-center gap-1.5">
         {/* The icon stays with its words; only the draft badge may wrap to a line of its own. */}
         <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-          {row.original.kind === "pr" ? (
-            <>
-              <GitPullRequestIcon className="size-3.5" aria-hidden="true" />
-              {row.original.number === null ? "Pull request" : `PR #${row.original.number}`}
-            </>
-          ) : (
-            <>
-              <GitBranchIcon className="size-3.5" aria-hidden="true" />
-              Crew branch
-            </>
-          )}
+          <GitPullRequestIcon className="size-3.5" aria-hidden="true" />
+          {row.original.number === null ? "Pull request" : `PR #${row.original.number}`}
         </span>
         {row.original.draft && (
           <Badge variant="outline" className="text-muted-foreground">
@@ -360,8 +351,8 @@ function Branches({ data }: { data: ProjectData }) {
       <CardHeader>
         <CardTitle>Merge check</CardTitle>
         <CardDescription>
-          The open pull requests and crew branches, with the merge guard's verdict on each: whether
-          it would merge by itself. Read {ago(data.checkedAt)}.
+          The open pull requests, with the merge guard's verdict on each: whether it would merge by
+          itself. Read {ago(data.checkedAt)}.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
@@ -382,7 +373,7 @@ function Branches({ data }: { data: ProjectData }) {
               // nothing was found in the part that could. It wraps on a narrow screen.
               <span className="block whitespace-normal text-pretty">
                 {data.branchesNote === null
-                  ? "No open pull request and no crew branch."
+                  ? "No open pull request."
                   : "Nothing found in what could be read. The note above says what is missing."}
               </span>
             }

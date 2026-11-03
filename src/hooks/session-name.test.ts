@@ -1,24 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { cliPaths } from "../cli/paths";
-import { CREW_ENV } from "../crew/session";
-import { writeLead } from "../crew/store";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
 import {
+  cleanSessionName,
   isSessionId,
   namesDir,
   namingNote,
   recordSessionName,
-  titleToSet,
-  titleToSetOrProblem,
 } from "./session-name";
 import { sessionNameHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
-// `cleanSessionName` lives in `src/crew/names.ts`, and its tests beside it.
 describe("names", () => {
   test("only a UUID is a session id", () => {
     expect(isSessionId(SESSION)).toBe(true);
@@ -31,39 +25,6 @@ describe("names", () => {
     expect(readFileSync(join(namesDir(env), `${SESSION}.name`), "utf8")).toBe("Fix login");
     expect(() => recordSessionName("../x", "a", env)).toThrow('"../x" is not a session id');
     expect(() => recordSessionName(SESSION, "  ", env)).toThrow("the name is empty");
-  });
-
-  test("recordSessionName refuses in a crew session, and records nothing", () => {
-    const env = { ...hookEnv(), [CREW_ENV]: "W2-x-1a2b3c" };
-    expect(() => recordSessionName(SESSION, "Fix login", env)).toThrow(
-      "a crew session keeps the name its lead gave it",
-    );
-    expect(existsSync(join(namesDir(env), `${SESSION}.name`))).toBe(false);
-  });
-});
-
-describe("titleToSetOrProblem: a name whose record cannot be written is not set, and says why", () => {
-  test("it answers as titleToSet does while the record can be written", () => {
-    const env = hookEnv();
-    expect(titleToSetOrProblem(env, SESSION, "LEAD app plan", "other")).toEqual({
-      problem: null,
-      title: "LEAD app plan",
-    });
-    // Recorded now: the same name is not set twice.
-    expect(titleToSetOrProblem(env, SESSION, "LEAD app plan", "other")).toEqual({
-      problem: null,
-      title: null,
-    });
-  });
-
-  test("a TMPDIR that is a file: no title, and the reason, where titleToSet throws", () => {
-    const notAFolder = join(tempDir("tmp-is-a-file"), "tmp");
-    writeFileSync(notAFolder, "");
-    const env = { ...hookEnv(), TMPDIR: notAFolder };
-    expect(() => titleToSet(env, SESSION, "LEAD app plan", "other")).toThrow();
-    const answer = titleToSetOrProblem(env, SESSION, "LEAD app plan", "other");
-    expect(answer.title).toBeNull();
-    expect(answer.problem).toStartWith("the session name could not be recorded (");
   });
 });
 
@@ -131,37 +92,21 @@ describe("the hook", () => {
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
     expect(await runHook(sessionNameHook, start(makeRepo("plain")), env)).toEqual({});
   });
+});
 
-  test("a recorded lead: silence, because the lead's name is lead-notes' (LD1)", async () => {
-    const { repo, env } = setup();
-    await writeLead(
-      cliPaths(env).stateDir,
-      {
-        cwd: repo,
-        name: "LEAD app plan",
-        plan: "plan",
-        repo,
-        sessionId: SESSION,
-        tag: "app",
-      },
-      Date.now(),
-    );
-    recordSessionName(SESSION, "Fix login", env);
-    expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
-    expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
+describe("cleanSessionName", () => {
+  test.each([
+    ["Fix the login page", "Fix the login page"],
+    ["  two\tspaces  \nsecond line", "two spaces"],
+    ["\u001b]0;evil\u0007title", "]0;evil title"],
+    ["\u009bx", "x"],
+    ["   ", null],
+    ["x".repeat(70), "x".repeat(60)],
+  ])("cleanSessionName(%j) is %j", (raw, expected) => {
+    expect(cleanSessionName(raw)).toBe(expected);
   });
 
-  test("a crew session: no note and no title, even with a name recorded for it", async () => {
-    const { repo, env } = setup();
-    // A name recorded before it was a crew session (or for another session with this id): the
-    // name `crew start --name` gave it is the address its lead and `crew answer` use, and the
-    // hook never sets another one.
-    recordSessionName(SESSION, "Fix login", env);
-    const crew = { ...env, [CREW_ENV]: "W2-x-1a2b3c" };
-    expect(await runHook(sessionNameHook, start(repo), crew)).toEqual({});
-    expect(await runHook(sessionNameHook, prompt(repo), crew)).toEqual({});
-    expect(
-      await runHook(sessionNameHook, prompt(repo, { session_title: "mine now" }), crew),
-    ).toEqual({});
+  test("never splits an emoji at the cut", () => {
+    expect(cleanSessionName(`${"a".repeat(59)}😀😀`)).toBe(`${"a".repeat(59)}😀`);
   });
 });

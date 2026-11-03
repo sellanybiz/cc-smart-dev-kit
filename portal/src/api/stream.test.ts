@@ -174,40 +174,31 @@ describe("the live stream", () => {
     expect(fake.reloads).toBe(1);
     stream.stop();
   });
+});
 
-  test("two tabs share one stream: the leader's events and state reach the follower", async () => {
-    FakeSource.made = [];
-    const Channel = channels();
-    const lock = locks();
-    const leader = startLiveStream("/events", world({ BroadcastChannel: Channel, locks: lock }));
-    const follower = startLiveStream("/events", world({ BroadcastChannel: Channel, locks: lock }));
-    await Promise.resolve();
-    expect(FakeSource.made).toHaveLength(1);
-    const states: Connection[] = [];
-    const seen: string[] = [];
-    follower.connection((state) => states.push(state));
-    follower.on((message) => seen.push(message.name));
-    FakeSource.made[0]?.send("hello", { at: 1, boot: "b1" });
-    FakeSource.made[0]?.send("crew", {
-      at: "t",
-      crew: "c1",
-      lead: null,
-      name: "n",
-      state: "working",
-      text: null,
-      type: "step",
-      version: 1,
-    });
-    expect(states).toEqual(["reconnecting", "live"]);
-    expect(seen).toEqual(["hello", "crew"]);
-    // The leader's tab closes: the follower takes the lock and opens its own stream, and,
-    // having had a stream before, tells its page to read again.
-    leader.stop();
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(FakeSource.made).toHaveLength(2);
-    FakeSource.made[1]?.send("hello", { at: 2, boot: "b1" });
-    expect(seen).toEqual(["hello", "crew", "reset", "hello"]);
-    follower.stop();
-  });
+test("two tabs share one stream: the leader's events and state reach the follower", async () => {
+  FakeSource.made = [];
+  const Channel = channels();
+  const lock = locks();
+  const leader = startLiveStream("/events", world({ BroadcastChannel: Channel, locks: lock }));
+  const follower = startLiveStream("/events", world({ BroadcastChannel: Channel, locks: lock }));
+  await Promise.resolve();
+  expect(FakeSource.made).toHaveLength(1);
+  const states: Connection[] = [];
+  const seen: string[] = [];
+  follower.connection((state) => states.push(state));
+  follower.on((message) => seen.push(message.name));
+  FakeSource.made[0]?.send("hello", { at: 1, boot: "b1" });
+  FakeSource.made[0]?.send("tasks", { at: 1 });
+  expect(states).toEqual(["reconnecting", "live"]);
+  expect(seen).toEqual(["hello", "tasks"]);
+  // The leader's tab closes: the follower takes the lock and opens its own stream, and,
+  // having had a stream before, tells its page to read again.
+  leader.stop();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(FakeSource.made).toHaveLength(2);
+  FakeSource.made[1]?.send("hello", { at: 2, boot: "b1" });
+  expect(seen).toEqual(["hello", "tasks", "reset", "hello"]);
+  follower.stop();
 });

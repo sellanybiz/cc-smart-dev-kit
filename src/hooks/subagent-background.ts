@@ -5,8 +5,8 @@
  * own still running leaves Claude Code holding the agent open: the parent already has the
  * report, the task outlives the turn, and the person's panel shows the agent as if it were
  * stuck. The fix belongs to the agent — wait for the work, or stop it, before the final
- * report (`/cc-smart-dev-kit:subagent-decision` § How to brief; `/cc-smart-dev-kit:crew` § 4)
- * — and this hook says it once when the agent did not.
+ * report (`/cc-smart-dev-kit:subagent-decision` § How to brief) — and this hook says it once
+ * when the agent did not.
  *
  * **The input's `background_tasks` is the SESSION's in-flight list, not this agent's.** Proved
  * offline on 2.1.308 (fake Anthropic, throwaway HOME): a subagent launched in the background

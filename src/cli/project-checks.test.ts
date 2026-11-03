@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { VERSION } from "../build-info";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir, withGitVersion } from "../testing/temp";
 import { checkLine } from "./doctor";
@@ -478,28 +479,43 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 });
 
 describe("a requires below what the file's fields need", () => {
+  // `workflow.issues` came in 1.4.0. The old `crew` group is a leftover 2.0 loads and ignores:
+  // it raises no floor, and the file still loads with no error.
   const LOW = {
     requires: ">=1.0",
     worktrees: { base: "main" },
-    workflow: { crew: { enabled: true, handoffTokens: 300000 } },
+    workflow: {
+      crew: { enabled: true, handoffTokens: 300000 },
+      issues: { foundLabel: "kit:found" },
+    },
   };
 
-  test("1.2.0 wrote handoffTokens under >=1.0: one ! line naming the range, the floor and the fix", async () => {
+  test("an issues group under >=1.0: one ! line naming the range, the floor and the fix", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", LOW);
     ignoreWorktrees(repo);
     expect(await check(repo)).toEqual([
-      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields need ">=1.2": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init (or any cc-smart-dev-kit workflow set … --project) raises it to ">=1.2"',
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields need ">=1.4": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init (or any cc-smart-dev-kit workflow set … --project) raises it to ">=1.4"',
     ]);
   });
 
   test("a requires at or above the floor, a range read as a newer one, or none: nothing to say", async () => {
     const repo = makeRepo();
     ignoreWorktrees(repo);
-    for (const requires of [">=1.2", ">=1.3", "^1.2", undefined]) {
+    for (const requires of [">=1.4", ">=1.5", "^1.4 || >=2", undefined]) {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { ...LOW, requires });
       expect(await check(repo)).toEqual([]);
     }
+  });
+
+  test("a requires that stops below this plugin: one ✗ line, and project init is not the fix", async () => {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: "<1" });
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    expect(await check(repo)).toEqual([
+      `✗ project: ${file}: this project's requires <1 does not let in cc-smart-dev-kit ${VERSION}, which is newer; widen requires in that file Fix: do what this line says`,
+    ]);
   });
 });
 
@@ -546,7 +562,7 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     // (`shown`, the same for every project line): the rest is the same everywhere.
     expect(lines[0]).toStartWith("· project: ");
     expect(lines[0]).toEndWith(
-      "cc-smart-dev-kit.json sets size fields in jobs.kinds (e2e: gb, filesGb, workers; tsc: gb) that the job queue ignores: it counts jobs now, not gigabytes Fix: remove them from jobs.kinds; how many heavy jobs run at once is your own setting: cc-smart-dev-kit job set max-jobs <n>",
+      "cc-smart-dev-kit.json sets size fields in jobs.kinds (e2e: gb, filesGb, workers; tsc: gb) that the job queue ignores: it counts jobs now, not gigabytes Fix: remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says",
     );
   });
 
@@ -572,32 +588,5 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs });
       expect(await check(repo)).toEqual([]);
     }
-  });
-});
-
-describe("D71: project crew limits", () => {
-  test("one informational line names every ignored key", async () => {
-    const repo = makeRepo();
-    ignoreWorktrees(repo);
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { workflow: { crew: { max: 4, memoryGb: 2 } } });
-    const env = hookEnv();
-    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({
-      ok: true,
-      info: true,
-      fix: "remove each one with cc-smart-dev-kit workflow unset --project <key>; set your own with cc-smart-dev-kit workflow set crew.max <n>",
-    });
-    expect(lines[0]?.text).toEndWith(
-      "sets workflow.crew machine limits (crew.max, crew.memoryGb) that are ignored because crew limits are per machine",
-    );
-  });
-  test("no machine key means no line", async () => {
-    const repo = makeRepo();
-    ignoreWorktrees(repo);
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      workflow: { crew: { enabled: true, tag: "my-app" } },
-    });
-    expect(await check(repo)).toEqual([]);
   });
 });

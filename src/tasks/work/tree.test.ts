@@ -2,12 +2,18 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../../testing/temp";
-import { openWorkDb, workDbFile } from "./db";
-import { createTask, ensurePhaseTask, updateTask } from "./store";
-import { crewPhaseTree, projectTaskTree, TREE_TASK_LIMIT } from "./tree";
+import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
+import { createTask, type LaidPhase, layPhase, updateTask } from "./store";
+import type { Who } from "./types";
+
+function createPhase(db: WorkDb, input: LaidPhase, who: Who, now: number) {
+  return writeWork(db, () => layPhase(db, input, who, now).task);
+}
+
+import { projectTaskTree, TREE_TASK_LIMIT } from "./tree";
 import type { Result } from "./types";
 
-const who = { sessionId: "s", crewId: null, pid: 1, procStart: "1" };
+const who = { sessionId: "s", pid: 1, procStart: "1" };
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
 
@@ -20,7 +26,7 @@ test("plan, phase and subtasks as one tree, with closed/total over each subtree"
   const paths = { stateDir: tempDir() };
   const db = openWorkDb(workDbFile(paths), { mode: "write" });
   const phase = value(
-    ensurePhaseTask(
+    createPhase(
       db,
       {
         project: "p",
@@ -28,8 +34,6 @@ test("plan, phase and subtasks as one tree, with closed/total over each subtree"
         phase: "a",
         subject: "Phase A",
         description: "",
-        crewId: "c",
-        waitsForPhases: [],
       },
       who,
       NOW - 2 * DAY,
@@ -66,20 +70,6 @@ test("plan, phase and subtasks as one tree, with closed/total over each subtree"
     "#6 Closed today [dropped] 0/0",
   ]);
   expect(tree.value.more).toBe(0);
-
-  // A crew page's tree: its phase and everything under it, however old, and nothing else.
-  const crew = crewPhaseTree(paths, "p", "c");
-  if (crew.state !== "ready" || crew.value.phase === null) throw new Error("no phase tree");
-  expect(outline([crew.value.phase])).toEqual([
-    "#2 Phase A [pending] 1/2",
-    "  #4 Two [pending] 0/0",
-    "  #3 One [done] 0/0",
-  ]);
-  expect(crewPhaseTree(paths, "p", "a-crew-from-before-1.10.0")).toEqual({
-    state: "ready",
-    value: { phase: null, more: 0 },
-  });
-  expect(crewPhaseTree({ stateDir: tempDir() }, "p", "c")).toEqual({ state: "none" });
 });
 
 test("past the limit the rest is counted, subtrees included", () => {

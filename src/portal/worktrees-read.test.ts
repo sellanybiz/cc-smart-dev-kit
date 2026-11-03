@@ -146,7 +146,7 @@ process.exit(2);
   });
 
   test("a folder that is not there any more: the reason in words, never a crash", async () => {
-    // A worktree a crew session worked in and removed: `Bun.spawn` refuses to start in a `cwd`
+    // A worktree a session worked in and removed: `Bun.spawn` refuses to start in a `cwd`
     // that does not exist, and the page gets a line instead of a broken request.
     const w = world();
     const read = await readWorktreesOffLoop(w.ctx, join(w.home, "no-such-worktree"));

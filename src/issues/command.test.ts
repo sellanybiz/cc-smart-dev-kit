@@ -183,7 +183,7 @@ describe("issue fixed: the command", () => {
     git(run.repo, "checkout", "-q", "main");
     run.gh.issues.push({
       body: "A bug",
-      comments: [fixedComment({ base: "release", branch: "crew/x", issue: 4, merge: null, tip })],
+      comments: [fixedComment({ base: "release", branch: "fix/x", issue: 4, merge: null, tip })],
       labels: ["fixed-unreleased"],
       number: 4,
       title: "A bug",
@@ -224,5 +224,53 @@ describe("issue fixed: the command", () => {
     expect(await runIssue(argv, run.context)).toBe(2);
     expect(run.lines).toEqual([]);
     expect(run.errors[0]).toContain(said);
+  });
+});
+
+describe("issue mark-fixed: the command", () => {
+  test("writes the fixed marker and label after a merge", async () => {
+    const run = setup();
+    await runIssue(ARGS, run.context);
+    expect(
+      await runIssue(
+        [
+          "mark-fixed",
+          "--issue",
+          "1",
+          "--base",
+          "release",
+          "--branch",
+          "fix/bug",
+          "--tip",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        run.context,
+      ),
+    ).toBe(0);
+    expect(run.lines.at(-1)).toBe("marked #1 fixed");
+    expect(run.gh.issues[0]?.comments).toEqual([
+      "Fixed on `fix/bug` at `aaaaaaa`, merged into `release`; it closes when `release` ships.\n\n<!-- cc-smart-dev-kit:fixed fix%2Fbug aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa - -->\n",
+    ]);
+    expect(run.gh.issues[0]?.labels).toContain("fixed-unreleased");
+  });
+  test("invalid marks never reach GitHub", async () => {
+    const run = setup();
+    expect(
+      await runIssue(
+        [
+          "mark-fixed",
+          "--issue",
+          "-1",
+          "--base",
+          "release",
+          "--branch",
+          "fix/bug",
+          "--tip",
+          "short",
+        ],
+        run.context,
+      ),
+    ).toBe(2);
+    expect(run.gh.calls).toEqual([]);
   });
 });

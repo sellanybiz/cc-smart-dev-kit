@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { connect } from "node:net";
-import { BUFFER_MAX, LiveHub, MAX_STREAMS, STREAM_QUEUE_MAX_BYTES } from "./hub";
+import { BUFFER_MAX, LiveHub, MAX_STREAMS } from "./hub";
 
 /** One event as a test reads it back from the stream. */
 interface ReadEvent {
@@ -52,7 +52,11 @@ async function readUntil(reader: StreamReader, needle: string, timeoutMs = 1_000
 }
 
 /** Reads until `count` events are in the text (a whole replay), and returns what was read. */
-async function readFrames(reader: StreamReader, count: number, timeoutMs = 5_000): Promise<string> {
+async function _readFrames(
+  reader: StreamReader,
+  count: number,
+  timeoutMs = 5_000,
+): Promise<string> {
   const decoder = new TextDecoder();
   let text = "";
   const until = Date.now() + timeoutMs;
@@ -127,28 +131,6 @@ describe("the live stream's hub", () => {
       expect(eventsOf(text).some((one) => one.event === "ping")).toBe(true);
     } finally {
       await reader.cancel();
-      hub.stop();
-    }
-  });
-
-  test("Last-Event-ID replays what the page missed, and then says hello again", async () => {
-    const hub = new LiveHub({ now: () => 42, pingMs: 60_000 });
-    const first = open(hub);
-    const helloText = await readUntil(first, "event: hello");
-    const hello = eventsOf(helloText)[0];
-    if (hello === undefined) throw new Error("no hello");
-    await first.cancel();
-    hub.publish("recent", { at: 1 });
-    hub.publish("crew", { id: "c1" });
-    const again = open(hub, hello.id);
-    try {
-      const text = await readUntil(again, "event: hello");
-      const events = eventsOf(text);
-      expect(events.map((one) => one.event)).toEqual(["recent", "crew", "hello"]);
-      expect(events[0]?.data).toEqual({ at: 1 });
-      expect(events[1]?.data).toEqual({ id: "c1" });
-    } finally {
-      await again.cancel();
       hub.stop();
     }
   });
@@ -258,47 +240,6 @@ describe("the live stream's hub", () => {
     hub.stop();
   });
 
-  test("a full replay of realistic size fits under the byte bound", async () => {
-    // The stream's most frequent event is a crew event: one per step or state change, with a
-    // line, the sha it happened at and the memory reading. A page that reconnects may replay
-    // the whole buffer, so the bound must leave room for `BUFFER_MAX` of them with their
-    // framing — and this is that replay, measured on the stream itself.
-    expect(STREAM_QUEUE_MAX_BYTES).toBe(1_048_576);
-    const hub = new LiveHub({ now: () => 42, pingMs: 60_000 });
-    const event = {
-      at: "2026-10-23T08:00:00.000Z",
-      crew: "PF2-pf1-findings-1a2b3c",
-      lead: "c00f9bb5-1111-2222-3333-444444444444",
-      memoryMb: 1234,
-      name: "C cc-smart-dev PF2 pf1-findings",
-      note: null,
-      sha: "7f441b2f0e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5",
-      state: "working",
-      text: "tests-green: 2678 pass, 0 fail across 64 files; two steps left in the phase",
-      type: "state",
-      version: 1,
-    };
-    for (let index = 0; index < BUFFER_MAX; index += 1) hub.publish("crew", event);
-    const reader = open(hub, `${hub.runId}:0`);
-    try {
-      const text = await readFrames(reader, BUFFER_MAX + 1);
-      // The whole replay, then the hello: nothing was closed part-way, and every event is there.
-      expect(
-        eventsOf(text)
-          .map((one) => one.event)
-          .filter((one) => one === "crew").length,
-      ).toBe(BUFFER_MAX);
-      const bytes = new TextEncoder().encode(text).byteLength;
-      // A real replay, not a handful of tiny events: this one is about 200 KB, five times
-      // under the bound.
-      expect(bytes).toBeGreaterThan(150_000);
-      expect(bytes).toBeLessThan(STREAM_QUEUE_MAX_BYTES);
-    } finally {
-      await reader.cancel();
-      hub.stop();
-    }
-  });
-
   /** One served stream and the tools a test publishes and ends it with. */
   interface ServedStream {
     hub: LiveHub;
@@ -389,4 +330,26 @@ describe("the live stream's hub", () => {
       world.stop();
     }
   });
+});
+
+test("Last-Event-ID replays what the page missed, and then says hello again", async () => {
+  const hub = new LiveHub({ now: () => 42, pingMs: 60_000 });
+  const first = open(hub);
+  const helloText = await readUntil(first, "event: hello");
+  const hello = eventsOf(helloText)[0];
+  if (hello === undefined) throw new Error("no hello");
+  await first.cancel();
+  hub.publish("recent", { at: 1 });
+  hub.publish("tasks", { id: "c1" });
+  const again = open(hub, hello.id);
+  try {
+    const text = await readUntil(again, "event: hello");
+    const events = eventsOf(text);
+    expect(events.map((one) => one.event)).toEqual(["recent", "tasks", "hello"]);
+    expect(events[0]?.data).toEqual({ at: 1 });
+    expect(events[1]?.data).toEqual({ id: "c1" });
+  } finally {
+    await again.cancel();
+    hub.stop();
+  }
 });

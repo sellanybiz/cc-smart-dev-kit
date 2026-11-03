@@ -35,7 +35,7 @@ export interface SettingChoice {
 
 export interface SettingSpec {
   /** Which card the row sits in, and in what order. */
-  card: "alerts" | "crew" | "flow" | "switches";
+  card: "alerts" | "flow" | "switches";
   choices?: readonly SettingChoice[];
   help: string;
   /** The row's own id, from the design: `aria-labelledby` points at the label. */
@@ -203,43 +203,6 @@ export const SETTINGS: readonly SettingSpec[] = [
     label: "Hold self-updates",
     where: "personal",
   },
-  {
-    card: "crew",
-    help: "At most this many crew sessions run for one lead at once, in every repository.",
-    id: "set-crew-lead",
-    key: "crew.perLead",
-    kind: "number",
-    label: "Crew sessions per lead",
-    where: "personal",
-  },
-  {
-    card: "crew",
-    help: "Of one lead's crew sessions, at most this many on the opus tier.",
-    id: "set-crew-lead-opus",
-    key: "crew.perLeadOpus",
-    kind: "number",
-    label: "On Opus, per lead",
-    where: "personal",
-  },
-  {
-    card: "crew",
-    help: "The machine's ceiling: at most this many crew sessions at once, across every lead.",
-    id: "set-crew-max",
-    key: "crew.max",
-    kind: "number",
-    label: "On this machine, at most",
-    where: "personal",
-  },
-  {
-    card: "crew",
-    help: "Past this share of the 5-hour usage window, a new opus crew session waits, unless the opus slot has a fallback chain.",
-    id: "set-crew-usage",
-    key: "crew.usagePercent",
-    kind: "number",
-    label: "Opus waits past",
-    unit: "%",
-    where: "personal",
-  },
 ];
 
 /** The card headings, in the design's words, in the design's order. */
@@ -247,7 +210,6 @@ export const SETTINGS_CARDS: readonly { card: SettingSpec["card"]; title: string
   { card: "flow", title: "Work flow" },
   { card: "alerts", title: "Alerts" },
   { card: "switches", title: "Switches" },
-  { card: "crew", title: "Crew sessions" },
 ];
 
 /** One row as the page draws it: the table's words, the value now, and where it came from. */

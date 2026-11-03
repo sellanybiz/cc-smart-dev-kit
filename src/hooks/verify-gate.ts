@@ -18,10 +18,8 @@
  * subagent keeps its own transcript, and a sidechain line is skipped.
  *
  * **Silent** when the project sets no `checks.fast`, in a project with no
- * cc-smart-dev-kit.json, in a crew session (its own report gate answers, `crew-role`), on a
- * turn that still waits on background work (a lead's own watch monitor is not that: it always
- * runs, `isLeadWatchTask`), with no transcript path, and when the transcript
- * cannot be read — fail open, because a reminder must never stop a person's work. Only the
+ * cc-smart-dev-kit.json, on a turn that still waits on background work, with no transcript
+ * path, and when the transcript cannot be read — fail open, because a reminder must never stop a person's work. Only the
  * file's last `VERIFY_GATE_TAIL_BYTES` are read, like every other reader of a session's end
  * (`transcript.ts`): a check that ran before that window is not seen, so the hook may remind
  * once about a check that did run — a reminder, never a held session.
@@ -29,8 +27,6 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
-import { isLeadWatchTask } from "../crew/brief";
-import { crewIdOf } from "../crew/session";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import {
@@ -228,20 +224,13 @@ export function seenIn(lines: readonly string[], check: string): SeenIn {
 export function verifyGateWouldBlock(
   input: HookInput,
   config: CcSmartDevKitConfig | null,
-  env: Env,
 ): boolean {
   // A project that never opted in must not notice the plugin.
   if (config === null) return false;
   // The stop a block caused: never a second block for the same turn.
   if (input.stop_hook_active === true) return false;
-  // A crew session has its own gate: the report (`crew-role`).
-  if (crewIdOf(env) !== null) return false;
   // A turn that waits on background work is not over: Claude Code wakes the session when it lands.
-  // A lead's own watch (`crew-events`) is no such work: it runs for the whole session, so it is
-  // always in the list, and counting it would keep the gate silent in every lead.
-  if (Array.isArray(input.background_tasks) && !input.background_tasks.every(isLeadWatchTask)) {
-    return false;
-  }
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return false;
   const check = config.checks?.fast;
   if (check === undefined) return false;
   const transcript = stringField(input.transcript_path);
@@ -261,9 +250,7 @@ export function verifyGateWouldBlockAt(input: HookInput, env: Env): boolean {
   if (cwd === null) return false;
   try {
     const checkout = locateCheckout(cwd, { env });
-    return (
-      checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config, env)
-    );
+    return checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config);
   } catch {
     // A project that cannot be read asks nothing of a sibling hook either.
     return false;
@@ -272,7 +259,7 @@ export function verifyGateWouldBlockAt(input: HookInput, env: Env): boolean {
 
 export function verifyGate(context: HookContext): HookResult {
   if (context.event !== "Stop") return SILENT;
-  if (!verifyGateWouldBlock(context.input, context.project.config, context.env)) return SILENT;
+  if (!verifyGateWouldBlock(context.input, context.project.config)) return SILENT;
   const check = context.project.config?.checks?.fast ?? "";
   return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
 }

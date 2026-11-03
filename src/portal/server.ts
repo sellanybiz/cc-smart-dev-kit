@@ -41,7 +41,6 @@ import {
   runDoctorPass,
   updateState,
 } from "./actions";
-import { forgetPageReads } from "./api/page-reads";
 import { answerApi } from "./api/routes";
 import type { ApiError } from "./api/types";
 import { PORTAL_CSS, PORTAL_ICON, PORTAL_JS, THEME_JS } from "./assets";
@@ -303,7 +302,6 @@ export async function startPortal(
     paths: ctx.paths,
     pollMs: options.livePollMs,
     publish: (event, data) => hub.publish(event, data),
-    forgetPageReads: () => forgetPageReads(ctx),
     routerPort: () => {
       const found = readConfig(ctx);
       return "config" in found ? found.config.port : null;

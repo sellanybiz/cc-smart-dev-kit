@@ -1,22 +1,12 @@
-/**
- * Mock data for the D52 pages: Needs you, a crew session's page, the guard log, worktrees and
- * updates. Real shapes (`./types.ts`), placeholder names, seeded numbers.
- */
-
 import { rangeOf } from "@/lib/history";
 import { seeded } from "./mock-history";
-import { mockCrewName } from "./mock-names";
-import { phaseTasksFor } from "./mock-tasks";
+import { mockSessionName } from "./mock-names";
 import type {
-  CrewDetail,
-  CrewEvent,
-  CrewRecord,
   GuardAsk,
   GuardAsksPage,
   GuardQuery,
   HeldMajor,
   JobsData,
-  LeadRecord,
   NeedsData,
   OpenBreaker,
   UpdateData,
@@ -49,47 +39,23 @@ export function needsData(
     note: null,
     items: [
       {
-        kind: "question",
-        id: "q-d9e2f7a4-1",
-        since: iso(now - 9 * MINUTE),
-        crew: { id: "d9e2f7a4", name: mockCrewName("C2", "skills-agents"), shortId: "d9e2f7a4" },
-        ask: {
-          number: 1,
-          question:
-            "The reviewer agent lists Bash, so Claude Code drops Grep and Glob from it. Keep Grep, or Bash only?",
-          options: [
-            "Keep Grep and Glob; drop Bash",
-            "Bash only; search through rg",
-            "Both: a second agent for searching",
-          ],
-          recommended: 1,
-          askedAt: iso(now - 9 * MINUTE),
-          answeredAt: null,
-          answer: null,
-        },
-      },
-      {
         kind: "permission",
         id: "p-a1f04c2e",
         since: iso(now - 4 * MINUTE),
-        crew: { id: "a1f04c2e", name: mockCrewName("B6b", "live-stream"), shortId: "a1f04c2e" },
         asker: "git-guard",
         session: "a1f04c2e-session",
         project: "my-app",
-        attach: "claude attach a1f04c2e",
         tool: "Bash",
-        detail: "git push origin crew/b6b-live-stream: the git guard asks before a push",
+        detail: "git push origin feature/b6b-live-stream: the git guard asks before a push",
       },
       {
         kind: "permission",
         id: "p-own-session",
         since: iso(now - 14 * MINUTE),
-        crew: null,
         asker: "claude",
         session: "5c0e7d21-90ab-4cde-8f12-3456789abcde",
         project: "docs-site",
         // One of the person's own sessions: it runs in a terminal, so there is nothing to attach.
-        attach: null,
         tool: "Write",
         detail: "a write outside the project",
       },
@@ -145,155 +111,6 @@ export function needsData(
         installed: "1.1.0",
       },
     ],
-  };
-}
-
-const BRIEF = `# B6b: the live stream
-
-**Kind:** security. **Waits for:** B6a, B7. **Owns:** \`src/portal/live/\`, \`src/portal/server.ts\`.
-
-## What to build
-
-1. \`GET /events\` (Server-Sent Events) through the same door as every route: \`Host\`,
-   \`Origin\`, \`Sec-Fetch-Site\`.
-2. A hub that sends each region's new value once, with pings and \`Last-Event-ID\`.
-3. At most **8** streams; the leader tab shares one with the others.
-
-## Done when
-
-- [x] The door's tests pass on \`/events\`
-- [ ] The idle clock is not touched by the stream
-- [ ] Keys are never in the first snapshot
-
-> Never put a backend key on the stream: every value goes through \`maskKey\`.
-
-See [the design](https://example.com/design) for the region list.
-`;
-
-export function crewDetail(
-  now: number,
-  record: CrewRecord,
-  lead: LeadRecord,
-  memory: { at: number; mb: number }[],
-): CrewDetail {
-  const step = (
-    minutes: number,
-    type: CrewEvent["type"],
-    text: string,
-    state: CrewEvent["state"],
-    note?: string,
-  ): CrewEvent => ({
-    at: iso(now - minutes * MINUTE),
-    type,
-    crew: record.id,
-    name: record.name,
-    lead: lead.sessionId,
-    state,
-    text,
-    ...(note === undefined ? {} : { note }),
-  });
-  const merged = record.state === "merged";
-  return {
-    record,
-    lead,
-    brief: BRIEF,
-    events: [
-      step(45, "created", "Recorded by the lead", "queued"),
-      step(40, "state", "Started on deepseek-v4.1-flash", "starting"),
-      step(
-        36,
-        "step",
-        "Read the door and the server",
-        "working",
-        "guard.ts and server.ts read; the route list is in one table.",
-      ),
-      step(
-        24,
-        "step",
-        "The hub and its regions",
-        "working",
-        "src/portal/live/hub.ts: one value per region, sent once.",
-      ),
-      step(
-        11,
-        "step",
-        "GET /events behind the door",
-        "working",
-        "The door's own checks run first; tests for a foreign Origin and a missing Sec-Fetch-Site.",
-      ),
-      step(3, "step", "Leader tab: Web Locks and BroadcastChannel", "working"),
-    ],
-    questions: [],
-    report: merged
-      ? null
-      : {
-          status: "done",
-          phase: record.phase,
-          branch: { name: record.branch, sha: "4f2a9c1" },
-          base: { ref: record.baseRef, sha: "a729513" },
-          pr: 44,
-          changed: { files: 9, insertions: 612, deletions: 88 },
-          outsideBrief: ["docs/design.md"],
-          tests: {
-            targeted: [{ command: "bun test src/portal/live", passed: 31, failed: 0, ok: true }],
-            full: { command: "bun test", passed: 2140, failed: 0, ok: true },
-          },
-          checks: [
-            { name: "typecheck", ok: true, note: null },
-            { name: "lint", ok: true, note: null },
-            { name: "check:neutral", ok: true, note: null },
-          ],
-          review: {
-            agent: "reviewer",
-            model: "claude-opus-5-5",
-            effort: "xhigh",
-            sha: "4f2a9c1",
-            findings: [
-              {
-                finding: "A stream left open past the cap is not closed",
-                fix: "The ninth stream gets 503 and closes",
-              },
-              {
-                finding: "Last-Event-ID is trusted as a number",
-                fix: "Parsed and range-checked; anything else starts over",
-              },
-            ],
-          },
-          docs: ["docs/design.md"],
-          needsLead: [],
-          open: ["The idle clock test is still to write"],
-          question: null,
-        },
-    diffTotals: { deletions: 88, error: null, files: 7, insertions: 612 },
-    diff: [
-      { path: "src/portal/live/hub.ts", added: 214, removed: 0 },
-      { path: "docs/images/live-stream.png", added: null, removed: null },
-      { path: "src/portal/live/hub.test.ts", added: 188, removed: 0 },
-      { path: "src/portal/live/sources.ts", added: 96, removed: 0 },
-      { path: "src/portal/server.ts", added: 61, removed: 44 },
-      { path: "src/portal/guard.ts", added: 12, removed: 9 },
-      { path: "docs/design.md", added: 41, removed: 35 },
-    ],
-    mergeCheck: {
-      kind: "refused",
-      allowed: false,
-      pr: 44,
-      reason:
-        "The change after the review is 74 lines in 2 files: more than the limit of 50 lines or 10 % of the reviewed change (612 lines). Review it again.",
-      review: "4f2a9c1",
-      delta: { lines: 74, files: 2, binary: 0 },
-      reviewed: { lines: 612, files: 9, binary: 1 },
-      limits: { lines: 50, files: 5, percent: 10 },
-      allowance: { lines: 61, files: 5 },
-    },
-    memory,
-    reviews: merged
-      ? []
-      : [
-          { at: iso(now - 30 * MINUTE), by: ["reviewer"], sha: "1c8e0b7" },
-          { at: iso(now - 6 * MINUTE), by: ["reviewer", "lead"], sha: "4f2a9c1" },
-        ],
-    tasks: phaseTasksFor(now, merged),
   };
 }
 
@@ -381,32 +198,32 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
       {
         project: "my-app",
         path: wt("b6b-live-stream"),
-        branch: "crew/b6b-live-stream",
+        branch: "feature/b6b-live-stream",
         idleMinutes: 3,
         verdict: {
           finished: false,
           held: true,
-          why: `a Claude session works in it: ${mockCrewName("B6b", "live-stream")}`,
+          why: `a Claude session works in it: ${mockSessionName("B6b", "live-stream")}`,
         },
       },
       {
         project: "my-app",
         path: wt("b6c-slots-page"),
-        branch: "crew/b6c-slots-page",
+        branch: "feature/b6c-slots-page",
         idleMinutes: 18,
         verdict: { finished: false, held: true, why: "touched 18 minutes ago (under 60)" },
       },
       {
         project: "my-app",
         path: wt("c2-skills-agents"),
-        branch: "crew/c2-skills-agents",
+        branch: "feature/c2-skills-agents",
         idleMinutes: 9,
         verdict: { finished: false, held: false, why: "3 commits are not on release-1.1.0" },
       },
       {
         project: "my-app",
         path: wt("a4b-hook-frame"),
-        branch: "crew/a4b-hook-frame",
+        branch: "feature/a4b-hook-frame",
         idleMinutes: 340,
         verdict: { finished: true, note: "its pull request is merged (squash)" },
       },
@@ -436,13 +253,13 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
         {
           name: "wt-finished-cleanup",
           path: wt("wt-finished-cleanup"),
-          branch: "crew/wt-finished-cleanup",
+          branch: "feature/wt-finished-cleanup",
           why: "its pull request is merged (squash)",
         },
         {
           name: "br2-breaker-alert",
           path: wt("br2-breaker-alert"),
-          branch: "crew/br2-breaker-alert",
+          branch: "feature/br2-breaker-alert",
           why: "its branch is merged into release-1.1.0",
         },
         {
@@ -456,27 +273,16 @@ export function worktreesData(now: number, empty: boolean): WorktreesData {
   };
 }
 
-/** The heavy-job queue: three held jobs of three slots, one waiting test run; nothing at all when empty. */
+/** The heavy-job queue: the machine's one slot held by a type check, three jobs waiting; nothing at all when empty. */
 export function jobsData(now: number, empty: boolean): JobsData {
   const folder = "/home/user/code/my-app/.claude/worktrees/b6b-live-stream";
   return {
-    ceiling: { gb: 24, why: "32 GB of memory less 8 GB kept for everything else" },
-    memoryGb: 32,
     route: { on: !empty, project: null, source: empty ? "default" : "personal" },
-    weights: empty
-      ? {
-          cpu: { value: null, why: "the CPU controller is off for this user's services" },
-          io: { value: null, why: "the io controller is off for this user's services" },
-        }
-      : {
-          cpu: { value: 50 },
-          io: { value: null, why: "a job runs at systemd's own weight (100)." },
-        },
     stores: [
       {
         where: "machine",
-        slots: 3,
-        used: empty ? 0 : 3,
+        slots: 1,
+        used: empty ? 0 : 1,
         held: empty
           ? []
           : [
@@ -484,41 +290,41 @@ export function jobsData(now: number, empty: boolean): JobsData {
                 kind: "typecheck",
                 command: "tsc --noEmit",
                 folder,
-                user: mockCrewName("B6b", "live-stream"),
+                user: mockSessionName("B6b", "live-stream"),
                 since: now - 2 * MINUTE - 10_000,
                 pid: 48211,
-                lane: "heavy",
-              },
-              {
-                kind: "build",
-                command: "next build",
-                folder,
-                user: mockCrewName("B6b", "live-stream"),
-                since: now - MINUTE,
-                pid: 48302,
-                lane: "heavy",
-              },
-              {
-                kind: "test",
-                command: "bun test src/jobs",
-                folder: "/home/user/code/my-app/.claude/worktrees/d1-docs",
-                user: mockCrewName("D1", "docs"),
-                since: now - 30_000,
-                pid: 48350,
-                lane: "heavy",
+                slot: true,
               },
             ],
         waiting: empty
           ? []
           : [
               {
+                kind: "build",
+                command: "next build",
+                folder,
+                user: mockSessionName("B6b", "live-stream"),
+                since: now - MINUTE,
+                pid: 48302,
+                slot: true,
+              },
+              {
+                kind: "test",
+                command: "bun test src/jobs",
+                folder: "/home/user/code/my-app/.claude/worktrees/d1-docs",
+                user: mockSessionName("D1", "docs"),
+                since: now - 30_000,
+                pid: 48350,
+                slot: true,
+              },
+              {
                 kind: "test",
                 command: "bun test",
                 folder: "/home/user/code/my-app/.claude/worktrees/c2-skills-agents",
-                user: mockCrewName("C2", "skills-agents"),
+                user: mockSessionName("C2", "skills-agents"),
                 since: now - 20_000,
                 pid: 48390,
-                lane: "heavy",
+                slot: true,
               },
             ],
       },

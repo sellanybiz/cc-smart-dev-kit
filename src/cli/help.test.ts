@@ -7,8 +7,6 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
-import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
@@ -74,65 +72,6 @@ describe("the command table", () => {
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
   });
 
-  test("AR1: the help of `sessions` and `crew rm` say what happens to a removed crew session's conversation, with the setting's default", () => {
-    // Written by hand: the default comes from the schema, and 7 is today's.
-    expect(helpTextFor(["sessions"])).toContain("past crew.deleteDays (30 by default).");
-    expect(helpTextFor(["crew", "rm"])).toContain(
-      "conversation stays in /resume for crew.archiveDays",
-    );
-    expect(helpTextFor(["crew", "rm"])).toContain(
-      "crew.deleteDays (30 by default) after the session ended.",
-    );
-  });
-
-  test("CM-12: `crew --help` lists every crew session command with a short line, the board's own rows from their table", () => {
-    const usage = helpTextFor(["crew"]) ?? "";
-    // The names of the plan's phases: the launcher, the watch and the reports, the board.
-    for (const name of [
-      "lead",
-      "start",
-      "watch",
-      "self-watch",
-      "step",
-      "report",
-      "answer",
-      "list",
-      "status",
-      "stop",
-      "rm",
-      "resume",
-      "attach",
-      "history",
-      "kinds",
-    ]) {
-      expect(usage).toMatch(new RegExp(`^  ${name}\\b`, "m"));
-    }
-    // A row each for the board and the end of a crew session, with its own help and nothing else.
-    for (const one of BOARD_COMMANDS) {
-      expect(helpTextFor(["crew", one.name])).toBe(one.help);
-      expect(one.help).toStartWith(`Usage: ${COMMAND} crew ${one.name}`);
-      expect(usage).toContain(one.summary);
-    }
-    expect(BOARD_COMMANDS.map((one) => one.name)).toEqual([
-      "log",
-      "list",
-      "status",
-      "stop",
-      "rm",
-      "resume",
-      "model",
-      "attach",
-      "history",
-      "kinds",
-    ]);
-    // The commands that are not in the table still print the whole usage.
-    expect(helpTextFor(["crew", "start"])).toBe(CREW_USAGE);
-    expect(helpTextFor(["crew", "lead"])).toBe(CREW_USAGE);
-    // `crew tell` has its own text, a crew session's one note to another (D47).
-    expect(helpTextFor(["crew", "tell"])).toBe(TELL_USAGE);
-    expect(usage).toContain("  tell <name…> --kind contract|question");
-  });
-
   test("CM-12: the hook help names the one hook left, from the constant that names it", () => {
     // The worktree engine's names are retired, so `notify` is the one name: never typed here,
     // read from the constant the notifier's own wiring uses.
@@ -150,35 +89,6 @@ describe("the command table", () => {
 });
 
 describe("the top-level help", () => {
-  test("UX-3: it is one screen, and every line fits 80 columns", () => {
-    const expected = [
-      `${COMMAND} ${VERSION}: sets up and checks this machine for Claude Code`,
-      "",
-      `Usage: ${COMMAND} <command> [options]`,
-      "",
-      "Start here",
-      "  setup            Set up this machine (safe to run again)",
-      "  doctor           Check that everything works, and say what to fix",
-      "  browser setup    Let Claude use your own Chrome",
-      "  gateway setup    Optional: set up the local AI gateway",
-      "  project init     Turn the plugin's features on in this project",
-      "",
-      "Examples",
-      `  ${COMMAND} setup --dry-run     show what setup would change`,
-      `  ${COMMAND} doctor              the health check`,
-      "",
-      "More commands: task, issue, workflow, update, restore, migrate, launch,",
-      "  sessions, worktrees, usage, report, portal, mcp, omniroute, job, crew,",
-      "  user, hook, statusline, version",
-      `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
-    ].join("\n");
-    expect(topLevelHelp()).toBe(expected);
-    // 80 columns, counted the way a terminal counts them (`Bun.stringWidth`), not by bytes.
-    for (const line of topLevelHelp().split("\n")) {
-      expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
-    }
-  });
-
   test("every row can be asked for by name, and a start row always carries its summary", () => {
     for (const row of COMMAND_HELP) {
       const text = helpTextFor(row.name.split(" "));
@@ -238,4 +148,33 @@ describe("the claude-mem help and the take-over's own note", () => {
     const help = COMMAND_HELP.find((row) => row.name === "claude-mem")?.help ?? "";
     expect(help.replace(/\s+/g, " ")).toContain(TAKE_OVER_KEY_NOTE);
   });
+});
+
+test("UX-3: it is one screen, and every line fits 80 columns", () => {
+  const expected = [
+    `${COMMAND} ${VERSION}: sets up and checks this machine for Claude Code`,
+    "",
+    `Usage: ${COMMAND} <command> [options]`,
+    "",
+    "Start here",
+    "  setup            Set up this machine (safe to run again)",
+    "  doctor           Check that everything works, and say what to fix",
+    "  browser setup    Let Claude use your own Chrome",
+    "  gateway setup    Optional: set up the local AI gateway",
+    "  project init     Turn the plugin's features on in this project",
+    "",
+    "Examples",
+    `  ${COMMAND} setup --dry-run     show what setup would change`,
+    `  ${COMMAND} doctor              the health check`,
+    "",
+    "More commands: task, issue, workflow, update, restore, migrate, launch,",
+    "  sessions, worktrees, usage, report, portal, mcp, omniroute, job, user,",
+    "  hook, statusline, version",
+    `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
+  ].join("\n");
+  expect(topLevelHelp()).toBe(expected);
+  // 80 columns, counted the way a terminal counts them (`Bun.stringWidth`), not by bytes.
+  for (const line of topLevelHelp().split("\n")) {
+    expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+  }
 });

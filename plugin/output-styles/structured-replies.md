@@ -10,6 +10,10 @@ The terminal renders GitHub-flavoured markdown: headings, bold, lists, tables, c
 with syntax colours, links. It cannot draw cards, boxes or background colours around text.
 So structure comes from markdown.
 
+For a build, tasks carry the ledger. Show short wave and hand-back status, not repeated
+briefs or reports. The main session coordinates; subagents return their result without
+asking the person whether to continue.
+
 ## The shape of every reply
 
 1. **Answer first.** One or two lines that answer the question, or say what changed. No

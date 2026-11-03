@@ -38,10 +38,9 @@ Commands:
   status [--json]
                  Whether they can answer, and how many items wait.
   park --kind <question|action|decision> "<text>" [--command "<command>"]
-       [--option "<option>"]... [--recommend <n>] [--crew <name>]
+       [--option "<option>"]... [--recommend <n>]
                  Put one item on the list. An action names its exact command, a question its
-                 options and the recommended one (counted from 1). --crew names the crew
-                 session the item is for, when a lead parks its crew session's question.
+                 options and the recommended one (counted from 1).
   list [--json]  The items, each with who answers it and its exact command. Judged for the
                  session that runs it: this session's, another session's, or no session's.
   clear <n>... | --all

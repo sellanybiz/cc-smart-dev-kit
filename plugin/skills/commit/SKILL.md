@@ -23,7 +23,7 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `openPr = "off"` | Open a pull request only when the person asks. |
 | `openPr = "draft"` | Open it as a draft; a person marks it ready. |
 | `openPr = "ready"` | Open it ready for review. |
-| `reviewBeforePush = true` | The one premium review has run before the first push, and is recorded (`/cc-smart-dev-kit:review` § Second opinion). |
+| `reviewBeforePush = true` | The required review has run before the first push, and is recorded (`/cc-smart-dev-kit:review` § Second opinion). |
 | `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
 | `deleteBranch` | Whether the branch goes once its pull request merged. |
 
@@ -36,9 +36,9 @@ move on; with the whole plan done, ask once, listing every open pull request wit
 and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
-- **Crew sessions:** a crew session commits on its own branch and nothing more — its git rule is
-  `/cc-smart-dev-kit:crew` § 3. The lead handles git: it merges each crew session's branch locally
-  (`/cc-smart-dev-kit:lead` § 6), and this skill covers its own commits, push and pull request.
+- **Builder commits:** a brief may allow commits on that builder's own isolated branch.
+  Its caller reviews and merges them through `/cc-smart-dev-kit:build`. This does not allow
+  a push, a pull request or a merge into a shared branch.
 - **Push and open the pull request** when the change set is complete and the second opinion
   has read it, or it is a small fix that skips it. Not after each commit.
 - **Always the person's word, every time:** anything into the main branch or production, a
@@ -50,7 +50,8 @@ and the merge order.
 
 1. Run in parallel: `git status`, `git log -5`, `git diff --staged --stat`. Read the full diff
    only if the review did not.
-2. **The review ran?** If not (the person said "commit" cold, in a fresh session), run
+2. **In a builder:** skip review and commit only if the brief allows it, then report to your
+   caller. **In the main session, the review ran?** If not (the person said "commit" cold, in a fresh session), run
    `/cc-smart-dev-kit:review` now. A Critical stops the commit. A Warning is fixed, or shipped only
    with the person's explicit yes. A small fix is exempt: say so in one line.
 3. **The checks on what you changed ran?** `/cc-smart-dev-kit:verify-change` § 2. The full check

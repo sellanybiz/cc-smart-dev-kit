@@ -1,18 +1,94 @@
-/**
- * One project's tasks and a crew page's phase card, drawn from data alone: every state says what
- * it is in words, each row its layer, its type and what blocks it, and the markup holds no
- * `style` attribute (the portal's policy refuses one).
- */
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PhaseTasksCard, TasksBody } from "@/components/tasks-card";
-import { FULL, PHASE, words } from "@/components/tasks-fixtures";
-import { DEFAULT_FILTER, SHOW_ALL } from "@/lib/tasks";
+import type { WorkTaskNode } from "@/api/types";
+import { TaskList } from "@/components/task-tree";
+import { TasksBody } from "@/components/tasks-card";
+import { FULL, LEDGER, PHASE, task, words } from "@/components/tasks-fixtures";
+import { DEFAULT_FILTER, filterTasks, SHOW_ALL } from "@/lib/tasks";
 
 /** The `data-layer` of every row, in the order the tree draws them. */
 function layers(html: string): string[] {
   return [...html.matchAll(/data-layer="([a-z]+)"/g)].map((match) => match[1] ?? "");
 }
+
+/** One phase drawn alone, its steps closed so only its own row shows. */
+function phaseRow(more: Partial<WorkTaskNode>): string {
+  const phase = task(2, "Build the store", "in_progress", [], {
+    kind: "phase",
+    layer: "phase",
+    phase: "K",
+    plan: "plan",
+    ...more,
+  });
+  return renderToStaticMarkup(<TaskList tasks={filterTasks([phase], SHOW_ALL)} />);
+}
+
+/** The words of each term of a ledger, in order: what a screen reader names each value. */
+function terms(html: string): string[] {
+  return [...html.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((match) => match[1] ?? "");
+}
+
+describe("a phase's ledger (G3)", () => {
+  test("every field: the agent, branch, worktree folder, short base and steps, each named", () => {
+    const html = phaseRow({ ...LEDGER, steps: { done: 3, total: 5 } });
+    expect(html).not.toContain("style=");
+    expect(terms(html)).toEqual(["steps", "agent", "branch", "worktree", "base"]);
+    const text = words(html);
+    expect(text).toContain("3 of 5 steps done");
+    expect(text).toContain("3/5");
+    expect(text).toContain("agent builder-a1c485264ab14f591");
+    expect(text).toContain("branch plan/build-the-store");
+    // The folder's name in sight, the whole path in its title and for a screen reader.
+    expect(text).toContain(
+      "worktree build-the-store , at /home/user/my-app/.claude/worktrees/build-the-store",
+    );
+    expect(html).toContain('title="/home/user/my-app/.claude/worktrees/build-the-store"');
+    expect(text).toContain("base 21eadc8");
+    expect(html).toContain('title="21eadc8a0f3b4c5d6e7f8091a2b3c4d5e6f70812"');
+    expect(html).toContain('aria-label="Ledger of phase K"');
+  });
+
+  test("some fields: only those, after the steps; none: the steps alone, no empty label", () => {
+    const some = phaseRow({ agent: "builder-b2", branch: "plan/ui", steps: { done: 0, total: 2 } });
+    expect(terms(some)).toEqual(["steps", "agent", "branch"]);
+    expect(words(some)).toContain("0 of 2 steps done");
+    const none = phaseRow({ steps: { done: 0, total: 0 } });
+    expect(terms(none)).toEqual(["steps"]);
+    expect(words(none)).toContain("no steps yet");
+    for (const label of ["agent", "branch", "worktree", "base"]) {
+      expect(words(none)).not.toContain(label);
+    }
+  });
+
+  test("the steps take the place of the subtree's count on a phase row, never both", () => {
+    const html = phaseRow({ closed: 2, steps: { done: 1, total: 3 }, total: 5 });
+    expect(words(html)).toContain("1 of 3 steps done");
+    expect(words(html)).not.toContain("2 of 5 closed");
+    // A phase the store could not count keeps the subtree's count and draws no ledger.
+    const uncounted = phaseRow({ closed: 2, steps: null, total: 5 });
+    expect(words(uncounted)).toContain("2 of 5 closed");
+    expect(uncounted).not.toContain("<dl");
+  });
+
+  test("a plan and a task draw no ledger, whatever they hold", () => {
+    const html = renderToStaticMarkup(
+      <TaskList
+        tasks={filterTasks(
+          [
+            task(1, "plan", "in_progress", [task(3, "A task", "pending", [], { ...LEDGER })], {
+              ...LEDGER,
+              kind: "plan",
+              layer: "plan",
+              plan: "plan",
+            }),
+          ],
+          SHOW_ALL,
+        )}
+      />,
+    );
+    expect(html).not.toContain("<dl");
+  });
+});
 
 describe("one project's tasks", () => {
   test("open only (the default): the tree by layer, each status in words, the files by kind", () => {
@@ -162,46 +238,5 @@ describe("one project's tasks", () => {
     );
     expect(broken).toContain("The task list cannot be read");
     expect(broken).toContain("file is not a database. cc-smart-dev-kit doctor checks the store.");
-  });
-});
-
-describe("a crew page's phase card", () => {
-  test("its phase with its progress, and every task under it with the same row details", () => {
-    const html = renderToStaticMarkup(
-      <PhaseTasksCard tasks={{ more: 0, phase: PHASE, state: "ready" }} />,
-    );
-    expect(html).not.toContain("style=");
-    const text = words(html);
-    expect(text).toContain("#2 Build the store phase K");
-    expect(text).toContain("2 of 5 closed");
-    // The whole phase, closed tasks too.
-    expect(text).toContain("done: Write the schema");
-    expect(text).toContain("Task, in progress: Prove two writers");
-    expect(text).toContain("Subtask, pending: Time the lock non-blocking");
-    expect(text).toContain("! blocked by #3 ✓ (done: Write the schema) #5 ◐");
-  });
-
-  test("a session from before the task list, a phase with no task yet, and no store", () => {
-    expect(
-      words(
-        renderToStaticMarkup(<PhaseTasksCard tasks={{ more: 0, phase: null, state: "ready" }} />),
-      ),
-    ).toContain("This crew session started before the kit's task list, so it has no phase task.");
-    expect(
-      words(
-        renderToStaticMarkup(
-          <PhaseTasksCard
-            tasks={{
-              more: 0,
-              phase: { ...PHASE, children: [], closed: 0, total: 0 },
-              state: "ready",
-            }}
-          />,
-        ),
-      ),
-    ).toContain("No task under it yet: its first edit waits until it has one.");
-    expect(words(renderToStaticMarkup(<PhaseTasksCard tasks={{ state: "none" }} />))).toContain(
-      "The kit's task list has no store on this machine yet.",
-    );
   });
 });

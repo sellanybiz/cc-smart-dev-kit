@@ -3,6 +3,62 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 2.0.0
+
+Fast parallel work with subagents, in worktrees, with the kit's task system as the ledger. The
+crew and all load and usage balancing are gone.
+
+**Before you update:** finish your crew work. Merge the branches you want and stop the crew
+sessions that still run. After the update there is no `crew` command left to manage them.
+A project whose `requires` stops below 2.0 (`^1.4`, `>=1.4 <2`) refuses the new version until
+you widen it (`>=1.4`); a `requires` that `project init` wrote (`>=1.x`) needs nothing.
+
+**What to run** after the update:
+
+1. `cc-smart-dev-kit update`. A major version never installs by itself: it waits for this step.
+2. `cc-smart-dev-kit setup`. It writes Claude Code's subagent cap (10 at once) and refreshes the
+   instructions.
+3. Start Claude Code again. A running session keeps the old version until it restarts.
+
+What changed:
+
+- **Building is subagent-driven.** The new `build` skill replaces the `lead` and `crew` skills.
+  The main session plans the phases, then starts one builder subagent per phase, all ready
+  phases in one message. Phases whose files differ run in parallel, each in its own worktree. A
+  fresh reviewer reads each phase, the same builder fixes what it finds, and one final review
+  runs on Opus over the whole branch.
+- **The task system is the ledger.** A work task can now hold the `agent`, `branch`,
+  `worktree` and `base` of the work on it (`task_create`, `task_update`, and the CLI's
+  `--agent`, `--branch`, `--worktree` and `--base`). `task_list` with `scope: "plan"` shows one
+  line per phase with its agent, branch, state and steps done. The work store moves to schema 3
+  by itself, and keeps every task.
+- **Two new guards keep the work moving.** `keep-going` (Stop) blocks the main session once
+  when it would end its turn while a phase of its plan is in progress, no subagent runs, and its
+  last message has no `Waiting for:` line; it names the next ready phase. `builder-finish`
+  (SubagentStop) blocks a builder once when it hands back while the task its brief names
+  (`Your task: #<n>`) still has open blocking steps, each named with the call that closes it.
+  Both are machine-wide: they read only your own task list.
+- **Ten subagents at once, by default.** Setup writes Claude Code's own cap,
+  `env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = "10"`, as a key the kit owns. A value of your own
+  stays yours. `cc-smart-dev-kit setup --max-subagents <n>` (1–100) changes the kit's, `doctor`
+  shows it, and `restore` takes it back.
+- **The heavy-job queue is one slot per machine.** One full heavy run at a time, oldest first;
+  a run on named files skips the queue. The memory gates, CPU and I/O weights, systemd slices,
+  OOM scores, fair share, light lane, the `install` kind, `jobs.json` and `job set` are gone.
+- **The portal's Tasks page shows each phase's ledger:** its steps done of its blocking steps,
+  then the agent, branch, worktree and base set on it. The Heavy jobs card shows the one slot.
+  The crew pages are gone.
+- **`cc-smart-dev-kit issue mark-fixed`** writes a fixed issue's comment and label after the main
+  session merges the fix. The crew watch used to do this.
+- **Removed:** crew sessions, leads, the `crew` command, the crew monitors, the `crew-role` and
+  `lead-notes` hooks, the crew start queue, the load gate, the usage guard for crew starts, and
+  the `workflow.crew.*` settings.
+- **What still loads:** a project or workflow file that still has `crew` keys,
+  `issues.watch` or `issues.watchMinutes` (the issue feed went with the crew), or old jobs size
+  fields, loads as before, and those keys are ignored. `ownHooks` may still list `crew-role` or
+  `lead-notes`: the file parses, and the names silence nothing. Old crew state on disk stays
+  where it is, unread.
+
 ## 1.11.3
 
 The lead's watch wakes the lead only for what needs it.

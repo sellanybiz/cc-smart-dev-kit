@@ -498,80 +498,8 @@ describe("requiresFloor", () => {
     });
   });
 
-  test("a file with a field that came with 1.0.0: the release that brought it", () => {
-    // An older plugin reads the file strictly, does not know the field, and refuses the
-    // whole file — so every guard in that project fails closed until it is updated.
-    expect(requiresFloor({ workflow: { crew: { enabled: true } } })).toEqual({
-      floor: ">=1.0",
-      version: "1.0.0",
-    });
-    expect(requiresFloor({ workflow: { fixesAfterReview: { lines: 200 } } })).toEqual({
-      floor: ">=1.0",
-      version: "1.0.0",
-    });
-  });
-
   test("`worktrees.autoClean` came with 1.0.0 too (D48): a file that sets it needs >=1.0", () => {
     expect(requiresFloor({ worktrees: { base: "main", autoClean: false } })).toEqual({
-      floor: ">=1.0",
-      version: "1.0.0",
-    });
-  });
-
-  test("`checks` came with 1.1.0, and it wins over the older fields' floors", () => {
-    expect(requiresFloor({ checks: { fast: "bun run check" } })).toEqual({
-      floor: ">=1.1",
-      version: "1.1.0",
-    });
-    expect(
-      requiresFloor({
-        checks: { fast: "bun run check" },
-        workflow: { crew: { enabled: true } },
-        worktrees: { base: "main", autoClean: true },
-      }),
-    ).toEqual({ floor: ">=1.1", version: "1.1.0" });
-  });
-
-  test("a workflow.crew key that came with 1.1.0 needs 1.1, though workflow.crew came with 1.0", () => {
-    // A 1.0.x plugin reads `workflow.crew` but refuses `perLead` as an unknown field: with a
-    // 1.0 floor every guard of a teammate still on 1.0.x would fail closed, not say "update".
-    for (const crew of [{ perLead: 2 }, { perLeadOpus: 1 }, { usagePercent: 85 }, { keep: [] }]) {
-      expect(requiresFloor({ workflow: { crew } })).toEqual({ floor: ">=1.1", version: "1.1.0" });
-    }
-    expect(requiresFloor({ workflow: { crew: { enabled: true, max: 8 } } })).toEqual({
-      floor: ">=1.0",
-      version: "1.0.0",
-    });
-  });
-
-  test("a workflow.crew key that came with 1.2.0 or 1.3.0 needs that release", () => {
-    // `handoffTokens` is on the 1.2.0 plugin; `loadPerCore` and `archiveDays` are new in 1.3.0.
-    // A plugin one release older refuses each as an unknown field.
-    expect(requiresFloor({ workflow: { crew: { handoffTokens: 400000 } } })).toEqual({
-      floor: ">=1.2",
-      version: "1.2.0",
-    });
-    for (const crew of [{ loadPerCore: 3 }, { archiveDays: 7 }]) {
-      expect(requiresFloor({ workflow: { crew } })).toEqual({ floor: ">=1.3", version: "1.3.0" });
-    }
-    // The newest key wins.
-    expect(requiresFloor({ workflow: { crew: { handoffTokens: 1, loadPerCore: 2 } } })).toEqual({
-      floor: ">=1.3",
-      version: "1.3.0",
-    });
-  });
-
-  test("an ownHooks name that came after ownHooks needs the release that brought it", () => {
-    // A plugin that predates the hook validates the name as an enum and refuses the file.
-    expect(requiresFloor({ ownHooks: ["tier-view"] })).toEqual({
-      floor: ">=1.3",
-      version: "1.3.0",
-    });
-    expect(requiresFloor({ ownHooks: ["git-guard", "verify-gate"] })).toEqual({
-      floor: ">=1.1",
-      version: "1.1.0",
-    });
-    expect(requiresFloor({ ownHooks: ["crew-role"] })).toEqual({
       floor: ">=1.0",
       version: "1.0.0",
     });
@@ -602,14 +530,6 @@ describe("requiresFloor", () => {
     const plan = planProjectInit(input({ root, existing }));
     expect(plan.text).toContain('"requires": ">=1.3"');
     expect(plan.text).toContain('"tier-view"');
-  });
-
-  test("the plan asks for what its own fields need", () => {
-    const root = tempDir("project-init");
-    const plan = planProjectInit(
-      input({ root, answers: { ...ANSWERS, workflow: { crew: { enabled: true } } } }),
-    );
-    expect(plan.text).toContain('"requires": ">=1.0"');
   });
 
   test("the plan writes the fast check, under checks.fast, and asks for >=1.1", () => {

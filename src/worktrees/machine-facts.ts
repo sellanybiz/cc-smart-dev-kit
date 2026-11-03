@@ -53,12 +53,6 @@ export interface RunningProgram {
    * own command line names it — from a program that uses it.
    */
   parentPid?: number;
-  /**
-   * When it was started (epoch ms), when a test supplies it. This does not prove ownership:
-   * stopping a finished session's leftover program needs its crew marker and the exact process
-   * identity from `processStartTime` (`src/crew/end.ts`, D62). Absent when unknown.
-   */
-  startedAt?: number;
   /** The folder it works in, when that could be read (Linux only); absent when unknown. */
   cwd?: string;
 }
@@ -237,16 +231,6 @@ function lineage(programs: RunningProgram[], pid: number): Set<number> {
   return chain;
 }
 
-/**
- * True when `pid` is `ancestor` or was started by it, as far as the listing says: the chain a
- * session's shell and the program it ran form. A dead session's orphans are reparented, so a
- * listing read after the end often cannot prove this — the crew id in a program's environment is
- * the other witness (`stopLeftoverProcesses`, `src/crew/end.ts`, D62).
- */
-export function descendsFrom(programs: RunningProgram[], pid: number, ancestor: number): boolean {
-  return lineage(programs, pid).has(ancestor);
-}
-
 /** The tools this scan runs itself: short-lived children that would otherwise keep a worktree. */
 const OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
 
@@ -276,8 +260,7 @@ export function programName(program: RunningProgram): string {
  * So the working folder is compared as a real path on both sides, and a command line is
  * matched against BOTH forms of the worktree.
  *
- * One home for the matching rule: `programsInside` names them, and a crew session's removal
- * asks which pids they are (`stopLeftoverProcesses`, `src/crew/end.ts`).
+ * One home for the matching rule: `programsInside` names the same programs.
  */
 export function programsUsing(
   programs: RunningProgram[],
@@ -395,8 +378,7 @@ function procPids(): number[] {
  *
  * Linux reads both the command lines and each process's working folder; macOS reads the
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
- * folder a program's file is in cannot be renamed there. A removal reads exact process identities
- * separately, only for the few owned programs it is about to stop (`src/crew/end.ts`).
+ * folder a program's file is in cannot be renamed there.
  */
 export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
   if (on === "win32") {

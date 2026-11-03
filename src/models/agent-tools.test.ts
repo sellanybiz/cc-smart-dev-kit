@@ -14,7 +14,8 @@ const READ_ONLY = ["Edit", "Write", "NotebookEdit", "AskUserQuestion"];
 /** Each agent's deny list, written by hand. */
 const DENIED: Record<string, string[]> = {
   auditor: READ_ONLY,
-  builder: ["AskUserQuestion"],
+  // A builder builds its one phase: it never asks the person and never starts agents (2.0).
+  builder: ["AskUserQuestion", "Agent"],
   reviewer: READ_ONLY,
   "rules-maintainer": ["AskUserQuestion"],
   "ui-verifier": READ_ONLY,

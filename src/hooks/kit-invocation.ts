@@ -9,9 +9,10 @@
  *
  * Two guards ask, for two different reasons, and a spelling that gets past one must not get past
  * the other: `session-escape-guard` (a kit command run with `CLAUDECODE` unset, `workflow
- * review-done` by hand) and `job-route` (a crew session's `crew start` and `workflow propose`,
- * D24). So the recogniser lives here, once, and both import it — never a copy
- * (`.claude/rules/hooks-guards.md` § A crew session's own limits).
+ * review-done` by hand) and `job-route`, through `bash-judge.ts` (`workflow propose`, where the
+ * push gate says the push or the pull request is the person's). So the recogniser lives here,
+ * once, and both import it — never a copy (`.claude/rules/hooks-guards.md` § A machine-wide
+ * hook). `user-away` reads the kit's name too, on purpose without this recogniser.
  */
 import { COMMAND } from "../build-info/names";
 import { programName } from "../shell/command";
@@ -69,7 +70,7 @@ const KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
  * a path that only passes through a folder of that name: a path separator may come before the
  * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
  * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
- * a crew session working in this repository, whose name every path holds). A token that ends a
+ * a session working in this repository, whose name every path holds). A token that ends a
  * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
  * `K=${COMMAND}`).
  */

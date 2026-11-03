@@ -27,8 +27,7 @@
  * prompt's context reaches Claude before it picks.
  *
  * **Why a hook of its own.** `fable-session` runs at the same events but speaks to the person
- * and never to Claude (its contract); `lead-notes` and `crew-role` speak for a lead and a crew
- * session; `session-name` names the session. None has this job.
+ * and never to Claude (its contract); `session-name` names the session. Neither has this job.
  *
  * **One more line, while auto mode's safety checks fail** (the owner, 2026-10-27): when the
  * router has recorded that Claude is limited or down and nothing stood in for it
@@ -41,8 +40,8 @@
  * the gateway gets it (`sessionGatewayOf`), its own profile's record only.
  *
  * **Machine-wide**, like `agent-guard` whose view it reads: the note never depends on the
- * project's file, a folder outside git gets it, and a crew session gets it too (its subagents
- * run on these tiers). A config that cannot be read is said plainly, never a crash; the address
+ * project's file, and a folder outside git gets it too (its subagents run on these tiers). A
+ * config that cannot be read is said plainly, never a crash; the address
  * of a proxy that is not the kit's gateway (no `gateway.json`) is read as Claude, the guard's
  * way. Never a question and never a block.
  */

@@ -1,39 +1,8 @@
-/**
- * The Projects page's answers (B8): every repository the person works in, and one project's
- * own page with its branches and the merge guard's verdict on each.
- *
- * **The list is read from Claude Code's own session records.** Every folder a saved session
- * last worked in (`sessionWorkFolderTimes`) is taken to its checkout, and a linked worktree is
- * folded into the main checkout it belongs to: one row per repository, never one per worktree.
- * A folder that is gone, or no longer in git, is skipped. The folders the person added on the
- * page (`portalProjectsFile`) are rows too, whether or not a session ever worked there.
- *
- * **Nothing here blocks the server.** Every git and `gh` child is awaited (`Bun.spawn`:
- * `locateCheckoutAsync`, `runGitAsync`, the merge check's own runner), and both run a few at
- * a time: a page, another action and the live stream stay live while they run
- * (`.claude/rules/portal.md`). The list's projects are read `PROJECT_GIT_AT_ONCE` at a time,
- * and a page's pull request verdicts `PROJECT_VERDICTS_AT_ONCE` at a time. One deadline covers
- * the whole branch answer (`PROJECT_BRANCHES_DEADLINE_MS`): past it a verdict is `late` ("not
- * read yet"), never a guess. The branch answers are kept for `PROJECT_BRANCHES_CACHE_MS` and
- * the list for `PROJECTS_LIST_CACHE_MS` in the server's own memory, because reading them asks
- * GitHub and measures git; the clock is the portal's own (`PortalContext.now`), so a test
- * moves time instead of waiting.
- *
- * **A project is named by its id, never by a path.** The id is a short hash of the main
- * checkout's root (`projectId`): the page and the `project.*` actions send it, and the server
- * looks it up in this list. A path from a request never reaches git.
- *
- * The facts themselves come from the plugin's own readers — `projectFiles` and
- * `projectCardData` (the Machine card's), the crew store, and the merge check's one home — so
- * a page can never disagree with the command line.
- */
-
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { COMMAND } from "../../build-info";
 import type { CliPaths } from "../../cli/paths";
-import { type CrewRecord, listCrew } from "../../crew/store";
 import { GUARD_GIT_TIMEOUT_MS, parseWorktreeList, runGitAsync, samePath } from "../../hooks/git";
 import type { Env } from "../../hooks/run";
 import { type CcSmartDevKitConfig, loadCcSmartDevKitConfig } from "../../project/config";
@@ -44,7 +13,6 @@ import { atomicWrite } from "../../setup/write";
 import { checkoutOfAsync } from "../../update/retired-repos";
 import {
   type MergeVerdict as CheckVerdict,
-  checkBranch,
   checkPullRequest,
   defaultBranchOf,
   GH_TIMEOUT_MS,
@@ -460,11 +428,6 @@ export function forgetProjectBranches(): void {
   readingBranches.clear();
 }
 
-/**
- * One project's open pull requests and crew branches, each with the merge guard's verdict,
- * kept for `PROJECT_BRANCHES_CACHE_MS`. One deadline covers the whole answer: every child gets
- * the smaller of its own limit and the time left, and past it a verdict is `late`.
- */
 export async function projectBranches(
   world: ProjectsWorld,
   project: ProjectSummary,
@@ -503,30 +466,6 @@ function unreadVerdict(number: null | number, what: string): CheckVerdict {
   return { kind: "unread", number, what };
 }
 
-/**
- * The crew states whose branch is on disk and still waits for a merge: the only crew rows the
- * project page lists. Every other state is out:
- *
- * - `queued` and `starting` — no branch yet: a queued crew session's worktree is made when a
- *   place frees up, and a starting one's `git worktree add` has not returned;
- * - `handoff` — it handed its phase to the next crew session, and that one's branch is the row;
- * - `merged` — its branch is already in the base, so there is nothing left to merge;
- * - `removed` — its session, worktree and branch are gone.
- *
- * The rest — `working`, `blocked`, `paused`, `quiet`, `done`, `failed`, `stopped` — all have
- * a branch on disk that the lead has not merged yet.
- */
-const CREW_BRANCH_STATES: ReadonlySet<string> = new Set([
-  "working",
-  "blocked",
-  "paused",
-  "quiet",
-  "done",
-  "failed",
-  "stopped",
-]);
-
-/** Reads one project's branches: gh's open pull requests, the crew's, and their verdicts. */
 async function readBranches(
   world: ProjectsWorld,
   project: ProjectSummary,
@@ -537,7 +476,7 @@ async function readBranches(
   const gh = world.gh ?? spawnGh;
   const notes: string[] = [];
 
-  // gh's open pull requests. A missing or failing gh is a soft note: the crew's own branches
+  // gh's open pull requests. A missing or failing gh is a soft note: the project settings
   // and the card are still worth showing (the rule: a page works without what it cannot read).
   let pullRequests: OpenPullRequest[] = [];
   if (timeFor(GH_TIMEOUT_MS) <= 0) {
@@ -637,37 +576,6 @@ async function readBranches(
       };
     },
   );
-
-  // The crew sessions' branches that no open pull request already covers, and only the ones
-  // that still wait for a merge (`CREW_BRANCH_STATES`). A store that cannot be read is one
-  // note: the pull requests still show, and the page says why the crew's are missing.
-  const openNumbers = new Set(pullRequests.map((one) => one.number));
-  const openHeads = new Set(pullRequests.map((one) => one.head));
-  let crewRecords: CrewRecord[] = [];
-  try {
-    crewRecords = listCrew(world.paths.stateDir, project.root).records;
-  } catch {
-    notes.push("the crew sessions' branches could not be read");
-  }
-  for (const record of crewRecords) {
-    if (!CREW_BRANCH_STATES.has(record.state)) continue;
-    if (record.branch === "" || openHeads.has(record.branch)) continue;
-    if (record.pr !== null && openNumbers.has(record.pr)) continue;
-    const base = record.base?.ref ?? record.baseRef;
-    const verdict =
-      mergeWorld === null
-        ? unreadVerdict(null, "this project's folder is not in a git checkout")
-        : await checkBranch(mergeWorld, { base, branch: record.branch });
-    branches.push({
-      base,
-      branch: record.branch,
-      draft: false,
-      kind: "crew",
-      number: null,
-      title: null,
-      verdict: mergeVerdictOf(verdict),
-    });
-  }
 
   if (notes.length === 0 && branches.some((one) => one.verdict.kind === "late")) {
     notes.push("the time to read every verdict ran out, so some are not read yet");

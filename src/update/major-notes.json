@@ -1,3 +1,4 @@
 {
-  "1.0.0": "it refuses old project fields"
+  "1.0.0": "it refuses old project fields",
+  "2.0.0": "it removes the crew: finish crew work first"
 }

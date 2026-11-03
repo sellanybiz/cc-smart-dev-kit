@@ -4,8 +4,8 @@ import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
-import { type Workflow, workflowSchema } from "../workflow/schema";
-import { isValidRange, satisfiesRange } from "./version-range";
+import { workflowSchema } from "../workflow/schema";
+import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
 
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
@@ -24,12 +24,12 @@ export const PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "builder-finish",
   "verify-gate",
+  "keep-going",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
-  "crew-role",
-  "lead-notes",
   "task-start",
 ] as const;
 
@@ -43,7 +43,13 @@ export type PluginHookName = (typeof PLUGIN_HOOK_NAMES)[number];
  * of a project file written for an older plugin, and then every guard would ask on every call.
  * `doctor` says the name can go (`src/cli/project-checks.ts`).
  */
-export const RETIRED_HOOK_NAMES = ["serena-root"] as const;
+export const RETIRED_HOOK_NAMES = [
+  // 0.6.0: the Serena MCP server went.
+  "serena-root",
+  // 2.0.0: crew sessions and leads went, with their two hooks.
+  "crew-role",
+  "lead-notes",
+] as const;
 
 /**
  * The plugin hooks a project can no longer switch off (`HookSpec.alwaysOn`) whose name a
@@ -74,15 +80,15 @@ export const WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
 export const RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
 
 /**
- * The release that brought `workflow.crew` and `workflow.fixesAfterReview`. A project file
+ * The release that brought `workflow.fixesAfterReview`. A project file
  * that sets one needs that plugin version or newer: an older plugin reads the file strictly
  * and refuses it whole (a field it does not know), and every guard then fails closed.
  */
-export const WORKFLOW_CREW_SINCE = "1.0.0";
+export const WORKFLOW_FIXES_SINCE = "1.0.0";
 
 /**
  * The release that brought `worktrees.autoClean` (D48). A project file that sets it needs that
- * plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ * plugin version or newer, for the same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 
@@ -92,51 +98,29 @@ export const WORKTREE_REBUILDABLE_SINCE = "1.9.0";
 /**
  * The release that brought `checks` (MD-3): a project names the fast check a session runs
  * before it stops. A project file that sets it needs that plugin version or newer, for the
- * same reason as `WORKFLOW_CREW_SINCE`.
+ * same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const CHECKS_SINCE = "1.1.0";
 
 /**
  * The release that brought `workflow.issues` (D67): the switch for GitHub Issues. A project
  * file that sets it needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`.
+ * `WORKFLOW_FIXES_SINCE`.
  */
 export const WORKFLOW_ISSUES_SINCE = "1.4.0";
-
-/**
- * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
- * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
- * start) in 1.1.0; `handoffTokens` (the hand-off at a token count) in 1.2.0; `loadPerCore`
- * (the load hold) and `archiveDays` (how long a removed crew session's conversation stays) in
- * 1.3.0. A project file that sets one needs that plugin version or newer, for the same reason
- * as `WORKFLOW_CREW_SINCE`. The keys are typed from the schema, so a name that is not a crew
- * key does not compile; `config.test.ts` fails when a new crew key has no entry here.
- */
-export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
-  Partial<Record<keyof NonNullable<Workflow["crew"]>, string>>
-> = {
-  perLead: "1.1.0",
-  perLeadOpus: "1.1.0",
-  usagePercent: "1.1.0",
-  keep: "1.1.0",
-  handoffTokens: "1.2.0",
-  loadPerCore: "1.3.0",
-  archiveDays: "1.3.0",
-  deleteDays: "1.7.0",
-  startGapSeconds: "1.8.0",
-};
 
 /**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`: an older plugin reads a kind strictly and refuses the whole file. The
+ * `WORKFLOW_FIXES_SINCE`: an older plugin reads a kind strictly and refuses the whole file. The
  * keys are typed from the kind's schema; `config.test.ts` fails when a new kind field has no
  * entry here.
  */
 export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string>>> = {
   noSlotForFiles: "1.5.0",
-  light: "1.8.0",
+  // `light` (1.8.0) is ignored since 2.0 (`IGNORED_KIND_FIELDS`): it raises no floor, and
+  // doctor says it can go.
 };
 
 /**
@@ -144,23 +128,29 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
  * release that brought each. Older plugins validate the names as an enum, so one they do not
  * know makes them refuse the whole file, and every guard in that project fails closed. A
  * project file that lists one needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`. A name from 0.5.2 or earlier needs no entry: 0.5.2 is the floor of every
+ * `WORKFLOW_FIXES_SINCE`. A name from 0.5.2 or earlier needs no entry: 0.5.2 is the floor of every
  * file (`WORKTREE_PREFIX_OPTIONAL_SINCE`). The keys are typed from `PLUGIN_HOOK_NAMES`;
  * `config.test.ts` fails when a new hook name has no entry here.
  */
-export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, string>>> = {
+export const OWN_HOOK_NAMES_SINCE: Readonly<
+  Partial<Record<PluginHookName | (typeof RETIRED_HOOK_NAMES)[number], string>>
+> = {
   "subagent-background": "1.0.0",
+  // Retired in 2.0.0, still accepted (RETIRED_HOOK_NAMES): a file that lists one still needs
+  // the release that first took it.
   "crew-role": "1.0.0",
   "lead-notes": "1.0.0",
   "verify-gate": "1.1.0",
   "agent-usage": "1.1.0",
   "tier-view": "1.3.0",
   "task-start": "1.10.0",
+  "keep-going": "2.0.0",
+  "builder-finish": "2.0.0",
 };
 
 /**
  * The release that brought `tasks` (D75): the project's own task files. A project file that
- * sets it needs that plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ * sets it needs that plugin version or newer, for the same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const TASKS_SINCE = "1.10.0";
 
@@ -292,8 +282,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
     .optional(),
   /**
    * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
-   * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field
-   * except the machine's crew limits (`src/workflow/`).
+   * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field (`src/workflow/`).
    */
   workflow: workflowSchema.optional(),
   /**
@@ -361,18 +350,32 @@ function describeIssue(issue: z.core.$ZodIssue): string {
  * Checks `requires` before anything else, reading only that field. A newer cc-smart-dev-kit.json may hold
  * fields this plugin does not know yet; the user must hear "update the plugin", not
  * "unknown field".
+ *
+ * A plugin past the range's top (`^1.4` on 2.0.0) is the other way round: an update cannot
+ * help, so the message says to widen the range instead. Which one: an update helps when some
+ * version newer than the plugin is in the range (`allowsNewer`); so `^1.4 || ^2.1` on 2.0.0
+ * hears update, and `^1.4` on 2.0.0 hears widen.
  */
 function checkRequires(file: string, raw: unknown, pluginVersion: string): void {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
   const requires = (raw as { requires?: unknown }).requires;
   // A broken value is reported by the full check below.
   if (typeof requires !== "string" || !isValidRange(requires)) return;
-  if (!satisfiesRange(pluginVersion, requires)) {
+  if (satisfiesRange(pluginVersion, requires)) return;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example =
+      lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(
-      `${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` +
-        `run ${PLUGIN_UPDATE_COMMAND}`,
+      `${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` +
+        `${pluginVersion}, which is newer; widen requires in that file${example}`,
     );
   }
+  throw new CcSmartDevKitVersionError(
+    `${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` +
+      `run ${PLUGIN_UPDATE_COMMAND}`,
+  );
 }
 
 /** One retired field's message: the field, what to do, and the command that does it. */

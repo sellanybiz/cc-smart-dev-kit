@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review your own finished change before you commit it, then get one second opinion per change set. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
+description: Review a finished change in the main session; approved plans use build for task reviews and the final whole-branch review. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
 ---
 
 # Review — You Are The Reviewer
@@ -13,10 +13,14 @@ name on it.
 
 ## When
 
+A builder skips this skill: its caller owns both the review pass and reviewer dispatch.
+Approved plans follow `/cc-smart-dev-kit:build`; the second-opinion section below covers
+changes outside that loop.
+
 - **Your own pass:** once per commit of finished work — each phase of a plan, or the whole
   change when there are no phases — when your next action is the commit. The test: "if this
   comes back clean, do I commit right now?" No: you are still building; come back later.
-- **The second opinion:** once per change set (§ Second opinion).
+- **The second opinion outside a plan:** once per change set (§ Second opinion).
 - **On request:** "review this".
 - **A sweep of an area, not a diff:** `/cc-smart-dev-kit:audit` — one class of defect across
   code nobody is changing, with its own Workflow.
@@ -65,14 +69,12 @@ For a hard or high-stakes change — security, money, permissions, a big archite
 you may run the reviewer on `fable` instead of its usual model, on your own judgment or when the
 person asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
 
-- **When** (the rule is in the core instructions § Review): phases built in parallel that
-  ship together get one read, not one each. A phase built on another open pull request is a
-  new change set: its own branch, its own read. Fixes to code the agent already read are a
-  re-push, not a new change set.
-- **Crew sessions:** each crew session's phase is its own change set, and the crew session runs its one read
-  (`/cc-smart-dev-kit:crew` § 2). The lead's integration commits — conflict fixes, the shared
-  files, the glue between phases — are one more: one small integration review before the push,
-  on that diff alone.
+- **When:** once the non-plan change is complete, before its first push. Task-scoped reviews
+  and the final branch read for a plan follow the build skill instead.
+- **One change set, one read:** phases built in parallel that ship together get one read,
+  not one each. A phase stacked on another open pull request is its own change set: its own
+  branch, its own read. Fixes to code the reviewer already read are a re-push, not a new
+  change set.
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to
   do, your own edge-case list, and the checkout's absolute path (in a worktree, the
   worktree's).

@@ -15,11 +15,10 @@
  */
 
 import { COMMAND } from "../build-info/names";
+import { parseOptions } from "../cli/args";
 import { usageError } from "../cli/help";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
-import { parseOptions } from "../crew/args";
-import { crewIdOf } from "../crew/session";
 import { formatClock } from "../gateway/limit-state";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";
@@ -228,7 +227,7 @@ function runStatus(args: string[], ctx: UserContext): number {
 
 /**
  * The words that say who parked an item, when, and who answers it:
- * `crew UA1-x · session abc · 01:00 · waits in my-app lead`.
+ * `session abc · 01:00 · waits in my-app`.
  */
 function whoText(ctx: UserContext, item: ParkedItem & Owned, asking: boolean): string {
   const owner =
@@ -240,7 +239,6 @@ function whoText(ctx: UserContext, item: ParkedItem & Owned, asking: boolean): s
           ? "for this session"
           : "";
   const parts = [
-    item.crew === "" ? "" : `crew ${plainText(item.crew)}`,
     item.session === "" ? "" : `session ${plainText(item.session)}`,
     clock(ctx, item.at),
     owner,
@@ -301,7 +299,7 @@ const KIND_WORDS: Record<ParkKind, string> = {
 async function runPark(args: string[], ctx: UserContext): Promise<number> {
   const parsed = parseOptions(
     args,
-    ["--kind", "--command", "--option", "--recommend", "--crew"],
+    ["--kind", "--command", "--option", "--recommend"],
     [],
     ["--option"],
   );
@@ -325,12 +323,6 @@ async function runPark(args: string[], ctx: UserContext): Promise<number> {
   const command = parsed.options.get("--command") ?? null;
   if (command !== null && command.trim() === "") {
     return usageProblem(ctx, "--command needs the exact command the person's yes runs");
-  }
-  // The crew session an item is for: a lead parks its crew session's question, so the answer
-  // goes back to that crew session (`user-available`). Without it, the session that parks.
-  const crewOption = parsed.options.get("--crew");
-  if (crewOption !== undefined && crewOption.trim() === "") {
-    return usageProblem(ctx, "--crew needs a crew session's name");
   }
   if (command !== null && parkKind !== "action") {
     return usageProblem(ctx, "--command is for an action: the exact command the person's yes runs");
@@ -356,7 +348,6 @@ async function runPark(args: string[], ctx: UserContext): Promise<number> {
   }
   const draft: ParkDraft = {
     command,
-    crew: crewOption?.trim() ?? crewIdOf(ctx.env) ?? "",
     cwd: ctx.cwd,
     kind: parkKind,
     options,

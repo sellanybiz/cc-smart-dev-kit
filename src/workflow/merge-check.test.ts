@@ -1,6 +1,6 @@
 /**
- * `checkBranch`: the verdict a lead's hand-back gate reads (D22), and the review gate's own
- * numbers it now carries for the portal's crew page (`MergeDetail`).
+ * `checkBranch`: the verdict `workflow merge-check --branch` prints for a local branch (D22), and
+ * the review gate's own numbers it carries for the portal's project page (`MergeDetail`).
  *
  * The cases run in a real clone of a bare origin, so `readCover` really measures the fixes:
  * a review of 100 lines in 2 files, then a fix, exactly as `workflow merge-check` sees them.

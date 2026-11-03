@@ -1,30 +1,13 @@
-/**
- * The one translation from the server's answers (`wire.ts`) to the shapes the pages draw
- * (`types.ts`). Pure, and tested on its own (`adapt.test.ts`).
- *
- * The rule, from `.claude/rules/portal.md` § The portal runs the command line's own code: a fact the
- * server does not send is `null` or an empty list here, and the page says it does not know —
- * never a value made up to fill a field. Where a page needs more than its own answer (the
- * Overview counts the running crew sessions from `/api/work`), the client fetches both and
- * hands both in.
- */
-
 import { KIT_NAME, slotName } from "@/lib/format";
 import type {
   BranchVerdict,
-  CrewDetail,
-  CrewEvent,
-  CrewRecord,
-  CrewState,
   FlowReport,
   FlowWindow,
   GuardAsksPage,
   HealthData,
   HistoryKeys,
   JobsData,
-  LeadRecord,
   MachineData,
-  MergeCheck,
   NeedsData,
   NeedsItem,
   OverviewData,
@@ -43,8 +26,6 @@ import type {
   WorktreesData,
 } from "./types";
 import type {
-  CrewAnswer,
-  CrewSummary,
   DoctorCheck,
   FlowAnswer,
   GuardAsksAnswer,
@@ -68,29 +49,6 @@ import type {
   WorkAnswer,
   WorktreesAnswer,
 } from "./wire";
-
-/** The crew states a session is still running in (the Work view's own list). */
-const RUNNING_STATES: readonly string[] = ["starting", "working", "blocked", "paused", "quiet"];
-
-const KNOWN_STATES: readonly CrewState[] = [
-  "queued",
-  "starting",
-  "working",
-  "blocked",
-  "paused",
-  "quiet",
-  "done",
-  "failed",
-  "stopped",
-  "handoff",
-  "merged",
-  "removed",
-];
-
-/** A crew state this page knows, or null for a word a newer kit wrote. */
-export function crewStateOf(state: string): CrewState | null {
-  return KNOWN_STATES.find((known) => known === state) ?? null;
-}
 
 /** One routed request, as the activity feed draws it. */
 export function recentOf(entry: RecentEntry): RecentRequest {
@@ -124,13 +82,9 @@ export class NotSetUpError extends Error {
   override name = "NotSetUpError";
 }
 
-/** The Overview: its own answer, and the crew sessions that run now (`/api/work`). */
-export function overviewOf(answer: OverviewAnswer, work: WorkAnswer | null): OverviewData {
+export function overviewOf(answer: OverviewAnswer): OverviewData {
   if (!answer.configured) throw new NotSetUpError(answer.error ?? "The gateway is not set up.");
   return {
-    // Only a crew session the work answer lists is counted; with no answer there is none known.
-    crewRunning:
-      work === null ? 0 : work.crew.filter((crew) => RUNNING_STATES.includes(crew.state)).length,
     fallbacks: answer.fallbacks,
     health: routerHealthOf(
       answer.router,
@@ -330,128 +284,9 @@ export function workflowValueText(value: unknown, unsetWords?: string): string {
   return String(value);
 }
 
-/**
- * What a paused crew session waits for, as the record names it. The four kinds stay four: a
- * wait the watch could not name (`unknown`) is shown as unknown, with the slot of its session
- * when the record has one, never as a Claude limit on no model.
- */
-function waitingOf(waiting: CrewSummary["waitingFor"]): CrewRecord["waitingFor"] {
-  if (waiting === null) return undefined;
-  if (waiting.kind === "slot") {
-    return { kind: "slot", since: waiting.since ?? "", slot: waiting.slot ?? "" };
-  }
-  if (waiting.kind === "safety-checks") {
-    return { kind: "safety-checks", scope: waiting.scope ?? "", since: waiting.since ?? "" };
-  }
-  if (waiting.kind === "unknown") {
-    return waiting.slot === undefined
-      ? { kind: "unknown", since: waiting.since ?? "" }
-      : { kind: "unknown", since: waiting.since ?? "", slot: waiting.slot };
-  }
-  return {
-    kind: "claude-limit",
-    model: waiting.model ?? "",
-    resetsAt: waiting.resetsAt ?? null,
-  };
-}
-
-/** A crew session's record, from its summary: the fields the summary does not hold are empty. */
-function crewRecordOf(crew: CrewSummary): CrewRecord {
-  return {
-    baseRef: crew.base?.ref ?? "",
-    branch: crew.branch,
-    createdAt: crew.createdAt,
-    effort: crew.effort,
-    files: crew.files,
-    id: crew.id,
-    kind: crew.kind,
-    lastLine: crew.lastLine,
-    leadName: crew.leadName,
-    leadSessionId: crew.leadSessionId,
-    memoryMb: crew.memoryMb,
-    model: crew.model,
-    name: crew.name,
-    permissionMode: "",
-    phase: crew.phase,
-    plan: crew.plan,
-    pr: crew.pr,
-    repo: crew.repo,
-    sessionId: null,
-    shortId: crew.shortId,
-    slug: crew.slug,
-    state: crew.state,
-    stateSince: crew.stateSince,
-    updatedAt: crew.updatedAt,
-    waitingFor: waitingOf(crew.waitingFor),
-    waitsFor: crew.waitsFor,
-    worktree: crew.worktree,
-  };
-}
-
-/**
- * Work: every lead on the machine with its crew, and the person's other sessions. Each lead
- * and each crew session carries its own repository (the server reads the machine's crew store),
- * so a group of another repository is labelled with that repository, never the portal's.
- */
 export function workOf(answer: WorkAnswer): WorkData {
-  const groups: WorkData["leads"] = answer.leads.map((lead) => ({
-    crew: lead.crew.map((crew) => crewRecordOf(crew)),
-    lastStep: {},
-    lead: {
-      createdAt: lead.createdAt,
-      cwd: lead.cwd,
-      name: lead.name,
-      plan: lead.plan,
-      repo: lead.repo,
-      sessionId: lead.sessionId,
-      tag: lead.tag,
-      updatedAt: lead.updatedAt,
-    },
-  }));
-  const shown = new Set(answer.leads.flatMap((lead) => lead.crew.map((crew) => crew.id)));
-  for (const crew of answer.crew) {
-    if (shown.has(crew.id)) continue;
-    let group = groups.find((one) => one.lead.sessionId === crew.leadSessionId);
-    if (group === undefined) {
-      group = {
-        crew: [],
-        lastStep: {},
-        lead: {
-          createdAt: crew.createdAt,
-          cwd: "",
-          name: crew.leadName,
-          plan: crew.plan,
-          repo: crew.repo,
-          sessionId: crew.leadSessionId,
-          tag: "",
-          updatedAt: crew.updatedAt,
-        },
-      };
-      groups.push(group);
-    }
-    group.crew.push(crewRecordOf(crew));
-  }
-  const lastStep: Record<string, CrewEvent> = {};
-  const memory: WorkData["memory"] = {};
-  for (const crew of answer.crew) {
-    memory[crew.id] = crew.memory.map((point) => ({ at: Date.parse(point.at), mb: point.mb }));
-    if (crew.lastEvent !== null) {
-      lastStep[crew.id] = {
-        at: crew.lastEvent.at,
-        crew: crew.id,
-        lead: crew.leadSessionId,
-        name: crew.name,
-        state: crew.state,
-        text: crew.lastEvent.text,
-        type: crew.lastEvent.type,
-      };
-    }
-  }
-  for (const group of groups) group.lastStep = lastStep;
   return {
     folderNote: answer.folderNote,
-    leads: groups,
-    memory,
     // A store or a folder the server could not read: the page says why, never an empty list.
     note: answer.note,
     waitsNote:
@@ -470,97 +305,6 @@ export function workOf(answer: WorkAnswer): WorkData {
   };
 }
 
-/** The merge guard's verdict, in the crew page's words: its reason, its review and its counts. */
-export function mergeCheckOf(verdict: MergeVerdict): MergeCheck | null {
-  switch (verdict.kind) {
-    case "silent":
-      return null;
-    case "allowed":
-    case "refused": {
-      const detail = verdict.detail;
-      return {
-        allowance: detail?.allowance ?? null,
-        allowed: verdict.kind === "allowed",
-        delta: detail?.delta ?? null,
-        kind: verdict.kind,
-        limits: detail?.limits ?? null,
-        pr: verdict.kind === "refused" ? verdict.number : null,
-        reason: verdict.reason,
-        review: detail?.review ?? null,
-        reviewed: detail?.reviewed ?? null,
-      };
-    }
-    default:
-      return {
-        allowance: null,
-        allowed: false,
-        delta: null,
-        kind: verdict.kind,
-        limits: null,
-        pr: verdict.number,
-        reason: verdict.what,
-        review: null,
-        reviewed: null,
-      };
-  }
-}
-
-/** One crew session's page. */
-export function crewOf(answer: CrewAnswer): CrewDetail {
-  const crew = answer.crew;
-  const lead: LeadRecord = {
-    createdAt: crew.createdAt,
-    cwd: "",
-    name: crew.leadName,
-    plan: crew.plan,
-    repo: "",
-    sessionId: crew.leadSessionId,
-    tag: "",
-    updatedAt: crew.updatedAt,
-  };
-  const events: CrewEvent[] = answer.events.map((event) => ({
-    at: event.at,
-    crew: crew.id,
-    lead: crew.leadSessionId,
-    name: crew.name,
-    note: event.note,
-    state: event.state,
-    text: event.text,
-    type: event.type,
-  }));
-  return {
-    brief: answer.brief ?? "",
-    diff: answer.diff.byFile.map((file) => ({
-      added: file.added,
-      path: file.path,
-      removed: file.deleted,
-    })),
-    diffTotals: {
-      deletions: answer.diff.deletions,
-      error: answer.diff.error,
-      files: answer.diff.files,
-      insertions: answer.diff.insertions,
-    },
-    events,
-    lead,
-    memory: answer.memory.map((point) => ({ at: Date.parse(point.at), mb: point.mb })),
-    mergeCheck: mergeCheckOf(answer.mergeCheck),
-    questions: crew.questions.map((question) => ({
-      number: question.number,
-      answer: null,
-      answeredAt: null,
-      askedAt: question.askedAt,
-      options: question.options,
-      question: question.text,
-      recommended: question.recommend,
-    })),
-    record: crewRecordOf(crew),
-    report: answer.report,
-    reviews: answer.reviews,
-    tasks: answer.tasks,
-  };
-}
-
 /** The command that lets Claude answer a slot again while its targets rest. */
 function claudeSlotCommand(slot: string): string {
   return `${KIT_NAME} gateway slot ${slotName(slot)} claude`;
@@ -569,30 +313,9 @@ function claudeSlotCommand(slot: string): string {
 /** "Needs you": everything the server lists, newest first. `installed` is the running version. */
 export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
   const items: NeedsItem[] = [];
-  for (const need of answer.crew) {
-    const crew = { id: need.crew.id, name: need.crew.name, shortId: need.crew.shortId };
-    items.push({
-      ask: {
-        number: need.number,
-        answer: null,
-        answeredAt: null,
-        askedAt: need.askedAt,
-        options: need.options,
-        question: need.question,
-        recommended: need.recommended,
-      },
-      crew,
-      // The question itself, not only its crew session: a later question is a new item.
-      id: `question-${need.crew.id}-${need.number}`,
-      kind: "question",
-      since: need.askedAt,
-    });
-  }
   for (const wait of answer.permissions) {
     items.push({
       asker: wait.asker,
-      attach: wait.attach,
-      crew: wait.crew,
       detail: wait.kind ?? `asked by ${wait.asker}`,
       id: `permission-${wait.session}-${String(wait.at)}`,
       kind: "permission",
@@ -718,12 +441,10 @@ export function jobsOf(answer: JobsAnswer): JobsData {
     kind: item.kind,
     pid: item.pid,
     since: item.since === null ? null : Date.parse(item.since),
-    lane: item.lane,
+    slot: item.slot,
     user: item.user,
   });
   return {
-    ceiling: answer.ceiling,
-    memoryGb: answer.memoryGb,
     route: answer.route,
     stores: answer.stores.map((store) => ({
       held: store.held.map((item) => ({
@@ -736,7 +457,6 @@ export function jobsOf(answer: JobsAnswer): JobsData {
       waiting: store.waiting.map(entry),
       where: store.where,
     })),
-    weights: answer.weights,
   };
 }
 

@@ -2,10 +2,10 @@
  * Where a folder's tasks live (D75, `docs/design/tasks.md`): the one place that turns a working
  * folder into the work store's project key, the checkout new project task files are written in,
  * and the project's `tasks` settings. The server, the `task` command, the hooks and `doctor`
- * all read it, so a session, its crew worktrees and the person's own terminal agree on one
+ * all read it, so a session, its worktrees and the person's own terminal agree on one
  * project.
  *
- * - **The project key** is the crew store's: the main checkout's `repoKey`, so every worktree of a
+ * - **The project key** is the main checkout's `repoKey`, so every worktree of a
  *   repo shares one list. A folder outside git is its own project, by its real path.
  * - **Project task files** go into the checkout the folder is in (a worktree's own root), so a
  *   task ships in that branch's commit and pull request.
@@ -62,7 +62,7 @@ export type TaskContext =
   | { ok: false; why: string };
 
 /**
- * The work store's project key for a main checkout: the crew store's own key, so a hook that
+ * The work store's project key for a main checkout, so a hook that
  * already holds the checkout (`mainCheckout ?? root`) needs no second git call.
  */
 export function projectKey(repo: string): string {

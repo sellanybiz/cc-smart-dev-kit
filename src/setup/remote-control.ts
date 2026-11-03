@@ -17,8 +17,8 @@ import { getKey, type KeyPath, ownedRecords, ownership, readJsonObject } from ".
 import { realTarget } from "./write";
 
 /**
- * The settings key that starts Remote Control's bridge at a session's start: its name (a crew
- * session's own settings file writes it `false`, `src/crew/start.ts`), and its path for setup.
+ * The settings key that starts Remote Control's bridge at a session's start: its name, and its
+ * path for setup.
  */
 export const REMOTE_CONTROL_SETTING = "remoteControlAtStartup";
 export const REMOTE_CONTROL_KEY: KeyPath = [REMOTE_CONTROL_SETTING];

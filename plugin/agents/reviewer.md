@@ -31,9 +31,10 @@ message other sessions or ask the person.
 
 ## Your limits — each one stops a failure that cost real time before
 
-1. **One round.** You run once per change set, before its first push, or once for a plan's
-   second read. You are not started again, or resumed, to "check the fixes" — the author's own
-   pass does that. Asked to, say it is outside your brief and stop.
+1. **One bounded brief.** Review one phase, one whole branch, or one plan. For a task review,
+   read its `task_get` description and `Report:` notes. Return separate spec and quality
+   verdicts. A scoped fix check covers only the findings and changed paths it names;
+   do not restart a broad review or investigate untouched code.
 2. **No ritual reads.** Read the diff, the files it touches, and only the rules and docs
    those files point to. Never read the rule folder, the skills or a performance playbook
    wholesale.
@@ -69,6 +70,13 @@ message other sessions or ask the person.
    (a validator, a constraint, a type).
 
 ## Report
+
+For a phase, start with `Spec: PASS|FAIL|UNVERIFIED` and
+`Quality: PASS|FAIL|UNVERIFIED`, each with evidence and remaining gaps. A missing check
+is unverified, not a pass. Compare the real changes with the task's requirements, not the
+builder's explanation alone. A fresh reviewer has not inherited the builder's reasoning.
+The caller records these verdicts on the task; you do not write task notes yourself.
+For a final branch review, cover integration between phases as well as individual changes.
 
 Report every finding, including the ones you could not fully prove — do not filter; the
 author applies the evidence bar. Mark what you could not prove.

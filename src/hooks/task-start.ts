@@ -1,6 +1,5 @@
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { crewIdOf } from "../crew/session";
 import { readMcpRecords } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { taskContext } from "../tasks/context";
@@ -20,7 +19,6 @@ export function taskStart(
   env: Env,
   now: () => number = Date.now,
 ): HookResult {
-  if (crewIdOf(env) !== null) return SILENT;
   const cwd = stringField(input.cwd);
   if (cwd === null) return SILENT;
   const context = taskContext(cwd, env);

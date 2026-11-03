@@ -409,22 +409,6 @@ function OverviewPage({ data }: { data: OverviewData }) {
           }
         />
         <PlanCard window={data.fiveHour} limit={limit} now={now} />
-        <StatCard
-          label="Crew sessions running"
-          value={count(data.crewRunning)}
-          badge={
-            <AppLink
-              href="/work"
-              className="text-sm font-medium underline-offset-4 hover:underline focus-visible:underline"
-            >
-              Open Work
-            </AppLink>
-          }
-          headline={
-            data.crewRunning === 0 ? "No crew session runs now" : "Working, blocked or paused"
-          }
-          detail="Queued and finished ones are on Work"
-        />
       </SectionCards>
       <FilterBar state={state} />
       <Charts state={state} jobs={data.jobs} />

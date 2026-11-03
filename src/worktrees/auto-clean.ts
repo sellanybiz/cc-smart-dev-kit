@@ -29,8 +29,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
-import type { CrewContext } from "../crew/context";
-import { pruneCrewDiscarded } from "../crew/discard";
 import { samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
@@ -46,15 +44,12 @@ import {
   recordStart,
 } from "./auto-state";
 import { type CleanLock, cleanFinished, holdCleanLock, type KeptWorktree } from "./clean";
-import { baseBranch, isCrewWorktree } from "./command";
-import { cleanOrphanCrew, cleanupCrewContext, orphanCrewOf } from "./crew-clean";
+import { baseBranch } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
 import { finishStrays, type StrayPass, strayParkedFolders } from "./scan-parked";
 
 export interface AutoCleanDeps {
   env: Env;
-  /** The crew CLI dependencies, so tests never run the machine's Claude. */
-  crewContext?: CrewContext;
   /**
    * The folder of the session that started this clean. A worktree it works in stays, even
    * when Claude Code has not written that session's record yet (a resumed session in a
@@ -238,31 +233,7 @@ export async function runAutoClean(
     // The leftover folders git no longer lists are read before the clean removes any worktree:
     // they are looked for next to the worktrees git lists.
     const strays = strayParkedFolders(main, env);
-    // A crew session's worktree is its lead's to remove (`crew rm`, or the watch once merged):
-    // this clean would leave the record, the branch and the session behind (D62).
-    const crewContext =
-      deps.crewContext ?? cleanupCrewContext(paths, env, main, judged.facts, deps.now);
-    const orphaned = await orphanCrewOf(crewContext);
-    for (const line of await pruneCrewDiscarded(main, crewContext)) log(line);
-    const crewRecords = orphaned.records;
-    const orphanPass = await cleanOrphanCrew(
-      crewContext,
-      orphaned,
-      { label: base, ref: `refs/remotes/origin/${base}` },
-      log,
-    );
-    // The lines the command prints are not kept: the report holds what a person needs.
-    const report = cleanFinished(
-      main,
-      scanned,
-      judged,
-      () => undefined,
-      (one) => isCrewWorktree(one, crewRecords),
-    );
-    report.removed.push(...orphanPass.removed);
-    report.kept = report.kept.filter(
-      (one) => !orphanPass.removed.some((removed) => samePath(removed.path, one.path)),
-    );
+    const report = cleanFinished(main, scanned, judged, () => undefined);
     recordRun(files, main, { base, kept: report.kept, now, removed: report.removed });
     // The folders a removal moved aside that git no longer lists: finished by what they hold.
     const leftovers = finishStrays(main, judged, () => undefined, strays);

@@ -32,11 +32,6 @@ export type WorktreesRead = { answer: WorktreesAnswer } | { error: string };
 /** One answer per folder, kept for `WORKTREES_FRESH_MS` (`shortCache`'s rules). */
 const scans = shortCache<string, WorktreesRead>(WORKTREES_FRESH_MS);
 
-/**
- * Drops this portal's kept answers: an action that adds or removes a worktree (`crew rm`,
- * `worktrees.clean`) makes them stale, and the page's next read must scan again instead of
- * showing the list from before the action for up to `WORKTREES_FRESH_MS`.
- */
 export function forgetWorktrees(ctx: PortalContext): void {
   scans.forget(ctx);
 }

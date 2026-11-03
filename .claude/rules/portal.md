@@ -89,22 +89,14 @@ in this turn.
 
 ## The portal runs the command line's own code
 
-- **An action is the same function the command line runs**, never a second copy: slots, the
-  switches, the router restart and the OmniRoute update go through `runGateway` /
-  `runOmniroute`; `update`, `doctor`, the heavy-job queue, the worktrees and the crew
-  commands call the modules the CLI calls. So a page can never do something the CLI would
-  refuse, and the two can never agree differently about a machine.
+- **An action calls the CLI's own function**, never a second implementation. This includes
+  gateway switches, updates, doctor, jobs and worktrees. The page must not bypass a CLI refusal.
+
 - **An action never blocks the server.** Every command it starts with a child is spawned
   asynchronously (`Bun.spawn`), never `Bun.spawnSync`: the pages, every other action and the
   live stream stay live while a 300-second `claude plugin …` runs, and the action's lines and
   result go out on the stream. `CommandRunner` (`src/update/apply.ts`) takes a promise for
   exactly this. Never put a blocking spawn back into a path an action runs.
-- **A crew page and a crew action read the machine's store, never the portal's folder.** The
-  portal starts in the home folder, which is no git project: the Work page and Needs list every
-  repository's crew sessions and leads (`listAllCrew`, `listAllLeads`), each summary names its
-  own `repo`, `/api/crew/<id>` reads its record's repository, and a crew action finds its record
-  by id and acts in `record.repo` (`src/portal/cli-child.ts` runs the CLI's own command there).
-  A new crew read or action follows that, or it finds nothing on a normal start.
 - **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
   in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
   and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>
@@ -204,6 +196,4 @@ in this turn.
 
 ## Docs
 
-`README.md` § The portal and § OmniRoute updates, and `docs/design/portal.md` § The portal and
-§ OmniRoute, change in the same commit as the behaviour. A screen or a command that does
-something the README does not say is a doc bug, not a nicety.
+Update the README and portal design page in the same change as behavior.

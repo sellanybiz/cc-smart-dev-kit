@@ -242,6 +242,7 @@ export function world(options: WorldOptions = {}) {
       instructionsSource: PLUGIN_INSTRUCTIONS,
       statusline: false,
       retryWatchdog: null,
+      maxSubagents: null,
       // No environment of its own: a test that wants a key sets one through `extra`.
       env: {},
       tavilyKeyStdin: null,

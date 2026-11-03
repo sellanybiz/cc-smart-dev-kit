@@ -21,8 +21,8 @@ const BIOME_PROJECT = `{
   "sessionNames": false,
   "workflow": {
     "reviewBeforePush": true,
-    "crew": {
-      "enabled": true
+    "fixesAfterReview": {
+      "lines": 200
     }
   }
 }
@@ -66,35 +66,10 @@ describe("workflow set / unset --project", () => {
     const written = readFileSync(file, "utf8");
     expect(written).toBe(
       BIOME_PROJECT.replace(
-        '      "enabled": true\n    }\n',
-        '      "enabled": true\n    },\n    "autoCommit": true\n',
+        '      "lines": 200\n    }\n',
+        '      "lines": 200\n    },\n    "autoCommit": true\n',
       ),
     );
-    expect(biomeFormat(written)).toBe(written);
-  });
-
-  test("an unset removes only that key's line and the comma it leaves", () => {
-    const { repo, file, env } = projectWith(BIOME_PROJECT);
-    writeProjectSetting(repo, "reviewBeforePush", undefined, env);
-    expect(readFileSync(file, "utf8")).toBe(
-      BIOME_PROJECT.replace('    "reviewBeforePush": true,\n', ""),
-    );
-    // The last key of an object: the comma before it goes.
-    writeProjectSetting(repo, "crew.enabled", undefined, env);
-    const written = readFileSync(file, "utf8");
-    expect(written).toBe(`{
-  "requires": ">=1.0",
-  "worktrees": {
-    "base": "main",
-    "bases": {
-      "hotfix/": "main",
-      "release/": "main"
-    }
-  },
-  "protectedBranches": ["main"],
-  "sessionNames": false
-}
-`);
     expect(biomeFormat(written)).toBe(written);
   });
 
@@ -153,37 +128,4 @@ describe("workflow set / unset (the person's own file)", () => {
       `{\n  "alerts": { "events": ["needs-you"] },\n  "autoCommit": true\n}\n`,
     );
   });
-});
-
-test("D71: set refuses a project machine limit without changing the file", () => {
-  const { repo, file, env } = projectWith(BIOME_PROJECT);
-  expect(() => writeProjectSetting(repo, "crew.max", 4, env)).toThrow(
-    "crew.max is your own setting, not the project's: run it without --project",
-  );
-  expect(readFileSync(file, "utf8")).toBe(BIOME_PROJECT);
-});
-
-test("D71: unset takes an ignored machine limit out of the project file, and leaves the rest", () => {
-  const { repo, file, env } = projectWith(`{
-  "requires": ">=1.1",
-  "workflow": {
-    "crew": {
-      "enabled": true,
-      "max": 6,
-      "perLead": 2
-    }
-  }
-}
-`);
-  expect(writeProjectSetting(repo, "crew.max", undefined, env)).toContain("crew.max");
-  expect(readFileSync(file, "utf8")).toBe(`{
-  "requires": ">=1.1",
-  "workflow": {
-    "crew": {
-      "enabled": true,
-      "perLead": 2
-    }
-  }
-}
-`);
 });

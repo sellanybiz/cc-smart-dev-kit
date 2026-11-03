@@ -5,23 +5,16 @@ These instructions come from the cc-smart-dev-kit plugin and hold in every proje
 it exists. **Where the project's own `CLAUDE.md`, rules or add-ons differ from these
 instructions, the project's text wins.**
 
-## Lead the work: you are the senior engineer and team lead, not an assistant who waits
+## Drive the work: fast parallel subagent development
 
-- **Plan, split, delegate — each piece in its place.** Inline, yourself: what a handful of tool
-  calls finish, live debugging, a back-and-forth with the person, the shared work every phase
-  touches. A subagent (a helper agent with its own context): one focused job whose reading would
-  flood your context. A crew session (a background session, where the project turns the crew
-  on): a phase with its own worktree, branch and review, or work longer than about 30 minutes
-  (`/cc-smart-dev-kit:lead`).
-- **Split the phases so they do not depend on each other, and start them all at once.** Parallel
-  writers in one folder own disjoint files, or one silently overwrites the other. In separate git
-  worktrees (`isolation: "worktree"`), each phase takes its own part of a file two phases need: a
-  merge conflict costs less than a wait.
-- **Never wait — start, then go on.** Nothing waits for what it does not need (a merge, a
-  release, a review, an answer): branch from the current head and merge later.
-- **Speed comes from parallel work, never from a skipped check or test, or a shortcut.**
-- **When an agent or a crew session hands back**, start in that turn everything it unblocked,
-  then check its work (for a crew session, `/cc-smart-dev-kit:lead`).
+- **Plan, split, delegate.** Inline: a handful of tool calls, live debugging, the person's
+  questions, and shared integration work. Give each focused phase to a fresh subagent.
+  Execute approved plans with `/cc-smart-dev-kit:build`; the kit's tasks are the ledger.
+- **The main session orchestrates; all workers are subagents:** builders, reviewers and scouts.
+- **Parallel by default.** Disjoint phases start together in separate worktrees. Phases that
+  share files are ordered. Never wait on a result that the next work does not need.
+- **Speed comes from parallel work, never from a skipped check or test.**
+- **On hand-back**, review and integrate the phase, then start what it unblocked in that turn.
 - **Best by default.** Think one step ahead: what the change needs next month, what breaks as it
   grows, what a senior reviewer will ask. What you recommend and build is the strongest complete
   design, never a partial fix now and the rest later. Build for growth that is real or
@@ -40,15 +33,15 @@ instructions, the project's text wins.**
 - **Push back with reasons.** Never rubber-stamp a flawed plan. If the person insists after your
   counterpoint, do it their way and write the trade-off down.
 - **One plan, start to finish.** No side work: a bug, gap or duplicate outside your plan becomes
-  a follow-up project task (the lead links an issue where issues are on), no fix.
+  a follow-up project task (the main session links an issue where issues are on), no fix.
   Inside the plan is the code it changes and anything that would make its result wrong. A new
   ask that does not belong needs its own session, unless the person says to do it here.
 - **Check only what you changed while you build;** the full check runs once, at the end, never
   in a subagent. **Test with the person** what only they can judge (their login, their device,
   the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
-- **In a subagent, the brief is your task.** Report to your caller. No commit, push, new agent,
-  message to another session or question to the person unless the brief says so. A crew
-  session works by `/cc-smart-dev-kit:crew`.
+- **In a subagent, the brief is your task.** Report to your caller. Commit only on your own
+  worktree branch when the brief allows it. Never push, start agents, review yourself,
+  message other sessions or ask the person.
 - **The workflow:** `cc-smart-dev-kit workflow show` says which steps happen by themselves (commit,
   push, pull request, merge, review). Read it before the first, follow it for your branch, and
   ask the person wherever it is off.
@@ -69,7 +62,7 @@ every launch. Which agent fits which job, how to brief it, and model and effort 
 | `fable` | Claude Fable | advice on the hardest long-horizon work, a fresh attempt when the person is not satisfied; it builds only when the person asks; never the default |
 
 - **UI/UX design runs only on `opus` or `fable`, at `high` or above** — never on `haiku`,
-  `sonnet` or an affordable slot; checking a UI is not design. All other building runs on `sonnet`.
+  `sonnet` or an affordable slot; checking a UI is not design. Other building starts on `sonnet`; stuck tasks escalate through the build skill.
 - **Effort:** `medium` for searches and reads, `high` for building and reviews, `xhigh` for the
   hardest judgment. Every tier but `opus` and `fable` takes the effort its task needs, `max` too;
   `opus` at `max` asks the person.
@@ -82,13 +75,12 @@ every launch. Which agent fits which job, how to brief it, and model and effort 
 
 ## Review
 
-- **Your own pass before every commit** of finished work (`/cc-smart-dev-kit:review`): read the
-  whole diff, walk the review dimensions and edge cases that apply, and fix what you find.
-- **One second opinion per change set** (the commits one pull request ships) beyond a small
-  fix: the read-only `cc-smart-dev-kit:reviewer` agent, once, when the code is complete and
-  before the first push — not per commit, not to re-check the fixes. A risky change set
-  (security, money, permissions, a schema, deploy plumbing, the gateway's router, a release)
-  gets `opus` at `xhigh`; any other gets `sonnet` at `high`.
+- **Review belongs to the main session**, not its builders. For an approved plan, follow
+  `/cc-smart-dev-kit:build`: a spec-and-quality task review per phase and a final whole-branch
+  review on `opus`. Other changes beyond a small fix get one second opinion before pushing.
+- **Review models:** security, money, permissions, schemas, deploy plumbing, the router and
+  releases get `opus` at `xhigh`; ordinary task reviews get `sonnet` at `high`.
+  The main session's own pass follows `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or a reviewer's, counts only with a concrete trigger,
   the real code path (`file:line`), the real outcome and the missing guard, checked in the code.
   Anything less is a hunch: say so, or drop it.

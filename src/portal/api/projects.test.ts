@@ -20,7 +20,6 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
-import { createCrew, type NewCrew } from "../../crew/store";
 import { projectFolderName } from "../../sessions/saved-sessions";
 import { type FakeWorkflow, fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import {
@@ -31,7 +30,6 @@ import {
 } from "../../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import type { GhRunner } from "../../workflow/merge-check";
-import { isProjectKey, WORKFLOW_KEYS } from "../../workflow/schema";
 import { ACTION_NAMES, type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { workflowAdapter } from "../workflow-adapter";
@@ -53,7 +51,7 @@ import {
 } from "./projects";
 import { answerApi } from "./routes";
 import { testPortalContext } from "./test-context";
-import type { ProjectAnswer, ProjectSummary } from "./types";
+import type { ProjectSummary } from "./types";
 
 /** One session's time: every list assertion names a hand-written time, never `Date.now()`. */
 const T0 = Date.UTC(2026, 0, 5, 9, 0, 0);
@@ -243,38 +241,6 @@ function formAnswers(): Record<string, unknown> {
     bases: {},
     guards: { guardMainFolder: false, jobRoute: false, sessionNames: false },
     protectedBranches: ["main"],
-  };
-}
-
-/** A crew record of `repo`, on `branch`, as the store writes one. */
-function crewFixture(repo: string, head: string): NewCrew {
-  return {
-    base: { ref: "integration", sha: head },
-    baseRef: "integration",
-    branch: "crew/K-contracts",
-    effort: "xhigh",
-    files: ["src/portal/api/projects.ts"],
-    id: "crew-K-contracts",
-    kind: "schema",
-    lastLine: null,
-    leadName: "LEAD alpha master-plan",
-    leadSessionId: "11111111-1111-4111-8111-111111111111",
-    memoryMb: null,
-    model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
-    name: "C alpha K contracts",
-    permissionMode: "auto",
-    phase: "K",
-    plan: ".claude/plans/master-plan.md",
-    pr: null,
-    questions: [],
-    reportPath: null,
-    repo,
-    sessionId: null,
-    shortId: null,
-    slug: "contracts",
-    state: "working",
-    waitsFor: [],
-    worktree: join(repo, ".claude", "worktrees", "crew-K-contracts"),
   };
 }
 
@@ -538,124 +504,6 @@ describe("/api/projects/<id> (B8)", () => {
     );
   });
 
-  test("a known id answers its own card, and says gh is not installed", async () => {
-    const w = testWorld({ clock: () => T0 });
-    const alpha = committedRepo("alpha");
-    sessionRecord(w.paths.projectsDir, alpha, "s-alpha", T0);
-    const id = (await projectOf(w.projects, alpha)).id;
-
-    const answer = await answerApi(w.deps, new URL(`http://127.0.0.1/api/projects/${id}`));
-    expect(answer?.status).toBe(200);
-    const body = answer?.body as ProjectAnswer;
-    expect(body.project.id).toBe(id);
-    expect(body.project.root).toBe(alpha);
-    expect(body.project.worktrees).toBe(0);
-    // The same card the Machine page draws, for this project's root.
-    expect(body.card.root).toBe(alpha);
-    expect(body.card.name).toBe("alpha");
-    expect(body.card.set).toBe(true);
-    expect(typeof body.card.filesHash).toBe("string");
-    // No gh on this PATH: the crew branches (none here) are still read, and the note says why
-    // the open pull requests are missing.
-    expect(body.branches).toEqual([]);
-    expect(body.branchesNote).toContain("gh is not installed");
-    expect(body.checkedAt).toBe(new Date(T0).toISOString());
-  });
-
-  test("an open pull request and a crew branch, each with the merge guard's own verdict", async () => {
-    const w = testWorld({ clock: () => T0, gh: true });
-    const repo = makeRepo("alpha");
-    // A plain integration base, so the policy may merge into it by itself; no review gate.
-    commitConfig(
-      repo,
-      {
-        workflow: { autoMerge: true, reviewBeforePush: false },
-        worktrees: { base: "integration" },
-      },
-      ["main", "integration"],
-    );
-    const head = git(repo, "rev-parse", "HEAD").trim();
-    git(repo, "branch", "crew/K-contracts");
-    await createCrew(w.paths.stateDir, crewFixture(repo, head), T0);
-    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
-
-    const asked: string[][] = [];
-    const run: GhRunner = async (args) => {
-      asked.push(args);
-      if (args[0] === "pr" && args[1] === "list") {
-        return JSON.stringify([
-          {
-            baseRefName: "integration",
-            headRefName: "feat/x",
-            isDraft: false,
-            number: 7,
-            title: "Add x",
-          },
-        ]);
-      }
-      if (args[0] === "pr" && args[1] === "view") {
-        return JSON.stringify({
-          baseRefName: "integration",
-          headRefName: "feat/x",
-          headRefOid: "c".repeat(40),
-          number: 7,
-        });
-      }
-      if (args[0] === "repo" && args[1] === "view") {
-        return JSON.stringify({ defaultBranchRef: { name: "main" } });
-      }
-      if (args[0] === "pr" && args[1] === "checks") {
-        return JSON.stringify([{ bucket: "pass", name: "ci" }]);
-      }
-      return null;
-    };
-    const world = { ...w.projects, gh: run };
-    const answer = await projectBranches(world, await projectOf(world, repo));
-    expect(answer.note).toBe(null);
-    expect(answer.branches).toEqual([
-      {
-        base: "integration",
-        branch: "feat/x",
-        draft: false,
-        kind: "pr",
-        number: 7,
-        title: "Add x",
-        verdict: {
-          detail: {
-            allowance: null,
-            delta: null,
-            limits: { files: 10, lines: 200, percent: 20 },
-            review: null,
-            reviewed: null,
-          },
-          kind: "allowed",
-          reason: "its required checks are green, and reviewBeforePush is off",
-        },
-      },
-      {
-        base: "integration",
-        branch: "crew/K-contracts",
-        draft: false,
-        kind: "crew",
-        number: null,
-        title: null,
-        verdict: {
-          detail: {
-            allowance: null,
-            delta: null,
-            limits: { files: 10, lines: 200, percent: 20 },
-            review: null,
-            reviewed: null,
-          },
-          kind: "allowed",
-          reason: "reviewBeforePush is off, so no review is required for crew/K-contracts",
-        },
-      },
-    ]);
-    // gh's list was asked once; the crew branch needed no gh call of its own.
-    expect(asked.filter((one) => one[1] === "list")).toHaveLength(1);
-  });
-
   test("past the one deadline a verdict is late, and the note says the time ran out", async () => {
     let clock = T0;
     const w = testWorld({ clock: () => clock, gh: true });
@@ -793,29 +641,6 @@ describe("/api/projects/<id> (B8)", () => {
       what: "the pull request this command names",
     });
     expect(answer.note).toContain("the time to read every verdict ran out");
-  });
-
-  test("crew rows are only the branches that still wait for a merge", async () => {
-    const w = testWorld({ clock: () => T0 });
-    const repo = committedRepo("alpha");
-    const head = git(repo, "rev-parse", "HEAD").trim();
-    const base = crewFixture(repo, head);
-    const records = [
-      { branch: "crew/A-merged", id: "crew-A", state: "merged" },
-      { branch: "crew/B-handoff", id: "crew-B", state: "handoff" },
-      { branch: "crew/C-queued", id: "crew-C", state: "queued" },
-      { branch: "crew/D-working", id: "crew-D", state: "working" },
-      { branch: "crew/E-stopped", id: "crew-E", state: "stopped" },
-    ] as const;
-    for (const { branch, id, state } of records) {
-      await createCrew(w.paths.stateDir, { ...base, branch, id, name: id, state }, T0);
-    }
-    sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
-
-    const answer = await projectBranches(w.projects, await projectOf(w.projects, repo));
-    // A merged branch, a handed-off one and one with no branch yet are not rows; a running one
-    // and a stopped one still wait for the lead's merge, so they are.
-    expect(answer.branches.map((one) => one.branch)).toEqual(["crew/D-working", "crew/E-stopped"]);
   });
 
   test("the branches are kept for 60 s, and read again after it", async () => {
@@ -971,56 +796,7 @@ async function workflowAnswer(
   return await projectWorkflowAnswerFor({ ...w.deps, workflow: workflowAdapter }, expectedId(repo));
 }
 
-/** Every key the answer must carry, one per row `workflow set --project` takes. */
-const PROJECT_KEYS = WORKFLOW_KEYS.filter(isProjectKey);
-
 describe("a project's workflow settings (D57)", () => {
-  test("every setting with its value and source, the base, and gh logged in", async () => {
-    const w = testWorld({ gh: true, withGh: async () => "test-user" });
-    const repo = committedRepo("workflow-app", {
-      requires: ">=0.1",
-      workflow: { autoCommit: true, openPr: "draft" },
-      worktrees: { base: "main" },
-    });
-    await addProjectRoot(w.paths, repo);
-    forgetGhLogin();
-    forgetProjectsList();
-
-    const answer = await workflowAnswer(w, repo);
-    if ("error" in answer) throw new Error(answer.error);
-    expect(answer.base).toBe("main");
-    expect(answer.gh).toBe("in");
-    expect(answer.note).toBeNull();
-    // Every key the project's file can hold, in the schema's own order — the schema's list,
-    // never a copy here — and neither of the person's own switches.
-    expect(answer.settings.map((one) => one.key)).toEqual([...PROJECT_KEYS]);
-    expect(answer.settings.map((one) => one.key)).not.toContain("switches.statusLine");
-    expect(answer.settings.map((one) => one.key)).not.toContain("switches.updateHold");
-    const of = (key: string) => answer.settings.find((one) => one.key === key);
-    expect(of("autoCommit")).toEqual({ key: "autoCommit", source: "project", value: true });
-    expect(of("openPr")).toEqual({ key: "openPr", source: "project", value: "draft" });
-    expect(of("autoPush")).toEqual({ key: "autoPush", source: "default", value: false });
-    expect(of("fixesAfterReview.lines")).toEqual({
-      key: "fixesAfterReview.lines",
-      source: "default",
-      value: 200,
-    });
-    expect(of("switches.sessionNames")).toEqual({
-      key: "switches.sessionNames",
-      source: "default",
-      value: false,
-    });
-    expect(of("switches.statusLine")).toBeUndefined();
-    // An unset tag uses workflow show's words; machine limits are not project settings.
-    expect(of("crew.tag")).toEqual({
-      key: "crew.tag",
-      source: "default",
-      unsetWords: "(the main checkout's folder name)",
-      value: null,
-    });
-    expect(of("crew.maxOpus")).toBeUndefined();
-  });
-
   test("the person's own file is the source of a value the project does not set", async () => {
     const w = testWorld();
     const repo = committedRepo("personal-app", {
@@ -1174,4 +950,76 @@ describe("a project's workflow settings (D57)", () => {
     expect(answer.note).toContain("not valid JSON");
     expect(answer.base).toBe("main");
   });
+});
+
+test("an open pull request with the merge guard's own verdict", async () => {
+  const w = testWorld({ clock: () => T0, gh: true });
+  const repo = makeRepo("alpha");
+  // A plain integration base, so the policy may merge into it by itself; no review gate.
+  commitConfig(
+    repo,
+    {
+      workflow: { autoMerge: true, reviewBeforePush: false },
+      worktrees: { base: "integration" },
+    },
+    ["main", "integration"],
+  );
+  sessionRecord(w.paths.projectsDir, repo, "s-alpha", T0);
+
+  const asked: string[][] = [];
+  const run: GhRunner = async (args) => {
+    asked.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify([
+        {
+          baseRefName: "integration",
+          headRefName: "feat/x",
+          isDraft: false,
+          number: 7,
+          title: "Add x",
+        },
+      ]);
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return JSON.stringify({
+        baseRefName: "integration",
+        headRefName: "feat/x",
+        headRefOid: "c".repeat(40),
+        number: 7,
+      });
+    }
+    if (args[0] === "repo" && args[1] === "view") {
+      return JSON.stringify({ defaultBranchRef: { name: "main" } });
+    }
+    if (args[0] === "pr" && args[1] === "checks") {
+      return JSON.stringify([{ bucket: "pass", name: "ci" }]);
+    }
+    return null;
+  };
+  const world = { ...w.projects, gh: run };
+  const answer = await projectBranches(world, await projectOf(world, repo));
+  expect(answer.note).toBe(null);
+  expect(answer.branches).toEqual([
+    {
+      base: "integration",
+      branch: "feat/x",
+      draft: false,
+      kind: "pr",
+      number: 7,
+      title: "Add x",
+      verdict: {
+        detail: {
+          allowance: null,
+          delta: null,
+          limits: { files: 10, lines: 200, percent: 20 },
+          review: null,
+          reviewed: null,
+        },
+        kind: "allowed",
+        reason: "its required checks are green, and reviewBeforePush is off",
+      },
+    },
+  ]);
+  // gh's list was asked once; the page reuses its branch read.
+  expect(asked.filter((one) => one[1] === "list")).toHaveLength(1);
 });

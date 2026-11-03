@@ -46,11 +46,10 @@ export type ParentReader = (pid: number) => number | null;
 
 /**
  * Every ancestor of `pid`, nearest first, up to (not including) pid 0, by `parentOf`: the one
- * walk, whatever reads the parents (`/proc` here; a process listing where there is none — the
- * crew launcher finds its Claude session this way, `src/crew/session.ts`). A chain that
+ * walk, whatever reads the parents (`ancestorPids` reads them from `/proc`). A chain that
  * comes back to a pid it holds, or runs past `MAX_DEPTH`, ends there.
  */
-export function ancestorsBy(pid: number, parentOf: ParentReader): number[] {
+function ancestorsBy(pid: number, parentOf: ParentReader): number[] {
   const ancestors: number[] = [];
   const seen = new Set<number>([pid]);
   let current = pid;

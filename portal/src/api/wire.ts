@@ -453,33 +453,12 @@ export type WorkflowKey =
   | "clearWorktreeAfterMerge"
   | "issues.enabled"
   | "issues.allowPublic"
-  | "issues.watch"
-  | "issues.watchMinutes"
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
-  | "crew.enabled"
-  | "crew.keep"
-  | "crew.idleStopMinutes"
-  | "crew.max"
-  | "crew.maxOpus"
-  | "crew.memoryGb"
-  | "crew.loadPerCore"
-  | "crew.startGapSeconds"
-  | "crew.perLead"
-  | "crew.perLeadOpus"
-  | "crew.usagePercent"
-  | "crew.quietMinutes"
-  | "crew.handoffPercent"
-  | "crew.handoffTokens"
-  | "crew.softHours"
-  | "crew.maxHours"
-  | "crew.archiveDays"
-  | "crew.deleteDays"
-  | "crew.tag"
   | "switches.statusLine"
   | "switches.sessionNames"
   | "switches.jobRoute"
@@ -487,7 +466,7 @@ export type WorkflowKey =
 
 /** `src/portal/settings.ts` › `SettingsRow`. */
 export interface SettingsRow {
-  card: "alerts" | "crew" | "flow" | "switches";
+  card: "alerts" | "flow" | "switches";
   unit?: "%";
   choices?: readonly { label: string; value: string }[];
   help: string;
@@ -535,7 +514,7 @@ export interface ProjectBranch {
   base: null | string;
   branch: string;
   draft: boolean;
-  kind: "crew" | "pr";
+  kind: "pr";
   number: null | number;
   title: null | string;
   verdict: MergeVerdict;
@@ -554,7 +533,7 @@ export interface ProjectWorkflowSetting {
   /** One of `WORKFLOW_KEYS` (`src/workflow/schema.ts`): the page labels it. */
   key: string;
   source: "project" | "personal" | "default";
-  /** Only for a null `crew.tag` or `crew.maxOpus`: what `workflow show` prints in its place. */
+
   unsetWords?: string;
   value: unknown;
 }
@@ -669,12 +648,23 @@ export interface WorkTaskBlocker {
   subject: string;
 }
 
+/** A phase's steps: its blocking work done, of its blocking work (a dropped step left out). */
+export interface WorkTaskSteps {
+  done: number;
+  total: number;
+}
+
 /** One work task in the Tasks tab's tree. */
 export interface WorkTaskNode {
+  /** The subagent working on it (id or name); null when none was set. */
+  agent: null | string;
+  /** The commit its work started from. */
+  base: null | string;
   /** Open, and one of `blockedBy` is still open. */
   blocked: boolean;
   /** In number order, closed ones too. */
   blockedBy: WorkTaskBlocker[];
+  branch: null | string;
   children: WorkTaskNode[];
   /** Its whole subtree: closed (done or dropped) of total. */
   closed: number;
@@ -686,11 +676,15 @@ export interface WorkTaskNode {
   /** `#12`. */
   ref: string;
   status: WorkTaskStatus;
+  /** A phase's steps; null for a plan or a task. */
+  steps: null | WorkTaskSteps;
   subject: string;
   total: number;
   type: WorkTaskType;
   /** ISO 8601. */
   updatedAt: string;
+  /** The worktree's absolute path. */
+  worktree: null | string;
 }
 
 /** One open project task file. */
@@ -744,71 +738,7 @@ export interface TasksAnswer {
   projects: TasksProject[];
 }
 
-// ── Work, crew, needs ──────────────────────────────────────────────────────────────────
-
-export interface CrewSummary {
-  base: null | { ref: string; sha: string };
-  branch: string;
-  createdAt: string;
-  effort: string;
-  files: string[];
-  id: string;
-  kind: string;
-  lastEvent: null | { at: string; text: string; type: string };
-  lastLine: null | string;
-  leadGone: boolean;
-  leadName: string;
-  leadSessionId: string;
-  memory: CrewMemoryPoint[];
-  memoryMb: null | number;
-  model: { named: string; resolved: string; slot: null | string; tier: null | string };
-  name: string;
-  phase: string;
-  plan: string;
-  pr: null | number;
-  questions: {
-    number: number;
-    text: string;
-    options: string[];
-    recommend: null | number;
-    askedAt: string;
-  }[];
-  question: null | {
-    askedAt: string;
-    options: string[];
-    question: string;
-    recommended: null | number;
-  };
-  repo: string;
-  shortId: null | string;
-  slug: string;
-  state: string;
-  stateSince: string;
-  updatedAt: string;
-  waitingFor: null | {
-    kind: string;
-    model?: string;
-    resetsAt?: null | string;
-    scope?: string;
-    since?: string;
-    slot?: string;
-  };
-  waitsFor: string[];
-  worktree: string;
-}
-
-export interface LeadSummary {
-  crew: CrewSummary[];
-  createdAt: string;
-  cwd: string;
-  name: string;
-  pausedAgents: string[];
-  plan: string;
-  repo: string;
-  sessionId: string;
-  tag: string;
-  updatedAt: string;
-}
+// ── Work and needs ──────────────────────────────────────────────────────────────────
 
 export interface SessionSummary {
   branch: null | string;
@@ -830,86 +760,14 @@ export interface FinishedSession {
   ageMs: number;
 }
 
-export interface CrewDiscardFacts {
-  head: string;
-  archiveRef: string;
-  token: string;
-  unmergedCommits: { count: number | null; subjects: string[] };
-  changedFiles: string[];
-  ignoredFiles: string[];
-  lines: string[];
-  question: string;
-}
-
-export interface StoppedCrewItem {
-  discard: { facts: CrewDiscardFacts | null; error: string | null };
-  crew: { id: string; name: string; shortId: null | string; state: string };
-  repo: string;
-  since: string;
-  days: number;
-  unmergedCommits: null | number;
-  line: string;
-}
-
 export interface WorkAnswer {
   finishedSessions: FinishedSession[];
   finishedSessionsError: string | null;
-  crew: CrewSummary[];
-  leads: LeadSummary[];
   folderNote: null | string;
   note: null | string;
   repo: null | string;
   sessions: SessionSummary[];
   waitsError: null | string;
-}
-
-export interface CrewStepItem {
-  at: string;
-  note: null | string;
-  sha: null | string;
-  state: string;
-  text: null | string;
-  type: string;
-}
-
-export interface TestRun {
-  command: string;
-  failed: number;
-  ok: boolean;
-  passed: number;
-  [key: string]: unknown;
-}
-
-export interface CrewReport {
-  base: { ref: string; sha: string };
-  branch: { name: string; sha: string };
-  changed: { deletions: number; files: number; insertions: number };
-  checks: { name: string; note: null | string; ok: boolean }[];
-  docs: string[];
-  needsLead: string[];
-  open: string[];
-  /** The crew session's own review, where its brief asked for no second opinion (RG1); null or absent when there is none. */
-  ownReview?: null | { findings: { finding: string; fix: string }[]; reason: string } | undefined;
-  outsideBrief: string[];
-  phase: string;
-  pr: null | number;
-  question: null | string;
-  review: null | {
-    agent: string;
-    effort: string;
-    findings: { finding: string; fix: string }[];
-    model: string;
-    sha: string;
-  };
-  status: string;
-  summary?: string | null | undefined;
-  tests: { full: null | TestRun; targeted: TestRun[] };
-}
-
-export interface CrewReview {
-  at: string;
-  by: string[];
-  sha: string;
 }
 
 export type MergeVerdict =
@@ -927,43 +785,6 @@ export interface MergeDetail {
   review: null | string;
   reviewed: null | { binary: number; files: number; lines: number };
 }
-
-/** `src/crew/diff.ts` › `DiffFile`: one file of the diff; a binary file has null counts. */
-export interface DiffFile {
-  added: null | number;
-  deleted: null | number;
-  path: string;
-}
-
-/** `src/portal/api/types.ts` › `CrewMemoryPoint`: one memory reading of a crew session. */
-export interface CrewMemoryPoint {
-  at: string;
-  mb: number;
-}
-
-export interface CrewAnswer {
-  brief: null | string;
-  crew: CrewSummary;
-  diff: {
-    byFile: DiffFile[];
-    deletions: number;
-    error: null | string;
-    files: number;
-    insertions: number;
-    outsideBrief: string[];
-  };
-  events: CrewStepItem[];
-  memory: CrewMemoryPoint[];
-  mergeCheck: MergeVerdict;
-  report: CrewReport | null;
-  reviews: CrewReview[];
-  tasks: CrewPhaseTasks;
-}
-
-export type CrewPhaseTasks =
-  | { more: number; phase: null | WorkTaskNode; state: "ready" }
-  | { state: "none" }
-  | { state: "unreadable"; why: string };
 
 export interface GuardAskItem {
   at: number;
@@ -991,22 +812,11 @@ export interface GuardAsksAnswer {
 
 export interface PermissionWait {
   asker: string;
-  attach: null | string;
   at: number;
-  crew: null | { id: string; name: string; shortId: null | string };
   kind: null | string;
   project: string;
   session: string;
   tool: string;
-}
-
-export interface CrewNeed {
-  number: number;
-  askedAt: string;
-  crew: { id: string; name: string; shortId: null | string; state: string };
-  options: string[];
-  question: string;
-  recommended: null | number;
 }
 
 export interface BreakerNeed {
@@ -1024,10 +834,7 @@ export interface DoctorFailure {
 }
 
 export interface NeedsAnswer {
-  stopped: StoppedCrewItem[];
-  stoppedError: string | null;
   breakers: BreakerNeed[];
-  crew: CrewNeed[];
   doctor: { at: null | number; failures: DoctorFailure[] };
   permissions: PermissionWait[];
   permissionsError: null | string;
@@ -1064,27 +871,11 @@ export interface JobHolderItem {
   exclusive?: string;
   folder: string;
   kind: string;
-  lane: "heavy" | "light" | "none";
   pid: number;
   since: null | string;
   slot: boolean;
   user: string;
   unknown?: true;
-}
-
-export interface JobCeilingState {
-  gb: null | number;
-  why: string;
-}
-
-export interface JobWeightState {
-  value: null | number | "idle";
-  why?: string;
-}
-
-export interface JobWeightsState {
-  cpu: JobWeightState;
-  io: JobWeightState;
 }
 
 /** `src/jobs/status.ts` › `JobRouteState`: the resolved job route, and where it comes from. */
@@ -1095,10 +886,6 @@ export interface JobRouteState {
 }
 
 export interface JobsAnswer {
-  admission: { freeGb: null | number; startFreeGb: number };
-  ceiling: JobCeilingState;
-  lightJobs: { slots: number; used: number };
-  memoryGb: number;
   route: JobRouteState;
   stores: {
     held: JobHolderItem[];
@@ -1108,7 +895,6 @@ export interface JobsAnswer {
     waiting: JobHolderItem[];
     where: string;
   }[];
-  weights: JobWeightsState;
 }
 
 // ── The request history (H1) ───────────────────────────────────────────────────────────
@@ -1281,10 +1067,6 @@ export const ACTION_NAMES = [
   "claudemem.route",
   "claudemem.takeover",
   "companion.enable",
-  "crew.answer",
-  "crew.resume",
-  "crew.rm",
-  "crew.stop",
   "doctor.run",
   "gateway.key.make",
   "gateway.key.save",
@@ -1357,30 +1139,11 @@ export interface LiveState {
   seenClaude: Record<string, number>;
 }
 
-/** `src/crew/store.ts` › `CrewEvent`: one line of a crew store's events log. */
-export interface CrewEvent {
-  version: number;
-  at: string;
-  type: string;
-  crew: string;
-  name: string;
-  lead: string | null;
-  state: string;
-  text: string | null;
-  sha?: string | null | undefined;
-  note?: string | null | undefined;
-  question?: number | undefined;
-  memoryMb?: number | null | undefined;
-  pair?: string | undefined;
-  tell?: { [key: string]: unknown; kind: string; to: string[] } | null | undefined;
-}
-
 export type ActionEvent = { action: string; line: string } | ({ action: string } & ActionResult);
 
 export interface LiveEvents {
   action: ActionEvent;
   closing: { at: number };
-  crew: CrewEvent;
   doctor: null | { at: number; checks: DoctorCheck[] };
   "guard-ask": GuardAsk;
   hello: { at: number; boot: string };

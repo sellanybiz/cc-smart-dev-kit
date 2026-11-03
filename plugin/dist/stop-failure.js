@@ -1,32 +1,4 @@
 // @bun
-var __defProp = Object.defineProperty;
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, {
-      get: all[name],
-      enumerable: true,
-      configurable: true,
-      set: __exportSetter.bind(all, name)
-    });
-};
-
-// node_modules/zod/v4/classic/iso.js
-var exports_iso = {};
-__export(exports_iso, {
-  ZodISODate: () => ZodISODate,
-  ZodISODateTime: () => ZodISODateTime,
-  ZodISODuration: () => ZodISODuration,
-  ZodISOTime: () => ZodISOTime,
-  date: () => date2,
-  datetime: () => datetime2,
-  duration: () => duration2,
-  time: () => time2
-});
-
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
 
@@ -225,7 +197,10 @@ function startDetached(platform, argv, options) {
 
 // src/hooks/stop-failure.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "fs";
-import { join as join9 } from "path";
+import { join as join8 } from "path";
+
+// src/gateway/config.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -2598,89 +2573,6 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
     return Promise.all(results).then((results) => {
       return handleUnionResults(results, payload, inst, ctx);
     });
-  };
-});
-function discriminatorMap(def) {
-  const map = new Map;
-  for (const option of def.options) {
-    const values = option._zod.propValues?.[def.discriminator];
-    if (!values || values.size === 0)
-      throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(option)}"`);
-    for (const value of values) {
-      if (map.has(value)) {
-        if (value !== undefined)
-          throw new Error(`Duplicate discriminator value "${String(value)}"`);
-        map.set(value, null);
-      } else {
-        map.set(value, option);
-      }
-    }
-  }
-  return map;
-}
-var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnion", (inst, def) => {
-  def.inclusive = false;
-  $ZodUnion.init(inst, def);
-  const _super = inst._zod.parse;
-  defineLazyInternal(inst, "propValues", (zod) => {
-    const propValues = {};
-    let undefinedCount = 0;
-    for (const option of zod.def.options) {
-      const pv = option._zod.propValues;
-      if (!pv || Object.keys(pv).length === 0)
-        throw new Error(`Invalid discriminated union option at index "${zod.def.options.indexOf(option)}"`);
-      if (pv[zod.def.discriminator]?.has(undefined))
-        undefinedCount++;
-      for (const [k, v] of Object.entries(pv)) {
-        if (!Object.prototype.hasOwnProperty.call(propValues, k)) {
-          assignProp(propValues, k, new Set);
-        }
-        for (const val of v) {
-          propValues[k].add(val);
-        }
-      }
-    }
-    if (!zod.def.unionFallback && undefinedCount > 1)
-      propValues[zod.def.discriminator]?.delete(undefined);
-    return propValues;
-  });
-  def.options.forEach((option, i) => {
-    const propShape = rawShape(option._zod.def);
-    if (propShape && !Object.prototype.hasOwnProperty.call(propShape, def.discriminator)) {
-      throw new Error(`Invalid discriminated union option at index "${i}"`);
-    }
-  });
-  const disc = cached(() => discriminatorMap(def));
-  inst._zod.parse = (payload, ctx) => {
-    const input = payload.value;
-    if (!isObject(input)) {
-      payload.issues.push({
-        code: "invalid_type",
-        expected: "object",
-        input,
-        inst
-      });
-      return payload;
-    }
-    const value = input?.[def.discriminator];
-    const opt = disc.value.get(value);
-    if (opt && (value !== undefined || ctx.direction !== "backward")) {
-      return opt._zod.run(payload, ctx);
-    }
-    if (def.unionFallback || ctx.direction === "backward") {
-      return _super(payload, ctx);
-    }
-    payload.issues.push({
-      code: "invalid_union",
-      errors: [],
-      note: "No matching discriminator",
-      discriminator: def.discriminator,
-      options: Array.from(disc.value.keys()).filter((value) => disc.value.get(value) !== null),
-      input,
-      path: [def.discriminator],
-      inst
-    });
-    return payload;
   };
 });
 var $ZodIntersection = /* @__PURE__ */ $constructor("$ZodIntersection", (inst, def) => {
@@ -5876,18 +5768,6 @@ function union(options, params) {
     ...normalizeParams(params)
   });
 }
-var ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("ZodDiscriminatedUnion", (inst, def) => {
-  ZodUnion.init(inst, def);
-  $ZodDiscriminatedUnion.init(inst, def);
-});
-function discriminatedUnion(discriminator, options, params) {
-  return new ZodDiscriminatedUnion({
-    type: "union",
-    options,
-    discriminator,
-    ...normalizeParams(params)
-  });
-}
 var ZodIntersection = /* @__PURE__ */ $constructor("ZodIntersection", (inst, def) => {
   $ZodIntersection.init(inst, def);
   ZodType.init(inst, def);
@@ -6162,118 +6042,59 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-// node_modules/zod/v4/classic/iso.js
-function datetime2(params) {
-  return _isoDateTime(ZodISODateTime, params);
+// src/setup/file-mode.ts
+function isOwnerOnly(mode, platform = hostPlatform()) {
+  return platform === "win32" || (mode & 63) === 0;
 }
-function date2(params) {
-  return _isoDate(ZodISODate, params);
-}
-function time2(params) {
-  return _isoTime(ZodISOTime, params);
-}
-function duration2(params) {
-  return _isoDuration(ZodISODuration, params);
-}
-// src/gateway/limit-state.ts
-var NO_RESET_FRESH_MS = 15 * 60000;
-var limitSchema = object({
-  claim: string2().nullable(),
-  resetsAt: number2().nullable(),
-  seenAt: number2()
-});
-var fallbackSchema = object({
-  lastAt: number2(),
-  model: string2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  target: string2()
-});
-var breakerTargetSchema = object({
-  status: int().nullable(),
-  target: string2(),
-  until: number2()
-});
-var breakerSchema = object({
-  held: int().min(0),
-  lastAt: number2(),
-  since: number2(),
-  targets: array(breakerTargetSchema)
-});
-var CHECKS_DOWN_WHY = [
-  "untested",
-  "no-worker",
-  "off",
-  "failed",
-  "chain-untested",
-  "chain-failed"
-];
-var checksDownSchema = object({
-  claim: string2().nullable(),
-  lastAt: number2(),
-  resetsAt: number2().nullable(),
-  since: number2(),
-  status: int(),
-  why: _enum(CHECKS_DOWN_WHY)
-});
-var stateSchema = object({
-  breakers: record(string2(), breakerSchema).optional(),
-  checksDown: record(string2(), checksDownSchema).optional(),
-  fallbacks: record(string2(), fallbackSchema),
-  limits: record(string2(), limitSchema),
-  seenClaude: record(string2(), number2()).optional(),
-  version: literal(1)
-});
-function stateKeyFor(slot, profile) {
-  return profile === null ? slot : `${profile}/${slot}`;
-}
-function parseLimitState(text) {
-  let raw;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
+var MAX_LINKS = 40;
+function realTarget(file) {
+  let path = resolve(file);
+  for (let links = 0;links <= MAX_LINKS; links += 1) {
+    try {
+      return realpathSync(path);
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    let isLink = false;
+    try {
+      isLink = lstatSync(path).isSymbolicLink();
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    if (!isLink) {
+      const parent = dirname(path);
+      return parent === path ? path : join4(realTarget(parent), basename(path));
+    }
+    path = resolve(dirname(path), readlinkSync(path));
   }
-  const parsed = stateSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
+  throw new Error(`${file}: too many symlinks (a loop?)`);
 }
-var UNKNOWN_CLOCK = "an unknown time";
-function formatClock(epochSec, nowMs, timeZone) {
-  const at = new Date(epochSec * 1000);
-  if (Number.isNaN(at.getTime()))
-    return UNKNOWN_CLOCK;
-  const day = (date) => new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone,
-    year: "numeric"
-  }).format(date);
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    timeZone
-  }).format(at);
-  if (day(at) === day(new Date(nowMs)))
-    return time;
-  const date = new Intl.DateTimeFormat("en-US", {
-    day: "numeric",
-    month: "short",
-    timeZone
-  }).format(at);
-  return `${date} ${time}`;
-}
-function current(resetsAt, lastMs, nowMs) {
-  if (resetsAt !== null)
-    return resetsAt * 1000 > nowMs;
-  return nowMs - lastMs < NO_RESET_FRESH_MS;
-}
-function currentLimits(state, nowMs) {
-  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
-function currentBreakers(state, nowMs) {
-  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
-}
+
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/targets.ts
 var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
@@ -6353,66 +6174,6 @@ function targetsInUse(targets, fallback) {
   return fallback ? [...targets] : targets.slice(0, 1);
 }
 var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
-
-// src/gateway/breaker.ts
-var BREAKER_REMINDER_MS = 10 * 60000;
-
-// src/gateway/config.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2, statSync as statSync2 } from "fs";
-
-// src/setup/file-mode.ts
-function isOwnerOnly(mode, platform = hostPlatform()) {
-  return platform === "win32" || (mode & 63) === 0;
-}
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join4, resolve } from "path";
-var MAX_LINKS = 40;
-function realTarget(file) {
-  let path = resolve(file);
-  for (let links = 0;links <= MAX_LINKS; links += 1) {
-    try {
-      return realpathSync(path);
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    let isLink = false;
-    try {
-      isLink = lstatSync(path).isSymbolicLink();
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
-    if (!isLink) {
-      const parent = dirname(path);
-      return parent === path ? path : join4(realTarget(parent), basename(path));
-    }
-    path = resolve(dirname(path), readlinkSync(path));
-  }
-  throw new Error(`${file}: too many symlinks (a loop?)`);
-}
-
-// src/gateway/history.ts
-var HISTORY_MAX_RETENTION_DAYS = 3650;
-var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
-var HISTORY_RETRY_MS = 60 * 1000;
 
 // src/gateway/config.ts
 var DEFAULT_PORT = 20100;
@@ -6739,47 +6500,107 @@ ${parsed.error}`);
   return parsed.config;
 }
 
-// src/gateway/fallback-answer.ts
-var DROPPED_BLOCKS = new Set(["redacted_thinking"]);
-
-// src/gateway/safety-checks.ts
-var countSchema = object({
-  cacheRead: number2(),
-  cacheWrite: number2(),
-  checks: number2(),
-  input: number2(),
-  output: number2()
+// src/gateway/limit-state.ts
+var NO_RESET_FRESH_MS = 15 * 60000;
+var limitSchema = object({
+  claim: string2().nullable(),
+  resetsAt: number2().nullable(),
+  seenAt: number2()
 });
-var daySchema = object({
-  anthropic: countSchema,
-  checks: number2(),
-  fallback: countSchema
+var fallbackSchema = object({
+  lastAt: number2(),
+  model: string2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  target: string2()
 });
-var stateSchema2 = object({
-  days: record(string2(), daySchema),
+var breakerTargetSchema = object({
+  status: int().nullable(),
+  target: string2(),
+  until: number2()
+});
+var breakerSchema = object({
+  held: int().min(0),
+  lastAt: number2(),
+  since: number2(),
+  targets: array(breakerTargetSchema)
+});
+var CHECKS_DOWN_WHY = [
+  "untested",
+  "no-worker",
+  "off",
+  "failed",
+  "chain-untested",
+  "chain-failed"
+];
+var checksDownSchema = object({
+  claim: string2().nullable(),
+  lastAt: number2(),
+  resetsAt: number2().nullable(),
+  since: number2(),
+  status: int(),
+  why: _enum(CHECKS_DOWN_WHY)
+});
+var stateSchema = object({
+  breakers: record(string2(), breakerSchema).optional(),
+  checksDown: record(string2(), checksDownSchema).optional(),
+  fallbacks: record(string2(), fallbackSchema),
+  limits: record(string2(), limitSchema),
+  seenClaude: record(string2(), number2()).optional(),
   version: literal(1)
 });
-var CHECK_USAGE_MAX_BYTES = 256 * 1024;
-var EVENT_MAX_CHARS = 64 * 1024;
+function stateKeyFor(slot, profile) {
+  return profile === null ? slot : `${profile}/${slot}`;
+}
+function parseLimitState(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const parsed = stateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+var UNKNOWN_CLOCK = "an unknown time";
+function formatClock(epochSec, nowMs, timeZone) {
+  const at = new Date(epochSec * 1000);
+  if (Number.isNaN(at.getTime()))
+    return UNKNOWN_CLOCK;
+  const day = (date) => new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric"
+  }).format(date);
+  const time = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    timeZone
+  }).format(at);
+  if (day(at) === day(new Date(nowMs)))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone
+  }).format(at);
+  return `${date} ${time}`;
+}
+function current(resetsAt, lastMs, nowMs) {
+  if (resetsAt !== null)
+    return resetsAt * 1000 > nowMs;
+  return nowMs - lastMs < NO_RESET_FRESH_MS;
+}
+function currentLimits(state, nowMs) {
+  return Object.entries(state.limits).filter(([, record2]) => current(record2.resetsAt, record2.seenAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
+function currentBreakers(state, nowMs) {
+  return Object.entries(state.breakers ?? {}).filter(([, record2]) => current(null, record2.lastAt, nowMs)).sort(([a], [b]) => a < b ? -1 : 1);
+}
 
-// src/gateway/router.ts
-var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
-var HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade"
-]);
-var NULL_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
-var ABOVE_HIGH = new Set(["max", "xhigh"]);
-var encoder = new TextEncoder;
-
-// src/crew/wait.ts
-var FIRST_BACKOFF_MS = 5 * 60000;
-var MAX_BACKOFF_MS = 20 * 60000;
-var REPAUSE_WINDOW_MS = 15 * 60000;
+// src/gateway/limit-holds.ts
 function targetsNow(config) {
   const inUse = (view, profile) => Object.entries(view.slots).map(([slot, chain]) => [
     stateKeyFor(slot, profile),
@@ -6800,7 +6621,7 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.11.3",
+  version: "2.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6983,186 +6804,32 @@ var matchRuleSchema = union([
   })
 ]);
 var kindSpecSchema = strictObject({
-  light: boolean2().optional(),
   printOnly: array(string2().min(1)).optional(),
   noSlotForFiles: boolean2().optional(),
   skipWords: array(string2().min(1)).optional(),
   valuedFlags: array(string2().min(1)).optional(),
   match: array(matchRuleSchema).optional(),
   about: string2().min(1).optional(),
-  gb: number2().int().min(0).max(1024).optional(),
-  filesGb: number2().int().min(0).max(1024).optional(),
-  maxFiles: number2().int().min(1).optional(),
-  workers: strictObject({
-    flag: string2().min(1),
-    aliases: array(string2().min(1)).optional(),
-    gbEach: number2().positive()
-  }).optional()
+  gb: unknown().optional(),
+  filesGb: unknown().optional(),
+  maxFiles: unknown().optional(),
+  workers: unknown().optional(),
+  light: unknown().optional()
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
-var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
-var TEST_VALUED_FLAGS = [
-  "--bail",
-  "--config",
-  "--coverageDirectory",
-  "--dir",
-  "--environment",
-  "--env",
-  "--exclude",
-  "--hookTimeout",
-  "--maxWorkers",
-  "--minWorkers",
-  "--mode",
-  "--outputFile",
-  "--pool",
-  "--project",
-  "--reporter",
-  "--reporters",
-  "--retry",
-  "--root",
-  "--rootDir",
-  "--roots",
-  "--selectProjects",
-  "--shard",
-  "--testEnvironment",
-  "--testNamePattern",
-  "--testPathIgnorePatterns",
-  "--testPathPattern",
-  "--testTimeout",
-  "-c",
-  "-r",
-  "-t",
-  "-w"
-];
-var DEFAULT_KINDS = {
-  tsc: {
-    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
-    printOnly: TSC_PRINT_ONLY,
-    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
-  },
-  "lint:typed": {
-    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
-    printOnly: TEST_PRINT_ONLY,
-    match: [
-      { tool: "eslint", argIncludes: "typed" },
-      { tool: "eslint", argIncludes: "type-checked" },
-      { tool: "oxlint", flags: ["--type-aware"] }
-    ]
-  },
-  "test:coverage": {
-    about: "A test run with coverage (vitest or jest with --coverage).",
-    printOnly: TEST_PRINT_ONLY,
-    match: [
-      { tool: "vitest", argIncludes: "--coverage" },
-      { tool: "jest", argIncludes: "--coverage" }
-    ]
-  },
-  "test:run": {
-    about: "A test run (vitest, jest). A run on named test files runs at once, with no slot.",
-    printOnly: TEST_PRINT_ONLY,
-    noSlotForFiles: true,
-    skipWords: ["run"],
-    valuedFlags: TEST_VALUED_FLAGS,
-    match: [{ tool: "vitest" }, { tool: "jest" }]
-  },
-  build: {
-    about: "A framework production build (next build).",
-    match: [{ tool: "next", sub: ["build"] }]
-  },
-  install: {
-    about: "Install dependencies in the light lane.",
-    light: true,
-    printOnly: TEST_PRINT_ONLY,
-    match: ["bun", "npm", "pnpm", "yarn"].flatMap((tool) => ["install", "i", "add", ...tool === "npm" ? ["ci"] : []].map((sub) => ({
-      tool,
-      sub: [sub]
-    })))
-  },
-  "image:build": {
-    about: "A container image build (docker, podman, compose).",
-    match: [
-      { tool: "docker", sub: ["build"] },
-      { tool: "docker", sub: ["image", "build"] },
-      { tool: "docker", sub: ["builder", "build"] },
-      { tool: "docker", sub: ["buildx", "build"] },
-      { tool: "docker", sub: ["buildx", "b"] },
-      { tool: "docker", sub: ["buildx", "bake"] },
-      { tool: "docker", sub: ["compose", "build"] },
-      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["build"] },
-      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
-      { tool: "podman", sub: ["build"] },
-      { tool: "podman", sub: ["image", "build"] },
-      { tool: "buildah", sub: ["build"] }
-    ]
-  }
-};
-
-// src/crew/names.ts
-var MAX_TAG = 12;
-var MAX_PHASE = 8;
-var MAX_SLUG = 32;
-var LEAD_ROLE = "LEAD";
-var CREW_ROLE = "C";
-var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
-function namePart(raw, max) {
-  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
-  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
-}
-function partRule(max) {
-  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
-}
-var TAG_RULE = partRule(MAX_TAG);
-function isNameTag(value) {
-  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
-}
-var SLUG_RULE = partRule(MAX_SLUG);
-var PHASE_RULE = partRule(MAX_PHASE);
-var PART = "[A-Za-z0-9._-]+";
-var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
-var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
 var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
 var PERCENT = { kind: "whole", max: 100, min: 1 };
-var AT_LEAST_ONE = { kind: "whole", min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
-var ABOVE_ZERO = { kind: "positive" };
-var WATCH_MINUTES_FLOOR = 2;
-var WATCH_MINUTES = { kind: "whole", max: 24 * 60, min: WATCH_MINUTES_FLOOR };
 function numberSchema(rule) {
-  if (rule.kind === "positive")
-    return number2().positive();
   const whole = number2().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
 }
 var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "crew.idleStopMinutes": AT_LEAST_ONE,
-  "crew.max": AT_LEAST_ONE,
-  "crew.maxOpus": AT_LEAST_ONE,
-  "crew.memoryGb": ABOVE_ZERO,
-  "crew.loadPerCore": ABOVE_ZERO,
-  "crew.startGapSeconds": AT_LEAST_ONE,
-  "crew.perLead": AT_LEAST_ONE,
-  "crew.perLeadOpus": AT_LEAST_ONE,
-  "crew.usagePercent": PERCENT,
-  "crew.quietMinutes": AT_LEAST_ONE,
-  "crew.handoffPercent": PERCENT,
-  "crew.handoffTokens": AT_LEAST_ONE,
-  "crew.softHours": ABOVE_ZERO,
-  "crew.maxHours": ABOVE_ZERO,
-  "crew.archiveDays": AT_LEAST_ONE,
-  "crew.deleteDays": AT_LEAST_ONE,
-  "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO
@@ -7188,20 +6855,6 @@ function labelsClash(labels) {
   }
   return null;
 }
-var tagSchema = string2().refine(isNameTag, TAG_RULE);
-var CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
-function parseCrewKeep(entry) {
-  if (entry.startsWith("plugin:")) {
-    const id = entry.slice("plugin:".length);
-    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
-  }
-  if (entry.startsWith("server:")) {
-    const name = entry.slice("server:".length);
-    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
-  }
-  return null;
-}
-var crewKeepSchema = string2().refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -7220,8 +6873,8 @@ var workflowSchema = strictObject({
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
-    watch: boolean2().optional(),
-    watchMinutes: numberField("issues.watchMinutes"),
+    watch: unknown().optional(),
+    watchMinutes: unknown().optional(),
     foundLabel: labelSchema.optional(),
     fixedLabel: labelSchema.optional(),
     readyLabel: labelSchema.optional()
@@ -7239,27 +6892,7 @@ var workflowSchema = strictObject({
     sound: boolean2().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).optional(),
-  crew: strictObject({
-    enabled: boolean2().optional(),
-    keep: array(crewKeepSchema).optional(),
-    idleStopMinutes: numberField("crew.idleStopMinutes"),
-    max: numberField("crew.max"),
-    maxOpus: numberField("crew.maxOpus"),
-    memoryGb: numberField("crew.memoryGb"),
-    loadPerCore: numberField("crew.loadPerCore"),
-    startGapSeconds: numberField("crew.startGapSeconds"),
-    perLead: numberField("crew.perLead"),
-    perLeadOpus: numberField("crew.perLeadOpus"),
-    usagePercent: numberField("crew.usagePercent"),
-    quietMinutes: numberField("crew.quietMinutes"),
-    handoffPercent: numberField("crew.handoffPercent"),
-    handoffTokens: numberField("crew.handoffTokens"),
-    softHours: numberField("crew.softHours"),
-    maxHours: numberField("crew.maxHours"),
-    archiveDays: numberField("crew.archiveDays"),
-    deleteDays: numberField("crew.deleteDays"),
-    tag: tagSchema.optional()
-  }).refine((crew) => crew.deleteDays === undefined || crew.archiveDays === undefined || crew.deleteDays >= crew.archiveDays, { message: "crew.deleteDays must be at least crew.archiveDays", path: ["deleteDays"] }).optional()
+  crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
   switches: strictObject({ jobRoute: boolean2().optional() }).optional()
@@ -7282,8 +6915,6 @@ var workflowDefaults = {
   issues: {
     enabled: false,
     allowPublic: false,
-    watch: false,
-    watchMinutes: 5,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
     readyLabel: "kit:ready"
@@ -7292,27 +6923,6 @@ var workflowDefaults = {
     events: [...ALERT_EVENTS],
     sound: false,
     usagePercent: 85
-  },
-  crew: {
-    enabled: false,
-    keep: [],
-    idleStopMinutes: 10,
-    max: 12,
-    maxOpus: null,
-    memoryGb: 6,
-    loadPerCore: 1.5,
-    startGapSeconds: 60,
-    perLead: 4,
-    perLeadOpus: 2,
-    usagePercent: 85,
-    quietMinutes: 20,
-    handoffPercent: 70,
-    handoffTokens: 400000,
-    softHours: 2,
-    maxHours: 4,
-    archiveDays: 7,
-    deleteDays: 30,
-    tag: null
   }
 };
 var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
@@ -7331,46 +6941,15 @@ var POLICY_KEYS = [
   "clearWorktreeAfterMerge",
   "issues.enabled",
   "issues.allowPublic",
-  "issues.watch",
-  "issues.watchMinutes",
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.events",
   "alerts.sound",
-  "alerts.usagePercent",
-  "crew.enabled",
-  "crew.keep",
-  "crew.idleStopMinutes",
-  "crew.max",
-  "crew.maxOpus",
-  "crew.memoryGb",
-  "crew.loadPerCore",
-  "crew.startGapSeconds",
-  "crew.perLead",
-  "crew.perLeadOpus",
-  "crew.usagePercent",
-  "crew.quietMinutes",
-  "crew.handoffPercent",
-  "crew.handoffTokens",
-  "crew.softHours",
-  "crew.maxHours",
-  "crew.archiveDays",
-  "crew.deleteDays",
-  "crew.tag"
+  "alerts.usagePercent"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
-var MACHINE_CREW_KEYS = [
-  "crew.max",
-  "crew.maxOpus",
-  "crew.perLead",
-  "crew.perLeadOpus",
-  "crew.memoryGb",
-  "crew.loadPerCore",
-  "crew.usagePercent",
-  "crew.startGapSeconds"
-];
 function workflowValue(workflow, key) {
   const [head, tail] = key.split(".");
   if (head === undefined || tail === undefined)
@@ -7403,6 +6982,37 @@ function satisfiesRange(version, range) {
     throw new Error(`"${range}" is not a valid version range`);
   return Bun.semver.satisfies(version, range);
 }
+var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+function lowestAllowed(range) {
+  let lowest = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null)
+      return null;
+    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0)
+      lowest = version;
+  }
+  return lowest;
+}
+var NO_TOP = "999999.0.0";
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
@@ -7416,15 +7026,19 @@ var PLUGIN_HOOK_NAMES = [
   "after-merge",
   "review-record",
   "subagent-background",
+  "builder-finish",
   "verify-gate",
+  "keep-going",
   "agent-usage",
   "worktree-leftovers",
   "session-name",
-  "crew-role",
-  "lead-notes",
   "task-start"
 ];
-var RETIRED_HOOK_NAMES = ["serena-root"];
+var RETIRED_HOOK_NAMES = [
+  "serena-root",
+  "crew-role",
+  "lead-notes"
+];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
@@ -7483,9 +7097,15 @@ function checkRequires(file, raw, pluginVersion) {
   const requires = raw.requires;
   if (typeof requires !== "string" || !isValidRange(requires))
     return;
-  if (!satisfiesRange(pluginVersion, requires)) {
-    throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+  if (satisfiesRange(pluginVersion, requires))
+    return;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+    throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
   }
+  throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
 }
 function retiredFieldMessage(field) {
   return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
@@ -7768,22 +7388,13 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
-  const projectCrew = project.crew === undefined ? undefined : { ...project.crew };
-  for (const key of MACHINE_CREW_KEYS) {
-    if (projectCrew !== undefined) {
-      delete projectCrew[key.slice("crew.".length)];
-    }
-  }
-  const crew = mergedGroup(personal.crew, projectCrew);
-  if (crew !== undefined)
-    merged.crew = crew;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
   return merged;
 }
 function sourceOf(personal, project, key) {
-  if (!MACHINE_CREW_KEYS.includes(key) && workflowValue(project, key) !== undefined)
+  if (workflowValue(project, key) !== undefined)
     return "project";
   return workflowValue(personal, key) !== undefined ? "personal" : "default";
 }
@@ -7833,401 +7444,6 @@ function alertsAt(paths, cwd, env) {
     };
   }
 }
-
-// src/jobs/memory.ts
-var GIB = 1024 ** 3;
-
-// src/jobs/config.ts
-import { isAbsolute, join as join7 } from "path";
-var absolutePath = string2().min(1).refine((path) => isAbsolute(path), "must be an absolute path");
-var MAX_WEIGHT = 1e4;
-var weightSchema = union([
-  literal(0),
-  literal("off"),
-  number2().int().min(1).max(MAX_WEIGHT)
-]);
-var jobsMachineConfigSchema = strictObject({
-  stateDir: absolutePath.optional(),
-  maxJobs: number2().int().min(1).optional(),
-  lightJobs: number2().int().min(1).optional(),
-  startFreeGb: number2().min(0).optional(),
-  budgetGb: number2().int().min(1).optional(),
-  reserveGb: number2().int().min(0).optional(),
-  sharedDirs: array(absolutePath).optional(),
-  launch: _enum(["auto", "plain"]).optional(),
-  slice: string2().regex(/^[A-Za-z0-9_][A-Za-z0-9_-]*\.slice$/, "must be a slice name like name.slice").optional(),
-  cpuWeight: union([weightSchema, literal("idle")]).optional(),
-  ioWeight: weightSchema.optional()
-});
-
-// src/path-compare.ts
-var IGNORE_CASE = process.platform === "win32";
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
-// src/tasks/project/format.ts
-var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
-var projectTaskSchema = object({
-  id: string2().regex(/^T-[a-z2-7]{6}$/),
-  title: string2().min(1).max(200),
-  kind: _enum(["production", "database", "teammate", "follow-up"]),
-  status: _enum(["open", "done", "dropped"]),
-  when: _enum(["now", "next-release", "any"]).optional(),
-  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
-  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
-  created: date3,
-  closed: date3.optional(),
-  from: string2().optional(),
-  refs: array(string2()).optional(),
-  evidence: string2().optional()
-}).passthrough();
-
-// src/tasks/work/db.ts
-var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
-
-// src/worktrees/machine-facts.ts
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-
-// src/crew/session.ts
-var CREW_QUESTION_STEP = "Nobody is at the machine to answer this question, so the call is refused. Ask your lead " + `with \`${COMMAND} crew report --question "<the question>" --option "<choice>" --option ` + '"<choice>" --recommend <n>`, and go on with the rest of your phase.';
-
-// src/tasks/work/identity.ts
-var cached2 = new Map;
-
-// src/crew/runs.ts
-var text = string2().min(1);
-var actor = looseObject({ name: text, sessionId: text });
-var runEventSchema = looseObject({
-  at: text,
-  kind: text,
-  by: actor.nullable(),
-  state: text,
-  text: string2().nullable(),
-  detail: record(string2(), unknown()).optional()
-});
-var runTimesSchema = looseObject({
-  createdAt: text,
-  startedAt: text.nullable(),
-  finishedAt: text.nullable(),
-  mergedAt: text.nullable(),
-  removedAt: text.nullable(),
-  wallMs: number2().nullable(),
-  workingMs: number2().nullable(),
-  queuedMs: number2().nullable(),
-  pausedMs: number2(),
-  pauses: array(looseObject({ from: text, to: text.nullable(), reason: text }))
-});
-var runRecordSchema = looseObject({
-  version: number2().int().min(1),
-  id: text,
-  name: text,
-  plan: text,
-  phase: text,
-  slug: text,
-  kind: text,
-  model: looseObject({
-    named: text,
-    resolved: text,
-    slot: string2().nullable()
-  }),
-  effort: text,
-  branch: text,
-  baseRef: text,
-  base: looseObject({ ref: text, sha: text }).nullable(),
-  brief: looseObject({ path: string2().nullable(), sha256: string2().nullable() }),
-  issue: looseObject({ number: number2().int().positive(), url: text }).optional(),
-  lead: actor,
-  continues: string2().nullable(),
-  continuedBy: string2().nullable(),
-  sessions: array(looseObject({
-    at: text,
-    by: actor.nullable(),
-    sessionId: text,
-    shortId: string2().nullable()
-  })),
-  state: text,
-  events: array(runEventSchema),
-  times: runTimesSchema,
-  contextTokens: number2().int().min(0).nullable().optional(),
-  backfilled: array(text).optional(),
-  createdAt: text,
-  updatedAt: text
-});
-
-// src/crew/store.ts
-var FILE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-var text2 = string2().min(1);
-var version2 = number2().int().min(1);
-var sha = string2().regex(COMMIT_SHA, "a full commit sha");
-var count = number2().int().min(0);
-var word = () => text2.transform((value) => value);
-var supersededAnswer = looseObject({
-  answer: text2,
-  answeredAt: text2,
-  deliveredAt: text2.nullable().optional()
-});
-var crewQuestionFields = looseObject({
-  question: text2,
-  options: array(text2).min(2),
-  recommended: number2().int().min(1).nullable(),
-  askedAt: text2,
-  answeredAt: text2.nullable(),
-  answer: text2.nullable(),
-  supersededBy: number2().int().min(0).nullable().optional(),
-  deliveredAt: text2.nullable().optional(),
-  superseded: array(supersededAnswer).optional()
-});
-var crewQuestion = crewQuestionFields.superRefine((asked, context) => {
-  if (asked.recommended !== null && asked.recommended > asked.options.length) {
-    context.addIssue({
-      code: "custom",
-      message: `recommends option ${asked.recommended} of ${asked.options.length}`,
-      path: ["recommended"]
-    });
-  }
-  if (asked.answer === null !== (asked.answeredAt === null)) {
-    context.addIssue({
-      code: "custom",
-      message: "an answer and its time are given together",
-      path: ["answeredAt"]
-    });
-  }
-});
-var waitingForSchema = discriminatedUnion("kind", [
-  looseObject({
-    kind: literal("slot"),
-    since: text2,
-    slot: text2
-  }),
-  looseObject({
-    kind: literal("claude-limit"),
-    model: text2,
-    resetsAt: text2.nullable()
-  }),
-  looseObject({
-    kind: literal("safety-checks"),
-    scope: text2,
-    since: text2
-  }),
-  looseObject({
-    kind: literal("unknown"),
-    since: text2,
-    slot: text2.exactOptional()
-  })
-]);
-var discardArchiveSchema = looseObject({
-  ref: text2,
-  head: sha,
-  at: text2,
-  prunedAt: text2.optional()
-});
-var crewFields = object({
-  version: version2,
-  id: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  sessionId: text2.nullable(),
-  shortId: text2.nullable(),
-  earlierSessions: array(looseObject({ sessionId: text2, shortId: text2 })).optional(),
-  sessionEndedAt: exports_iso.datetime().optional(),
-  leadSessionId: text2,
-  leadName: text2,
-  repo: text2,
-  plan: text2,
-  phase: text2,
-  slug: text2,
-  kind: word(),
-  model: looseObject({
-    named: text2,
-    slot: text2.nullable(),
-    resolved: text2,
-    tier: text2.nullable()
-  }),
-  effort: text2,
-  permissionMode: text2,
-  worktree: text2,
-  released: object({ at: text2 }).optional(),
-  branch: text2,
-  baseRef: text2,
-  baseCommit: sha.optional(),
-  base: looseObject({ ref: text2, sha }).nullable(),
-  waitsFor: array(text2),
-  files: array(text2),
-  questions: array(crewQuestion),
-  notes: array(looseObject({ text: text2, at: text2, deliveredAt: text2.nullable() })).optional(),
-  state: word(),
-  lastLine: string2().nullable(),
-  reportPath: text2.nullable(),
-  pr: number2().int().positive().nullable(),
-  memoryMb: number2().min(0).nullable(),
-  waitingFor: waitingForSchema.optional(),
-  resumeClaim: looseObject({ at: text2, token: text2 }).optional(),
-  pendingLaunch: looseObject({
-    at: text2,
-    effort: text2,
-    model: looseObject({
-      named: text2,
-      slot: text2.nullable(),
-      resolved: text2,
-      tier: text2.nullable()
-    }),
-    why: text2
-  }).optional(),
-  lastPause: looseObject({ backoffMs: count, since: text2 }).optional(),
-  lastApiError: looseObject({ at: text2, class: text2, text: string2() }).optional(),
-  startedAt: text2.nullable().optional(),
-  launchedAt: text2.optional(),
-  resumeWaits: looseObject({ at: text2, answer: count.nullable() }).optional(),
-  sweptFrom: text2.optional(),
-  continues: text2.nullable().optional(),
-  mergedBeforeRemoval: boolean2().optional(),
-  mergedWhileStopped: boolean2().optional(),
-  stoppedByWatch: boolean2().optional(),
-  mergeProof: looseObject({ head: sha, leadRef: text2, leadCommit: sha }).optional(),
-  archive: discardArchiveSchema.optional(),
-  archiveHistory: array(discardArchiveSchema).optional(),
-  discardPending: looseObject({
-    head: sha,
-    archivedHead: sha,
-    indexPath: text2,
-    indexBackup: text2,
-    indexArchived: text2
-  }).optional(),
-  planFile: text2.nullable().optional(),
-  briefSource: looseObject({ path: string2().nullable(), sha256: text2 }).optional(),
-  issue: looseObject({ author: text2, number: number2().int().positive(), repo: text2, url: text2 }).optional(),
-  createdAt: text2,
-  updatedAt: text2
-});
-var crewRecordSchema = crewFields.loose();
-var leadFields = object({
-  version: version2,
-  sessionId: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  repo: text2,
-  plan: text2,
-  tag: text2,
-  cwd: text2,
-  planFile: text2.nullable().optional(),
-  earlierSessions: array(object({ sessionId: text2, shortId: text2 })).optional(),
-  adoptedBy: text2.optional(),
-  adoptedAt: text2.optional(),
-  generation: count.optional(),
-  endedAt: text2.nullable().optional(),
-  sessionUnknownSince: text2.nullable().optional(),
-  pausedAgents: array(text2).optional(),
-  createdAt: text2,
-  updatedAt: text2
-});
-var leadRecordSchema = leadFields.loose();
-var eventFields = object({
-  version: version2,
-  at: text2,
-  type: word(),
-  crew: string2().regex(FILE_ID, "a plain file name"),
-  name: text2,
-  lead: text2.nullable(),
-  state: word(),
-  text: string2().nullable(),
-  sha: sha.nullable().optional(),
-  note: string2().nullable().optional(),
-  question: number2().int().min(1).optional(),
-  memoryMb: number2().min(0).nullable().optional(),
-  pair: text2.optional(),
-  tell: looseObject({ kind: text2, to: array(text2) }).nullable().optional()
-});
-var crewEventSchema = eventFields.loose();
-var testRun = looseObject({ command: text2, passed: count, failed: count, ok: boolean2() });
-var reportFields = object({
-  version: version2,
-  status: word(),
-  phase: text2,
-  branch: looseObject({ name: text2, sha }),
-  base: looseObject({ ref: text2, sha }),
-  pr: number2().int().positive().nullable(),
-  changed: looseObject({ files: count, insertions: count, deletions: count }),
-  outsideBrief: array(text2),
-  tests: looseObject({ targeted: array(testRun), full: testRun.nullable() }),
-  checks: array(looseObject({ name: text2, ok: boolean2(), note: string2().nullable() })),
-  review: looseObject({
-    agent: text2,
-    model: text2,
-    effort: text2,
-    sha,
-    findings: array(looseObject({ finding: text2, fix: text2 }))
-  }).nullable(),
-  ownReview: looseObject({
-    reason: text2,
-    findings: array(looseObject({ finding: text2, fix: text2 }))
-  }).nullable().optional(),
-  docs: array(text2),
-  issues: array(number2().int().positive()).optional(),
-  needsLead: array(text2),
-  open: array(text2),
-  question: text2.nullable(),
-  summary: text2.nullable().optional(),
-  extra: record(string2(), unknown()).optional()
-});
-var handBackReportSchema = reportFields.loose().superRefine((report, context) => {
-  if (report.status === "blocked" && report.question === null) {
-    context.addIssue({
-      code: "custom",
-      message: "a blocked report names the question it waits on",
-      path: ["question"]
-    });
-  }
-});
-var RESUME_CLAIM_MS = 2 * 60000;
-var watchStateFields = object({
-  fyi: object({ dropped: count, kept: array(string2()).optional(), lines: array(string2()) }).optional(),
-  summarizedGeneration: count.optional(),
-  missingSince: record(string2(), number2()).optional(),
-  removals: record(string2(), object({ at: number2(), signature: string2() })).optional(),
-  parkedAt: number2().int().min(0).optional(),
-  noted: boolean2().optional(),
-  offset: count,
-  said: record(string2(), string2()),
-  resumedAt: number2().int().min(0).optional(),
-  routerRequests: number2().int().min(0).nullable().optional(),
-  stoppedRemindedAt: record(string2(), number2().int().min(0)).optional()
-});
-var watchLeaseFields = object({
-  at: number2().int().min(0),
-  host: string2(),
-  once: boolean2().optional(),
-  pid: number2().int().positive(),
-  pidns: string2().nullable().default(null),
-  startTime: string2().nullable(),
-  token: text2
-});
-var WATCH_LEASE_REFRESH_MS = FALLBACK_STALE_MS / 5;
-var notesStateFields = object({ offset: count });
-var stopStateFields = object({
-  last: _enum(["report", "step"]).nullable(),
-  offset: count
-});
-var selfWatchStateFields = object({ at: number2().int().min(0), kind: text2 });
-var answerWatchFields = object({ at: number2().int().min(0) });
-var feedCursor = object({
-  etag: string2().nullable(),
-  top: count
-});
-var issueFeedFields = object({
-  comments: feedCursor.nullable(),
-  issues: feedCursor.nullable(),
-  nextAt: count,
-  problem: string2().nullable(),
-  source: string2().min(1),
-  version: literal(1)
-});
-
-// src/cli/usage-window.ts
-var WINDOW_SPAN_MS = 5 * 60 * 60000;
-var storedSchema = looseObject({
-  fiveHour: object({ percent: number2(), resetsAt: number2().nullable() }),
-  readAt: string2()
-});
 
 // src/gateway/settings.ts
 function gatewayEnv(port) {
@@ -8296,47 +7512,6 @@ function uiEffortAllowed(effort) {
 }
 var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
 var EFFORT_AUTO = "auto";
-var CREW_KINDS = {
-  build: { about: "routine building", effort: "high", model: "sonnet" },
-  docs: {
-    about: "docs and their updates",
-    effort: "high",
-    model: "sonnet"
-  },
-  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
-  security: {
-    about: "code that touches security",
-    effort: "high",
-    model: "sonnet"
-  },
-  money: {
-    about: "code that touches money",
-    effort: "high",
-    model: "sonnet"
-  },
-  permissions: {
-    about: "code that touches permissions",
-    effort: "high",
-    model: "sonnet"
-  },
-  schema: {
-    about: "a schema or a contract",
-    effort: "high",
-    model: "sonnet"
-  },
-  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
-  architecture: {
-    about: "architecture and design",
-    effort: "xhigh",
-    model: "opus"
-  },
-  ui: {
-    about: "UI and UX judgment",
-    effort: UI_POLICY.minEffort,
-    model: UI_POLICY.tiers[0]
-  }
-};
-var CREW_KIND_NAMES = Object.keys(CREW_KINDS);
 
 // src/hooks/agent-guard-workflows.ts
 var FAIL = Symbol("not a pure literal");
@@ -8403,25 +7578,6 @@ function lastClaudeModel(transcriptPath) {
 }
 
 // src/hooks/agent-guard.ts
-function agentKey(type) {
-  const base = type.includes(":") ? type.split(":").pop() ?? type : type;
-  return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
-}
-var READ_ONLY_BUILT_INS = [
-  "Explore",
-  "Plan",
-  "claude-code-guide",
-  "statusline-setup"
-];
-var READ_ONLY_KIT_AGENTS = ["reviewer", "auditor", "ui-verifier"];
-var READ_ONLY_BUILT_IN_KEYS = new Set(READ_ONLY_BUILT_INS.map(agentKey));
-var READ_ONLY_KIT_KEYS = new Set(READ_ONLY_KIT_AGENTS.map((one) => `${PLUGIN}:${one}`.toLowerCase()));
-var READ_ONLY_WORKFLOWS = [
-  `${PLUGIN}:audit-run`,
-  `${PLUGIN}:review-split`,
-  `${PLUGIN}:research-sweep`
-];
-var READ_ONLY_WORKFLOW_KEYS = new Set(READ_ONLY_WORKFLOWS.map((one) => one.toLowerCase()));
 var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
 var HANDED_AROUND = {
   agent: [
@@ -8557,8 +7713,8 @@ function windowsToastArgvFor(title, body, critical = false) {
 var TOKEN_SCHEMES = new Set(["http", "https", "ftp", "ftps"]);
 
 // src/update/major.ts
-import { join as join8 } from "path";
-var MAJOR_NOTES_PATH = join8("src", "update", "major-notes.json");
+import { join as join7 } from "path";
+var MAJOR_NOTES_PATH = join7("src", "update", "major-notes.json");
 
 // src/update/apply.ts
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
@@ -8636,7 +7792,7 @@ function breakerAlert(input, ctx) {
 function rememberBreakerAlert(paths, alerted, opening) {
   try {
     mkdirSync3(paths.stateDir, { recursive: true, mode: 448 });
-    writeFileSync2(join9(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
+    writeFileSync2(join8(paths.stateDir, BREAKER_ALERT_FILE), `${JSON.stringify({ ...alerted, [opening.mark]: opening.since }, null, 2)}
 `, { mode: 384 });
   } catch {}
 }
@@ -8708,7 +7864,7 @@ function readAlertContext(paths, nowMs, input, env = process.env) {
 }
 function readBreakerAlerted(stateDir) {
   try {
-    const raw = JSON.parse(readFileSync6(join9(stateDir, BREAKER_ALERT_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync6(join8(stateDir, BREAKER_ALERT_FILE), "utf8"));
     if (!isJsonObject2(raw))
       return {};
     return Object.fromEntries(Object.entries(raw).filter((entry) => typeof entry[1] === "number"));

@@ -26,7 +26,6 @@ import type { LiveEventName, LiveEvents } from "./wire";
 export const LIVE_EVENTS: readonly LiveEventName[] = [
   "action",
   "closing",
-  "crew",
   "doctor",
   "guard-ask",
   "hello",

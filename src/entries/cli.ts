@@ -8,6 +8,7 @@ import { runBrowserMcp } from "../browser/launcher";
 import { browserSetup, realBrowserSetupDeps } from "../browser/setup";
 import { clearBrowserToken, savePastedToken } from "../browser/token";
 import { COMMAND, VERSION } from "../build-info";
+import { parseOptions } from "../cli/args";
 import { oldBunRefusal } from "../cli/bun-check";
 import { runClaudeMem } from "../cli/claude-mem";
 import { DOCTOR_FLAGS, runDoctor } from "../cli/doctor";
@@ -37,9 +38,6 @@ import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
-import { parseOptions } from "../crew/args";
-import { runCrew } from "../crew/command";
-import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { loopbackFetch, realProbe } from "../gateway/health";
@@ -53,12 +51,11 @@ import {
 } from "../hooks/desktop-alert";
 import { runtimeDir } from "../hooks/notify";
 import { runNotifyEntry } from "../hooks/notify-entry";
-import { recordSessionName, SessionNameRefused } from "../hooks/session-name";
+import { recordSessionName } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runIssue } from "../issues/command";
 import { runJobCommand } from "../jobs/commands";
-import { realMemoryFacts } from "../jobs/memory";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
@@ -72,6 +69,7 @@ import { locateCheckout } from "../project/resolve";
 import { runSessions } from "../sessions/command";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
+import { MAX_SUBAGENTS_FLAG, parseMaxSubagents } from "../setup/max-subagents";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { runUser } from "../user-away/command";
@@ -297,10 +295,21 @@ async function main(argv: string[]): Promise<number> {
         "--tavily-key-stdin",
       ];
       let project = process.cwd();
+      let maxSubagents: number | null = null;
       const unknown: string[] = [];
       for (let index = 0; index < rest.length; index += 1) {
         const arg = rest[index] ?? "";
-        if (arg === "--project") {
+        if (arg === MAX_SUBAGENTS_FLAG) {
+          try {
+            maxSubagents = parseMaxSubagents(rest[index + 1]);
+          } catch (error) {
+            console.error(
+              usageError(error instanceof Error ? error.message : String(error), "setup"),
+            );
+            return 2;
+          }
+          index += 1;
+        } else if (arg === "--project") {
           const dir = rest[index + 1];
           if (dir === undefined || dir.startsWith("--")) {
             console.error(usageError("--project needs a folder", "setup"));
@@ -367,6 +376,7 @@ async function main(argv: string[]): Promise<number> {
         instructionsSource: instructionsFolder(import.meta.dir),
         statusline: rest.includes("--statusline"),
         retryWatchdog: watchdogOn ? true : watchdogOff ? false : null,
+        maxSubagents,
       });
     }
     case "statusline":
@@ -567,13 +577,6 @@ async function main(argv: string[]): Promise<number> {
       try {
         name = recordSessionName(sessionId, words.join(" "), process.env);
       } catch (error) {
-        // A crew session keeps the name its lead gave it: the arguments are well formed and the
-        // state refuses them, so this is a failed command — exit 1 and one line, never the
-        // usage exit 2 and its help pointer.
-        if (error instanceof SessionNameRefused) {
-          console.error(error.message);
-          return 1;
-        }
         // A wrong argument (a name that is not a session id, a name that is empty) is a
         // usage mistake, not a failed command: exit 2, and say what is wrong.
         console.error(
@@ -929,8 +932,6 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
-    case "crew":
-      return await runCrew(rest, realCrewContext(paths));
     case "user":
       return await runUser(rest, {
         cwd: process.cwd(),
@@ -961,7 +962,6 @@ async function main(argv: string[]): Promise<number> {
         paths,
         cwd: process.cwd(),
         execArgv: process.execArgv,
-        memory: realMemoryFacts(),
         say: (line) => console.error(line),
         print: (line) => console.log(line),
       });

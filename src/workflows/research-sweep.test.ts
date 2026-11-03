@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
-import { type GuardContext, judgeWorkflow, READ_ONLY_WORKFLOWS } from "../hooks/agent-guard";
+import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
@@ -318,9 +318,5 @@ describe("the research-sweep workflow", () => {
       "allow",
       "allow",
     ]);
-  });
-
-  test("the agent guard counts it among the kit's read-only workflows", () => {
-    expect(READ_ONLY_WORKFLOWS).toContain("cc-smart-dev-kit:research-sweep");
   });
 });

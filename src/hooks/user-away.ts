@@ -15,7 +15,7 @@
  *   call parked as an `action` with its exact command, so the person's later yes can run it. One
  *   exception, the way back: a line that is nothing but the kit's own `user available`, `user
  *   status` or `user list` (`isStateCommand`) gets silence, so the person who is back answers
- *   Claude Code's prompt. Never in a crew session, which never asks the person.
+ *   Claude Code's prompt.
  * - **A kit guard that would ask** (`askedWhileAway`, called by the frame for every hook): the
  *   ask becomes a deny that keeps the guard's own words, and the call is parked the same way.
  *   One home for all the guards, so a new guard needs nothing here.
@@ -36,7 +36,6 @@
 
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CREW_QUESTION_STEP, crewIdOf } from "../crew/session";
 import { formatClock } from "../gateway/limit-state";
 import { maskedLine } from "../gateway/plain-text";
 import {
@@ -150,13 +149,8 @@ function planStep(when: string): string {
   return `The person is unavailable${when}: the plan cannot be approved now. Park it with \`${COMMAND} user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${UNAVAILABLE_SKILL}.`;
 }
 
-/**
- * What a denied question tool reads. A crew session reads its own step (its lead takes the
- * question, and the lead parks what is the person's); `crew-role` denies the same call with the
- * same step, so the two reasons agree. Any other session parks the question itself.
- */
-function questionToolStep(tool: string, when: string, env: Env): string {
-  if (crewIdOf(env) !== null) return CREW_QUESTION_STEP;
+/** What a denied question tool reads: the session parks the question (or the plan) itself. */
+function questionToolStep(tool: string, when: string): string {
   return tool === "ExitPlanMode" ? planStep(when) : questionStep(when);
 }
 
@@ -211,7 +205,6 @@ function callCommand(input: HookInput): null | string {
  */
 async function parkCall(
   input: HookInput,
-  env: Env,
   paths: CliPaths,
   nowMs: number,
   words: string,
@@ -225,7 +218,6 @@ async function parkCall(
       paths.stateDir,
       {
         command,
-        crew: crewIdOf(env) ?? "",
         cwd: stringField(input.cwd) ?? "",
         kind: "action",
         options: [],
@@ -291,7 +283,6 @@ function permissionDeny(message: string): HookResult {
 
 async function permissionAnswer(
   input: HookInput,
-  env: Env,
   paths: CliPaths,
   nowMs: number,
   options: AwayOptions,
@@ -299,19 +290,17 @@ async function permissionAnswer(
   const state = readAway(paths.stateDir);
   if (!state.unavailable) return SILENT;
   // The kit's own switch-back and reads: the person who is back answers Claude Code's prompt,
-  // as before this feature. Parking them would deny the one command that ends the state. A crew
-  // session never asks the person, so it keeps the deny and the park under its name.
-  if (crewIdOf(env) === null && isStateCommand(input)) return SILENT;
+  // as before this feature. Parking them would deny the one command that ends the state.
+  if (isStateCommand(input)) return SILENT;
   const when = whenText(state, nowMs, options);
   const tool = stringField(input.tool_name) ?? "";
   // The two tools that ask are denied by their PreToolUse answer first; Claude Code's prompt for
   // one, if it ever gets here, reads the same step and parks nothing: the session parks it.
   if ((AWAY_ASK_TOOLS as readonly string[]).includes(tool)) {
-    return permissionDeny(questionToolStep(tool, when, env));
+    return permissionDeny(questionToolStep(tool, when));
   }
   const parked = await parkCall(
     input,
-    env,
     paths,
     nowMs,
     `Claude Code's own permission prompt: ${callLabel(input)}`,
@@ -323,9 +312,8 @@ async function permissionAnswer(
   };
 }
 
-/** True when the prompt is the person's own words: a bare prompt in a session that is no crew session's. */
-function isPersonsPrompt(input: HookInput, env: Env): boolean {
-  if (crewIdOf(env) !== null) return false;
+/** True when the prompt is the person's own words: a bare prompt, with no wrapper of Claude Code's. */
+function isPersonsPrompt(input: HookInput): boolean {
   const prompt = stringField(input.prompt);
   return prompt !== null && !hasNotPersonWrapper(prompt);
 }
@@ -366,7 +354,7 @@ async function noteAnswer(
   }
   const when = whenText(state, nowMs, options);
   const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
-  if (isPersonsPrompt(input, env)) {
+  if (isPersonsPrompt(input)) {
     const waiting =
       count === 0
         ? "Nothing is parked yet."
@@ -401,10 +389,9 @@ export async function userAwayAnswer(
       if (tool === null || !(AWAY_ASK_TOOLS as readonly string[]).includes(tool)) return SILENT;
       const state = readAway(paths.stateDir);
       if (!state.unavailable) return SILENT;
-      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options), env));
+      return toolDecision("deny", questionToolStep(tool, whenText(state, nowMs, options)));
     }
-    if (event === "PermissionRequest")
-      return await permissionAnswer(input, env, paths, nowMs, options);
+    if (event === "PermissionRequest") return await permissionAnswer(input, paths, nowMs, options);
     if (event === "UserPromptSubmit") return await noteAnswer(input, env, paths, nowMs, options);
     return SILENT;
   } catch (error) {
@@ -418,11 +405,13 @@ export async function userAwayAnswer(
  * person is away, naming the guard's own question, with the call parked as an action. Anything
  * that is not a PreToolUse ask — a deny, an allow, silence — comes back as it was, so this can
  * only ever make an answer stricter. A state it cannot read keeps the ask, with one line why.
+ *
+ * `_env` is read by nothing here: the frame (`run.ts`) still passes it.
  */
 export async function askedWhileAway(
   input: HookInput | null,
   result: HookResult,
-  env: Env,
+  _env: Env,
   paths: CliPaths,
   nowMs: number,
   options: AwayOptions = {},
@@ -441,7 +430,6 @@ export async function askedWhileAway(
   const when = whenText(state, nowMs, options);
   const parked = await parkCall(
     input,
-    env,
     paths,
     nowMs,
     `${callLabel(input)}: ${maskedLine(reason, [], REASON_MAX)}`,

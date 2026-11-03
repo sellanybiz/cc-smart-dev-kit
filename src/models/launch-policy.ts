@@ -1,12 +1,10 @@
 /**
  * The launch policy: which model and effort a launch really runs on (Claude Code's own overrides,
  * `effectiveLaunch`, then the model's resolution), the effort levels a subagent may run at, the
- * Fable reason words, and the model and effort each kind of crew phase runs on (D46).
+ * Fable reason words and UI/UX policy.
  *
- * **One home, pure.** The Agent guard (`src/hooks/agent-guard.ts`) judges every Agent, Task and
- * Workflow launch by it; the crew launcher and the Bash judge read the same table, so a
- * crew session never starts on a model or an effort the guard would refuse for a subagent. Nothing
- * here reads a file or the machine: the caller hands in what it knows of the gateway
+ * **One home, pure.** The Agent guard judges every Agent, Task and Workflow launch by it.
+ * Nothing here reads a file or the machine: the caller hands in the gateway facts
  * (`GatewayFacts`) and the environment. The hook's own parts — reading a Workflow script, the
  * agent types, the record, the messages — stay in the guard.
  *
@@ -90,9 +88,9 @@ export function effortAllowed(effort: string): boolean {
  * **Checking is not design:** the `ui-verifier` may run on `sonnet`, and the design verdict is
  * made on one of these tiers.
  *
- * **One home.** The Agent guard's UI rule, the crew kind `ui` and the crew launcher read these
+ * **One home.** The Agent guard's UI rule reads these
  * two values. Lift the rule in one change — both values here, with the guard's and the
- * launcher's tests — when a cheap open-source model proves good at UI/UX.
+ * policy's tests — when a cheap open-source model proves good at UI/UX.
  */
 export const UI_POLICY = {
   /** The lowest effort UI/UX work runs at. */
@@ -103,7 +101,7 @@ export const UI_POLICY = {
 
 /**
  * The reason words that declare UI/UX work (D50), read as the first word of an
- * `Opus reason:` or `Fable reason:` line: `ui` (the crew kind) and `ui-design` (the Fable
+ * `Opus reason:` or `Fable reason:` line: `ui` and `ui-design` (the Fable
  * read-only word). A prompt is never sniffed for keywords: the declaration is the contract.
  */
 export const UI_REASON_WORDS = ["ui", "ui-design"] as const;
@@ -328,7 +326,7 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
  * follows it: a family name through `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then — a family name or a
  * Claude id — its family's slot while that slot has a chain; a slot key is its own slot. Null
  * when no slot answers: the gateway off, a family slot with no chain (Claude itself answers), a
- * `<backend>:<model>` named directly. What a crew session's record names as its `slot`.
+ * `<backend>:<model>` named directly.
  */
 export function answeringSlot(name: string, gateway: GatewayFacts, env: Env): null | string {
   if (!gateway.gatewayOn || gateway.config === null) return null;
@@ -462,101 +460,4 @@ export function effectiveLaunch(
   const workflowModel = launch.workflow ? modelVariable(env, WORKFLOW_SUBAGENT_MODEL_ENV) : null;
   if (workflowModel !== null) return { ...effort, model: workflowModel, modelFrom: "workflow" };
   return { ...effort, model: launch.model, modelFrom: "call" };
-}
-
-/** The model a crew kind names, and the effort it runs at. */
-export interface CrewKindPolicy {
-  /** What the kind is for, in a few words: what `crew kinds` prints beside it. */
-  about: string;
-  /** The effort the kind runs at, whatever model answers the family (the owner, 2026-10-26). */
-  effort: Effort;
-  /** The family name the launcher passes as the crew session's `--model`. */
-  model: "opus" | "sonnet";
-}
-
-/**
- * The kinds of crew phase, and the model and effort each runs on (the owner's decisions D46 and
- * D50). Routine work — building, docs, tests — goes to `sonnet`, the worker slot, at `high`
- * whatever model answers the slot (the owner, 2026-10-26: no level is forced on a backend). So
- * does code that touches security, money, permissions, a schema or deploy plumbing: it builds
- * like any other code.
- * Work that needs design judgment — architecture — goes to `opus` at `xhigh`, whatever answers
- * the tier. UI/UX work is the exception (`UI_POLICY`, D50): `opus` at `high` by default, and
- * never an affordable model — the launcher refuses an override that would put it there. A
- * kind's name may also be the word of an `Opus reason: <word>` line in a launch record: the
- * guard takes any word there, so `security` still names an Opus review. A person may override
- * one crew session's model (the launcher's own flag); the table is the default.
- */
-export const CREW_KINDS = {
-  build: { about: "routine building", effort: "high", model: "sonnet" },
-  docs: {
-    about: "docs and their updates",
-    effort: "high",
-    model: "sonnet",
-  },
-  tests: { about: "tests and test runs", effort: "high", model: "sonnet" },
-  security: {
-    about: "code that touches security",
-    effort: "high",
-    model: "sonnet",
-  },
-  money: {
-    about: "code that touches money",
-    effort: "high",
-    model: "sonnet",
-  },
-  permissions: {
-    about: "code that touches permissions",
-    effort: "high",
-    model: "sonnet",
-  },
-  schema: {
-    about: "a schema or a contract",
-    effort: "high",
-    model: "sonnet",
-  },
-  deploy: { about: "deploy plumbing", effort: "high", model: "sonnet" },
-  architecture: {
-    about: "architecture and design",
-    effort: "xhigh",
-    model: "opus",
-  },
-  ui: {
-    about: "UI and UX judgment",
-    effort: UI_POLICY.minEffort,
-    model: UI_POLICY.tiers[0],
-  },
-} as const satisfies Record<string, CrewKindPolicy>;
-
-/** One kind of crew phase. */
-export type CrewKind = keyof typeof CREW_KINDS;
-
-/** Every kind, in the table's order: what a list or a help text shows. */
-export const CREW_KIND_NAMES = Object.keys(CREW_KINDS) as CrewKind[];
-
-/** True when `value` names a crew kind, exactly. */
-export function isCrewKind(value: string): value is CrewKind {
-  return Object.hasOwn(CREW_KINDS, value);
-}
-
-/** What one crew session of a kind starts on: the name passed, its effort, and what answers it. */
-export interface CrewLaunch {
-  effort: Effort;
-  model: CrewKindPolicy["model"];
-  /** The model behind the name, resolved the way the guard resolves a launch's. */
-  real: LaunchModel;
-}
-
-/**
- * The model and effort a crew session of `kind` starts on, by the table and the gateway as the caller
- * reads it: the kind's own effort, whatever model answers its family. So a launch the table makes
- * is one the Agent guard allows.
- */
-export function crewLaunch(kind: CrewKind, gateway: GatewayFacts, env: Env): CrewLaunch {
-  const policy: CrewKindPolicy = CREW_KINDS[kind];
-  return {
-    effort: policy.effort,
-    model: policy.model,
-    real: resolveLaunchModel(policy.model, gateway, env),
-  };
 }

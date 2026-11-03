@@ -5,7 +5,7 @@
  */
 
 import { rangeOf } from "@/lib/history";
-import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
+import { MOCK_PLAN, MOCK_TAG, mockSessionName } from "./mock-names";
 import type {
   History,
   HistoryFilter,
@@ -104,13 +104,13 @@ export const TRAFFIC: {
 /** The sessions the traffic comes from, and the share each one sends. */
 export const SESSIONS: { id: string; name: null | string; project: string; share: number }[] = [
   {
-    id: "9c3a7e5d-lead",
-    name: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
+    id: "9c3a7e5d-session",
+    name: `${MOCK_TAG}: ${MOCK_PLAN}`,
     project: "my-app",
     share: 0.34,
   },
-  { id: "a1f04c2e", name: mockCrewName("B6b", "live-stream"), project: "my-app", share: 0.27 },
-  { id: "d9e2f7a4", name: mockCrewName("C2", "skills-agents"), project: "my-app", share: 0.18 },
+  { id: "a1f04c2e", name: mockSessionName("B6b", "live-stream"), project: "my-app", share: 0.27 },
+  { id: "d9e2f7a4", name: mockSessionName("C2", "skills-agents"), project: "my-app", share: 0.18 },
   { id: "e51a9b30", name: "docs-site: fix the nav", project: "docs-site", share: 0.13 },
   { id: "f07c3d12", name: null, project: "api-service", share: 0.08 },
 ];
@@ -321,22 +321,6 @@ export function historyKeys(empty: boolean): HistoryKeys {
     models: [...new Set(TRAFFIC.map((t) => modelOf(t.target)))],
     sessions: SESSIONS.map(({ id, name, project }) => ({ id, name, project })),
   };
-}
-
-/** A crew session's memory over the last hours, in the events log's `memoryMb` shape. */
-export function memorySeries(
-  now: number,
-  seed: number,
-  base: number,
-): { at: number; mb: number }[] {
-  const random = seeded(seed);
-  const out: { at: number; mb: number }[] = [];
-  let mb = base * 0.55;
-  for (let i = 24; i >= 0; i--) {
-    mb = Math.max(80, mb + (base - mb) * 0.18 + (random() - 0.45) * 40);
-    out.push({ at: now - i * 5 * MINUTE, mb: Math.round(mb) });
-  }
-  return out;
 }
 
 /** The flow report's buckets: launches and blocked time per bucket. */

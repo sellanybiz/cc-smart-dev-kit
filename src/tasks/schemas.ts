@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { projectTaskSchema } from "./project/format";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
@@ -10,11 +11,21 @@ const ref = z.string().min(1);
 const type = z
   .enum(["blocking", "non-blocking"])
   .describe(
-    "blocking (the default): its parent cannot be done, and a crew session cannot hand back, while it is open. non-blocking: noted work that holds nothing.",
+    "blocking (the default): its parent cannot be done, while it is open. non-blocking: noted work that holds nothing.",
   );
 const blockedBy = z
   .array(ref)
   .describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
+const bindings = {
+  agent: z.string().describe("The builder subagent's name or id.").optional(),
+  branch: z.string().describe("The builder's git branch.").optional(),
+  worktree: z
+    .string()
+    .refine(isAbsolute, "worktree must be an absolute path")
+    .describe("The builder's absolute worktree path.")
+    .optional(),
+  base: z.string().describe("The commit sha the builder started from.").optional(),
+};
 const projectFields = {
   when: fields.when,
   weight: fields.weight,
@@ -26,31 +37,25 @@ export const taskSchemas = {
   create: z
     .object({
       subject,
+      ...bindings,
       description: description.optional(),
       kind: z.enum(["work", ...fields.kind.options]).default("work"),
       parent: ref
         .optional()
         .describe(
-          "The task (#n) it goes under. Three layers: phase › task › subtask; a subtask holds no subtasks. A crew session's tasks go under its phase by themselves.",
+          "The task (#n) it goes under. Three layers: phase › task › subtask; a subtask holds no subtasks.",
         ),
       status: z.enum(["pending", "in_progress"]).optional(),
       type: type.optional(),
       blocked_by: blockedBy.optional(),
-      phase: z
-        .string()
-        .trim()
-        .min(1)
-        .optional()
-        .describe(
-          "Lay out a phase of the plan by its id (as `crew start` names it): its task is made once, and `crew start` for that phase takes it over.",
-        ),
+      phase: z.string().trim().min(1).optional().describe("Create the plan phase once, by its id."),
       plan: z
         .string()
         .trim()
         .min(1)
         .optional()
         .describe(
-          "The plan's slug (as `crew lead --plan` names it); a lead's own plan when left out. With no phase, it makes the plan's own task, subject its title.",
+          "The plan's slug; the caller's latest plan when left out. With no phase, it makes the plan task.",
         ),
       ...projectFields,
     })
@@ -58,6 +63,7 @@ export const taskSchemas = {
   update: z
     .object({
       task: ref,
+      ...bindings,
       subject: subject.optional(),
       description: description.optional(),
       status: z.enum(["pending", "in_progress", "done", "dropped"]).optional(),

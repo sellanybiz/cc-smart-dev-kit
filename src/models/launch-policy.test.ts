@@ -1,21 +1,16 @@
 /**
  * The launch policy (`launch-policy.ts`): the parts the Agent guard does not test through its
- * own verdicts — which tier a model answers, and the model and effort each crew kind runs on
- * (D46). The guard's own tests (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
+ * own verdicts — the UI rule, the slot that answers a launch, which tier a model answers, the
+ * efforts, and what a launch really runs on. The guard's own tests
+ * (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
  */
 import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../gateway/config";
-import { judgeLaunch, readLaunch } from "../hooks/agent-guard";
 import {
   answeringSlot,
-  CREW_KIND_NAMES,
-  CREW_KINDS,
-  type CrewKind,
-  crewLaunch,
   effectiveLaunch,
   effortAllowed,
   type GatewayFacts,
-  isCrewKind,
   resolveLaunchModel,
   UI_EFFORTS,
   UI_POLICY,
@@ -60,164 +55,6 @@ const CLAUDE_SLOTS: GatewayFacts = {
 /** A config with backend chains, but Claude Code's settings do not point at the router. */
 const CONFIG_BUT_OFF: GatewayFacts = { ...AFFORDABLE, gatewayOn: false };
 
-describe("D46: the crew kinds", () => {
-  test("D46/D50: eight kinds name sonnet, architecture names opus at xhigh, ui names opus at high", () => {
-    expect(CREW_KINDS).toEqual({
-      build: {
-        about: "routine building",
-        effort: "high",
-        model: "sonnet",
-      },
-      docs: {
-        about: "docs and their updates",
-        effort: "high",
-        model: "sonnet",
-      },
-      tests: {
-        about: "tests and test runs",
-        effort: "high",
-        model: "sonnet",
-      },
-      security: {
-        about: "code that touches security",
-        effort: "high",
-        model: "sonnet",
-      },
-      money: {
-        about: "code that touches money",
-        effort: "high",
-        model: "sonnet",
-      },
-      permissions: {
-        about: "code that touches permissions",
-        effort: "high",
-        model: "sonnet",
-      },
-      schema: {
-        about: "a schema or a contract",
-        effort: "high",
-        model: "sonnet",
-      },
-      deploy: {
-        about: "deploy plumbing",
-        effort: "high",
-        model: "sonnet",
-      },
-      architecture: {
-        about: "architecture and design",
-        effort: "xhigh",
-        model: "opus",
-      },
-      ui: {
-        about: "UI and UX judgment",
-        effort: "high",
-        model: "opus",
-      },
-    });
-  });
-
-  test("D46: the kind names, in the table's order, and the check for one", () => {
-    expect(CREW_KIND_NAMES).toEqual([
-      "build",
-      "docs",
-      "tests",
-      "security",
-      "money",
-      "permissions",
-      "schema",
-      "deploy",
-      "architecture",
-      "ui",
-    ]);
-    expect(isCrewKind("ui")).toBe(true);
-    expect(isCrewKind("UI")).toBe(false);
-    expect(isCrewKind("review")).toBe(false);
-    expect(isCrewKind("toString")).toBe(false);
-  });
-
-  test("D46, 2026-10-26: a sonnet kind runs at the kind's own effort on an affordable worker slot too", () => {
-    const launch = crewLaunch("build", AFFORDABLE, NO_ENV);
-    expect(launch.model).toBe("sonnet");
-    expect(launch.effort).toBe("high");
-    expect(launch.real).toEqual({
-      claude: false,
-      family: "sonnet",
-      model: "omniroute:glm-5.3-flash",
-      tier: null,
-    });
-  });
-
-  test.each([
-    ["the gateway off", NO_GATEWAY],
-    ["the worker slot answered by Claude Sonnet", CLAUDE_SLOTS],
-    ["the worker slot answered by a backend", AFFORDABLE],
-    ["a backend chain, but the gateway off", CONFIG_BUT_OFF],
-  ] as const)("D46: a sonnet kind runs at high with %s", (_label, gateway) => {
-    for (const kind of [
-      "build",
-      "docs",
-      "tests",
-      "security",
-      "money",
-      "permissions",
-      "schema",
-      "deploy",
-    ] as const) {
-      expect(crewLaunch(kind, gateway, NO_ENV)).toMatchObject({
-        effort: "high",
-        model: "sonnet",
-      });
-    }
-  });
-
-  test("D46: a person's own override to a backend changes the model, not the kind's effort", () => {
-    const env = { ANTHROPIC_DEFAULT_SONNET_MODEL: "omniroute:glm-5.3-flash" };
-    const launch = crewLaunch("tests", NO_GATEWAY, env);
-    expect(launch.effort).toBe("high");
-    expect(launch.real.claude).toBe(false);
-  });
-
-  test.each([
-    ["the gateway off", NO_GATEWAY],
-    ["the opus slot answered by a backend", AFFORDABLE],
-    ["the opus slot answered by Claude Opus", CLAUDE_SLOTS],
-  ] as const)("D46: an opus kind runs at xhigh with %s", (_l, gateway) => {
-    const launch = crewLaunch("architecture", gateway, NO_ENV);
-    expect(launch.model).toBe("opus");
-    expect(launch.effort).toBe("xhigh");
-    expect(launch.real.tier).toBe("opus");
-  });
-
-  test("D46: the Agent guard allows every kind's own launch, on every gateway", () => {
-    for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
-      for (const kind of CREW_KIND_NAMES) {
-        const { effort, model } = crewLaunch(kind, gateway, NO_ENV);
-        // The `ui` kind declares UI/UX work (D50): its own launch must pass its own rule.
-        const prompt = kind === "ui" ? "Build it.\nOpus reason: ui - the page" : "Build it.";
-        const launch = readLaunch({
-          hook_event_name: "PreToolUse",
-          tool_input: { effort, model, prompt, subagent_type: "general-purpose" },
-          tool_name: "Agent",
-        });
-        if (launch === null) throw new Error("not an Agent call");
-        const verdict = judgeLaunch(launch, { ...gateway, sessionModel: null }, NO_ENV);
-        expect(`${kind}: ${verdict.decision}`).toBe(`${kind}: allow`);
-      }
-    }
-  });
-
-  test("D46: every kind resolves through the policy the guard uses", () => {
-    const kind: CrewKind = "architecture";
-    expect(crewLaunch(kind, AFFORDABLE, NO_ENV).real).toEqual(
-      resolveLaunchModel("opus", AFFORDABLE, NO_ENV),
-    );
-    const sonnetKind: CrewKind = "security";
-    expect(crewLaunch(sonnetKind, AFFORDABLE, NO_ENV).real).toEqual(
-      resolveLaunchModel("sonnet", AFFORDABLE, NO_ENV),
-    );
-  });
-});
-
 describe("D50: UI/UX work runs only on the tiers and efforts UI_POLICY names", () => {
   test("the one home: opus and fable, at high and above", () => {
     expect(UI_POLICY).toEqual({ minEffort: "high", tiers: ["opus", "fable"] });
@@ -244,16 +81,6 @@ describe("D50: UI/UX work runs only on the tiers and efforts UI_POLICY names", (
     }
     for (const effort of ["medium", "low", "turbo", "", null]) {
       expect(`${effort}: ${uiEffortAllowed(effort)}`).toBe(`${effort}: false`);
-    }
-  });
-
-  test("D50: the ui kind is opus at high, on every gateway, and always the opus tier", () => {
-    for (const gateway of [NO_GATEWAY, AFFORDABLE, CLAUDE_SLOTS, CONFIG_BUT_OFF]) {
-      const launch = crewLaunch("ui", gateway, NO_ENV);
-      expect(launch).toMatchObject({ effort: "high", model: "opus" });
-      expect(launch.real.tier).toBe("opus");
-      expect(uiTierAllowed(launch.real)).toBe(true);
-      expect(uiEffortAllowed(launch.effort)).toBe(true);
     }
   });
 });

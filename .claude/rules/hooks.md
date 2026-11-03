@@ -3,9 +3,8 @@ paths:
   - "src/hooks/**"
   - "src/entries/after-merge.ts"
   - "src/entries/agent-usage.ts"
-  - "src/entries/crew-role.ts"
+  - "src/entries/builder-finish.ts"
   - "src/entries/fable-session.ts"
-  - "src/entries/lead-notes.ts"
   - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
   - "src/entries/review-record.ts"
@@ -29,16 +28,14 @@ together is `docs/design/hooks.md` § The hooks. The Claude Code behaviour behin
 the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
 hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
 
-What a **guard** answers — its crew refusals, its fail-safe table, `ownHooks`, and what a
-broken project file does — is `hooks-guards.md`. The notifier and its two wirings are
-`notify.md`. What a session start may do, the self-update included, is `session-start.md`.
+Guard answers and failures: `hooks-guards.md`. Alerts: `notify.md`.
+Session-start behavior and self-update: `session-start.md`.
 
 ## Who wires it
 
-Every spec in `src/hooks/specs.ts` is a **plugin** hook (`HOOKS`): in
-`plugin/hooks/hooks.json`, so it runs in every project. It stays silent in a project without
-`cc-smart-dev-kit.json`, and in one whose `ownHooks` names it (`hooks-guards.md` § The project's
-own copy).
+Plugin hook specs in `HOOKS` are wired through `plugin/hooks/hooks.json`. Project-scoped
+hooks stay silent without a project file; machine-wide hooks still judge their domains.
+A switchable hook honors `ownHooks` (`hooks-guards.md`).
 
 **Every project uses Claude Code's own worktrees** (`<repo>/.claude/worktrees/<name>` on
 `worktree-<name>`), and they need no hook. The plugin's old worktree engine is retired
@@ -50,21 +47,25 @@ subagents, and one that prints no folder makes the creation fail (proved live). 
 WorktreeCreate cannot step aside for a project that did not opt in, and a hook-made worktree
 loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS handling.
 
-**A plugin SubagentStop hook that touches no worktree is fine.** Three are wired, all on the
+**A plugin SubagentStop hook that touches no worktree is fine.** Four are wired, all on the
 subagent's stop alone: `review-record` (which also runs on SubagentStart to note the commit
 and branch a review agent starts on, and records the review of that start commit, on that
 branch, at the stop — commits made while it read count as change after the review,
 `src/workflow/review-cover.ts`), `subagent-background` (one block when a subagent ends its
-turn with background work it started still running, `src/hooks/subagent-background.ts`) and
+turn with background work it started still running, `src/hooks/subagent-background.ts`),
+`builder-finish` (one block when a builder hands back while the task its brief names,
+`Your task: #<n>`, still has open blocking steps, `src/hooks/builder-finish.ts`) and
 `agent-usage` (each subagent's cost on record, `src/hooks/agent-usage.ts`: **machine-wide**,
-the person's spend, so it records with no `cc-smart-dev-kit.json` and outside git). The two
+the person's spend, so it records with no `cc-smart-dev-kit.json` and outside git; and
+`builder-finish` is machine-wide too, since it reads only the person's task list). The two
 project-scoped ones can be silent for a project that never opted in, none removes anything,
 and no two answer the same thing: `review-record` writes the review,
-`subagent-background` may continue the agent, and `agent-usage` only appends a line.
+`subagent-background` continues the agent for its running background work, `builder-finish`
+continues it for its open steps, and `agent-usage` only appends a line.
 `entries.test.ts` fails when `hooks.json` wires
 WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
-list it names (`review-record` on SubagentStart; `review-record`, `subagent-background` and
-`agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
+list it names (`review-record` on SubagentStart; `review-record`, `subagent-background`,
+`builder-finish` and `agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
 feeds stops mistakes, not a same-user process set on getting past it
 (`docs/design/workflow.md` § The review record).
 
@@ -106,7 +107,7 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   to bun: `--missing=ask` prints one PreToolUse answer on stdout, asking the person, and
   exits 0; `--missing=quiet` writes one line on stderr and exits 0; `--missing=fail` writes
   one line on stderr and **exits 1**, for the command (`plugin/bin/cc-smart-dev-kit`), which must
-  never report success when it did not run. A hook never stops a session on its own.
+  never report success when it did not run. An informational hook never stops a session on its own.
 - **A guard also asks when its bundle file is gone** (`--missing=ask` checks the file): Claude
   Code deletes an old plugin version folder some time after an update, and bun told to run a
   file that is not there only prints its error and exits 1, which Claude Code reads as a failure
@@ -130,15 +131,13 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 `handleHook` runs each hook in this order; never skip a step in a new hook.
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
-2. **A guard's crew part** (`HookSpec.crewLimits`), before `ownHooks` and before the file (§ A
-   crew session's own limits, `hooks-guards.md`).
-3. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
-4. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
-5. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
-6. **While the person is away**: an answer that asks them becomes a deny, with the call
+2. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
+3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
+4. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
+5. **While the person is away**: an answer that asks them becomes a deny, with the call
    parked on their list (`hooks-guards.md` § While the person is away). One step for every
    hook; never an allow.
-7. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
+6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
 
 The frame stays general: later hooks (notifications, the routing of heavy jobs) are new
@@ -151,8 +150,8 @@ then `loadProjectConfig()`, from `src/project/`). It follows the session into a 
 
 - Never `CLAUDE_PROJECT_DIR`: it stays at the folder the session started in.
 - Never `process.cwd()`.
-- Without a `.claude/cc-smart-dev-kit.json`, every plugin hook stays silent. A project that never
-  opted in must not notice the plugin.
+- Without a project file, project-specific hooks stay silent. Machine-wide hooks still
+  judge their domains (`hooks-guards.md`).
 
 ## Quiet output
 
@@ -182,56 +181,32 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **A guard reads every way a line may run**: both dialects when unknown, joined at a
   trailing escape and not, and blind when a quote never closes. A check for something
   that RAN (the after-merge note) reads the open quote as text.
-- **The reader steps over every wrapper it knows** (`isWrapper`: `env`, `sudo`, `timeout`,
-  `setsid`, `flock`, `script -c`, `busybox`, …) and reads the command inside, and a program
-  named at run time (`$GIT`, `$(which git)`) comes back `computed`. **A guard whose domain
-  words are in a computed command asks** rather than stay silent; in a crew session, whose
-  words name a push or a pull request opening or merge, it denies instead (D24). A new
-  wrapper or spelling
-  goes in this one reader, never in a guard.
-- **The reader also reads what a runner runs**: `find -exec`/`-execdir`/`-ok`/`-okdir`, `watch`,
-  `su -c`/`--command` and `parallel` (`nestedCommand`, beside `bash -c`; `xargs` is a wrapper).
-  They stay the program of their step — the merge reader's rule for what a runner does to a merge
-  keys on that — and the command they run is a nested line every guard walks, so `watch git push`
-  and `find . -exec git push \;` are the git guard's business. A new runner goes there, with a
-  reader test and a test in each guard that matters, never as a list inside one guard.
+- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. A guard
+  whose domain words are in a computed command asks; it never stays silent.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.
-- A 64 KB line stays well inside the guard's time (`git-guard.test.ts`): no step may cost
+- **A 64 KB line stays well inside the guard's time** (`git-guard.test.ts`): no step may cost
   more than linear time, and git is asked once a folder per run.
+
+Wrappers, nested commands and the parser's examples: `docs/design/hooks.md`.
 
 ## Timeouts
 
-- Set `timeout` (seconds) on every hook in `hooks.json`. Do not rely on Claude Code's default.
-- Every child process and network call inside a hook has its own timeout, shorter than
-  the hook's (a `git fetch` 5 or 30 s, `gh` 10 s).
-- PreToolUse runs before every matching tool call: keep it fast. No network, except where
-  the guard's question *is* about the network — the merge guard's read-only `gh` calls (10 s
-  each, and only for a command that really asks for a merge). **The merge guard also gives
-  itself one deadline** (`GUARD_BUDGET_MS`, 25 s of its 30 s): each call gets the smaller of
-  its own limit and the time left, and when too little is left for the next call the guard
-  asks instead of overrunning — a PreToolUse hook Claude Code has to kill blocks nothing, so
-  an overrun would be fail-open. Every git call in a guard takes `GUARD_GIT_TIMEOUT_MS` (5 s)
-  or less, against the hook's own 10 s. The merge guard's review check adds a few git calls
-  (`merge-tree`, `diff --numstat`, `check-attr`, `rev-parse` in `review-cover.ts`), each with
-  the same limit and from the same budget: when the measurement does not fit, the guard asks
-  with that reason instead of overrunning. **`after-merge` shares one budget the same way**
-  (`src/hooks/budget.ts`, 25 s of its 30 s), so its children (the alias list, the worktree
-  list, `gh pr view`, the origin) cannot add up past the hook; a note that would not fit is
-  skipped whole. **`job-route`'s question about `workflow propose` does the same with the
-  short budget** (`SHORT_GUARD_BUDGET_MS`, 8 s of its 10 s, counted from the hook's start): the
-  project lookup and the committed-file read pass `timeFor` to `src/project/resolve.ts`, and a
-  call that timed out or was never made makes the question say that git did not answer in time. A hook that starts a child with the time left gives it no call at
-  zero or less (`Bun.spawnSync` reads a timeout of 0 as no limit at all).
+- Give every hook an explicit timeout and every child a shorter one. PreToolUse stays fast;
+  only a merge judgment may make read-only network calls about that merge.
+- Share one deadline across children (`src/hooks/budget.ts`). Give each child the smaller
+  of its own limit and the time left. At zero time, do not start it: a Bun timeout of zero
+  means no timeout. If judgment cannot finish, ask; an informational note skips the work.
 - A guard gets a short timeout; a hook that waits gets a long one.
 
 ## Tests
 
-Each hook is tested by running it with a JSON input (`runHook` in `src/testing/hooks.ts`,
-the same frame the entry uses), in a temp git repo (`testing.md`): with and without
-`cc-smart-dev-kit.json`, in a worktree, with `ownHooks` listing it and with a project hook on the
-same event that is not listed, with `requires` not met, and with a broken `cc-smart-dev-kit.json`.
-Assert stdout exactly. Each plugin entry also runs once as a subprocess with stdin
-(`entries.test.ts`); the user's notify hook through `cc-smart-dev-kit hook`
-(`src/cli/hook-commands.test.ts`), once through the exact line setup writes. The shim has its
-own tests (`src/hooks/bun-shim.test.ts`).
+Run each hook with a JSON input through `runHook` (`src/testing/hooks.ts`, the same frame
+the entry uses), in a temp git repo (`testing.md`): with and without `cc-smart-dev-kit.json`,
+in a worktree, with `ownHooks` listing it and with an unlisted project hook on the same event,
+with `requires` not met, and with a broken `cc-smart-dev-kit.json` (`matrix.test.ts` runs the
+`ownHooks` and `requires` cases for every hook). Assert stdout exactly, and cover the
+missing-input and failure paths. Each plugin entry also runs once as a subprocess with stdin
+(`entries.test.ts`); the person's notify hook runs through `cc-smart-dev-kit hook`
+(`src/cli/hook-commands.test.ts`), once through the exact line setup writes. Never real user
+files. The shim has its own tests (`src/hooks/bun-shim.test.ts`).

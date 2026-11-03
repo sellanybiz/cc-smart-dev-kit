@@ -4,7 +4,7 @@
 Claude Code's `CLAUDE_CODE_RETRY_WATCHDOG=1` makes a session wait and retry, instead of failing,
 when a model is limited or down. Proved on 2.1.306: Claude Code reads it from a settings file's
 `env`, it retries past 11 requests, and `CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS` makes
-it check whether a usage limit was lifted early. It is the only way the lead's own subagents
+it check whether a usage limit was lifted early. It is the only way the main session's subagents
 survive a limit in process, so `setup` turns it on.
 
 - **One home**: `src/setup/retry-watchdog.ts` holds the three env names, their values
@@ -30,11 +30,6 @@ survive a limit in process, so `setup` turns it on.
   read-only pass (`ForeignKeyError`); the same one is named and left alone.
   `--no-retry-watchdog` removes the ones that are ours and remembers a "no". `restore` removes
   ours like any owned key, and the `env` object with them when setup made it.
-- **A crew session gets the cap from the person's settings** (`src/crew/start.ts`): its own
-  `--settings` file carries the first two keys and no cap (D42), and Claude Code merges `env`
-  per variable, so setup's `…_MAX_USAGE_LIMIT_WAIT_MS` reaches the crew session when setup
-  wrote it. A usage limit that resets more than 24 hours away then ends the turn; the lead's
-  watch pauses the crew session and resumes it after the reset, so the phase still goes on.
 - **`doctor`** has one `·` line (`retryWatchdogState`): on (ours), on (the person's own), off with
   the command that turns it on, or off because the person's own value leaves it off. It is
   information, never a failure.

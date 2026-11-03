@@ -9,13 +9,10 @@
  *   branch the pull request was, the note gives the steps that clear it.
  * - **The other sessions now work on an old base.** When the pull request went into
  *   `worktrees.base`, in this repo's own remote, in the last 15 minutes, and was not announced
- *   before, the note gives the exact message to send **the other leads of this repo and the
- *   person's own sessions** — never a crew session, which follows its own lead's branch and
- *   must not take the base in (D55). The message also names the prefixes of `worktrees.bases`
- *   whose own base is another one
- *   (`otherBaseCaution`): a session on such a branch must not merge the integration base in,
- *   because that would ship unreleased work. Each other lead's own watch also hears the merge
- *   from the store, as one `merge` event, so the line arrives without waiting for a message.
+ *   before, the note gives the exact message to send **the person's other sessions in this
+ *   repo**. The message also names the prefixes of `worktrees.bases` whose own base is another
+ *   one (`otherBaseCaution`): a session on such a branch must not merge the integration base in,
+ *   because that would ship unreleased work.
  *
  * It looks the pull request up once with `gh pr view` (10 s at most). **The hook has 30 s,
  * and its children (the alias list, `git worktree list`, `gh pr view`, `git remote get-url`)
@@ -38,7 +35,6 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { appendCrewEvent, type LeadRecord, listLeads } from "../crew/store";
 import {
   anyFill,
   CHANGE_DIR,
@@ -69,7 +65,6 @@ import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "
 import { gitCalls } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
-import { isSessionId } from "./session-name";
 
 /**
  * The gh commands this plugin knows (gh 2.102.0: `gh --help` and `gh help reference` read
@@ -77,8 +72,8 @@ import { isSessionId } from "./session-name";
  * alias, or an extension — and is never guessed: `mergeCalls` reads `gh alias list` for it,
  * and a word that neither is an alias nor expands to a merge is left alone. It holds gh's own
  * command aliases too (`ext`, `cs`, `at`, `rs`, `agent`, … — each shown under ALIASES in the
- * command's `--help`) and the hidden `version`: a crew session is denied a word that is none of
- * these, so a real gh command left out here would be refused.
+ * command's `--help`) and the hidden `version`: a word that is none of these is looked up as
+ * one of the person's aliases, so a real gh command left out here would be misread.
  */
 export const GH_COMMANDS: ReadonlySet<string> = new Set([
   "accessibility",
@@ -1343,9 +1338,8 @@ function namesPullRequestChange(words: readonly string[]): boolean {
 
 /**
  * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
- * command name a pull request opening or merge. The program cannot be named, so a guard that
- * must refuse both cannot tell the line's work apart: a crew session's crew part denies on it
- * (D24, F5-1), the same way the merge guard asks about a computed merge.
+ * command name a pull request opening or merge. The program cannot be named, so a guard cannot
+ * tell the line's work apart: the merge guard asks about it.
  */
 export function computedPullRequestRisk(command: string, dialect?: Dialect): boolean {
   return computedInvocationRisk(command, dialect, namesPullRequestChange);
@@ -1355,7 +1349,7 @@ export function computedPullRequestRisk(command: string, dialect?: Dialect): boo
  * Did this shell command ask GitHub to merge a pull request, or open or ready one? What the
  * merge guard watches (D16): one cheap read, so an ordinary Bash call finds nothing and pays
  * nothing. A computed program whose words name a merge, an opening or making one ready counts:
- * the guard asks (or a crew session's crew part denies) rather than stay silent.
+ * the guard asks rather than stay silent.
  */
 export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
   return (
@@ -1542,10 +1536,7 @@ export function insideClaudeWorktrees(path: string): boolean {
  * finished-worktree check (`worktrees --remove`, `src/worktrees/`), which removes the folder
  * and the branch only when the worktree is finished.
  */
-export function clearWorktreeNote(path: string, branch: string, lead = false): string {
-  if (lead) {
-    return `The work of ${branch} is in the base; once nothing remains to do here, leave and remove this lead's worktree with ExitWorktree (action "remove").`;
-  }
+export function clearWorktreeNote(path: string, branch: string): string {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path)
@@ -1576,7 +1567,6 @@ export function tellSessionsNote(
   pr: PullRequestView,
   base: string,
   bases: Record<string, string> = {},
-  otherLeads: readonly string[] | null = null,
 ): string {
   const caution = otherBaseCaution(bases, base);
   const message =
@@ -1584,105 +1574,12 @@ export function tellSessionsNote(
     `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` +
     `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` +
     `${caution === null ? "" : `${caution} `}No reply needed.`;
-  // D55: the other leads of this repo hear it too, and a crew session never does: it works on
-  // its own lead's branch, cut from that lead's work, and the base has no place in it. `null`:
-  // the store was not read, so nothing is claimed about which leads there are.
-  const leads =
-    otherLeads === null
-      ? "The other leads here are the sessions named `LEAD …` in that list."
-      : otherLeads.length === 0
-        ? "No other lead is recorded in this repo."
-        : `The other leads here: ${otherLeads.join(", ")}.`;
   return [
     `That merged #${pr.number} into ${base}.`,
-    "Tell the other leads of this repo and the person's own sessions, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session, not a subagent, and not a crew session (a session named `C …`), with exactly this text:",
+    "Tell the person's other sessions in this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
     `"${message}"`,
-    `${leads} Never send it to a crew session: it follows its own lead's branch, and merging ${base} into it would be wrong.`,
     "Merged several pull requests this turn? Send each session one message, naming every merged number.",
   ].join("\n");
-}
-
-/** The line each other lead's watch prints for a merge into the base (D55). */
-export function mergedLine(pr: PullRequestView, base: string, who: string): string {
-  return `${who} merged #${pr.number} (${quotableTitle(pr.title)}) into ${base} — at your next stop, merge origin/${base} into your branch`;
-}
-
-/** The leads of `repo` other than the session that merged, and that session's lead record. */
-function leadsOf(
-  stateDir: string,
-  repo: string,
-  sessionId: string | null,
-): { merger: LeadRecord | null; others: LeadRecord[] } {
-  const leads = listLeads(stateDir, repo).records.filter((one) => one.endedAt == null);
-  // No session id: which lead merged is unknown, so every lead is another one to tell.
-  if (sessionId === null) return { merger: null, others: leads };
-  const merger = leads.find((one) => one.sessionId === sessionId) ?? null;
-  return {
-    merger,
-    others: leads.filter((one) => one.sessionId !== sessionId && !sameLead(one, merger)),
-  };
-}
-
-/**
- * True when `one` is a record of the same lead as `merger` from before the lead's restart. A
- * restarted lead runs `crew lead` in a new session, which writes a second record (the first stays),
- * so the two differ in session id and agree in everything the command derives: the plan, the name,
- * the folder it works in. The name alone is not enough — two leads may share a name in different
- * folders — and the merging session's own record is no "other lead" to tell.
- */
-function sameLead(one: LeadRecord, merger: LeadRecord | null): boolean {
-  return (
-    merger !== null &&
-    one.repo === merger.repo &&
-    one.plan === merger.plan &&
-    one.name === merger.name &&
-    one.cwd === merger.cwd
-  );
-}
-
-/** The names of `leads`, each said once: an other lead that restarted has two records. */
-function leadNames(leads: readonly LeadRecord[]): string[] {
-  return [...new Set(leads.map((one) => one.name))];
-}
-
-/**
- * Records one `merge` event per other lead (D55), so that lead's own watch says the line
- * without waiting for the message the merging session sends. `found` is the store's leads as
- * the caller read them, so the store is read once. News, never a guard: an event that cannot be
- * written costs nothing — the note still says to send the message — and the events stop when
- * the hook's own time is spent, so the note it answers with is never lost to them.
- */
-async function recordMerged(
-  context: HookContext,
-  repo: string,
-  pr: PullRequestView,
-  base: string,
-  sessionId: string,
-  found: { merger: LeadRecord | null; others: LeadRecord[] },
-  timeFor: (limitMs: number) => number,
-): Promise<void> {
-  const who = found.merger?.name ?? "a session";
-  const line = mergedLine(pr, base, who);
-  for (const one of found.others) {
-    if (timeFor(1) <= 0) return;
-    try {
-      await appendCrewEvent(
-        context.paths.stateDir,
-        repo,
-        {
-          crew: sessionId,
-          lead: one.sessionId,
-          name: who,
-          state: "working",
-          text: line,
-          type: "merge",
-        },
-        context.nowMs,
-      );
-    } catch {
-      // A line that cannot be written is not worth an error on the person's screen.
-    }
-  }
 }
 
 /**
@@ -1779,42 +1676,13 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
   });
   const notes: string[] = [];
   if (outcome.clear !== null) {
-    let lead = false;
-    try {
-      lead = listLeads(context.paths.stateDir, repo).records.some(
-        (one) => one.sessionId === input.session_id,
-      );
-    } catch {
-      // The ordinary note still gives ExitWorktree when the lead's store cannot be read.
-    }
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch, lead));
+    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
   }
   if (outcome.announce !== null && record !== null) {
-    const pr = outcome.announce;
-    // The other leads of this repo (D55): the note names them, and each one's watch also gets
-    // the merge from the store, so the line arrives without waiting for a message. A store that
-    // cannot be read leaves the note without lead names — never claiming there are none.
-    const mergedBy = isSessionId(input.session_id) ? input.session_id : null;
-    let found: { merger: LeadRecord | null; others: LeadRecord[] } | null = null;
-    try {
-      found = leadsOf(context.paths.stateDir, repo, mergedBy);
-    } catch {
-      // A store that cannot be read leaves the note without lead names.
-    }
-    notes.push(
-      tellSessionsNote(
-        pr,
-        base,
-        project.config?.worktrees?.bases ?? {},
-        found === null ? null : leadNames(found.others),
-      ),
-    );
-    // The marker first: a merge event written twice is worse than a note the next merge
-    // command says again, and a marker that cannot be written leaves no event behind.
+    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
+    // Each pull request is announced once: the marker says this one was.
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
-    if (mergedBy !== null && found !== null)
-      await recordMerged(context, repo, pr, base, mergedBy, found, timeFor);
   }
   // A merge into the base (announced once per pull request): finished worktrees clean
   // themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).

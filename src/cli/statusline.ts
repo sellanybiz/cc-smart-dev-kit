@@ -47,17 +47,12 @@
  * once, at the folder the session is in, with the same reader the alert hooks use (`alertsAt`),
  * so the number lives in one place (`src/workflow/schema.ts`).
  *
- * **It also records the 5-hour window it read** (`recordUsageWindow`, D54): this command is
- * the only one Claude Code tells the number to, and the crew's opus guard reads it from the
- * state file (`src/cli/usage-window.ts`). **And the context window Claude Code reports** for
- * the session's model (`recordClaudeWindow`): `crew self-watch` measures a crew session's
- * hand-off share against it, its one home being `src/crew/context-window.ts`. A recording
- * failure never fails the line: it prints one stderr line and the status line goes on.
+ * It also records the 5-hour usage window for other readers. A recording failure prints
+ * one stderr line without failing the status line.
  */
 
 import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
-import { recordClaudeWindow } from "../crew/context-window";
 import { breakerChangeCommand, slotShortName } from "../gateway/breaker";
 import { checksDownStatusline } from "../gateway/checks-down";
 import {
@@ -292,17 +287,9 @@ export async function runStatusline(
   try {
     recordUsageWindow(paths, input, nowMs);
   } catch (error) {
-    // The line still prints; without the reading the crew's opus guard simply does not hold.
+    // The line still prints even when the reading cannot be saved.
     console.error(
       `${COMMAND}: the 5-hour usage window was not recorded (${error instanceof Error ? error.message : String(error)})`,
-    );
-  }
-  try {
-    recordClaudeWindow(paths, input, nowMs);
-  } catch (error) {
-    // The line still prints; without the reading `crew self-watch` falls back to its own table.
-    console.error(
-      `${COMMAND}: the context window Claude Code reported was not recorded (${error instanceof Error ? error.message : String(error)})`,
     );
   }
   let state: LimitState | null = null;

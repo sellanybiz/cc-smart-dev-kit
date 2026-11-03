@@ -15,7 +15,7 @@ parts, then the part you are changing.
 | [The three parts](design/parts.md) | The launcher, why long-running parts run from copies, the Bun it needs, and the two flags on every bun run inside a person's folder. |
 | [How the command prints](design/command.md) | One way to print: headings, marked lines, `Fix:` lines, a verdict, and the same words rich or plain. |
 | [The installer](design/installer.md) | The one command that does the whole install, and what its first real run taught it. |
-| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the 21 skills, the 5 agents, and the output style. |
+| [Instructions, skills and agents](design/instructions.md) | The general text every session loads, the skills, the 5 agents, and the output style. |
 | [Per-project opt-in](design/project-json.md) | `.claude/cc-smart-dev-kit.json`: every field, and how a project adds its own part to a general skill. |
 | [Updates](design/updates.md) | The hourly background check, the major-version hold, and `cc-smart-dev-kit update`'s steps. |
 | [Companion plugins](design/companions.md) | claude-mem and frontend-design: why the plugin does not load without them. |
@@ -28,7 +28,7 @@ parts, then the part you are changing.
 |---|---|
 | [The AI gateway](design/gateway.md) | The router, the five slots and their two modes, the fallback and breaker switches, and the judge. |
 | [OmniRoute](design/omniroute.md) | The program the affordable slots answer from, and the three-day rule for a new release. |
-| [Heavy jobs](design/jobs.md) | The machine-wide queue: slots, the kinds, the config, and the shared view. |
+| [Heavy jobs](design/jobs.md) | The machine-wide queue: one fixed slot, heavy kinds and the shared status view. |
 | [The browser](design/browser.md) | The person's own Google Chrome, the Playwright extension, the required token, and the costs upstream will not fix. |
 | [MCP servers at user scope](design/mcp.md) | What `setup` registers, why at user scope, and the Tavily key's order. |
 | [Claude Code's retry watchdog](design/retry-watchdog.md) | The three settings, on by default, and the 24-hour cap (D56). |
@@ -50,12 +50,11 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [The kit's task list](design/tasks.md) | D75: local SQLite work tasks, project Markdown tasks, one tool surface, setup and guards; replaces D68's split, denies Claude Code's list tools and keeps claude-mem for memory only. D76: three layers (phase › task › subtask), blocking or non-blocking, blocked-by, and phases a lead lays out ahead of its crew. |
+| [The kit's task list](design/tasks.md) | The subagent ledger: plan, phase and step tasks; agent, branch, worktree and base; reports, rulings and dependencies. |
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
-| [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, a phase started from an issue (only one the person labelled, its text kept as data, the hand-back comment), and what the later issue parts add. |
-| [Lead and the crew](design/crew.md) | The lead and the launch, the caps and the queue, a plan's own folder with its briefs and the record of each crew run, a phase from an issue, the board and the end of a crew session, the crew session's steps and its report, the lead's watch and fork adoption, numbered questions and lead notes, the crew talks, and the crew's own hooks. |
+| [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, the fixed-unreleased mark and the release list. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
-| [Sessions and worktrees](design/sessions.md) | Reading Claude Code's saved sessions, reopening the ones a crash or a closed window stopped, confirmed targeted finished-session removal, orphan crew cleanup, stale-lock and cache safety, and the flow report. |
+| [Sessions and worktrees](design/sessions.md) | Saved sessions, targeted finished-session removal, safe worktree cleanup and the flow report. |
 | [Moving a machine from the old names](design/migrate.md) | What 0.2.x left, what `migrate` moves, and the order it moves it in. |
 
 ## The rest

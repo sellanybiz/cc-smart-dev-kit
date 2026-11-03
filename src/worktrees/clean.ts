@@ -87,14 +87,8 @@ export function cleanFinished(
   scanned: ScannedWorktree[],
   judged: ScanOptions,
   say: (line: string) => void,
-  /**
-   * True for a worktree the caller keeps out of this clean. A crew session's worktree is one:
-   * its lead removes it with `crew rm`, or the watch does (D62), and this clean would leave the
-   * record, the branch and the Claude session behind.
-   */
-  skip?: (worktree: ScannedWorktree) => boolean,
 ): CleanReport {
-  const going = scanned.filter((one) => canGo(one) && (skip === undefined || !skip(one)));
+  const going = scanned.filter(canGo);
   const removed: RemovedWorktree[] = [];
   const kept: KeptWorktree[] = [];
   const failed: KeptWorktree[] = [];

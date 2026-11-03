@@ -1,16 +1,4 @@
-/**
- * `cc-smart-dev-kit job <command>`: the machine-wide queue for heavy jobs.
- *
- *   run     waits until a slot is free, runs the job, and passes its stdio, exit code and
- *           signals through.
- *   status  how many slots are in use, who holds them, who waits: here and on each shared
- *           folder; the memory ceiling and the weights.
- *   kinds   the kinds of heavy job.
- *   set     the person's own settings: how many jobs run at once, the weights.
- *
- * How it works and why: docs/jobs.md.
- */
-
+/** The heavy-job command: run, status and kinds. */
 import { readdirSync, statSync } from "node:fs";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
@@ -18,27 +6,11 @@ import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
 import { toolCallOfArgv } from "./classify";
-import {
-  cpuWeightOf,
-  DEFAULT_SLICE,
-  ioWeightOf,
-  type JobsMachineConfig,
-  jobsPaths,
-  loadJobsConfig,
-} from "./config";
 import { isPrintOnly, type Kinds, mergeKinds, namesOnlyFiles } from "./kinds";
-import {
-  exitCodeOf,
-  realLaunchFacts,
-  realScope,
-  realSliceControl,
-  sliceMemoryMax,
-  spawnAndWait,
-} from "./launch";
+import { exitCodeOf, spawnAndWait } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { runJob } from "./run";
-import { JOB_SETTINGS, setJobsSetting } from "./set";
-import { type JobContext, type OpenedStores, openStores, readJobs, statusLines } from "./status";
+import { type JobContext, openStores, readJobs, statusLines } from "./status";
 
 export type { JobContext } from "./status";
 
@@ -46,19 +18,11 @@ export const USAGE = `Usage: ${COMMAND} job <command>
 
 Commands:
   run [--kind <kind>] [--exclusive <name>] -- <command...>
-                 Wait until this machine has a free slot for the job, then run
-                 it. Up to max-jobs heavy jobs run at once. Its output, exit code
-                 and signals pass through. --exclusive: at most one job with that
-                 name at a time, in order. --kind, or --exclusive, or both.
-                 (--gb <n> is accepted and ignored: the queue counts jobs now.)
-  status         How many slots are in use, who holds them, who waits, the memory
-                 ceiling, and the CPU and disk I/O weights of the heavy slices.
+                 Wait for this machine's single heavy slot, then run the command.
+                 Named-file and print-only runs skip the queue.
+                 Output, exit code and signals pass through.
+  status         Who holds the slot and who waits.
   kinds          The kinds of heavy job.
-  set <setting> <value>
-                 Your own settings, written to jobs.json: ${Object.keys(JOB_SETTINGS).join(", ")}.
-                 max-jobs is how many heavy jobs run at once (default 3).
-                 CPU weight is idle (the default), off, or 1 to 10000.
-                 I/O weight is off (the default), or 1 to 10000.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
@@ -89,7 +53,6 @@ function projectKinds(cwd: string): Kinds {
 
 interface RunArgs {
   kind: string | null;
-  gb: number | null;
   exclusive: string | null;
   command: [string, ...string[]];
 }
@@ -99,14 +62,13 @@ const EXCLUSIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 
 function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   let kind: string | null = null;
-  let gb: number | null = null;
   let exclusive: string | null = null;
   let index = 0;
   while (index < args.length && args[index] !== "--") {
     const arg = args[index] ?? "";
     if (!arg.startsWith("-")) return { error: "put -- before the command" };
     const [name, inline] = arg.includes("=") ? arg.split(/=(.*)/s, 2) : [arg, undefined];
-    if (name !== "--kind" && name !== "--gb" && name !== "--exclusive") {
+    if (name !== "--kind" && name !== "--exclusive") {
       return { error: `unknown option: ${arg}` };
     }
     const value = inline ?? args[index + 1];
@@ -120,9 +82,6 @@ function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
         };
       }
       exclusive = value;
-    } else {
-      if (!/^\d+$/.test(value)) return { error: "--gb takes a whole number of GB" };
-      gb = Number(value);
     }
   }
   if (kind === null && exclusive === null) {
@@ -131,7 +90,7 @@ function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   if (args[index] !== "--") return { error: "put -- before the command" };
   const [program, ...rest] = args.slice(index + 1);
   if (program === undefined || program === "") return { error: "no command after --" };
-  return { kind, gb, exclusive, command: [program, ...rest] };
+  return { kind, exclusive, command: [program, ...rest] };
 }
 
 /** `job run`: returns the exit code to end with. */
@@ -152,15 +111,9 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     return 2;
   }
   const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
-  // A config this run cannot use (jobs.json, cc-smart-dev-kit.json, the state folder) ends it
-  // before anything starts, as a wrong command line does: exit 2, never the job's code.
-  let config: JobsMachineConfig;
   let kinds: Kinds;
-  let opened: OpenedStores;
   try {
-    config = loadJobsConfig(jobsPaths(ctx.paths.home).configFile);
     kinds = projectKinds(ctx.cwd);
-    opened = openStores(ctx, config, say);
   } catch (error) {
     say(error instanceof Error ? error.message : String(error));
     return 2;
@@ -170,25 +123,23 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     ctx.say(`${PREFIX} unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
     return 2;
   }
-  const stores = [opened.machine, ...opened.shared];
-  const now = ctx.now ?? Date.now;
-  const slice = config.slice ?? DEFAULT_SLICE;
   const call = toolCallOfArgv(parsed.command);
-  // A job with a kind takes a heavy slot. It takes none when it only prints (`tsc
-  // --version`), and a light one when its kind is `light` (an install) or, for a kind with
-  // `noSlotForFiles`, when it names only a few existing files (`vitest run src/a.test.ts`).
-  // A job with a name alone takes none: it holds its name, and nothing else.
-  const lane =
-    spec === null || isPrintOnly(spec, call.args)
-      ? "none"
-      : spec.light === true || namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word))
-        ? "light"
-        : "heavy";
-  const slot = lane !== "none";
+  const slot =
+    spec !== null &&
+    !isPrintOnly(spec, call.args) &&
+    !namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word));
   const exclusive = parsed.exclusive ?? undefined;
-  if (parsed.gb !== null) {
-    say(`--gb is ignored: the queue counts jobs now, not gigabytes (see "${COMMAND} job status")`);
+  // A narrow run never opens or reads the lease store.
+  if (!slot && exclusive === undefined)
+    return spawnAndWait(parsed.command, process, say).then((end) => end.code);
+  let stores: ReturnType<typeof openStores>["machine"][];
+  try {
+    stores = [openStores(ctx).machine];
+  } catch (error) {
+    say(error instanceof Error ? error.message : String(error));
+    return 2;
   }
+  const now = ctx.now ?? Date.now;
 
   // A signal while it waits: give back what it holds, and end as a shell would.
   const stop = new AbortController();
@@ -220,20 +171,13 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
         command: parsed.command,
         exclusive,
         slot,
-        lane,
         pid: process.pid,
         checkout: ctx.cwd,
-        memoryMax: sliceMemoryMax(opened.ceilingGb),
-        slice,
-        cpuWeight: cpuWeightOf(config),
-        ioWeight: ioWeightOf(config),
-        startedAt: now(),
       },
       {
         isNested: () => nestedIn(),
         ancestorHoldsName: (name) => nestedIn(name),
         acquire: async (job, onWaiting) => {
-          for (const note of opened.notes) say(note);
           // No slot to take and no name to hold: no queue at all.
           if (!job.slot && job.exclusive === undefined) {
             return { release: () => undefined, waitedSince: null };
@@ -247,13 +191,10 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
           held = reservation;
           return reservation;
         },
-        launchFacts: () => (config.launch === "plain" ? null : realLaunchFacts(slice)),
         now,
-        slice: realSliceControl(ctx.memory.read, undefined, jobsPaths(ctx.paths.home).stateDir),
-        run: (argv, scopeUnit) => {
+        run: (argv) => {
           started = true;
-          const scope = scopeUnit === null ? null : realScope(slice, scopeUnit, ctx.memory.read);
-          return spawnAndWait(argv, process, say, { scope });
+          return spawnAndWait(argv, process, say);
         },
         say,
         stopped: () => stop.signal.aborted,
@@ -291,22 +232,6 @@ function jobKinds(ctx: JobContext): number {
   return 0;
 }
 
-/** `job set <setting> <value>`: one machine-wide setting, written to `jobs.json`. */
-async function jobSet(args: readonly string[], ctx: JobContext): Promise<number> {
-  const [name, value, ...extra] = args;
-  if (name === undefined || value === undefined || extra.length > 0) {
-    ctx.say(`${PREFIX} set needs a setting and one value\n\n${USAGE}`);
-    return 2;
-  }
-  const result = await setJobsSetting(ctx.paths, name, value);
-  if (!result.ok) {
-    ctx.say(`${PREFIX} ${result.error}`);
-    return result.code;
-  }
-  for (const line of result.lines) ctx.print(line);
-  return 0;
-}
-
 export async function runJobCommand(args: readonly string[], ctx: JobContext): Promise<number> {
   const [command, ...rest] = args;
   switch (command) {
@@ -316,8 +241,6 @@ export async function runJobCommand(args: readonly string[], ctx: JobContext): P
       return jobStatus(ctx);
     case "kinds":
       return jobKinds(ctx);
-    case "set":
-      return jobSet(rest, ctx);
     case undefined:
     case "help":
     case "--help":

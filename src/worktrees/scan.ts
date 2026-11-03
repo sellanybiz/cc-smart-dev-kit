@@ -49,7 +49,7 @@ import {
 /**
  * The mark a removal gives the folder it moves aside before removing it:
  * `<path>-removing-<milliseconds>` (`removeWorktree`). A folder carrying it is one whose removal
- * stopped halfway, and its own removal — `crew rm`, `worktrees --clean`, the watch — finishes it
+ * stopped halfway, and the next `worktrees --clean` finishes it
  * (D62). An older kit moved such a folder aside again, so the mark may stand more than once.
  */
 const PARKED_END = /(?:-removing-\d{13})+$/;
@@ -171,8 +171,7 @@ export interface ScanOptions {
   /** The base branch work must be on: `worktrees.base`, or the repo's default branch. */
   base: string;
   /**
-   * The ref the commits are judged against, and how a message calls it: the lead's branch, for
-   * a crew session's worktree (D24: the lead merges locally, nothing is pushed). Without it the ref is
+   * The ref the commits are judged against, and how a message calls it. Without it the ref is
    * `origin/<base>`, as `worktrees` judges.
    */
   against?: { label: string; ref: string };
@@ -389,7 +388,7 @@ export type WorkOnRef =
 /**
  * Is the work of the commit `head` on `ref`? The one answer for "is this branch merged": an
  * ancestor (a merge commit or a fast-forward), or a merge of it that changes nothing (a squash
- * merge, `replayOntoBase`). A crew session's removal and the lead's watch both ask it, so they agree
+ * merge, `replayOntoBase`). Every removal asks the same question, so they agree
  * with `worktrees --clean`. Only "ancestor" and "replay" are certain; keep what is at stake for
  * the rest.
  */

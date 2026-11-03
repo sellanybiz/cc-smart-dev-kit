@@ -54,8 +54,7 @@ An optional local router between Claude Code and the model providers
   before it is used; the router uses only a target whose test proof is in the config (D44).
   When a check still fails for want of capacity with nothing standing in, the router records it
   (`checksDown`) and the status line, `gateway status`, `doctor` and the session say it once with
-  the fix (`src/gateway/checks-down.ts`); a crew session pauses until the checks answer
-  (`docs/design/crew.md` § Waiting out a limit).
+  the fix (`src/gateway/checks-down.ts`).
 - A request that carries an Anthropic server tool (`web_search_*`, `web_fetch_*`) goes to
   Anthropic as sent, whatever its slot; at a Claude capacity failure the router answers it with a
   note that names the Tavily MCP server's search tool (D41, D44; `docs/gateway.md` § Anthropic's

@@ -97,10 +97,9 @@ on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 ## The task system (D75)
 
 Setup registers `cc-smart-dev-kit-tasks` at user scope through the stable launcher, with
-`alwaysLoad: true`. It asks before adding `mcp__cc-smart-dev-kit-tasks__*` to
-`permissions.allow`: this is a trust rule, like the auto-mode entries, and is left out
-when no terminal can ask. Every crew session's settings allow it and its `mcp.json`
-keeps the server, including on resume.
+`alwaysLoad: true`, so the task tools are in every request from the first turn. It asks before
+adding `mcp__cc-smart-dev-kit-tasks__*` to `permissions.allow`: this is a trust rule, like the
+auto-mode entries, and is left out when no terminal can ask.
 
 Managed deny entries remove `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet` and
 `TodoWrite` from Claude's tools. They never deny `TaskStop` or `TaskOutput`. Setup takes
@@ -142,3 +141,19 @@ commands and guards. The status line adds `#12 Subject · 2/5` for current work.
 
 So an automatic update can never restart something or widen a permission without the
 user seeing it: a new router version runs only after `gateway setup`, which asks.
+
+
+## Subagent concurrency
+
+Setup writes `env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` as the managed string `"10"` in
+Claude Code's user settings. A value you set yourself stays yours. Use
+`cc-smart-dev-kit setup --max-subagents <n>` to change the kit's value: it also takes the key
+back after the person removed it, and over a value of their own it never writes, only warns
+(a `!` line). `restore` takes back only the value the kit owns. This uses Claude Code's own per-session cap, not a kit queue.
+Claude Code's default without the key is 20. A launch past the cap fails and Claude is told
+not to retry. The key exists from Claude Code v2.1.217; the live check is still owed.
+
+`doctor` prints one information line, `max subagents: …` (`maxSubagentsLine`,
+`src/setup/max-subagents.ts`): the kit's value, the person's own value, a key the person removed
+(Claude Code's own default), or no key yet, each with how to change it. Setup prints the same
+line when it leaves a person's value alone, and one line when it sets or changes its own.

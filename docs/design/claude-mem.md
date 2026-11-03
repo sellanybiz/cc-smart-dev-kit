@@ -31,12 +31,6 @@ budget guarantee comes from its CHANGELOG.
   way. A person's unowned `"false"` stays. A changed `"true"` stays too, without a file write.
   When the old key is removed, setup prints one information line explaining that open lists
   return and how to keep work state off: set the key to `"false"` again after setup.
-- **Task tools everywhere.** Setup sets `env.CLAUDE_CODE_ENABLE_TODO_TOOLS: "1"` in the user
-  settings on every machine, with or without claude-mem, through the managed writer. A
-  person's value stays. Normal sessions use claude-mem's work state when available; leads
-  and crew sessions use Claude Code's list because the kit's hooks read it. The memory-routing
-  skill owns the routing rule and its fallbacks. Crew sessions also load claude-mem, so their
-  card and the lead's reminder explicitly name Claude Code's list despite its work-state text.
 - **Notes as you go.** The memory-use block also told a session to save its own notes with
   `save_memory`. With the block off, the kit's general instructions say that part in one rule
   (`plugin/instructions/core.md`, "Save as you go"):

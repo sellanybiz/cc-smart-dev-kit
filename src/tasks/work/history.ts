@@ -15,21 +15,23 @@ const FIELDS: readonly [key: string, label: string][] = [
   ["status", "status"],
   ["type", "type"],
   ["parent", "parent"],
-  ["crew", "crew"],
+  ["agent", "agent"],
+  ["branch", "branch"],
+  ["worktree", "worktree"],
+  ["base", "base"],
   ["claim", "claimed by"],
   ["waitsFor", "blocked by"],
   ["description", "description"],
   ["note", "note"],
 ];
 
-/** Who made the change: the session (name and id), its crew and process, or the kit's reason. */
+/** Who made the change: the session (name and id) and process, or the kit's reason. */
 function actor(event: WorkEvent): string {
   const parts: string[] = [];
   if (event.sessionId !== null) {
     const name = event.sessionName ? `"${event.sessionName}" ` : "";
     parts.push(`session ${name}${event.sessionId}`);
   }
-  if (event.crewId !== null) parts.push(`crew ${event.crewId}`);
   if (event.pid !== null) parts.push(`process ${event.pid}`);
   if (event.reason !== null) parts.push(`the kit (${event.reason})`);
   return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";

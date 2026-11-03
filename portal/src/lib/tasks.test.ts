@@ -4,6 +4,7 @@ import {
   countTasks,
   DEFAULT_FILTER,
   filterTasks,
+  ledgerOf,
   matchCount,
   queryOfView,
   type ShownTask,
@@ -76,5 +77,58 @@ describe("what a filter shows", () => {
       blocked: 0,
       nonBlocking: 0,
     });
+  });
+});
+
+describe("a phase's ledger (G3)", () => {
+  test("all four fields, in their fixed order: the worktree as its folder, the base as a short sha", () => {
+    expect(ledgerOf(PHASE)).toEqual([
+      {
+        full: "builder-a1c485264ab14f591",
+        key: "agent",
+        label: "agent",
+        shown: "builder-a1c485264ab14f591",
+      },
+      {
+        full: "plan/build-the-store",
+        key: "branch",
+        label: "branch",
+        shown: "plan/build-the-store",
+      },
+      {
+        full: "/home/user/my-app/.claude/worktrees/build-the-store",
+        key: "worktree",
+        label: "worktree",
+        shown: "build-the-store",
+      },
+      {
+        full: "21eadc8a0f3b4c5d6e7f8091a2b3c4d5e6f70812",
+        key: "base",
+        label: "base",
+        shown: "21eadc8",
+      },
+    ]);
+  });
+
+  test("some fields: only the ones set, still in order; none: an empty list", () => {
+    const some = task(2, "Some", "pending", [], {
+      agent: "builder-b2",
+      kind: "phase",
+      layer: "phase",
+      worktree: "C:\\Users\\user\\my-app\\.claude\\worktrees\\ui\\",
+    });
+    expect(ledgerOf(some).map((field) => [field.key, field.shown])).toEqual([
+      ["agent", "builder-b2"],
+      // A Windows path, its trailing separator too: the folder's own name.
+      ["worktree", "ui"],
+    ]);
+    expect(ledgerOf(task(3, "None", "pending", [], { kind: "phase", layer: "phase" }))).toEqual([]);
+  });
+
+  test("a base that is not a long hex sha is shown as written", () => {
+    const tag = task(4, "Tag", "pending", [], { base: "v1.2.0", kind: "phase", layer: "phase" });
+    expect(ledgerOf(tag)).toEqual([
+      { full: "v1.2.0", key: "base", label: "base", shown: "v1.2.0" },
+    ]);
   });
 });

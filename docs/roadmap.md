@@ -1,5 +1,17 @@
 # Roadmap
 
+## 2.0.0 — subagent-driven parallel development
+
+The main session orchestrates one builder per phase, disjoint phases in parallel worktrees,
+a fresh reviewer per phase and one final review on `opus`. The task system is the ledger:
+agent, branch, worktree and base fields, with `Report:` and `Ruling:` notes.
+
+Crew was removed in 2.0, including its launch queue, monitors and balancing gates. Old
+`workflow.crew` values load and are ignored; old stores, branches and worktrees stay untouched.
+The `build` skill replaces `lead`. Heavy jobs use one fixed machine-wide slot; named-file
+runs skip it. Memory checks, priorities, shared folders and machine queue settings are gone.
+Setup manages Claude Code's subagent cap, defaulting to 10 per session.
+
 Each phase ships as a plugin release (`release` skill in `.claude/skills/`). How the
 parts fit: `design.md`.
 
@@ -24,37 +36,28 @@ old names (`README.md` § Moving from anymodel).
 
 ## 1.11.0 — three task layers, blocking or not, and a Tasks tab (D76)
 
-In progress: work tasks get three layers under a plan (phase › task › subtask), a type
-(blocking holds its parent, non-blocking holds nothing) and a blocked-by list that holds a
-task's start and done. A lead lays out its phases ahead of its crew, and `crew start` adopts
-them. The guards wait only for blocking work, and a merge leaves non-blocking work open. The
-portal shows every project's tasks on a Tasks tab of its own. [The task design](design/tasks.md)
-§ Layers, types and blocked-by (D76) holds the rules.
+Work tasks got three layers under a plan (phase › task › subtask), a type (blocking holds its
+parent, non-blocking holds nothing) and a blocked-by list that holds a task's start and done. A
+plan's phases can be laid out ahead of the work. The portal shows every project's tasks on a
+Tasks tab of its own. [The task design](design/tasks.md) § Layers, types and blocked-by (D76)
+holds the rules.
 
 ## 1.10.0 — keep going, with the kit's task list (D75)
 
-In progress: the release joins the lead and crew keep-going guards with one task system.
-Local SQLite holds live work across worktrees; reviewed Markdown files hold production,
-database, teammate and follow-up obligations. The task tools and command share both stores.
-Setup replaces Claude Code's list tools and turns off claude-mem work state; memory stays.
-The first-edit gate, Stop gates, done report and lead reminder read the kit's list, with
-Claude Code's beside it for one release. Start notes, status progress, checks, imports and
-release lists make open work visible. [The task design](design/tasks.md) records the
-boundary; live MCP, permissions and process-identity proofs remain release checks.
+One task system for the kit. Local SQLite holds live work across worktrees; reviewed Markdown
+files hold production, database, teammate and follow-up obligations. The task tools and command
+share both stores. Setup replaces Claude Code's list tools and turns off claude-mem work state;
+memory stays. Start notes, status progress, checks, imports and release lists make open work
+visible. [The task design](design/tasks.md) records the boundary; live MCP, permissions and
+process-identity proofs remain release checks.
 
-## 1.0.1 — a crew session reaches its worktree
+## 1.0.1 — a hotfix of 1.0.0
 
-**A hotfix of 1.0.0**, from its first live use (H101). `crew start` read
-`claude agents --json` once right after `claude --bg -w …` and judged the session's folder from
-it; that read reports the launch folder until a `--bg -w` session has entered its worktree
-(2.1.308, `docs/claude-code-contract.md`), so every crew session was failed and stopped within a
-second of starting. The launcher now records the session's id and leaves it `starting`; the
-crew session's own `SessionStart` hook checks its real `cwd` against its worktree, marks a
-session anywhere else `failed` with the reason (the lead's watch stops it), and turns a
-`starting` record `working` when it is where it belongs. No new field, command or switch: a
-patch.
+A fix to the crew sessions' start (H101), a part 2.0.0 removed.
 
 ## 1.0.0 — safety, the crew, and native Windows
+
+The crew sessions this release brought were removed in 2.0.0; the rest stays.
 
 **Done in this release:**
 
@@ -77,18 +80,10 @@ patch.
   "Invalid `signature`" 400), and gives a backend its own signature back.
 - **The breaker** (D42): while every target of a slot is limited or down, the router holds the
   request (up to 240 s) and then answers a 429 Claude Code retries; a heartbeat-only target
-  rests like any other failure; the status line and the StopFailure alert name it; a crew
-  session waits out a limit, and its lead resumes it once the gateway answers again.
+  rests like any other failure; the status line and the StopFailure alert name it.
 - **Claude judges first** (D44): auto mode's checks go to Claude first; while Claude is limited
   or down, the worker slot's tested targets judge in its place. WebSearch never falls back to
   them, and opus and fable keep no fallback.
-- **Crew sessions** (D34, D35, D37, D45, D47): `cc-smart-dev-kit crew lead|start|watch|list|
-  status|step|report|answer|tell|self-watch|stop|rm|resume|attach|kinds`. A small lead starts
-  each phase as a background session in its own worktree, never waits, hears each change as one
-  line, routes a question to the person only when it is the person's, merges the branch and
-  ends the session. Off by default (`crew.enabled`). The `lead` and `crew` skills and
-  `plugin/instructions/core.md` place each phase inline, in a subagent or in a crew session
-  (W5).
 - **Reviews count for their fix commits** (D17): a review covers its branch's head while the
   change since it stays within `fixesAfterReview` (200 lines, 10 files, or 20 % — whichever is
   more), the base's own changes and generated files not counted. `workflow merge-check` prints
@@ -99,12 +94,11 @@ patch.
   path, name or plugin. `medium` is now an allowed subagent effort.
 - **Less Opus** (D46, D50): Opus builds architecture and UI/UX work only, and the other kinds
   build on the worker slot; a review runs on Opus only for a risky change set; UI/UX design
-  runs only on `opus` or `fable`, at `high` or above, and the agent guard and the crew launcher
-  refuse it anywhere else.
+  runs only on `opus` or `fable`, at `high` or above, and the agent guard refuses it anywhere
+  else.
 - **The hook frame fails closed** (A4), with the `session-escape-guard` (a session never
-  loosens its own limits), the shell judge in `job-route` (a raw `claude --bg` and `claude -p`
-  judged, polling refused, a lead's long waits moved to the background), the git guard's
-  refusal of a crew session's push (D24), and the message guard's crew tag (D47).
+  loosens its own limits) and the shell judge in `job-route` (a raw `claude --bg` and
+  `claude -p` judged, polling refused).
 - **A subagent never hands back with its own background work running** (D53): a SubagentStop
   check blocks the stop once, with one plain reason.
 - **Finished worktrees clean themselves** (D48): after a merge into the base, and at an
@@ -118,8 +112,8 @@ patch.
   guard (A2).
 - **claude-mem's two start blocks are off** (D23): `setup` writes both keys off and turns
   Claude Code's own task tools on; `restore` puts them back.
-- **Claude Code's retry watchdog** (D42): `setup` offers it once (default no), and each crew
-  session's own settings turn it on with no wait limit (CC1, BR3).
+- **Claude Code's retry watchdog** (D42): `setup` offered it once (default no); since D56 it is on
+  by default (`docs/design/retry-watchdog.md`).
 - **Native Windows** (WIN): every 1.0.0 part checked against native Windows, a Windows CI job,
   and `docs/windows-setup.md` with the checklist for a real PC and what is still owed.
 
@@ -448,8 +442,8 @@ The release on every machine, `doctor` green on each.
 `cc-smart-dev-kit job run` makes heavy jobs (a type check, a test run, a build) take turns
 instead of freezing the machine: each job takes one slot (it reserved its gigabytes in the
 first version), waits its turn in one machine-wide queue, and runs in its own cgroup inside
-`cc-smart-dev-kit-heavy.slice`. How a job waits and runs, the kinds, the config and the
-shared view: [jobs.md](jobs.md).
+`cc-smart-dev-kit-heavy.slice`. Since 2.0.0 the queue has one slot and no slice, memory
+check or shared view. How a job waits and runs, the kinds and the limits: [jobs.md](jobs.md).
 
 ## After the rollout
 
@@ -467,14 +461,7 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   extension, so `doctor` neither warns nor gives that advice.
 - **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
   finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
-  for a removal by hand. The same answer refuses every `crew rm --discard` there ("its mount
-  points could not be read"), so a crew session whose work is not merged cannot be dropped on
-  Windows or macOS (seen on a Windows 11 PC, 2026-10-27); after a merge `crew rm` works. Reading
-  mount points there is a design decision.
-- **One quiet-facts helper for the crew tests.** Three copies give a test fixed machine facts
-  today (`QUIET_MACHINE` in `src/crew/end.test.ts`, `quietFacts`, `quietScan`); one helper in
-  `src/testing/`, and a default `scanFacts` in `crew-world.ts`'s `ctx`, would keep every crew
-  test off the host's own facts.
+  for a removal by hand. Reading mount points there is a design decision.
 - **The launch judge and a wait loop that matches itself.** It let through
   `until ! pgrep -f "bun run check"; do sleep 3; done`, whose `pgrep -f` pattern matches the
   loop's own command line, so it never ends.
@@ -482,17 +469,14 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   keep-alive pings are never cut, and the 120 s allowed for Anthropic is not measured.
 - **The merge guard's shell reader.** It does not test an endpoint or a method the shell fills
   in for a pull request, and it does not follow `cat <<EOF | sh` or `eval "$cmd"`.
-- **GitHub Issues (1.4.0) limits.** `visibleText` leaves attribute values, link titles and alt
-  text unmarked (a person sees them on hover); the feed judges a lead alive by its pid on this
-  machine; the portal's settings writer has no protected-key check of its own (it relies on the
-  portal's door); `issue file` needs `gh api user` to succeed (an App token may get 403); the
-  `GH_COMMANDS` list must follow gh's own commands, or a crew session is denied a new one; the
-  `## What <phase> left behind` heading is written in `src/crew/start.ts` and matched by a
-  pattern of its own in `src/issues/phase-issues.ts`: two homes for one shape.
+- **GitHub Issues limits.** The portal's settings writer has no protected-key check of its own
+  (it relies on the portal's door); `issue file` needs `gh api user` to succeed (an App token may
+  get 403); the `GH_COMMANDS` list must follow gh's own commands, or the issue-write reader takes
+  a new gh command for an extension and lets it through unasked.
 - **`resolveSwitch` and the base's name.** It takes the base branch's name from the working
   copy, as the merge guard does.
-- **`claudeLimitHolds` (`src/crew/wait.ts`) compares exact Claude model ids.** Check whether a
-  variant of one model's id should count as the same model.
+- **`claudeLimitHolds` (`src/gateway/limit-holds.ts`) compares exact Claude model ids**, the
+  `[1m]` suffix aside. Check whether a variant of one model's id should count as the same model.
 - **A merge-guard test left its fake `gh` running.** In one full run on a loaded machine (load
   average about 30), "a gh call that hangs" (`src/hooks/merge-guard.test.ts`) passed but left its
   fake `gh` alive with its parent gone. The fake's `read x < /dev/zero` spins, so it ran 12
@@ -500,16 +484,5 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
   stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
   person's machine.
-- **Plugin monitors with telemetry off: the live proof.** Claude Code 2.1.310's changelog says a
-  plugin's monitors now run with telemetry off too, and the kit follows it (1.5.0): the
-  telemetry check (`src/crew/telemetry.ts`) and the `crew watch --once` fallback for it are
-  gone, and the lead skill, `docs/design/crew.md` and the contract's monitors row say so. Still
-  owed: a throwaway session with `DISABLE_TELEMETRY=1` in which `crew-events` and `crew-self`
-  start and print a line (`docs/claude-code-contract.md`, the monitors row).
-- **Crew arming and Remote Control, live.** Read from the 2.1.310 binary, not yet seen in a
-  session: a monitor arms once per process on the skill's dispatch (a `--bg --resume` with the
-  crew command arms `crew-self` again), a slash prompt dispatches in `--bg`, the
-  `background_tasks` entry of a monitor, and a crew session's `--settings` file turning Remote
-  Control off (`docs/claude-code-contract.md`, the rows that say "owed").
 - **Windows on Claude Code 2.1.310, by a person.** `doctor --live` on a Windows machine, and a
   `PreToolUse` hook that still blocks with Git Bash absent (`docs/windows-setup.md`).

@@ -1,7 +1,6 @@
 /**
  * The words every part of the task list says the same way (D75): the tools' names, the command,
- * and the sentences a guard, a role card and a brief put to a session. One home, so a crew
- * session's first-edit refusal and its brief never name two different steps.
+ * and the steps a session follows.
  */
 import { COMMAND } from "../build-info/names";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
@@ -54,17 +53,9 @@ export const TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 export const TASK_COMMAND = `${COMMAND} task`;
 
 /**
- * The first step of a crew session, before its first edit: its phase broken into subtasks. The
- * crew-role card and refusal and the crew brief all say it from here.
- */
-export function crewTaskStep(): string {
-  return `Break your phase into subtasks first: one \`${TASK_TOOL.create}\` per part of your brief, with its done-check in the description (they go under your phase task by themselves). A session without the task tools runs \`${TASK_COMMAND} add "<subject>" --description "<done-check>"\`.`;
-}
-
-/**
  * How a session closes the task a Stop block names, spelled out so any model can follow it:
  * a kit task (`#12`) by `task_done` or the command, a task on Claude Code's own list (read only
- * before setup denies its tools, `src/tasks/guard-view.ts`) by `TaskUpdate`.
+ * before setup denies its tools) by `TaskUpdate`.
  */
 export function taskCloseStep(ref: string): string {
   return ref.startsWith("#")
@@ -77,9 +68,4 @@ export function taskDropStep(ref: string): string {
   return ref.startsWith("#")
     ? `\`${TASK_TOOL.done}\` with task "${ref}" and outcome "dropped", or \`${TASK_COMMAND} drop ${ref}\``
     : `\`${RETIRED_TASK_CLOSER}\` with status "deleted"`;
-}
-
-/** The line a lead with no task of its own gets with each prompt (`lead-notes`). */
-export function leadTaskReminder(): string {
-  return `You have no task of your own on the kit's task list: put the person's asks and your open work there (\`${TASK_TOOL.create}\`, or \`${TASK_COMMAND} add\`), and keep each one's status true as it moves.`;
 }

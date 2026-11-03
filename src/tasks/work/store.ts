@@ -3,7 +3,6 @@ import {
   allTasks,
   descendants,
   holdingUnder,
-  isOpen,
   layerOf,
   openBlockers,
   openSubtasks,
@@ -33,7 +32,10 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     status: task.status,
     type: task.type,
     parent: task.parentId === null ? null : numberOf(task.parentId),
-    crew: task.crewId,
+    agent: task.agent,
+    branch: task.branch,
+    worktree: task.worktree,
+    base: task.base,
     claim: task.claim === null ? null : (task.claim.sessionId ?? `process ${task.claim.pid}`),
     waitsFor: task.waitsFor.map(numberOf).sort(),
   };
@@ -80,7 +82,7 @@ function recordEvent(
 ): void {
   db.sqlite
     .query(
-      "INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,crew_id,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO task_events(task_id,project,number,at,action,changes,session_id,session_name,pid,reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
     )
     .run(
       task.id,
@@ -91,7 +93,6 @@ function recordEvent(
       JSON.stringify(changes),
       who.sessionId,
       who.name ?? null,
-      who.crewId,
       who.pid,
       reason,
     );
@@ -113,6 +114,11 @@ function recordChange(
   recordEvent(db, task, closed ? "closed" : "changed", changes, who, now, reason);
 }
 export interface CreateTask {
+  agent?: string | undefined;
+  branch?: string | undefined;
+  worktree?: string | undefined;
+  base?: string | undefined;
+
   project: string;
   subject: string;
   description?: string;
@@ -121,13 +127,17 @@ export interface CreateTask {
   status?: WorkStatus;
   plan?: string | null;
   phase?: string | null;
-  crewId?: string | null;
   /** `WorkType`; blocking unless set. */
   type?: WorkType;
   /** The ids of the tasks it is blocked by. */
   blockedBy?: string[];
 }
 export interface UpdateTask {
+  agent?: string | undefined;
+  branch?: string | undefined;
+  worktree?: string | undefined;
+  base?: string | undefined;
+
   subject?: string;
   description?: string;
   status?: WorkStatus;
@@ -279,7 +289,7 @@ export function insertTask(
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite
     .query(
-      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .run(
       id,
@@ -292,7 +302,10 @@ export function insertTask(
       status,
       input.plan ?? null,
       input.phase ?? null,
-      input.crewId ?? who.crewId,
+      input.agent ?? null,
+      input.branch ?? null,
+      input.worktree ?? null,
+      input.base ?? null,
       who.sessionId,
       claimed ? who.pid : null,
       claimed ? who.procStart : null,
@@ -366,7 +379,7 @@ export function applyUpdate(
         : task.claim;
   db.sqlite
     .query(
-      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=? WHERE id=?",
+      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
     )
     .run(
       change.subject === undefined ? task.subject : subjectOf(change.subject),
@@ -379,6 +392,10 @@ export function applyUpdate(
       now,
       status === "done" || status === "dropped" ? (task.closedAt ?? now) : null,
       (change.type ?? task.type) === "non-blocking" ? 0 : 1,
+      change.agent ?? task.agent,
+      change.branch ?? task.branch,
+      change.worktree ?? task.worktree,
+      change.base ?? task.base,
       id,
     );
   const changed = taskById(db, id);
@@ -398,10 +415,10 @@ export function insertNote(
   if (!text.trim() || text.length > NOTE_LIMIT)
     throw new Error(`note must be 1–${NOTE_LIMIT} characters`);
   const row = db.sqlite
-    .query<{ id: number }, [string, string, string | null, string | null, number]>(
-      "INSERT INTO task_notes(task_id,text,session_id,crew_id,at) VALUES (?,?,?,?,?) RETURNING id",
+    .query<{ id: number }, [string, string, string | null, number]>(
+      "INSERT INTO task_notes(task_id,text,session_id,at) VALUES (?,?,?,?) RETURNING id",
     )
-    .get(id, text, who.sessionId, who.crewId, now);
+    .get(id, text, who.sessionId, now);
   db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(now, id);
   const preview = text.length > NOTE_PREVIEW ? `${text.slice(0, NOTE_PREVIEW)}…` : text;
   recordEvent(db, task, "noted", { note: [null, preview] }, who, now, reason);
@@ -410,7 +427,6 @@ export function insertNote(
     taskId: id,
     text,
     sessionId: who.sessionId,
-    crewId: who.crewId,
     at: now,
   };
 }
@@ -447,8 +463,7 @@ export function systemClose(
  * `systemClose` inside a transaction the caller holds: the kit closes a task and drops its open
  * subtasks, each with an automatic note and a history entry that give the reason. Closed as done
  * (a merge), it drops only the open tasks that hold it (`holdingUnder`): non-blocking work stays
- * open for whoever picks it up. Dropped (a removal), it drops every open task under it, except
- * under a phase the steps its lead laid out (no crew id): those go back to pending.
+ * open for whoever picks it up. Dropped, it drops every open task under it.
  */
 export function applySystemClose(
   db: WorkDb,
@@ -461,30 +476,8 @@ export function applySystemClose(
   const task = taskById(db, id);
   const open =
     status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
-  // A removed crew session's phase keeps the steps its lead laid out (they have no crew id): the
-  // plan still needs them, so each goes back to pending for the phase's next crew session.
-  const laidOut = (t: WorkTask) =>
-    status === "dropped" && task.kind === "phase" && t.crewId === null;
   for (const child of open) {
     const before = shape(db, child);
-    if (laidOut(child)) {
-      if (child.status === "pending" && child.claim === null) continue;
-      db.sqlite
-        .query(
-          "UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
-        )
-        .run(now, child.id);
-      recordChange(db, before, taskById(db, child.id), who, now, reason);
-      insertNote(
-        db,
-        child.id,
-        `Back to pending: ${reason}. The phase's next crew session takes it.`,
-        who,
-        now,
-        reason,
-      );
-      continue;
-    }
     db.sqlite
       .query(
         "UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
@@ -516,17 +509,17 @@ export function planTask(db: WorkDb, input: PlanTask, who: Who, now: number): Wo
   );
 }
 export interface LaidPhase extends PlanTask {
+  agent?: string | undefined;
+  branch?: string | undefined;
+  worktree?: string | undefined;
+  base?: string | undefined;
+
   phase: string;
   description?: string;
   type?: WorkType;
   blockedBy?: string[];
 }
-/**
- * A phase a lead lays out ahead of its crew (D76), inside a transaction the caller holds: the
- * plan's phase task, made once under the plan task. `crew start` for the same plan and phase
- * adopts it later (`ensurePhaseTask` finds it by both), so a phase has one task. `made` is false
- * when the phase was there already; it is returned as it is.
- */
+/** The plan phase, made once under its plan task, inside the caller's transaction. */
 export function layPhase(
   db: WorkDb,
   input: LaidPhase,
@@ -552,6 +545,10 @@ export function layPhase(
       parentId: parent.id,
       plan: input.plan,
       phase: input.phase,
+      agent: input.agent,
+      branch: input.branch,
+      worktree: input.worktree,
+      base: input.base,
       ...(input.description === undefined ? {} : { description: input.description }),
       ...(input.type === undefined ? {} : { type: input.type }),
       ...(input.blockedBy === undefined ? {} : { blockedBy: input.blockedBy }),
@@ -563,66 +560,6 @@ export function layPhase(
 }
 export function ensurePlanTask(db: WorkDb, input: PlanTask, who: Who, now: number) {
   return writeWork(db, () => planTask(db, input, who, now));
-}
-export interface PhaseTask extends PlanTask {
-  phase: string;
-  description: string;
-  crewId: string;
-  waitsForPhases: string[];
-  /** Why the kit points the phase at this crew session (its start), for the history. */
-  reason?: string;
-}
-export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: number) {
-  return writeWork(db, () => {
-    const parent = planTask(
-      db,
-      { project: input.project, plan: input.plan, subject: input.plan },
-      who,
-      now,
-    );
-    const reason = input.reason ?? "crew start";
-    const { reason: _reason, ...fields } = input;
-    const task =
-      allTasks(db, input.project).find(
-        (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
-      ) ?? insertTask(db, { ...fields, kind: "phase", parentId: parent.id }, who, now, reason);
-    const before = shape(db, task);
-    if (!isOpen(task) && task.crewId !== input.crewId) {
-      // Started again after its crew session was removed or merged: open for the new session.
-      // The old session's closed subtasks stay as its record and stop counting (`countsToward`).
-      db.sqlite.query("UPDATE tasks SET status='pending',closed_at=NULL WHERE id=?").run(task.id);
-      // The steps its lead laid out (no crew id) that the old session closed are its record too:
-      // they take its crew id, so they stop counting. Those still open are the new session's work.
-      if (task.crewId !== null)
-        for (const sub of descendants(db, task.id).filter((t) => t.crewId === null && !isOpen(t))) {
-          const old = shape(db, sub);
-          db.sqlite.query("UPDATE tasks SET crew_id=? WHERE id=?").run(task.crewId, sub.id);
-          recordChange(db, old, taskById(db, sub.id), who, now, reason);
-        }
-    } else if (task.crewId !== null && task.crewId !== input.crewId) {
-      // A continuation: its predecessor's subtasks are its own now, so they count on. Their
-      // `updated_at` stays: their work did not change, and the history entry says who took them.
-      for (const sub of descendants(db, task.id).filter((t) => t.crewId === task.crewId)) {
-        const old = shape(db, sub);
-        db.sqlite.query("UPDATE tasks SET crew_id=? WHERE id=?").run(input.crewId, sub.id);
-        recordChange(db, old, taskById(db, sub.id), who, now, reason);
-      }
-    }
-    db.sqlite
-      .query("UPDATE tasks SET crew_id=?,updated_at=? WHERE id=?")
-      .run(input.crewId, now, task.id);
-    const refs = input.waitsForPhases.map((phase) => {
-      const found = allTasks(db, input.project).find(
-        (t) => t.kind === "phase" && t.plan === input.plan && t.phase === phase,
-      );
-      if (!found) throw new Error(`phase not found: ${phase}`);
-      return found.id;
-    });
-    dependencies(db, task, { add: refs });
-    const after = taskById(db, task.id);
-    recordChange(db, before, after, who, now, reason);
-    return after;
-  });
 }
 export function ack(db: WorkDb, project: string, taskRef: string, now: number) {
   return writeWork(db, () => {

@@ -11,7 +11,6 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { CREW_ENV } from "../crew/session";
 import type { Dialect } from "../shell/command";
 import {
   commitConfig,
@@ -23,16 +22,7 @@ import {
   writePersonalWorkflow,
 } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import {
-  CREW_PUSH_REFUSAL,
-  CREW_STEPS,
-  crewGitAnswer,
-  DEFAULT_PROTECTED_BRANCHES,
-  guardQuestions,
-  guardVerdict,
-  PUSH_FREE,
-  runsGit,
-} from "./git-guard";
+import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import { gitGuardHook } from "./specs";
 
 // Folders made once for this file (the preload removes only tempDir() folders after each test).
@@ -55,7 +45,14 @@ beforeAll(() => {
 
 afterAll(() => rmSync(base, { recursive: true, force: true }));
 
-const OPTIONS = { protectedBranches: ["dev", "main"], pushRules: PUSH_FREE, sharedStash: true };
+/** `autoPush` on: a push asks only when it is a force-push or reaches a protected branch. */
+const AUTO_PUSH_ON = () => null;
+
+const OPTIONS = {
+  protectedBranches: ["dev", "main"],
+  autoPushAsk: AUTO_PUSH_ON,
+  sharedStash: true,
+};
 
 /**
  * The one question string the hook would ask, or undefined when it asks nothing. `dialect`:
@@ -205,7 +202,7 @@ describe("a push to a protected branch asks", () => {
     const only = (command: string) =>
       guardQuestions(command, neutral, {
         protectedBranches: DEFAULT_PROTECTED_BRANCHES,
-        pushRules: PUSH_FREE,
+        autoPushAsk: AUTO_PUSH_ON,
         sharedStash: false,
         env: cleanGitEnv(),
       });
@@ -983,7 +980,7 @@ describe("a 64 KB command line is read within the guard's time", () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// D15: `autoPush` off is enforced. D24: a crew session never pushes.
+// D15: `autoPush` off is enforced.
 // ---------------------------------------------------------------------------------------
 
 /** The project's file as committed on `origin/dev`, the integration base. */
@@ -1134,278 +1131,138 @@ describe("D15: autoPush off asks before any git push", () => {
   });
 });
 
-describe("D24: a crew session never pushes", () => {
-  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
-
-  it("D24: any git push is denied, whatever autoPush says", async () => {
-    const { env, repo } = policyRepo({ ...BASE_CONFIG, workflow: { autoPush: true } });
-    const crew = { ...env, ...CREW };
-    for (const [command, tool] of [
-      ["git push", "Bash"],
-      ["git push origin fix/x", "Bash"],
-      ["git push -u origin HEAD", "Bash"],
-      ["git -C ../other push origin fix/x", "Bash"],
-      ["bash -c 'git push origin HEAD'", "Bash"],
-      ['sh -c "cd sub && git push"', "Bash"],
-      ["git commit -m x && git push", "Bash"],
-      ["git push --dry-run origin fix/x", "Bash"],
-      ["git push --force origin main", "Bash"],
-      ["git push origin :old-branch", "Bash"],
-      ["git push origin fix/x", "PowerShell"],
-    ] as const) {
-      expect([command, await pushAnswer(crew, repo, command, tool)]).toEqual([
-        command,
-        { decision: "deny", reason: CREW_PUSH_REFUSAL },
-      ]);
-    }
-    // The lead (no variable) keeps today's behaviour: autoPush on is silent for a feature branch.
-    expect(await pushAnswer(env, repo, "git push origin fix/x")).toBeNull();
-  });
-
-  it("D24: with autoPush off a crew session is denied, not asked", async () => {
-    const { env, repo } = policyRepo();
-    expect(await pushAnswer({ ...env, ...CREW }, repo, "git push origin fix/x")).toEqual({
-      decision: "deny",
-      reason: CREW_PUSH_REFUSAL,
-    });
-  });
-
-  it("D24: the rest of git is as for anyone: commits and reads are silent", async () => {
-    const { env, repo } = policyRepo();
-    const crew = { ...env, ...CREW };
-    for (const command of [
-      "git commit -m x",
-      "git status",
-      "git fetch origin",
-      "git merge origin/dev",
-      "git log --oneline -3",
-    ]) {
-      expect([command, await pushAnswer(crew, repo, command)]).toEqual([command, null]);
-    }
-    // A thing git guards for everyone is denied for a crew session, with the step (CC6).
-    expect((await pushAnswer(crew, repo, "git reset --hard"))?.decision).toBe("deny");
-  });
-
-  it("D24: an empty variable names no crew session", async () => {
-    const { env, repo } = policyRepo({ ...BASE_CONFIG, workflow: { autoPush: true } });
-    expect(
-      await pushAnswer({ ...env, [CREW_ENV]: "  " }, repo, "git push origin fix/x"),
-    ).toBeNull();
-  });
-
-  it("D24: the verdict names the denial apart from the questions", () => {
-    const options = {
-      protectedBranches: ["main"],
-      pushRules: { crew: true, autoPushAsk: () => "asked" },
-      sharedStash: false,
-      env: cleanGitEnv(),
-    };
-    expect(guardVerdict("git push -f origin main", neutral, options)).toEqual({
-      refuse: [CREW_PUSH_REFUSAL],
-      ask: [],
-    });
-    // A work-destroying ask is a refusal in a crew session, with the step that replaces it.
-    expect(guardVerdict("git reset --hard", neutral, options)).toEqual({
-      refuse: [CREW_STEPS.resetHard],
-      ask: [],
-    });
-    const lead = { ...options, pushRules: { crew: false, autoPushAsk: () => "asked" } };
-    expect(guardVerdict("git push origin fix/x", neutral, lead)).toEqual({
-      refuse: [],
-      ask: ["asked"],
-    });
-  });
-});
-
 // ---------------------------------------------------------------------------------------
-// CC6: a crew session's work-destroying asks are denies naming the step (D24).
+// The hook's question before each command that destroys work.
 // ---------------------------------------------------------------------------------------
 
-/**
- * Each command that destroys work: the question a person's session still reads, and the deny a
- * crew session reads instead — the step that does the same job without a question. The crew
- * texts are written by hand here, as the answer's contract; a repeat uses the guard's own.
- */
+/** Each command that destroys work, and the question the hook asks, written by hand. */
 const WORK_COMMANDS = [
   [
     "git checkout -- src/a.ts",
     "`git checkout` here overwrites files in this folder with another version, and any uncommitted change in them is lost for good. Approve only if you want them gone; a WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
-    "A crew session never discards uncommitted changes with `git checkout`, `git switch -f` or `git restore`: nobody is at the machine to answer the guard's question, and the changes are lost for good. Commit the work in progress first. To undo a deliberate break, copy the file before you break it (`cp path path.bak`), copy it back after (`cp path.bak path`), delete the copy (`rm path.bak`), then check it with `git diff --quiet -- path`.",
   ],
   [
     "git restore src/a.ts",
     "`git restore` here overwrites files in this folder with another version, and any uncommitted change in them is lost for good. Approve only if you want them gone; a WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
-    CREW_STEPS.discard,
   ],
   [
     "git switch -f dev",
     "`git switch` here overwrites files in this folder with another version, and any uncommitted change in them is lost for good. Approve only if you want them gone; a WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.",
-    CREW_STEPS.discard,
   ],
   [
     "git worktree remove --force ../app-wt-other",
     "`git worktree remove --force` deletes a worktree even when it holds uncommitted or untracked work, and git cannot bring that back. Look in it first.",
-    "A crew session never runs `git worktree remove --force`: it deletes a worktree even when it holds uncommitted or untracked work, and nobody is at the machine to answer the guard's question. Look in it first: commit or copy out what it holds, then run `git worktree remove <path>` without `--force`, which refuses while anything is left.",
   ],
   [
     "git branch -D fix/x",
     "`git branch -D` deletes a branch even if it was never merged: its commits are then only in the reflog. `git branch -d` deletes a merged branch, and does not ask.",
-    "A crew session never deletes a branch with `git branch -D`: it can drop commits that were never merged, and nobody is at the machine to answer the guard's question. `git log --oneline HEAD..<branch>` shows what would be lost: when it lists nothing, `git branch -d <branch>` deletes it; when it lists commits, leave the branch and name it in your report.",
   ],
   [
     "git reset --hard",
     "`git reset --hard` throws away every uncommitted change in this folder, for good. Approve only if you want them gone; a WIP commit keeps the work first.",
-    "A crew session never runs `git reset --hard`: it throws away every uncommitted change in this folder, and nobody is at the machine to answer the guard's question. Commit the work in progress first; `git reset --soft <commit>` moves the branch and keeps the changes in the folder. To undo a deliberate break, copy the file back (`cp path.bak path`), delete the copy (`rm path.bak`), and check it with `git diff --quiet -- path`.",
   ],
   [
     "git reset --merge HEAD~1",
     "`git reset --merge` throws away changes that are staged but not committed: a staged change to a tracked file goes back to the target version, and a staged new file is deleted from the folder (measured). Your working files are kept: it refuses rather than overwrite one whose working copy differs from the target, including a file with both staged and unstaged changes (measured on git 2.53). Approve only if you want the staged work gone; a WIP commit keeps it first.",
-    CREW_STEPS.resetMerge,
   ],
   [
     "git clean -f",
     "`git clean -f` deletes untracked files for good: git cannot bring them back. `git clean -n` shows what it would delete, without deleting.",
-    "A crew session never runs `git clean -f`: it deletes untracked files for good, and nobody is at the machine to answer the guard's question. Run `git clean -n` and read the list first; commit anything worth keeping (`git add <path>`), then delete the rest with `rm`.",
   ],
   [
     "git stash clear",
     "`git stash clear` throws away every stash for good: git cannot bring them back. `git stash list` shows what they hold, `git stash show -p` one of them.",
-    "A crew session never runs `git stash clear`: it throws away every stash for good, and nobody is at the machine to answer the guard's question. `git stash list` shows them all; drop only your own by name (`git stash drop stash@{n}`) and leave the rest.",
   ],
   [
     "git stash drop",
     "`git stash drop` with no stash named drops the newest one, whoever made it. `git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.",
-    "A crew session never runs `git stash drop` without a name: it drops the newest stash, whoever made it, and nobody is at the machine to answer the guard's question. `git stash list` shows them; `git stash drop stash@{n}` names the one you mean.",
   ],
   [
     "git stash",
     "The git stash is shared by every worktree of this repo, so a bare `git stash` or `git stash pop` can take or restore another session's work. A WIP commit is safer; or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
-    "A crew session never runs a bare `git stash`, or `git stash pop`: the stash is shared by every worktree of the repo, and nobody is at the machine to answer the guard's question. Use the tagged form: `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
   ],
   [
     "git stash pop",
     "The git stash is shared by every worktree of this repo, so a bare `git stash` or `git stash pop` can take or restore another session's work. A WIP commit is safer; or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.",
-    CREW_STEPS.stashShared,
   ],
 ] as const;
 
-describe("CC6: a crew session is denied, never asked, before a command that destroys work", () => {
-  const CREW = { [CREW_ENV]: "B2-api-aaaaaa" };
-
-  it("CC6: each former ask is a deny naming the step", async () => {
+describe("the hook asks before a command that destroys work", () => {
+  it("each command gets exactly its question", async () => {
     const { env, repo } = policyRepo();
-    for (const [command, , crewReason] of WORK_COMMANDS) {
-      expect([command, await pushAnswer({ ...env, ...CREW }, repo, command)]).toEqual([
-        command,
-        { decision: "deny", reason: crewReason },
-      ]);
-    }
-  });
-
-  it("CC6: a person's own session keeps exactly today's question", async () => {
-    const { env, repo } = policyRepo();
-    for (const [command, personAsk] of WORK_COMMANDS) {
+    for (const [command, ask] of WORK_COMMANDS) {
       expect([command, await pushAnswer(env, repo, command)]).toEqual([
         command,
-        { decision: "ask", reason: personAsk },
+        { decision: "ask", reason: ask },
       ]);
     }
   });
 
-  it("CC6: a crew session's bare stash is denied even with no `worktrees` in the file", async () => {
-    // The crew part reads no project file, and a crew session always works in a worktree,
-    // where every worktree of the repo shares one stash.
+  it("a bare stash is silent in the main checkout when the project does not work in worktrees", async () => {
     const { env, repo } = policyRepo({ requires: ">=0.4" });
     for (const command of ["git stash", "git stash pop"]) {
-      expect([command, await pushAnswer({ ...env, ...CREW }, repo, command)]).toEqual([
-        command,
-        { decision: "deny", reason: CREW_STEPS.stashShared },
-      ]);
       expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
     }
   });
 
-  it("CC6: the tagged stash form, a named drop and a read stay silent in a crew session", async () => {
+  it("a bare stash asks in a linked worktree, even with no worktrees key", async () => {
+    // Builders in linked worktrees of one repo share its stash list, so one builder's
+    // `git stash pop` can take another's work.
+    const { env, repo } = policyRepo({ requires: ">=0.4" });
+    const linked = join(dirname(repo), "app-linked");
+    git(repo, "worktree", "add", "-q", "-b", "fix/linked", linked);
+    const ask =
+      "The git stash is shared by every worktree of this repo, so a bare `git stash` or `git stash pop` can take or restore another session's work. A WIP commit is safer; or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.";
+    for (const command of ["git stash", "git stash pop"]) {
+      expect([command, await pushAnswer(env, linked, command)]).toEqual([
+        command,
+        { decision: "ask", reason: ask },
+      ]);
+    }
+  });
+
+  it("the tagged stash form, a named drop and a read stay silent", async () => {
     const { env, repo } = policyRepo();
-    const crew = { ...env, ...CREW };
     for (const command of [
       "git stash push -u -m my-tag",
       "git stash apply 1234567",
       "git stash drop stash@{0}",
       "git stash list",
     ]) {
-      expect([command, await pushAnswer(crew, repo, command)]).toEqual([command, null]);
+      expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
     }
   });
 
-  it("CC6: a broken or too-new project file does not stall a crew session", async () => {
+  it("a too-new project file asks: the guard fails closed", async () => {
     const { env, repo } = policyRepo({ requires: ">=99" });
-    // A person's session is asked: the guard fails closed when it cannot do what the
-    // project's file asked.
     expect((await pushAnswer(env, repo, "git commit -m x"))?.decision).toBe("ask");
-    // A crew session's answer does not depend on the project's file (the crew rule reads no
-    // project value), so nothing is asked and the checkpoint commit goes through.
-    expect(await pushAnswer({ ...env, ...CREW }, repo, "git commit -m x")).toBeNull();
-    // A command that destroys work is denied by the crew part, before the file is read.
-    expect(await pushAnswer({ ...env, ...CREW }, repo, "git reset --hard")).toEqual({
-      decision: "deny",
-      reason: CREW_STEPS.resetHard,
-    });
   });
 
-  it("CC6: a project whose ownHooks lists git-guard still gets the crew deny", async () => {
+  it("a project whose ownHooks lists git-guard answers with its own copy", async () => {
     const { env, repo } = policyRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["git-guard"] });
-    // The project's own copy answers for a person's session...
     expect(await pushAnswer(env, repo, "git reset --hard")).toBeNull();
-    // ...and the crew part, which runs before it, still denies a crew session.
-    expect(await pushAnswer({ ...env, ...CREW }, repo, "git reset --hard")).toEqual({
-      decision: "deny",
-      reason: CREW_STEPS.resetHard,
-    });
   });
 
-  it("CC8: git reset --keep loses no working file, so it asks nobody and is never refused", async () => {
+  it("CC8: git reset --keep loses no working file, so it asks nobody", async () => {
     // Measured on git 2.53: --keep never overwrites a working file (it refuses instead), and a
     // staged change becomes unstaged when the target does not touch the file. It does reset
-    // the index, so a version staged and not also in the working file is dropped — the crew
-    // step says to commit it first — but no working file is lost, so there is no question to
-    // put to a person and no step to name for a crew session.
+    // the index, so a version staged and not also in the working file is dropped, but no
+    // working file is lost, so there is no question to put to a person.
     const { env, repo } = policyRepo();
     for (const command of ["git reset --keep HEAD~1", "git reset --keep", "git reset --ke HEAD"]) {
       expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
-      expect([command, await pushAnswer({ ...env, ...CREW }, repo, command)]).toEqual([
-        command,
-        null,
-      ]);
     }
   });
 
-  it("CC8: with the tool unknown, the crew part reads both dialects on its own", async () => {
-    // PowerShell reads its own curly quotes (“ ”) as quoting; Bash does not. The crew part
-    // passes no dialect when the tool is not told, so it reads both — exactly as the guard's
-    // own run does — and sees the reset.
+  it("CC8: with the tool unknown, the guard reads both dialects", async () => {
+    // PowerShell reads its own curly quotes (“ ”) as quoting; Bash does not. Not told the tool,
+    // the guard reads the line both ways, and sees the reset.
     const { env, repo } = policyRepo();
-    const command = "git reset “--hard”";
-    const call = (tool?: string) => ({
-      hook_event_name: "PreToolUse",
-      tool_input: { command },
-      ...(tool === undefined ? {} : { tool_name: tool }),
+    expect(await pushAnswer(env, repo, "git reset “--hard”", "SomeTool")).toEqual({
+      decision: "ask",
+      reason:
+        "`git reset --hard` throws away every uncommitted change in this folder, for good. Approve only if you want them gone; a WIP commit keeps the work first.",
     });
-    const crew = { ...env, ...CREW };
-    const answerOf = (result: unknown) =>
-      JSON.parse((result as { stdout?: string }).stdout ?? "{}").hookSpecificOutput;
-    expect(answerOf(crewGitAnswer(call("SomeTool"), crew, repo))).toEqual({
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: CREW_STEPS.resetHard,
-    });
-    // Told PowerShell, the part reads that dialect alone and still denies; told Bash, the
-    // same line is no reset it can read, so the part stays silent (the guard's own run, which
-    // reads both, is what answers a hook call).
-    expect(answerOf(crewGitAnswer(call("PowerShell"), crew, repo)).permissionDecision).toBe("deny");
-    expect(crewGitAnswer(call("Bash"), crew, repo)).toEqual({});
-    // Through the whole hook, a call whose tool is unknown is denied too.
-    expect((await pushAnswer(crew, repo, command, "SomeTool"))?.decision).toBe("deny");
   });
 });

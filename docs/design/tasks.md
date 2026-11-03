@@ -14,19 +14,41 @@ other machines. One local database cannot do that. So work tasks live locally in
 production, database, teammate and follow-up tasks live as Markdown files in the repo.
 The task's kind selects its store, not a second set of tools.
 
+## The subagent ledger in 2.0
+
+The main session creates the plan task, one phase task per builder and each phase's steps.
+The phase description is the brief: goal, files and boundaries, patterns and tools, and
+verification. Disjoint phases run in parallel worktrees; `blocked_by` orders shared files.
+
+Work tasks add four optional fields, set through `task_create` / `task_update` or the CLI:
+
+| Field | Meaning |
+|---|---|
+| `agent` | The builder's name or id, used to resume it for fixes. |
+| `branch` | Its git branch. |
+| `worktree` | Its checkout path. |
+| `base` | The commit the builder started from. |
+
+`phase` remains the plan's phase id. `task_get` shows the fields; `task_list scope plan`
+shows each phase's agent, branch, state and completed steps, such as `3/5`.
+
+A builder writes a `Report:` note with its result and checks. The main session records
+small decisions in `Ruling:` notes, asks a fresh reviewer to review each phase, merges it,
+closes its task and starts what it unblocked. One final whole-branch review runs on `opus`.
+After compaction, this ledger and git history prevent repeating finished work.
+
 ## The work store
+
+A work task has a project-local number such as `#12`, a subject, Markdown description,
+status (`pending`, `in_progress`, `done`, `dropped`), type (`blocking` or `non-blocking`),
+parent, plan, phase, agent, branch, worktree, base commit, creator, claim and timestamps.
+Dependencies name tasks it waits for; notes hold reports, rulings and other work records.
 
 `src/tasks/work/` owns `<stateDir>/tasks/work.db`, using `bun:sqlite`. WAL (write-ahead
 logging) lets readers run beside a writer. Writes use short `BEGIN IMMEDIATE` transactions
 and a busy timeout. `PRAGMA user_version` holds the schema version; `min_compatible` records
 the oldest compatible reader. Migrations only add to the schema, because an older plugin
 folder can still have a running server.
-
-A task has a project-local number, shown as `#12`, a subject and free Markdown description,
-status (`pending`, `in_progress`, `done`, `dropped`), a type (`blocking` or `non-blocking`),
-an optional parent, plan, phase and crew id, creator, process claim and timestamps. Its
-blocked-by list (the `task_deps` table) names the tasks it waits for; notes keep the work log.
-Machine acknowledgements record teammate tasks completed here.
 
 The store enforces these rules, not the caller:
 
@@ -35,8 +57,6 @@ The store enforces these rules, not the caller:
   transaction.
 - A task blocked by an open task can neither start nor be done.
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
-- A system close on merge or removal drops open subtasks and leaves an automatic note; a merge
-  leaves non-blocking work open, and a removal hands the steps a lead laid out back to pending.
 - Delete is for a mistake with no notes or subtasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
 
@@ -62,7 +82,8 @@ nothing. `holdingUnder` (`queries.ts`) is the one answer to "what holds this tas
 tasks below it, reached through blocking tasks only, those in progress first. It never walks
 into a non-blocking task, so a blocking subtask of a non-blocking task holds only that task.
 It does walk on below a closed task, so a task closed early cannot hide open work under it.
-`doneValid`, the crew gates and a merge's close all use it.
+`doneValid`, the builder's hand-back check (`builder-finish`) and the portal's phase steps all
+use it.
 
 **Blocked-by** (`blocked_by` on create, `blocked_by_add` and `blocked_by_remove` on update)
 names tasks that must finish first. A task blocked by an open task cannot go to `in_progress`
@@ -73,35 +94,35 @@ this one, and a task that already waits for this one through a parent: a parent 
 blocking subtasks, so a subtask blocked by its parent, or by a task that waits for that parent,
 could never start, and none of them could ever be done. That last walk follows both kinds of
 wait (blocked-by, and a parent for the subtasks that hold it), so the order the blocks were
-added does not matter. The kit's own writes (a crew start, a merge's close, an import) are not
-held. Done is judged only on the move to done, so a done task's other fields still change.
+added does not matter. Done is judged only on the move to done, so a done task's other fields
+still change.
+
+**The main session lays out its phases ahead of its builders.** `task_create` with `phase` (its
+id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
+under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
+that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
+out, it is the plan of the caller's latest own task that has one (made or claimed by it), never
+another session's plan. Only `task_list` with `scope: "plan"` falls back to the project's
+newest plan, to show it. `plan` alone makes the plan task, and takes a subject only.
+Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
+each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
 1.11.0 migrated. A 1.10.x writer adds tasks with the default, blocking, which is the 1.10.x
 rule. No hook query names the column, and a row without it reads as blocking.
 
-**A lead lays out its phases ahead of its crew.** `task_create` with `phase` (its id, as
-`crew start` names it, refused by the same rule, `isPhase`) makes the phase task under the
-plan task, once per plan and phase (`layPhase`). A second call answers with the phase that is
-there, says so, and names the fields it did not use. `plan` is the slug `crew lead --plan`
-names, the lead's own plan when left out. `plan` alone makes the plan task, and takes a subject
-only. Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its
-plan, and each starts pending. A crew session cannot lay phases: it works inside its own.
-`crew start` finds the phase by plan and phase (`ensurePhaseTask`) and adopts it with what the
-lead put under it, so a phase has one task.
-
 ### A task's history
 
 Every write in `store.ts` adds one entry to `task_events`, in the same transaction as the
 change, so the two land together or not at all. An entry holds the time, what happened
 (`created`, `changed`, `noted`, `closed`, `deleted`), each field's value before and after
-(subject, description, status, type, parent, crew, claim, blocked by), and who made it: the session
-id and name (the name Claude Code shows, read from its session record by `callerOf`), the crew
-id and the Claude process. A change the kit makes itself (a merge or removal closing a phase,
-a crew session taking a phase, an import) carries its reason instead. A change that changes
-nothing adds no entry. Entries are never edited, and the table has no foreign key on purpose:
-a deleted task keeps its history, whose last entry holds the task as it was.
+(subject, description, status, type, parent, the four ledger fields, claim, blocked by), and who
+made it: the session id and name (the name Claude Code shows, read from its session record by
+`callerOf`) and the Claude process. A change the kit makes itself (an import, or the import's
+repair) carries its reason instead. A change that changes nothing adds no entry. Entries are
+never edited, and the table has no foreign key on purpose: a deleted task keeps its history,
+whose last entry holds the task as it was.
 
 `task_get` and `task show` print it as a timeline, oldest first, from `history.ts`, and a
 deleted task's too (`#12 "Subject" [deleted]`, then its history). A
@@ -118,29 +139,15 @@ The project key belongs to the main checkout, shared by its worktrees. A folder 
 git uses its own real path. A git failure is an error, never a guessed identity. A broken
 project config leaves local work usable.
 
-A claim belongs to the Claude process: pid plus start time, not just a session id. The
+A claim belongs to the Claude process: pid plus start time, not just a session id. Off
+Linux there is no start time, so a claim there also needs the caller's session id
+(`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims, and a
+`/clear` there drops the claims until the task is started again. The
 server finds that process through ancestry and reads its current session record on each
 call. The record supplies the session id and cwd, including a move into a worktree. Thus
 `/clear` and a background fork keep the process's tasks. Another process's in-progress
 work is marked as belonging to another session. Live proof of these Claude Code behaviours
 is still owed in [the contract](../claude-code-contract.md).
-
-`crew start` makes a phase task keyed by plan and phase, even while the phase is queued, or
-adopts the one its lead laid out (above). `--waits-for` adds those phases to its blocked-by
-list. A continuation points the same task at the new crew id and takes over its predecessor's
-subtasks (their crew id moves too, with a history entry); new crew tasks default to its
-subtasks. Merge closes the phase done and drops its open blocking work; its non-blocking work
-stays open, for whoever picks it up. Removal drops the phase and the crew session's own open
-work under it (the tasks with its crew id). The steps its lead laid out (no crew id) stay: each
-goes back to pending, its claim cleared, with a note, because the plan still needs them. A
-phase started again after either opens again for the new crew session; the old session's
-closed subtasks stay under it as its record, and stop counting (below). The laid-out steps the
-old session closed take its crew id at that moment, so they stop counting too; those still
-open are the new session's work, on its role card.
-A lead has a plan task too. Its *own* tasks are the tasks its sessions in `leadSessions` made
-in its plan, the steps it laid out inside a phase too: they answer the reminder. Its Stop holds
-only for its own blocking work in progress outside an open phase; inside one, a step is that
-phase's crew session's to work. Adoption carries that ownership forward.
 
 ## Project tasks
 
@@ -189,7 +196,7 @@ fields rather than writing null. References and evidence keep the task understan
 
 ### The life of a project task
 
-- Create writes in the session's checkout, including a crew worktree, so the task ships in
+- Create writes in the session's checkout, a builder's worktree included, so the task ships in
   that branch's commit and pull request.
 - `task list --branch [--base <branch>]` lists task files changed against the base for the
   pull request's notes and still-owed sections. `task list --branches` finds open tasks on
@@ -215,50 +222,39 @@ The CLI exposes the same operations, including import, branch lists, checks and 
 lists; [README](../../README.md) lists their arguments. `task_get` and `task show` cap
 long output and accept an offset. Search uses SQL `LIKE`, not FTS5.
 
-`src/tasks/guard-view.ts` is the one join of the kit's list with Claude Code's legacy list
-for one release, and only until setup has run: once the user's settings deny `TaskUpdate`, a
-task left on Claude Code's list can never be closed, so it holds no stop and no done report.
-Hooks read the work database with `PRAGMA query_only`, a short busy wait
-and fail-open handling. A read-write open with query-only mode also works when a WAL file
-has no writer holding it open. All gates use this view, including `crew report`:
+### The hooks and pages that read it
 
-- The first crew edit needs a subtask under its phase. A crew made before phase tasks
-  existed is let through. A refusal names the task tool and CLI fallback.
-- Crew Stop names an open blocking subtask (`holdingUnder` its phase) and says to continue;
-  with none, it asks for the report. A done report is refused while one remains open.
-  Non-blocking work never holds either: it stays open after the merge. The role card lists it
-  apart, under "Non-blocking, never holds your report", so a crew session sees what its lead
-  laid out.
-- Lead Stop holds once for the lead's own blocking work in progress, unless the turn names
-  `Waiting for:` or has background work other than its watch. The notifier yields to it.
-- The lead reminder asks for its own task when none exists.
+Hooks open the work database with `PRAGMA query_only`, a short busy wait and fail-open handling
+(`src/tasks/work/db.ts`). A read-write open with query-only mode also works when a WAL file has
+no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's rules):
 
-`task-start` is machine-wide. At every start, clear and compaction it adds one block of the
-project's open work tasks, without descriptions, at most eight lines and "+n more". An open
-crew phase and its tasks stay out (they are that crew session's, on the board); what a merge
-left open under a closed phase (non-blocking work) is listed, since it is anyone's now. This process's
-own claimed tasks come first, then the ones in progress, then the most recently touched. A
-task untouched for `tasks.staleDays` (default 30) is not listed but counted in one line,
-unless this process claims it. Crew sessions get their subtasks on the role card instead. A
-lead also gets a line about stale project tasks. Until registration exists, the hook says to
-run setup.
+- `task-start` (SessionStart) is machine-wide. At every start, clear and compaction it adds one
+  block of the project's open work tasks, without descriptions, at most eight lines
+  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first, then the
+  ones in progress, then the most recently touched. A task untouched for `tasks.staleDays`
+  (default 30) is not listed but counted in one line, unless this process claims it. Until
+  registration exists, the hook says to run setup.
+- `keep-going` (Stop) holds the main session's turn end once while a phase of its plan is in
+  progress and nothing runs, naming the next ready phase.
+- `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
+  has open blocking steps (`holdingUnder`).
 
-Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, the crew board,
-`task_list`, the crew gates and the portal: the tasks under a task at every depth, closed (done
-or dropped) of all of them (`subtreeProgress`). Non-blocking tasks count too: progress says how
-much of the work is closed, and `holdingUnder` says what still holds the parent's done. Under a
-crew phase, a closed task an earlier crew session of the phase made does not
-count (`countsToward`): so a phase started again after a removal holds its new session at the
-first-edit gate until that session lists its own work.
+Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, `task_list` and the
+portal: the tasks under a task at every depth, closed (done or dropped) of all of them
+(`subtreeProgress`). Non-blocking tasks count too: progress says how much of the work is closed,
+and `holdingUnder` says what still holds the parent's done. A phase's steps on the portal are
+the one exception, and say so: they count blocking steps only, with a dropped step left out of
+both numbers ([portal](portal.md) § The pages' facts and actions (B6d)).
 
 The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
 each project's work tree as plan › phase › task › subtask, its open work and what closed in the
-last seven days, each row with its layer, type, blockers and progress, then the open task files
-by kind, stale ones marked. Filters narrow it to one project, blocked work or non-blocking work,
-and keep each match under the tasks above it. A project's page keeps a one-line card that links
-there, and each crew page a phase card with the same rows. All of them read again on the live
-stream's `tasks` event, which fires when the store's file or its write-ahead log changes
-([portal](portal.md)).
+last seven days, each row with its layer, type, blockers and progress, each phase with its
+ledger, then the open task files by kind, stale ones marked. Filters narrow it to one project,
+blocked work or non-blocking work, and keep each match under the tasks above it. A project's
+page keeps a one-line card that links there. Both read again on the live stream's `tasks`
+event, which fires when the store's file or its write-ahead log changes ([portal](portal.md)).
+
+
 
 ## Setup and the move from older lists
 

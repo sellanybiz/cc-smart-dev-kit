@@ -1,10 +1,24 @@
 /**
  * The reader of a raw write to GitHub's issues (D67): `gh issue create|edit|comment|close|…` and
  * `gh api` POST/PATCH/PUT/DELETE to a repository's issues. The merge guard asks the person about
- * one, and denies it in a crew session. Reads, and the kit's own `issue file`, are no write.
+ * one. Reads, and the kit's own `issue file`, are no write.
  */
 import { describe, expect, test } from "bun:test";
-import { computedIssueRisk, issueWrites, requestsIssueWrite, unnamedGhWords } from "./issue-writes";
+import {
+  computedIssueRisk,
+  issueWrites,
+  issueWritesWithAliases,
+  requestsIssueWrite,
+} from "./issue-writes";
+
+/**
+ * The words after `gh` that name no gh command and no alias in `aliases`, as the merge guard's
+ * reader hands them back (`issueWritesWithAliases`). With no aliases given, the list is read as
+ * unreadable, which leaves every such word in it.
+ */
+function unnamedGhWords(command: string, aliases: Map<string, string> | null = null): string[] {
+  return issueWritesWithAliases(command, () => aliases, "bash").unnamed;
+}
 
 describe("a raw issue write", () => {
   test.each([
@@ -47,7 +61,7 @@ describe("a raw issue write", () => {
   });
 
   // The review of the follow-up: the private runner list is gone, and these must still be seen
-  // by the shared reader alone (the crew deny reads this detector).
+  // by the shared reader alone (the merge guard reads this detector).
   test.each([
     "parallel ::: 'gh issue create -t x -b y'",
     "parallel -u gh issue create -t x -b y ::: a",
@@ -295,13 +309,13 @@ describe("IX1-4: a gh alias is read for what it expands to", () => {
   });
 
   test("the words that name no gh command are handed back, minus the aliases given", () => {
-    expect(unnamedGhWords("gh bug --title t && gh issue list && gh -R o/r dash", "bash")).toEqual([
+    expect(unnamedGhWords("gh bug --title t && gh issue list && gh -R o/r dash")).toEqual([
       "bug",
       "dash",
     ]);
-    expect(unnamedGhWords("gh bug", "bash", ALIASES)).toEqual([]);
-    expect(unnamedGhWords("gh dash", "bash", ALIASES)).toEqual(["dash"]);
-    expect(unnamedGhWords("echo gh dash; ls", "bash")).toEqual([]);
+    expect(unnamedGhWords("gh bug", ALIASES)).toEqual([]);
+    expect(unnamedGhWords("gh dash", ALIASES)).toEqual(["dash"]);
+    expect(unnamedGhWords("echo gh dash; ls")).toEqual([]);
   });
 });
 
@@ -359,7 +373,7 @@ describe("IX1 review: what the second opinion found", () => {
       "agents",
       "agent-tasks",
     ]) {
-      expect([word, unnamedGhWords(`gh ${word} list`, "bash")]).toEqual([word, []]);
+      expect([word, unnamedGhWords(`gh ${word} list`)]).toEqual([word, []]);
     }
   });
 
@@ -383,7 +397,7 @@ describe("IX1 review: what the second opinion found", () => {
   test("an alias is looked up by the name as typed: gh's aliases are case-sensitive", () => {
     const aliases = new Map([["Bug", "issue create"]]);
     expect(issueWrites("gh Bug -t x", "bash", aliases)).toEqual(["gh issue create"]);
-    expect(unnamedGhWords("gh bug -t x", "bash", aliases)).toEqual(["bug"]);
+    expect(unnamedGhWords("gh bug -t x", aliases)).toEqual(["bug"]);
   });
 
   test("a full URL of a GitHub Enterprise API is read like the path", () => {

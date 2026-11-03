@@ -6,8 +6,7 @@ export type WorkKind = "task" | "plan" | "phase";
  */
 export type WorkLayer = "plan" | "phase" | "task" | "subtask";
 /**
- * Whether an open task holds what is above it (D76). A blocking one holds its parent's done, a
- * crew session's hand-back and a lead's stop; a non-blocking one is noted work that holds nothing.
+ * Whether an open task holds its parent's done. Non-blocking work holds nothing.
  */
 export type WorkType = "blocking" | "non-blocking";
 export const SUBJECT_LIMIT = 200;
@@ -15,7 +14,6 @@ export const DESCRIPTION_LIMIT = 200_000;
 export const NOTE_LIMIT = 64_000;
 export interface Who {
   sessionId: string | null;
-  crewId: string | null;
   pid: number | null;
   procStart: string | null;
   /** The session's name, as Claude Code shows it (`callerOf`); absent or null when unknown. */
@@ -36,7 +34,6 @@ export interface WorkEvent {
   changes: Record<string, [unknown, unknown]>;
   sessionId: string | null;
   sessionName: string | null;
-  crewId: string | null;
   pid: number | null;
   /** Why the kit itself made the change (a merge, a removal, an import); null for a session's own. */
   reason: string | null;
@@ -57,7 +54,10 @@ export interface WorkTask {
   status: WorkStatus;
   plan: string | null;
   phase: string | null;
-  crewId: string | null;
+  agent: string | null;
+  branch: string | null;
+  worktree: string | null;
+  base: string | null;
   createdBy: string | null;
   claim: WorkClaim | null;
   createdAt: number;
@@ -76,7 +76,6 @@ export interface WorkNote {
   taskId: string;
   text: string;
   sessionId: string | null;
-  crewId: string | null;
   at: number;
 }
 export type Result<T> = { ok: true; value: T } | { ok: false; why: string };

@@ -16,9 +16,9 @@
  *   (information); a listed one with no project hook on its event left to answer is a
  *   warning. A project hook on the same event and tool as a plugin hook the list does NOT
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
- *   (`MACHINE_WIDE_HOOKS`: stop-failure, update-check, notify, playwright-output, and
- *   `agent-guard`, `fable-session`, `session-escape-guard`, `crew-role`, `lead-notes` and
- *   `agent-usage`, which run with or without the project's file) are never warned about: they
+ *   (`MACHINE_WIDE_HOOKS`: the user hooks stop-failure, update-check, notify and
+ *   playwright-output, and the specs that run with or without the project's file, such as
+ *   `agent-guard`, `keep-going` and `agent-usage`) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
@@ -50,6 +50,7 @@ import { ignoredFieldsOf } from "../jobs/kinds";
 import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
+  CcSmartDevKitVersionError,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -68,7 +69,6 @@ import { checkProjectTasks } from "../tasks/project/check";
 import { shippedIdsOn } from "../tasks/project/release";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
-import { MACHINE_CREW_KEYS, workflowValue } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -403,9 +403,8 @@ function ownCopyLines(
 /**
  * One `!` line when the file's `requires` lets in a plugin older than the one that brought a
  * field the file holds (`requiresFloor`): that plugin reads the file strictly and refuses all
- * of it, instead of saying "update". 1.2.0's `workflow set` left such files (a
- * `crew.handoffTokens` under `>=1.0`). A file with no `requires`, or one in a form not read
- * there, is not judged. `workflow set --project` and `project init` both raise it.
+ * of it, instead of saying "update" (a `workflow.issues` group, from 1.4.0, under `>=1.0`). A
+ * file with no `requires`, or one in a form not read there, is not judged. `workflow set --project` and `project init` both raise it.
  */
 function requiresLines(configFile: string, projectDir: string, home: string): ProjectLine[] {
   let file: unknown;
@@ -450,29 +449,7 @@ function jobKindLines(
       ok: true,
       info: true,
       text: `project: ${shown(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
-      fix: `remove them from jobs.kinds; how many heavy jobs run at once is your own setting: ${COMMAND} job set max-jobs <n>`,
-    },
-  ];
-}
-
-/** Legacy project limits still parse, but only the person's file controls this machine. */
-function crewLimitLines(
-  config: CcSmartDevKitConfig | null,
-  configFile: string | null,
-  projectDir: string,
-  home: string,
-): ProjectLine[] {
-  if (config === null || configFile === null) return [];
-  const keys = MACHINE_CREW_KEYS.filter(
-    (key) => workflowValue(config.workflow ?? {}, key) !== undefined,
-  );
-  if (keys.length === 0) return [];
-  return [
-    {
-      ok: true,
-      info: true,
-      text: `project: ${shown(configFile, projectDir, home)} sets workflow.crew machine limits (${keys.join(", ")}) that are ignored because crew limits are per machine`,
-      fix: `remove each one with ${COMMAND} workflow unset --project <key>; set your own with ${COMMAND} workflow set crew.max <n>`,
+      fix: "remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says",
     },
   ];
 }
@@ -515,7 +492,11 @@ export async function projectChecks(
       {
         ok: false,
         text: `project: ${error.message}`,
-        fix: `correct the file as this line says, or run: ${COMMAND} project init`,
+        // `project init` never changes which plugin versions a `requires` range lets in.
+        fix:
+          error instanceof CcSmartDevKitVersionError
+            ? "do what this line says"
+            : `correct the file as this line says, or run: ${COMMAND} project init`,
       },
       ...engine,
     ];
@@ -525,7 +506,6 @@ export async function projectChecks(
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
     ...jobKindLines(config, configFile, projectDir, paths.home),
-    ...crewLimitLines(config, configFile, projectDir, paths.home),
     ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.

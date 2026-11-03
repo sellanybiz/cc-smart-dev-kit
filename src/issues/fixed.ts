@@ -1,5 +1,5 @@
 /**
- * What a crew merge leaves on an issue, and what the release reads back (decision D67).
+ * What a merge leaves on an issue, and what the release reads back (decision D67).
  *
  * A fix merged into a release branch is not on the default branch, so GitHub does not close
  * its issue. The kit does two things instead (`.claude/research/2026-10-25-gi2-closing.md`):
@@ -42,7 +42,7 @@ import { screenText } from "./screen";
 export interface FixedMark {
   /** The branch the work merged into. */
   base: string;
-  /** The crew session's branch. */
+  /** The fix's branch. */
   branch: string;
   issue: number;
   /** The commit the base got from the merge (a merge or a squash commit); null when unknown. */
@@ -131,8 +131,8 @@ export async function openGate(world: IssueWorld): Promise<Gate> {
   }
   const off = issuesOff(policy.resolved, policy.base);
   if (off !== null) return { kind: "off", why: off };
-  // Not "off": the project does use issues. The mark waits, and the lead hears why, until the
-  // labels differ (`labelsProblem`).
+  // Not "off": the project does use issues. The mark waits, and `issue mark-fixed` says why,
+  // until the labels differ (`labelsProblem`).
   const clash = labelsProblem(policy.resolved);
   if (clash !== null) return { kind: "failed", why: clash };
   const own = ownRepository(world.cwd, world.env);

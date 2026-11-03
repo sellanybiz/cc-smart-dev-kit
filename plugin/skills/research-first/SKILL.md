@@ -10,7 +10,7 @@ Where it differs, the add-on wins (`core.md`, top). It names the project's resea
 any library it prefers or bans.
 
 The rule — research before you build, reuse in a fixed order, never give up — is in the core
-instructions (§ Lead the work). This skill is how.
+instructions (§ Drive the work). This skill is how.
 
 ## 1. Look in the project first
 
@@ -98,7 +98,7 @@ the quote.
 
 **Starting it is the person's call.** Start it only when they asked for a workflow, a sweep or
 this skill's sweep by name; when you decided on it yourself, ask once with `AskUserQuestion`
-(a crew session asks its lead with `crew report --question`; a subagent never starts it),
+(a subagent reports the need to its caller instead of starting it),
 naming the question, the angles and the budget, with the recommended option first, and say it
 starts several agents (one `opus` refuter per claim checked). Never write an inline workflow to
 take its place; if the plugin's workflow is missing or `Workflow` refuses it, say so and go on

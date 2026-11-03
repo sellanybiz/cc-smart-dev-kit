@@ -23,7 +23,10 @@ interface TaskRow {
   status: WorkStatus;
   plan: string | null;
   phase: string | null;
-  crew_id: string | null;
+  agent?: string | null;
+  branch?: string | null;
+  worktree?: string | null;
+  base?: string | null;
   created_by: string | null;
   claim_pid: number | null;
   claim_start: string | null;
@@ -59,7 +62,10 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       status: row.status,
       plan: row.plan,
       phase: row.phase,
-      crewId: row.crew_id,
+      agent: row.agent ?? null,
+      branch: row.branch ?? null,
+      worktree: row.worktree ?? null,
+      base: row.base ?? null,
       createdBy: row.created_by,
       claim:
         row.claim_pid === null
@@ -96,52 +102,11 @@ export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
 }
-/**
- * Whether a task counts toward progress, given the crew id of the nearest crew phase above it
- * (null: none). A closed task an earlier crew session of that phase made does not: a phase
- * started again after `crew rm` or a merge (`ensurePhaseTask` reopens it) keeps that session's
- * closed subtasks as its record, and the new session's gates and `closed/total` start from its
- * own work. A continuation takes its predecessor's subtasks over, so they count on.
- */
-export function countsToward(task: WorkTask, phaseCrew: string | null): boolean {
-  return phaseCrew === null || isOpen(task) || task.crewId === null || task.crewId === phaseCrew;
-}
-/** The tasks under a task, at every depth, that its progress counts (`countsToward`). */
+/** Every descendant counts toward progress. */
 export function countedUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
-  const children = new Map<string, WorkTask[]>();
-  for (const t of tasks) {
-    if (!t.parentId) continue;
-    const siblings = children.get(t.parentId);
-    if (siblings) siblings.push(t);
-    else children.set(t.parentId, [t]);
-  }
-  const crewOf = (t: WorkTask | undefined, above: string | null) =>
-    t?.kind === "phase" ? t.crewId : above;
-  const seen = new Set([id]);
-  const result: WorkTask[] = [];
-  const walk = (parent: string, phaseCrew: string | null) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id)) continue;
-      seen.add(child.id);
-      if (countsToward(child, phaseCrew)) result.push(child);
-      walk(child.id, crewOf(child, phaseCrew));
-    }
-  };
-  walk(
-    id,
-    crewOf(
-      tasks.find((t) => t.id === id),
-      null,
-    ),
-  );
-  return result;
+  return descendantsIn(tasks, id);
 }
-/**
- * How far a task is: the tasks under it, at every depth, that are closed (done or dropped), of
- * all of them that count (`countsToward`). The one rule the status line, the board, `task_list`,
- * the crew gates and the portal count by: a parent may be done once each is done or dropped, so
- * a dropped one is finished with too.
- */
+/** Closed (done or dropped), of all descendants. */
 export function subtreeProgress(
   tasks: readonly WorkTask[],
   id: string,
@@ -225,9 +190,8 @@ export interface ListOptions {
   project: string;
   root?: string;
   plan?: string;
-  crewId?: string;
-  /** The Claude process whose claims count as "mine" (never a session id: `/clear` keeps them). */
-  claimedBy?: { pid: number; procStart: string | null };
+  /** The caller whose claims count as "mine" (`claimHeldBy`). */
+  claimedBy?: Who;
   openOnly: boolean;
 }
 export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
@@ -240,10 +204,7 @@ export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
         (!allowed || allowed.has(t.id)) &&
         (!options.root || root !== null) &&
         (!options.plan || t.plan === options.plan) &&
-        (!options.crewId || t.crewId === options.crewId) &&
-        (!options.claimedBy ||
-          (t.claim?.pid === options.claimedBy.pid &&
-            t.claim.procStart === options.claimedBy.procStart)) &&
+        (!options.claimedBy || claimHeldBy(t.claim, options.claimedBy)) &&
         (!options.openOnly || isOpen(t)),
     )
     .map((t) => ({ ...t, children: [] as WorkTree[] }));
@@ -271,7 +232,7 @@ export function searchTasks(db: WorkDb, project: string, text: string): WorkTask
 export function notesOf(db: WorkDb, task: string | WorkTask): WorkNote[] {
   return db.sqlite
     .query<WorkNote, [string]>(
-      "SELECT id, task_id AS taskId,text,session_id AS sessionId,crew_id AS crewId,at FROM task_notes WHERE task_id=? ORDER BY id",
+      "SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id",
     )
     .all(typeof task === "string" ? task : task.id);
 }
@@ -284,7 +245,6 @@ interface EventRow {
   changes: string;
   session_id: string | null;
   session_name: string | null;
-  crew_id: string | null;
   pid: number | null;
   reason: string | null;
 }
@@ -302,7 +262,6 @@ export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
       changes: JSON.parse(row.changes) as WorkEvent["changes"],
       sessionId: row.session_id,
       sessionName: row.session_name,
-      crewId: row.crew_id,
       pid: row.pid,
       reason: row.reason,
     }));
@@ -322,15 +281,24 @@ export function deletedHistory(db: WorkDb, project: string, ref: string): WorkEv
   const events = eventsOf(db, row.task_id);
   return events.at(-1)?.action === "deleted" ? events : [];
 }
+/**
+ * True when `who` holds the claim: the one test of a claim against a caller, everywhere.
+ *
+ * A claim belongs to the Claude process, not its session id: the same pid, and on Linux the same
+ * process start time, so `/clear` and a resume keep the process's own tasks its own. Off Linux
+ * there is no start time (`callerOf`), and a later process may get a dead claimer's pid. So when
+ * either side has no start time, the claim's session id must also be the caller's.
+ */
+export function claimHeldBy(claim: WorkClaim | null, who: Who | null | undefined): boolean {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid) return false;
+  if (claim.procStart !== null && who.procStart !== null) return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
 export function claimState(
   task: WorkTask,
   isLive: (claim: WorkClaim) => boolean,
   who?: Who,
 ): "mine" | "another session" | "free" {
   if (!task.claim || !isLive(task.claim)) return "free";
-  // The claim belongs to the Claude process, not its session id: `/clear` and a resume keep the
-  // process, so its own tasks stay its own. The session id on the claim is provenance only.
-  return who?.pid === task.claim.pid && who.procStart === task.claim.procStart
-    ? "mine"
-    : "another session";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }

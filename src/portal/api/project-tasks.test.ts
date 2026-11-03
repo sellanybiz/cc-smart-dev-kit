@@ -10,9 +10,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { projectKey } from "../../tasks/context";
-import { openWorkDb, workDbFile } from "../../tasks/work/db";
-import { createTask, ensurePhaseTask, updateTask } from "../../tasks/work/store";
-import type { Result } from "../../tasks/work/types";
+import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../../tasks/work/db";
+import { createTask, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
+import type { Result, Who } from "../../tasks/work/types";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext } from "../actions";
@@ -25,7 +25,7 @@ import type { ProjectTasksAnswer, TasksAnswer } from "./types";
 const DAY = 86_400_000;
 /** 2026-03-01T00:00:00Z: every date below is counted from it. */
 const NOW = Date.UTC(2026, 2, 1);
-const who = { sessionId: "s", crewId: null, pid: 1, procStart: "1" };
+const who: Who = { sessionId: "s", pid: 1, procStart: "1" };
 
 function idOf(root: string): string {
   return createHash("sha256").update(root).digest("hex").slice(0, 12);
@@ -34,6 +34,14 @@ function idOf(root: string): string {
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
   return result.value;
+}
+
+/** A node with none of the ledger's fields: no agent, branch, worktree or base, and no steps. */
+const NO_LEDGER = { agent: null, base: null, branch: null, steps: null, worktree: null };
+
+/** A plan's phase, made once under its plan task, the way the task tools lay it. */
+function phaseOf(db: WorkDb, input: LaidPhase, now: number) {
+  return value(writeWork(db, () => layPhase(db, input, who, now).task));
 }
 
 function repo(): string {
@@ -93,21 +101,10 @@ describe("a project's tasks answer (D75)", () => {
     const root = repo();
     const { deps, paths } = await world(root);
     const db = openWorkDb(workDbFile(paths), { mode: "write" });
-    const phase = value(
-      ensurePhaseTask(
-        db,
-        {
-          project: projectKey(root),
-          plan: "launch",
-          phase: "api",
-          subject: "The API",
-          description: "",
-          crewId: "c1",
-          waitsForPhases: [],
-        },
-        who,
-        NOW - 2 * DAY,
-      ),
+    const phase = phaseOf(
+      db,
+      { project: projectKey(root), plan: "launch", phase: "api", subject: "The API" },
+      NOW - 2 * DAY,
     );
     const step = value(
       createTask(
@@ -160,6 +157,7 @@ describe("a project's tasks answer (D75)", () => {
             {
               children: [
                 {
+                  ...NO_LEDGER,
                   blocked: false,
                   blockedBy: [],
                   children: [],
@@ -179,6 +177,7 @@ describe("a project's tasks answer (D75)", () => {
                   updatedAt: "2026-02-28T00:00:00.000Z",
                 },
               ],
+              ...NO_LEDGER,
               blocked: false,
               blockedBy: [],
               closed: 0,
@@ -189,12 +188,15 @@ describe("a project's tasks answer (D75)", () => {
               plan: "launch",
               ref: "#2",
               status: "pending",
+              // Its one step is in progress: none of one done.
+              steps: { done: 0, total: 1 },
               subject: "The API",
               total: 1,
               type: "blocking",
               updatedAt: "2026-02-27T00:00:00.000Z",
             },
           ],
+          ...NO_LEDGER,
           blocked: false,
           blockedBy: [],
           closed: 0,
@@ -299,6 +301,7 @@ describe("a project's tasks answer (D75)", () => {
     // Open work first, newest change first; the closed brief last.
     expect(work.tasks).toEqual([
       {
+        ...NO_LEDGER,
         blocked: true,
         // In number order, the closed one too: only the open one still blocks.
         blockedBy: [
@@ -320,10 +323,12 @@ describe("a project's tasks answer (D75)", () => {
         updatedAt: "2026-03-01T00:00:00.000Z",
       },
       {
+        ...NO_LEDGER,
         blocked: false,
         blockedBy: [],
         children: [
           {
+            ...NO_LEDGER,
             blocked: false,
             blockedBy: [],
             children: [],
@@ -355,6 +360,7 @@ describe("a project's tasks answer (D75)", () => {
         updatedAt: "2026-02-28T00:00:00.000Z",
       },
       {
+        ...NO_LEDGER,
         blocked: false,
         blockedBy: [],
         children: [],
@@ -374,6 +380,82 @@ describe("a project's tasks answer (D75)", () => {
     ]);
     // The same reading as the one project's own answer: the tab and the route never disagree.
     expect((await answerOf(deps, idOf(root)))?.body).toEqual(body.projects[0]?.tasks);
+  });
+
+  test("the ledger (G3): each phase's agent, branch, worktree, base and steps, as the store holds them", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const at = NOW - DAY;
+    const all = phaseOf(
+      db,
+      {
+        agent: "builder-a1",
+        base: "21eadc8a0f3b4c5d6e7f8091a2b3c4d5e6f70812",
+        branch: "plan/api",
+        phase: "api",
+        plan: "launch",
+        project,
+        subject: "The API",
+        worktree: "/home/user/my-app/.claude/worktrees/plan-api",
+      },
+      at,
+    );
+    const some = phaseOf(
+      db,
+      { agent: "builder-b2", phase: "ui", plan: "launch", project, subject: "The page" },
+      at,
+    );
+    const none = phaseOf(db, { phase: "docs", plan: "launch", project, subject: "The docs" }, at);
+    for (const status of ["done", "done", "pending"] as const) {
+      const made = value(createTask(db, { parentId: all.id, project, subject: "A step" }, who, at));
+      if (status !== "pending") value(updateTask(db, made.id, { status }, who, at));
+    }
+    // Set after the phase is laid, the way the main session binds a phase to its agent.
+    value(updateTask(db, some.id, { branch: "plan/ui" }, who, at));
+    db.close();
+
+    const answer = await answerOf(deps, idOf(root));
+    expect(answer?.status).toBe(200);
+    const work = (answer?.body as ProjectTasksAnswer | undefined)?.work;
+    if (work?.state !== "ready") throw new Error(`no tree: ${JSON.stringify(work)}`);
+    const phases = work.tasks[0]?.children ?? [];
+    const ledger = (id: string) => {
+      const node = phases.find((one) => one.id === id);
+      return node === undefined
+        ? undefined
+        : {
+            agent: node.agent,
+            base: node.base,
+            branch: node.branch,
+            steps: node.steps,
+            worktree: node.worktree,
+          };
+    };
+    expect(ledger(all.id)).toEqual({
+      agent: "builder-a1",
+      base: "21eadc8a0f3b4c5d6e7f8091a2b3c4d5e6f70812",
+      branch: "plan/api",
+      steps: { done: 2, total: 3 },
+      worktree: "/home/user/my-app/.claude/worktrees/plan-api",
+    });
+    expect(ledger(some.id)).toEqual({
+      agent: "builder-b2",
+      base: null,
+      branch: "plan/ui",
+      steps: { done: 0, total: 0 },
+      worktree: null,
+    });
+    expect(ledger(none.id)).toEqual({
+      agent: null,
+      base: null,
+      branch: null,
+      steps: { done: 0, total: 0 },
+      worktree: null,
+    });
+    // The steps of a phase only: the plan above them has none.
+    expect(work.tasks[0]?.steps).toBe(null);
   });
 
   test("the Tasks tab with no project at all: an empty list, not an error", async () => {

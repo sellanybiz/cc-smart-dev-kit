@@ -5,7 +5,7 @@
  * repository's `issues` or `labels` endpoints, or with a GraphQL mutation. An issue is text that
  * leaves the machine, and a label can make an issue "ready" that nobody labelled, so a session's
  * own write is the person's yes; the kit's way is `cc-smart-dev-kit issue file`, which is not a
- * `gh` command and is never read here. A crew session is denied (`merge-guard.ts`).
+ * `gh` command and is never read here. The merge guard asks the person (`merge-guard.ts`).
  *
  * Read with the one shell reader (`invocationsOf`, `src/shell/command.ts`): wrappers, `bash -c`
  * and the dialect of the tool are stepped through like every guard does. A read (`gh issue
@@ -21,7 +21,7 @@
  * (`--input`, `query=@file`), and a `gh` alias that runs a shell command or expands too deep all
  * count as a write. A `gh <word>` is looked up in the person's aliases when the caller gives the
  * list (`issueWritesWithAliases`, like the merge reader); a word that is neither a gh command nor
- * an alias is handed back (`unnamedGhWords`) for a crew session's part to refuse.
+ * an alias is handed back in the reading's `unnamed` list, and is no write.
  * **Not read:** a script file. The program of a line worked out when it runs (`$GH issue create`)
  * is a risk of its own (`computedIssueRisk`).
  */
@@ -304,7 +304,7 @@ function readLine(
  * Every raw issue or label write a command line makes, named, in the order it runs them: `gh
  * issue close`, `a gh api PATCH to repos/o/r/issues/5`. `dialect`: the tool's; not given, both
  * are read. `aliases`: the person's `gh alias list` as name → expansion; not given, a `gh
- * <word>` is no write (`unnamedGhWords` hands the word back).
+ * <word>` is no write (`issueWritesWithAliases` hands the word back in `unnamed`).
  */
 export function issueWrites(
   command: string,
@@ -315,24 +315,13 @@ export function issueWrites(
 }
 
 /**
- * The words after `gh` that name no gh command and, when `aliases` is given, no alias in it
- * (`gh dash`, `gh bug` before the alias list is read). A crew session is denied these: what
- * they run cannot be read.
- */
-export function unnamedGhWords(
-  command: string,
-  dialect?: Dialect,
-  aliases: ReadonlyMap<string, string> | null = null,
-): string[] {
-  return readLine(command, dialect, aliases).unnamed;
-}
-
-/**
- * `issueWrites` and `unnamedGhWords` with the person's gh aliases read when a `gh <word>` needs
- * them, as the merge reader does (`pullRequestCallsWithAliases`): `gh alias list` reads the local
- * config, no network, and `readAliases` runs only for a line with such a word (the caller passes
- * one `onceAliases` reader to this and to the pull request reader). A list that cannot be read leaves the alias a write of its own — whether `gh <word>` writes is
- * then unknown, and a guard asks.
+ * `issueWrites` with the person's gh aliases read when a `gh <word>` needs them, as the merge
+ * reader does (`pullRequestCallsWithAliases`), and the words after `gh` that name no gh command
+ * and no alias (`unnamed`: `gh dash`, an extension). `gh alias list` reads the local config, no
+ * network, and `readAliases` runs only for a line with such a word (the caller passes one
+ * `onceAliases` reader to this and to the pull request reader). A list that cannot be read
+ * leaves the alias a write of its own — whether `gh <word>` writes is then unknown, and a guard
+ * asks.
  */
 export function issueWritesWithAliases(
   command: string,
@@ -355,8 +344,7 @@ export function issueWritesWithAliases(
 /**
  * True when a command's program is worked out when it runs (`$GH`, `$(which gh)`) and its
  * words name an issue or a label (`issue`, `label`, a path with `/issues` or `/labels`): the
- * guard cannot tell whether it writes one, so it asks (a crew session: denied), like a computed
- * merge.
+ * guard cannot tell whether it writes one, so it asks, like a computed merge.
  */
 export function computedIssueRisk(command: string, dialect?: Dialect): boolean {
   return computedInvocationRisk(command, dialect, (words) =>

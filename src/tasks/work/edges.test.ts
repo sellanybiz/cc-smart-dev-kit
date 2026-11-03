@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readProcStat } from "../../jobs/ancestry";
 import { tempDir } from "../../testing/temp";
-import { openWorkDb, workDbFile } from "./db";
+import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
 import { callerOf } from "./identity";
 import {
   allTasks,
@@ -15,19 +15,20 @@ import {
   subtreeProgress,
   taskById,
 } from "./queries";
-import { crewPhaseState, hasOwnTask, leadOwnState, startView, statusTask } from "./read";
+import { hasOwnTask, startView, statusTask } from "./read";
 import {
   addNote,
   createTask,
   deleteTask,
-  ensurePhaseTask,
   ensurePlanTask,
+  type LaidPhase,
+  layPhase,
   systemClose,
   updateTask,
 } from "./store";
-import type { Result } from "./types";
+import type { Result, Who } from "./types";
 
-const who = { sessionId: "lead", crewId: null, pid: 1, procStart: "2" };
+const who = { sessionId: "lead", pid: 1, procStart: "2" };
 function ok<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
   return result.value;
@@ -81,7 +82,7 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   const { db, paths } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
-    ensurePhaseTask(
+    createPhase(
       db,
       {
         project: "p",
@@ -89,8 +90,6 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
         phase: "a",
         subject: "Phase",
         description: "",
-        crewId: "crew",
-        waitsForPhases: [],
       },
       who,
       2,
@@ -108,7 +107,6 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
         parentId: a.id,
         plan: "plan",
         status: "in_progress",
-        crewId: "crew",
       },
       who,
       4,
@@ -125,64 +123,34 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   );
   // "Mine" is the Claude process (pid and its start time), so `/clear` keeps the list.
   expect(
-    listTasks(db, { project: "p", claimedBy: { pid: 1, procStart: "2" }, openOnly: true }).map(
-      (t) => t.subject,
-    ),
+    listTasks(db, {
+      project: "p",
+      claimedBy: { sessionId: "clear", pid: 1, procStart: "2" },
+      openOnly: true,
+    }).map((t) => t.subject),
   ).toEqual(["Beta"]);
   expect(
-    listTasks(db, { project: "p", claimedBy: { pid: 1, procStart: "reused" }, openOnly: true }),
+    listTasks(db, {
+      project: "p",
+      claimedBy: { sessionId: "lead", pid: 1, procStart: "reused" },
+      openOnly: true,
+    }),
   ).toEqual([]);
-  expect(
-    listTasks(db, { project: "p", crewId: "crew", openOnly: true }).map((t) => t.subject),
-  ).toEqual(["Phase", "Beta"]);
-  const state = crewPhaseState(paths, "p", "crew");
-  expect(state.state).toBe("ready");
-  if (state.state === "ready") {
-    expect(state.value.total).toBe(2);
-    expect(state.value.openSubtasks.map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
-  }
-  // The lead's session made Alpha and Beta, so they are its own for the reminder (D76); inside an
-  // open phase they are its crew's to work, so Beta in progress never holds the lead's stop.
-  const lead = leadOwnState(paths, "p", "plan", ["lead"]);
-  if (lead.state !== "ready") throw Error("not ready");
-  expect(lead.value.total).toBe(2);
-  expect(lead.value.inProgress).toEqual([]);
-  // The phase and its subtasks are the crew session's own: a session start shows the plan alone.
-  const view = startView(paths, "p", who, { limit: 1 });
-  expect(view).toEqual({
-    state: "ready",
-    value: {
-      tasks: [
-        {
-          id: plan.id,
-          number: 1,
-          subject: "Plan",
-          status: "pending",
-          claim: "free",
-          type: "blocking",
-          blocked: false,
-        },
-      ],
-      more: 0,
-      stale: 0,
-    },
-  });
+  expect(startView(paths, "p", who, { limit: 8 }).state).toBe("ready");
   ok(systemClose(db, phase.id, "dropped", "removed", who, 20));
   expect(notesOf(db, b.id)[0]?.text).toBe("Automatically dropped: removed");
-  // Beta was the crew session's (its crew id): dropped. Alpha was laid out (no crew id): it stays
-  // pending for the phase's next session, untouched, so it is still the lead's own.
-  expect(taskById(db, a.id).status).toBe("pending");
-  expect(notesOf(db, a.id)).toEqual([]);
-  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: true });
+  // A dropped phase drops all its open work.
+  expect(taskById(db, a.id).status).toBe("dropped");
+  expect(notesOf(db, a.id).map((n) => n.text)).toEqual(["Automatically dropped: removed"]);
+  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: false });
   db.close();
 });
-test("the start view leaves crew phases out, puts this process's claims first, and counts stale work it hides", () => {
+test("the start view shows phases, puts process claims first, and counts stale work", () => {
   const { db, paths } = setup();
   // This test process stands in for the Claude process: its claim must read as live.
   const stat = readProcStat(process.pid) ?? "";
   const me = {
     sessionId: "me",
-    crewId: null,
     pid: process.pid,
     procStart:
       process.platform === "linux"
@@ -192,14 +160,12 @@ test("the start view leaves crew phases out, puts this process's claims first, a
             .split(/\s+/)[19] ?? null)
         : null,
   };
-  const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+  const nobody = { sessionId: "other", pid: null, procStart: null };
   const DAY = 86_400_000;
   const now = 100 * DAY;
-  const plan = ok(
-    ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, nobody, now - DAY),
-  );
+  ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, nobody, now - DAY));
   const phase = ok(
-    ensurePhaseTask(
+    createPhase(
       db,
       {
         project: "p",
@@ -207,17 +173,15 @@ test("the start view leaves crew phases out, puts this process's claims first, a
         phase: "a",
         subject: "Phase",
         description: "",
-        crewId: "crew",
-        waitsForPhases: [],
       },
       nobody,
       now - DAY,
     ),
   );
-  ok(
+  const step = ok(
     createTask(
       db,
-      { project: "p", subject: "Crew step", parentId: phase.id, status: "in_progress" },
+      { project: "p", subject: "Phase step", parentId: phase.id, status: "in_progress" },
       nobody,
       now,
     ),
@@ -249,6 +213,15 @@ test("the start view leaves crew phases out, puts this process's claims first, a
           blocked: false,
         },
         {
+          id: step.id,
+          number: 3,
+          subject: "Phase step",
+          status: "in_progress",
+          claim: "free",
+          type: "blocking",
+          blocked: false,
+        },
+        {
           id: theirs.id,
           number: 6,
           subject: "Theirs",
@@ -257,17 +230,8 @@ test("the start view leaves crew phases out, puts this process's claims first, a
           type: "blocking",
           blocked: false,
         },
-        {
-          id: plan.id,
-          number: 1,
-          subject: "Plan",
-          status: "pending",
-          claim: "free",
-          type: "blocking",
-          blocked: false,
-        },
       ],
-      more: 1,
+      more: 3,
       stale: 1,
     },
   });
@@ -275,8 +239,10 @@ test("the start view leaves crew phases out, puts this process's claims first, a
   const all = startView(paths, "p", me, { limit: 8 });
   expect(all.state === "ready" ? all.value.tasks.map((t) => t.subject) : []).toEqual([
     "Old but mine",
+    "Phase step",
     "Theirs",
     "Plan",
+    "Phase",
     "Recent",
     "Old idea",
   ]);
@@ -307,7 +273,7 @@ test("hook failures return unreadable, query-only blocks writes, schema versions
   writeFileSync(workDbFile(paths), "garbage");
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("unreadable");
   const fresh = setup();
-  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 3 });
   expect(fresh.db.sqlite.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
   fresh.db.close();
   const hook = openWorkDb(workDbFile(fresh.paths), { mode: "hook" });
@@ -328,7 +294,7 @@ test("portable ancestry, missing caller, and pid reuse", () => {
     platform: "darwin" as const,
     parentOf: () => 9,
     running: () => true,
-    env: { CC_SMART_DEV_KIT_CREW: "crew" },
+    env: {},
   };
   expect(callerOf(facts)).toEqual({
     pid: 9,
@@ -336,7 +302,10 @@ test("portable ancestry, missing caller, and pid reuse", () => {
     sessionId: "s",
     cwd: dir,
     name: "N",
-    crewId: "crew",
   });
   expect(callerOf({ ...facts, running: () => false, env: {} })).toBeNull();
 });
+
+function createPhase(db: WorkDb, input: LaidPhase, who: Who, now: number) {
+  return writeWork(db, () => layPhase(db, input, who, now).task);
+}

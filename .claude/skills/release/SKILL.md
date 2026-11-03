@@ -63,18 +63,10 @@ version and rebuilds the bundle counts as a small fix.
 ## 4. Pull request
 
 1. Commit `plugin.json` and `plugin/dist/` with the change that needs them.
-2. Before you open the pull request, list the issues it fixes:
-   `cc-smart-dev-kit issue fixed --base main --head <the release branch>`. It prints one
-   `Fixes #<n>` line for each open issue the kit marked fixed whose fix is in the branch.
-   Paste those lines into the pull request body: GitHub closes an issue only when a pull
-   request that names it merges into the default branch.
-   - No output and exit 0: the switch is off or no issue waits. Add nothing.
-   - Exit 1: GitHub or a branch could not be read. Put the reason it printed under "Still
-     owed" in the body. Never read an empty list from a failed call as complete.
-   - A number the lead's watch refused to mark ("not marked": neither the brief nor the crew
-     record's issue named it) shows in the watch's line and in the plan. `issue fixed` does not
-     list it. If the lead agreed after reading the diff, write `Fixes #<n>` for it in the body
-     by hand.
+2. Run `cc-smart-dev-kit issue fixed --base main --head <the release branch>` before opening
+   the pull request. Paste its `Fixes #<n>` lines into the body. No output and exit 0 means
+   nothing waits; exit 1 means the list could not be read, so record the reason under
+   "Still owed". Never treat a failed read as an empty list.
 
    The command's contract is in `README.md` (the `issue fixed` row) and
    `docs/design/issues.md` § Resolved when it ships.

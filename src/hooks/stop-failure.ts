@@ -51,8 +51,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { claudeLimitHolds, targetsNow } from "../crew/wait";
 import { fallbackOn, type GatewayConfig } from "../gateway/config";
+import { claudeLimitHolds, targetsNow } from "../gateway/limit-holds";
 import {
   type BreakerRecord,
   currentBreakers,
@@ -318,9 +318,9 @@ export function planAlert(input: unknown, ctx: AlertContext): Alert | null {
   const record = chosen?.[1] ?? null;
   const slot = model === null ? null : slotKeyOf(model);
   const view = slot === null || ctx.config === null || !ctx.gatewayOn ? null : ctx.config;
-  // Does this Claude limit hold the session? `claudeLimitHolds` is the one reading (the crew
-  // wait uses it): a slot whose chain in use starts with another target answers from that
-  // target, so the Claude model's reset date says nothing about when this session goes on.
+  // Does this Claude limit hold the session? `claudeLimitHolds` is the one reading: a slot whose
+  // chain in use starts with another target answers from that target, so the Claude model's
+  // reset date says nothing about when this session goes on.
   const inUse = view === null ? null : targetsNow(view);
   const first = slot === null ? undefined : inUse?.[slot]?.[0];
   const holds = model === null || claudeLimitHolds(view === null ? null : slot, model, inUse);

@@ -1,14 +1,5 @@
 "use client";
 
-/**
- * The kit's task list on the portal (D75, D76), read-only. The Tasks tab draws each project with
- * `TasksBody`: its work tree on this machine, then the task files its repository keeps. A
- * project's page has one card that counts them and opens the tab on that project (one home), and
- * a crew page keeps its phase tree, drawn by the same row (`task-tree.tsx`). A session changes a
- * task with its task tools, a person with `cc-smart-dev-kit task`; the page only shows them, and
- * reads again when the work store changes (the `tasks` event).
- */
-
 import {
   ArrowRightIcon,
   FilterXIcon,
@@ -20,7 +11,6 @@ import { useId } from "react";
 import { useResource } from "@/api/hooks";
 import { TASKS_REFRESH } from "@/api/refresh";
 import type {
-  CrewPhaseTasks,
   ProjectListRow,
   ProjectTaskFiles,
   ProjectTaskRow,
@@ -30,18 +20,11 @@ import type {
 import { AppLink } from "@/components/router";
 import { EmptyState } from "@/components/states";
 import { TonePill } from "@/components/status";
-import { TaskList, TaskMarks } from "@/components/task-tree";
+import { TaskList } from "@/components/task-tree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KIT_NAME } from "@/lib/format";
@@ -49,10 +32,8 @@ import {
   DEFAULT_FILTER,
   fileCountsOf,
   filterTasks,
-  isClosed,
   narrowsWork,
   narrowWords,
-  SHOW_ALL,
   type TaskFilter,
   tasksHref,
   workCountsOf,
@@ -400,59 +381,6 @@ export function TasksCard({ project }: { project: ProjectListRow }) {
           </Button>
         </CardAction>
       </CardHeader>
-    </Card>
-  );
-}
-
-/** A crew page's card: its phase task, how far it is, and every task under it. */
-export function PhaseTasksCard({ tasks }: { tasks: CrewPhaseTasks }) {
-  const phase = tasks.state === "ready" ? tasks.phase : null;
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Tasks</CardTitle>
-        <CardDescription className="text-pretty">
-          Its phase task and the tasks it broke the phase into. It hands back once each blocking one
-          is done or dropped; a non-blocking one may stay open.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {tasks.state === "unreadable" ? (
-          <CannotRead title="The task list cannot be read" why={tasks.why} />
-        ) : tasks.state === "none" ? (
-          <p className="text-sm text-muted-foreground">
-            The kit's task list has no store on this machine yet.
-          </p>
-        ) : phase === null ? (
-          <p className="text-sm text-pretty text-muted-foreground">
-            This crew session started before the kit's task list, so it has no phase task.
-          </p>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-              <span className="min-w-0 font-medium wrap-any">
-                <span className="mr-2 font-mono text-xs text-muted-foreground">{phase.ref}</span>
-                {phase.subject}
-              </span>
-              <TaskMarks task={phase} leftOpen={false} />
-            </div>
-            {phase.children.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No task under it yet: its first edit waits until it has one.
-              </p>
-            ) : (
-              <TaskList
-                tasks={filterTasks(phase.children, SHOW_ALL)}
-                label="Its tasks"
-                parentClosed={isClosed(phase.status)}
-              />
-            )}
-            {tasks.state === "ready" && tasks.more > 0 && (
-              <p className="text-xs text-muted-foreground">{tasks.more} more not shown.</p>
-            )}
-          </>
-        )}
-      </CardContent>
     </Card>
   );
 }

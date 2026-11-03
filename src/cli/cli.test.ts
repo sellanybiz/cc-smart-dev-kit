@@ -393,6 +393,7 @@ function setupOptions(
     instructionsSource: PLUGIN_INSTRUCTIONS,
     statusline: false,
     retryWatchdog: null,
+    maxSubagents: null,
     // No environment of its own: a test that wants a key sets one through `extra`.
     env: {},
     tavilyKeyStdin: null,
@@ -436,6 +437,18 @@ const WATCHDOG_ENV = {
   CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS: "300000",
   CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS: "86400000",
 };
+/**
+ * Claude Code's subagent cap: setup writes the kit's 10 on a machine that has no value, as any
+ * other owned key — one `~` line, and one `·` line that says how to change it.
+ */
+const SUBAGENT_CAP_LINE =
+  '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: (none) -> "10"';
+const SUBAGENT_CAP_NOTE =
+  "  · max subagents: 10 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)";
+const SUBAGENT_CAP_DRY_NOTE =
+  "  · would set max subagents: 10; to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)";
+/** The same key as it lands in `settings.json`'s `env`. */
+const SUBAGENT_CAP_ENV = { CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "10" };
 /** setup's warning for the Tavily server on a machine with no key, in the MCP section. */
 const TAVILY_SKIPPED =
   "  ! tavily-websearch: skipped — no TAVILY_API_KEY in the environment, in the settings, or in a key file: put the key there (chmod 600), or set the variable, then run setup again";
@@ -555,10 +568,11 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 1 note",
+          "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          SUBAGENT_CAP_LINE,
           // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: task permission added "TaskCreate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskUpdate"',
@@ -567,6 +581,7 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
+          SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
           ...INSTRUCTIONS_CREATED,
           ...CLAUDE_MEM_OFF,
@@ -574,7 +589,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -587,7 +602,7 @@ describe("cc-smart-dev-kit setup", () => {
         allow: ["mcp__cc-smart-dev-kit-tasks__*"],
         deny: ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"],
       },
-      env: { ...WATCHDOG_ENV },
+      env: { ...WATCHDOG_ENV, ...SUBAGENT_CAP_ENV },
       enabledPlugins: {
         "cc-smart-dev-kit@cc-smart-dev-kit": true,
         "claude-mem@thedotmack": true,
@@ -679,10 +694,11 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "· The command           1 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "· Claude Code settings  11 to change, 1 note",
+          "· Claude Code settings  12 to change, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          SUBAGENT_CAP_LINE,
           // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: task permission added "TaskCreate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskUpdate"',
@@ -691,6 +707,7 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
+          SUBAGENT_CAP_DRY_NOTE,
           "· Instructions          3 to change",
           ...INSTRUCTIONS_CREATED,
           "· Companion plugins     2 to change",
@@ -699,7 +716,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 20 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 21 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -751,13 +768,86 @@ describe("cc-smart-dev-kit setup", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "· Claude Code settings  1 note",
+          "· Claude Code settings  2 notes",
           '  · ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
+          "  · max subagents: 10 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
           ...MCP_TAVILY_ONLY,
         ],
         [UP_TO_DATE],
       ),
     );
+  });
+
+  test("--max-subagents over the person's own value: one ! line, and their value stays", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    settings.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = "30";
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    const result = run(["setup", "--max-subagents", "4"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "! Claude Code settings  1 warning",
+          "  ! --max-subagents 4 not applied: CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json is your own value (30), and cc-smart-dev-kit leaves it; change it there to use 4",
+          ...MCP_TAVILY_ONLY,
+        ],
+        ["! Nothing to change. Setup is up to date, with 2 warnings to read above."],
+      ),
+    );
+    expect(readJson(settingsFile).env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe("30");
+    // With no flag, the same value is the · line it always was.
+    expect(run(["setup"]).stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          "  · max subagents: 30 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [UP_TO_DATE],
+      ),
+    );
+  });
+
+  test("--max-subagents after the person removed the key: the flag writes it again, and restore takes it back", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    delete settings.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS;
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    // With no flag, the removal stays the person's choice.
+    expect(run(["setup"]).stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          "  · max subagents: Claude Code's own default (you removed CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS from ~/.claude/settings.json; set it by hand, or run: cc-smart-dev-kit setup --max-subagents <n>)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [UP_TO_DATE],
+      ),
+    );
+    const result = run(["setup", "--max-subagents", "4"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ Claude Code settings  1 change, 1 note",
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: (none) -> "4"',
+          "  · max subagents: 4 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [`! Done: 1 change, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
+    );
+    expect(readJson(settingsFile).env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe("4");
+    expect(run(["restore"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).env?.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBeUndefined();
   });
 
   test("UX-7: a next step when ~/.local/bin is not on PATH, with the line for this shell, and none when it is", () => {
@@ -871,10 +961,11 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 1 note",
+          "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          SUBAGENT_CAP_LINE,
           // D68: every machine gets Claude Code's own task tools.
           '  ~ ~/.claude/settings.json: task permission added "TaskCreate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskUpdate"',
@@ -883,6 +974,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
+          SUBAGENT_CAP_NOTE,
           "✓ Instructions          1 change",
           OPT_OUT_STORED,
           ...CLAUDE_MEM_OFF,
@@ -890,7 +982,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 18 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 19 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1071,8 +1163,9 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Browser            6 passed, 1 note",
         // Chrome closed is the state a restart leaves: the first browser call starts it.
         '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
-        "✓ Alerts and limits  1 passed, 1 note",
+        "✓ Alerts and limits  1 passed, 2 notes",
         "  · retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
+        "  · max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
         // The gateway is optional: never set up is information, not a failure.
         "· Gateway            1 note",
         "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
@@ -1368,10 +1461,11 @@ describe("cc-smart-dev-kit doctor", () => {
         "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit. Work state must be off so the kit owns the task list",
         "    Fix: cc-smart-dev-kit setup",
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
-        "✗ Alerts and limits  1 to fix, 1 note",
+        "✗ Alerts and limits  1 to fix, 2 notes",
         "  ✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive",
         "    Fix: cc-smart-dev-kit setup",
         "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
+        "  · max subagents: Claude Code's own default; to use the kit's 10, run: cc-smart-dev-kit setup",
         "· Gateway            1 note",
         "  · gateway: not checked on this Bun (its checks send the backend key)",
         "",
@@ -1963,10 +2057,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 1 note",
+          "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          SUBAGENT_CAP_LINE,
           '  ~ ~/.claude/settings.json: task permission added "TaskCreate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskUpdate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
@@ -1974,6 +2069,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
+          SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
           ...INSTRUCTIONS_CREATED,
           "✓ Companion plugins     2 changes",
@@ -1982,7 +2078,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2068,10 +2164,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 1 note",
+          "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
+          SUBAGENT_CAP_LINE,
           '  ~ ~/.claude/settings.json: task permission added "TaskCreate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskUpdate"',
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
@@ -2079,6 +2176,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
           NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
+          SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
           ...INSTRUCTIONS_CREATED,
           "✗ Companion plugins     1 to fix",
@@ -3308,7 +3406,6 @@ describe("cc-smart-dev-kit setup --statusline, statusline and usage", () => {
       hours: 1,
       sessions: [
         {
-          archived: false,
           cwd: "/home/user/my-app",
           launched: { sonnet: 1 },
           main: {},
@@ -3375,8 +3472,8 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
   const WATCHDOG = "CLAUDE_CODE_RETRY_WATCHDOG";
   const RECHECK = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
   const CAP = "CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS";
-  /** The key setup writes beside them whenever claude-mem is installed (D68). */
-  const TODO = {};
+  /** The key setup writes beside them on every machine: Claude Code's subagent cap. */
+  const TODO = SUBAGENT_CAP_ENV;
   const ON_LINE = `  ~ ~/.claude/settings.json: env.${WATCHDOG}: (none) -> "1"`;
   const RECHECK_LINE = `  ~ ~/.claude/settings.json: env.${RECHECK}: (none) -> "300000"`;
   const CAP_LINE = `  ~ ~/.claude/settings.json: env.${CAP}: (none) -> "86400000"`;
@@ -3438,7 +3535,9 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     // Exactly the watchdog keys: no `..._MAX_WAIT_MS`, which the 5-hour limit and a down
     // model still wait out with no limit.
     expect(readJson(settingsFile).env).toEqual(ALL_ON);
-    expect(Object.keys(readJson(settingsFile).env).sort()).toEqual([WATCHDOG, RECHECK, CAP].sort());
+    expect(Object.keys(readJson(settingsFile).env).sort()).toEqual(
+      [...Object.keys(TODO), WATCHDOG, RECHECK, CAP].sort(),
+    );
     // restore removes all three, and the `env` setup made goes with them.
     expect(readJson(settingsFile)).toHaveProperty("env");
     restore(stateDir);
@@ -3452,12 +3551,12 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(real.exitCode).toBe(0);
     expect(real.stdout).toContain(DECLINED_NOTE);
     expect(real.stdout).not.toContain(WATCHDOG);
-    expect(readJson(settingsFile).env).toBeUndefined();
+    expect(readJson(settingsFile).env).toEqual(TODO);
     // A dry run says the same · line, and the "no" stays.
     const dry = run(["setup", "--dry-run"]);
     expect(dry.exitCode).toBe(0);
     expect(dry.stdout).toContain(DECLINED_NOTE);
-    expect(readJson(settingsFile).env).toBeUndefined();
+    expect(readJson(settingsFile).env).toEqual(TODO);
     expect(existsSync(retryWatchdogDeclinedFile(stateDir))).toBe(true);
     // --retry-watchdog writes all three keys and removes the "no", so the state agrees.
     const on = run(["setup", "--retry-watchdog"]);
@@ -3650,7 +3749,13 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     );
     expect(same.stdout).toContain(RECHECK_LINE);
     expect(same.stdout).toContain(CAP_LINE);
-    expect(readJson(settingsFile).env).toEqual(ALL_ON);
+    // `setEnv` wrote the whole `env`, so the subagent cap setup wrote is gone: a key the person
+    // removed is theirs, and setup leaves it out.
+    expect(readJson(settingsFile).env).toEqual({
+      [WATCHDOG]: "1",
+      [RECHECK]: "300000",
+      [CAP]: "86400000",
+    });
     // restore takes out only the keys that are ours.
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     expect(readJson(settingsFile).env).toEqual({ [WATCHDOG]: "1" });
@@ -3700,20 +3805,21 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${WATCHDOG}: "1" -> (none)\n`);
     expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${RECHECK}: "300000" -> (none)\n`);
     expect(off.stdout).toContain(`~ ~/.claude/settings.json: env.${CAP}: "86400000" -> (none)\n`);
-    expect(readJson(settingsFile).env).toBeUndefined();
+    expect(readJson(settingsFile).env).toEqual(TODO);
     expect(readFileSync(retryWatchdogDeclinedFile(stateDir), "utf8")).toBe("no\n");
     // The "no" holds for a plain setup, which says so in one · line.
     const again = run(["setup"]);
     expect(again.exitCode).toBe(0);
     expect(again.stdout).toContain(DECLINED_NOTE);
-    expect(readJson(settingsFile).env).toBeUndefined();
+    expect(readJson(settingsFile).env).toEqual(TODO);
     // A key the person wrote is not named, not touched.
     decline(stateDir);
     setEnv(settingsFile, { [WATCHDOG]: "1" });
     const own = run(["setup", "--no-retry-watchdog"]);
     expect(own.exitCode).toBe(0);
     expect(own.stdout).not.toContain(WATCHDOG);
-    expect(readJson(settingsFile).env).toEqual({ ...TODO, [WATCHDOG]: "1" });
+    // `setEnv` wrote the whole `env`: the subagent cap the person removed stays out too.
+    expect(readJson(settingsFile).env).toEqual({ [WATCHDOG]: "1" });
   });
 
   test("restore removes all three keys; a later setup turns it on again unless a no is on file", () => {
@@ -3729,7 +3835,7 @@ describe("D56: setup turns Claude Code's retry watchdog on by default", () => {
     expect(run(["restore", "--yes"]).exitCode).toBe(0);
     decline(stateDir);
     expect(run(["setup"]).exitCode).toBe(0);
-    expect(readJson(settingsFile).env).toBeUndefined();
+    expect(readJson(settingsFile).env).toEqual(TODO);
   });
 
   test("our keys already there: nothing to change, and no · line", () => {
