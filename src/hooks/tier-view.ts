@@ -27,8 +27,7 @@
  * prompt's context reaches Claude before it picks.
  *
  * **Why a hook of its own.** `fable-session` runs at the same events but speaks to the person
- * and never to Claude (its contract); `lead-notes` and `crew-role` speak for a lead and a crew
- * session; `session-name` names the session. None has this job.
+ * and never to Claude (its contract); `session-name` names the session. Neither has this job.
  *
  * **One more line, while auto mode's safety checks fail** (the owner, 2026-10-27): when the
  * router has recorded that Claude is limited or down and nothing stood in for it

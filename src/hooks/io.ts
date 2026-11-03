@@ -59,7 +59,7 @@ export interface HookInput {
   background_tasks?: unknown;
   /**
    * StopFailure: why the turn ended (`rate_limit` for the plan limit and a short rate limit,
-   * `server_error`, …). The crew session's pause reads it (`src/hooks/crew-role.ts`, D42).
+   * `server_error`, …). The usage-limit alert reads it (`src/hooks/stop-failure.ts`).
    */
   error?: unknown;
   /** The session's transcript: every event carries it (StopFailure, PreToolUse, …). */

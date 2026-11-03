@@ -5,8 +5,8 @@ name: Windows
 # shaped for it: docs/windows-hooks.md says how, and docs/claude-code-contract.md says which
 # of it is proved here and which still needs one run on a person's Windows PC.
 #
-# This job is deliberately small: the tests that are cross-platform today — the hooks', the crew
-# store and names, the guards' Windows paths (a `C:\…` path, the PowerShell dialect), the
+# This job is deliberately small: the tests that are cross-platform today — the hooks', the
+# session names and the `claude` launch argv, the guards' Windows paths (a `C:\…` path, the PowerShell dialect), the
 # background clean's Windows argv and the detached start's trampoline, the shell reader, and the
 # readers whose rule is "is this file the owner's alone?" (`isOwnerOnly`: on Windows the mode
 # says nothing and the profile's ACL is the protection) — and the smoke test that runs a real
@@ -74,11 +74,10 @@ jobs:
         # parser, as `Register-ScheduledTask -Xml` does, and registers nothing.
         run: bun test src/gateway/service-windows.test.ts
 
-      - name: The 1.0.0 parts on Windows — the crew, the guards' Windows paths, the clean
+      - name: The 1.0.0 parts on Windows — the claude argv, the guards' Windows paths, the clean
         # What this step proves, file by file:
-        # - the crew store and names, and the launch's `claude.exe`/`claude.cmd` argv: a `.cmd`
-        #   runs through `cmd.exe`, and the session names hold on every platform;
-        # - the two monitors' shape, and the self-watch's transcript reading;
+        # - the `claude.exe`/`claude.cmd` argv the kit runs `claude` with: a `.cmd` runs
+        #   through `cmd.exe`; and a session's name holds on every platform;
         # - the always-on guards' Windows paths: a `C:\…` state path asks, and the Bash judge
         #   reads the PowerShell tool's dialect (the PowerShell cases run here natively);
         # - the background clean's argv behind the `cmd /c start` trampoline, and the detached
@@ -88,11 +87,8 @@ jobs:
         # No `shell: bash`: the plugin's own tests, from the shell a person has on Windows.
         run: >
           bun test
-          src/crew/names.test.ts
-          src/crew/store.test.ts
-          src/crew/claude.test.ts
-          src/crew/monitors.test.ts
-          src/crew/self-watch.test.ts
+          src/hooks/session-name.test.ts
+          src/machine/claude.test.ts
           src/hooks/session-escape-guard.test.ts
           src/hooks/agent-guard.test.ts
           src/hooks/bash-judge.test.ts
@@ -118,7 +114,7 @@ jobs:
         # The whole hook path on Windows, with no person: Git Bash runs the shim, the shim
         # finds bun.exe, the bundle answers the hook input, and — with bun taken away — the
         # guard still fails closed. It also proves `--missing=fail` (the command's mode: one
-        # line and exit 1), the exact line `cc-smart-dev-kit hook` writes, and every monitor
-        # command from `plugin/monitors/monitors.json`, all through `$HOME` and Git Bash.
+        # line and exit 1) and the exact line `cc-smart-dev-kit hook` writes, through `$HOME`
+        # and Git Bash.
         shell: bash
         run: bash scripts/windows-hook-smoke.sh

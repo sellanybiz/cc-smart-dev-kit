@@ -135,7 +135,7 @@ describe("the hook", () => {
     );
     expect(result).toEqual({ stdout: BLOCK });
     // Never `additionalContext`: a Stop-family hook's context keeps the turn going by itself
-    // (crew-role's rule), and the block's reason is the whole message.
+    // (`.claude/rules/hooks-guards.md` § Fail safe), and the block's reason is the whole message.
     expect(result.stdout).not.toContain("additionalContext");
     expect(HAND_BACK_REASON).toBe(
       "Your background work is still running: wait for it or stop it, then report.",

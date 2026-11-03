@@ -1,8 +1,8 @@
 /**
  * Where a prompt came from: the one signal a `UserPromptSubmit` hook has. Its input names no
- * source, so the first characters of the prompt are all there is. Two hooks read it
- * (`crew-role`: the person's own prompt to a crew session; `user-away`: the person's own prompt
- * while they are marked unavailable), and neither may carry the other's code, so it lives here.
+ * source, so the first characters of the prompt are all there is. `user-away` reads it (the
+ * person's own prompt while they are marked unavailable); it lives in its own module so a
+ * second reader imports it, never a copy.
  */
 
 /**

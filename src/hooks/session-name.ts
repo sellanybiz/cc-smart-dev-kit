@@ -75,7 +75,7 @@ function appliedFile(env: Env, sessionId: string): string {
 }
 
 /** The name the kit last set for this session, or null. */
-export function readAppliedName(env: Env, sessionId: string): string | null {
+function readAppliedName(env: Env, sessionId: string): string | null {
   return readName(appliedFile(env, sessionId));
 }
 

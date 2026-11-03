@@ -9,9 +9,9 @@
  *
  * Two guards ask, for two different reasons, and a spelling that gets past one must not get past
  * the other: `session-escape-guard` (a kit command run with `CLAUDECODE` unset, `workflow
- * review-done` by hand) and `job-route` (a crew session's `crew start` and `workflow propose`,
- * D24). So the recogniser lives here, once, and both import it — never a copy
- * (`.claude/rules/hooks-guards.md` § A crew session's own limits).
+ * review-done` by hand) and `job-route` (`workflow propose`, where the push gate says the push
+ * or the pull request is the person's). So the recogniser lives here, once, and both import it
+ * — never a copy (`.claude/rules/hooks-guards.md` § A machine-wide hook).
  */
 import { COMMAND } from "../build-info/names";
 import { programName } from "../shell/command";
