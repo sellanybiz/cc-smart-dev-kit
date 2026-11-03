@@ -35,12 +35,6 @@
 
 import { basename, resolve } from "node:path";
 import {
-  type TranscriptRef,
-  transcriptChangedAt,
-  transcriptText,
-  transcriptTree,
-} from "../crew/archive-read";
-import {
   type CheckTokens,
   localDay,
   recentCheckDays,
@@ -61,6 +55,12 @@ import {
   readAgentUsage,
 } from "../hooks/agent-usage";
 import { type CliPaths, tildify } from "./paths";
+import {
+  type TranscriptRef,
+  transcriptChangedAt,
+  transcriptText,
+  transcriptTree,
+} from "./transcripts";
 
 export interface UsageOptions {
   /** Only sessions whose folder, or its last part, or the project folder's name, is this. */
@@ -71,8 +71,6 @@ export interface UsageOptions {
 
 /** One session: its own replies and its subagents'. */
 export interface SessionUsage {
-  /** Read from the kit's crew archive: a removed crew session's conversation. */
-  archived: boolean;
   cwd: null | string;
   /** How each subagent was launched: `opus`, `sonnet`, `haiku`, or `inherited`. */
   launched: Record<string, number>;
@@ -156,22 +154,12 @@ function count(into: Record<string, number>, replies: Map<string, string>): void
   for (const model of replies.values()) into[model] = (into[model] ?? 0) + 1;
 }
 
-/**
- * Every session with a reply, or a subagent, in the window, read from `projectsDir` — and, with
- * `stateDir`, from the kit's crew archive too (`archive-read.ts`): a removed crew session's
- * conversation moves there, and its replies still count. An archived session says so
- * (`archived`).
- */
-export function collectUsage(
-  projectsDir: string,
-  options: UsageOptions,
-  stateDir: null | string = null,
-): SessionUsage[] {
+/** Every session with a reply or a subagent in the window, read from `projectsDir`. */
+export function collectUsage(projectsDir: string, options: UsageOptions): SessionUsage[] {
   const out: SessionUsage[] = [];
-  for (const [project, sessions] of transcriptTree(projectsDir, stateDir)) {
+  for (const [project, sessions] of transcriptTree(projectsDir)) {
     for (const [session, files] of sessions) {
       const usage: SessionUsage = {
-        archived: files.main?.gz === true || [...files.subagents.values()].some((file) => file.gz),
         cwd: null,
         launched: {},
         main: {},
@@ -482,7 +470,7 @@ export function formatUsage(
   for (const session of sessions) {
     lines.push(
       "",
-      `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}${session.archived ? " (a removed crew session, from the kit's crew archive)" : ""}`,
+      `${session.cwd === null ? session.project : tildify(session.cwd, home)}  session ${session.session.slice(0, 8)}`,
     );
     lines.push(`  main session, replies by model: ${counts(session.main) || "none in the window"}`);
     if (session.subagents === 0) {
@@ -558,7 +546,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
   }
   const projectsDir = paths.projectsDir;
   const sinceMs = nowMs - options.hours * 3_600_000;
-  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs }, paths.stateDir);
+  const sessions = collectUsage(projectsDir, { project: options.project, sinceMs });
   const recorded = readAgentUsage(agentUsageFile(paths.stateDir), sinceMs);
   // `--project` filters the sessions the transcripts give. The record holds a session id and
   // no folder, so under a project filter it counts only the sessions that survived: an agent

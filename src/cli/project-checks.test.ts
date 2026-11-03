@@ -575,29 +575,4 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
   });
 });
 
-describe("D71: project crew limits", () => {
-  test("one informational line names every ignored key", async () => {
-    const repo = makeRepo();
-    ignoreWorktrees(repo);
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { workflow: { crew: { max: 4, memoryGb: 2 } } });
-    const env = hookEnv();
-    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({
-      ok: true,
-      info: true,
-      fix: "remove each one with cc-smart-dev-kit workflow unset --project <key>; set your own with cc-smart-dev-kit workflow set crew.max <n>",
-    });
-    expect(lines[0]?.text).toEndWith(
-      "sets workflow.crew machine limits (crew.max, crew.memoryGb) that are ignored because crew limits are per machine",
-    );
-  });
-  test("no machine key means no line", async () => {
-    const repo = makeRepo();
-    ignoreWorktrees(repo);
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      workflow: { crew: { enabled: true, tag: "my-app" } },
-    });
-    expect(await check(repo)).toEqual([]);
-  });
-});
+describe("D71: project crew limits", () => {});

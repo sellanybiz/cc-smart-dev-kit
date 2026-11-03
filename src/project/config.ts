@@ -4,7 +4,7 @@ import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
-import { type Workflow, workflowSchema } from "../workflow/schema";
+import { workflowSchema } from "../workflow/schema";
 import { isValidRange, satisfiesRange } from "./version-range";
 
 /**
@@ -74,15 +74,15 @@ export const WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
 export const RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"] as const;
 
 /**
- * The release that brought `workflow.crew` and `workflow.fixesAfterReview`. A project file
+ * The release that brought `workflow.fixesAfterReview`. A project file
  * that sets one needs that plugin version or newer: an older plugin reads the file strictly
  * and refuses it whole (a field it does not know), and every guard then fails closed.
  */
-export const WORKFLOW_CREW_SINCE = "1.0.0";
+export const WORKFLOW_FIXES_SINCE = "1.0.0";
 
 /**
  * The release that brought `worktrees.autoClean` (D48). A project file that sets it needs that
- * plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ * plugin version or newer, for the same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 
@@ -92,45 +92,22 @@ export const WORKTREE_REBUILDABLE_SINCE = "1.9.0";
 /**
  * The release that brought `checks` (MD-3): a project names the fast check a session runs
  * before it stops. A project file that sets it needs that plugin version or newer, for the
- * same reason as `WORKFLOW_CREW_SINCE`.
+ * same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const CHECKS_SINCE = "1.1.0";
 
 /**
  * The release that brought `workflow.issues` (D67): the switch for GitHub Issues. A project
  * file that sets it needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`.
+ * `WORKFLOW_FIXES_SINCE`.
  */
 export const WORKFLOW_ISSUES_SINCE = "1.4.0";
-
-/**
- * The `workflow.crew` keys that came after `workflow.crew` itself, with the release that
- * brought them: the caps per lead and the opus usage guard (D54), and `keep` (the lean crew
- * start) in 1.1.0; `handoffTokens` (the hand-off at a token count) in 1.2.0; `loadPerCore`
- * (the load hold) and `archiveDays` (how long a removed crew session's conversation stays) in
- * 1.3.0. A project file that sets one needs that plugin version or newer, for the same reason
- * as `WORKFLOW_CREW_SINCE`. The keys are typed from the schema, so a name that is not a crew
- * key does not compile; `config.test.ts` fails when a new crew key has no entry here.
- */
-export const WORKFLOW_CREW_KEYS_SINCE: Readonly<
-  Partial<Record<keyof NonNullable<Workflow["crew"]>, string>>
-> = {
-  perLead: "1.1.0",
-  perLeadOpus: "1.1.0",
-  usagePercent: "1.1.0",
-  keep: "1.1.0",
-  handoffTokens: "1.2.0",
-  loadPerCore: "1.3.0",
-  archiveDays: "1.3.0",
-  deleteDays: "1.7.0",
-  startGapSeconds: "1.8.0",
-};
 
 /**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`: an older plugin reads a kind strictly and refuses the whole file. The
+ * `WORKFLOW_FIXES_SINCE`: an older plugin reads a kind strictly and refuses the whole file. The
  * keys are typed from the kind's schema; `config.test.ts` fails when a new kind field has no
  * entry here.
  */
@@ -144,7 +121,7 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
  * release that brought each. Older plugins validate the names as an enum, so one they do not
  * know makes them refuse the whole file, and every guard in that project fails closed. A
  * project file that lists one needs that plugin version or newer, for the same reason as
- * `WORKFLOW_CREW_SINCE`. A name from 0.5.2 or earlier needs no entry: 0.5.2 is the floor of every
+ * `WORKFLOW_FIXES_SINCE`. A name from 0.5.2 or earlier needs no entry: 0.5.2 is the floor of every
  * file (`WORKTREE_PREFIX_OPTIONAL_SINCE`). The keys are typed from `PLUGIN_HOOK_NAMES`;
  * `config.test.ts` fails when a new hook name has no entry here.
  */
@@ -160,7 +137,7 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<Partial<Record<PluginHookName, strin
 
 /**
  * The release that brought `tasks` (D75): the project's own task files. A project file that
- * sets it needs that plugin version or newer, for the same reason as `WORKFLOW_CREW_SINCE`.
+ * sets it needs that plugin version or newer, for the same reason as `WORKFLOW_FIXES_SINCE`.
  */
 export const TASKS_SINCE = "1.10.0";
 
@@ -292,8 +269,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
     .optional(),
   /**
    * What cc-smart-dev-kit may do by itself in this project, over the person's own defaults
-   * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field
-   * except the machine's crew limits (`src/workflow/`).
+   * (`~/.config/cc-smart-dev-kit/workflow.json`): the project's value wins field by field (`src/workflow/`).
    */
   workflow: workflowSchema.optional(),
   /**

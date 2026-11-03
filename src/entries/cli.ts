@@ -38,8 +38,6 @@ import { currentTerminal } from "../cli/ui/terminal";
 import { runUpdate } from "../cli/update";
 import { runUsage } from "../cli/usage";
 import { parseOptions } from "../crew/args";
-import { runCrew } from "../crew/command";
-import { realCrewContext } from "../crew/context";
 import { type GatewayContext, runGateway } from "../gateway/commands";
 import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { loopbackFetch, realProbe } from "../gateway/health";
@@ -929,8 +927,6 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
-    case "crew":
-      return await runCrew(rest, realCrewContext(paths));
     case "user":
       return await runUser(rest, {
         cwd: process.cwd(),

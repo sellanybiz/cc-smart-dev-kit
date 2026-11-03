@@ -44,8 +44,7 @@ import {
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
   TASKS_SINCE,
-  WORKFLOW_CREW_KEYS_SINCE,
-  WORKFLOW_CREW_SINCE,
+  WORKFLOW_FIXES_SINCE,
   WORKFLOW_ISSUES_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -241,14 +240,8 @@ function lowestAllowed(range: string): null | string {
  * The oldest plugin that reads every field the file holds: the range and the version it
  * names, for `raisedRequires`.
  *
- * A file that sets several fields needs the newest among them. A file with `workflow.crew`
- * keys or `ownHooks` names that came with a later release needs that release: the crew keys
- * in `WORKFLOW_CREW_KEYS_SINCE` (1.1.0 to 1.3.0), the hook names in `OWN_HOOK_NAMES_SINCE`
- * (1.0.0 to 1.3.0). A file with `checks` needs 1.1.0 (`CHECKS_SINCE`). A file with
- * `workflow.crew` or `workflow.fixesAfterReview`, or with `worktrees.autoClean`, needs the
- * release that brought them (1.0.0). Every other file needs the plugin that made
- * `worktrees.prefix` optional (0.5.2): it covers a hook name `ownHooks` already took then, and
- * the retired and unswitchable names (`serena-root`, `job-route`) older plugins accept too.
+ * A file that sets several fields needs the newest among them. The version tables in
+ * `config.ts` name those releases. Ignored settings do not raise the floor.
  * An older plugin reads the file strictly, does not know the field or the name, and refuses
  * the file — so every guard in that project fails closed until the plugin is updated; the
  * floor makes it say "update" instead.
@@ -259,7 +252,6 @@ export function requiresFloor(file: Record<string, unknown>): {
 } {
   const workflow = isObject(file.workflow) ? file.workflow : {};
   const worktrees = isObject(file.worktrees) ? file.worktrees : {};
-  const crew = isObject(workflow.crew) ? workflow.crew : {};
   const needs: string[] = [];
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
   if (Object.hasOwn(file, "tasks")) needs.push(TASKS_SINCE);
@@ -268,11 +260,8 @@ export function requiresFloor(file: Record<string, unknown>): {
   for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
     if (ownHooks.includes(name)) needs.push(since);
   }
-  for (const [key, since] of Object.entries(WORKFLOW_CREW_KEYS_SINCE)) {
-    if (Object.hasOwn(crew, key)) needs.push(since);
-  }
-  if (Object.hasOwn(workflow, "crew") || Object.hasOwn(workflow, "fixesAfterReview")) {
-    needs.push(WORKFLOW_CREW_SINCE);
+  if (Object.hasOwn(workflow, "fixesAfterReview")) {
+    needs.push(WORKFLOW_FIXES_SINCE);
   }
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);
@@ -455,7 +444,7 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (Object.keys(answers.workflow).length > 0) next.workflow = answers.workflow;
   else delete next.workflow;
   // The floor depends on the fields the file ends up with: a file that sets
-  // `workflow.crew` needs the plugin that brought it, or every older plugin refuses the
+  // a newer setting needs the plugin that brought it, or every older plugin refuses the
   // whole file (it does not know the field) and every guard in that project fails closed.
   const floor = requiresFloor(next);
   next.requires = raisedRequires(before.requires, floor.floor, floor.version);

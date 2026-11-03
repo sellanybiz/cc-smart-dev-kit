@@ -63,7 +63,7 @@ describe("workflow show", () => {
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.errors).toEqual([]);
     expect(run.lines).toEqual([
-      "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field, except the machine's crew limits",
+      "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field",
       "autoCommit = false (default)",
       "autoPush = false (default)",
       "openPr = off (default)",
@@ -86,25 +86,6 @@ describe("workflow show", () => {
       "alerts.events = needs-you, question, finished, failed (default)",
       "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
-      "crew.enabled = false (default)",
-      "crew.keep = (nothing) (default)",
-      "crew.idleStopMinutes = 10 (default)",
-      "crew.max = 12 (default)",
-      "crew.maxOpus = (no machine-wide opus count) (default)",
-      "crew.memoryGb = 6 (default)",
-      "crew.loadPerCore = 1.5 (default)",
-      "crew.startGapSeconds = 60 (default)",
-      "crew.perLead = 4 (default)",
-      "crew.perLeadOpus = 2 (default)",
-      "crew.usagePercent = 85 (default)",
-      "crew.quietMinutes = 20 (default)",
-      "crew.handoffPercent = 70 (default)",
-      "crew.handoffTokens = 400000 (default)",
-      "crew.softHours = 2 (default)",
-      "crew.maxHours = 4 (default)",
-      "crew.archiveDays = 7 (default)",
-      "crew.deleteDays = 30 (default)",
-      "crew.tag = (the main checkout's folder name) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -272,74 +253,6 @@ describe("workflow set and unset", () => {
         "",
       ].join("\n"),
     );
-  });
-
-  test("--project with a key a newer plugin brought raises the file's requires, and only then", async () => {
-    // `crew.handoffTokens` came with 1.2.0: an older plugin would refuse the unknown field,
-    // so every guard of a teammate still on it would ask on every call instead of saying "update".
-    const env = hookEnv();
-    const repo = makeRepo();
-    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-    writeFileSync(
-      file,
-      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { crew: { enabled: true } } }, null, 2)}\n`,
-    );
-    const run = context(repo, env);
-    expect(
-      await runWorkflow(["set", "crew.handoffTokens", "500000", "--project"], run.context),
-    ).toBe(0);
-    const written = JSON.parse(readFileSync(file, "utf8"));
-    expect(written.requires).toBe(">=1.2");
-    expect(written.workflow.crew).toEqual({ enabled: true, handoffTokens: 500000 });
-    // A key the old floor already covers leaves `requires` as it was.
-    const plain = context(repo, env);
-    writeFileSync(
-      file,
-      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
-    );
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], plain.context)).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.0");
-  });
-
-  test("--project on a file an older plugin wrote with a requires below its own fields raises it, for any key", async () => {
-    // 1.2.0 wrote `crew.handoffTokens` under `>=1.0`: a 1.1 teammate refuses the whole file.
-    // A write that adds nothing new still mends it, from the file's real `requires`.
-    const env = hookEnv();
-    const repo = makeRepo();
-    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-    const seed = (requires: string) =>
-      writeFileSync(
-        file,
-        `${JSON.stringify({ requires, worktrees: { base: "main" }, workflow: { crew: { enabled: true, handoffTokens: 300000 } } }, null, 2)}\n`,
-      );
-    seed(">=1.0");
-    const run = context(repo, env);
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.2");
-    // The raise is named in the line: a diff nobody can explain is not committed.
-    expect(run.lines).toEqual([
-      `~ ${file}: autoCommit = true; requires ">=1.0" -> ">=1.2" (the file's fields need it)`,
-    ]);
-    // A key that was set already: the line says the file's `requires` was the only change.
-    seed(">=1.0");
-    writeFileSync(
-      file,
-      `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" }, workflow: { autoCommit: true, crew: { enabled: true, handoffTokens: 300000 } } }, null, 2)}\n`,
-    );
-    const again = context(repo, env);
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], again.context)).toBe(0);
-    expect(again.lines).toEqual([
-      `~ ${file}: requires ">=1.0" -> ">=1.2" (the file's fields need it); autoCommit = true (already set)`,
-    ]);
-    seed(">=1.0");
-    // Never lowered: a range that already needs a newer plugin stays as written.
-    seed(">=1.3");
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe(">=1.3");
-    // A range in a form that is not read here is left alone by a write that adds nothing new.
-    seed("*");
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
-    expect(JSON.parse(readFileSync(file, "utf8")).requires).toBe("*");
   });
 
   test("D20: --project on a file that still holds a retired engine field: refused, naming it, nothing written", async () => {
@@ -994,27 +907,6 @@ describe("the review gate (CM-1)", () => {
       // D16: the write leaves two settings that cannot work together, and says so.
       OPEN_PR_DRAFT_CLASH,
     ]);
-  });
-
-  test("D34: the crew sessions' switch is not part of the gate: set in both files, shown with its source", async () => {
-    const env = { ...hookEnv(), CLAUDECODE: "1" };
-    const repo = makeRepo();
-    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-    const mine = context(repo, env);
-    expect(await runWorkflow(["set", "crew.max", "2"], mine.context)).toBe(0);
-    expect(mine.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: crew.max = 2"]);
-    const theirs = context(repo, env);
-    expect(await runWorkflow(["set", "crew.enabled", "true", "--project"], theirs.context)).toBe(0);
-    expect(theirs.lines).toEqual([
-      `~ ${file}: crew.enabled = true; requires ">=0.1" -> ">=1.0" (the file's fields need it)`,
-    ]);
-    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ crew: { enabled: true } });
-    const show = context(repo, env);
-    await runWorkflow(["show"], show.context);
-    expect(show.lines).toContain("crew.enabled = true (project)");
-    expect(show.lines).toContain("crew.max = 2 (personal)");
-    // Not a gate key: no gate line names it.
-    expect(show.lines.filter((line) => line.startsWith("gate crew sessions."))).toEqual([]);
   });
 
   test("CM-1: show prints the gate as the merge guard reads it, from the committed file", async () => {

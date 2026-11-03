@@ -266,7 +266,7 @@ function show(context: WorkflowContext): number {
     return 1;
   }
   print(
-    `your own defaults: ${tildify(paths.workflowConfigFile, paths.home)}; a project's .claude/cc-smart-dev-kit.json wins field by field, except the machine's crew limits`,
+    `your own defaults: ${tildify(paths.workflowConfigFile, paths.home)}; a project's .claude/cc-smart-dev-kit.json wins field by field`,
   );
   for (const key of WORKFLOW_KEYS) {
     const { value, source } = resolvedValueOf(resolved, key);

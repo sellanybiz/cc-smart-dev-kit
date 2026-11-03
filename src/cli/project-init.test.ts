@@ -432,11 +432,11 @@ describe("the defaults from the repo", () => {
       defaultAnswers(existing, facts, {
         dryRun: false,
         yes: true,
-        workflow: ["crew.enabled=false"],
+        workflow: ["fixesAfterReview.lines=200"],
       }).workflow,
     ).toEqual({
-      crew: { enabled: false, max: 4 },
-      fixesAfterReview: { lines: 120, percent: 30 },
+      crew: { enabled: true, max: 4 },
+      fixesAfterReview: { lines: 200, percent: 30 },
     });
   });
 });
@@ -762,7 +762,7 @@ describe("the run", () => {
         {
           requires: ">=1.0",
           worktrees: { base: "main" },
-          workflow: { crew: { enabled: true }, fixesAfterReview: { lines: 120 } },
+          workflow: { alerts: { sound: true }, fixesAfterReview: { lines: 120 } },
         },
         null,
         2,
@@ -776,7 +776,7 @@ describe("the run", () => {
       workflow: Record<string, unknown>;
     };
     expect(written.workflow).toEqual({
-      crew: { enabled: true },
+      alerts: { sound: true },
       fixesAfterReview: { lines: 120 },
       autoPush: true,
     });

@@ -14,7 +14,7 @@
  * the process, so two launches at once never write each other's file, and a second launch can
  * never change a running session's URL (a changed settings file reaches a running session
  * within about a second, P7). It is made 0600 through the kit's one JSON writer
- * (`writeJsonFile`, which `crew start` uses for its own `--settings` file too), and removed
+ * (`atomicWrite`), and removed
  * when the session ends.
  *
  * **What the file leaves in place, it says** (the lead's choice, RV3): `env` merges one variable
@@ -38,7 +38,6 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { claudeArgv, findClaude } from "../crew/claude";
-import { writeJsonFile } from "../crew/store";
 import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
 import {
   type HealthFetch,
@@ -49,6 +48,7 @@ import {
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
+import { atomicWrite } from "../setup/write";
 import { tildify } from "./paths";
 
 type Env = Record<string, string | undefined>;
@@ -460,8 +460,12 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
-      // The one JSON writer the crew's own launch uses (`src/crew/store.ts`).
-      writeJsonFile(settingsFile, { env: { ANTHROPIC_BASE_URL: target.url } });
+      // Publish the complete settings file with private permissions.
+      atomicWrite(
+        settingsFile,
+        `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: target.url } }, null, 2)}\n`,
+        0o600,
+      );
     } catch (error) {
       ctx.error(
         `launch: its settings file could not be written: ${error instanceof Error ? error.message : String(error)}`,

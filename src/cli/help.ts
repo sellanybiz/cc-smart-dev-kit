@@ -20,8 +20,6 @@
  * before any command runs, so help never runs a command and never needs a machine (`UX-2`).
  */
 import { COMMAND, VERSION } from "../build-info";
-import { CREW_USAGE } from "../crew/command";
-import { BOARD_COMMANDS, LEAD_TELL_USAGE, TELL_USAGE } from "../crew/usage";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { ISSUE_USAGE } from "../issues/command";
@@ -209,23 +207,12 @@ command that resumes each. --open reopens every session that was open when the m
 down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
 it would open and opens nothing.
 
---finished lists this machine's background sessions done or stopped for more than one day,
-with their name, folder and age. Crew sessions and leads stay out of that list, even when renamed.
-Finished crew records no watch releases (no live watch of their lead holds its lease) are listed
-first, separately. --remove confirms releasing their worktrees and agent-view rows; branches and
-conversations stay. --id leaves this crew release out.
+--finished lists this machine's background sessions done or stopped for more than one day.
 Add --remove to remove that list with claude rm (asks once); --yes skips confirmation.
 A registered/locked worktree must be cleared first through worktrees --clean or ExitWorktree.
 A refusal is reported, later eligible rows are attempted, and any failure returns exit 1.
 --id limits removal to that exact eligible session; repeat it to name several.
 
---finished also lists what removed crew sessions left in /resume: their conversations still in
-Claude Code's projects folder, their worktrees' empty project folders, and the kit's archives
-past crew.deleteDays (${workflowDefaults.crew.deleteDays} by default). Conversations stay in /resume for crew.archiveDays
-(${workflowDefaults.crew.archiveDays} by default) after the session ended, then move to the gzipped archive. Both ages count
-from session end. --remove asks once more, moves due conversations, removes empty folders and deletes
-each expired archive. A lead's session, a crew session still on the board, one a running Claude
-holds and one written after its removal are never taken. --id leaves this part out.
 Use --finished separately from --open and --dry-run.`;
 
 const WORKTREES_HELP = `Usage: ${COMMAND} worktrees [--clean] [--remove <path>] [--no-fetch] [--json]
@@ -361,7 +348,6 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   // plugin's own command — `help claude-mem` and the README's table name it.
   { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
-  { name: "crew", listed: "more", help: CREW_USAGE },
   { name: "user", listed: "more", help: USER_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
@@ -372,11 +358,6 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "gateway", help: GATEWAY_USAGE },
   { name: "project", help: PROJECT_INIT_USAGE },
   { name: "mcp status", help: MCP_HELP },
-  // The board and the end of a crew session: a row each, from their own table (`crew/usage.ts`).
-  ...BOARD_COMMANDS.map((one) => ({ name: `crew ${one.name}`, help: one.help })),
-  // A crew session's note to another: its help sits beside the board's, so both read one text.
-  { name: "crew tell", help: TELL_USAGE },
-  { name: "crew lead tell", help: LEAD_TELL_USAGE },
   { name: "session-name", help: SESSION_NAME_HELP },
   // Claude Code runs it from the plugin's settings.json: a status line's row body, not a
   // command for a person.

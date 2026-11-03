@@ -37,7 +37,6 @@ import {
   isPersonalFileSwitch,
   isProjectKey,
   isSwitchKey,
-  MACHINE_CREW_KEYS,
   personalWorkflowSchema,
   type SwitchName,
   switchOf,
@@ -149,16 +148,8 @@ export function writeProjectSetting(
   env: Env = process.env,
 ): string {
   const wanted = requireKey(key);
-  // A crew limit a project file still carries (D71) is ignored, so it may be taken out, never set.
-  const removesCrewLimit =
-    value === undefined && (MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(wanted);
-  if (!isProjectKey(wanted) && !removesCrewLimit) {
-    const reason =
-      wanted === "switches.statusLine"
-        ? "the status line is"
-        : wanted === "switches.updateHold"
-          ? "the update hold is"
-          : "crew limits are";
+  if (!isProjectKey(wanted)) {
+    const reason = wanted === "switches.statusLine" ? "the status line is" : "the update hold is";
     throw new Error(
       `${wanted} is your own setting, not the project's: run it without --project (${reason} per person, per machine)`,
     );
@@ -198,8 +189,7 @@ function writeProjectFile(
   // A write that brings a field a newer plugin added raises `requires` (never lowers it), as
   // `project init` does: a teammate on an older plugin then hears "update", not every guard
   // asking. Only then: a write the file's old floor already covers leaves `requires` alone.
-  // The file's own `requires` counts too: one an older plugin wrote below its fields (1.2.0 with
-  // `crew.handoffTokens` under `>=1.0`) is raised by any write, so the teammate hears "update".
+  // The file's own `requires` counts too: a floor below its fields rises on any write.
   const needed = requiresFloor(data);
   if (
     Bun.semver.order(needed.version, requiresFloor(before).version) > 0 ||

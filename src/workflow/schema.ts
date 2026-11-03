@@ -21,13 +21,12 @@
  * workflow setting does (`resolve.ts`).
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
- * without the person, every alert is on, and no crew session starts.
+ * without the person, every alert is on.
  *
- * **A group** (`alerts`, `crew`, `fixesAfterReview`) is merged field by field like the rest,
- * and its fields are named with a dot (`crew.enabled`).
+ * **A group** (`alerts`, `fixesAfterReview`) is merged field by field like the rest,
+ * and its fields are named with a dot (`alerts.sound`).
  */
 import { z } from "zod";
-import { isNameTag, TAG_RULE } from "../crew/names";
 
 /** The four moments an alert is worth having. */
 export const ALERT_EVENTS = ["needs-you", "question", "finished", "failed"] as const;
@@ -43,12 +42,10 @@ const alertEventsSchema = z
  * any number above 0. One home: the schema checks a file with it, and `parseWorkflowValue` a
  * value a person types, in the same words.
  */
-type NumberRule = { kind: "whole"; max?: number; min: number } | { kind: "positive" };
+type NumberRule = { kind: "whole"; max?: number; min: number };
 
 const PERCENT: NumberRule = { kind: "whole", max: 100, min: 1 };
-const AT_LEAST_ONE: NumberRule = { kind: "whole", min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
-const ABOVE_ZERO: NumberRule = { kind: "positive" };
 
 /**
  * The fewest minutes between two looks at GitHub (`issues.watchMinutes`). One look is two
@@ -62,7 +59,6 @@ const WATCH_MINUTES: NumberRule = { kind: "whole", max: 24 * 60, min: WATCH_MINU
 
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
-  if (rule.kind === "positive") return z.number().positive();
   const whole = z.number().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
 }
@@ -70,22 +66,6 @@ function numberSchema(rule: NumberRule): z.ZodNumber {
 /** Every number setting, and what it takes. */
 const NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
-  "crew.idleStopMinutes": AT_LEAST_ONE,
-  "crew.max": AT_LEAST_ONE,
-  "crew.maxOpus": AT_LEAST_ONE,
-  "crew.memoryGb": ABOVE_ZERO,
-  "crew.loadPerCore": ABOVE_ZERO,
-  "crew.startGapSeconds": AT_LEAST_ONE,
-  "crew.perLead": AT_LEAST_ONE,
-  "crew.perLeadOpus": AT_LEAST_ONE,
-  "crew.usagePercent": PERCENT,
-  "crew.quietMinutes": AT_LEAST_ONE,
-  "crew.handoffPercent": PERCENT,
-  "crew.handoffTokens": AT_LEAST_ONE,
-  "crew.softHours": ABOVE_ZERO,
-  "crew.maxHours": ABOVE_ZERO,
-  "crew.archiveDays": AT_LEAST_ONE,
-  "crew.deleteDays": AT_LEAST_ONE,
   "issues.watchMinutes": WATCH_MINUTES,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
@@ -153,38 +133,6 @@ export function labelsClash(labels: IssueLabels): string | null {
   }
   return null;
 }
-
-/** The schema for the crew sessions' tag: already clean, as the names need it (`isNameTag`). */
-const tagSchema = z.string().refine(isNameTag, TAG_RULE);
-
-/**
- * One entry of `workflow.crew.keep`: a plugin a crew session keeps on, or an MCP server it keeps
- * beside the ones its kind needs. A plugin is named by its Claude Code id (`name@marketplace`),
- * a server by its name.
- */
-export type CrewKeepEntry = { id: string; kind: "plugin" } | { kind: "server"; name: string };
-
-/** The two shapes an entry takes, in the words a refusal says it. */
-export const CREW_KEEP_RULE = '"plugin:<id>" or "server:<name>"';
-
-/** One `workflow.crew.keep` entry, read; null when it is neither shape. */
-export function parseCrewKeep(entry: string): CrewKeepEntry | null {
-  if (entry.startsWith("plugin:")) {
-    const id = entry.slice("plugin:".length);
-    // `name@marketplace`, both non-empty: what `claude plugin list` names a plugin by.
-    return /^[^\s@]+@[^\s@]+$/.test(id) ? { id, kind: "plugin" } : null;
-  }
-  if (entry.startsWith("server:")) {
-    const name = entry.slice("server:".length);
-    return /^[a-z0-9][a-z0-9-]*$/.test(name) ? { kind: "server", name } : null;
-  }
-  return null;
-}
-
-/** The schema for one entry: refused with its shape, so a typo never waits for the next start. */
-const crewKeepSchema = z
-  .string()
-  .refine((entry) => parseCrewKeep(entry) !== null, `an entry is ${CREW_KEEP_RULE}`);
 
 export const workflowSchema = z.strictObject({
   /** Commit each finished, reviewed step without asking. */
@@ -280,91 +228,8 @@ export const workflowSchema = z.strictObject({
       usagePercent: numberField("alerts.usagePercent"),
     })
     .optional(),
-  /**
-   * Lead and crew sessions (decisions D34, D35, D54): the switch, one lead's caps, the machine's
-   * guards a start waits at, and the tag in their names. In the person's file it is every
-   * project's default; a project's file wins field by field. `crew lead` and `crew start` read
-   * `enabled`, `perLead`, `perLeadOpus`, `max`, `maxOpus`, `memoryGb`, `loadPerCore`, `usagePercent` and `tag`
-   * (`src/crew/`); the rest is for the parts after them.
-   */
-  crew: z
-    .strictObject({
-      /** Crew sessions may start here: off, a lead uses subagents only. Default: false. */
-      enabled: z.boolean().optional(),
-      /**
-       * What a crew session keeps beside the kit itself: a plugin (`plugin:<id>`) a phase needs,
-       * or an MCP server (`server:<name>`, one the kit registers). Every other plugin is turned
-       * off for the session and every other MCP server is not loaded, so its context goes to the
-       * phase instead of to the machine's other tools. A plugin named here must be enabled on the
-       * machine. Default: nothing.
-       */
-      keep: z.array(crewKeepSchema).optional(),
-      /** Minutes a blocked crew session waits before its session is stopped; an answer brings it back. Default: 10. */
-      idleStopMinutes: numberField("crew.idleStopMinutes"),
-      /** The machine's safety ceiling across leads (D54), read from the person's file only. Default: 12. */
-      max: numberField("crew.max"),
-      /**
-       * An optional machine-wide opus ceiling inside `max` (D37). Unset: no machine-wide
-       * count, and each lead's `perLeadOpus` alone bounds the opus tier. Read from the person's file only. Default: unset.
-       */
-      maxOpus: numberField("crew.maxOpus"),
-      /** Free memory in GB a start needs, read from the person's file only. Default: 6. */
-      memoryGb: numberField("crew.memoryGb"),
-      /**
-       * A new crew session waits while the 1-minute load average is above this many per core
-       * (the cores times this number). Where the platform gives no load average (native
-       * Windows), the hold does not apply. Read from the person's file only. Default: 1.5.
-       */
-      loadPerCore: numberField("crew.loadPerCore"),
-      /** Whole seconds between launches on this machine, including resumes and continuations (D72), read from the person's file only. Default: 60. */
-      startGapSeconds: numberField("crew.startGapSeconds"),
-      /** One lead's cap across repositories (D54), read from the person's file only. Default: 4. */
-      perLead: numberField("crew.perLead"),
-      /** One lead's opus-tier cap (D54), read from the person's file only. Default: 2. */
-      perLeadOpus: numberField("crew.perLeadOpus"),
-      /**
-       * Past this share of the 5-hour usage window, a new opus-tier crew session waits,
-       * unless the gateway's opus slot has a chain with its fallback on (D54). The window
-       * is the one the status line reads; with no reading, the guard does not hold.
-       * Read from the person's file only. Default: 85.
-       */
-      usagePercent: numberField("crew.usagePercent"),
-      /** Minutes a working crew session's transcript may stay still before it counts as quiet (an alert only). Default: 20. */
-      quietMinutes: numberField("crew.quietMinutes"),
-      /**
-       * The share of its context window, in percent, at which a crew session hands off to a
-       * next one. It hands off at this share or at `handoffTokens`, whichever comes first.
-       * Default: 70.
-       */
-      handoffPercent: numberField("crew.handoffPercent"),
-      /**
-       * The tokens of context at which a crew session hands off, whatever its window: a 1M
-       * window hands off here, a 200k window at `handoffPercent` first. It needs no window, so
-       * a model the kit cannot size still hands off at it. Default: 400000.
-       */
-      handoffTokens: numberField("crew.handoffTokens"),
-      /** Hours after which the lead gets a note about a crew session still running. Default: 2. */
-      softHours: numberField("crew.softHours"),
-      /** Hours after which a crew session hands off. Default: 4. */
-      maxHours: numberField("crew.maxHours"),
-      /**
-       * Days after a crew session ended before its conversation leaves `/resume` for the archive.
-       * Default: 7 (`src/crew/archive.ts`, D69).
-       */
-      archiveDays: numberField("crew.archiveDays"),
-      /** Days after the session ended before its archive is deleted. Default: 30. */
-      deleteDays: numberField("crew.deleteDays"),
-      /** The tag in every lead's and crew session's name (D26). Default: the main checkout's folder name. */
-      tag: tagSchema.optional(),
-    })
-    .refine(
-      (crew) =>
-        crew.deleteDays === undefined ||
-        crew.archiveDays === undefined ||
-        crew.deleteDays >= crew.archiveDays,
-      { message: "crew.deleteDays must be at least crew.archiveDays", path: ["deleteDays"] },
-    )
-    .optional(),
+  /** ignored since 2.0 */
+  crew: z.unknown().optional(),
 });
 
 export type Workflow = z.infer<typeof workflowSchema>;
@@ -420,43 +285,7 @@ export const workflowDefaults = {
     sound: false,
     usagePercent: 85,
   },
-  // Off by default (D34). The caps are D54's: each lead keeps its own four crew sessions, two
-  // on the opus tier, and the machine's ceiling is a safety net no lead reaches alone.
-  crew: {
-    enabled: false,
-    keep: [],
-    idleStopMinutes: 10,
-    max: 12,
-    /** Null: no machine-wide opus count; one set is the person's own ceiling. */
-    maxOpus: null,
-    memoryGb: 6,
-    /**
-     * A start waits past a 1-minute load of 1.5 per core. The load average lags, so the line
-     * sits low enough to leave room for the sessions already starting (seen: load 85 on 16 cores
-     * with 24 sessions, and load 34–76 on 12 cores after a reboot started 15 at once).
-     */
-    loadPerCore: 1.5,
-    startGapSeconds: 60,
-    perLead: 4,
-    perLeadOpus: 2,
-    usagePercent: 85,
-    quietMinutes: 20,
-    handoffPercent: 70,
-    handoffTokens: 400_000,
-    softHours: 2,
-    maxHours: 4,
-    archiveDays: 7,
-    deleteDays: 30,
-    /** Null: the main checkout's folder name stands in (`crewTag` in `src/crew/names.ts`). */
-    tag: null,
-  },
 } as const;
-
-/** What `workflow show` prints for `crew.tag` while nobody sets it. */
-export const CREW_TAG_UNSET = "the main checkout's folder name";
-
-/** What `workflow show` prints for `crew.maxOpus` while nobody sets it (D54: no machine count). */
-export const CREW_MAX_OPUS_UNSET = "no machine-wide opus count";
 
 /**
  * The switches, and where each one really lives: read and written through the setting that
@@ -489,25 +318,6 @@ export type WorkflowKey =
   | "alerts.events"
   | "alerts.sound"
   | "alerts.usagePercent"
-  | "crew.enabled"
-  | "crew.keep"
-  | "crew.idleStopMinutes"
-  | "crew.max"
-  | "crew.maxOpus"
-  | "crew.memoryGb"
-  | "crew.loadPerCore"
-  | "crew.startGapSeconds"
-  | "crew.perLead"
-  | "crew.perLeadOpus"
-  | "crew.usagePercent"
-  | "crew.quietMinutes"
-  | "crew.handoffPercent"
-  | "crew.handoffTokens"
-  | "crew.softHours"
-  | "crew.maxHours"
-  | "crew.archiveDays"
-  | "crew.deleteDays"
-  | "crew.tag"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -534,25 +344,6 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "alerts.events",
   "alerts.sound",
   "alerts.usagePercent",
-  "crew.enabled",
-  "crew.keep",
-  "crew.idleStopMinutes",
-  "crew.max",
-  "crew.maxOpus",
-  "crew.memoryGb",
-  "crew.loadPerCore",
-  "crew.startGapSeconds",
-  "crew.perLead",
-  "crew.perLeadOpus",
-  "crew.usagePercent",
-  "crew.quietMinutes",
-  "crew.handoffPercent",
-  "crew.handoffTokens",
-  "crew.softHours",
-  "crew.maxHours",
-  "crew.archiveDays",
-  "crew.deleteDays",
-  "crew.tag",
 ];
 
 /**
@@ -610,32 +401,12 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
 export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
 
 /**
- * The crew limits (D71): read from the person's own file only. They protect one machine, and a
- * project's file is shared by every machine that checks it out. A project file that still sets
- * one parses as before; the value is ignored, and `doctor` says so once.
- */
-export const MACHINE_CREW_KEYS = [
-  "crew.max",
-  "crew.maxOpus",
-  "crew.perLead",
-  "crew.perLeadOpus",
-  "crew.memoryGb",
-  "crew.loadPerCore",
-  "crew.usagePercent",
-  "crew.startGapSeconds",
-] as const satisfies readonly WorkflowKey[];
-
-/**
- * True when the project's own file can hold the key: every policy key but the crew limits
- * (`MACHINE_CREW_KEYS`), and the project's two switches. The one answer behind
+ * True when the project's own file can hold the key: every policy key, and the project's two switches. The one answer behind
  * `workflow set --project`'s and `workflow propose`'s refusals and the portal's list of what a
  * project's card may change; `propose.test.ts` holds it equal to what the writer accepts.
  */
 export function isProjectKey(key: WorkflowKey): boolean {
-  return (
-    !(MACHINE_CREW_KEYS as readonly WorkflowKey[]).includes(key) &&
-    (!isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key)))
-  );
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
 }
 
 /** True when the person's own file holds the key (a switch with a machine-wide default). */
@@ -696,10 +467,9 @@ function isNumberKey(key: string): key is NumberKey {
   return Object.hasOwn(NUMBER_RULES, key);
 }
 
-/** What a number setting takes, in words: `crew.max is a whole number, 1 or more`. */
+/** What a number setting takes, in words: `alerts.usagePercent is a whole number, 1-100`. */
 function numberRuleText(key: NumberKey): string {
   const rule: NumberRule = NUMBER_RULES[key];
-  if (rule.kind === "positive") return `${key} is a number above 0`;
   return rule.max === undefined
     ? `${key} is a whole number, ${rule.min} or more`
     : `${key} is a whole number ${rule.min}-${rule.max}`;
@@ -708,7 +478,7 @@ function numberRuleText(key: NumberKey): string {
 /** A number setting as a person typed it: digits (and a decimal point where one may be). */
 function parseNumber(key: NumberKey, value: string): ParsedValue {
   const rule: NumberRule = NUMBER_RULES[key];
-  const shape = rule.kind === "whole" ? /^\d+$/ : /^\d+(?:\.\d+)?$/;
+  const shape = /^\d+$/;
   const number = Number(value);
   return shape.test(value) && numberSchema(rule).safeParse(number).success
     ? { ok: true, value: number }
@@ -731,24 +501,6 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
   if (isNumberKey(key)) return parseNumber(key, value);
   if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
     return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
-  }
-  if (key === "crew.tag") {
-    return isNameTag(value) ? { ok: true, value } : { ok: false, why: `${key} is ${TAG_RULE}` };
-  }
-  if (key === "crew.keep") {
-    const named = value
-      .split(/[,\s]+/)
-      .map((word) => word.trim())
-      .filter((word) => word !== "");
-    if (named.length === 0) return { ok: false, why: `crew.keep is a list of ${CREW_KEEP_RULE}` };
-    const unknown = named.filter((entry) => parseCrewKeep(entry) === null);
-    if (unknown.length > 0) {
-      return {
-        ok: false,
-        why: `crew.keep: unknown ${unknown.join(", ")} (an entry is ${CREW_KEEP_RULE})`,
-      };
-    }
-    return { ok: true, value: [...new Set(named)] };
   }
   if (key === "reviewAgents") {
     const named = value
@@ -785,12 +537,9 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
 }
 
 /**
- * A value as `workflow show` prints it: a list as words, a number, a boolean, a word — and an
- * unset `crew.tag` as what stands in for it.
+ * A value as `workflow show` prints it: a list as words, a number, a boolean or a word.
  */
-export function showValue(key: WorkflowKey, value: unknown): string {
-  if (key === "crew.tag" && value === null) return `(${CREW_TAG_UNSET})`;
-  if (key === "crew.maxOpus" && value === null) return `(${CREW_MAX_OPUS_UNSET})`;
+export function showValue(_key: WorkflowKey, value: unknown): string {
   if (Array.isArray(value)) return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }
