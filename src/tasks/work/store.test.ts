@@ -6,7 +6,15 @@ import { subprocessGuard } from "../../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { NEWER_STORE, openWorkDb, workDbFile } from "./db";
 import { importClaudeMem } from "./import-claude-mem";
-import { claimState, getTask, listTasks, notesOf, openSubtasks, searchTasks } from "./queries";
+import {
+  claimHeldBy,
+  claimState,
+  getTask,
+  listTasks,
+  notesOf,
+  openSubtasks,
+  searchTasks,
+} from "./queries";
 import { hasOwnTask, startView } from "./read";
 import {
   ack,
@@ -89,6 +97,31 @@ test("plan upserts and process claims survive a clear", () => {
   expect(claimState(own, () => false, who)).toBe("free");
   db.close();
   expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: true });
+});
+test("one claim match: the start time names the process; without one the session must match too", () => {
+  const linux = { pid: 12, procStart: "34", sessionId: "session" };
+  expect(claimHeldBy(linux, { sessionId: "after-clear", pid: 12, procStart: "34" })).toBe(true);
+  expect(claimHeldBy(linux, { sessionId: "session", pid: 12, procStart: "reused" })).toBe(false);
+  expect(claimHeldBy(linux, { sessionId: "session", pid: 13, procStart: "34" })).toBe(false);
+  // Off Linux there is no start time: the same pid with another session is a reused pid.
+  const elsewhere = { pid: 12, procStart: null, sessionId: "session" };
+  expect(claimHeldBy(elsewhere, { sessionId: "other", pid: 12, procStart: null })).toBe(false);
+  expect(claimHeldBy(elsewhere, { sessionId: "session", pid: 12, procStart: null })).toBe(true);
+  expect(claimHeldBy(elsewhere, { sessionId: null, pid: 12, procStart: null })).toBe(false);
+  expect(
+    claimHeldBy({ ...elsewhere, sessionId: null }, { sessionId: null, pid: 12, procStart: null }),
+  ).toBe(false);
+  // A start time on one side only proves nothing either.
+  expect(claimHeldBy(linux, { sessionId: "other", pid: 12, procStart: null })).toBe(false);
+  expect(claimHeldBy(linux, { sessionId: "session", pid: 12, procStart: null })).toBe(true);
+  expect(claimHeldBy(elsewhere, { sessionId: "session", pid: null, procStart: null })).toBe(false);
+  expect(claimHeldBy(null, { sessionId: "session", pid: 12, procStart: null })).toBe(false);
+  // The list's "mine" mark follows the same match.
+  const { db } = setup();
+  const task = value(createTask(db, { project: "p", subject: "Work" }, who, 1));
+  db.close();
+  const other = { sessionId: "other", pid: 12, procStart: null };
+  expect(claimState({ ...task, claim: elsewhere }, () => true, other)).toBe("another session");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {
   const { db, paths } = setup();

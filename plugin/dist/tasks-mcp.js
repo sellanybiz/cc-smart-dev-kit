@@ -22027,6 +22027,24 @@ function lowestAllowed(range) {
   }
   return lowest;
 }
+var NO_TOP = "999999.0.0";
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
@@ -22105,7 +22123,6 @@ function describeIssue(issue) {
   }
   return `${field}: ${issue.message}`;
 }
-var NO_TOP = "999999.0.0";
 function checkRequires(file, raw, pluginVersion) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return;
@@ -22114,11 +22131,10 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (satisfiesRange(pluginVersion, requires))
     return;
-  const lowest = lowestAllowed(requires);
-  const hasTop = !satisfiesRange(NO_TOP, requires);
-  if (hasTop && lowest !== null && Bun.semver.order(pluginVersion, lowest) >= 0) {
-    const [major, minor] = lowest.split(".");
-    const example = lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
   }
   throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
@@ -23264,10 +23280,17 @@ function deletedHistory(db, project, ref) {
   const events = eventsOf(db, row.task_id);
   return events.at(-1)?.action === "deleted" ? events : [];
 }
+function claimHeldBy(claim, who) {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
+    return false;
+  if (claim.procStart !== null && who.procStart !== null)
+    return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
     return "free";
-  return who?.pid === task.claim.pid && who.procStart === task.claim.procStart ? "mine" : "another session";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 
 // src/tasks/work/store.ts
@@ -23586,7 +23609,8 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const plan = [...all].reverse().find((t) => t.plan !== null && (t.createdBy === who.sessionId || who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart))?.plan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
+      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
+      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -23638,7 +23662,7 @@ function createTaskOps(options = {}) {
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
             throw new Error("A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers");
-          const slug = input.plan ?? plan;
+          const slug = input.plan ?? ownPlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
@@ -23683,7 +23707,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: parent?.plan ?? plan,
+          plan: parent?.plan ?? ownPlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -23855,12 +23879,13 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
-          selected = selected.filter((t) => t.createdBy === who.sessionId || who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart);
+          selected = selected.filter(owns);
           if (!caller)
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
-        } else if (input.scope === "plan")
-          selected = selected.filter((t) => plan !== null && t.plan === plan && t.kind !== "task");
-        else if (ctx.projectTasks.ok)
+        } else if (input.scope === "plan") {
+          const shown = ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
+          selected = selected.filter((t) => shown !== null && t.plan === shown && t.kind !== "task");
+        } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter((t) => (!openOnly || t.status === "open") && (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)));
       }
       const selectedIds = new Set(selected.map((t) => t.id));

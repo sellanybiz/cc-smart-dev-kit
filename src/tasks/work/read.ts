@@ -1,7 +1,15 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
 import { claimLive } from "./identity";
-import { allTasks, claimState, holdingUnder, isBlocked, isOpen, subtreeProgress } from "./queries";
+import {
+  allTasks,
+  claimHeldBy,
+  claimState,
+  holdingUnder,
+  isBlocked,
+  isOpen,
+  subtreeProgress,
+} from "./queries";
 import type { Who } from "./types";
 export type ReadState<T> =
   | { state: "ready"; value: T }
@@ -81,12 +89,7 @@ export function statusTask(paths: Paths, project: string, who: Who) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const task = all
-      .filter(
-        (t) =>
-          t.status === "in_progress" &&
-          t.claim?.pid === who.pid &&
-          t.claim?.procStart === who.procStart,
-      )
+      .filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who))
       .sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (!task) return null;
     const count = subtreeProgress(all, task.id);

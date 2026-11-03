@@ -2,7 +2,7 @@
  * Claude Code's own subagent cap, written as an owned settings key.
  * Setup merges `planMaxSubagents(...).set` into its one managed JSON write, under its lock.
  * Restore removes our key through the normal managed JSON record; a value the person changed
- * or removed stays theirs.
+ * stays theirs, and so does a removal until they pass `--max-subagents` again.
  */
 import { COMMAND } from "../build-info";
 import { getKey, type KeyPath, ownedRecords, ownership, readJsonObject } from "./managed-json";
@@ -66,29 +66,57 @@ export interface MaxSubagentsOptions {
   dryRun?: boolean;
 }
 
+/**
+ * One line for setup's report: information (`info`, what setup did or left alone) or a warning
+ * (`warn`, what the person asked for and did not get). Setup prints it with its own marks.
+ */
+export interface MaxSubagentsNote {
+  mark: "info" | "warn";
+  text: string;
+}
+
 export interface MaxSubagentsPlan {
   /** Merge these pairs into setup's managed JSON set list. */
   set: ReadonlyArray<readonly [KeyPath, string]>;
-  /** Print once as an info line, if present. No output is printed by this module. */
-  note: string | null;
+  /** Print once, if present. No output is printed by this module. */
+  note: MaxSubagentsNote | null;
 }
 
 /** Read-only, including in a real run. Does not create settings, state or a lock. */
 export function planMaxSubagents(options: MaxSubagentsOptions): MaxSubagentsPlan {
   const value = String(validateMaxSubagents(options.maxSubagents ?? DEFAULT_MAX_SUBAGENTS));
   const state = maxSubagentsState(options.settingsFile, options.stateDir);
-  // A key removed after we wrote it is the person's choice too: setup says so in doctor's words.
-  if (state.kind === "yours" || state.kind === "removed") {
-    return { set: [], note: maxSubagentsLine(state, options.shownFile ?? options.settingsFile) };
+  const file = options.shownFile ?? options.settingsFile;
+  const asked = options.maxSubagents !== undefined;
+  // A value of the person's own is never overwritten, even when they pass the flag: then the
+  // flag did nothing, so setup warns instead of informing.
+  if (state.kind === "yours") {
+    return {
+      set: [],
+      note: asked
+        ? {
+            mark: "warn",
+            text: `${MAX_SUBAGENTS_FLAG} ${value} not applied: ${MAX_SUBAGENTS_ENV} in ${file} is your own value (${shown(state.value)}), and ${COMMAND} leaves it; change it there to use ${value}`,
+          }
+        : { mark: "info", text: maxSubagentsLine(state, file) },
+    };
+  }
+  // A key removed after we wrote it is the person's choice too: setup says so in doctor's
+  // words. The flag is a new choice, so with it the key is written (and owned) again.
+  if (state.kind === "removed" && !asked) {
+    return { set: [], note: { mark: "info", text: maxSubagentsLine(state, file) } };
   }
   return {
     set: [[MAX_SUBAGENTS_KEY, value]],
     note:
       state.kind === "ours" && state.value === value
         ? null
-        : options.dryRun
-          ? `would set max subagents: ${value}; ${CHANGE}`
-          : `max subagents: ${value} (set by ${COMMAND}); ${CHANGE}`,
+        : {
+            mark: "info",
+            text: options.dryRun
+              ? `would set max subagents: ${value}; ${CHANGE}`
+              : `max subagents: ${value} (set by ${COMMAND}); ${CHANGE}`,
+          },
   };
 }
 
@@ -108,7 +136,7 @@ export function maxSubagentsLine(state: MaxSubagentsState, settingsFile: string)
     case "yours":
       return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile}; change it there to use another value)`;
     case "removed":
-      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand to use another value)`;
+      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand, or run: ${COMMAND} setup ${MAX_SUBAGENTS_FLAG} <n>)`;
     case "unset":
       return `max subagents: Claude Code's own default; to use the kit's ${DEFAULT_MAX_SUBAGENTS}, run: ${COMMAND} setup`;
   }

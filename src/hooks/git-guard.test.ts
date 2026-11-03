@@ -1198,10 +1198,26 @@ describe("the hook asks before a command that destroys work", () => {
     }
   });
 
-  it("a bare stash is silent when the project does not work in worktrees", async () => {
+  it("a bare stash is silent in the main checkout when the project does not work in worktrees", async () => {
     const { env, repo } = policyRepo({ requires: ">=0.4" });
     for (const command of ["git stash", "git stash pop"]) {
       expect([command, await pushAnswer(env, repo, command)]).toEqual([command, null]);
+    }
+  });
+
+  it("a bare stash asks in a linked worktree, even with no worktrees key", async () => {
+    // Builders in linked worktrees of one repo share its stash list, so one builder's
+    // `git stash pop` can take another's work.
+    const { env, repo } = policyRepo({ requires: ">=0.4" });
+    const linked = join(dirname(repo), "app-linked");
+    git(repo, "worktree", "add", "-q", "-b", "fix/linked", linked);
+    const ask =
+      "The git stash is shared by every worktree of this repo, so a bare `git stash` or `git stash pop` can take or restore another session's work. A WIP commit is safer; or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.";
+    for (const command of ["git stash", "git stash pop"]) {
+      expect([command, await pushAnswer(env, linked, command)]).toEqual([
+        command,
+        { decision: "ask", reason: ask },
+      ]);
     }
   });
 

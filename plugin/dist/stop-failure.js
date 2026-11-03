@@ -6995,6 +6995,24 @@ function lowestAllowed(range) {
   }
   return lowest;
 }
+var NO_TOP = "999999.0.0";
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
@@ -7073,7 +7091,6 @@ function describeIssue(issue) {
   }
   return `${field}: ${issue.message}`;
 }
-var NO_TOP = "999999.0.0";
 function checkRequires(file, raw, pluginVersion) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return;
@@ -7082,11 +7099,10 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (satisfiesRange(pluginVersion, requires))
     return;
-  const lowest = lowestAllowed(requires);
-  const hasTop = !satisfiesRange(NO_TOP, requires);
-  if (hasTop && lowest !== null && Bun.semver.order(pluginVersion, lowest) >= 0) {
-    const [major, minor] = lowest.split(".");
-    const example = lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
   }
   throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);

@@ -147,8 +147,9 @@ user seeing it: a new router version runs only after `gateway setup`, which asks
 
 Setup writes `env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` as the managed string `"10"` in
 Claude Code's user settings. A value you set yourself stays yours. Use
-`cc-smart-dev-kit setup --max-subagents <n>` to change the kit's value; `restore` takes back
-only the value the kit owns. This uses Claude Code's own per-session cap, not a kit queue.
+`cc-smart-dev-kit setup --max-subagents <n>` to change the kit's value: it also takes the key
+back after the person removed it, and over a value of their own it never writes, only warns
+(a `!` line). `restore` takes back only the value the kit owns. This uses Claude Code's own per-session cap, not a kit queue.
 Claude Code's default without the key is 20. A launch past the cap fails and Claude is told
 not to retry. The key exists from Claude Code v2.1.217; the live check is still owed.
 

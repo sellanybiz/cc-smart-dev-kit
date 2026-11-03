@@ -9692,12 +9692,29 @@ function lowestAllowed(range) {
   }
   return lowest;
 }
-var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)", IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*", PARTIAL, COMPARATOR, HYPHEN, RANGE_START;
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)", IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*", PARTIAL, COMPARATOR, HYPHEN, RANGE_START, NO_TOP = "999999.0.0", WRITTEN_VERSION;
 var init_version_range = __esm(() => {
   PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
   COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
   HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
   RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+  WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
 });
 
 // src/setup/lock.ts
@@ -14571,11 +14588,10 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (satisfiesRange(pluginVersion, requires))
     return;
-  const lowest = lowestAllowed(requires);
-  const hasTop = !satisfiesRange(NO_TOP, requires);
-  if (hasTop && lowest !== null && Bun.semver.order(pluginVersion, lowest) >= 0) {
-    const [major, minor] = lowest.split(".");
-    const example = lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
   }
   throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
@@ -14635,7 +14651,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   }
   return parsed.data;
 }
-var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", JOB_KIND_KEYS_SINCE, OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", inCheckout, ccSmartDevKitConfigSchema, CcSmartDevKitConfigError, CcSmartDevKitVersionError, CcSmartDevKitRetiredFieldError, NO_TOP = "999999.0.0";
+var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", JOB_KIND_KEYS_SINCE, OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", inCheckout, ccSmartDevKitConfigSchema, CcSmartDevKitConfigError, CcSmartDevKitVersionError, CcSmartDevKitRetiredFieldError;
 var init_config2 = __esm(() => {
   init_zod();
   init_build_info();
@@ -27914,12 +27930,26 @@ function maxSubagentsState(settingsFile, stateDir) {
 function planMaxSubagents(options) {
   const value = String(validateMaxSubagents(options.maxSubagents ?? DEFAULT_MAX_SUBAGENTS));
   const state = maxSubagentsState(options.settingsFile, options.stateDir);
-  if (state.kind === "yours" || state.kind === "removed") {
-    return { set: [], note: maxSubagentsLine(state, options.shownFile ?? options.settingsFile) };
+  const file = options.shownFile ?? options.settingsFile;
+  const asked = options.maxSubagents !== undefined;
+  if (state.kind === "yours") {
+    return {
+      set: [],
+      note: asked ? {
+        mark: "warn",
+        text: `${MAX_SUBAGENTS_FLAG} ${value} not applied: ${MAX_SUBAGENTS_ENV} in ${file} is your own value (${shown(state.value)}), and ${COMMAND} leaves it; change it there to use ${value}`
+      } : { mark: "info", text: maxSubagentsLine(state, file) }
+    };
+  }
+  if (state.kind === "removed" && !asked) {
+    return { set: [], note: { mark: "info", text: maxSubagentsLine(state, file) } };
   }
   return {
     set: [[MAX_SUBAGENTS_KEY, value]],
-    note: state.kind === "ours" && state.value === value ? null : options.dryRun ? `would set max subagents: ${value}; ${CHANGE}` : `max subagents: ${value} (set by ${COMMAND}); ${CHANGE}`
+    note: state.kind === "ours" && state.value === value ? null : {
+      mark: "info",
+      text: options.dryRun ? `would set max subagents: ${value}; ${CHANGE}` : `max subagents: ${value} (set by ${COMMAND}); ${CHANGE}`
+    }
   };
 }
 function shown(value) {
@@ -27932,7 +27962,7 @@ function maxSubagentsLine(state, settingsFile) {
     case "yours":
       return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile}; change it there to use another value)`;
     case "removed":
-      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand to use another value)`;
+      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand, or run: ${COMMAND} setup ${MAX_SUBAGENTS_FLAG} <n>)`;
     case "unset":
       return `max subagents: Claude Code's own default; to use the kit's ${DEFAULT_MAX_SUBAGENTS}, run: ${COMMAND} setup`;
   }
@@ -30892,10 +30922,17 @@ function deletedHistory(db, project, ref) {
   const events = eventsOf(db, row.task_id);
   return events.at(-1)?.action === "deleted" ? events : [];
 }
+function claimHeldBy(claim, who) {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
+    return false;
+  if (claim.procStart !== null && who.procStart !== null)
+    return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
     return "free";
-  return who?.pid === task.claim.pid && who.procStart === task.claim.procStart ? "mine" : "another session";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 
 // src/tasks/work/store.ts
@@ -31230,7 +31267,8 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const plan = [...all].reverse().find((t) => t.plan !== null && (t.createdBy === who.sessionId || who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart))?.plan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
+      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
+      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -31282,7 +31320,7 @@ function createTaskOps(options = {}) {
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
             throw new Error("A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers");
-          const slug = input.plan ?? plan;
+          const slug = input.plan ?? ownPlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
@@ -31327,7 +31365,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: parent?.plan ?? plan,
+          plan: parent?.plan ?? ownPlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -31499,12 +31537,13 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
-          selected = selected.filter((t) => t.createdBy === who.sessionId || who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart);
+          selected = selected.filter(owns);
           if (!caller)
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
-        } else if (input.scope === "plan")
-          selected = selected.filter((t) => plan !== null && t.plan === plan && t.kind !== "task");
-        else if (ctx.projectTasks.ok)
+        } else if (input.scope === "plan") {
+          const shown = ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
+          selected = selected.filter((t) => shown !== null && t.plan === shown && t.kind !== "task");
+        } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter((t) => (!openOnly || t.status === "open") && (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)));
       }
       const selectedIds = new Set(selected.map((t) => t.id));
@@ -45690,7 +45729,7 @@ function startView(paths, project, who, options) {
 function statusTask(paths, project, who) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
-    const task = all.filter((t) => t.status === "in_progress" && t.claim?.pid === who.pid && t.claim?.procStart === who.procStart).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const task = all.filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
     if (!task)
       return null;
     const count = subtreeProgress(all, task.id);
@@ -45794,11 +45833,11 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/builder-finish.ts
-var BUILDER_TYPE_END = "builder";
+var BUILDER_TYPE_ENDS = ["builder", "rules-maintainer"];
 var BRIEF_HEAD_BYTES = 1024 * 1024;
 var TASK_LINE = /^Your task: #(\d+)[ \t\r]*$/m;
 function isBuilder(agentType) {
-  return agentType?.endsWith(BUILDER_TYPE_END) === true;
+  return agentType !== null && BUILDER_TYPE_ENDS.some((end) => agentType.endsWith(end));
 }
 function briefTaskNumber(brief) {
   const found = TASK_LINE.exec(brief)?.[1];
@@ -46880,26 +46919,32 @@ init_context();
 init_words();
 init_identity();
 // src/tasks/work/phases.ts
-function claimedBy(task, who) {
-  return who.pid !== null && task.claim?.pid === who.pid && task.claim.procStart === who.procStart;
-}
+var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
   return { number: task.number, subject: task.subject, plan: task.plan };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
 }
-function openPhasesOf(paths, project, who) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const mine = new Set(all.flatMap((t) => t.plan !== null && claimedBy(t, who) ? [t.plan] : []));
-    const phases = all.filter(isPhase).filter((t) => mine.has(t.plan));
-    const inProgress = phases.filter((t) => t.status === "in_progress");
-    const busy = new Set(inProgress.map((t) => t.plan));
-    const byId = new Map(all.map((t) => [t.id, t]));
-    const ready = phases.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
-    return { inProgress: inProgress.map(refOf), ready: ready.map(refOf) };
-  });
+function openPhasesOf(paths, project, caller) {
+  const read = readWorkStore(paths, (db) => allTasks(db, project));
+  if (read.state !== "ready")
+    return read;
+  const all = read.value;
+  const phases = all.filter(isPhase);
+  if (!phases.some((t) => t.status === "in_progress")) {
+    return { state: "ready", value: NOTHING_OPEN };
+  }
+  const who = caller();
+  if (who === null)
+    return { state: "ready", value: NOTHING_OPEN };
+  const mine = new Set(all.flatMap((t) => t.plan !== null && claimHeldBy(t.claim, who) ? [t.plan] : []));
+  const own = phases.filter((t) => mine.has(t.plan));
+  const inProgress = own.filter((t) => t.status === "in_progress");
+  const busy = new Set(inProgress.map((t) => t.plan));
+  const byId = new Map(all.map((t) => [t.id, t]));
+  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
+  return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 
 // src/hooks/keep-going.ts
@@ -46907,9 +46952,10 @@ init_io();
 init_transcript();
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
+var LEADING_MARKS2 = /^(?:[*_>#\- ]|\d+[.)])+/;
 function waitsOnSomething(said) {
   const mark = WAIT_MARK.toLowerCase();
-  return said.split(/\r?\n/).some((line) => line.trim().replace(/^[*_>\- ]+/, "").toLowerCase().startsWith(mark));
+  return said.split(/\r?\n/).some((line) => line.trim().replace(LEADING_MARKS2, "").toLowerCase().startsWith(mark));
 }
 function lastSaid(input) {
   if (typeof input.last_assistant_message === "string")
@@ -46928,7 +46974,7 @@ function keepGoingReason(inProgress, ready) {
   const next = ready[0];
   return next === undefined ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.` : `${head} Start ${named2(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
 }
-function keepGoingAnswer(input, project, paths, env) {
+function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
   if (input.stop_hook_active === true)
     return SILENT;
   if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
@@ -46939,10 +46985,7 @@ function keepGoingAnswer(input, project, paths, env) {
   const cwd = stringField(input.cwd);
   if (cwd === null)
     return SILENT;
-  const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir });
-  if (who === null || who.pid === null)
-    return SILENT;
-  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), who);
+  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () => findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }));
   if (view.state === "unreadable")
     return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0)
@@ -48281,7 +48324,7 @@ var gitGuardHook = {
     const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
-      sharedStash: config.worktrees !== undefined,
+      sharedStash: config.worktrees !== undefined || project.isWorktree,
       env
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join(`
@@ -51391,7 +51434,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
   }
   if (maxSubagents.note !== null)
-    add("settings", "info", maxSubagents.note);
+    add("settings", maxSubagents.note.mark, maxSubagents.note.text);
   if (managed.retryWatchdog === null && retryWatchdogDeclined(paths.stateDir) && retryWatchdogState(paths) === "off") {
     add("settings", "info", RETRY_WATCHDOG_DECLINED_NOTE);
   }

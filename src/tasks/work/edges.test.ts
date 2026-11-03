@@ -123,12 +123,18 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   );
   // "Mine" is the Claude process (pid and its start time), so `/clear` keeps the list.
   expect(
-    listTasks(db, { project: "p", claimedBy: { pid: 1, procStart: "2" }, openOnly: true }).map(
-      (t) => t.subject,
-    ),
+    listTasks(db, {
+      project: "p",
+      claimedBy: { sessionId: "clear", pid: 1, procStart: "2" },
+      openOnly: true,
+    }).map((t) => t.subject),
   ).toEqual(["Beta"]);
   expect(
-    listTasks(db, { project: "p", claimedBy: { pid: 1, procStart: "reused" }, openOnly: true }),
+    listTasks(db, {
+      project: "p",
+      claimedBy: { sessionId: "lead", pid: 1, procStart: "reused" },
+      openOnly: true,
+    }),
   ).toEqual([]);
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("ready");
   ok(systemClose(db, phase.id, "dropped", "removed", who, 20));

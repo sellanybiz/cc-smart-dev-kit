@@ -778,6 +778,78 @@ describe("cc-smart-dev-kit setup", () => {
     );
   });
 
+  test("--max-subagents over the person's own value: one ! line, and their value stays", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    settings.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = "30";
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    const result = run(["setup", "--max-subagents", "4"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "! Claude Code settings  1 warning",
+          "  ! --max-subagents 4 not applied: CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json is your own value (30), and cc-smart-dev-kit leaves it; change it there to use 4",
+          ...MCP_TAVILY_ONLY,
+        ],
+        ["! Nothing to change. Setup is up to date, with 2 warnings to read above."],
+      ),
+    );
+    expect(readJson(settingsFile).env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe("30");
+    // With no flag, the same value is the · line it always was.
+    expect(run(["setup"]).stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          "  · max subagents: 30 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [UP_TO_DATE],
+      ),
+    );
+  });
+
+  test("--max-subagents after the person removed the key: the flag writes it again, and restore takes it back", () => {
+    const { settingsFile, run } = setup();
+    run(["setup"]);
+    const settings = readJson(settingsFile);
+    delete settings.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS;
+    writeFileSync(settingsFile, JSON.stringify(settings, null, 2));
+    // With no flag, the removal stays the person's choice.
+    expect(run(["setup"]).stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "· Claude Code settings  1 note",
+          "  · max subagents: Claude Code's own default (you removed CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS from ~/.claude/settings.json; set it by hand, or run: cc-smart-dev-kit setup --max-subagents <n>)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [UP_TO_DATE],
+      ),
+    );
+    const result = run(["setup", "--max-subagents", "4"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(
+      setupStdout(
+        SETUP_HEADING,
+        [
+          "✓ Claude Code settings  1 change, 1 note",
+          '  ~ ~/.claude/settings.json: env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: (none) -> "4"',
+          "  · max subagents: 4 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+          ...MCP_TAVILY_ONLY,
+        ],
+        [`! Done: 1 change, with 1 warning to read above. ${BACKUPS}`],
+        [RESTART_STEP],
+      ),
+    );
+    expect(readJson(settingsFile).env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBe("4");
+    expect(run(["restore"]).exitCode).toBe(0);
+    expect(readJson(settingsFile).env?.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS).toBeUndefined();
+  });
+
   test("UX-7: a next step when ~/.local/bin is not on PATH, with the line for this shell, and none when it is", () => {
     const { fakeBin, home, run } = setup();
     expect(run(["setup"]).stdout).not.toContain("to your PATH");

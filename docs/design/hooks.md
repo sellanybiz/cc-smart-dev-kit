@@ -214,7 +214,7 @@ that, so the plugin ships no worktree hook at all.
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit is a change (an edit whose result was an error or a refusal changed nothing), a shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlockAt`), and `keep-going`'s (`keepGoingWouldBlockAt`), so the "finished" alert waits for the stop that really ends the turn. |
-| `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder`) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
+| `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder` or `rules-maintainer`, the two agents the build skill gives a phase) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
 | `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once** when a phase of a plan this Claude process works on is `in_progress`, no background work runs and the last answer has no `Waiting for:` line; the reason names the phase and the next ready phase to start. Silent on any read it cannot make. § The keep-going guard. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone — never a locked one, which `worktrees --clean` keeps — says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
@@ -503,13 +503,22 @@ It blocks the stop **once** when all of these hold, cheapest first:
 2. No background work runs: `background_tasks` is absent or empty. A subagent or a background
    command wakes the session when it lands (`docs/claude-code-contract.md` § Hooks).
 3. No line of the turn's last answer starts with `Waiting for:` (any case, after a Markdown
-   mark such as `**`, `>` or `-`). The answer is the input's own `last_assistant_message`, else
+   mark such as `**`, `>`, `-`, a heading's `#` or a list number `1.`). The answer is the input's own `last_assistant_message`, else
    the transcript's last answer (`lastAssistantText`). With neither, the hook cannot tell, and
    lets the turn end.
-4. A phase of a plan this Claude process works on is `in_progress`. A plan is the process's own
-   when it holds a task the process has claimed (`openPhasesOf`, `src/tasks/work/phases.ts`): the
-   store's claim is the Claude process from `callerOf`, never the session id, so a `/clear`
-   keeps the plan. A phase in progress in another session's plan does not count.
+4. A phase of a plan this Claude process works on is `in_progress`. The store is read first,
+   and the caller is looked up only when some phase of the project is in progress: off Linux
+   that lists the running processes. A plan is the process's own when it holds a task the
+   process has claimed (`openPhasesOf`, `src/tasks/work/phases.ts`; the one claim test is
+   `claimHeldBy`). The claim is the Claude process from `callerOf`: on Linux its pid and start
+   time, so a `/clear` keeps the plan; off Linux, with no start time, the session id too, so a
+   reused pid never inherits a dead process's plan. A phase in progress in another session's
+   plan does not count, and no write ever stamps another session's plan on a task.
+
+**Known limits, all fail open.** Any `background_tasks` entry keeps it silent, a long-running
+shell (a dev server, a watch) too: which entry is an agent is not proved yet. And after another
+Stop hook's block (`verify-gate`), the turn's next stop has `stop_hook_active` set, so this
+hook does not judge that stop.
 
 The reason is one short paragraph. It names each phase in progress as `#n subject`, then the
 next ready phase of the same plan — the lowest-numbered phase that is `pending` with no open
@@ -535,7 +544,8 @@ back unfinished work. The build skill launches each builder with the exact line
 (`docs/design/tasks.md`), and the builder keeps its steps as tasks under it. At the builder's
 stop the hook:
 
-1. judges only an `agent_type` that ends in `builder` (`cc-smart-dev-kit:builder`);
+1. judges only an `agent_type` that ends in `builder` or `rules-maintainer`
+   (`cc-smart-dev-kit:builder`, `cc-smart-dev-kit:rules-maintainer`: `BUILDER_TYPE_ENDS`);
 2. reads the brief: the first `user` entry of the agent's own transcript
    (`agent_transcript_path`), from the file's first 1 MiB — never a later line, so a task
    number the agent wrote or read later does not count;

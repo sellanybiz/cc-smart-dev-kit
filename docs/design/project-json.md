@@ -91,7 +91,8 @@ accepts: a project file that sets a retired field fails closed until `project in
   than a user's plugin; that user is told to update, not that the field is unknown. A plugin
   past the top of a range (`^1.4` or `>=1.4 <2` under 2.0.0) is told to widen `requires`
   instead, since an update cannot help: `checkRequires` tells the two apart with
-  `lowestAllowed` (`src/project/version-range.ts`) and whether the range has a top.
+  `allowsNewer` (`src/project/version-range.ts`): when some version newer than the plugin is in
+  the range (`^1.4 || ^2.1` on 2.0.0), an update helps; else only a wider range does.
 - **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay
   silent. A project that never opted in does not notice the plugin.
 - **The retired engine's hook lines fail, and `project init` takes them out:** a line in the

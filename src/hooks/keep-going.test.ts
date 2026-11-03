@@ -10,13 +10,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { projectKey } from "../tasks/context";
+import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../tasks/work/db";
+import { callerOf } from "../tasks/work/identity";
 import { createTask, layPhase, updateTask } from "../tasks/work/store";
 import type { Who, WorkTask } from "../tasks/work/types";
 import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from "../testing/hooks";
 import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
-import { keepGoingWouldBlockAt, waitsOnSomething } from "./keep-going";
+import { keepGoingAnswer, keepGoingWouldBlockAt, waitsOnSomething } from "./keep-going";
 import { keepGoingHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -251,6 +253,53 @@ describe("keep-going: silent", () => {
     expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
   });
 
+  test("another session's plan in the same project is never stamped on this session's task", async () => {
+    const w = world();
+    w.db.close();
+    const ops = (who: Who) =>
+      createTaskOps({
+        stateDir: cliPaths(w.env).stateDir,
+        env: w.env,
+        cwd: () => w.repo,
+        caller: () => ({ ...who, cwd: w.repo }),
+      });
+    const theirs = ops(OTHER);
+    const mine = ops(ME);
+    try {
+      expect(theirs.call("create", { subject: "Auth", plan: "auth" }).ok).toBe(true);
+      expect(theirs.call("create", { subject: "G1 the guard", plan: "auth", phase: "G1" }).ok).toBe(
+        true,
+      );
+      expect(theirs.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
+      expect(mine.call("create", { subject: "Fix a typo", status: "in_progress" }).ok).toBe(true);
+    } finally {
+      theirs.close();
+      mine.close();
+    }
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("no phase in progress: the caller is never looked up", () => {
+    const w = world();
+    const g1 = phase(w, "plan-a", "G1", "G1 the guard");
+    w.db.close();
+    let asked = 0;
+    const findCaller: typeof callerOf = (facts) => {
+      asked += 1;
+      return callerOf(facts);
+    };
+    const project = { root: w.repo, mainCheckout: null };
+    expect(keepGoingAnswer(stop(w.repo), project, cliPaths(w.env), w.env, findCaller)).toEqual({});
+    expect(asked).toBe(0);
+    const db = openWorkDb(workDbFile(cliPaths(w.env)), { mode: "write" });
+    start({ ...w, db }, g1, ME);
+    db.close();
+    expect(keepGoingAnswer(stop(w.repo), project, cliPaths(w.env), w.env, findCaller)).toEqual({
+      stdout: BLOCK_NO_NEXT,
+    });
+    expect(asked).toBe(1);
+  });
+
   test("no session record: the caller is unknown, so nothing is its own", async () => {
     const repo = makeRepo();
     const env = hookEnv();
@@ -336,7 +385,13 @@ describe("waitsOnSomething", () => {
     ["Waiting for: the builders", true],
     ["Done.\n  Waiting for: CI", true],
     ["> Waiting for: the person", true],
+    ["## Waiting for: the G2 builder", true],
+    ["1. Waiting for: CI", true],
+    ["2) Waiting for: CI", true],
+    ["### **Waiting for:** the person", true],
     ["I am waiting for: nothing", false],
+    ["## Status: Waiting for: nothing", false],
+    ["1. The builder is Waiting for: CI", false],
     ["Waiting for the builders", false],
     ["", false],
   ])("%j → %j", (said, expected) => {

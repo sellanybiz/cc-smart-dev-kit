@@ -62,15 +62,19 @@ describe("max subagents", () => {
     const before = readFileSync(w.settingsFile, "utf8");
     expect(planMaxSubagents(w)).toEqual({
       set: [[KEY, "10"]],
-      note: "max subagents: 10 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+      note: {
+        mark: "info",
+        text: "max subagents: 10 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+      },
     });
     expect(existsSync(w.stateDir)).toBe(false);
     const dry = apply({ ...w, dryRun: true });
     expect(dry.written).toBe(false);
     expect(dry.changes).toEqual([{ path: KEY, before: undefined, after: "10" }]);
-    expect(dry.note).toBe(
-      "would set max subagents: 10; to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
-    );
+    expect(dry.note).toEqual({
+      mark: "info",
+      text: "would set max subagents: 10; to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+    });
     expect(readFileSync(w.settingsFile, "utf8")).toBe(before);
     expect(existsSync(w.stateDir)).toBe(false);
     const real = apply(w);
@@ -105,16 +109,53 @@ describe("max subagents", () => {
     ["30", "30"],
     [5, "5"],
     [null, "null"],
-  ])("keeps an unowned value %p, even with an option", (value, said) => {
+  ])("keeps an unowned value %p, and says so as information", (value, said) => {
     const w = world({ env: { [ENV]: value } });
-    const result = apply({ ...w, maxSubagents: 40, shownFile: "~/.claude/settings.json" });
-    expect(result.note).toBe(
-      `max subagents: ${said} at once (your own ${ENV} in ~/.claude/settings.json; change it there to use another value)`,
-    );
+    const result = apply({ ...w, shownFile: "~/.claude/settings.json" });
+    expect(result.note).toEqual({
+      mark: "info",
+      text: `max subagents: ${said} at once (your own ${ENV} in ~/.claude/settings.json; change it there to use another value)`,
+    });
     expect(result.written).toBe(false);
     expect(result.changes).toEqual([]);
     expect(existsSync(w.stateDir)).toBe(false);
     expect(read(w.settingsFile)).toEqual({ env: { [ENV]: value } });
+  });
+
+  test.each([
+    ["10", "10"],
+    ["30", "30"],
+    [5, "5"],
+    [null, "null"],
+  ])("keeps an unowned value %p over the flag, with a warning", (value, said) => {
+    const w = world({ env: { [ENV]: value } });
+    const result = apply({ ...w, maxSubagents: 40, shownFile: "~/.claude/settings.json" });
+    expect(result.note).toEqual({
+      mark: "warn",
+      text: `--max-subagents 40 not applied: ${ENV} in ~/.claude/settings.json is your own value (${said}), and cc-smart-dev-kit leaves it; change it there to use 40`,
+    });
+    expect(result.written).toBe(false);
+    expect(result.changes).toEqual([]);
+    expect(existsSync(w.stateDir)).toBe(false);
+    expect(read(w.settingsFile)).toEqual({ env: { [ENV]: value } });
+  });
+
+  test("the flag after the person removed the key: written again, owned again, and restore takes it back", () => {
+    const w = world({ env: { OTHER: "kept" } });
+    apply(w);
+    writeFileSync(w.settingsFile, JSON.stringify({ env: { OTHER: "kept" } }));
+    const result = apply({ ...w, maxSubagents: 4 });
+    expect(result.written).toBe(true);
+    expect(result.changes).toEqual([{ path: KEY, before: undefined, after: "4" }]);
+    expect(result.note).toEqual({
+      mark: "info",
+      text: "max subagents: 4 (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
+    });
+    expect(read(w.settingsFile)).toEqual({ env: { OTHER: "kept", [ENV]: "4" } });
+    expect(ownedRecords(w.stateDir, w.settingsFile)).toEqual([{ path: KEY, value: "4" }]);
+    expect(maxSubagentsState(w.settingsFile, w.stateDir)).toEqual({ kind: "ours", value: "4" });
+    restore(w.stateDir);
+    expect(read(w.settingsFile)).toEqual({ env: { OTHER: "kept" } });
   });
 
   test.each([
@@ -124,7 +165,7 @@ describe("max subagents", () => {
     ],
     [
       undefined,
-      `max subagents: Claude Code's own default (you removed ${ENV} from ~/s.json; set it by hand to use another value)`,
+      `max subagents: Claude Code's own default (you removed ${ENV} from ~/s.json; set it by hand, or run: cc-smart-dev-kit setup --max-subagents <n>)`,
     ],
   ])("keeps a person's edit or deletion after setup: %p", (value, said) => {
     const w = world({ env: { OTHER: "kept" } });
@@ -135,7 +176,7 @@ describe("max subagents", () => {
     );
     const before = readFileSync(w.settingsFile, "utf8");
     expect(apply(w).written).toBe(false);
-    expect(apply({ ...w, shownFile: "~/s.json" }).note).toBe(said);
+    expect(apply({ ...w, shownFile: "~/s.json" }).note).toEqual({ mark: "info", text: said });
     restore(w.stateDir);
     expect(readFileSync(w.settingsFile, "utf8")).toBe(before);
   });
@@ -183,7 +224,7 @@ describe("max subagents", () => {
       "max subagents: 30 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
     );
     expect(maxSubagentsLine({ kind: "removed" }, file)).toBe(
-      "max subagents: Claude Code's own default (you removed CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS from ~/.claude/settings.json; set it by hand to use another value)",
+      "max subagents: Claude Code's own default (you removed CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS from ~/.claude/settings.json; set it by hand, or run: cc-smart-dev-kit setup --max-subagents <n>)",
     );
     expect(maxSubagentsLine({ kind: "unset" }, file)).toBe(
       "max subagents: Claude Code's own default; to use the kit's 10, run: cc-smart-dev-kit setup",

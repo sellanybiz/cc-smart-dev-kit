@@ -65,7 +65,8 @@ disk, the file committed on a branch, the object `workflow set --project` writes
 (The file committed on a branch is read by `readCommittedConfig` in `src/project/resolve.ts`: from `origin/<branch>` through git, never a working copy, so a session cannot change the policy a guard judges by editing a file; a ref that is not there is `found: false`, and the caller asks the person.)
 
 1. Read only `requires`. When the running plugin is outside the range, throw
-   `CcSmartDevKitVersionError`, whose message names the update command.
+   `CcSmartDevKitVersionError`. Its message names the update command, or, when no newer
+   version is in the range (`allowsNewer`: `^1.4` on 2.0.0), says to widen `requires`.
 2. Then the retired fields (`RETIRED_WORKTREE_FIELDS`): each one present is named, with the
    fix, in one `CcSmartDevKitRetiredFieldError` — never "unknown field (a newer
    cc-smart-dev-kit may be needed)", which would send the person to update.

@@ -18,8 +18,9 @@
  *    `last_assistant_message`, else the transcript's last answer (`lastAssistantText`). With
  *    neither, the hook cannot tell, and lets the turn end.
  * 4. **A phase in progress** of a plan this Claude process works on: a plan that holds a task
- *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). Another
- *    session's plan is not this one's business.
+ *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). The store is
+ *    read first; the caller is looked up only when some phase is in progress, since off Linux
+ *    that lists the running processes. Another session's plan is not this one's business.
  *
  * **Fail open everywhere.** It needs no `cc-smart-dev-kit.json` (the task store is the person's
  * own), and is silent outside git, with no task store, with no caller, and on any read it
@@ -47,18 +48,20 @@ export const KEEP_GOING = "keep-going";
 export const WAIT_MARK = "Waiting for:";
 
 /**
+ * The marks a Markdown line may start with: emphasis, a quote, a list dash, a heading's `#`
+ * marks, and an ordered list's number (`1.` or `1)`).
+ */
+const LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;
+
+/**
  * True when a line of the answer starts with `Waiting for:` (any case), after the marks a
- * Markdown line may start with: emphasis, a quote, a list dash.
+ * Markdown line may start with (`LEADING_MARKS`).
  */
 export function waitsOnSomething(said: string): boolean {
   const mark = WAIT_MARK.toLowerCase();
-  return said.split(/\r?\n/).some((line) =>
-    line
-      .trim()
-      .replace(/^[*_>\- ]+/, "")
-      .toLowerCase()
-      .startsWith(mark),
-  );
+  return said
+    .split(/\r?\n/)
+    .some((line) => line.trim().replace(LEADING_MARKS, "").toLowerCase().startsWith(mark));
 }
 
 /** The turn's last answer: the input's own field, else the transcript's; null when neither. */
@@ -96,6 +99,7 @@ export function keepGoingAnswer(
   project: Pick<Project, "mainCheckout" | "root">,
   paths: CliPaths,
   env: Env,
+  findCaller: typeof callerOf = callerOf,
 ): HookResult {
   if (input.stop_hook_active === true) return SILENT;
   if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return SILENT;
@@ -103,10 +107,10 @@ export function keepGoingAnswer(
   if (said === null || waitsOnSomething(said)) return SILENT;
   const cwd = stringField(input.cwd);
   if (cwd === null) return SILENT;
-  const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir });
-  // A claim is a Claude process: a caller with no process holds none.
-  if (who === null || who.pid === null) return SILENT;
-  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), who);
+  // The caller is looked up only once the store has a phase in progress (`openPhasesOf`).
+  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () =>
+    findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }),
+  );
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
   return {

@@ -39,8 +39,8 @@ const RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
  * one read here. Each `||` alternative is read by its first comparator: `>=`, `>`, `^`, `~`, `=`
  * or a bare version start at the version written; one that starts with `<` lets in 0.0.0. So
  * `~1.1.0`, `^1.1` and `>=1.1 <2` all start at 1.1.0. `project init` reads it to keep a range
- * that already starts high enough; the `requires` check reads it to tell a plugin too old for a
- * range from one past its top.
+ * that already starts high enough; the `requires` check reads it for the example in its
+ * "widen requires" message.
  */
 export function lowestAllowed(range: string): null | string {
   let lowest: null | string = null;
@@ -53,4 +53,49 @@ export function lowestAllowed(range: string): null | string {
     if (lowest === null || Bun.semver.order(version, lowest) < 0) lowest = version;
   }
   return lowest;
+}
+
+/** A version far above any release: a range that lets it in has no top. */
+export const NO_TOP = "999999.0.0";
+
+/** Each version a valid range writes, by its parts: `1.4` is 1, 4 and no patch. */
+const WRITTEN_VERSION = new RegExp(
+  `v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`,
+  "g",
+);
+
+/** One part of a written version as a number: `x`, `X`, `*` and a missing part are 0. */
+function partNumber(part: string | undefined): number {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+
+/**
+ * True when some version newer than `version` is in `range`: then an update can bring a plugin
+ * at `version` into the range; false means only a wider range can. Throws on a range we cannot
+ * read.
+ *
+ * Above `version`, the versions a range lets in start at a version the range writes, or just
+ * above one. So the candidates are: each written version, partials filled with 0 (`1.4` is
+ * 1.4.0, `1.x` is 1.0.0); for `>X`, its next patch, minor and major (`>1.4.2` starts at 1.4.3,
+ * `>1.4` at 1.5.0, `>1` at 2.0.0); and `NO_TOP`, for a range with no top.
+ */
+export function allowsNewer(version: string, range: string): boolean {
+  if (!isValidRange(range)) throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(
+      `${major}.${minor}.${patch}${pre}`,
+      `${major}.${minor}.${patch + 1}`,
+      `${major}.${minor + 1}.0`,
+      `${major + 1}.0.0`,
+    );
+  }
+  return candidates.some(
+    (candidate) =>
+      Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range),
+  );
 }

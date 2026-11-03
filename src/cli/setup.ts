@@ -469,7 +469,7 @@ function applySetup(
   if (managed.retryWatchdog === "on" && watchdogTurnedOn) {
     add("settings", "info", RETRY_WATCHDOG_ON_NOTE);
   }
-  if (maxSubagents.note !== null) add("settings", "info", maxSubagents.note);
+  if (maxSubagents.note !== null) add("settings", maxSubagents.note.mark, maxSubagents.note.text);
   if (
     managed.retryWatchdog === null &&
     retryWatchdogDeclined(paths.stateDir) &&

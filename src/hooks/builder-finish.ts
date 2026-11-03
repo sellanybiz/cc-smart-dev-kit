@@ -1,5 +1,7 @@
 /**
  * SubagentStop: a builder never hands back while its phase still has open blocking steps.
+ * "Builder" here means any agent the build skill gives a phase: the builder, or the
+ * rules-maintainer for a phase that edits instruction files.
  *
  * The build skill launches every builder with the exact line `Your task: #<n>` in its brief,
  * where `#<n>` is the phase's task in the kit's task list (`plugin/skills/build/SKILL.md`). The
@@ -7,12 +9,14 @@
  * is still open hands back unfinished work as if it were done. This hook reads the line and
  * says so once, naming each open step and the call that closes it.
  *
- * **Which agents:** an `agent_type` that ends with `builder` (`cc-smart-dev-kit:builder`, the
- * plugin's own). **Which task:** the first `Your task: #<n>` line of the agent's brief, which
- * is the first `user` entry of its own transcript (`agent_transcript_path`) — never a later
- * line, so a task number the agent itself wrote or read later is not the brief. **Which
- * steps:** the ones that hold the task's done (`holdingUnder`, the same set `task_done`
- * refuses on): open blocking tasks at any depth under it, reached through blocking tasks only.
+ * **Which agents:** an `agent_type` that ends with one of `BUILDER_TYPE_ENDS`
+ * (`cc-smart-dev-kit:builder` and `cc-smart-dev-kit:rules-maintainer`, the plugin's own: the
+ * build skill launches both with the same line). **Which task:** the first `Your task: #<n>`
+ * line of the agent's brief, which is the first `user` entry of its own transcript
+ * (`agent_transcript_path`) — never a later line, so a task number the agent itself wrote or
+ * read later is not the brief. **Which steps:** the ones that hold the task's done
+ * (`holdingUnder`, the same set `task_done` refuses on): open blocking tasks at any depth under
+ * it, reached through blocking tasks only.
  * A non-blocking step holds nothing.
  *
  * **The project key** is the main checkout's (`projectKey`), the key the task server writes
@@ -42,8 +46,11 @@ import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { agentTypeOf } from "./review-record";
 import type { HookContext } from "./run";
 
-/** The end of the agent types this hook judges: the plugin's builder, `cc-smart-dev-kit:builder`. */
-export const BUILDER_TYPE_END = "builder";
+/**
+ * The ends of the agent types this hook judges: the plugin's builder
+ * (`cc-smart-dev-kit:builder`) and its rules-maintainer (`cc-smart-dev-kit:rules-maintainer`).
+ */
+export const BUILDER_TYPE_ENDS = ["builder", "rules-maintainer"] as const;
 
 /**
  * How much of a transcript's start is read for the brief. The brief is the first line; a
@@ -56,7 +63,7 @@ const TASK_LINE = /^Your task: #(\d+)[ \t\r]*$/m;
 
 /** True for an agent type this hook judges. */
 export function isBuilder(agentType: string | null): boolean {
-  return agentType?.endsWith(BUILDER_TYPE_END) === true;
+  return agentType !== null && BUILDER_TYPE_ENDS.some((end) => agentType.endsWith(end));
 }
 
 /** The task number of the brief's first `Your task: #<n>` line, or null when it has none. */

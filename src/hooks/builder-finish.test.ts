@@ -205,11 +205,37 @@ describe("the hook", () => {
     }
   });
 
+  test("the rules-maintainer is judged exactly as a builder is", async () => {
+    // The build skill sends instruction-file phases to it, with the same `Your task:` line.
+    const repo = repoWithConfig();
+    const env = hookEnv();
+    seed(env, repo, [
+      { subject: "Write the test", status: "in_progress" },
+      { subject: "Wire the entry", under: 0 },
+      { subject: "Already done", status: "done" },
+    ]);
+    expect(
+      await runHook(
+        builderFinishHook,
+        stop(repo, {
+          agent_type: "cc-smart-dev-kit:rules-maintainer",
+          agent_transcript_path: transcript("Your task: #1"),
+        }),
+        env,
+      ),
+    ).toEqual({ stdout: BLOCK_TWO });
+  });
+
   test("another agent type: none of its business", async () => {
     const repo = repoWithConfig();
     const env = hookEnv();
     seed(env, repo, [{ subject: "Write the test" }]);
-    for (const agent of ["cc-smart-dev-kit:reviewer", "general-purpose", "builder-helper"]) {
+    for (const agent of [
+      "cc-smart-dev-kit:reviewer",
+      "general-purpose",
+      "builder-helper",
+      "rules-maintainer-helper",
+    ]) {
       expect(
         await runHook(
           builderFinishHook,

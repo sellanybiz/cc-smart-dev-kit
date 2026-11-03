@@ -253,6 +253,11 @@ describe("resolveProject", () => {
     expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
       `${file}: this project needs cc-smart-dev-kit >2.0.0; you have 2.0.0; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`,
     );
+    // A later alternative of the range is newer than the plugin: an update reaches it.
+    writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "^1.4 || ^2.1" }));
+    expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(
+      `${file}: this project needs cc-smart-dev-kit ^1.4 || ^2.1; you have 2.0.0; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit`,
+    );
     // A range that starts at 0.0.0 gets no example: ">=0.0" would say nothing.
     writeCcSmartDevKitJson(repo, JSON.stringify({ requires: "<1" }));
     expect(() => resolveProject(repo, { pluginVersion: "2.0.0" })).toThrow(

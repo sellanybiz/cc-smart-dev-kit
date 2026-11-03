@@ -101,7 +101,9 @@ still change.
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
 under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
-out, it is the plan of the caller's latest task that has one (made or claimed by it). `plan` alone makes the plan task, and takes a subject only.
+out, it is the plan of the caller's latest own task that has one (made or claimed by it), never
+another session's plan. Only `task_list` with `scope: "plan"` falls back to the project's
+newest plan, to show it. `plan` alone makes the plan task, and takes a subject only.
 Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
 each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
 
@@ -137,7 +139,10 @@ The project key belongs to the main checkout, shared by its worktrees. A folder 
 git uses its own real path. A git failure is an error, never a guessed identity. A broken
 project config leaves local work usable.
 
-A claim belongs to the Claude process: pid plus start time, not just a session id. The
+A claim belongs to the Claude process: pid plus start time, not just a session id. Off
+Linux there is no start time, so a claim there also needs the caller's session id
+(`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims, and a
+`/clear` there drops the claims until the task is started again. The
 server finds that process through ancestry and reads its current session record on each
 call. The record supplies the session id and cwd, including a move into a worktree. Thus
 `/clear` and a background fork keep the process's tasks. Another process's in-progress

@@ -13592,6 +13592,24 @@ function lowestAllowed(range) {
   }
   return lowest;
 }
+var NO_TOP = "999999.0.0";
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
@@ -13702,7 +13720,6 @@ function describeIssue(issue) {
   }
   return `${field}: ${issue.message}`;
 }
-var NO_TOP = "999999.0.0";
 function checkRequires(file, raw, pluginVersion) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return;
@@ -13711,11 +13728,10 @@ function checkRequires(file, raw, pluginVersion) {
     return;
   if (satisfiesRange(pluginVersion, requires))
     return;
-  const lowest = lowestAllowed(requires);
-  const hasTop = !satisfiesRange(NO_TOP, requires);
-  if (hasTop && lowest !== null && Bun.semver.order(pluginVersion, lowest) >= 0) {
-    const [major, minor] = lowest.split(".");
-    const example = lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
   }
   throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
@@ -28349,7 +28365,7 @@ function maxSubagentsLine(state, settingsFile) {
     case "yours":
       return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile}; change it there to use another value)`;
     case "removed":
-      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand to use another value)`;
+      return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand, or run: ${COMMAND} setup ${MAX_SUBAGENTS_FLAG} <n>)`;
     case "unset":
       return `max subagents: Claude Code's own default; to use the kit's ${DEFAULT_MAX_SUBAGENTS}, run: ${COMMAND} setup`;
   }
@@ -31749,7 +31765,7 @@ function listTasks(db, options) {
   const all = allTasks(db, options.project);
   const root = options.root ? getTask(db, options.project, options.root) : null;
   const allowed = root ? new Set([root.id, ...descendants(db, root.id).map((t) => t.id)]) : null;
-  const nodes = all.filter((t) => (!allowed || allowed.has(t.id)) && (!options.root || root !== null) && (!options.plan || t.plan === options.plan) && (!options.claimedBy || t.claim?.pid === options.claimedBy.pid && t.claim.procStart === options.claimedBy.procStart) && (!options.openOnly || isOpen(t))).map((t) => ({ ...t, children: [] }));
+  const nodes = all.filter((t) => (!allowed || allowed.has(t.id)) && (!options.root || root !== null) && (!options.plan || t.plan === options.plan) && (!options.claimedBy || claimHeldBy(t.claim, options.claimedBy)) && (!options.openOnly || isOpen(t))).map((t) => ({ ...t, children: [] }));
   const byId = new Map(nodes.map((t) => [t.id, t]));
   const roots = [];
   for (const t of nodes) {
@@ -31761,10 +31777,17 @@ function listTasks(db, options) {
   }
   return roots;
 }
+function claimHeldBy(claim, who) {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
+    return false;
+  if (claim.procStart !== null && who.procStart !== null)
+    return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
 function claimState(task, isLive, who) {
   if (!task.claim || !isLive(task.claim))
     return "free";
-  return who?.pid === task.claim.pid && who.procStart === task.claim.procStart ? "mine" : "another session";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 
 // src/tasks/work/read.ts
@@ -31893,11 +31916,11 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/builder-finish.ts
-var BUILDER_TYPE_END = "builder";
+var BUILDER_TYPE_ENDS = ["builder", "rules-maintainer"];
 var BRIEF_HEAD_BYTES = 1024 * 1024;
 var TASK_LINE = /^Your task: #(\d+)[ \t\r]*$/m;
 function isBuilder(agentType) {
-  return agentType?.endsWith(BUILDER_TYPE_END) === true;
+  return agentType !== null && BUILDER_TYPE_ENDS.some((end) => agentType.endsWith(end));
 }
 function briefTaskNumber(brief) {
   const found = TASK_LINE.exec(brief)?.[1];
@@ -33541,34 +33564,41 @@ function routeFacts(input, context) {
 }
 
 // src/tasks/work/phases.ts
-function claimedBy(task, who) {
-  return who.pid !== null && task.claim?.pid === who.pid && task.claim.procStart === who.procStart;
-}
+var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
   return { number: task.number, subject: task.subject, plan: task.plan };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
 }
-function openPhasesOf(paths, project, who) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const mine = new Set(all.flatMap((t) => t.plan !== null && claimedBy(t, who) ? [t.plan] : []));
-    const phases = all.filter(isPhase).filter((t) => mine.has(t.plan));
-    const inProgress = phases.filter((t) => t.status === "in_progress");
-    const busy = new Set(inProgress.map((t) => t.plan));
-    const byId = new Map(all.map((t) => [t.id, t]));
-    const ready = phases.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
-    return { inProgress: inProgress.map(refOf), ready: ready.map(refOf) };
-  });
+function openPhasesOf(paths, project, caller) {
+  const read = readWorkStore(paths, (db) => allTasks(db, project));
+  if (read.state !== "ready")
+    return read;
+  const all = read.value;
+  const phases = all.filter(isPhase);
+  if (!phases.some((t) => t.status === "in_progress")) {
+    return { state: "ready", value: NOTHING_OPEN };
+  }
+  const who = caller();
+  if (who === null)
+    return { state: "ready", value: NOTHING_OPEN };
+  const mine = new Set(all.flatMap((t) => t.plan !== null && claimHeldBy(t.claim, who) ? [t.plan] : []));
+  const own = phases.filter((t) => mine.has(t.plan));
+  const inProgress = own.filter((t) => t.status === "in_progress");
+  const busy = new Set(inProgress.map((t) => t.plan));
+  const byId = new Map(all.map((t) => [t.id, t]));
+  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
+  return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 
 // src/hooks/keep-going.ts
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
+var LEADING_MARKS2 = /^(?:[*_>#\- ]|\d+[.)])+/;
 function waitsOnSomething(said) {
   const mark = WAIT_MARK.toLowerCase();
-  return said.split(/\r?\n/).some((line) => line.trim().replace(/^[*_>\- ]+/, "").toLowerCase().startsWith(mark));
+  return said.split(/\r?\n/).some((line) => line.trim().replace(LEADING_MARKS2, "").toLowerCase().startsWith(mark));
 }
 function lastSaid(input) {
   if (typeof input.last_assistant_message === "string")
@@ -33587,7 +33617,7 @@ function keepGoingReason(inProgress, ready) {
   const next = ready[0];
   return next === undefined ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.` : `${head} Start ${named(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
 }
-function keepGoingAnswer(input, project, paths, env) {
+function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
   if (input.stop_hook_active === true)
     return SILENT;
   if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
@@ -33598,10 +33628,7 @@ function keepGoingAnswer(input, project, paths, env) {
   const cwd = stringField(input.cwd);
   if (cwd === null)
     return SILENT;
-  const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir });
-  if (who === null || who.pid === null)
-    return SILENT;
-  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), who);
+  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () => findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }));
   if (view.state === "unreadable")
     return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0)
@@ -35155,7 +35182,7 @@ var gitGuardHook = {
     const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
-      sharedStash: config.worktrees !== undefined,
+      sharedStash: config.worktrees !== undefined || project.isWorktree,
       env
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join(`

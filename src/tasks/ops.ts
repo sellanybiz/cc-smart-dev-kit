@@ -21,6 +21,7 @@ import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
 import {
   allTasks,
+  claimHeldBy,
   claimState,
   deletedHistory,
   eventsOf,
@@ -148,22 +149,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      // The ledger is project-wide: the caller's latest task with a plan selects its plan.
-      const plan =
-        [...all]
-          .reverse()
-          .find(
-            (t) =>
-              t.plan !== null &&
-              (t.createdBy === who.sessionId ||
-                (who.pid !== null &&
-                  t.claim?.pid === who.pid &&
-                  t.claim.procStart === who.procStart)),
-          )?.plan ??
-        all
-          .filter((t) => t.kind === "plan")
-          .sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ??
-        null;
+      // The caller's own task: one it made (a caller with no session id made none), or one its
+      // process claims.
+      const owns = (t: WorkTask) =>
+        (who.sessionId !== null && t.createdBy === who.sessionId) || claimHeldBy(t.claim, who);
+      // The caller's own plan, from its latest own task with a plan: what a new task or phase
+      // takes. Never another session's plan, or that session's phases would count as the
+      // caller's (`openPhasesOf`).
+      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
@@ -239,7 +232,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             throw new Error(
               "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
             );
-          const slug = input.plan ?? plan;
+          const slug = input.plan ?? ownPlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
             const there = allTasks(store, ctx.project).some(
@@ -311,7 +304,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
-                plan: parent?.plan ?? plan,
+                plan: parent?.plan ?? ownPlan,
                 blockedBy,
               },
               who,
@@ -552,17 +545,23 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
-          selected = selected.filter(
-            (t) =>
-              t.createdBy === who.sessionId ||
-              (who.pid !== null && t.claim?.pid === who.pid && t.claim.procStart === who.procStart),
-          );
+          selected = selected.filter(owns);
           // A terminal without Claude identity owns the tasks made without a session.
           if (!caller)
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
-        } else if (input.scope === "plan")
-          selected = selected.filter((t) => plan !== null && t.plan === plan && t.kind !== "task");
-        else if (ctx.projectTasks.ok)
+        } else if (input.scope === "plan") {
+          // Only this read may show another session's plan: the project's newest, when the
+          // caller has none of its own. Nothing written ever takes it.
+          const shown =
+            ownPlan ??
+            all
+              .filter((t) => t.kind === "plan")
+              .sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ??
+            null;
+          selected = selected.filter(
+            (t) => shown !== null && t.plan === shown && t.kind !== "task",
+          );
+        } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter(
             (t) =>
               (!openOnly || t.status === "open") &&

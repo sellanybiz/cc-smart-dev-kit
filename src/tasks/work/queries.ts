@@ -190,8 +190,8 @@ export interface ListOptions {
   project: string;
   root?: string;
   plan?: string;
-  /** The Claude process whose claims count as "mine" (never a session id: `/clear` keeps them). */
-  claimedBy?: { pid: number; procStart: string | null };
+  /** The caller whose claims count as "mine" (`claimHeldBy`). */
+  claimedBy?: Who;
   openOnly: boolean;
 }
 export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
@@ -204,9 +204,7 @@ export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
         (!allowed || allowed.has(t.id)) &&
         (!options.root || root !== null) &&
         (!options.plan || t.plan === options.plan) &&
-        (!options.claimedBy ||
-          (t.claim?.pid === options.claimedBy.pid &&
-            t.claim.procStart === options.claimedBy.procStart)) &&
+        (!options.claimedBy || claimHeldBy(t.claim, options.claimedBy)) &&
         (!options.openOnly || isOpen(t)),
     )
     .map((t) => ({ ...t, children: [] as WorkTree[] }));
@@ -283,15 +281,24 @@ export function deletedHistory(db: WorkDb, project: string, ref: string): WorkEv
   const events = eventsOf(db, row.task_id);
   return events.at(-1)?.action === "deleted" ? events : [];
 }
+/**
+ * True when `who` holds the claim: the one test of a claim against a caller, everywhere.
+ *
+ * A claim belongs to the Claude process, not its session id: the same pid, and on Linux the same
+ * process start time, so `/clear` and a resume keep the process's own tasks its own. Off Linux
+ * there is no start time (`callerOf`), and a later process may get a dead claimer's pid. So when
+ * either side has no start time, the claim's session id must also be the caller's.
+ */
+export function claimHeldBy(claim: WorkClaim | null, who: Who | null | undefined): boolean {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid) return false;
+  if (claim.procStart !== null && who.procStart !== null) return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
 export function claimState(
   task: WorkTask,
   isLive: (claim: WorkClaim) => boolean,
   who?: Who,
 ): "mine" | "another session" | "free" {
   if (!task.claim || !isLive(task.claim)) return "free";
-  // The claim belongs to the Claude process, not its session id: `/clear` and a resume keep the
-  // process, so its own tasks stay its own. The session id on the claim is provenance only.
-  return who?.pid === task.claim.pid && who.procStart === task.claim.procStart
-    ? "mine"
-    : "another session";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }

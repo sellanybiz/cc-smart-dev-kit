@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { folderProject } from "./context";
 import { createTaskOps } from "./ops";
 import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
+import { openPhasesOf } from "./work/phases";
 
 test("a close the store refuses keeps no note, so a retry saves each note once", () => {
   const cwd = tempDir();
@@ -53,10 +55,11 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
   const cwd = tempDir();
   const stateDir = tempDir();
   let session = "first";
+  // A process start time, as on Linux: it names the process, so `/clear` keeps its claims.
   const ops = createTaskOps({
     stateDir,
     cwd: () => cwd,
-    caller: () => ({ sessionId: session, pid: process.pid, procStart: null, cwd }),
+    caller: () => ({ sessionId: session, pid: process.pid, procStart: "4242", cwd }),
   });
   try {
     expect(ops.call("create", { subject: "Parent" }).ok).toBe(true);
@@ -231,5 +234,91 @@ test("work tasks share create, list and close operations", () => {
     expect(ops.call("list", {})).toMatchObject({ ok: true, text: "No tasks." });
   } finally {
     ops.close();
+  }
+});
+
+test("another session's plan is never stamped on a session's own task; the plan read still finds it", () => {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  const x = { sessionId: "session-x", pid: 4101, procStart: "41010", cwd };
+  const y = { sessionId: "session-y", pid: 5202, procStart: "52020", cwd };
+  const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x });
+  const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y });
+  const planOf = (number: number) => {
+    const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
+    try {
+      return db.sqlite
+        .query<{ plan: string | null }, [number]>("SELECT plan FROM tasks WHERE number=?")
+        .get(number)?.plan;
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    expect(opsX.call("create", { subject: "Auth", plan: "auth" }).ok).toBe(true);
+    expect(opsX.call("create", { subject: "Guard", plan: "auth", phase: "G1" }).ok).toBe(true);
+    expect(opsX.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
+    expect(opsY.call("create", { subject: "Fix a typo", status: "in_progress" })).toEqual({
+      ok: true,
+      text: '#3 "Fix a typo"',
+    });
+    expect(planOf(3)).toBeNull();
+    expect(openPhasesOf({ stateDir }, folderProject(cwd), () => y)).toEqual({
+      state: "ready",
+      value: { inProgress: [], ready: [] },
+    });
+    // Y has no plan of its own, so its phase needs the plan named.
+    expect(opsY.call("create", { subject: "Theirs", phase: "G2" })).toEqual({
+      ok: false,
+      why: "A phase belongs to a plan: give plan (its slug)",
+    });
+    // X's own work still takes its plan, and so does its phase with the plan left out.
+    expect(opsX.call("create", { subject: "Own step", status: "in_progress" }).ok).toBe(true);
+    expect(planOf(4)).toBe("auth");
+    expect(opsX.call("create", { subject: "Docs", phase: "G2" })).toEqual({
+      ok: true,
+      text: '#5 "Docs" · phase G2 of plan auth',
+    });
+    // Reading the ledger may fall back to the project's newest plan.
+    expect(opsY.call("list", { scope: "plan" })).toMatchObject({
+      ok: true,
+      text: "#1 [pending · plan] Auth · 0/2\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+    });
+  } finally {
+    opsX.close();
+    opsY.close();
+  }
+});
+
+test("a caller with no session id owns no task the terminal made", () => {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  const terminal = createTaskOps({ stateDir, cwd: () => cwd, caller: () => null });
+  const nameless = createTaskOps({
+    stateDir,
+    cwd: () => cwd,
+    caller: () => ({ sessionId: null, pid: 7301, procStart: "73010", cwd }),
+  });
+  try {
+    expect(terminal.call("create", { subject: "Solo", plan: "solo" }).ok).toBe(true);
+    expect(terminal.call("create", { subject: "Step", parent: "#1" }).ok).toBe(true);
+    expect(nameless.call("create", { subject: "Own", status: "in_progress" })).toEqual({
+      ok: true,
+      text: '#3 "Own"',
+    });
+    // Neither the terminal's tasks nor their plan count as its own.
+    expect(nameless.call("list", {})).toMatchObject({
+      ok: true,
+      text: "#3 [in progress] Own",
+      data: { work: [{ number: 3, plan: null }] },
+    });
+    // The terminal owns every task made without a session id, that one too.
+    expect(terminal.call("list", {})).toMatchObject({
+      ok: true,
+      text: "#1 [pending · plan] Solo · 0/1\n  #2 [pending] Step\n#3 [in progress] Own",
+    });
+  } finally {
+    terminal.close();
+    nameless.close();
   }
 });

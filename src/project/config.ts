@@ -5,7 +5,7 @@ import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { workflowSchema } from "../workflow/schema";
-import { isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
+import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
 
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
@@ -352,23 +352,21 @@ function describeIssue(issue: z.core.$ZodIssue): string {
  * "unknown field".
  *
  * A plugin past the range's top (`^1.4` on 2.0.0) is the other way round: an update cannot
- * help, so the message says to widen the range instead. Past the top means the range has a top
- * (it refuses `NO_TOP`) and the plugin is at or above the range's lowest version.
+ * help, so the message says to widen the range instead. Which one: an update helps when some
+ * version newer than the plugin is in the range (`allowsNewer`); so `^1.4 || ^2.1` on 2.0.0
+ * hears update, and `^1.4` on 2.0.0 hears widen.
  */
-/** A version far above any release: a `requires` range that lets it in has no top. */
-const NO_TOP = "999999.0.0";
-
 function checkRequires(file: string, raw: unknown, pluginVersion: string): void {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
   const requires = (raw as { requires?: unknown }).requires;
   // A broken value is reported by the full check below.
   if (typeof requires !== "string" || !isValidRange(requires)) return;
   if (satisfiesRange(pluginVersion, requires)) return;
-  const lowest = lowestAllowed(requires);
-  const hasTop = !satisfiesRange(NO_TOP, requires);
-  if (hasTop && lowest !== null && Bun.semver.order(pluginVersion, lowest) >= 0) {
-    const [major, minor] = lowest.split(".");
-    const example = lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example =
+      lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
     throw new CcSmartDevKitVersionError(
       `${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` +
         `${pluginVersion}, which is newer; widen requires in that file${example}`,

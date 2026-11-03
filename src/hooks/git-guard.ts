@@ -83,7 +83,10 @@ export interface GuardOptions {
    * on. A function, so the policy is read (git, a file) only for a line that really pushes.
    */
   autoPushAsk: () => string | null;
-  /** Ask before a bare `git stash` / `stash pop`: the project works in worktrees. */
+  /**
+   * Ask before a bare `git stash` / `stash pop`: the stash list is shared, because the project
+   * works in worktrees or this checkout is a linked worktree (a builder's).
+   */
   sharedStash: boolean;
   env: Env;
   /** The dialect of the tool that runs the line (`dialectOfTool`); not given, both are read. */

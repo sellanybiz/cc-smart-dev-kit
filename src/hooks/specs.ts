@@ -163,7 +163,9 @@ export const gitGuardHook: HookSpec = {
     const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
-      sharedStash: config.worktrees !== undefined,
+      // Every worktree of a repo shares one stash list: a project that works in worktrees, or
+      // any linked worktree (a builder's), can take another session's stash.
+      sharedStash: config.worktrees !== undefined || project.isWorktree,
       env,
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
