@@ -42,7 +42,11 @@ export function taskStart(
   if (view.state === "ready" && view.value.tasks.length > 0) {
     lines.push("Open tasks here (the kit's task list):");
     for (const task of view.value.tasks) {
-      const status = task.status === "in_progress" ? "in progress" : task.status;
+      const status = [
+        task.status === "in_progress" ? "in progress" : task.status,
+        ...(task.type === "non-blocking" ? ["non-blocking"] : []),
+        ...(task.blocked ? ["blocked"] : []),
+      ].join(" · ");
       lines.push(
         `#${task.number} [${status}] ${task.subject}${task.claim === "another session" ? " (another session)" : ""}`,
       );

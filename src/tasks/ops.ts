@@ -27,11 +27,22 @@ import {
   eventsOf,
   getTask,
   isOpen,
+  layerOf,
   notesOf,
+  openBlockers,
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
-import { ack, applyUpdate, deleteTask, insertNote, insertTask, updateTask } from "./work/store";
+import {
+  ack,
+  applyUpdate,
+  deleteTask,
+  insertNote,
+  insertTask,
+  layPhase,
+  planTask,
+  updateTask,
+} from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
 
 export const TASK_LINE_CAP = 200;
@@ -50,6 +61,32 @@ function value<T>(result: Result<T>): T {
 }
 function label(task: WorkTask): string {
   return `#${task.number} "${task.subject}"`;
+}
+/** What a task's line adds to its status (D76): its type when non-blocking, its open blockers. */
+function marks(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): string[] {
+  const blockers = isOpen(task) ? openBlockers(task, byId) : [];
+  return [
+    ...(task.type === "non-blocking" ? ["non-blocking"] : []),
+    ...(blockers.length ? [`blocked by ${blockers.map((t) => `#${t.number}`).join(", ")}`] : []),
+  ];
+}
+/**
+ * The words in a task's brackets: its status, its layer when it is a plan or a phase (`withLayer`:
+ * every layer, for `task_get`), then its `marks`.
+ */
+function stateWords(
+  task: WorkTask,
+  byId: ReadonlyMap<string, WorkTask>,
+  withLayer = false,
+): string {
+  const layer = layerOf(task, byId);
+  return [
+    ...(withLayer ? [layer] : []),
+    task.status.replaceAll("_", " "),
+    ...(!withLayer && layer === "plan" ? ["plan"] : []),
+    ...(!withLayer && layer === "phase" ? [`phase ${task.phase ?? ""}`.trim()] : []),
+    ...marks(task, byId),
+  ].join(" · ");
 }
 export function projectLine(task: ProjectTask): string {
   return `${task.id} [${[task.kind, task.when, task.weight].filter(Boolean).join(" · ")}] ${task.title}`;
@@ -116,8 +153,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
-          if (input.parent || input.waits_for?.length || input.status)
-            throw new Error("Project tasks have no parent, waits-for or work status");
+          if (
+            input.parent ||
+            input.blocked_by?.length ||
+            input.status ||
+            input.type ||
+            input.phase ||
+            input.plan
+          )
+            throw new Error(
+              "Project tasks have no parent, blocked-by, work status, type, phase or plan",
+            );
           const branch = ctx.checkoutRoot
             ? runGit(ctx.checkoutRoot, ["branch", "--show-current"], env)
             : null;
@@ -144,32 +190,97 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             text: `${task.id} "${task.title}" · ${relative(ctx.checkoutRoot ?? cwd, task.file)} · commit it with your branch`,
           };
         }
+        // Every blocker is found before anything is written: a wrong one leaves no task behind.
+        const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
+        if (input.phase !== undefined || input.plan !== undefined) {
+          // A plan's own task, or a phase laid out ahead of its crew (D76): a lead's call.
+          if (who.crewId !== null)
+            throw new Error(
+              `A crew session works inside its own phase${phase ? ` (#${phase.number})` : ""}: its lead lays out the plan's phases`,
+            );
+          if (input.parent !== undefined)
+            throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
+          if (input.status !== undefined)
+            throw new Error("A plan or a phase starts pending: leave out status");
+          if (
+            input.phase === undefined &&
+            (blockedBy.length || input.type !== undefined || input.description !== undefined)
+          )
+            throw new Error(
+              "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
+            );
+          const slug = input.plan ?? plan;
+          if (slug === null)
+            throw new Error(
+              "A phase belongs to a plan: give plan (its slug, as `crew lead --plan` names it)",
+            );
+          if (input.phase === undefined) {
+            const made = value(
+              writeWork(store, () =>
+                planTask(
+                  store,
+                  { project: ctx.project, plan: slug, subject: input.subject },
+                  who,
+                  now,
+                ),
+              ),
+            );
+            return { ok: true, text: `${label(made)} · plan ${slug}` };
+          }
+          const phaseId = input.phase;
+          const laid = value(
+            writeWork(store, () =>
+              layPhase(
+                store,
+                {
+                  project: ctx.project,
+                  plan: slug,
+                  phase: phaseId,
+                  subject: input.subject,
+                  ...(input.description === undefined ? {} : { description: input.description }),
+                  ...(input.type === undefined ? {} : { type: input.type }),
+                  blockedBy,
+                },
+                who,
+                now,
+              ),
+            ),
+          );
+          return {
+            ok: true,
+            text: `${label(laid.task)} · phase ${phaseId} of plan ${slug}${laid.made ? "" : " · it was there already"}`,
+          };
+        }
         const parent = input.parent ? work(input.parent) : phase;
-        // Validate every dependency before creating a task; failed creation must not leave a task behind.
-        const waits = input.waits_for?.map((r) => work(r).id) ?? [];
-        // The task and its waits-for rows go in one transaction: a failed dependency leaves no task.
+        // The task and its blockers go in one transaction: a refused blocker leaves no task.
         const task = value(
-          writeWork(store, () => {
-            const made = insertTask(
+          writeWork(store, () =>
+            insertTask(
               store,
               {
                 project: ctx.project,
                 subject: input.subject,
                 ...(input.description === undefined ? {} : { description: input.description }),
                 ...(input.status === undefined ? {} : { status: input.status }),
+                ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
                 plan: parent?.plan ?? plan,
                 crewId: who.crewId,
+                blockedBy,
               },
               who,
               now,
-            );
-            for (const id of waits)
-              store.sqlite.query("INSERT INTO task_deps VALUES (?,?)").run(made.id, id);
-            return made;
-          }),
+            ),
+          ),
         );
-        return { ok: true, text: `${label(task)}${parent ? ` under #${parent.number}` : ""}` };
+        const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
+        return {
+          ok: true,
+          text: [
+            `${label(task)}${parent ? ` under #${parent.number}` : ""}`,
+            ...marks(task, byId),
+          ].join(" · "),
+        };
       }
       if (operation === "update") {
         const input = taskSchemas.update.parse(raw);
@@ -177,11 +288,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           if (
             input.status !== undefined ||
             input.parent !== undefined ||
-            input.waits_for_add !== undefined ||
-            input.waits_for_remove !== undefined
+            input.type !== undefined ||
+            input.blocked_by_add !== undefined ||
+            input.blocked_by_remove !== undefined
           )
             throw new Error(
-              "Project task status changes only through task_done; project tasks have no parent or waits-for",
+              "Project task status changes only through task_done; project tasks have no parent, type or blocked-by",
             );
           const task = updateProjectTask(
             projectDir(),
@@ -211,16 +323,23 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               ...(input.parent === undefined
                 ? {}
                 : { parentId: input.parent === null ? null : work(input.parent).id }),
+              ...(input.type === undefined ? {} : { type: input.type }),
               waitsFor: {
-                add: (input.waits_for_add ?? []).map((r) => work(r).id),
-                remove: (input.waits_for_remove ?? []).map((r) => work(r).id),
+                add: (input.blocked_by_add ?? []).map((r) => work(r).id),
+                remove: (input.blocked_by_remove ?? []).map((r) => work(r).id),
               },
             },
             who,
             now,
           ),
         );
-        return { ok: true, text: `${label(updated)} · ${updated.status.replaceAll("_", " ")}` };
+        const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
+        return {
+          ok: true,
+          text: [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(
+            " · ",
+          ),
+        };
       }
       if (operation === "done") {
         const input = taskSchemas.done.parse(raw);
@@ -313,9 +432,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               const notes = notesOf(store, task)
                 .map((n) => `${new Date(n.at).toISOString()} ${n.text}`)
                 .join("\n");
+              const byId = new Map(all.map((t) => [t.id, t]));
+              const blockers = task.waitsFor
+                .map((id) => byId.get(id))
+                .filter((t) => t !== undefined)
+                .sort((a, b) => a.number - b.number)
+                .map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`);
               // Only the parts that hold something, a blank line between them.
               return [
-                `${label(task)} [${task.status.replaceAll("_", " ")}]`,
+                [
+                  `${label(task)} [${stateWords(task, byId, true)}]`,
+                  ...(blockers.length ? [`Blocked by: ${blockers.join(", ")}`] : []),
+                ].join("\n"),
                 task.description,
                 notes,
                 historyText(eventsOf(store, task), { full: input.history }),
@@ -399,13 +527,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
       }
       const selectedIds = new Set(selected.map((t) => t.id));
+      const byId = new Map(all.map((t) => [t.id, t]));
       const lines: string[] = [];
       const visit = (task: WorkTask, depth: number) => {
         const count = subtreeProgress(all, task.id);
         const progress = count.total ? ` · ${count.closed}/${count.total}` : "";
         const state = claimState(task, claimLive, who);
         lines.push(
-          `${"  ".repeat(depth)}#${task.number} [${task.status.replaceAll("_", " ")}] ${task.subject}${progress}${state === "another session" ? " (another session)" : ""}`,
+          `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${state === "another session" ? " (another session)" : ""}`,
         );
         for (const child of selected.filter((t) => t.parentId === task.id)) visit(child, depth + 1);
       };

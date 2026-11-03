@@ -1,4 +1,4 @@
-# The kit's task list (D75)
+# The kit's task list (D75, D76)
 
 D75 (2026-11-03, 1.10.0) replaces D68's split between claude-mem work state and Claude
 Code's task list. The kit owns tasks; claude-mem keeps memory. The tools and the command
@@ -23,25 +23,75 @@ the oldest compatible reader. Migrations only add to the schema, because an olde
 folder can still have a running server.
 
 A task has a project-local number, shown as `#12`, a subject and free Markdown description,
-status (`pending`, `in_progress`, `done`, `dropped`), an optional parent, plan, phase and
-crew id, creator, process claim and timestamps. Dependencies say what it waits for; notes
-keep the work log. Machine acknowledgements record teammate tasks completed here.
+status (`pending`, `in_progress`, `done`, `dropped`), a type (`blocking` or `non-blocking`),
+an optional parent, plan, phase and crew id, creator, process claim and timestamps. Its
+blocked-by list (the `task_deps` table) names the tasks it waits for; notes keep the work log.
+Machine acknowledgements record teammate tasks completed here.
 
 The store enforces these rules, not the caller:
 
-- Done requires every subtask to be done or dropped. A refusal names what remains, and keeps
-  none of the call's notes or evidence: they are written in the same transaction.
-- A parent or dependency cycle is refused.
-- A system close on merge or removal drops open subtasks and leaves an automatic note.
+- Done requires every blocking task under it to be done or dropped (below). A refusal names
+  what remains, and keeps none of the call's notes or evidence: they are written in the same
+  transaction.
+- A task blocked by an open task can neither start nor be done.
+- A parent cycle, a blocked-by cycle, and a fourth layer are refused.
+- A system close on merge or removal drops open subtasks and leaves an automatic note; a merge
+  leaves non-blocking work open.
 - Delete is for a mistake with no notes or subtasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
+
+### Layers, types and blocked-by (D76)
+
+D76 (2026-11-03, 1.11.0) gives the work three layers under a plan: **phase › task ›
+subtask**. A task's layer is never stored. `layerOf` (`queries.ts`) reads it from the parent
+alone: a plan or a phase is its kind, a task under a task is a `subtask`, and any other task
+(at the top, under a plan, under a phase) is a `task`. So a move changes the layer with it, and
+there is no second value to drift. `placeValid` (`store.ts`) holds the shape, on create and on
+every move:
+
+- Nothing goes under a subtask. The refusal names the task above it, where the new one fits.
+- A task that has subtasks cannot move under a task: its subtasks would be a fourth layer.
+- A plan stays at the top and a phase under its plan: neither can be moved.
+
+A store an older kit nested deeper reads as it is: anything below a task is a subtask. The
+layer rules hold only a move, so each of those tasks still changes and closes where it sits.
+
+**The type** says whether a task holds the one above it. A `blocking` task (the default) must
+be closed before its parent is done. A `non-blocking` one (a nice-to-have, a later idea) holds
+nothing. `holdingUnder` (`queries.ts`) is the one answer to "what holds this task": the open
+tasks below it, reached through blocking tasks only, those in progress first. It never walks
+into a non-blocking task, so a blocking subtask of a non-blocking task holds only that task.
+It does walk on below a closed task, so a task closed early cannot hide open work under it.
+`doneValid`, the crew gates and a merge's close all use it.
+
+**Blocked-by** (`blocked_by` on create, `blocked_by_add` and `blocked_by_remove` on update)
+names tasks that must finish first. A task blocked by an open task cannot go to `in_progress`
+or `done`; a blocker that is done or dropped lets it go. The check runs on the change of status
+only, so a task already in progress when a blocker is added keeps going, and says it is
+blocked. `addBlockers` refuses a blocked-by cycle, a task of another project, and a task above
+this one: a parent waits for its subtasks, so a subtask blocked by its parent could never
+start, and neither could ever be done. The kit's own writes (a crew start, a merge's close, an
+import) are not held.
+
+**The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
+with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
+1.11.0 migrated. A 1.10.x writer adds tasks with the default, blocking, which is the 1.10.x
+rule. No hook query names the column, and a row without it reads as blocking.
+
+**A lead lays out its phases ahead of its crew.** `task_create` with `phase` (its id, as
+`crew start` names it) makes the phase task under the plan task, once per plan and phase
+(`layPhase`); a second call answers with the phase that is there. `plan` is the slug `crew lead
+--plan` names, the lead's own plan when left out. `plan` alone makes the plan task, and takes a
+subject only. Neither takes a `parent` or a `status`: a plan sits at the top and a phase under
+its plan, and each starts pending. A crew session cannot lay phases: it works inside its own. `crew start` finds the phase by plan and phase (`ensurePhaseTask`) and adopts it with what
+the lead put under it, so a phase has one task.
 
 ### A task's history
 
 Every write in `store.ts` adds one entry to `task_events`, in the same transaction as the
 change, so the two land together or not at all. An entry holds the time, what happened
 (`created`, `changed`, `noted`, `closed`, `deleted`), each field's value before and after
-(subject, description, status, parent, crew, claim, waits-for), and who made it: the session
+(subject, description, status, type, parent, crew, claim, blocked by), and who made it: the session
 id and name (the name Claude Code shows, read from its session record by `callerOf`), the crew
 id and the Claude process. A change the kit makes itself (a merge or removal closing a phase,
 a crew session taking a phase, an import) carries its reason instead. A change that changes
@@ -70,14 +120,18 @@ call. The record supplies the session id and cwd, including a move into a worktr
 work is marked as belonging to another session. Live proof of these Claude Code behaviours
 is still owed in [the contract](../claude-code-contract.md).
 
-`crew start` makes a phase task keyed by plan and phase, even while the phase is queued.
-`--waits-for` adds dependencies. A continuation points the same task at the new crew id and
-takes over its predecessor's subtasks (their crew id moves too, with a history entry); new
-crew tasks default to its subtasks. Merge closes the phase done; removal drops it. A phase
-started again after either opens again for the new crew session; the old session's closed
-subtasks stay under it as its record, and stop counting (below).
+`crew start` makes a phase task keyed by plan and phase, even while the phase is queued, or
+adopts the one its lead laid out (above). `--waits-for` adds those phases to its blocked-by
+list. A continuation points the same task at the new crew id and takes over its predecessor's
+subtasks (their crew id moves too, with a history entry); new crew tasks default to its
+subtasks. Merge closes the phase done and drops its open blocking work; its non-blocking work
+stays open, for whoever picks it up. Removal drops the phase and everything open under it. A
+phase started again after either opens again for the new crew session; the old session's
+closed subtasks stay under it as its record, and stop counting (below).
 A lead has a plan task too. Its *own* tasks are those created by its sessions in
-`leadSessions`, not the plan or phase tasks. Adoption carries that ownership forward.
+`leadSessions`, outside every phase: not the plan or phase tasks, and not the tasks it laid out
+inside a phase, which are that phase's crew session's work. Adoption carries that ownership
+forward.
 
 ## Project tasks
 
@@ -161,15 +215,17 @@ has no writer holding it open. All gates use this view, including `crew report`:
 
 - The first crew edit needs a subtask under its phase. A crew made before phase tasks
   existed is let through. A refusal names the task tool and CLI fallback.
-- Crew Stop names an open subtask and says to continue; with none, it asks for the report.
-  A done report is refused while subtasks remain open.
-- Lead Stop holds once for the lead's own in-progress work, unless the turn names
+- Crew Stop names an open blocking subtask (`holdingUnder` its phase) and says to continue;
+  with none, it asks for the report. A done report is refused while one remains open.
+  Non-blocking work never holds either: it stays open after the merge.
+- Lead Stop holds once for the lead's own blocking work in progress, unless the turn names
   `Waiting for:` or has background work other than its watch. The notifier yields to it.
 - The lead reminder asks for its own task when none exists.
 
 `task-start` is machine-wide. At every start, clear and compaction it adds one block of the
-project's open work tasks, without descriptions, at most eight lines and "+n more". A crew
-phase and its subtasks stay out (they are that crew session's, on the board). This process's
+project's open work tasks, without descriptions, at most eight lines and "+n more". An open
+crew phase and its tasks stay out (they are that crew session's, on the board); what a merge
+left open under a closed phase (non-blocking work) is listed, since it is anyone's now. This process's
 own claimed tasks come first, then the ones in progress, then the most recently touched. A
 task untouched for `tasks.staleDays` (default 30) is not listed but counted in one line,
 unless this process claims it. Crew sessions get their subtasks on the role card instead. A
@@ -178,15 +234,19 @@ run setup.
 
 Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, the crew board,
 `task_list`, the crew gates and the portal: the tasks under a task at every depth, closed (done
-or dropped) of all of them (`subtreeProgress`), since a parent may be done once each is done or
-dropped. Under a crew phase, a closed task an earlier crew session of the phase made does not
+or dropped) of all of them (`subtreeProgress`). Non-blocking tasks count too: progress says how
+much of the work is closed, and `holdingUnder` says what still holds the parent's done. Under a
+crew phase, a closed task an earlier crew session of the phase made does not
 count (`countsToward`): so a phase started again after a removal holds its new session at the
 first-edit gate until that session lists its own work.
 
-The portal shows the list read-only: a Tasks card on each project's page (the work tree with
-its open work and what closed in the last seven days; the open task files by kind, stale ones
-marked) and a phase card on each crew page. Both read again on the live stream's `tasks`
-event, which fires when the store's file or its write-ahead log changes
+The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
+each project's work tree as plan › phase › task › subtask, its open work and what closed in the
+last seven days, each row with its layer, type, blockers and progress, then the open task files
+by kind, stale ones marked. Filters narrow it to one project, blocked work or non-blocking work,
+and keep each match under the tasks above it. A project's page keeps a one-line card that links
+there, and each crew page a phase card with the same rows. All of them read again on the live
+stream's `tasks` event, which fires when the store's file or its write-ahead log changes
 ([portal](portal.md)).
 
 ## Setup and the move from older lists
@@ -221,7 +281,7 @@ work. The repair runs even when claude-mem's database is gone.
 Doctor checks registration, permissions, the memory switch, work-store schema and
 integrity, and project-file findings. It does not replace the live checks in the contract.
 
-## Not in 1.10.0
+## Not yet
 
-FTS5 search, database snapshots, hand ordering, a Claude Code task-panel mirror and
-cross-machine sync of live work are not in this release.
+FTS5 search, database snapshots, hand ordering, a Claude Code task-panel mirror,
+cross-machine sync of live work, and editing tasks from the portal are not built yet.

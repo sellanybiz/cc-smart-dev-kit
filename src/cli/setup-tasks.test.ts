@@ -86,13 +86,13 @@ test("doctor warns for a newer store and reports damaged files", () => {
   const w = world();
   const file = workDbFile(w.paths);
   const db = openWorkDb(file, { mode: "write" });
-  db.sqlite.run("PRAGMA user_version = 2");
+  db.sqlite.run("PRAGMA user_version = 3");
   db.close();
   expect(taskStoreChecks(w.paths)).toEqual([
     {
       ok: true,
       warn: true,
-      text: "task work store: schema 2 is newer than 1",
+      text: "task work store: schema 3 is newer than 2",
       fix: "cc-smart-dev-kit update",
     },
     { ok: true, text: "task work store: integrity check is ok" },
@@ -112,7 +112,7 @@ test("doctor checks existing store schema and integrity without writing", () => 
   const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
   db.close();
   expect(taskStoreChecks(w.paths)).toEqual([
-    { ok: true, text: "task work store: schema 1 is current" },
+    { ok: true, text: "task work store: schema 2 is current" },
     { ok: true, text: "task work store: integrity check is ok" },
   ]);
 });

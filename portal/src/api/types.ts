@@ -46,7 +46,10 @@ import type {
   SlotTarget,
   SwitchFacts,
   HistoryPoint as WireHistoryPoint,
+  WorkTaskBlocker,
+  WorkTaskLayer,
   WorkTaskNode,
+  WorkTaskType,
 } from "./wire";
 
 export type {
@@ -75,11 +78,26 @@ export type {
   SlotRow,
   SlotTarget,
   SwitchFacts,
+  WorkTaskBlocker,
+  WorkTaskLayer,
   WorkTaskNode,
+  WorkTaskType,
 };
 
-/** `GET /api/projects/<id>/tasks` (D75): a project's Tasks card, as the server answers it. */
+/** One project's tasks (D75): its work tree and its task files, as the server answers them. */
 export type ProjectTasksData = ProjectTasksAnswer;
+
+/** One project on the Tasks tab: its row, as the project list draws it, and its tasks. */
+export interface TasksProjectData {
+  project: ProjectListRow;
+  tasks: ProjectTasksData;
+}
+
+/** `GET /api/tasks` (D76): the Tasks tab, every project in the list's order, and its note. */
+export interface TasksData {
+  note: null | string;
+  projects: TasksProjectData[];
+}
 
 // ── The shell ──────────────────────────────────────────────────────────────────────────
 

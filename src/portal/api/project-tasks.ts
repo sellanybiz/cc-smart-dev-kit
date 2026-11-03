@@ -1,9 +1,11 @@
 /**
- * `GET /api/projects/<id>/tasks` (D75): the Project page's Tasks card. Two lists, read-only:
+ * `GET /api/tasks` (D76: the Tasks tab, every project) and `GET /api/projects/<id>/tasks` (D75:
+ * one project). Both answer each project with the same reading, two lists, read-only:
  *
- * - **Work tasks**: the kit's work store for the project (`src/tasks/work/tree.ts`): plan tasks,
- *   phase tasks and their subtasks as one tree — the open ones, and those closed in the last
- *   `TASKS_CARD_RECENT_DAYS` days. Every worktree of the repo shares the one list.
+ * - **Work tasks**: the kit's work store for the project (`src/tasks/work/tree.ts`): Plan ›
+ *   Phase › Task › Subtask as one tree, each with its type and what blocks it — the open ones,
+ *   and those closed in the last `TASKS_CARD_RECENT_DAYS` days. Every worktree of the repo
+ *   shares the one list.
  * - **Project task files**: the open ones in the main checkout's task folder
  *   (`src/tasks/project/`), what blocks a release first. Stale is `task check`'s own rule
  *   (`checkProjectTasks`), never a second copy of it. A task on a branch not merged yet is not in
@@ -20,12 +22,14 @@ import { scanProjectTasks } from "../../tasks/project/files";
 import type { ProjectTask } from "../../tasks/project/format";
 import { projectTaskTree, type TaskTreeNode } from "../../tasks/work/tree";
 import type { PageDataDeps } from "../page-data";
-import { projectsList, projectsWorldOf } from "./projects";
+import { mapLimit, PROJECT_GIT_AT_ONCE, projectsList, projectsWorldOf } from "./projects";
 import type {
+  ProjectSummary,
   ProjectTaskFiles,
   ProjectTaskRow,
   ProjectTasksAnswer,
   ProjectWorkTasks,
+  TasksAnswer,
   WorkTaskNode,
 } from "./types";
 
@@ -45,16 +49,24 @@ const WHEN_ORDER: Readonly<Record<string, number>> = { now: 0, "next-release": 1
 /** A tree node as the wire carries it: its change time as ISO 8601. */
 export function workTaskNodeOf(node: TaskTreeNode): WorkTaskNode {
   return {
+    blocked: node.blocked,
+    blockedBy: node.blockedBy.map((one) => ({
+      ref: one.ref,
+      status: one.status,
+      subject: one.subject,
+    })),
     children: node.children.map(workTaskNodeOf),
     closed: node.closed,
     id: node.id,
     kind: node.kind,
+    layer: node.layer,
     phase: node.phase,
     plan: node.plan,
     ref: node.ref,
     status: node.status,
     subject: node.subject,
     total: node.total,
+    type: node.type,
     updatedAt: new Date(node.updatedAt).toISOString(),
   };
 }
@@ -119,6 +131,7 @@ function filesOf(
   }
 }
 
+/** `projects/<id>/tasks`: one project's answer, or why there is no project by that id. */
 export async function projectTasksAnswerFor(
   deps: PageDataDeps,
   id: string,
@@ -128,6 +141,24 @@ export async function projectTasksAnswerFor(
   if (project === undefined) {
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
+  return await tasksOf(deps, project);
+}
+
+/**
+ * `GET /api/tasks` (D76): the Tasks tab, every project of the list with its tasks, read
+ * `PROJECT_GIT_AT_ONCE` at a time (each project asks git for its key and checkout).
+ */
+export async function tasksAnswer(deps: PageDataDeps): Promise<TasksAnswer> {
+  const list = await projectsList(projectsWorldOf(deps));
+  const projects = await mapLimit(list.projects, PROJECT_GIT_AT_ONCE, async (project) => ({
+    project,
+    tasks: await tasksOf(deps, project),
+  }));
+  return { note: list.note, projects };
+}
+
+/** One project's work tree and its open task files: the one reading both answers use. */
+async function tasksOf(deps: PageDataDeps, project: ProjectSummary): Promise<ProjectTasksAnswer> {
   const { env, now, paths } = deps.action.portal;
   const context = await taskContextAsync(project.root, env);
   if (!context.ok) {

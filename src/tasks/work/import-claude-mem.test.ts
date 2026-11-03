@@ -127,7 +127,8 @@ test("the repair takes every own list an earlier import made, keeps what a sessi
   value(updateTask(db, closed.list.id, { status: "done" }, who, at));
   const mine = value(createTask(db, { project: "p", subject: "Session work" }, who, at)); // #12
   const moved = mistakenImport(db, "p", at, "my-focus"); // #13, #14
-  value(updateTask(db, moved.list.id, { parentId: mine.id }, who, at));
+  // Moved under a session's task while 1.10.x let a task with subtasks become a subtask.
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(mine.id, moved.list.id);
   const args = {
     // claude-mem uninstalled: its database is gone, and the repair still runs.
     claudeMemDb: join(tempDir(), "claude-mem.db"),

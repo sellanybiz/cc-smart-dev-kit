@@ -83,11 +83,11 @@ export const GATEWAY_CARD_REFRESH: RefreshOn = (message) =>
   settingsChanged(message) || actionResult(message, "slot.") || actionResult(message, "switch");
 
 /**
- * A project's Tasks card: the work store's own event (any session's task tool or `task`
+ * The Tasks tab (D76): the work store's own event (any session's task tool or `task`
  * command wrote), a crew event or result (a phase task opens and closes with its crew session),
  * and a project result (the task files are read from the project's checkout).
  */
-export const TASKS_CARD_REFRESH: RefreshOn = (message) =>
+export const TASKS_REFRESH: RefreshOn = (message) =>
   message.name === "tasks" ||
   message.name === "crew" ||
   actionResult(message, "crew.") ||

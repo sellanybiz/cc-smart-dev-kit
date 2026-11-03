@@ -33,7 +33,8 @@ branch, how you report and ask).
 - **Before the first edit, break the phase into subtasks** with `task_create`; the parent
   defaults to your phase task. Put each step's done-check in its description. Read existing
   subtasks first on a resume; continue them rather than making a second list.
-  The first-edit gate requires a subtask, and the done-report gate requires all subtasks done.
+  The first-edit gate requires a subtask, and the done-report gate requires every blocking
+  one done or dropped; a task your lead marked non-blocking does not hold you.
   Task tools need no lookup; the CLI fallback is in `/cc-smart-dev-kit:memory-routing`.
 - **Your own subagents** — a search, a separable piece — run in the background
   (`run_in_background: true`), so your turn goes on while they work.

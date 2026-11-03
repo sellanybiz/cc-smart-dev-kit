@@ -44,8 +44,12 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
     why: "open subtasks: #2 Child",
   });
   expect(updateTask(db, root.id, { parentId: child.id }, who, 12).ok).toBe(false);
-  expect(updateTask(db, child.id, { waitsFor: { add: [root.id] } }, who, 12).ok).toBe(true);
-  expect(updateTask(db, root.id, { waitsFor: { add: [child.id] } }, who, 12).ok).toBe(false);
+  // A subtask blocked by its own parent could never start, and neither could ever be done.
+  expect(updateTask(db, child.id, { waitsFor: { add: [root.id] } }, who, 12)).toEqual({
+    ok: false,
+    why: '#2 "Child" cannot be blocked by #1 "Root": it sits under it, and a parent waits for its subtasks',
+  });
+  expect(updateTask(db, root.id, { waitsFor: { add: [child.id] } }, who, 12).ok).toBe(true);
   expect(listTasks(db, { project: "p", openOnly: true })[0]?.children[0]?.id).toBe(child.id);
   expect(openSubtasks(db, root.id).map((t) => t.number)).toEqual([2]);
   value(updateTask(db, child.id, { status: "in_progress" }, who, 13));
@@ -144,7 +148,8 @@ test("plan and phase upserts, hook views and claim classification", () => {
   db.close();
   expect(crewPhaseState(paths, "p", "new").state).toBe("ready");
   expect(leadOwnState(paths, "p", "plan", ["session"]).state).toBe("ready");
-  expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: true });
+  // A task inside a phase is the phase's work (D76), not its maker's own.
+  expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: false });
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("ready");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {
@@ -153,7 +158,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='2' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='3' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");

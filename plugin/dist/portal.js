@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.10.1",
+  version: "1.11.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -14953,7 +14953,7 @@ function contextOf(checkout, cwd, env) {
 import { Database as Database2 } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync16, mkdirSync as mkdirSync9 } from "fs";
 import { dirname as dirname10, join as join17 } from "path";
-var WORK_SCHEMA_VERSION = 1;
+var WORK_SCHEMA_VERSION = 2;
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -14982,6 +14982,9 @@ CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project 
 CREATE INDEX task_event_task ON task_events(task_id,id);
 CREATE INDEX task_event_number ON task_events(project,number);
 `;
+var MIGRATIONS = [
+  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))"
+];
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
   const fresh = !existsSync16(file);
@@ -15004,6 +15007,13 @@ function openWorkDb(file, options) {
         if (version < 1) {
           sqlite.run(SCHEMA);
           sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined)
+            throw new Error(`no migration from task schema ${at}`);
+          sqlite.run(step);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
         sqlite.run("COMMIT");
       } catch (error) {
@@ -15395,7 +15405,8 @@ function allTasks(db, project) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     closedAt: row.closed_at,
-    waitsFor: dependencies.get(row.id) ?? []
+    waitsFor: dependencies.get(row.id) ?? [],
+    type: row.blocking === 0 ? "non-blocking" : "blocking"
   }));
 }
 function getTask(db, project, ref) {
@@ -15463,8 +15474,49 @@ function descendantsIn(tasks, id) {
   }
   return result;
 }
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
 function openSubtasks(db, id) {
-  return descendants(db, id).filter(isOpen).sort((a, b) => Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number);
+  return descendants(db, id).filter(isOpen).sort(inProgressFirst);
+}
+function layerOf(task, byId) {
+  if (task.kind !== "task")
+    return task.kind;
+  const parent = task.parentId === null ? undefined : byId.get(task.parentId);
+  return parent?.kind === "task" ? "subtask" : "task";
+}
+function openBlockers(task, byId) {
+  return task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined && isOpen(t)).sort((a, b) => a.number - b.number);
+}
+function isBlocked(task, byId) {
+  return isOpen(task) && openBlockers(task, byId).length > 0;
+}
+function holdingUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id) || child.type === "non-blocking")
+        continue;
+      seen.add(child.id);
+      if (isOpen(child))
+        result.push(child);
+      walk(child.id);
+    }
+  };
+  walk(id);
+  return result.sort(inProgressFirst);
 }
 function listTasks(db, options) {
   const all = allTasks(db, options.project);
@@ -15510,34 +15562,45 @@ function crewPhaseState(paths, project, crewId) {
     const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
     return {
       phase,
-      openSubtasks: phase ? openSubtasks(db, phase.id) : [],
+      openSubtasks: phase ? holdingUnder(tasks, phase.id) : [],
       total: phase ? countedUnder(tasks, phase.id).length : 0
     };
   });
 }
+function phaseOf(task, byId) {
+  const seen = new Set;
+  for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
+    if (t.kind === "phase")
+      return t;
+    seen.add(t.id);
+  }
+  return null;
+}
+function inPhase(task, byId) {
+  return phaseOf(task, byId) !== null;
+}
 function own2(db, project, sessionIds, plan) {
-  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
+  const all = allTasks(db, project);
+  const byId = new Map(all.map((t) => [t.id, t]));
+  return all.filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan) && !inPhase(t, byId));
 }
 function leadOwnState(paths, project, plan, sessionIds) {
   return readWorkStore(paths, (db) => {
     const tasks = own2(db, project, sessionIds, plan);
-    return { inProgress: tasks.filter((t) => t.status === "in_progress"), total: tasks.length };
+    return {
+      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking"),
+      total: tasks.length
+    };
   });
 }
 function startView(paths, project, who, options) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    const inPhase = (task) => {
-      const seen = new Set;
-      for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
-        if (t.kind === "phase")
-          return true;
-        seen.add(t.id);
-      }
-      return false;
-    };
-    const open = all.filter((t) => isOpen(t) && !inPhase(t)).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+    const open = all.filter((t) => {
+      const phase = phaseOf(t, byId);
+      return isOpen(t) && (phase === null || !isOpen(phase));
+    }).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
     const shown = open.filter(({ task, claim }) => claim === "mine" || options.staleBefore === undefined || task.updatedAt >= options.staleBefore);
     shown.sort((a, b) => Number(b.claim === "mine") - Number(a.claim === "mine") || Number(b.task.status === "in_progress") - Number(a.task.status === "in_progress") || b.task.updatedAt - a.task.updatedAt || a.task.number - b.task.number);
     const limit = Math.max(0, Math.floor(options.limit));
@@ -15547,7 +15610,9 @@ function startView(paths, project, who, options) {
         number: task.number,
         subject: task.subject,
         status: task.status,
-        claim
+        claim,
+        type: task.type,
+        blocked: isBlocked(task, byId)
       })),
       more: Math.max(0, shown.length - limit),
       stale: open.length - shown.length
@@ -15566,6 +15631,7 @@ function shape(db, task) {
     subject: task.subject,
     description: task.description,
     status: task.status,
+    type: task.type,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     crew: task.crewId,
     claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
@@ -15612,7 +15678,8 @@ function systemClose(db, id, status, reason, who, now) {
 }
 function applySystemClose(db, id, status, reason, who, now) {
   const task = taskById(db, id);
-  for (const child of openSubtasks(db, id)) {
+  const open = status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  for (const child of open) {
     const before = shape(db, child);
     db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
     recordChange2(db, before, taskById(db, child.id), who, now, reason);
@@ -32746,7 +32813,8 @@ function keptCount(task, keep) {
     return 0;
   return 1 + task.children.reduce((sum, child) => sum + keptCount(child, keep), 0);
 }
-function shapeTrees(roots, keep) {
+function shapeTrees(roots, all, keep) {
+  const byId = new Map(all.map((t) => [t.id, t]));
   let sent = 0;
   let more = 0;
   const byOpenThenNewest = (a, b) => Number(isOpen(b)) - Number(isOpen(a)) || b.updatedAt - a.updatedAt;
@@ -32765,6 +32833,10 @@ function shapeTrees(roots, keep) {
       subject: task.subject,
       status: task.status,
       kind: task.kind,
+      layer: layerOf(task, byId),
+      type: task.type,
+      blockedBy: task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined).sort((a, b) => a.number - b.number).map((t) => ({ ref: `#${t.number}`, subject: t.subject, status: t.status })),
+      blocked: isBlocked(task, byId),
       plan: task.plan,
       phase: task.phase,
       closed: count.closed,
@@ -32780,14 +32852,15 @@ function shapeTrees(roots, keep) {
 }
 function projectTaskTree(paths, project, options) {
   const since = options.now - options.recentMs;
-  return readWorkStore(paths, (db) => shapeTrees(listTasks(db, { project, openOnly: false }), (task) => recent(task, since)));
+  return readWorkStore(paths, (db) => shapeTrees(listTasks(db, { project, openOnly: false }), allTasks(db, project), (task) => recent(task, since)));
 }
 function crewPhaseTree(paths, project, crewId) {
   return readWorkStore(paths, (db) => {
-    const phase = allTasks(db, project).find((t) => t.kind === "phase" && t.crewId === crewId);
+    const all = allTasks(db, project);
+    const phase = all.find((t) => t.kind === "phase" && t.crewId === crewId);
     if (phase === undefined)
       return { phase: null, more: 0 };
-    const tree = shapeTrees(listTasks(db, { project, root: phase.id, openOnly: false }), () => true);
+    const tree = shapeTrees(listTasks(db, { project, root: phase.id, openOnly: false }), all, () => true);
     return { phase: tree.roots[0] ?? null, more: tree.more };
   });
 }
@@ -39000,7 +39073,11 @@ function taskStart(input, paths, env, now = Date.now) {
   if (view.state === "ready" && view.value.tasks.length > 0) {
     lines.push("Open tasks here (the kit's task list):");
     for (const task of view.value.tasks) {
-      const status = task.status === "in_progress" ? "in progress" : task.status;
+      const status = [
+        task.status === "in_progress" ? "in progress" : task.status,
+        ...task.type === "non-blocking" ? ["non-blocking"] : [],
+        ...task.blocked ? ["blocked"] : []
+      ].join(" \xB7 ");
       lines.push(`#${task.number} [${status}] ${task.subject}${task.claim === "another session" ? " (another session)" : ""}`);
     }
     if (view.value.more > 0)
@@ -44141,16 +44218,24 @@ var WEIGHT_ORDER = {
 var WHEN_ORDER = { now: 0, "next-release": 1, any: 2 };
 function workTaskNodeOf(node) {
   return {
+    blocked: node.blocked,
+    blockedBy: node.blockedBy.map((one) => ({
+      ref: one.ref,
+      status: one.status,
+      subject: one.subject
+    })),
     children: node.children.map(workTaskNodeOf),
     closed: node.closed,
     id: node.id,
     kind: node.kind,
+    layer: node.layer,
     phase: node.phase,
     plan: node.plan,
     ref: node.ref,
     status: node.status,
     subject: node.subject,
     total: node.total,
+    type: node.type,
     updatedAt: new Date(node.updatedAt).toISOString()
   };
 }
@@ -44200,6 +44285,17 @@ async function projectTasksAnswerFor(deps, id) {
   if (project === undefined) {
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
+  return await tasksOf(deps, project);
+}
+async function tasksAnswer(deps) {
+  const list = await projectsList(projectsWorldOf(deps));
+  const projects = await mapLimit(list.projects, PROJECT_GIT_AT_ONCE, async (project) => ({
+    project,
+    tasks: await tasksOf(deps, project)
+  }));
+  return { note: list.note, projects };
+}
+async function tasksOf(deps, project) {
   const { env, now, paths } = deps.action.portal;
   const context = await taskContextAsync(project.root, env);
   if (!context.ok) {
@@ -45942,6 +46038,7 @@ var API_READS = {
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
   "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
+  "/api/tasks": async (deps) => ok(await tasksAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/needs": async (deps) => ok(await needsAnswer(deps)),
   "/api/worktrees": async (deps) => ok(await worktreesAnswer(deps)),

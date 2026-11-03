@@ -75,11 +75,12 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
       ok: false,
       why: "parent would make a cycle",
     });
-    expect(ops.call("update", { task: "#2", waits_for_add: ["#1"] }).ok).toBe(true);
-    expect(ops.call("update", { task: "#1", waits_for_add: ["#2"] })).toEqual({
+    // A subtask blocked by its own parent could never start (D76); the other way is fine.
+    expect(ops.call("update", { task: "#2", blocked_by_add: ["#1"] })).toEqual({
       ok: false,
-      why: "waits-for would make a cycle",
+      why: '#2 "Child" cannot be blocked by #1 "Parent": it sits under it, and a parent waits for its subtasks',
     });
+    expect(ops.call("update", { task: "#1", blocked_by_add: ["#2"] }).ok).toBe(true);
     session = "after-clear";
     expect(ops.call("list", {})).toMatchObject({ ok: true, text: "#2 [in progress] Child" });
     const page = ops.call("get", { task: "#2" });
@@ -95,7 +96,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
     });
     expect(ops.call("done", { task: "#2", outcome: "dropped" }).ok).toBe(true);
     expect(ops.call("done", { task: "#1", evidence: "Checked" }).ok).toBe(true);
-    expect(ops.call("create", { subject: "Invalid", waits_for: ["#99"] }).ok).toBe(false);
+    expect(ops.call("create", { subject: "Invalid", blocked_by: ["#99"] }).ok).toBe(false);
     expect(ops.call("create", { subject: "Next" })).toEqual({ ok: true, text: '#3 "Next"' });
     expect(ops.call("delete", { task: "#3" }).ok).toBe(true);
     expect(ops.call("note", { task: "#1", text: "x".repeat(64001) }).ok).toBe(false);
@@ -136,8 +137,9 @@ test("crew caller defaults to its phase parent and follows its current checkout"
     });
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      // Progress counts the whole subtree, the status line's and the board's rule.
-      text: "#1 [pending] my-plan · 0/2\n  #2 [pending] Build · 0/1\n    #3 [pending] Check",
+      // Progress counts the whole subtree, the status line's and the board's rule. A plan and a
+      // phase say their layer (D76).
+      text: "#1 [pending · plan] my-plan · 0/2\n  #2 [pending · phase one] Build · 0/1\n    #3 [pending] Check",
     });
   } finally {
     ops.close();

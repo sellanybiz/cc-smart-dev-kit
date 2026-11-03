@@ -41,6 +41,7 @@ import type {
   RequestQuery,
   SettingsData,
   SlotsData,
+  TasksData,
   UpdateData,
   WorkData,
   WorktreesData,
@@ -73,8 +74,10 @@ export interface PortalClient {
   projectGateway(id: string): Promise<ProjectGatewayData>;
   /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
   projectWorkflow(id: string): Promise<ProjectWorkflowData>;
-  /** A project's Tasks card (D75): its work tree on this machine and its task files. */
+  /** One project's tasks (D75): its work tree on this machine and its task files. */
   projectTasks(id: string): Promise<ProjectTasksData>;
+  /** The Tasks tab (D76): every project with its work tree and its task files. */
+  tasks(): Promise<TasksData>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
@@ -203,6 +206,14 @@ export function mockClient(scenario: MockScenario): PortalClient {
         if (found === undefined) throw new Error(`No project "${id}" is known on this machine.`);
         return found;
       }),
+    tasks: () =>
+      answer(() => ({
+        note: data.projects.note,
+        projects: data.projects.rows.flatMap((project) => {
+          const tasks = data.tasksPages[project.id];
+          return tasks === undefined ? [] : [{ project, tasks }];
+        }),
+      })),
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
     onJobs: () => () => {},
@@ -321,6 +332,7 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     },
     projectTasks: (id) =>
       get<Wire.ProjectTasksAnswer>(`/api/projects/${encodeURIComponent(id)}/tasks`),
+    tasks: async () => adapt.tasksOf(await get<Wire.TasksAnswer>("/api/tasks")),
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");
       if ("error" in answer) throw new Error(answer.error);

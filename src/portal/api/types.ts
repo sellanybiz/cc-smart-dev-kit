@@ -411,14 +411,33 @@ export interface ProjectGatewayAnswer {
 /** A work task's status in the kit's store (`src/tasks/work/types.ts` › `WorkStatus`). */
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
-/** One work task in the Tasks card's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
+/** Where a task sits (D76): Plan › Phase › Task › Subtask (`src/tasks/work/types.ts` › `WorkLayer`). */
+export type WorkTaskLayer = "phase" | "plan" | "subtask" | "task";
+
+/** Blocking holds its parent while open; non-blocking holds nothing (D76, `WorkType`). */
+export type WorkTaskType = "blocking" | "non-blocking";
+
+/** One task another waits for: its number, its subject and its state now, closed ones too. */
+export interface WorkTaskBlocker {
+  ref: string;
+  status: WorkTaskStatus;
+  subject: string;
+}
+
+/** One work task in the Tasks tab's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
 export interface WorkTaskNode {
+  /** Open, and one of `blockedBy` is still open: it cannot start or be done yet. */
+  blocked: boolean;
+  /** The tasks it waits for, in number order, closed ones too. */
+  blockedBy: WorkTaskBlocker[];
   children: WorkTaskNode[];
   /** Its whole subtree: how many tasks are closed (done or dropped), of how many. */
   closed: number;
   id: string;
   /** A plan's task, a phase's task (one per crew phase), or a task. */
   kind: "phase" | "plan" | "task";
+  /** Its layer, worked out from its parents: a task under a task is a subtask. */
+  layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
   /** `#12`: the project's own number for it. */
@@ -426,11 +445,12 @@ export interface WorkTaskNode {
   status: WorkTaskStatus;
   subject: string;
   total: number;
+  type: WorkTaskType;
   /** When it last changed (ISO 8601). */
   updatedAt: string;
 }
 
-/** One open project task file (`src/tasks/project/format.ts`), as the Tasks card lists it. */
+/** One open project task file (`src/tasks/project/format.ts`), as the Tasks tab lists it. */
 export interface ProjectTaskRow {
   /** When it was written (`YYYY-MM-DD`). */
   created: string;
@@ -479,13 +499,30 @@ export type ProjectTaskFiles =
   | { state: "unavailable"; why: string };
 
 /**
- * `GET /api/projects/<id>/tasks` (D75): the project's Tasks card. The kit's work store for the
- * project (every worktree shares one list) and the project's own task files in its main
- * checkout. Read-only: a task changes through the task tools or `cc-smart-dev-kit task`.
+ * `GET /api/projects/<id>/tasks` (D75): one project's tasks, as the Tasks tab and its project
+ * page draw them. The kit's work store for the project (every worktree shares one list) and the
+ * project's own task files in its main checkout. Read-only: a task changes through the task
+ * tools or `cc-smart-dev-kit task`.
  */
 export interface ProjectTasksAnswer {
   files: ProjectTaskFiles;
   work: ProjectWorkTasks;
+}
+
+/** One project on the Tasks tab: the project as the list names it, and its tasks. */
+export interface TasksProject {
+  project: ProjectSummary;
+  tasks: ProjectTasksAnswer;
+}
+
+/**
+ * `GET /api/tasks` (D76): the Tasks tab. Every project of `/api/projects`, in its order (newest
+ * use first), each with the answer `projects/<id>/tasks` gives, and the list's own note.
+ */
+export interface TasksAnswer {
+  /** Why the list is short or empty; null otherwise. */
+  note: null | string;
+  projects: TasksProject[];
 }
 
 /** A crew session, as the Work view and a crew page show it. */

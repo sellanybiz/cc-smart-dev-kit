@@ -79,9 +79,11 @@ cc-smart-dev-kit crew start <phase> --slug <slug> --kind <kind> \
   --files <glob,...> [--effort <effort>] [--waits-for <phase,...>] [--base <ref>]
 ```
 
-- **Each `crew start` makes its phase task under the plan task**, including queued phases.
-  Put the phase's steps beneath it; the crew skill owns that breakdown. The watch closes
-  the phase task when its branch merges; do not close it on a report alone.
+- **Each `crew start` takes its phase task**, queued phases too: the one the plan laid out
+  (`task_create` with `phase`), or a new one under the plan task. Put the phase's steps
+  beneath it; the crew skill owns that breakdown. The watch closes the phase task when its
+  branch merges; do not close it on a report alone. Its open non-blocking tasks stay open
+  after the merge: pick them up or drop them (`task_list` with scope `plan`).
 - **At plan approval, start the whole plan at once**, in one message: every phase of every
   wave, each later one with `--waits-for` the phases it builds on. You never keep a list of what
   is ready: the queue and the watch start each phase when what it waits for is merged and a

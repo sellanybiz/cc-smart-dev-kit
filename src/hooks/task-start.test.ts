@@ -100,6 +100,42 @@ test("work untouched past the project's tasks.staleDays is counted, not listed",
   );
 });
 
+test("D76: the start block marks non-blocking work and a task that is blocked", async () => {
+  const { repo } = makeClone();
+  const env = hookEnv();
+  const paths = cliPaths(env);
+  const project = projectKey(repo);
+  const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const at = Date.now() - 60_000;
+  const first = createTask(db, { project, subject: "First" }, nobody, at);
+  if (!first.ok) throw new Error(first.why);
+  const second = createTask(
+    db,
+    { project, subject: "Second", type: "non-blocking", blockedBy: [first.value.id] },
+    nobody,
+    at + 1,
+  );
+  if (!second.ok) throw new Error(second.why);
+  db.close();
+  writeFileSync(
+    mcpRecordsFile(paths.stateDir),
+    JSON.stringify({ servers: { [TASKS_SERVER_NAME]: { at: "2026-11-03", json: "{}" } } }),
+  );
+  expect(
+    await runHook(
+      taskStartHook,
+      { hook_event_name: "SessionStart", source: "startup", cwd: repo },
+      env,
+    ),
+  ).toEqual(
+    addContext(
+      "SessionStart",
+      "Open tasks here (the kit's task list):\n#2 [pending · non-blocking · blocked] Second\n#1 [pending] First",
+    ),
+  );
+});
+
 test("an unreadable store says one stderr line and no context", async () => {
   const { repo } = makeClone();
   const env = hookEnv();

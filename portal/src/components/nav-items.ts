@@ -3,6 +3,7 @@ import {
   BellDotIcon,
   CoinsIcon,
   GaugeIcon,
+  ListChecksIcon,
   type LucideIcon,
   MonitorCogIcon,
   RouteIcon,
@@ -53,6 +54,12 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         href: "/work",
         icon: UsersIcon,
         about: "Each lead with its crew sessions, and your other sessions",
+      },
+      {
+        title: "Tasks",
+        href: "/tasks",
+        icon: ListChecksIcon,
+        about: "Each project's plans, phases, tasks and subtasks, and what it still owes",
       },
       {
         title: "Flow",

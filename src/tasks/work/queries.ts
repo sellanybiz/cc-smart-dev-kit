@@ -5,6 +5,7 @@ import type {
   WorkEvent,
   WorkEventAction,
   WorkKind,
+  WorkLayer,
   WorkNote,
   WorkStatus,
   WorkTask,
@@ -30,6 +31,8 @@ interface TaskRow {
   created_at: number;
   updated_at: number;
   closed_at: number | null;
+  /** Absent in a store a hook reads before a writer moved it to schema 2. */
+  blocking?: number;
 }
 export function allTasks(db: WorkDb, project: string): WorkTask[] {
   const dependencies = new Map<string, string[]>();
@@ -66,6 +69,7 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       updatedAt: row.updated_at,
       closedAt: row.closed_at,
       waitsFor: dependencies.get(row.id) ?? [],
+      type: row.blocking === 0 ? "non-blocking" : "blocking",
     }));
 }
 export function getTask(db: WorkDb, project: string, ref: string): WorkTask | null {
@@ -161,14 +165,61 @@ function descendantsIn(tasks: readonly WorkTask[], id: string): WorkTask[] {
   }
   return result;
 }
+/** In progress first, then by number: the order every list of open tasks is said in. */
+function inProgressFirst(a: WorkTask, b: WorkTask): number {
+  return (
+    Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number
+  );
+}
 export function openSubtasks(db: WorkDb, id: string): WorkTask[] {
-  return descendants(db, id)
-    .filter(isOpen)
-    .sort(
-      (a, b) =>
-        Number(b.status === "in_progress") - Number(a.status === "in_progress") ||
-        a.number - b.number,
-    );
+  return descendants(db, id).filter(isOpen).sort(inProgressFirst);
+}
+/**
+ * A task's layer (D76), from its parent alone: a task under a task is a subtask; one at the top,
+ * under a plan or under a phase is a task. A task an older kit nested deeper reads as a subtask.
+ */
+export function layerOf(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkLayer {
+  if (task.kind !== "task") return task.kind;
+  const parent = task.parentId === null ? undefined : byId.get(task.parentId);
+  return parent?.kind === "task" ? "subtask" : "task";
+}
+/** The open tasks a task is blocked by, in number order: it cannot start or be done while one is. */
+export function openBlockers(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkTask[] {
+  return task.waitsFor
+    .map((id) => byId.get(id))
+    .filter((t): t is WorkTask => t !== undefined && isOpen(t))
+    .sort((a, b) => a.number - b.number);
+}
+/** Open, and blocked by a task still open. */
+export function isBlocked(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): boolean {
+  return isOpen(task) && openBlockers(task, byId).length > 0;
+}
+/**
+ * The open tasks under a task that hold it (D76), in progress first: each open blocking task
+ * reached through blocking tasks only. A non-blocking task holds nothing, and what is under it
+ * holds only it. Below a closed blocking task the walk goes on, so a task an older kit or a
+ * system close left open there still holds.
+ */
+export function holdingUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
+  const children = new Map<string, WorkTask[]>();
+  for (const t of tasks) {
+    if (!t.parentId) continue;
+    const siblings = children.get(t.parentId);
+    if (siblings) siblings.push(t);
+    else children.set(t.parentId, [t]);
+  }
+  const seen = new Set([id]);
+  const result: WorkTask[] = [];
+  const walk = (parent: string) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id) || child.type === "non-blocking") continue;
+      seen.add(child.id);
+      if (isOpen(child)) result.push(child);
+      walk(child.id);
+    }
+  };
+  walk(id);
+  return result.sort(inProgressFirst);
 }
 export interface ListOptions {
   project: string;

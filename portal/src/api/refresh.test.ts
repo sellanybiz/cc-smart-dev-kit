@@ -4,7 +4,7 @@ import {
   CREW_REFRESH,
   GATEWAY_CARD_REFRESH,
   PROJECT_REFRESH,
-  TASKS_CARD_REFRESH,
+  TASKS_REFRESH,
   WORKFLOW_CARD_REFRESH,
 } from "./refresh";
 import type { LiveMessage } from "./stream";
@@ -48,8 +48,8 @@ describe("a project's cards read again only for what changes them", () => {
     expect(refresh(lineOf("project.gateway.set"))).toBe(false);
   });
 
-  test("the Tasks card follows the work store, a crew session and a project result", () => {
-    const refresh = asFunction(TASKS_CARD_REFRESH);
+  test("the Tasks tab follows the work store, a crew session and a project result", () => {
+    const refresh = asFunction(TASKS_REFRESH);
     expect(refresh(tasksEvent)).toBe(true);
     expect(refresh(crewEvent)).toBe(true);
     expect(refresh(resultOf("crew.rm"))).toBe(true);

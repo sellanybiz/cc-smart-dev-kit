@@ -22,8 +22,11 @@ import { importClaudeMem } from "./work/import-claude-mem";
 export const TASK_USAGE = `Usage: ${TASK_COMMAND} <command>
 
 add <subject> [--description <text> | --file <path|->] [--kind work|production|database|teammate|follow-up]
-    [--parent <ref>] [--start] [--when now|next-release|any] [--weight blocks-release|after-deploy|owner]
+    [--parent <ref>] [--start] [--type blocking|non-blocking] [--blocked-by <ref>]...
+    [--phase <id>] [--plan <slug>]
+    [--when now|next-release|any] [--weight blocks-release|after-deploy|owner]
     [--flag <flag>]... [--ref <path>]...
+set <ref> [--type blocking|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
 start <ref>
 done <ref> [--evidence <text>] [--note <text>] [--for-everyone]
 drop <ref> [--note <text>]
@@ -40,7 +43,9 @@ import claude-mem [--project <name>] [--dry-run]
 delete <ref>
 mcp
 
-Work tasks stay on this machine. Project task files travel with your branch: commit them.`;
+Work tasks stay on this machine. Project task files travel with your branch: commit them.
+Layers: phase › task › subtask. A blocking task (the default) holds its parent; a non-blocking
+one holds nothing. A task blocked by an open task cannot start or be done.`;
 const definitions: Record<
   string,
   { values?: string[]; flags?: string[]; repeat?: string[]; min: number; max?: number }
@@ -51,14 +56,25 @@ const definitions: Record<
       "--file",
       "--kind",
       "--parent",
+      "--type",
+      "--blocked-by",
+      "--phase",
+      "--plan",
       "--when",
       "--weight",
       "--flag",
       "--ref",
     ],
     flags: ["--start"],
-    repeat: ["--flag", "--ref"],
+    repeat: ["--flag", "--ref", "--blocked-by"],
     min: 1,
+  },
+  set: {
+    values: ["--type", "--block", "--unblock", "--parent"],
+    flags: ["--top"],
+    repeat: ["--block", "--unblock"],
+    min: 1,
+    max: 1,
   },
   start: { min: 1, max: 1 },
   done: { values: ["--evidence", "--note"], flags: ["--for-everyone"], min: 1, max: 1 },
@@ -119,10 +135,25 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           kind: get("kind"),
           parent: get("parent"),
           status: has("start") ? "in_progress" : undefined,
+          type: get("type"),
+          blocked_by: lists.get("--blocked-by"),
+          phase: get("phase"),
+          plan: get("plan"),
           when: get("when"),
           weight: get("weight"),
           flags: lists.get("--flag"),
           refs: lists.get("--ref"),
+        };
+        break;
+      case "set":
+        if (get("parent") && has("top")) return bad("Use --parent or --top, not both");
+        operation = "update";
+        input = {
+          task,
+          type: get("type"),
+          blocked_by_add: lists.get("--block"),
+          blocked_by_remove: lists.get("--unblock"),
+          parent: has("top") ? null : get("parent"),
         };
         break;
       case "start":

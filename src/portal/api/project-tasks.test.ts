@@ -1,6 +1,7 @@
 /**
- * `GET /api/projects/<id>/tasks` (D75): the Project page's Tasks card — the kit's work store for
- * the project as a tree, and its open task files, what blocks a release first, stale marked.
+ * `GET /api/tasks` and `GET /api/projects/<id>/tasks` (D75, D76): the Tasks tab — the kit's
+ * work store for each project as a tree with each task's layer, type and blockers, and its open
+ * task files, what blocks a release first, stale marked.
  * Every file is in `tempDir()`, git runs in a clean environment, the store is a temp home's.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
@@ -19,7 +20,7 @@ import type { PageDataDeps } from "../page-data";
 import { addProjectRoot, forgetProjectsList } from "./projects";
 import { answerApi } from "./routes";
 import { testPortalContext } from "./test-context";
-import type { ProjectTasksAnswer } from "./types";
+import type { ProjectTasksAnswer, TasksAnswer } from "./types";
 
 const DAY = 86_400_000;
 /** 2026-03-01T00:00:00Z: every date below is counted from it. */
@@ -159,10 +160,13 @@ describe("a project's tasks answer (D75)", () => {
             {
               children: [
                 {
+                  blocked: false,
+                  blockedBy: [],
                   children: [],
                   closed: 0,
                   id: step.id,
                   kind: "task",
+                  layer: "task",
                   phase: null,
                   // Made straight in the store, which copies no plan from the parent (the task
                   // tools do): the tree shows what the store holds.
@@ -171,30 +175,39 @@ describe("a project's tasks answer (D75)", () => {
                   status: "in_progress",
                   subject: "Write it",
                   total: 0,
+                  type: "blocking",
                   updatedAt: "2026-02-28T00:00:00.000Z",
                 },
               ],
+              blocked: false,
+              blockedBy: [],
               closed: 0,
               id: phase.id,
               kind: "phase",
+              layer: "phase",
               phase: "api",
               plan: "launch",
               ref: "#2",
               status: "pending",
               subject: "The API",
               total: 1,
+              type: "blocking",
               updatedAt: "2026-02-27T00:00:00.000Z",
             },
           ],
+          blocked: false,
+          blockedBy: [],
           closed: 0,
           id: phase.parentId as string,
           kind: "plan",
+          layer: "plan",
           phase: null,
           plan: "launch",
           ref: "#1",
           status: "pending",
           subject: "launch",
           total: 2,
+          type: "blocking",
           updatedAt: "2026-02-27T00:00:00.000Z",
         },
       ],
@@ -247,6 +260,147 @@ describe("a project's tasks answer (D75)", () => {
       },
       work: { state: "none" },
     });
+  });
+
+  test("the Tasks tab's answer: every project, each task's layer, type and blockers (D76)", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const brief = value(createTask(db, { project, subject: "Read the brief" }, who, NOW - DAY));
+    value(updateTask(db, brief.id, { status: "done" }, who, NOW - DAY));
+    const build = value(createTask(db, { project, subject: "Build it" }, who, NOW - DAY));
+    value(updateTask(db, build.id, { status: "in_progress" }, who, NOW - DAY));
+    const note = value(
+      createTask(
+        db,
+        { project, subject: "Name the fields", parentId: build.id, type: "non-blocking" },
+        who,
+        NOW - DAY,
+      ),
+    );
+    const ship = value(
+      createTask(db, { project, subject: "Ship it", blockedBy: [build.id, brief.id] }, who, NOW),
+    );
+    db.close();
+
+    const answer = await answerApi(deps, new URL("http://127.0.0.1/api/tasks"));
+    expect(answer?.status).toBe(200);
+    const body = answer?.body as TasksAnswer;
+    // The projects list's own note, passed on: this home has an added folder and no records.
+    expect(body.note).toBe(
+      "Claude Code has saved no session records on this machine yet, so this list holds only the folders you added.",
+    );
+    expect(body.projects.map((one) => [one.project.id, one.project.name])).toEqual([
+      [idOf(root), "app"],
+    ]);
+    const work = body.projects[0]?.tasks.work;
+    if (work?.state !== "ready") throw new Error(`no tree: ${JSON.stringify(work)}`);
+    // Open work first, newest change first; the closed brief last.
+    expect(work.tasks).toEqual([
+      {
+        blocked: true,
+        // In number order, the closed one too: only the open one still blocks.
+        blockedBy: [
+          { ref: "#1", status: "done", subject: "Read the brief" },
+          { ref: "#2", status: "in_progress", subject: "Build it" },
+        ],
+        children: [],
+        closed: 0,
+        id: ship.id,
+        kind: "task",
+        layer: "task",
+        phase: null,
+        plan: null,
+        ref: "#4",
+        status: "pending",
+        subject: "Ship it",
+        total: 0,
+        type: "blocking",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      },
+      {
+        blocked: false,
+        blockedBy: [],
+        children: [
+          {
+            blocked: false,
+            blockedBy: [],
+            children: [],
+            closed: 0,
+            id: note.id,
+            kind: "task",
+            layer: "subtask",
+            phase: null,
+            plan: null,
+            ref: "#3",
+            status: "pending",
+            subject: "Name the fields",
+            total: 0,
+            type: "non-blocking",
+            updatedAt: "2026-02-28T00:00:00.000Z",
+          },
+        ],
+        closed: 0,
+        id: build.id,
+        kind: "task",
+        layer: "task",
+        phase: null,
+        plan: null,
+        ref: "#2",
+        status: "in_progress",
+        subject: "Build it",
+        total: 1,
+        type: "blocking",
+        updatedAt: "2026-02-28T00:00:00.000Z",
+      },
+      {
+        blocked: false,
+        blockedBy: [],
+        children: [],
+        closed: 0,
+        id: brief.id,
+        kind: "task",
+        layer: "task",
+        phase: null,
+        plan: null,
+        ref: "#1",
+        status: "done",
+        subject: "Read the brief",
+        total: 0,
+        type: "blocking",
+        updatedAt: "2026-02-28T00:00:00.000Z",
+      },
+    ]);
+    // The same reading as the one project's own answer: the tab and the route never disagree.
+    expect((await answerOf(deps, idOf(root)))?.body).toEqual(body.projects[0]?.tasks);
+  });
+
+  test("the Tasks tab with no project at all: an empty list, not an error", async () => {
+    const home = tempDir("tasks-empty-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const env = { ...cleanGitEnv(), CLAUDE_CONFIG_DIR: paths.claudeConfigDir, HOME: home };
+    const ctx = testPortalContext(paths, env, () => NOW);
+    const workflow = fakeWorkflow();
+    const action: ActionContext = {
+      cwd: home,
+      omniroute: portalOmnirouteContext(ctx),
+      portal: ctx,
+      projectDefaults: () => fakeDefaults(),
+      workflow,
+    };
+    const deps: PageDataDeps = {
+      action,
+      doctor: async () => null,
+      facts: async () => ({ platform: "linux", portalPort: 0, router: null, version: "0.0.0" }),
+      found: { error: "no gateway config yet" },
+      projectDefaults: action.projectDefaults,
+      workflow,
+    };
+    const answer = await answerApi(deps, new URL("http://127.0.0.1/api/tasks"));
+    expect(answer?.status).toBe(200);
+    const body = answer?.body as TasksAnswer;
+    expect(body.projects).toEqual([]);
   });
 
   test("a project the list does not have is a 404 with the list's name", async () => {

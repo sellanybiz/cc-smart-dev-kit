@@ -1,5 +1,14 @@
 import { type WorkDb, writeWork } from "./db";
-import { allTasks, descendants, isOpen, openSubtasks, taskById } from "./queries";
+import {
+  allTasks,
+  descendants,
+  holdingUnder,
+  isOpen,
+  layerOf,
+  openBlockers,
+  openSubtasks,
+  taskById,
+} from "./queries";
 import {
   DESCRIPTION_LIMIT,
   NOTE_LIMIT,
@@ -9,6 +18,7 @@ import {
   type WorkKind,
   type WorkStatus,
   type WorkTask,
+  type WorkType,
 } from "./types";
 
 /** How much of a note its history entry keeps: the note itself is in `task_notes`. */
@@ -21,6 +31,7 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     subject: task.subject,
     description: task.description,
     status: task.status,
+    type: task.type,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     crew: task.crewId,
     claim: task.claim === null ? null : (task.claim.sessionId ?? `process ${task.claim.pid}`),
@@ -41,9 +52,17 @@ function diff(
   return changes;
 }
 
-/** A value that says nothing on its own: left out of a created or deleted entry. */
-function empty(value: unknown): boolean {
-  return value === null || value === "" || (Array.isArray(value) && value.length === 0);
+/**
+ * A value that says nothing on its own, left out of a created or deleted entry: an empty one, or
+ * the default type (every task is blocking unless it says otherwise).
+ */
+function empty(key: string, value: unknown): boolean {
+  return (
+    value === null ||
+    value === "" ||
+    (Array.isArray(value) && value.length === 0) ||
+    (key === "type" && value === "blocking")
+  );
 }
 
 /**
@@ -103,14 +122,23 @@ export interface CreateTask {
   plan?: string | null;
   phase?: string | null;
   crewId?: string | null;
+  /** `WorkType`; blocking unless set. */
+  type?: WorkType;
+  /** The ids of the tasks it is blocked by. */
+  blockedBy?: string[];
 }
 export interface UpdateTask {
   subject?: string;
   description?: string;
   status?: WorkStatus;
   parentId?: string | null;
+  type?: WorkType;
+  /** The tasks it is blocked by (`task_deps`), by id. */
   waitsFor?: { add?: string[]; remove?: string[] };
   claim?: boolean;
+}
+function label(task: WorkTask): string {
+  return `#${task.number} "${task.subject}"`;
 }
 function subjectOf(subject: string): string {
   const text = subject.trim();
@@ -127,18 +155,86 @@ function newId(): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   return `w${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
 }
-function parentValid(db: WorkDb, project: string, id: string | null, parent: string | null): void {
+/**
+ * Where a task may sit: never under itself or its own subtasks, never in another project, and
+ * within the three layers (D76). Nothing goes under a subtask, and a task that has subtasks never
+ * becomes a subtask itself, which would put them a fourth layer down. A plan and a phase stay where
+ * the kit put them: a plan at the top, a phase under its plan. `moving` is null for a new task.
+ * A task that stays where it is meets none of it: a store an older kit nested deeper keeps
+ * every task workable where it sits, and only a move is held to the layers.
+ */
+function placeValid(
+  db: WorkDb,
+  project: string,
+  moving: WorkTask | null,
+  parent: string | null,
+  kind: WorkKind,
+): void {
+  if (moving !== null && parent === moving.parentId) return;
+  if (moving !== null && moving.kind !== "task")
+    throw new Error(
+      `${label(moving)} is a ${moving.kind}: ${moving.kind === "plan" ? "a plan stays at the top" : "a phase stays under its plan"}`,
+    );
   if (!parent) return;
-  if (parent === id) throw new Error("a task cannot be its own parent");
+  if (parent === moving?.id) throw new Error("a task cannot be its own parent");
   const target = taskById(db, parent);
   if (target.project !== project) throw new Error("parent belongs to another project");
-  if (id && descendants(db, id).some((t) => t.id === parent))
+  if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
+  if (kind !== "task" || target.kind !== "task") return;
+  const tasks = allTasks(db, project);
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  if (layerOf(target, byId) === "subtask") {
+    const above = target.parentId === null ? undefined : byId.get(target.parentId);
+    throw new Error(
+      `${label(target)} is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under ${above ? label(above) : "a task"}, or make it a task of its own`,
+    );
+  }
+  if (moving !== null && tasks.some((t) => t.parentId === moving.id))
+    throw new Error(
+      `${label(moving)} has subtasks, so it stays a task: under ${label(target)} they would be a fourth layer. Move them first, or put it at the top or under a phase`,
+    );
 }
-function doneValid(db: WorkDb, id: string): void {
-  const open = openSubtasks(db, id);
+/** Done needs every task that holds it closed (`holdingUnder`): a non-blocking one holds nothing. */
+function doneValid(db: WorkDb, task: WorkTask): void {
+  const open = holdingUnder(allTasks(db, task.project), task.id);
   if (open.length)
     throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
+}
+/** A task blocked by an open task neither starts nor is done (D76); a closed blocker lets it go. */
+function unblockedValid(db: WorkDb, task: WorkTask): void {
+  const open = openBlockers(task, new Map(allTasks(db, task.project).map((t) => [t.id, t])));
+  if (open.length)
+    throw new Error(
+      `${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`,
+    );
+}
+/**
+ * Adds blockers to a task: each in its project, never a cycle (a task waiting on itself), and
+ * never a task above it. A parent waits for its blocking subtasks to be done, so a subtask
+ * blocked by its parent could never start, and neither could ever be done.
+ */
+function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void {
+  for (const ref of refs) {
+    const other = taskById(db, ref);
+    if (other.project !== task.project) throw new Error("dependency belongs to another project");
+    const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
+    for (let up = byId.get(task.parentId ?? ""); up; up = byId.get(up.parentId ?? ""))
+      if (up.id === other.id)
+        throw new Error(
+          `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its subtasks`,
+        );
+    const seen = new Set<string>();
+    const pending = [ref];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || seen.has(id)) continue;
+      if (id === task.id) throw new Error("blocked-by would make a cycle");
+      seen.add(id);
+      pending.push(...(byId.get(id)?.waitsFor ?? []));
+    }
+    db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+  }
 }
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
@@ -153,7 +249,7 @@ export function insertTask(
 ): WorkTask {
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
-  parentValid(db, input.project, null, input.parentId ?? null);
+  placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
   const id = newId();
   // Never a deleted task's number: its history still answers to it (`task_get #n`).
   const number =
@@ -166,7 +262,7 @@ export function insertTask(
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite
     .query(
-      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,crew_id,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .run(
       id,
@@ -187,8 +283,11 @@ export function insertTask(
       now,
       now,
       status === "done" || status === "dropped" ? now : null,
+      input.type === "non-blocking" ? 0 : 1,
     );
+  addBlockers(db, taskById(db, id), input.blockedBy ?? []);
   const task = taskById(db, id);
+  if (status === "in_progress") unblockedValid(db, task);
   const initial: Record<string, unknown> = {
     kind: task.kind,
     plan: task.plan,
@@ -197,7 +296,7 @@ export function insertTask(
   };
   const changes: Record<string, [unknown, unknown]> = {};
   for (const [key, value] of Object.entries(initial))
-    if (!empty(value)) changes[key] = [null, value];
+    if (!empty(key, value)) changes[key] = [null, value];
   recordEvent(db, task, "created", changes, who, now, reason);
   return task;
 }
@@ -211,22 +310,7 @@ function dependencies(
 ): void {
   for (const ref of change.remove ?? [])
     db.sqlite.query("DELETE FROM task_deps WHERE task_id=? AND waits_for=?").run(task.id, ref);
-  for (const ref of change.add ?? []) {
-    const other = taskById(db, ref);
-    if (other.project !== task.project) throw new Error("dependency belongs to another project");
-    const tasks = allTasks(db, task.project);
-    const byId = new Map(tasks.map((t) => [t.id, t]));
-    const seen = new Set<string>();
-    const pending = [ref];
-    while (pending.length) {
-      const id = pending.pop();
-      if (!id || seen.has(id)) continue;
-      if (id === task.id) throw new Error("waits-for would make a cycle");
-      seen.add(id);
-      pending.push(...(byId.get(id)?.waitsFor ?? []));
-    }
-    db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
-  }
+  addBlockers(db, task, change.add ?? []);
 }
 export function updateTask(db: WorkDb, id: string, change: UpdateTask, who: Who, now: number) {
   return writeWork(db, () => applyUpdate(db, id, change, who, now));
@@ -245,10 +329,13 @@ export function applyUpdate(
   const task = taskById(db, id);
   const before = shape(db, task);
   const status = change.status ?? task.status;
-  if (status === "done") doneValid(db, id);
   const parent = change.parentId === undefined ? task.parentId : change.parentId;
-  parentValid(db, task.project, id, parent);
+  placeValid(db, task.project, task, parent, task.kind);
+  // The blockers change first, so one call can lift a block and start the task.
   if (change.waitsFor) dependencies(db, task, change.waitsFor);
+  if (status === "done") doneValid(db, task);
+  if ((status === "in_progress" || status === "done") && status !== task.status)
+    unblockedValid(db, taskById(db, id));
   const claiming =
     status === "in_progress" && (change.status === "in_progress" || change.claim === true);
   const claim =
@@ -261,7 +348,7 @@ export function applyUpdate(
         : task.claim;
   db.sqlite
     .query(
-      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=? WHERE id=?",
+      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=? WHERE id=?",
     )
     .run(
       change.subject === undefined ? task.subject : subjectOf(change.subject),
@@ -273,6 +360,7 @@ export function applyUpdate(
       claim?.sessionId ?? null,
       now,
       status === "done" || status === "dropped" ? (task.closedAt ?? now) : null,
+      (change.type ?? task.type) === "non-blocking" ? 0 : 1,
       id,
     );
   const changed = taskById(db, id);
@@ -321,7 +409,7 @@ export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
       throw new Error("task has notes");
     const last: Record<string, [unknown, unknown]> = {};
     for (const [key, value] of Object.entries(shape(db, task)))
-      if (!empty(value)) last[key] = [value, null];
+      if (!empty(key, value)) last[key] = [value, null];
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
     recordEvent(db, task, "deleted", last, who, now, null);
     return true;
@@ -339,7 +427,9 @@ export function systemClose(
 }
 /**
  * `systemClose` inside a transaction the caller holds: the kit closes a task and drops its open
- * subtasks, each with an automatic note and a history entry that give the reason.
+ * subtasks, each with an automatic note and a history entry that give the reason. Closed as done
+ * (a merge), it drops only the open tasks that hold it (`holdingUnder`): non-blocking work stays
+ * open for whoever picks it up. Dropped (a removal), it drops every open task under it.
  */
 export function applySystemClose(
   db: WorkDb,
@@ -350,7 +440,9 @@ export function applySystemClose(
   now: number,
 ): WorkTask {
   const task = taskById(db, id);
-  for (const child of openSubtasks(db, id)) {
+  const open =
+    status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  for (const child of open) {
     const before = shape(db, child);
     db.sqlite
       .query(
@@ -375,11 +467,58 @@ export interface PlanTask {
   plan: string;
   subject: string;
 }
-function planTask(db: WorkDb, input: PlanTask, who: Who, now: number): WorkTask {
+/** The plan's task, made once: inside a transaction the caller holds. */
+export function planTask(db: WorkDb, input: PlanTask, who: Who, now: number): WorkTask {
   return (
     allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ??
     insertTask(db, { ...input, kind: "plan" }, who, now)
   );
+}
+export interface LaidPhase extends PlanTask {
+  phase: string;
+  description?: string;
+  type?: WorkType;
+  blockedBy?: string[];
+}
+/**
+ * A phase a lead lays out ahead of its crew (D76), inside a transaction the caller holds: the
+ * plan's phase task, made once under the plan task. `crew start` for the same plan and phase
+ * adopts it later (`ensurePhaseTask` finds it by both), so a phase has one task. `made` is false
+ * when the phase was there already; it is returned as it is.
+ */
+export function layPhase(
+  db: WorkDb,
+  input: LaidPhase,
+  who: Who,
+  now: number,
+): { task: WorkTask; made: boolean } {
+  const there = allTasks(db, input.project).find(
+    (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
+  );
+  if (there) return { task: there, made: false };
+  const parent = planTask(
+    db,
+    { project: input.project, plan: input.plan, subject: input.plan },
+    who,
+    now,
+  );
+  const task = insertTask(
+    db,
+    {
+      project: input.project,
+      subject: input.subject,
+      kind: "phase",
+      parentId: parent.id,
+      plan: input.plan,
+      phase: input.phase,
+      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.type === undefined ? {} : { type: input.type }),
+      ...(input.blockedBy === undefined ? {} : { blockedBy: input.blockedBy }),
+    },
+    who,
+    now,
+  );
+  return { task, made: true };
 }
 export function ensurePlanTask(db: WorkDb, input: PlanTask, who: Who, now: number) {
   return writeWork(db, () => planTask(db, input, who, now));

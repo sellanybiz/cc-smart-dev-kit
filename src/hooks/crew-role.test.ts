@@ -947,6 +947,44 @@ describe("Stop: the last line, one block, never context", () => {
     });
   });
 
+  test("D76: open non-blocking work never holds the hand-back: Stop gives the report step", async () => {
+    const world = await crewWorld();
+    const cwd = makeWorktree(world.repo);
+    const paths = cliPaths(world.env);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const who = { sessionId: "s", crewId: CREW_ID, pid: null, procStart: null };
+    const phase = ensurePhaseTask(
+      db,
+      {
+        project: projectKey(world.repo),
+        plan: "plan",
+        phase: "W2",
+        subject: "Phase",
+        description: "",
+        crewId: CREW_ID,
+        waitsForPhases: [],
+      },
+      who,
+      T0,
+    );
+    if (!phase.ok) throw new Error(phase.why);
+    const made = createTask(
+      db,
+      {
+        project: projectKey(world.repo),
+        parentId: phase.value.id,
+        subject: "Polish later",
+        type: "non-blocking",
+      },
+      who,
+      T0,
+    );
+    if (!made.ok) throw new Error(made.why);
+    db.close();
+    await step(world.stateDir, world.repo);
+    expect(await runHook(crewRoleHook, stopInput(cwd), world.env)).toEqual(blockAnswer());
+  });
+
   test("after a step: the turn is blocked once, with the report step, and the last line is kept", async () => {
     const world = await crewWorld();
     await step(world.stateDir, world.repo);
