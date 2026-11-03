@@ -123,16 +123,22 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
 - **One fresh subagent owns each phase.** Name its agent type, model and effort using the
   core instructions' table. Keep shared integration work in the main session.
+- **A phase is about 30 to 90 minutes of work.** A bigger one splits before it starts.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases. Batch small edits of the same shape into one dispatch, not one agent per line.
-- **Name contracts and dependencies.** Put actual waits in `blocked_by`. Do not hold work for
+- **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
+  first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
+  from its merged code. Put every other real wait in `blocked_by` too. Do not hold work for
   an unrelated review, merge or answer.
 - **List waves.** The first wave contains all phases with no blockers. Execution and the
   hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
-- **Give each phase a targeted done-check.** The main session owns the final full check.
+- **The last wave is a heavy cleanup**, run only once everything is verified live: the
+  fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches
+  and worktrees, and docs that still name what was removed.
+- **Give each phase a targeted done-check.**
 - **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
-  shared indexes, migrations, dev servers and whole-project checks. Never assign the same
-  file to parallel builders.
+  shared indexes, migrations, dev servers and the final full check
+  (`/cc-smart-dev-kit:verify-change` § 4). Never assign the same file to parallel builders.
 
 ## 6. Keep tasks live, the design stable
 

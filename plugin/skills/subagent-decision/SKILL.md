@@ -89,7 +89,9 @@ judgment for it in the brief; a tier the note says is Claude needs none of this:
 - **A UI check:** the named key screenshots it saved and the measured value per check —
   never a design verdict.
 - **Its limits in words** — an affordable model follows written limits less reliably than Claude.
-- A stuck build uses the fix-round limit and escalation in `/cc-smart-dev-kit:build`.
+- Two failed tries at the same job → hand it to `opus`; never a third affordable try. A
+  stuck build phase uses the fix-round limit and escalation in `/cc-smart-dev-kit:build`
+  instead.
 
 ## Model and effort
 

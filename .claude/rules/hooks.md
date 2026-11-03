@@ -181,9 +181,14 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **A guard reads every way a line may run**: both dialects when unknown, joined at a
   trailing escape and not, and blind when a quote never closes. A check for something
   that RAN (the after-merge note) reads the open quote as text.
-Use the shared shell reader for wrappers, nested commands, computed words and dialects.
-Add new spellings there; never split a command inside a guard. Parser details and examples:
-`docs/design/hooks.md`.
+- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. A guard
+  whose domain words are in a computed command asks; it never stays silent.
+- **A new spelling that gets past a guard is fixed in the reader**, with a test named after
+  the finding, never with a special case in one guard.
+- **A 64 KB line stays well inside the guard's time** (`git-guard.test.ts`): no step may cost
+  more than linear time, and git is asked once a folder per run.
+
+Wrappers, nested commands and the parser's examples: `docs/design/hooks.md`.
 
 ## Timeouts
 
@@ -196,5 +201,12 @@ Add new spellings there; never split a command inside a guard. Parser details an
 
 ## Tests
 
-Test every hook entry with exact stdout and its missing-input and failure paths.
-Use the existing hook harness, never real user files. The shim has its own tests.
+Run each hook with a JSON input through `runHook` (`src/testing/hooks.ts`, the same frame
+the entry uses), in a temp git repo (`testing.md`): with and without `cc-smart-dev-kit.json`,
+in a worktree, with `ownHooks` listing it and with an unlisted project hook on the same event,
+with `requires` not met, and with a broken `cc-smart-dev-kit.json` (`matrix.test.ts` runs the
+`ownHooks` and `requires` cases for every hook). Assert stdout exactly, and cover the
+missing-input and failure paths. Each plugin entry also runs once as a subprocess with stdin
+(`entries.test.ts`); the person's notify hook runs through `cc-smart-dev-kit hook`
+(`src/cli/hook-commands.test.ts`), once through the exact line setup writes. Never real user
+files. The shim has its own tests (`src/hooks/bun-shim.test.ts`).

@@ -71,6 +71,10 @@ person asks, with the line `Fable reason: review - <why>`; `agent-guard` then as
 
 - **When:** once the non-plan change is complete, before its first push. Task-scoped reviews
   and the final branch read for a plan follow the build skill instead.
+- **One change set, one read:** phases built in parallel that ship together get one read,
+  not one each. A phase stacked on another open pull request is its own change set: its own
+  branch, its own read. Fixes to code the reviewer already read are a re-push, not a new
+  change set.
 - **The brief:** the diff (or how to get it: base and branch), what the change is meant to
   do, your own edge-case list, and the checkout's absolute path (in a worktree, the
   worktree's).

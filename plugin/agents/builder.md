@@ -24,6 +24,8 @@ Read its notes for the caller's rulings, then the named files, patterns and near
 - A refusal of a read-only command is not a stop. Rephrase it once, plainly, such as one
   file per command or the Read tool. A repeated refusal is reported; never bypass a guard
   or a permission decision, retry in a loop or widen scope.
+- Root-cause fixes only (the core instructions, § Core principles). A workaround needs the
+  person's yes, which only your caller can get: report the trade-off instead.
 - Decide a small judgment call and record `Ruling: <decision> — <why> — <cost if wrong>`
   with `task_note`. Continue within the brief. A destructive, security-sensitive or
   outside-worktree action needing a yes, or a broken plan with no grounded path, goes to
@@ -39,9 +41,9 @@ Read its notes for the caller's rulings, then the named files, patterns and near
    Routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
 3. For a behavior change, write the failing test first where this kind of code has tests.
    Implement the whole brief, not a first slice. Do not invent a test framework for prose.
-4. Run targeted tests and lint, plus checks the brief allows. Whole-project typecheck or
-   lint runs when the brief names it; otherwise leave it to the caller. Never start the
-   final whole-project check yourself. Report actual output, not an expected result.
+4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of
+   the whole project: `cc-smart-dev-kit:verify-change` § 4. Report actual output, not an
+   expected result.
 5. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts a fresh reviewer.
 6. Commit only when allowed. Finish or drop your blocking steps with evidence before

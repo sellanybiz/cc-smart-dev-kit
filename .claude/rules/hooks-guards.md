@@ -8,6 +8,7 @@ paths:
   - "src/hooks/agent-launches*"
   - "src/hooks/job-route*"
   - "src/hooks/bash-judge*"
+  - "src/hooks/kit-invocation*"
   - "src/hooks/session-escape-guard*"
   - "src/hooks/user-away*"
   - "src/hooks/prompt-source.ts"
@@ -41,22 +42,35 @@ The hook frame and shell reader: `hooks.md`. Event contracts and evidence:
 - Other machine-wide hooks can honor `ownHooks` when a project runs its own copy.
 - Rewrite a heavy Bash call through the jobs API with PreToolUse `updatedInput`, never run
   the command in the hook. Keep the Bash tool's working folder.
+- **The kit's own command is recognised in one place** (`kitArguments`, `namesKit`,
+  `src/hooks/kit-invocation.ts`): its name, a path to the launcher, its bundle behind another
+  program, a program that runs its arguments. Every guard that asks about a kit command imports
+  it; a spelling that gets past it is fixed there, never in one guard.
 
 ## While the person is away
 
 - Convert a PreToolUse ask to a deny and park the exact call as an action. Never turn an
   ask into an allow. A failed park still denies and names the manual park step.
+- A new guard needs no code for this: it asks as before and the frame's step does the rest.
+  Never add an `allow` path that skips the frame.
 - An unreadable away state keeps the original ask and logs one stderr line.
 - `user-away` refuses question tools and parks permission requests. Its own crash ask is
-  not converted. The returning person's availability command keeps its permission prompt.
+  not converted. The returning person's availability command keeps its permission prompt:
+  a line that is nothing but the kit's `user available`, `user status` or `user list`,
+  matched by the program's name, never through `kitArguments` (which leans toward yes, for
+  guards that ask or deny; an allow-list needs the opposite lean).
+- An automated turn is never the person's prompt (`src/hooks/prompt-source.ts`, the one
+  home), and a prompt from the person never switches the state back.
 - Keep a parked command byte-for-byte; mask only the guard's reason text.
 
 ## The project's own copy: `ownHooks`
 
 - Read `ownHooks` before the full project config. A listed plugin hook exits silently so
   the project's copy runs alone. A project hook on the same event is not enough.
-- Validate names against the one plugin hook list. Retired or unswitchable names may keep
-  parsing without silencing a hook; doctor explains that they can go.
+- Validate names against the one plugin hook list (`PLUGIN_HOOK_NAMES`). A hook you retire,
+  or make `alwaysOn`, keeps its name in `RETIRED_HOOK_NAMES` or `UNSWITCHABLE_HOOK_NAMES`
+  (`src/project/config.ts`): it still parses and silences nothing, and doctor says it can go.
+  Dropping a name fails the strict parse, and then every guard asks on every call.
 - Keep an `ownHooks` matrix test: listed means silent, unlisted means active.
 
 ## Fail closed when `cc-smart-dev-kit.json` cannot be used

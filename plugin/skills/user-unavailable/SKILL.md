@@ -45,7 +45,7 @@ line, to allow `Bash(cc-smart-dev-kit user park:*)` if their sessions run in tha
 | What you meet | You | Park |
 |---|---|---|
 | A choice the plan settles with a recommended option, easy to undo (a name, an order, a wording, a refactor inside your files) | Take the recommended option. | A `decision`: what you chose, why, and how to undo it. |
-| A choice that is the person's: scope, a trade-off the plan names as theirs, money, security, a public name, anything hard to undo | Take neither option. | A `question`, with its options and the recommended one. |
+| A choice that is the person's: architecture, scope, UX, a trade-off the plan names as theirs, money, security, a public name, anything hard to undo | Take neither option. | A `question`, with its options and the recommended one. |
 | An action that needs the person's yes: a push, a merge into the default branch, a delete, a message to another session or a service, a gateway change, a release, anything a guard or Claude Code would ask about | Never try it, not in another form either. | An `action`, with its exact command. |
 
 ```sh
