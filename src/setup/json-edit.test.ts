@@ -11,7 +11,7 @@ const BIOME_FILE = `{
   },
   "protectedBranches": ["main"],
   "workflow": {
-    "crew": {
+    "issues": {
       "enabled": true
     }
   }
@@ -32,7 +32,7 @@ describe("editJsonText", () => {
 
   test("a changed value inside a nested object touches only that value", () => {
     const after = parsed(BIOME_FILE);
-    (after.workflow as { crew: { enabled: boolean } }).crew.enabled = false;
+    (after.workflow as { issues: { enabled: boolean } }).issues.enabled = false;
     expect(editJsonText(BIOME_FILE, after)).toBe(
       BIOME_FILE.replace('"enabled": true', '"enabled": false'),
     );
@@ -40,9 +40,9 @@ describe("editJsonText", () => {
 
   test("a new nested key lands after the last key of its object, with the file's indent", () => {
     const after = parsed(BIOME_FILE);
-    (after.workflow as { crew: Record<string, unknown> }).crew.perLead = 2;
+    (after.workflow as { issues: Record<string, unknown> }).issues.watchMinutes = 2;
     expect(editJsonText(BIOME_FILE, after)).toBe(
-      BIOME_FILE.replace('"enabled": true', '"enabled": true,\n      "perLead": 2'),
+      BIOME_FILE.replace('"enabled": true', '"enabled": true,\n      "watchMinutes": 2'),
     );
   });
 

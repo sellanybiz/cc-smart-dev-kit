@@ -79,12 +79,6 @@ describe("a git that never answers", () => {
         },
         // The command's own catch-all: the uncaught throw is one line, not a stack.
         { args: ["worktrees"], exitCode: 1, stderr: `cc-smart-dev-kit: ${SAYS}\n` },
-        {
-          args: ["crew", "list"],
-          exitCode: 1,
-          stderr: `crew list: ${SAYS}\nFix: run it in the project's folder, or add --all\n`,
-        },
-        { args: ["crew", "lead"], exitCode: 1, stderr: `crew lead: ${SAYS}\n` },
       ];
       const answers = await Promise.all(commands.map((command) => run(command.args)));
       for (const [at, command] of commands.entries()) {

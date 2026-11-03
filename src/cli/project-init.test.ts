@@ -414,7 +414,7 @@ describe("the defaults from the repo", () => {
     const existing = {
       worktrees: { base: "main" },
       workflow: {
-        crew: { enabled: true, max: 4 },
+        alerts: { sound: true, usagePercent: 80 },
         fixesAfterReview: { lines: 120, percent: 30 },
       },
     };
@@ -423,7 +423,7 @@ describe("the defaults from the repo", () => {
       defaultAnswers(existing, facts, { dryRun: false, yes: true, workflow: ["autoPush=true"] })
         .workflow,
     ).toEqual({
-      crew: { enabled: true, max: 4 },
+      alerts: { sound: true, usagePercent: 80 },
       fixesAfterReview: { lines: 120, percent: 30 },
       autoPush: true,
     });
@@ -435,7 +435,7 @@ describe("the defaults from the repo", () => {
         workflow: ["fixesAfterReview.lines=200"],
       }).workflow,
     ).toEqual({
-      crew: { enabled: true, max: 4 },
+      alerts: { sound: true, usagePercent: 80 },
       fixesAfterReview: { lines: 200, percent: 30 },
     });
   });

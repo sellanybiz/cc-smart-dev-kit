@@ -371,7 +371,7 @@ describe("restore: a project's gateway key keeps the router up (GP4a)", () => {
     });
     // A `.worktreeinclude` copy of that file in a linked worktree: the kit did not write it.
     const worktree = join(tempDir("gf1-restore-copy-wt"), "wt");
-    git(root, "worktree", "add", "-q", worktree, "-b", "crew/copy");
+    git(root, "worktree", "add", "-q", worktree, "-b", "feat/copy");
     const copy = join(worktree, ".claude", "settings.local.json");
     mkdirSync(dirname(copy), { recursive: true });
     const copyText = `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:20999" } }, null, 2)}\n`;

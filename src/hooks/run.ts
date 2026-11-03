@@ -3,36 +3,31 @@
  *
  * 1. Read the input. Not a JSON object, a wrong event, or a `cwd` that is not a folder in
  *    git: nothing to do.
- * 2. **A guard's crew part** (`crewLimits`): what a crew session may never do, run before the
- *    project's own copy and its file, so a crew session cannot switch it off (`D24`, `D47`).
- * 3. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
+ * 2. **The project's own copy**: when the project's cc-smart-dev-kit.json lists the hook in
  *    `ownHooks`, exit 0 and print nothing, so the project's copy runs alone (a hook with
- *    `alwaysOn` skips this step: the project cannot switch it off; the crew part above has
- *    already run). Only that field
- *    is read here (`ownHooksOf`), so it works even when the rest of the file is broken or
- *    needs a newer plugin. Nothing else silences a plugin hook: a project hook on the same
- *    event does not (it may be a logger, and a guard must not go quiet for it).
- * 4. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
+ *    `alwaysOn` skips this step: the project cannot switch it off). Only that field is read
+ *    here (`ownHooksOf`), so it works even when the rest of the file is broken or needs a
+ *    newer plugin. Nothing else silences a plugin hook: a project hook on the same event does
+ *    not (it may be a logger, and a guard must not go quiet for it).
+ * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
  *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
  *    hook prints one line.
- * 5. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
+ * 4. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
  *    call in its own domain, never a silent pass); an informational hook's crash is one line
  *    on stderr and exit 0 — a bug never stops a person's work. Claude Code holds the second
  *    belt: a guard's hooks.json entry carries `onFailure: "block"`, so a hook that cannot
  *    start, times out or answers nothing readable blocks the tool call.
- * 6. **While the person cannot answer**, an answer that asks them becomes a deny that keeps the
+ * 5. **While the person cannot answer**, an answer that asks them becomes a deny that keeps the
  *    hook's own words, with the call parked for them (`askedWhileAway`, `src/hooks/user-away.ts`):
  *    one step for every hook, never an allow, and the ask stays when the state cannot be read.
- * 7. **Record an ask.** When the answer asks the person, the frame appends one line to
+ * 6. **Record an ask.** When the answer asks the person, the frame appends one line to
  *    `guard-asks.jsonl` in the state folder (`src/hooks/ask-log.ts`); a write that fails is
  *    one line on stderr and never changes the answer. An ask that became a deny is no ask: it is
  *    on the person's list instead.
  *
  * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
  * project: it runs with or without `cc-smart-dev-kit.json`, and its answer does not depend on the
- * project's file — except the one rule D59 gives `agent-guard` (a lead's building launch waits
- * for the crew queue), which reads the store and the project's caps. It gets the input and the
- * environment (`HookEnvContext`) where the frame's
+ * project's file. It gets the input and the environment (`HookEnvContext`) where the frame's
  * checkout or config step does not apply, and a project may still silence it through
  * `ownHooks` (which is read on its own, before the file).
  *
@@ -90,9 +85,8 @@ export interface HookContext {
 /**
  * What a hook gets besides the input when the frame's project steps do not apply (no
  * checkouts, a broken cc-smart-dev-kit.json, outside git): the environment and the paths. A
- * machine-wide hook (agent-guard) judges the model and effort from these alone, so those do not
- * change with the project's file — its D59 queue rule, which needs the checkout, does not run
- * here and lets the launch through.
+ * machine-wide hook (agent-guard) judges the model and effort from these alone, so its answer
+ * does not change with the project's file.
  */
 export interface HookEnvContext {
   env: Env;
@@ -125,21 +119,6 @@ export interface HookSpec {
     input: HookInput,
     event: string,
     why: string,
-    context: HookEnvContext,
-  ) => HookResult | Promise<HookResult>;
-  /**
-   * A guard's **crew part**: what a crew session may never do, whatever the project's file
-   * says — it never pushes, never runs a git command that destroys work without reading the
-   * step that replaces it, opens no pull request (`D24`), and its message to another crew
-   * session carries the `crew tell` tag (`D47`). The frame runs it after finding the
-   * checkout and **before `ownHooks` and the file**, because those are the two ways a session
-   * could switch the limit off, and it holds in a project with no file at all. It judges no
-   * other call: without `CC_SMART_DEV_KIT_CREW` it must be silent, so an ordinary session
-   * pays nothing for it, and an answer that is not a denial is the same as silence.
-   */
-  crewLimits?: (
-    input: HookInput,
-    checkout: Checkout,
     context: HookEnvContext,
   ) => HookResult | Promise<HookResult>;
   /**
@@ -180,11 +159,6 @@ export interface HookSpec {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** True when a hook's answer says anything at all: stdout, stderr, or a non-zero exit code. */
-function saysSomething(result: HookResult): boolean {
-  return result.stdout !== undefined || result.stderr !== undefined || (result.exitCode ?? 0) !== 0;
 }
 
 /**
@@ -273,13 +247,6 @@ async function answer(
     if (checkout === null)
       return await outside(input, event, `${cwd} is not in a git checkout`, context);
 
-    // A guard's crew part first (step 2): a crew session's own limits are not the project's
-    // to switch off, and hold with no file at all (D24, D47).
-    if (spec.crewLimits !== undefined) {
-      const crew = await spec.crewLimits(input, checkout, context);
-      if (saysSomething(crew)) return crew;
-    }
-
     if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
     let project: Project;
@@ -307,7 +274,7 @@ async function answer(
 }
 
 /**
- * Step 6: the ask of any hook but `user-away` itself (whose one ask is its own crash, made
+ * Step 5: the ask of any hook but `user-away` itself (whose one ask is its own crash, made
  * because it could not read anything) becomes a deny while the person is away. Never throws:
  * a failure here leaves the answer as it was, so a bug in it can only keep today's ask.
  */

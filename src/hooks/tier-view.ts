@@ -40,8 +40,8 @@
  * the gateway gets it (`sessionGatewayOf`), its own profile's record only.
  *
  * **Machine-wide**, like `agent-guard` whose view it reads: the note never depends on the
- * project's file, a folder outside git gets it, and a crew session gets it too (its subagents
- * run on these tiers). A config that cannot be read is said plainly, never a crash; the address
+ * project's file, and a folder outside git gets it too (its subagents run on these tiers). A
+ * config that cannot be read is said plainly, never a crash; the address
  * of a proxy that is not the kit's gateway (no `gateway.json`) is read as Claude, the guard's
  * way. Never a question and never a block.
  */

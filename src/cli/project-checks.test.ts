@@ -478,25 +478,30 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
 });
 
 describe("a requires below what the file's fields need", () => {
+  // `workflow.issues` came in 1.4.0. The old `crew` group is a leftover 2.0 loads and ignores:
+  // it raises no floor, and the file still loads with no error.
   const LOW = {
     requires: ">=1.0",
     worktrees: { base: "main" },
-    workflow: { crew: { enabled: true, handoffTokens: 300000 } },
+    workflow: {
+      crew: { enabled: true, handoffTokens: 300000 },
+      issues: { foundLabel: "kit:found" },
+    },
   };
 
-  test("1.2.0 wrote handoffTokens under >=1.0: one ! line naming the range, the floor and the fix", async () => {
+  test("an issues group under >=1.0: one ! line naming the range, the floor and the fix", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", LOW);
     ignoreWorktrees(repo);
     expect(await check(repo)).toEqual([
-      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields need ">=1.2": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init (or any cc-smart-dev-kit workflow set … --project) raises it to ">=1.2"',
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields need ">=1.4": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init (or any cc-smart-dev-kit workflow set … --project) raises it to ">=1.4"',
     ]);
   });
 
   test("a requires at or above the floor, a range read as a newer one, or none: nothing to say", async () => {
     const repo = makeRepo();
     ignoreWorktrees(repo);
-    for (const requires of [">=1.2", ">=1.3", "^1.2", undefined]) {
+    for (const requires of [">=1.4", ">=1.5", "^1.4", undefined]) {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { ...LOW, requires });
       expect(await check(repo)).toEqual([]);
     }
@@ -574,5 +579,3 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     }
   });
 });
-
-describe("D71: project crew limits", () => {});

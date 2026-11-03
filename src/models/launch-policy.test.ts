@@ -1,7 +1,8 @@
 /**
  * The launch policy (`launch-policy.ts`): the parts the Agent guard does not test through its
- * own verdicts — which tier a model answers, and the model and effort each crew kind runs on
- * (D46). The guard's own tests (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
+ * own verdicts — the UI rule, the slot that answers a launch, which tier a model answers, the
+ * efforts, and what a launch really runs on. The guard's own tests
+ * (`src/hooks/agent-guard.test.ts`) cover `resolveLaunchModel`.
  */
 import { describe, expect, test } from "bun:test";
 import type { GatewayConfig } from "../gateway/config";

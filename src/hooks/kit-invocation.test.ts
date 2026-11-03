@@ -25,7 +25,7 @@ describe("namesKit: the kit command as a token of a line's text", () => {
   test("a path to the kit's bundle written anywhere in the line names it, a variable's value included", () => {
     for (const line of [
       "C=$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/1.2.0/dist/cli.js; $(which bun) $C workflow",
-      'C="/opt/plugin/dist/cli.js"; "$BUN" "$C" crew list',
+      'C="/opt/plugin/dist/cli.js"; "$BUN" "$C" workflow show',
       "export P=/opt/plugin/dist/portal.js && $NODE $P",
       "$(which bun) src/entries/cli.ts doctor",
       // The form the plugin's own hook commands take: the plugin folder is a variable, so no

@@ -69,7 +69,7 @@ const KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
  * a path that only passes through a folder of that name: a path separator may come before the
  * name and never after it, so `/repo/${COMMAND}/src/x.test.ts` is an argument to another
  * program, and the computed program beside it runs that program (the false alarm of 1.1.0, in
- * a crew session working in this repository, whose name every path holds). A token that ends a
+ * a session working in this repository, whose name every path holds). A token that ends a
  * word still counts when a substitution or an assignment closes it (`$(which ${COMMAND})`,
  * `K=${COMMAND}`).
  */

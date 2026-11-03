@@ -144,7 +144,7 @@ function gitIn(
         stdout: "pipe",
         stderr: "pipe",
         timeout: limit,
-        // A hook or a crew command may run with no console of its own on Windows.
+        // A hook or a background command may run with no console of its own on Windows.
         windowsHide: true,
       });
       return {

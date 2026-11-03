@@ -21,8 +21,8 @@ const BIOME_PROJECT = `{
   "sessionNames": false,
   "workflow": {
     "reviewBeforePush": true,
-    "crew": {
-      "enabled": true
+    "fixesAfterReview": {
+      "lines": 200
     }
   }
 }
@@ -66,8 +66,8 @@ describe("workflow set / unset --project", () => {
     const written = readFileSync(file, "utf8");
     expect(written).toBe(
       BIOME_PROJECT.replace(
-        '      "enabled": true\n    }\n',
-        '      "enabled": true\n    },\n    "autoCommit": true\n',
+        '      "lines": 200\n    }\n',
+        '      "lines": 200\n    },\n    "autoCommit": true\n',
       ),
     );
     expect(biomeFormat(written)).toBe(written);

@@ -229,7 +229,7 @@ for (const twin of TWINS) {
       const files = machine();
       const root = repo("gp2-worktree");
       const worktree = join(tempDir("gp2-worktree-wt"), "wt");
-      git(root, "worktree", "add", "-q", worktree, "-b", "crew/one");
+      git(root, "worktree", "add", "-q", worktree, "-b", "feat/one");
       saveConfig(files.configPath, configOn(PORT));
       writeSettings(join(root, ".claude", "settings.local.json"), withUrl(ROUTER));
       writeSettings(
@@ -249,7 +249,7 @@ for (const twin of TWINS) {
       const files = machine();
       const root = repo("gp2-worktree-own");
       const worktree = join(tempDir("gp2-worktree-own-wt"), "wt");
-      git(root, "worktree", "add", "-q", worktree, "-b", "crew/own");
+      git(root, "worktree", "add", "-q", worktree, "-b", "feat/own");
       saveConfig(files.configPath, configOn(PORT));
       writeSettings(files.settingsFile, withUrl(DEFAULT_ANTHROPIC_BASE_URL));
       // A copy of the personal file in the worktree (a `.worktreeinclude` makes one).
@@ -296,7 +296,7 @@ for (const twin of TWINS) {
       const files = machine();
       const root = repo("gp2-team-wt");
       const worktree = join(tempDir("gp2-team-wt-wt"), "wt");
-      git(root, "worktree", "add", "-q", worktree, "-b", "crew/two");
+      git(root, "worktree", "add", "-q", worktree, "-b", "feat/two");
       saveConfig(files.configPath, configOn(PORT));
       writeSettings(join(root, ".claude", "settings.json"), withUrl(ROUTER));
       writeSettings(
@@ -464,8 +464,8 @@ for (const twin of TWINS) {
       const root = repo("gf1-wtfiles");
       const one = join(tempDir("gf1-wtfiles-one"), "one");
       const two = join(tempDir("gf1-wtfiles-two"), "two");
-      git(root, "worktree", "add", "-q", one, "-b", "crew/one");
-      git(root, "worktree", "add", "-q", two, "-b", "crew/two");
+      git(root, "worktree", "add", "-q", one, "-b", "feat/one");
+      git(root, "worktree", "add", "-q", two, "-b", "feat/two");
       saveConfig(files.configPath, configOn(PORT));
       writeSettings(join(one, ".claude", "settings.local.json"), withUrl(ROUTER));
       // `two` has no file of its own: it is not listed.
@@ -486,7 +486,7 @@ for (const twin of TWINS) {
       const files = machine();
       const root = repo("gf1-wtgone");
       const gone = join(tempDir("gf1-wtgone-wt"), "gone");
-      git(root, "worktree", "add", "-q", gone, "-b", "crew/gone");
+      git(root, "worktree", "add", "-q", gone, "-b", "feat/gone");
       writeSettings(join(gone, ".claude", "settings.local.json"), withUrl(ROUTER));
       rmSync(gone, { force: true, recursive: true });
       expect((await stateOf(root, files)).worktreeFiles).toEqual([]);

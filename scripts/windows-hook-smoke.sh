@@ -53,9 +53,7 @@ fi
 input="$(printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git reset --hard"}}' "$cwd")"
 
 # 1. bun is installed on this machine: the shim finds it, the guard reads the command and asks.
-#    `CC_SMART_DEV_KIT_CREW` is cleared: this proves the person's own session, which is asked
-#    (a crew session's guard denies instead, by design — `.claude/rules/hooks.md`).
-answer="$(printf '%s' "$input" | CC_SMART_DEV_KIT_CREW= "$bash_bin" "$shim" --missing=ask "$guard")"
+answer="$(printf '%s' "$input" | "$bash_bin" "$shim" --missing=ask "$guard")"
 case "$answer" in
   *'"permissionDecision":"ask"'*) ;;
   *) fail "the git guard did not answer with a PreToolUse ask: $answer" ;;
@@ -79,7 +77,7 @@ esac
 # 2. No bun anywhere: an empty folder for HOME and for PATH, and no $BUN_INSTALL. The shim
 #    cannot run the guard, so it must fail closed — one ask, which is what a guard owes a call
 #    it cannot judge.
-answer="$(printf '%s' "$input" | CC_SMART_DEV_KIT_CREW= BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=ask "$guard")"
+answer="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=ask "$guard")"
 case "$answer" in
   *'"permissionDecision":"ask"'*) ;;
   *) fail "with no bun the shim did not fail closed: $answer" ;;
@@ -108,7 +106,7 @@ ran="$(HOME="$home" "$bash_bin" -c "$line")"
 #    command through — writes one line on stderr and exits 1. A command that did not run must
 #    never report success.
 set +e
-refusal="$(printf '%s' "$input" | CC_SMART_DEV_KIT_CREW= BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=fail "$guard" 2>&1 >/dev/null)"
+refusal="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=fail "$guard" 2>&1 >/dev/null)"
 code=$?
 set -e
 [ "$code" = 1 ] || fail "--missing=fail exited $code, not 1: $refusal"

@@ -11,15 +11,14 @@
  * says where a prompt came from, so these first characters are the one signal there is.
  *
  * - `<cross-session-message from=… from-name=… from-mode=…>`: another session's message, sent
- *   with `SendMessage` — a lead's note, `crew answer` to a running crew session, a peer's
- *   `crew tell`.
- * - `<task-notification>`: a monitor's line (the `crew-self` monitor), and any background task's
- *   event.
- * - `<agent-message from=…>`: a subagent's hand-back the crew session itself launched (its
+ *   with `SendMessage`.
+ * - `<task-notification>`: a background task's event (a background command or agent that
+ *   ended, a monitor's line).
+ * - `<agent-message from=…>`: a subagent's hand-back that the session itself launched (its
  *   reviewer, a builder), delivered as a turn of its own (seen live on 2.1.309).
  * - `Stop hook feedback:`: a Stop hook's block continued the turn with its reason (the kit's own
- *   is `reportStep()`), and the same check catches the bare reason, should a transport drop the
- *   label.
+ *   `verify-gate` and `keep-going` block this way), and the same check catches the bare reason,
+ *   should a transport drop the label.
  */
 export const NOT_PERSON_PREFIXES = [
   "<cross-session-message",

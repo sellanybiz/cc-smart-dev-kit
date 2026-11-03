@@ -1,22 +1,18 @@
 /**
- * Claude Code's auto-compact variables, read only: the one reader of them.
+ * Claude Code's auto-compact variables and settings keys, read only: the one reader of them.
+ * The status line reads them for a session's window (`compactWindowsOf`).
  *
- * **What decides a crew session's auto-compact point** (proved from the 2.1.308 and 2.1.310
- * binaries and live on 2.1.310, `docs/claude-code-contract.md`): a crew session starts with
- * `--autocompact auto`, which makes Claude Code skip every `autoCompactWindow` and
- * `modelSettings.<model>.autoCompactWindow` setting. What still applies is the environment:
- * `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (it wins over the model's own window), and
- * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (it lowers the point to a share of the window).
+ * **What applies:** the environment first — `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (it wins over the
+ * model's own window) and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (it lowers the point to a share of
+ * the window) — then the `autoCompactWindow` and `modelSettings.<model>.autoCompactWindow` keys,
+ * then the model's own window.
  *
  * **Where the variables come from, in Claude Code's order** (P3 and P6 in the contract): a settings
  * file's `env` block beats the shell, and the first of these that sets a variable decides it: the
  * main checkout's `.claude/settings.local.json`, the session folder's own `settings.local.json`,
  * its `.claude/settings.json`, the user's `settings.json`, then the process environment. A file
- * that cannot be read, or holds no `env`, sets nothing.
- *
- * `compactEnvOf` does not read the `autoCompactWindow` keys: they do not apply to a crew session.
- * `compactWindowsOf` adds them for a normal session's window (the status line), from the same
- * single read of each file.
+ * that cannot be read, or holds no `env`, sets nothing. `compactWindowsOf` reads the keys from
+ * the same single read of each file.
  */
 import { readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -39,7 +35,7 @@ export interface CompactEnv {
   window: null | number;
 }
 
-/** What `compactEnvOf` reads. */
+/** What `compactWindowsOf` reads. */
 export interface CompactEnvSources {
   /** Claude Code's config folder (`CliPaths.claudeConfigDir`). */
   configDir: string;
@@ -128,7 +124,11 @@ function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] 
   ].map(settingsObject);
 }
 
-/** The variables, from the files (highest first) then the process environment. */
+/**
+ * The variables, from the files (highest first) then the process environment, in the order the
+ * top of this file gives. The first source that sets a variable decides it, usable or not:
+ * Claude Code ignores an unusable value and does not look further.
+ */
 function envFrom(
   files: readonly Record<string, unknown>[],
   processEnv: Record<string, string | undefined>,
@@ -142,15 +142,6 @@ function envFrom(
     percent: percentText === undefined ? null : parseCompactPercent(percentText),
     window: windowText === undefined ? null : parseCompactWindow(windowText),
   };
-}
-
-/**
- * The auto-compact variables that apply to a session running in `projectFolder`, in the order
- * the top of this file gives. The first source that sets a variable decides it, usable or not:
- * Claude Code ignores an unusable value and does not look further.
- */
-export function compactEnvOf(sources: CompactEnvSources): CompactEnv {
-  return envFrom(settingsFilesOf(sources), sources.env);
 }
 
 /** A model's id as Claude Code keys `modelSettings` by it: lower case, without `[1m]`. */
@@ -219,7 +210,7 @@ export interface CompactWindows {
 }
 
 /**
- * The variables (`compactEnvOf`) and the `autoCompactWindow` keys for `model`, from one read of
+ * The variables (`envFrom`) and the `autoCompactWindow` keys for `model`, from one read of
  * each file: the status line runs on every refresh and reads nothing twice. Claude Code uses the
  * variable first, then the keys, then the model's own window (the 2.1.310 binary, `TS`).
  */

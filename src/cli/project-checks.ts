@@ -402,9 +402,8 @@ function ownCopyLines(
 /**
  * One `!` line when the file's `requires` lets in a plugin older than the one that brought a
  * field the file holds (`requiresFloor`): that plugin reads the file strictly and refuses all
- * of it, instead of saying "update". 1.2.0's `workflow set` left such files (a
- * `crew.handoffTokens` under `>=1.0`). A file with no `requires`, or one in a form not read
- * there, is not judged. `workflow set --project` and `project init` both raise it.
+ * of it, instead of saying "update" (a `workflow.issues` group, from 1.4.0, under `>=1.0`). A
+ * file with no `requires`, or one in a form not read there, is not judged. `workflow set --project` and `project init` both raise it.
  */
 function requiresLines(configFile: string, projectDir: string, home: string): ProjectLine[] {
   let file: unknown;

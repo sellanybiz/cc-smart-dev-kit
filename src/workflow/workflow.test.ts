@@ -41,7 +41,7 @@ function writeSettings(env: Record<string, string>, value: unknown): string {
 }
 
 describe("the workflow schema", () => {
-  test("old project and personal crew objects load but never resolve", () => {
+  test("2.0 removed the crew: an old project or personal crew object loads and is ignored", () => {
     const env = hookEnv();
     const crew = { enabled: true, max: 0, futureKey: "ignored" };
     writePersonal(env, { crew });

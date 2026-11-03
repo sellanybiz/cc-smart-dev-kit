@@ -141,7 +141,7 @@ describe("doctor: a linked worktree's own local file (P6, re-proved on 2.1.310)"
   function withWorktreeFile(m: ReturnType<typeof machine>, body: Record<string, unknown>) {
     const root = project(m.home, "app", `http://127.0.0.1:${PORT}`);
     const worktree = join(m.home, "Code", "app-wt");
-    git(root, "worktree", "add", "-q", worktree, "-b", "crew/one");
+    git(root, "worktree", "add", "-q", worktree, "-b", "feat/one");
     mkdirSync(join(worktree, ".claude"), { recursive: true });
     writeFileSync(
       join(worktree, ".claude", "settings.local.json"),

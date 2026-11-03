@@ -288,7 +288,7 @@ test("portable ancestry, missing caller, and pid reuse", () => {
     platform: "darwin" as const,
     parentOf: () => 9,
     running: () => true,
-    env: { CC_SMART_DEV_KIT_CREW: "crew" },
+    env: {},
   };
   expect(callerOf(facts)).toEqual({
     pid: 9,

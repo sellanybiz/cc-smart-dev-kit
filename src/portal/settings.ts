@@ -40,7 +40,7 @@ export interface SettingSpec {
   help: string;
   /** The row's own id, from the design: `aria-labelledby` points at the label. */
   id: string;
-  key: Exclude<WorkflowKey, `crew.${string}`>;
+  key: WorkflowKey;
   kind: SettingKind;
   label: string;
   /** A number row's unit, shown after its box; absent for a plain count. */

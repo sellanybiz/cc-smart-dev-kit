@@ -719,15 +719,13 @@ export async function projectWorkflowAnswerFor(
       base,
       gh,
       note: null,
-      settings: WORKFLOW_KEYS.filter(isProjectKey)
-        .filter((key) => !key.startsWith("crew."))
-        .map((key) => {
-          const resolved = resolvedValueOf(read.gate.resolved, key);
-          // What `workflow show` prints for an unset key that something stands in for; any other
-          // key prints its plain value, and the card words that one itself.
-          const unsetWords = resolved.value === null ? showValue(key, null) : "null";
-          return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
-        }),
+      settings: WORKFLOW_KEYS.filter(isProjectKey).map((key) => {
+        const resolved = resolvedValueOf(read.gate.resolved, key);
+        // What `workflow show` prints for an unset key that something stands in for; any other
+        // key prints its plain value, and the card words that one itself.
+        const unsetWords = resolved.value === null ? showValue(key, null) : "null";
+        return unsetWords === "null" ? { key, ...resolved } : { key, ...resolved, unsetWords };
+      }),
     };
   } catch (error) {
     // A broken workflow.json of the person's own, or git that cannot run: a note, as the

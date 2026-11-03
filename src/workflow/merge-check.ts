@@ -212,7 +212,7 @@ export function parseRequiredChecks(json: string): RequiredCheck[] | null {
 export const PASSING_BUCKETS: ReadonlySet<string> = new Set(["pass", "skipping"]);
 
 /**
- * The review gate's own numbers behind a verdict (D17, D22), for the portal's crew page:
+ * The review gate's own numbers behind a verdict (D17, D22), for the portal's project page:
  * which review covers the head, the change made after it and the change it reviewed, and the
  * gate's `fixesAfterReview` limits those are judged against. A generated file is listed, not
  * counted, and a binary file changed after the review is never covered (`review-cover.ts`).

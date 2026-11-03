@@ -139,13 +139,10 @@ const START_BLOCK_OFF = "false";
 
 /**
  * The user setting that turns on Claude Code's own task tools (its to-do list, `TaskCreate`
- * and the rest). The live proof on Claude Code 2.1.306: they are absent in `claude -p` and
- * foreground sessions on newer models, and present in background sessions; `1` turns them on
- * everywhere. Leads and crew sessions use this list because the kit's hooks read it. It is
- * also the to-do home without claude-mem.
+ * and the rest). Setup wrote it once (D68); the kit's own task list replaced those tools (D75),
+ * so setup now takes back its own copy and doctor names one the person set themselves.
  */
 export const TODO_TOOLS_KEY = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
-export const TODO_TOOLS_VALUE = "1";
 
 /** For each key: the values that mean "nobody chose this yet" (claude-mem's defaults). */
 const UNCHOSEN: Readonly<Record<string, readonly string[]>> = {

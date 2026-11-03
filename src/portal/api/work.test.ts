@@ -183,5 +183,6 @@ test("Work keeps finished background sessions and reports no-project context", a
   expect(answer.finishedSessionsError).toBeNull();
   expect(answer.sessions).toEqual([]);
   expect(answer.folderNote).toContain("not in a project");
+  // 2.0 removed the crew: the Work answer carries no crew part.
   expect(Object.hasOwn(answer, "crew")).toBe(false);
 });

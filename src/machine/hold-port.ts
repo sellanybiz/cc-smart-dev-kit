@@ -4,8 +4,7 @@
  * power — so a lock held this way can never go stale, and there is nothing to clean up.
  *
  * Its one caller is `holdCleanLock` (`src/worktrees/clean.ts`, `LOCK_PORTS.worktreesClean`), the
- * lock of every worktree clean: `worktrees --clean` / `--remove`, the automatic clean, and
- * `finishParkedWorktrees` (`src/crew/remove.ts`: `crew rm` and the lead's watch).
+ * lock of every worktree clean: `worktrees --clean` / `--remove` and the automatic clean.
  */
 import { createServer, type Server } from "node:net";
 

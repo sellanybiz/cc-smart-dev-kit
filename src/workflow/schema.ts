@@ -228,7 +228,7 @@ export const workflowSchema = z.strictObject({
       usagePercent: numberField("alerts.usagePercent"),
     })
     .optional(),
-  /** ignored since 2.0 */
+  /** 2.0 removed the crew; an old file's `crew` keys load and are ignored. */
   crew: z.unknown().optional(),
 });
 

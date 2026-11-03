@@ -722,7 +722,7 @@ describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)",
   function withWorktree(label: string, copy: Record<string, unknown> | null) {
     const root = repo(label);
     const worktree = join(tempDir(`${label}-wt`), "wt");
-    git(root, "worktree", "add", "-q", worktree, "-b", "crew/gf1");
+    git(root, "worktree", "add", "-q", worktree, "-b", "feat/gf1");
     const own = join(worktree, ".claude", "settings.local.json");
     if (copy !== null) writeSettings(own, copy);
     return { own, root, worktree };

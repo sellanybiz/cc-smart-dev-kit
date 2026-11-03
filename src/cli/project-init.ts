@@ -437,9 +437,9 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
 
 /**
  * `base` with every setting `overrides` gives changed and every other one kept: one
- * `--workflow` word changes only its own field, so `crew.*`, `fixesAfterReview.*` and every
+ * `--workflow` word changes only its own field, so `alerts.*`, `fixesAfterReview.*` and every
  * other setting the file already holds survive a line that names one of them (F5-3). A group
- * (`crew`, `alerts`, `fixesAfterReview`) merges field by field; an array or a leaf replaces
+ * (`alerts`, `fixesAfterReview`, `issues`) merges field by field; an array or a leaf replaces
  * the value before it.
  */
 export function mergeWorkflow(base: Workflow, overrides: Workflow): Workflow {
@@ -505,7 +505,7 @@ export function defaultAnswers(
       jobRoute: flags.jobRoute ?? (typeof jobs.route === "boolean" ? jobs.route : false),
     },
     // A `--workflow` word changes only the settings it names, in the file's own policy: the
-    // rest (`crew.*`, `fixesAfterReview.*`, …) stays (F5-3). With no word, the file's policy
+    // rest (`alerts.*`, `fixesAfterReview.*`, …) stays (F5-3). With no word, the file's policy
     // is the answer as it stands.
     workflow:
       flags.workflow !== undefined

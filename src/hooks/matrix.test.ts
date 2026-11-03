@@ -16,7 +16,6 @@ import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "n
 import { dirname, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
-import { locateCheckout } from "../project/resolve";
 import { projectKey, taskContext } from "../tasks/context";
 import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
 import { createTask, layPhase, updateTask } from "../tasks/work/store";

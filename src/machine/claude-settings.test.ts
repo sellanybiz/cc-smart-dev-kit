@@ -10,7 +10,6 @@ import { tempDir } from "../testing/temp";
 import {
   AUTOCOMPACT_MAX_TOKENS,
   AUTOCOMPACT_MIN_TOKENS,
-  compactEnvOf,
   compactWindowsOf,
   mainCheckoutOfFolder,
   parseCompactPercent,
@@ -65,14 +64,17 @@ describe("the percent variable's value", () => {
   });
 });
 
-describe("what applies to a session", () => {
+describe("the variables that apply to a session", () => {
   /** A main checkout, a linked worktree beside it, and a config folder. */
   function world() {
     const main = tempDir("compact-main");
     const worktree = tempDir("compact-worktree");
     const config = tempDir("compact-config");
     const read = (env: Record<string, string> = {}) =>
-      compactEnvOf({ configDir: config, env, mainCheckout: main, projectFolder: worktree });
+      compactWindowsOf(
+        { configDir: config, env, mainCheckout: main, projectFolder: worktree },
+        "claude-opus-5-5",
+      ).env;
     const set = (file: string, variable: string, value: string | number) =>
       write(file, { env: { [variable]: value } });
     return {
@@ -126,7 +128,7 @@ describe("what applies to a session", () => {
     expect(w.read({ [WINDOW]: "300k" }).window).toBeNull();
   });
 
-  test("the modelSettings of the person's settings do not count: --autocompact auto skips them", () => {
+  test("the autoCompactWindow keys are no variable: they never set the window variable", () => {
     const w = world();
     write(w.config, {
       autoCompactWindow: 300_000,
@@ -172,7 +174,7 @@ describe("the main checkout of a folder, found without git (SL1)", () => {
   });
 });
 
-describe("the autoCompactWindow keys of a normal session (SL1)", () => {
+describe("the autoCompactWindow keys of a session (SL1)", () => {
   const OPUS = "claude-opus-5-5";
   function world() {
     const main = tempDir("keys-main");
