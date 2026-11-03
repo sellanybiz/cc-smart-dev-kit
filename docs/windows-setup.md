@@ -20,20 +20,16 @@ Windows yet.
 | `sessions` | Lists sessions and saves Warp tabs. `--open` brings sessions back in Warp tabs where Warp is there, else in **Windows Terminal** window each (`wt.exe`), else it says what to do by hand. |
 | `worktrees` | The scan and the removal are already Windows-aware (a PowerShell process scan, `hostPath`, move-before-delete). |
 | The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
-| The heavy-job queue | Runs each job as a plain child (no memory ceiling); the slots (three heavy jobs at once by default, `job set max-jobs <n>`) are what keeps heavy jobs apart (`windows-jobs.md`). |
+| The heavy-job queue | One heavy run at a time per machine. A named-file run bypasses the queue; no memory or priority settings. See [Windows jobs](windows-jobs.md). |
 | Notifications | A desktop toast through PowerShell, and Windows plays the sound of its own notification; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral (`windows-notify.md`). |
-| **The crew** (`crew lead`, `start`, `watch`, `report`, `rm`) | **Works.** `claude` is found on PATH or as `claude.exe`, then npm's `claude.cmd`, in `%USERPROFILE%\.local\bin`; a `.cmd` is no executable, so it runs through `cmd.exe` with one quoted line (`src/crew/claude.ts` § `findClaude`, `claudeArgv`). The session above a `crew` command comes from PowerShell's process list (its parent pids), because Windows has no `/proc` (`src/crew/session.ts` § `realProcessFacts`). A process's command line is not read there, so a hand-off is identified by the session record, not by its arguments. **Linux-only figure:** a crew session's memory comes from `/proc/<pid>/status`; on Windows the board and `crew status` show `-` (`src/crew/memory.ts`, `src/crew/display.ts` § `memoryText`) — it is never faked. |
-| **The crew's hooks** (`crew-role`, `lead-notes`) | **Works.** They are plugin hooks, so shell form through the bun shim and Git Bash, like every hook (below). Their work is JSON, files and text: no platform code. |
 | **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run, so with the route on a heavy PowerShell line is refused with the Bash line to run instead (`src/hooks/job-route.ts` § `jobRoute`; the live check is owed, `docs/windows-jobs.md`). The session-escape guard asks on a `C:\…` settings path, on Git Bash's own `/c/…` form of it, and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`, `shellTargetPath`). |
 | **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
 | **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
 | **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
-| **The retry watchdog keys** (CC1) | **Works.** Three owned keys under `env` in `settings.json`, written through the managed-key path (`src/setup/retry-watchdog.ts` § `RETRY_WATCHDOG_SETTINGS`); a crew session carries the first two in its own settings file and gets the cap from the person's settings where setup wrote it, because Claude Code merges `env` per variable (`src/crew/start.ts` § `launch`). No platform code. |
 | **The major-version hold and `autoUpdate: false`** (D33, D39) | **Works.** State files and one managed settings key: no platform code (`src/update/major.ts`, `src/setup/auto-update.ts`). |
 | **The usage-limit alert** (BR2) | **Works** as every alert: a PowerShell toast (`docs/windows-notify.md`). The alert has no button on any platform (it says which limit was hit and when it resets, and offers nothing), so the hook shows the plain toast itself and starts no detached worker. |
 | **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
 | **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every guard uses; its tests run in the Windows CI job. |
-| **The plugin's monitors** (the lead's watch, the crew session's self-watch) | **Proved live** (2026-10-27, Windows 11, Claude Code 2.1.310). Each command is the shell line `"$HOME/.local/bin/cc-smart-dev-kit" …` (`plugin/monitors/monitors.json`), so it needs Git Bash and its `$HOME`, and Claude Code starts it through Git Bash there: the lead's `crew-events` delivered a crew session's start, its question, its permission wait and its hand-back, each by itself, and the crew session's own self-watch delivered the lead's answer (`crew answer` said `delivered: its monitor gave it to the session`). The Windows CI job also runs every line against a stand-in launcher. |
 
 ## Where things live: one folder, three shells
 
@@ -243,7 +239,6 @@ exit code is 0.
 **3. A normal session.** In a git repository you can try things in, start `claude`, and:
 
 - ask it to run `git push --force` — the git guard **asks** (it must not run in silence);
-- ask it to run `claude --bg "x"` — the shell judge **asks**, showing the `crew start` line;
 - let a permission prompt wait, then end a turn — a **Windows toast** shows each, and the
   terminal title/badge shows Warp's or Windows Terminal's own alert where they have one;
 - ask it to edit a file in the main checkout from a session in a worktree — the main-folder
@@ -268,39 +263,12 @@ running session's next request works (Claude Code retries the moment of refusal 
 cost of Windows, `windows-gateway.md`). `gateway off` and `restore --yes` stop and remove the
 task; Task Scheduler no longer lists it.
 
-**5. A small crew session.** In the same repository (crew sessions are off by default):
-
 ```powershell
-& "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" workflow set crew.enabled true --project
 claude
 ```
 
-In the session: `/cc-smart-dev-kit:lead` (or ask it to lead this phase). Put a one-line brief in
-`crew-brief.md` at the repository root, then have the lead run:
-
 ```powershell
-cc-smart-dev-kit crew lead --plan windows-check
-cc-smart-dev-kit crew start K --slug first --kind docs --brief crew-brief.md
-cc-smart-dev-kit crew list
-cc-smart-dev-kit crew status "C <tag> windows-check K first"
 ```
-
-`<tag>` is the main checkout's folder name made clean (or `workflow.crew.tag` when it is set),
-the same tag in every name and in the board.
-
-Shows: `started C <tag> windows-check K first (…) · … · crew/K-first @ <sha>`; agent view lists a session with
-that name working in `.claude/worktrees/crew-K-first`; its branch `crew/K-first` gets its commit;
-the board shows its state, model and effort, and **memory `-`** (the one Linux-only figure);
-its report arrives in the lead as a `crew watch`/notes line; `crew rm` refuses until the lead
-merges `crew/K-first` into its own branch, then removes the session, the worktree and the branch.
-The lead's monitor (`crew-events`) must deliver that line by itself — that is also the live
-proof that Claude Code runs a plugin monitor through Git Bash on Windows.
-
-Run on 2026-10-27 (Windows 11, 2.1.310): it passes, with two findings. Up to 1.4.1, `crew lead`
-and `crew start` say "no Claude Code session runs this command" here: the session is now found
-from the Bash tool's environment (`docs/design/crew.md` § The lead and the launch). And `crew rm
---discard`, which drops a crew session whose work is not merged, refuses on Windows ("its mount
-points could not be read", `docs/roadmap.md`); after a merge `crew rm` works.
 
 **6. The portal.**
 

@@ -1,7 +1,7 @@
 # Instructions, skills and agents
 
 
-The plugin carries general working instructions for Claude, 21 skills, 5 agents and two
+The plugin carries general working instructions for Claude, skills, 5 agents and two
 Workflows, all written for any project (`README.md` § Instructions, skills and agents lists
 them).
 
@@ -86,37 +86,6 @@ or which line a launch needs: the guard's own message says that, at the launch i
 owner's D12). They tie no effort to the backend that answers a tier: every tier but `opus` and `fable`
 takes the effort its task needs, whatever model answers, and a backend's effort is the person's
 pin at the router (`docs/gateway.md` § A backend target's effort pin).
-
-**Checks: what you changed while building, the full check once (owner, 2026-10-26).** In a big
-project a whole type check takes tens of seconds and a whole test run many minutes, and sessions
-and agents that queue them slow every other. So `verify-change` is the one home: § 2 lists what a
-session runs while it builds (the tests of the changed code, the linter on the changed files, the
-type errors Claude Code reports for them, or the project's `checks.fast`), and § 4 defines the
-full check (the whole type check, the whole lint with any stricter push-hook rules, all the tests,
-the build) and when it runs: once, by a crew session before its report, or by the lead or an
-ordinary session before the push. A subagent never runs it; the session that launched it does,
-after its agents hand back. `core.md`, `builder`, `crew`, `lead`, `commit` and `impact-analysis`
-point to those two sections. Type errors per file: Claude Code's `LSP` tool reports a language
-server's type errors and warnings after each edit (code.claude.com/docs/en/tools-reference §
-LSP tool behavior, and `/plugins/code-intelligence`, read 2026-10-26), but only where a code
-intelligence plugin runs a server for the language, never in a cloud session, and for the edited
-file, not its callers. `tsc` on named files ignores `tsconfig.json`, so no rule uses it. The
-`verify-gate` Stop hook asks for `checks.fast` once after the last change of a turn that edited
-files; it is silent in a crew session, whose report is gated by `crew-role`.
-
-**The skill pair for the person's availability.** `user-unavailable` and `user-available` are the
-two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
-asleep, or just away). `user-unavailable` is the rules while the person cannot answer: never stop
-to ask; an easy-to-undo choice with a recommended option is taken and parked as a `decision`; the
-person's own choice is parked as a `question` with its options; an action that needs their yes is
-parked as an `action` with its exact command and never tried; a lead keeps its crew going; each
-stretch ends with a `Summary:` decision. `user-available` switches the state back, shows what
-was done, then goes through the list: decisions to keep or undo, the questions in one call, each
-action run on the person's yes. Neither skill duplicates the hooks (`hooks.md` § While the person
-is away): the hooks deny and park, the skills say how to work in that state. The pointer to them
-is in the hooks' notes, not in `core.md`, which stays inside its line budget. A skill's name and
-description are carried by every session, used or not, so both descriptions stay to one short
-sentence or two (`check:context-budget`).
 
 **The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
 one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to
@@ -223,3 +192,10 @@ the default set and the agents use them. The `cc-smart-dev-kit:impact-analysis` 
 to use when they are missing.
 
 **The output style** ships but is never switched on: a person picks it with `/output-style`.
+
+
+## Building a plan in 2.0
+
+`build` runs the subagent-driven workflow. The main session orchestrates one builder per
+phase, parallel worktrees for disjoint files, a fresh phase reviewer and a final review on
+`opus`. The task system holds briefs, reports and rulings; see [tasks](tasks.md).

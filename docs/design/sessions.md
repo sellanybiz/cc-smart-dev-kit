@@ -34,44 +34,11 @@ asked for (`src/sessions/`, `src/worktrees/`):
 
 ### Finished background sessions
 
-`sessions --finished` uses `src/sessions/finished.ts` for both the command and the Work API. It accepts only `background` jobs in `done` or `stopped`, older than a day by their
-matched job-state end timestamps. Stored crew and lead identities (full and short ids), role
-names, unknown kinds, active states and damaged records keep a session out. `--remove` shows
-the list and asks once, or takes `--yes`; repeated `--id <short-id>` limits the selection to those
-exact eligible sessions. Each candidate is read again before `claude rm`; any requested ineligible
-id refuses the whole selection before removal. The portal action uses that same targeted CLI.
-A still-registered or locked worktree refuses `claude rm`: its session uses `ExitWorktree`, or the
-project's finished-worktree clean removes it first. One refusal does not block later eligible rows;
-the final exit is nonzero if any failed. The portal child runs from the existing home folder, not
-from a possibly removed session folder. Nothing runs this removal by itself.
-
-Before that list, `sessions --finished` names the finished crew records (`done`, `handoff`,
-`failed`, `stopped`, and a `merged` one still waiting for its removal) that no watch releases
-(`releasableCrewSessions`, D69): no live watch of their lead holds its lease (`watchIsAlive`,
-`store.ts`) — the lead is stopped or gone, or its session is alive and runs no watch. A watch that
-runs releases its own crew sessions, a `--once` look as well while it runs; a lease whose process
-ended, or that no one can read, holds nothing. So they are listed at once, with no day's wait, and
-`--remove` releases them after its own question — the worktree and the agent-view rows go, the
-branch and the conversation stay. An agent view it cannot read, or a crew store with a broken
-record, releases nothing. Two releases of one crew session never run at once (the removal's own
-lock), so a watch that starts meanwhile and this command cannot both act on it.
-
-The same command runs the **conversation timeline** of crew sessions whose session ended (AR1,
-D69, `readCrewLeftovers` and `sweepCrewConversations` in `archive.ts`): the conversations past
-`workflow.crew.archiveDays` (default 7) since the record's `sessionEndedAt` that are still under
-Claude Code's projects folder, with the date each younger one moves, the empty project folders of
-their worktrees, and the crew archives past `workflow.crew.deleteDays` (default 30) since that
-same end — not since the move — with the date each other archive goes. A record from before the
-field counts from its removal event, then its last write. The lead's watch runs the same sweep at
-most hourly. `--remove` asks once more (or takes `--yes`), reads the lists again, then moves each
-due conversation into the crew archive, removes each folder that holds nothing and deletes each
-expired archive. Listing moves nothing. Never listed or taken: a lead's session, a session of a
-crew record whose session has not ended, one a running Claude holds, one written after its
-session ended (the person resumed it), one whose archived copy has other bytes, and any file the
-store does not name. A crew store or lead record it cannot read fails closed. `--id` names
-finished background sessions
-only, so it leaves this part out. How the archive works: `docs/design/crew.md` § A removed crew
-session's conversation.
+`sessions --finished` lists background jobs in `done` or `stopped`, older than a day by
+matching job-state timestamps. Unknown kinds, active states and damaged records stay out.
+`--remove` asks once, or accepts `--yes`; repeated `--id <short-id>` limits the selection.
+It reads candidates again before `claude rm`. A registered or locked worktree prevents
+removal. The portal uses the same targeted command. Nothing removes sessions by itself.
 
 ### Stale locks and local caches
 

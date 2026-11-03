@@ -7,8 +7,6 @@ paths:
   - "src/setup/auto-update.ts"
   - "src/hooks/worktree-leftovers*"
   - "src/hooks/session-name*"
-  - "src/hooks/crew-role*"
-  - "src/hooks/lead-notes*"
   - "src/hooks/fable-session*"
   - "src/entries/update-check.ts"
 ---
@@ -35,18 +33,12 @@ never waits — the hook starts a detached starter and returns (`src/portal/life
 never runs in `claude -p`, never on a `clear` or a `compact`, and its lines go to
 `<stateDir>/portal.log`, never to the session.
 
-The plugin's SessionStart hooks are the worktree-leftovers note, the session name, the Fable-session note
-(`fable-session`, machine-wide), the crew session's role card (`crew-role`, machine-wide), the
-lead's notes (`lead-notes`, machine-wide), the portal's start (D10) and the
-background self-update (`src/update/`, the owner's decision). The leftovers note
-also adds up to three short lines about the **main checkout** at an attended start — on another
-branch than `worktrees.base`, behind `origin/<base>` as git already knows it, or in the middle
-of a merge, a rebase or a cherry-pick — read-only and with no fetch (`mainFolderNotes`,
-`src/hooks/worktree-leftovers.ts`); in a guarded main checkout (`worktrees.guardMainFolder`)
-the line names the person's command, never a step for the session. `update-check`
-also brings the managed instructions copy up to this version when it is behind
-(`refreshInstructionsAtSessionStart`): the copy only, under the state lock, never the
-`CLAUDE.md` block, never a question, one stderr line on failure.
+SessionStart runs the worktree-leftovers and session-name notes, the Fable-session note,
+the task note, the portal starter and the background update. The leftovers note reads the
+main checkout without fetching. In a guarded main checkout it names the person's command,
+not a step for the session. The update hook refreshes an outdated managed instructions copy
+under the state lock; it never changes the user's `CLAUDE.md` block or asks a question.
+A refresh failure is one stderr line.
 
 ## The background self-update
 

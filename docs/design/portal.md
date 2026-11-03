@@ -6,52 +6,6 @@ to see and change the gateway's settings, the updates, the heavy-job queue, the 
 and OmniRoute. The screens the owner approved (2026-10-16) are `views.ts`, and the copy on
 each one follows them.
 
-**Settings and the Project card.** `/settings` shows every workflow setting — the flow after
-a finished step, the alerts, the switches, the crew caps — one row each, with the value now and where it
-came from (`Your default`, `This project`, `Built-in default`). A change is one POST that runs the module's
-own `writePersonalSetting` (the two project switches go to `writeProjectSetting`), so the
-page and `cc-smart-dev-kit workflow show` can never disagree; a row the project sets is
-read-only here, the page's first line says a project's own value wins and is changed on the
-project's page (its Workflow card, below), and a value outside its row's own set is
-refused in words. The Project card on Machine is about the repo the portal was started in:
-state A (no `.claude/cc-smart-dev-kit.json`) or the form, whose first values are the command
-line's own detection (`detectFacts` + `defaultAnswers` — the default branch, GitHub's
-protected branches). Its **preview is the server's own `planProjectInit`**,
-the same pure function the write runs, so the browser never builds the file: a form change is
-a `project.preview` POST — at once for a finished edit, 300 ms after the typing pauses in a
-text box — and the boxes are drawn from the answer. The answer carries
-`projectFilesHash` of the two texts it planned from, the page keeps it, and `project.write`
-sends it back: a project file that changed since the preview is refused ("preview again")
-rather than written over field by field. `Write the files` asks first and runs
-`applyProjectInit` — a backup, an atomic write, two files, and never a commit. The settings
-file gets Claude Code's `"worktree": {"baseRef": "head"}` when the base branch is not the
-repo's default branch.
-
-**Settings → Projects (B8).** `/api/projects` (`src/portal/api/projects.ts`) lists every
-repository from Claude Code's session records (`sessionWorkFolderTimes` in
-`src/sessions/command.ts`, the one reader `sessionWorkFolders` is built on), each folder taken
-to its main checkout by `checkoutOfAsync` on `checkoutFold` (`src/update/retired-repos.ts`, the
-fold the retired-repo scan uses too), plus the roots the person added (`portal-projects.json` in the state folder, written
-atomically under the state folder's lock). Each row carries an id (12 hex of the root's
-sha256), the last use, the worktree count (`git worktree list --porcelain`), whether the
-project files are set and committed on the branch it is on (`git status --porcelain` on the
-two files; the merge gate itself reads them from `origin/<base>`), and whether
-the portal's own folder is in it. `/api/projects/<id>` adds the project-init card for that
-root and the open pull requests (`gh pr list`) and crew branches (`listCrew`), each judged by
-`checkPullRequest` / `checkBranch` — the merge guard's own code — under **one deadline per
-page** (`PROJECT_BRANCHES_DEADLINE_MS`; past it a verdict is `late`, never a guess) and kept
-for `PROJECT_BRANCHES_CACHE_MS` (a read the deadline cut short is not kept). The verdicts run
-`PROJECT_VERDICTS_AT_ONCE` at a time and share one default-branch read; crew rows are only the
-states whose branch still waits for a merge (`CREW_BRANCH_STATES`). The list itself is kept for
-`PROJECTS_LIST_CACHE_MS`, shared by looks at once, dropped by an add or a write, and its scan
-runs at most `PROJECT_GIT_AT_ONCE` git children together. Every git and `gh` child on these paths is awaited
-(`Bun.spawn`): merge-check takes an injectable async `GhRunner` (default `spawnGh`), and the
-merge guard and `workflow merge-check` await it with their time budget unchanged, so a verdict
-never freezes the pages or the live stream. `project.preview` and `project.write` take an
-optional `project` id, looked up in that list (an unknown id writes nothing; no path ever comes
-from the request), and `project.add {folder}` adds a git folder's main checkout to the list —
-so a write reaches only a listed folder, and Add a folder is what extends the list.
-
 **The workflow module is behind one seam** (`src/portal/workflow-adapter.ts`). The values,
 the writes, the auto-merge rule and the project's two files all come from `src/workflow/`
 and `src/project/init.ts` through one typed interface, injected as `PortalOptions.workflow`
@@ -60,19 +14,6 @@ a test drives both screens without reading a real workflow file, running git, or
 anything. The project's own defaults are remembered per file text for the run (`server.ts`):
 `detectFacts` reads git and, when `gh` is there, GitHub itself, so a form change is a plan,
 not a network read.
-
-**Cleanup API contracts (CL2).** Needs exposes old stopped crew work and exact discard previews
-through a read-only `crew cleanup --json` CLI child; synchronous git never runs on the server loop.
-Work and crew details expose the shared lead-gone verdict, and Work lists finished unowned
-background sessions from the sessions command's reader. GET requests never persist absence clocks.
-A partial or unreadable agent view cannot prove absence. `crew.rm` requires explicit confirmation;
-discard also needs the exact shared content token and a second discard confirmation, then runs
-`crew rm --discard --yes --discard-token` in the record's repository. `sessions.rm` confirms and
-revalidates one id, then runs targeted `sessions --finished --remove --yes --id` from the existing
-home folder; a session folder already removed does not prevent removing its agent entry.
-Both paths use asynchronous CLI children and return their lines in place. The wire mirror carries
-these fields, but the current adapters and views do not render them: a separate UI phase must add
-the cards, shared-word dialogs, errors and results before claiming visible cleanup controls.
 
 ### What it is, and what it is not
 
@@ -288,46 +229,6 @@ holds it: `hub.ts` the streams and their format, `sources.ts` what changes. The 
 - **`closing`** when the portal stops for a new version: every stream is told, then closed, and
   the page reloads onto the new portal.
 
-The sources are polled on one timer (`LIVE_POLL_MS`, 2 s): the router's `recent` list from its
-health answer (metadata only), the crew store's `events.jsonl` by byte offset per repository,
-`gateway-state.json` (limits, fallbacks, an open breaker, `seenClaude`), `guard-asks.jsonl` by
-byte offset, the last update-check record, the heavy-job queue (its lease and ticket
-folders' fingerprint, with the queue read only when it changes), and the kit's work store
-(D75: its `work.db` and write-ahead log by size and time; every committed write changes one, and
-the `tasks` event carries only the time). **The first poll after a
-start only records where each file ends** — the router's list, each crew log and the guard log
-— so a portal start says what happens from then on, never the whole history as a burst of live
-events. A log that did not exist at that baseline is news when it appears (its first line is
-read, not skipped); so is a repository whose first crew session starts after it: the baseline
-covers the store as the portal found it. The doctor pass and an action's lines are not polled:
-the server publishes them when it has them.
-
-**`GET /api/…` is the JSON the Next.js pages fetch** (`src/portal/api/`): `overview`, `slots`,
-`health`, `machine`, `settings`, `projects`, `projects/<id>`, `projects/<id>/workflow`,
-`projects/<id>/tasks`, `tasks`, `work`, `crew/<id>`, `flow`, `needs`,
-`guard-asks`, `worktrees`, `update`, `jobs`, `history` and `requests`, all read-only and all
-through the door. Each answer is built from the same readers the server-rendered pages use
-(`page-data.ts` is the one home: `server.ts` and the API both call it), so a page and an answer
-can never disagree. `work` is every lead on the machine with its crew nested, each naming its
-own repository, plus the other sessions of the folder the portal runs in; a crew page
-carries its brief, its log, the diff against its base, its report, the reviews recorded on its
-branch and the merge check's verdict; `needs` is everything waiting on the person (a crew
-question with its options, an open permission prompt, doctor's failures, an open breaker, a
-held major version). `history` and `requests` read the router's request log through its own
-reader (`src/gateway/history-read.ts`, H1): `historySeries` answers one series per `by` key,
-every bucket of the range as zeros where nothing happened, and `recentRequests` pages the
-newest rows by id, both with the `slot`, `target`, `model`, `session` and `status=error`
-filters; a machine with no database yet answers empty with a note, never an error.
-
-The guard log is paged on the server: `guard-asks` takes a `range`, a `cursor` and a `limit`,
-and answers one page newest first, the range's chart of asks per hook, and the guards and
-sessions it holds for the filter menus. The facts a page explains itself with are on the same
-answers: a crew page's changed files each with their own line counts and the crew session's
-memory over time, the merge verdict's review, its limits and what the review still covers,
-every open breaker with the router's live count of what waits, each doctor failure with its
-fix and section, and each worktree's idle minutes and the removals auto-clean has not reported
-yet. Nothing carries a key or a prompt.
-
 **A project's gateway, and the two actions that change it** (GP4b, D29):
 `projects/<id>/gateway` (`src/portal/api/project-gateway.ts`) answers the project's own choice
 and what a session started in its folder effectively gets, each in `gateway project status`'
@@ -359,42 +260,9 @@ id is required). The command's refusals — a file git tracks, a login key, anot
 address, a router that does not answer, a target its backend does not list — are its own, made
 again under its lock, and the card shows them in place.
 
-**A project's workflow settings, and the one action that changes them** (D57):
-`projects/<id>/workflow` answers every key the project's file can hold (`isProjectKey`: the
-policy settings and the project's two switches), each with its value and where that value came
-from, the base a change would go into (`worktrees.base`) and whether `gh` can open a pull
-request now (`ghLoginState`, one cached answer a minute, as the branch verdicts are).
-**The values are the base's**, read with `resolveGateAsync` over the file committed on
-`origin/<base>` — the same read the merge guard judges with, and the one `workflow propose`
-compares against — then through `resolvedValueOf`, the map `workflow show` prints from. An
-uncommitted edit in the person's checkout, or another branch's file, is never shown as the
-project's policy; the ref is as fresh as the last fetch, so after a merge on GitHub the card
-shows the old value until the checkout fetches, exactly as the gate does. A project with no
-file, no base, or no committed file, or a file (or a personal `workflow.json`) that cannot be
-read, is a `note` and no settings — never a `default` for a value the project really sets. The change itself is `project.workflow.propose`:
-the page asks first (`confirm`), the request must name its project by id (a body with none is
-refused in words, because the command pushes a branch and opens a pull request, and "no project"
-must never mean the portal's own folder — `project.gateway.set` has the same rule), then `runCliChild` runs the CLI's own `workflow propose` in a
-child in the project's folder — a branch, a worktree, a commit and a push never run in the
-server's process. The child gets at least the command's own worst case (`PROPOSE_WORST_CASE_MS`,
-the sum of its step limits): its limits fire, and the take-back after a failed step runs, before
-the child is ended from outside. It runs with `--json`, and the answer carries the pull request's
-URL for the card's link only when the run exited 0 — a refusal's output never becomes a link. A crew
-session cannot reach it: the session-escape guard denies a crew session's call into the
-portal's port, and the child of a click is the person's, not the crew session whose start
-began the portal (`runCliChild` drops `CC_SMART_DEV_KIT_CREW`, D52). It drops `CLAUDECODE` too:
-the portal inherits it from the session start that launched it, and a command that refuses
-inside a session — a review-gate setting, above all — must not refuse the person's own click.
-A review-gate change counts once the pull request is merged, so the click opens the gate's own
-review rather than skipping it.
-
-**The heavy-job queue is one reader** (`src/jobs/status.ts`: `readJobs`, `jobsAnswer`,
-`statusLines`, `jobsFingerprint`): `job status` prints its lines, `/api/jobs` answers its
-shape (`{ ceiling: { gb, why }, memoryGb, stores: [{ where, slots, used, held, waiting,
-note? }], weights }`: slots in use of the slots there are, and the memory ceiling; each held or
-waiting job names its `lane`, `heavy`, `light` or `none`, which the Machine page's Holds column
-shows as a heavy slot, a light slot or a name), the Machine page shows the same lines, and the
-`jobs` event carries the same shape. There is no parser of printed lines anywhere.
+**The heavy-job queue is one reader** (`src/jobs/status.ts`). `job status`, `/api/jobs`,
+the Machine page and the `jobs` event show the same one-slot state: the active run and
+waiters. There is no memory ceiling, lane or weight, and no parser of printed lines.
 
 **The Next.js export ships inside the plugin** (D49, `plugin/portal-ui/`): built from
 `portal/` by `scripts/portal-export.ts` (`bun run build:portal`) and committed like the
@@ -471,115 +339,6 @@ accepts a promise, so `update.install` awaits the same `applyUpdate` the command
 step's last line and the action's result go out on the stream (`action` events), so a page shows
 the install as it happens.
 
-**The D52 crew actions are the CLI's own code, and every one that can block runs it in a
-child.** `crew stop`, `crew resume` and `crew rm` reach `git` and `claude` through synchronous
-spawns (`Bun.spawnSync` in `realRunProgram` and `runGit`) — up to 30 s a call, and a `crew rm`
-makes several — and `worktrees --clean` fetches, scans and removes the same way. Run in the
-server, one click froze every page, every other action and the stream for that long. So those
-actions — and `project.workflow.propose` (D57), which makes a worktree, a commit and a push, and
-the Gateway card's two (GP4b), whose commands run git and ask the router — run the CLI's own
-command in a child (`src/portal/cli-child.ts`): `dist/cli.js crew stop|resume|rm <id>`, each
-**in the record's own repository**, `dist/cli.js workflow propose` and `dist/cli.js gateway
-project <state> --folder <root>` **in the project's own folder**, or `dist/cli.js worktrees
---clean` and `dist/cli.js gateway profile …` (a profile is the machine's config), which have no
-crew record or project and run **in the portal's own folder** — the folder the portal was
-started in. Each child gets the
-plugin's two bun flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, no
-`CC_SMART_DEV_KIT_CREW` (the person's click is not a crew session, D52), no `CLAUDECODE` (nor a
-Claude Code session: the portal inherits it from the session start that launched it, D9), and a
-3-minute timeout — a propose gets its command's own worst case instead. One cut at that timeout
-says so and points at `crew status` and at running it again, because a `crew rm` may have done
-part of its work.
-Every line goes out on the stream as it is printed. The record is found on **the machine**
-(`listAllCrew`): the portal usually runs from the home folder, which is no git project, so its
-own folder's store would find nothing. `crew.answer` runs in a child too
-(`dist/cli.js crew answer --as-person -- <id> <text>`): a stopped crew session is resumed with
-a synchronous `claude --bg --resume`, so its path blocks as well; `--as-person` says the click
-is the person's (D52), and the bare `--` keeps an answer that starts with `--` an answer. The
-flag means no Claude Code session runs the command, so a session above it refuses the flag
-with one line — the portal's child has none, because the portal starts detached
-(`src/hooks/detached.ts`) and is reparented away from the session that started it. **No
-synchronous spawn is reachable from these five actions**, and no action ever forces anything.
-Two others are still owed a child, named here so the rule is never read as already true
-everywhere: `companion.enable` (its `claude plugin enable` through `Machine.run`), and the
-lock's own `ps` on every action that writes. `crew.stop`, `crew.rm` and
-`worktrees.clean` refuse a POST without the page's confirmation (`confirm: true`).
-
-**A read never blocks the server either.** The flow report (`readFlow`, `src/sessions/flow.ts`)
-reads every saved transcript with synchronous file reads: about 200 ms on a warm cache and 10 s on
-a cold one, measured on a machine with gigabytes of transcripts. Work and Needs ask it for the
-open permission prompts, and Flow for its window, so the portal never calls it in the server: it
-runs the CLI's own `report --hours <n> --json` in a child (`src/portal/flow-read.ts` through
-`runCliChildText`, the portal's one spawn in `src/portal/cli-child.ts`: the plugin's two bun
-flags, the portal's own `HOME` and `CLAUDE_CONFIG_DIR`, a 2-minute timeout). Requests for the
-same window at once share one child, and an answer is reused for 5 s; a failure is not kept. When
-the child fails, Flow answers 500 with its reason, Needs says the permission prompts could not be
-read (`permissionsError`), and Work says no session can show a wait (`waitsError`) — never an
-empty list that looks like "nothing waits".
-**The worktrees read runs the same way** (`src/portal/worktrees-read.ts`, through the same
-`runCliChildText`): the scan behind `/api/worktrees` reads every worktree's git status, the
-running sessions, the programs and the Docker containers synchronously, so the portal runs the
-CLI's own `worktrees --json` in a child — the one builder (`worktreesAnswerOf`,
-`src/worktrees/command.ts`) whose answer the page shows — shared by requests at once and reused
-for 5 s; a failure is not kept, and the page shows the child's reason in its `note`. The argv,
-the environment, the spawn, the failure's words and the timeout verdict live once, in
-`cli-child.ts`, and so does the short cache both readers keep (`shortCache`): a child still on its
-way is shared whatever its age, an answer is fresh for 5 s **from its arrival** (a cold read that
-took longer than that would otherwise be stale as it landed, and every poll would start another
-child), a failure is not kept, and `worktrees.clean` and the crew actions drop the worktrees
-answers. Two trade-offs of those rules: a child that hangs is shared until its timeout (the
-alternative — a second full read of every transcript — costs more than the wait), and the flow
-reader's kept answers start their clock from the arrival, so a read that lands after 5 s serves
-the next request too.
-**The Needs and Work reads use the same cache** (RX3). The header reads `/api/needs` on every
-`crew`, `state`, `update` and `doctor` event (a 300 ms debounce), and each read ran `crew
-cleanup --json` (about ten git children per stopped record, and a whole-worktree diff for its
-discard facts); `/api/work` and a crew page each started `claude agents --json --all`. Reads
-overlap on a busy machine, so each is now a `shortCache` of 5 s (`PAGE_READ_FRESH_MS`):
-`readCleanupForPage` and `readPortalAgentsForPage`. A failed read (an error, a list that did not
-answer) is shown and not kept; a fault inside one stopped record's own discard facts
-(`discard.error`) is part of an answer that did arrive, so it is kept for the window like the
-rest. **The removal paths stay uncached**: `crew.rm` and `sessions.rm` call `readPortalAgents`
-and `readCleanupOffLoop` themselves and compare the confirmation token with facts they have
-just read, so a preview kept for a few seconds can never authorize one. Two things drop both
-caches (`forgetPageReads`, `api/page-reads.ts`), because the page that reloads after either must
-not be served a read kept from before it: `runAction` when any action ends, and the live
-stream's crew source just before it publishes crew news (`createLiveSources`), so a `crew rm`
-in a terminal that lands inside the window is not hidden. The sharing that remains is the
-reads one event fans out to (the header and the page open) and the events that are not crew
-news (`update`, `doctor`).
-**The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
-(20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
-manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
-awaited through `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never
-`Bun.spawnSync`, in the portal process (`src/entries/portal.ts`) with the actions' runner's 300 s
-timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await it;
-`portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
-`warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
-doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
-same words.
-**The doctor pass and the project read are reads too, and every command they ask runs off the
-loop.** The Machine page runs the doctor's own pass (`doctor.run` is that same pass), and the
-pass's own reads go through `DoctorOptions.read` — the portal's `ReadRunner`: the launcher's own
-`version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher, Warp's package
-manager, the live record's `claude --version`, the marketplace's own source (`canReadGitRemoteAsync`: `git ls-remote`, up
-to 10 s a check) and tmux's `show-options`, and the gateway's checks, `RouterService.stateAsync`
-(does it run, and its state, in one awaited ask with the same words the synchronous pair gives)
-and `portHolderCheck`. `claude mcp get` runs through the mcp deps' own runner
-(`realMcpDoctorDeps(runRead)`), which is also how its child gets `MCP_TIMEOUT`; the 0.3.0
-leftovers' `ps` (macOS) or PowerShell listing (Windows) is read once per pass, only when 0.3.0
-left something (`legacyBrowserLeftovers`, `processCommandLinesAsync`), and handed to the check —
-the Browser card reads it the same way. The project read is awaited too:
-`resolveProjectAsync` (`locateCheckoutAsync`, `Bun.spawn`) for the Settings page and the Project
-card, `realRunnerAsync` (`runGitAsync`, and `gh api` spawned the same way) for the form's
-defaults, and `projectChecks`' own git reads (the checkout, `check-ignore`, the default branch,
-`git --version`), and the gateway's per-project lines (GP4a), which read each project with
-`projectGatewayStateAsync`, the one reader's awaited twin (GP4b). **Still on the loop**, named so
-the rule is never read as already true everywhere: the actions' changing commands (`ctx.runner`)
-and the lock's `ps` on every action that writes — the actions paragraph above has both — and the
-Browser card's Windows-only registry read (`reg query` through `realBrowserSetupDeps`' own `run`,
-tens of ms, no other platform).
-
 ### The pages' facts and actions (B6d)
 
 Each fact a page draws comes from the module that already owns it, through `facts.ts` and the
@@ -611,52 +370,8 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   Auto mode's safety checks are counted apart from the history, by local day:
   the page reads them through the CLI's own reader (`safety-checks-read.ts`, so `usage` and
   the page can never disagree) and says so, because the cost above leaves them out.
-- **Work**: **the crew sessions and leads are the machine's** (`listAllCrew`, `listAllLeads`),
-  grouped by repository and lead, because the portal usually runs from the home folder, which is
-  no git project; every summary and lead carries its own `repo`, and a crew page is read from
-  the record's own repository (`/api/crew/<id>`). Another session's model is its tail's last
-  reply (`describeSession`, skipping Claude Code's `<synthetic>` stand-in), and its state is
-  `ended` (the end marker), `waiting` (an open permission prompt, from the flow report's waits),
-  `working` (written in the last `SESSION_WORKING_MS`), or `idle`; the "other sessions" list is
-  the project of the folder the portal runs in (or none outside a git project). A folder that
-  is no project is the portal's normal start, so its line on the page is quiet (`folderNote`,
-  muted); a store or a folder that could not be read is a warning (`note`). A crew
-  session's summary adds the files its brief owns, what it waits for, its newest line and its
-  memory readings, and its "since" is its own newest state event (`stateSince` takes one
-  session's events, newest first).
 - **Flow**: the report's window hour by hour (`FlowReport.hours`, summed from the flow cache's
   own hourly buckets); the page draws an hour per bar for 24 hours and six for 7 days.
-- **Settings**: the crew caps (`crew.perLead`, `crew.perLeadOpus`, `crew.max`,
-  `crew.usagePercent`) are rows of the one table (`src/portal/settings.ts`), written by
-  `writePersonalSetting` like every row; a number row names its unit there.
-- **Project, the Workflow card** (D57, `portal/src/components/workflow-card.tsx`): a set-up
-  project's page shows every setting of `projects/<id>/workflow` with the value its base
-  commits and a badge for where it comes from, grouped as This machine groups them. The rows'
-  words and controls are the Settings table's, read from `/api/settings` and merged by
-  `projectWorkflowOf` (`portal/src/api/adapt.ts`) — both answers or neither, so a card is never
-  shown without its controls and no reason; the row and its control are
-  `settings-rows.tsx`'s own `SettingLine`, so the two pages never draw a setting two ways. A
-  key with no row in that table is listed under "Other settings" with its value and the
-  command that changes it. A change asks first — it opens a pull request into the base that
-  changes one line of the project's file, and counts once merged — then runs
-  `project.workflow.propose`; the row goes back to the base's value, and the pull request's
-  link (or the refusal, in the command's words) stays under it. One proposal runs at a time
-  across the card, because an action's progress lines name only the action (a control that
-  shares its action with another running control in the same tab, such as two slots of a
-  profile saved at once, shows "Working…" and no line, since the line could be either's; two
-  tabs are not told apart). An unset `crew.tag` or
-  `crew.maxOpus` carries `unsetWords`, what `workflow show` prints in its place, so the card and
-  the command word it alike. The Workflow card reads again for a `workflow.*` or
-  `project.*` result (the Gateway card also for a `slot.*` or `switch` result), never for a
-  crew event (a project's branch verdicts do depend on one, so the project's page keeps that):
-  each read costs the server a few git children. A value the project
-  sets can also be taken out (`--unset`), and the alert events keep at least one chosen (the
-  parser's own rule). Without a `gh` that can open a pull request (`missing` or
-  `out`) the values show, the controls are off, and one line names the command to run; the
-  server asks `gh` again at most once a minute, and the card reads it again on a reload. A crew
-  session never reaches the card: the session-escape guard denies its call into the portal.
-  The current project's page no longer shows the portal folder's own settings rows: the
-  person's defaults are Settings → This machine's.
 - **Project, the Gateway card** (GP4b, `portal/src/components/gateway-card.tsx`, its rules in
   `portal/src/lib/gateway.ts`): every project's page, set up or not, shows what its sessions
   get and which file decides it (the files read, in Claude Code's order, on demand), the
@@ -681,48 +396,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
   reaches every project whose address names that profile. A project that is no git project
   shows its state and no form.
-- **Tasks** (D76, `/tasks`, `portal/src/views/tasks.tsx`; the answer is `tasks`, built in
-  `src/portal/api/project-tasks.ts`): read-only, the one home of the kit's task list on the
-  portal, in the sidebar under Now after Work. `tasks` is every project of `projects`, in its
-  order, each with the same answer `projects/<id>/tasks` gives (one reading, `tasksOf`, read
-  `PROJECT_GIT_AT_ONCE` projects at a time). The tab opens with four counts over the projects in
-  view (open work with how much is in progress, blocked, non-blocking, task files owed with how
-  many block the release), then the filters, then a key to the tree, then a card per project.
-  - *The filters* live in the address, so a link opens the tab as it was: `project=<id>` (a
-    picker when there is more than one project, each with its open count), `show=recent` (open
-    only is the default; recent adds what closed in the last seven days,
-    `TASKS_CARD_RECENT_DAYS`), `blocked=1` and `type=non-blocking`. The rules are
-    `portal/src/lib/tasks.ts`: a filter keeps each task it asks for and the tasks above it as its
-    place (drawn in the muted colour), never a task cut from its parent. An id no project has
-    says so and shows every project.
-  - *Work on this machine* is the project's tree (`tree.ts` › `projectTaskTree`, at most
-    `TREE_TASK_LIMIT` tasks with the rest counted) as Plan › Phase › Task › Subtask: the layer
-    reads from the indent and the subject's weight, a plan and a phase carry a badge, and a screen
-    reader hears the layer and the status before the subject. Each row (`task-tree.tsx`, the one
-    row) shows its status as a glyph and its word (never colour alone), a dashed `non-blocking`
-    mark (blocking is the default and says nothing), `left open` for an open task under a closed
-    parent, `blocked by` with each blocker's number and its state's glyph while it is blocked
-    (closed blockers too, the subject on hover and for screen readers), and its subtree's
-    progress as a meter drawn by an SVG `<rect>` with a native `<meter>` for screen readers.
-  - *Owed by the project* lists the open task files of the main checkout by kind (production,
-    database, teammates, follow-ups), what blocks a release first, each with its weight, its
-    when, its flags in words and a mark when it is open past `tasks.staleDays`; a file that does
-    not read as a task is counted, with `task check` to name it.
-  - Every state has its words: loading is the page skeleton; no project at all points at
-    Settings; a store with nothing yet, nothing open, nothing matching the filters (with a way to
-    clear them or show recent) and no task file each say what makes tasks appear (a session's
-    `task_create`, or `cc-smart-dev-kit task add`); a store or a folder that cannot be read says
-    why. With every project in view, one with nothing to show (or, under a filter, nothing that
-    matches) is named in one line at the end instead of an empty card. The tab reads again on the
-    `tasks` event, a crew event or result, and a `project.*` result (`TASKS_REFRESH`).
 - **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`): one line on every
   project's page that counts its open, in-progress and blocked work and the task files it owes
   (from `projects/<id>/tasks`), and opens the Tasks tab on that project (`/tasks?project=<id>`).
-- **Crew, the phase card** (D75): a crew page's `tasks` (`crew/<id>`, `tree.ts` ›
-  `crewPhaseTree`) is its phase task with every task under it, closed ones too, drawn by the
-  Tasks tab's row with the same details. A session started before 1.10.0 has no phase task, and
-  the card says so. The page reads again on the `tasks` event too (`CREW_PAGE_REFRESH`); Work
-  does not.
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
 something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
@@ -763,20 +439,6 @@ reports it as one failed check — rather than reading a path that is gone.
 
 Two numbers the design's mockups show are not invented, and the pages say so instead:
 
-- **Claude Code's plan-usage percentages.** Claude Code computes them from the headers of its
-  own answers and hands them to the status line on stdin (`src/cli/statusline.ts`). One of
-  them is written down for one purpose: the 5-hour window feeds the crew's opus guard
-  (`<stateDir>/usage-window.json`, `src/cli/usage-window.ts`, D54). The 7-day window and the
-  plan's other windows are not stored. The router records only the limits it saw — which
-  model, which window, when it resets — and that is what the Overview shows, with a line
-  naming where the percentages live.
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.
-
-### Numbered crew questions
-
-The crew detail and Needs view render every open question from the work API, with its
-number, age, options and recommendation. Both views share `NeedsList`; an answer carries
-the question number as well as the crew id. Items are keyed by those two values, so answering
-one question never replaces another question from the same crew session.

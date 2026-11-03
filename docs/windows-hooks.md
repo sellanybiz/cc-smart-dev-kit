@@ -69,15 +69,6 @@ never report success when it did not run. The Windows CI job runs that mode too.
 
 ## The PowerShell tool is judged too
 
-Claude Code has a PowerShell tool beside Bash on native Windows (`docs/claude-code-contract.md`
-§ Windows). The plugin's shell judge, `job-route`, is therefore wired on `Bash|PowerShell`, and
-it reads each line in the dialect of the tool that runs it — the one shell reader every guard
-uses (`src/shell/command.ts`). A raw `claude --bg`, a crew session's lead commands and a
-polling loop are judged the same in PowerShell; only the queue rewrite stays Bash-only, because the
-rewritten line is a `sh` line the PowerShell tool cannot run. `src/hooks/entries.test.ts` pins
-the matcher, and `src/hooks/bash-judge.test.ts` has the PowerShell cases, both run by the
-Windows CI job.
-
 ## The user's own hook line
 
 The **user-level notification hook** `setup` writes uses shell form, with the launcher and

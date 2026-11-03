@@ -42,24 +42,6 @@ when every entry inside is safe. This only widens the "comes back by itself" rul
 project's own ignored paths: it does not exempt tracked changes or bypass other removal
 checks. A project that sets it raises `requires` to `>=1.9`.
 
-**The floor covers every field and hook name that came after 0.5.2.** An older plugin reads
-the file strictly: a field it does not know, or an `ownHooks` name outside its list, makes it
-refuse the whole file, and every guard in that project fails closed. `requiresFloor`
-(`src/project/init.ts`) picks the lowest plugin version that reads everything the file holds,
-and `project init` and `workflow set --project` write it as `requires`. Each version has one
-home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
-file), `WORKFLOW_CREW_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
-`WORKFLOW_CREW_KEYS_SINCE` (the `workflow.crew` keys: `perLead`, `perLeadOpus`, `usagePercent`
-and `keep` in 1.1.0, `handoffTokens` in 1.2.0, `loadPerCore` and `archiveDays` in 1.3.0,
-`deleteDays` in 1.7.0) and
-`OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background`, `crew-role` and
-`lead-notes` in 1.0.0, `verify-gate` and `agent-usage` in 1.1.0, `tier-view` in 1.3.0). The
-retired and unswitchable names (`serena-root`, `job-route`) are older than 0.5.2, so they
-raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
-the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the
-schema or `PLUGIN_HOOK_NAMES` gains one that is in neither, and when a since-table does not
-give the floor the list says.
-
 **The retired engine's fields are refused** (D20, 1.0.0): `worktrees.prefix`,
 `worktrees.setup` and `worktrees.engine` (`RETIRED_WORKTREE_FIELDS` in
 `src/project/config.ts`) were the plugin's own worktree engine's, and every project uses
@@ -77,15 +59,6 @@ to write (`src/workflow/write.ts`). `ownHooks` is still read on its own, and nev
 This is a stricter precedent than the retired hook name `serena-root`, which `ownHooks` still
 accepts: a project file that sets a retired field fails closed until `project init` cleans it.
 
-- A hook finds the project from its input's `cwd`, which follows the session into a
-  worktree. A worktree's own `cc-smart-dev-kit.json` wins; else the main checkout's is used. A moved
-  or deleted main checkout, and git older than 2.31, each give a clear error. **So does a git
-  that does not answer** (5 s a call): `GitTimedOutError`, never "outside git", because a hung
-  git says nothing about the folder. Its message is one plain line with its fix ("git did not
-  answer in time: run `git status` in this folder; …"). Every command that finds the checkout
-  prints it that way and no stack (`project init`, `workflow`, `worktrees`, `crew`); `doctor`
-  says the reason alone and prints the fix on its own line; a guard's question names the
-  reason alone (`checkoutFailure`, `src/project/resolve.ts`).
 - **`requires` is checked before the strict parse.** A project may use a field newer
   than a user's plugin; that user is told to update, not that the field is unknown.
 - **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay
@@ -107,3 +80,9 @@ A general skill reads the project's own additions when they exist. For example,
 `/cc-smart-dev-kit:review` also follows the project's `.claude/cc-smart-dev-kit/review.md`, and where they disagree,
 the project's text wins. The plugin stays general; each project keeps its own rules in
 its own repo.
+
+
+## Compatibility in 2.0
+
+Crew was removed in 2.0. Old `workflow.crew` values still load and are ignored, as are old
+job resource settings. The update does not clean old stores, branches or worktrees.
