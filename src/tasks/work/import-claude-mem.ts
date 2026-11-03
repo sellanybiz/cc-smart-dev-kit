@@ -89,8 +89,14 @@ function description(fields: Fields): string {
 function named(name: string, text: string): { subject: string; description: string } {
   const subject = name.trim();
   if (subject.length <= SUBJECT_LIMIT) return { subject, description: text };
+  // Whole characters only: a cut through an emoji would leave half of it.
+  let cut = "";
+  for (const character of subject) {
+    if (cut.length + character.length > SUBJECT_LIMIT - 1) break;
+    cut += character;
+  }
   return {
-    subject: `${subject.slice(0, SUBJECT_LIMIT - 1).trimEnd()}…`,
+    subject: `${cut.trimEnd()}…`,
     description: [`name: ${subject}`, text].filter(Boolean).join("\n"),
   };
 }
@@ -129,7 +135,8 @@ function takenByMistake(db: WorkDb, project: string): MistakenList[] {
 /**
  * claude-mem's lists for one project, folded as claude-mem folds them (15.5.0): its row order,
  * its case-blind project match, and an entry with no item name as the list's own record. No
- * file (claude-mem uninstalled) is no lists: the repair of an earlier import still runs.
+ * file (claude-mem uninstalled) and no work-state table (a claude-mem that never kept one) are
+ * no lists: the repair of an earlier import still runs.
  */
 function readLists(file: string, project: string): Map<string, ClaudeMemList> {
   const lists = new Map<string, ClaudeMemList>();
@@ -140,6 +147,7 @@ function readLists(file: string, project: string): Map<string, ClaudeMemList> {
       .query<{ name: string }, []>("PRAGMA table_info(work_state_entries)")
       .all()
       .map((r) => r.name);
+    if (columns.length === 0) return lists;
     if (!["id", "project", "list_name", "fields"].every((c) => columns.includes(c)))
       throw new Error(`work_state_entries has unsupported columns: ${columns.join(", ")}`);
     // claude-mem's own time of each entry, so an old item reads as old (`tasks.staleDays`).
@@ -221,7 +229,12 @@ export function importClaudeMem(options: ImportOptions): Result<ImportResult> {
         continue;
       }
       const marker = `imported:claude-mem:${options.claudeMemProject}:${name}`;
-      if (db.sqlite.query("SELECT 1 FROM meta WHERE key=?").get(marker)) continue;
+      // The project matches in any case, as the read does; the list name exactly.
+      const seenBefore = db.sqlite
+        .query<{ key: string }, [string]>("SELECT key FROM meta WHERE key=? COLLATE NOCASE")
+        .all(marker)
+        .some((row) => row.key.endsWith(`:${name}`));
+      if (seenBefore) continue;
       const task: ImportedTask = {
         ...named(name, description(list.state)),
         status: "pending",

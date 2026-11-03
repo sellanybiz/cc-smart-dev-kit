@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { claudeMemDb, mistakenImport } from "../../testing/claude-mem-db";
@@ -286,4 +287,82 @@ test("an imported task keeps claude-mem's dates, so an old one counts as stale",
   if (view.state !== "ready") throw new Error(view.state);
   expect(view.value.tasks.map((task) => task.subject)).toEqual(["new-list", "New step"]);
   expect(view.value.stale).toBe(2);
+});
+
+test("a list is imported once, whatever the case of the project name claude-mem matched it under", () => {
+  const paths = { stateDir: tempDir() };
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const run = (file: string, claudeMemProject: string) =>
+    value(
+      importClaudeMem({
+        claudeMemDb: file,
+        workDb: db,
+        project: "p",
+        claudeMemProject,
+        dryRun: false,
+        now: NOW,
+      }),
+    );
+  const first = claudeMemDb([["Plan", { task: "Step", status: "todo" }, NOW - DAY]]);
+  expect(run(first, "home").imported.map((task) => task.subject)).toEqual(["Plan", "Step"]);
+  // The read matches `HOME` to `home`, so `Plan` is the same list; `plan` is another one.
+  const second = claudeMemDb([
+    ["Plan", { task: "Step", status: "todo" }, NOW - DAY],
+    ["plan", { task: "Other step", status: "todo" }, NOW - DAY],
+  ]);
+  expect(run(second, "HOME").imported.map((task) => task.subject)).toEqual(["plan", "Other step"]);
+  expect(run(second, "Home").imported).toEqual([]);
+  db.close();
+});
+
+test("a long name is cut on whole characters, never through an emoji", () => {
+  const paths = { stateDir: tempDir() };
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const name = `${"a".repeat(198)}😀${"b".repeat(10)}`;
+  const file = claudeMemDb([["Plan", { task: name, status: "todo" }, NOW - DAY]]);
+  const result = value(
+    importClaudeMem({
+      claudeMemDb: file,
+      workDb: db,
+      project: "p",
+      claudeMemProject: "home",
+      dryRun: false,
+      now: NOW,
+    }),
+  );
+  expect(result.imported[1]).toEqual({
+    subject: `${"a".repeat(198)}…`,
+    description: `name: ${name}`,
+    status: "pending",
+    list: "Plan",
+    parent: "Plan",
+  });
+  db.close();
+});
+
+test("a claude-mem database with no work-state table has no lists, and the repair still runs", () => {
+  const paths = { stateDir: tempDir() };
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  mistakenImport(db, "p", NOW - DAY); // #1, #2
+  const file = join(tempDir(), "claude-mem.db");
+  new Database(file).close();
+  const result = value(
+    importClaudeMem({
+      claudeMemDb: file,
+      workDb: db,
+      project: "p",
+      claudeMemProject: "home",
+      dryRun: false,
+      now: NOW,
+    }),
+  );
+  expect(result).toEqual({
+    imported: [],
+    dropped: [{ list: "my-focus", number: 1, tasks: 2, touched: [] }],
+    kept: [],
+    skipped: [],
+    open: 0,
+  });
+  expect(statuses(db, 2)).toEqual(["dropped", "dropped"]);
+  db.close();
 });

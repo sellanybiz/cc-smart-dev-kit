@@ -20,12 +20,13 @@ What changed:
   launch gate held said its reason again whenever the text changed, and the text holds live
   numbers (the load, the seconds left), so each waiting crew session said a new line on every
   pass, and each line woke the lead. Now each kind of wait (the load, the memory, a cap) is
-  said once, the spacing between launches is never said, and a wait is said again only after
-  the session came back. The same holds for a paused session's `not resumed` line.
+  said once while the wait lasts, even when it flips between two kinds, the spacing between
+  launches is never said, and a wait is said again only after it ended (the session came back,
+  or was stopped). The same holds for a paused session's `not resumed` line.
 - **`crew stop` ends a resume that waits for room.** A `crew answer`, `crew note` or
   `crew resume` the launch gate held leaves the resume waiting, and the watch started it once
   the machine had room, even after the lead stopped that crew session. The stop now ends the
-  wait, and its line says so.
+  wait, also when the watch was about to start it, and its line says so, a failed stop's too.
 - **The import leaves claude-mem's own lists out.** claude-mem keeps its own data (focus
   areas, rules, owner goals, and a record of each subagent: the lists `my-focus`, `my-rules`,
   `owner-goals` and its month lists, and `agent-lifecycle`) in work state too. 1.10.0 took
@@ -34,7 +35,9 @@ What changed:
   them, each with a note that says why. A list a session added to or changed stays open, and
   the run names the tasks to look at. The repair works without claude-mem installed.
 - **The import reads claude-mem's lists as claude-mem does:** in its own order, with the
-  project name in any case, and `completed` and `failed` closed too.
+  project name in any case, and `completed` and `failed` closed too. A list is imported once,
+  whatever the case of the project name; a long name is cut on whole characters, never through
+  an emoji; and a claude-mem database with no work-state table counts as having no lists.
 - **An imported task keeps claude-mem's dates.** An item claude-mem last touched long ago now
   counts as stale (`tasks.staleDays`), so a session start counts it instead of listing it.
   This holds for lists imported from 1.10.1 on: a list 1.10.0 imported keeps the import's

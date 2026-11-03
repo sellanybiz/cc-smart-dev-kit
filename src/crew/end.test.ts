@@ -302,6 +302,26 @@ describe("crew stop", () => {
     expect(after?.resumeWaits).toBeUndefined();
   });
 
+  test("D72: a stop that fails still ends the wait, and its refusal says so", async () => {
+    const world = await boardWorld();
+    const record = await world.addCrew({ state: "done" });
+    const resumeWaits = { at: new Date(NOW).toISOString(), answer: null };
+    await updateCrew(world.paths.stateDir, world.repo, record.id, { resumeWaits }, NOW);
+    expect(
+      await runCrew(
+        ["stop", record.id],
+        world.ctx({}, { FAKE_AGENTS_JSON: LISTED, FAKE_STOP: "fail" }),
+      ),
+    ).toBe(1);
+    expect(world.err).toEqual([
+      "crew stop: claude stop a1b2c3d4 failed (exit 1): could not stop; it no longer waits to come back",
+      `Fix: claude stop a1b2c3d4 by hand, or ${COMMAND} crew list to see it`,
+    ]);
+    const after = await readCrew(world.paths.stateDir, world.repo, record.id);
+    expect(after?.state).toBe("done");
+    expect(after?.resumeWaits).toBeUndefined();
+  });
+
   test("D73: the lead's stop of a swept crew session makes the stop the lead's, never restored", async () => {
     const world = await boardWorld();
     const record = await world.addCrew({ state: "stopped" });

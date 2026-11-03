@@ -462,7 +462,7 @@ export async function runCrewStop(ref: string, ctx: CrewContext): Promise<number
   if (!stopped.ok) {
     return refuse(
       failure(
-        `crew stop: ${stopped.why}`,
+        `crew stop: ${stopped.why}${cancelled}`,
         `Fix: claude stop ${id} by hand, or ${COMMAND} crew list to see it`,
       ),
       ctx,

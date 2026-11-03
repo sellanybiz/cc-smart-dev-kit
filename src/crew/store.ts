@@ -1938,6 +1938,8 @@ export function resumeClaimHeld(claim: CrewRecord["resumeClaim"], atMs: number):
  * unexpired claim. Under the store's lock, so of two resumes of one record only one launches
  * Claude. The claim lasts until the record's state changes (`changeCrew`), `releaseResume`, or
  * `RESUME_CLAIM_MS`. Like `setCrewMemory`, it moves no `updatedAt` and writes no event.
+ * `needsWait`: the watch resumes a waiting record (D72), so it claims one only while it still
+ * waits — a `crew stop` since the watch read it ended the wait, and the stop holds.
  */
 export async function claimResume(
   stateDir: string,
@@ -1946,6 +1948,7 @@ export async function claimResume(
   states: readonly string[],
   token: string,
   atMs: number,
+  needsWait = false,
 ): Promise<boolean> {
   const file = crewFile(stateDir, repo, id);
   return await underStoreLock(stateDir, repo, () => {
@@ -1954,6 +1957,7 @@ export async function claimResume(
       throw new CrewStoreError(`no crew session "${id}" is recorded for ${repo} (${file})`);
     }
     if (!states.includes(before.state)) return false;
+    if (needsWait && before.resumeWaits === undefined) return false;
     const held = before.resumeClaim;
     if (held !== undefined && held.token !== token && resumeClaimHeld(held, atMs)) return false;
     writeJsonFile(

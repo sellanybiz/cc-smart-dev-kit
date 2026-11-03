@@ -606,7 +606,7 @@ export async function resumeSession(
   ctx: CrewContext,
   record: CrewRecord,
   text: null | string,
-  options: { replacesItself?: boolean } = {},
+  options: { replacesItself?: boolean; needsWait?: boolean } = {},
 ): Promise<ResumeResult> {
   if (record.sessionId === null) {
     return { ok: false, unnamed: false, why: `${record.name} has no session to resume` };
@@ -695,6 +695,7 @@ export async function resumeSession(
         [record.state],
         token,
         ctx.now(),
+        options.needsWait,
       );
       if (claimed)
         await updateCrew(
