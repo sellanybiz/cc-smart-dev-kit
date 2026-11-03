@@ -389,6 +389,7 @@ function applySetup(
   // Claude Code's own subagent cap (10 by default): an owned key, never a person's own value.
   const maxSubagents = planMaxSubagents({
     settingsFile: paths.settingsFile,
+    shownFile: tildify(paths.settingsFile, paths.home),
     stateDir: paths.stateDir,
     ...(managed.maxSubagents === null ? {} : { maxSubagents: managed.maxSubagents }),
     dryRun,

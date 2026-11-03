@@ -100,11 +100,16 @@ describe("max subagents", () => {
     expect(read(w.settingsFile)).toEqual({ env: { OTHER: "kept" } });
   });
 
-  test.each(["10", "30", 5, null])("keeps an unowned value %s, even with an option", (value) => {
+  test.each([
+    ["10", "10"],
+    ["30", "30"],
+    [5, "5"],
+    [null, "null"],
+  ])("keeps an unowned value %p, even with an option", (value, said) => {
     const w = world({ env: { [ENV]: value } });
-    const result = apply({ ...w, maxSubagents: 40 });
+    const result = apply({ ...w, maxSubagents: 40, shownFile: "~/.claude/settings.json" });
     expect(result.note).toBe(
-      `max subagents: your own ${ENV} in ${w.settingsFile} is kept; change it by hand to use another value`,
+      `max subagents: ${said} at once (your own ${ENV} in ~/.claude/settings.json; change it there to use another value)`,
     );
     expect(result.written).toBe(false);
     expect(result.changes).toEqual([]);
@@ -112,7 +117,16 @@ describe("max subagents", () => {
     expect(read(w.settingsFile)).toEqual({ env: { [ENV]: value } });
   });
 
-  test.each(["22", undefined])("keeps a person's edit or deletion after setup: %s", (value) => {
+  test.each([
+    [
+      "22",
+      `max subagents: 22 at once (your own ${ENV} in ~/s.json; change it there to use another value)`,
+    ],
+    [
+      undefined,
+      `max subagents: Claude Code's own default (you removed ${ENV} from ~/s.json; set it by hand to use another value)`,
+    ],
+  ])("keeps a person's edit or deletion after setup: %p", (value, said) => {
     const w = world({ env: { OTHER: "kept" } });
     apply(w);
     writeFileSync(
@@ -121,7 +135,7 @@ describe("max subagents", () => {
     );
     const before = readFileSync(w.settingsFile, "utf8");
     expect(apply(w).written).toBe(false);
-    expect(apply(w).note).toContain("your own");
+    expect(apply({ ...w, shownFile: "~/s.json" }).note).toBe(said);
     restore(w.stateDir);
     expect(readFileSync(w.settingsFile, "utf8")).toBe(before);
   });
@@ -166,7 +180,7 @@ describe("max subagents", () => {
       "max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
     );
     expect(maxSubagentsLine({ kind: "yours", value: "30" }, file)).toBe(
-      "max subagents: 30 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json)",
+      "max subagents: 30 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
     );
     expect(maxSubagentsLine({ kind: "removed" }, file)).toBe(
       "max subagents: Claude Code's own default (you removed CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS from ~/.claude/settings.json; set it by hand to use another value)",

@@ -58,6 +58,8 @@ export function maxSubagentsState(settingsFile: string, stateDir: string): MaxSu
 
 export interface MaxSubagentsOptions {
   settingsFile: string;
+  /** The settings file as setup's lines show it (`~/.claude/settings.json`); `settingsFile` when left out. */
+  shownFile?: string;
   stateDir: string;
   /** The kit's requested value; omitted means the default. Never overrides a person's key. */
   maxSubagents?: number;
@@ -75,12 +77,9 @@ export interface MaxSubagentsPlan {
 export function planMaxSubagents(options: MaxSubagentsOptions): MaxSubagentsPlan {
   const value = String(validateMaxSubagents(options.maxSubagents ?? DEFAULT_MAX_SUBAGENTS));
   const state = maxSubagentsState(options.settingsFile, options.stateDir);
-  // A key removed after we wrote it is the person's choice too.
+  // A key removed after we wrote it is the person's choice too: setup says so in doctor's words.
   if (state.kind === "yours" || state.kind === "removed") {
-    return {
-      set: [],
-      note: `max subagents: your own ${MAX_SUBAGENTS_ENV} in ${options.settingsFile} is kept; change it by hand to use another value`,
-    };
+    return { set: [], note: maxSubagentsLine(state, options.shownFile ?? options.settingsFile) };
   }
   return {
     set: [[MAX_SUBAGENTS_KEY, value]],
@@ -98,13 +97,16 @@ function shown(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
-/** `doctor`'s one information line: how many subagents a session runs at once, and whose value. */
+/**
+ * How many subagents a session runs at once, and whose value: `doctor`'s one information line,
+ * and setup's note when the value is the person's.
+ */
 export function maxSubagentsLine(state: MaxSubagentsState, settingsFile: string): string {
   switch (state.kind) {
     case "ours":
       return `max subagents: ${shown(state.value)} at once (set by ${COMMAND}); ${CHANGE}`;
     case "yours":
-      return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile})`;
+      return `max subagents: ${shown(state.value)} at once (your own ${MAX_SUBAGENTS_ENV} in ${settingsFile}; change it there to use another value)`;
     case "removed":
       return `max subagents: Claude Code's own default (you removed ${MAX_SUBAGENTS_ENV} from ${settingsFile}; set it by hand to use another value)`;
     case "unset":

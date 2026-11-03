@@ -168,8 +168,8 @@ test("UX-3: it is one screen, and every line fits 80 columns", () => {
     `  ${COMMAND} doctor              the health check`,
     "",
     "More commands: task, issue, workflow, update, restore, migrate, launch,",
-    "  sessions, worktrees, usage, report, portal, mcp, omniroute, job,",
-    "  user, hook, statusline, version",
+    "  sessions, worktrees, usage, report, portal, mcp, omniroute, job, user,",
+    "  hook, statusline, version",
     `Help on one:  ${COMMAND} ${HELP_COMMAND} <command>   (or <command> --help)`,
   ].join("\n");
   expect(topLevelHelp()).toBe(expected);
