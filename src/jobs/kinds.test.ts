@@ -22,7 +22,7 @@ function kind(name: string): KindSpec {
   return spec;
 }
 
-test("only ten named files fit the light lane", () => {
+test("only ten named files skip the queue", () => {
   expect(
     namesOnlyFiles(
       kind("test:run"),
@@ -69,7 +69,7 @@ describe("isPrintOnly", () => {
 describe("the kinds a project sees", () => {
   test("knows the default kinds, each with a way to be found and no size", () => {
     expect(Object.keys(DEFAULT_KINDS).sort()).toEqual(
-      ["build", "image:build", "install", "lint:typed", "test:coverage", "test:run", "tsc"].sort(),
+      ["build", "image:build", "lint:typed", "test:coverage", "test:run", "tsc"].sort(),
     );
     for (const spec of Object.values(DEFAULT_KINDS)) {
       expect(spec.match?.length ?? 0).toBeGreaterThan(0);
@@ -123,8 +123,8 @@ describe("the size fields an older project file may still set", () => {
   test("are named, in one order, by ignoredFieldsOf", () => {
     // `skipWords` and `valuedFlags` are no longer here: they came back in 1.5.0 for
     // `noSlotForFiles`, with the meaning they had, so `doctor` stops calling them stale.
-    expect(IGNORED_KIND_FIELDS).toEqual(["gb", "filesGb", "maxFiles", "workers"]);
-    expect(ignoredFieldsOf(old)).toEqual([...IGNORED_KIND_FIELDS]);
+    expect(IGNORED_KIND_FIELDS).toEqual(["gb", "filesGb", "maxFiles", "workers", "light"]);
+    expect(ignoredFieldsOf(old)).toEqual(["gb", "filesGb", "maxFiles", "workers"]);
     expect(ignoredFieldsOf({ skipWords: ["run"], valuedFlags: ["-c"] })).toEqual([]);
     expect(ignoredFieldsOf({ gb: 4, match: [{ tool: "x" }] })).toEqual(["gb"]);
     expect(ignoredFieldsOf({ about: "x", match: [{ tool: "x" }], printOnly: ["-v"] })).toEqual([]);
@@ -138,8 +138,6 @@ describe("the size fields an older project file may still set", () => {
   test("cc-smart-dev-kit.json still refuses what was never a field, and a size out of range", () => {
     for (const bad of [
       { jobs: { kind: {} } },
-      { jobs: { kinds: { e2e: { gb: -1 } } } },
-      { jobs: { kinds: { e2e: { gb: 2.5 } } } },
       { jobs: { kinds: { E2E: { gb: 2 } } } },
       { jobs: { kinds: { e2e: { gb: 2, size: 3 } } } },
       { jobs: { kinds: { e2e: { gb: 2, match: [{ tool: "x", script: "y" }] } } } },
@@ -263,4 +261,12 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
         .success,
     ).toBe(false);
   });
+});
+
+test("all old balancing fields load as unknown and are ignored", () => {
+  expect(
+    kindsSchema.safeParse({
+      custom: { gb: "old", filesGb: null, maxFiles: -1, workers: [], light: { old: true } },
+    }).success,
+  ).toBe(true);
 });

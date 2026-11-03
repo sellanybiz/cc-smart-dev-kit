@@ -9,16 +9,10 @@ import {
   cgroupLimit,
   GIB,
   type MemoryFacts,
-  MIN_CEILING_GB,
   machineMemory,
   meminfoBytes,
-  memoryCeilingGb,
   ownCgroup,
   realMemoryFacts,
-  sliceChain,
-  userManagerCgroup,
-  userManagerControllers,
-  userSliceCgroup,
 } from "./memory";
 
 const KB = 1024;
@@ -207,60 +201,5 @@ describe("the machine's own readings", () => {
     expect(real.platform).toBe(process.platform);
     expect(real.totalmem).toBe(totalmem);
     expect(real.freemem).toBe(freemem);
-  });
-});
-
-describe("memoryCeilingGb", () => {
-  test("leaves the reserve for what the heavy jobs never take", () => {
-    expect(memoryCeilingGb(54 * GIB, 8)).toBe(46);
-    expect(memoryCeilingGb(64 * GIB, 8)).toBe(56);
-    expect(memoryCeilingGb(54 * GIB + 0.9 * GIB, 8)).toBe(46);
-    expect(memoryCeilingGb(64 * GIB, 0)).toBe(64);
-  });
-
-  // A job must always have room to run, even on a small machine.
-  test("never drops below the floor", () => {
-    expect(MIN_CEILING_GB).toBe(14);
-    expect(memoryCeilingGb(16 * GIB, 8)).toBe(14);
-    expect(memoryCeilingGb(22 * GIB, 8)).toBe(14);
-    expect(memoryCeilingGb(23 * GIB, 8)).toBe(15);
-  });
-});
-
-describe("userSliceCgroup", () => {
-  // A dash in a slice name is nesting: the flat path never exists, and the weights would
-  // be set on a group that is not there.
-  test("nests at every dash, and leaves a dashless slice at the top", () => {
-    expect(userSliceCgroup(1000, "cc-smart-dev-kit-heavy.slice")).toBe(
-      "/user.slice/user-1000.slice/user@1000.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-heavy.slice",
-    );
-    expect(userSliceCgroup(7, "solo.slice")).toBe(
-      "/user.slice/user-7.slice/user@7.service/solo.slice",
-    );
-  });
-
-  // The weights go on every slice of this chain: systemd shares CPU and I/O between
-  // slices that are siblings, so only the outermost one competes with the desktop.
-  test("the slice chain, outermost first, and the user manager's cgroup", () => {
-    expect(sliceChain("cc-smart-dev-kit-heavy.slice")).toEqual([
-      "cc.slice",
-      "cc-smart.slice",
-      "cc-smart-dev.slice",
-      "cc-smart-dev-kit.slice",
-      "cc-smart-dev-kit-heavy.slice",
-    ]);
-    expect(sliceChain("solo.slice")).toEqual(["solo.slice"]);
-    expect(userManagerCgroup(1000)).toBe("/user.slice/user-1000.slice/user@1000.service");
-  });
-
-  test("the user manager's delegated controllers, or null when it cannot be read", () => {
-    const path = `/sys/fs/cgroup${userManagerCgroup(7)}/cgroup.controllers`;
-    expect(userManagerControllers(facts({ [path]: "cpu memory pids\n" }).read, 7)).toEqual([
-      "cpu",
-      "memory",
-      "pids",
-    ]);
-    expect(userManagerControllers(facts({ [path]: "\n" }).read, 7)).toEqual([]);
-    expect(userManagerControllers(facts({}).read, 7)).toBeNull();
   });
 });

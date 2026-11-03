@@ -431,13 +431,7 @@ function inspect(
 
 /**
  * The heavy-job kind a shell command runs, or null. When it runs several (`tsc && next
- * build`), the first one the line runs that is not `light`: the queue counts jobs and the
- * kind picks the job's lane, so a line that installs and then builds (`bun install && next
- * build`) takes a heavy slot, as its build needs; only a line of light kinds alone takes a light
- * one. `source` says where the line runs and how to read a folder's
- * `package.json`; without it, a package manager's word is the tool, as before. `dialect` is the
- * shell that reads the line: Bash, or the PowerShell tool's (`job-route` refuses a heavy
- * PowerShell line and names the Bash tool instead).
+ * build`), the first kind the line runs.
  */
 export function classifyHeavyCommand(
   command: string,
@@ -446,7 +440,7 @@ export function classifyHeavyCommand(
   dialect: Dialect = "bash",
 ): string | null {
   const found = inspect(command, kinds, dialect, 0, runOf(source));
-  return found.find((kind) => kinds[kind]?.light !== true) ?? found[0] ?? null;
+  return found[0] ?? null;
 }
 
 /**

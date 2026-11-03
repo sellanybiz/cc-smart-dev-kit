@@ -139,15 +139,7 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     isNested: async () => false,
     ancestorHoldsName: async () => false,
     acquire: async () => ({ release: () => {}, waitedSince: null }),
-    launchFacts: () => null,
     now: Date.now,
-    slice: {
-      controllers: () => ["cpu", "memory", "pids"],
-      controlGroup: () => null,
-      readFile: () => null,
-      setMemoryMax: () => true,
-      setWeights: () => true,
-    },
     run: async (argv) => {
       started = argv;
       return { code: 0, leftovers: false, sentOn: false, signal: null };
@@ -158,14 +150,9 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     {
       kind: "test:run",
       command,
-      cpuWeight: 20,
-      ioWeight: 20,
-      memoryMax: "1G",
       pid: 1,
       checkout: "/repo",
-      slice: "jobs.slice",
       slot: true,
-      startedAt: 0,
     },
     deps,
   );

@@ -1,7 +1,5 @@
 /**
- * How much memory this machine has, and how much is free right now. The queue reads only the
- * total (its ceiling, `memoryCeilingGb`); the free number is for the crew's start gate
- * (`freeForCrewGb`).
+ * Memory readings still used by external callers. The job queue never reads these.
  *
  * - **Linux:** `MemTotal` and `MemAvailable` from `/proc/meminfo`. `MemAvailable` is what
  *   the kernel can still hand out without swapping. Some container systems (lxcfs) already
@@ -157,56 +155,4 @@ export function machineMemory(facts: MemoryFacts): MachineMemory {
     availableBytes: memAvailable === null ? inGroup : Math.min(memAvailable, inGroup),
     limit,
   };
-}
-
-/** The lowest memory ceiling the heavy jobs get, however small the machine is. */
-export const MIN_CEILING_GB = 14;
-
-/**
- * The memory ceiling of all heavy jobs on this machine together, in whole GB: its memory less
- * `reserveGb` (kept for what the heavy jobs never take: the desktop, the Claude sessions, MCP
- * servers, dev servers, a local database), and never less than `MIN_CEILING_GB`, so a job
- * always has room to run. On Linux it is the `MemoryMax` of the jobs' slice.
- */
-export function memoryCeilingGb(totalBytes: number, reserveGb: number): number {
-  return Math.max(MIN_CEILING_GB, Math.floor(totalBytes / GIB) - reserveGb);
-}
-
-/**
- * The slices a slice nests in, outermost first. systemd reads every dash in a slice name
- * as nesting: `cc-smart-dev-kit-heavy.slice` sits inside `cc-smart-dev-kit.slice`, which
- * sits inside `cc-smart-dev.slice`, and so on up to `cc.slice`. One home for that rule, so
- * the launcher, the weights and the controller read all agree.
- */
-export function sliceChain(slice: string): string[] {
-  const parts = slice.replace(/\.slice$/, "").split("-");
-  return parts.map((_, i) => `${parts.slice(0, i + 1).join("-")}.slice`);
-}
-
-/** The cgroup of user `uid`'s systemd manager, under `/sys/fs/cgroup`. */
-export function userManagerCgroup(uid: number): string {
-  return `/user.slice/user-${String(uid)}.slice/user@${String(uid)}.service`;
-}
-
-/**
- * The cgroup path (under `/sys/fs/cgroup`) of a slice of user `uid`'s systemd manager.
- * One home for that rule, so the launcher and the weights agree.
- */
-export function userSliceCgroup(uid: number, slice: string): string {
-  return `${userManagerCgroup(uid)}/${sliceChain(slice).join("/")}`;
-}
-
-/**
- * The controllers this machine's user manager was given (`cgroup.controllers`), or null
- * when that file cannot be read: no user manager there, or not Linux at all. A controller
- * that is missing cannot carry a weight: systemd records the property and writes nothing
- * to the cgroup, so the job would carry no priority while `job status` claimed one.
- */
-export function userManagerControllers(read: ReadText, uid: number): string[] | null {
-  const text = read(`/sys/fs/cgroup${userManagerCgroup(uid)}/cgroup.controllers`);
-  if (text === null) return null;
-  return text
-    .trim()
-    .split(/\s+/)
-    .filter((name) => name !== "");
 }

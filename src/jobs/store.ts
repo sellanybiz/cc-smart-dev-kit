@@ -1,46 +1,10 @@
-/**
- * Where reservations live: a folder of small files, one per lease (a slot or a name held) and
- * one per ticket (a place in the line).
- *
- *   <dir>/leases/<token>.json    a job holds a slot (or only a name)
- *   <dir>/tickets/<token>.json   a job waits for its turn
- *   <dir>/lock                   held for a moment while a job takes a slot
- *
- * Each file names the process that wrote it: its pid, that process's start time, the host
- * name and the pid namespace. A file is stale when that process is gone: the pid is dead,
- * or alive with another start time (the pid was reused). The judge is the plugin's one
- * lock judge, `holderIsGone` in `src/setup/lock.ts`. A stale file counts for nothing, and
- * the next reader removes it. So a job killed with SIGKILL frees its slot at the next
- * look, with no clean-up step. Windows reads a process's start time with PowerShell
- * (`windows.ts`), and a holder it cannot judge counts as alive: a job waits, never runs
- * on top.
- *
- * A file from a process this machine cannot see (another pid namespace: a container on
- * this host sharing the folder) cannot be judged by its pid. Its writer touches it every
- * 5 seconds (the heartbeat), and it is stale when it was not touched for 30 seconds
- * (`HEARTBEAT_MS`, `UNSEEN_STALE_MS`: why those numbers).
- *
- * Taking a slot happens under the folder's lock (`withLock`, the same lock as setup's,
- * here with mode 0664 so every user of a shared folder can read who holds it), so two jobs
- * never both take the last free slot. Every file is written whole: a temp file, then a
- * rename, so a reader never sees half a record. Lease and ticket files are 0644: every
- * user of a shared folder reads them; only their writer changes them.
- *
- * A SHARED FOLDER is for one host: containers or users on one machine, through a bind
- * mount. They share one clock, which the time-based judge needs. A folder on a network
- * file system (NFS, SMB, 9p, sshfs …) is left out with a note: there, clocks differ and
- * O_EXCL and rename may not hold.
- */
-
+/** Local leases and tickets with stale-process recovery and atomic acquisition. */
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
-  statfsSync,
   statSync,
   unlinkSync,
   utimesSync,
@@ -54,11 +18,8 @@ import {
   type StartTimeReader,
   withLock,
 } from "../setup/lock";
-import { DEFAULT_LIGHT_JOBS } from "./config";
+import { HEAVY_SLOTS } from "./config";
 import {
-  type JobLane,
-  laneUsed,
-  type MemoryAdmission,
   parseHolder,
   type Store,
   type StoreHeld,
@@ -66,6 +27,7 @@ import {
   type StoreTicket,
   type StoreUnits,
   slotOfWire,
+  slotsUsed,
   wireOfSlot,
 } from "./queue";
 import { leaseHolder, startTimeReader } from "./windows";
@@ -87,7 +49,7 @@ export const UNSEEN_STALE_MS = 30_000;
 const LOCK_STALE_MS = 30_000;
 /** How long a take waits for the folder's lock before it tries again next round. */
 const LOCK_WAIT_MS = 2_000;
-/** The folder's lock: every user of a shared folder reads it, to judge who holds it. */
+/** The folder's lock: readable by the lease judge, to judge who holds it. */
 const LOCK_MODE = 0o664;
 /** Lease and ticket files: every user reads them; only the writer changes them. */
 const FILE_MODE = 0o644;
@@ -186,8 +148,7 @@ export function tempFileBeside(
 
 /**
  * Writes `text` to `file` whole: a temp file beside it, then a rename. The temp file gets
- * FILE_MODE before the rename (chmod: the umask may have narrowed it), so other users
- * of a shared folder can read it.
+ * FILE_MODE before the rename (chmod: the umask may have narrowed it), so readers can inspect it.
  */
 function writeWhole(file: string, text: string, token: string): void {
   const temp = tempFileBeside(file, token);
@@ -212,17 +173,7 @@ function removeQuietly(file: string): void {
 
 export interface LeaseStoreOptions {
   dir: string;
-  /** How waiting lines name it: "this machine", or the shared folder. */
   label: string;
-  shared: boolean;
-  /** The heavy slots this store gives out, read again for every decision. May throw. */
-  capacity: () => number;
-  /** The light slots it gives out. Default: `DEFAULT_LIGHT_JOBS`. May throw. */
-  lightCapacity?: () => number;
-  /** This machine's free memory and what a job needs to start. Shared folders: none. */
-  memoryAdmission?: () => MemoryAdmission;
-  /** Does this store keep an `--exclusive` name to one job? Default: every name. May throw. */
-  keepsExclusive?: (name: string) => boolean;
   /** A remark about one file (one this user may not read). Each file is named once. */
   onNote?: (line: string) => void;
   /** The writer of this process's files. Default: this process (`currentFileHolder`). */
@@ -245,9 +196,7 @@ export interface LeaseStore extends Store {
 }
 
 /**
- * A store over a folder of lease and ticket files. The folder must exist. This machine's
- * store makes its `leases/` and `tickets/`; a shared store never makes a folder (the
- * machine's own setup prepares it, `openSharedStore`).
+ * A store over a local folder of lease and ticket files. It makes its subfolders.
  */
 export function leaseStore(options: LeaseStoreOptions): LeaseStore {
   const me = options.self ?? currentFileHolder();
@@ -399,7 +348,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
       holder: me,
       record,
     } satisfies StoreFile);
-    if (!options.shared) mkdirSync(folder, { recursive: true });
+    mkdirSync(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -408,12 +357,6 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
   return {
     dir: options.dir,
     label: options.label,
-    shared: options.shared,
-    capacity: () => Promise.resolve().then(options.capacity),
-    lightCapacity: () =>
-      Promise.resolve().then(() => options.lightCapacity?.() ?? DEFAULT_LIGHT_JOBS),
-    ...(options.memoryAdmission === undefined ? {} : { memoryAdmission: options.memoryAdmission }),
-    keepsExclusive: (name) => Promise.resolve().then(() => options.keepsExclusive?.(name) ?? true),
 
     held: () =>
       Promise.resolve().then(() =>
@@ -444,7 +387,7 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
         };
       }),
 
-    tryTake: async (lane: JobLane, recordText, exclusive) => {
+    tryTake: async (slot: boolean, recordText, exclusive) => {
       try {
         return await withLock(
           options.dir,
@@ -453,18 +396,9 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
             if (exclusive !== undefined && held.some(({ file }) => file.exclusive === exclusive)) {
               return null;
             }
-            if (lane !== "none") {
-              const capacity =
-                lane === "light"
-                  ? (options.lightCapacity?.() ?? DEFAULT_LIGHT_JOBS)
-                  : options.capacity();
-              const units = held.map(({ file }) => ({
-                holder: parseHolder(file.record),
-                slot: file.slot,
-              }));
-              if (laneUsed(units, lane) >= capacity) return null;
-            }
-            const { path } = write(leases, lane !== "none", recordText, exclusive);
+            if (slot && slotsUsed(held.map(({ file }) => ({ slot: file.slot }))) >= HEAVY_SLOTS)
+              return null;
+            const { path } = write(leases, slot, recordText, exclusive);
             return { release: () => letGo(path) };
           },
           { waitMs: LOCK_WAIT_MS, fallbackStaleMs: LOCK_STALE_MS, mode: LOCK_MODE },
@@ -475,221 +409,4 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
       }
     },
   };
-}
-
-/** The file of a shared folder that says how many heavy jobs run at once for all its users. */
-export const MAX_JOBS_FILE = "max-jobs";
-/** The file an older plugin read from a shared folder: whole GB, which the queue no longer counts. */
-const LEGACY_BUDGET_FILE = "budget";
-
-/**
- * The number of heavy jobs at once in a shared folder's `max-jobs` file (a whole number, 1 or
- * more), or a reason it is not usable. A folder that has only the old `budget` file (GB) is not
- * usable: the reason names the fix. A folder with both is read by `max-jobs`, and an older
- * plugin goes on reading `budget`, so a shared folder can be moved over while both run.
- */
-export function readMaxJobsFile(dir: string): { slots: number } | { problem: string } {
-  const file = join(dir, MAX_JOBS_FILE);
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === "ENOENT" && existsSync(join(dir, LEGACY_BUDGET_FILE))) {
-      return {
-        problem: `it has only the old ${LEGACY_BUDGET_FILE} file (GB), and the queue counts jobs now: write the number of heavy jobs at once, for every user of the folder, into ${file} (a whole number, for example 3)`,
-      };
-    }
-    return { problem: `${file} cannot be read (${code ?? String(error)})` };
-  }
-  const value = text.trim();
-  if (!/^\d+$/.test(value) || Number(value) < 1) {
-    return { problem: `${file} does not hold a whole number of jobs, 1 or more` };
-  }
-  return { slots: Number(value) };
-}
-
-/**
- * The names a shared folder keeps to one job (`job run --exclusive`): its `exclusive`
- * file, one name a line; blank lines and `#` comments are skipped. No file: no names.
- */
-export function readExclusiveNames(dir: string): ReadonlySet<string> {
-  let text: string;
-  try {
-    text = readFileSync(join(dir, "exclusive"), "utf8");
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return new Set();
-    throw error;
-  }
-  return new Set(
-    text
-      .split("\n")
-      .map((line) => line.replace(/#.*/, "").trim())
-      .filter((line) => line !== ""),
-  );
-}
-
-/**
- * File systems whose clocks or locks a shared folder cannot trust: the `f_type` that
- * `statfs` gives on Linux (the kernel's magic numbers, `linux/magic.h`).
- */
-const NETWORK_FS: ReadonlyMap<number, string> = new Map([
-  [0x6969, "NFS"],
-  [0x517b, "SMB"],
-  [0xff534d42, "CIFS"],
-  [0xfe534d42, "SMB2"],
-  [0x01021997, "9p"],
-  [0x5346414f, "AFS"],
-  [0x6b414653, "AFS"],
-  [0x00c36400, "Ceph"],
-  [0x73757245, "Coda"],
-  [0x564c, "NCP"],
-  [0x0bd00bd0, "Lustre"],
-  [0x01161970, "GFS2"],
-  [0x7461636f, "OCFS2"],
-]);
-const FUSE_MAGIC = 0x65735546;
-/** FUSE file systems that reach another machine (`fuse.<subtype>` in mountinfo). */
-const NETWORK_FUSE = new Set([
-  "sshfs",
-  "rclone",
-  "s3fs",
-  "gcsfuse",
-  "goofys",
-  "glusterfs",
-  "juicefs",
-  "davfs",
-  "curlftpfs",
-  "cephfs",
-]);
-
-/** Undoes mountinfo's octal escapes (`\040` is a space). */
-function unescapeMount(path: string): string {
-  return path.replace(/\\([0-7]{3})/g, (_, octal: string) =>
-    String.fromCharCode(Number.parseInt(octal, 8)),
-  );
-}
-
-/** The type (`fuse.sshfs`, `ext4` …) of the mount that holds `path`, from mountinfo text. */
-export function mountTypeOf(path: string, mountinfo: string): string | null {
-  let best: { point: string; type: string } | null = null;
-  for (const line of mountinfo.split("\n")) {
-    const [left, right] = line.split(" - ");
-    const point = left?.split(" ")[4];
-    const type = right?.split(" ")[0];
-    if (point === undefined || type === undefined) continue;
-    const mount = unescapeMount(point);
-    const inside = mount === "/" || path === mount || path.startsWith(`${mount}/`);
-    if (inside && (best === null || mount.length >= best.point.length)) {
-      best = { point: mount, type };
-    }
-  }
-  return best?.type ?? null;
-}
-
-/** What a shared folder needs from the system: replaced in the tests. */
-export interface SharedFolderFacts {
-  platform: NodeJS.Platform;
-  /** `statfs(dir).type`, or null when it cannot be read. */
-  fsType: (dir: string) => number | null;
-  /** `/proc/self/mountinfo`, or null. */
-  mountinfo: () => string | null;
-}
-
-export const realSharedFolderFacts: SharedFolderFacts = {
-  platform: process.platform,
-  fsType: (dir) => {
-    try {
-      return statfsSync(dir).type;
-    } catch {
-      return null;
-    }
-  },
-  mountinfo: () => {
-    try {
-      return readFileSync("/proc/self/mountinfo", "utf8");
-    } catch {
-      return null;
-    }
-  },
-};
-
-/** The network file system `dir` is on (Linux), or null when it is a local one. */
-export function networkFileSystem(dir: string, facts: SharedFolderFacts): string | null {
-  if (facts.platform !== "linux") return null;
-  const type = facts.fsType(dir);
-  if (type === null) return null;
-  const known = NETWORK_FS.get(type);
-  if (known !== undefined) return known;
-  if (type !== FUSE_MAGIC) return null;
-  const info = facts.mountinfo();
-  let real = dir;
-  try {
-    real = realpathSync(dir);
-  } catch {
-    // Keep the path as given.
-  }
-  const mount = info === null ? null : mountTypeOf(real, info);
-  const subtype = mount?.startsWith("fuse.") ? mount.slice(5) : null;
-  return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
-}
-
-/**
- * Opens a shared folder as a store, or says why it cannot be used: the folder is missing,
- * it sits on a network file system, its `max-jobs` file is missing or wrong (or it has only
- * the old `budget` file), its `leases/` or `tickets/` is missing, or a file cannot be written
- * and removed there. It never makes a folder there: the machine's own setup prepares it. Never
- * a wait that cannot end: a folder that does not work is left out, with a note.
- */
-export function openSharedStore(
-  dir: string,
-  options: { facts?: SharedFolderFacts; onNote?: (line: string) => void } = {},
-): { store: LeaseStore } | { note: string } {
-  if (!existsSync(dir)) {
-    return { note: `The shared folder ${dir} is missing: this job runs without its slots.` };
-  }
-  const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
-  if (network !== null) {
-    return {
-      note: `The shared folder ${dir} is left out: it is on a network file system (${network}). A shared folder is for one host: containers or users on this machine, through a bind mount.`,
-    };
-  }
-  const limit = readMaxJobsFile(dir);
-  if ("problem" in limit) {
-    return { note: `The shared folder ${dir} is left out: ${limit.problem}.` };
-  }
-  for (const folder of ["leases", "tickets"]) {
-    const path = join(dir, folder);
-    let isFolder = false;
-    try {
-      isFolder = statSync(path).isDirectory();
-    } catch {
-      // Missing, or not ours to see: said below.
-    }
-    if (!isFolder) {
-      return { note: `The shared folder ${dir} is left out: ${path} is missing.` };
-    }
-    const probe = join(path, `.probe-${crypto.randomUUID()}`);
-    try {
-      writeFileSync(probe, "");
-      unlinkSync(probe);
-    } catch (error) {
-      return {
-        note: `The shared folder ${dir} is left out: ${path} cannot be written (${errorCode(error) ?? String(error)}).`,
-      };
-    }
-  }
-  const store = leaseStore({
-    dir,
-    label: dir,
-    shared: true,
-    capacity: () => {
-      const now = readMaxJobsFile(dir);
-      if ("problem" in now) throw new Error(now.problem);
-      return now.slots;
-    },
-    keepsExclusive: (name) => readExclusiveNames(dir).has(name),
-    ...(options.onNote !== undefined && { onNote: options.onNote }),
-  });
-  return { store };
 }
