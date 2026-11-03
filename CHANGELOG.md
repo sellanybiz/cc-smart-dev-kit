@@ -3,6 +3,27 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 1.11.1
+
+Each session goes through its own parked items.
+
+**What to run** after the update: nothing. A session started before the update reads the old
+skill until it restarts.
+
+What changed:
+
+- **`/cc-smart-dev-kit:user-available` asks about this session's items only.** The parked list is
+  the machine's, and the skill used to go through all of it, so two sessions brought back at
+  once asked the person each other's questions, in projects that were not their own. Now
+  `user list --json` says whose each item is (`whose`), judged for the session that asks:
+  `this session` (it parked it, it leads the crew session the item is for, or the session that
+  parked it ended in this project), `another session` (a running session owns it, named in
+  `waitsIn`), or `no session` (its session ended in another project). The skill goes through
+  its own, names the sessions that hold the rest, asks once about items nobody owns any more,
+  and never clears another session's item.
+- **`user available` and the "available again" note count this session's items**, and name
+  the sessions that hold the others. The text view of `user list` says who answers each item.
+
 ## 1.11.0
 
 Three task layers, a type on each task, blocked-by, and a Tasks tab in the portal (D76).

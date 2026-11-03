@@ -22,6 +22,7 @@ import {
   loadProjectConfig,
   locateCheckout,
   locateCheckoutAsync,
+  type ResolveOptions,
 } from "../project/resolve";
 import { repoKey } from "../workflow/reviews";
 import { DEFAULT_STALE_DAYS } from "./project/check";
@@ -93,19 +94,43 @@ export async function taskContextAsync(cwd: string, env: Env = process.env): Pro
   return contextOf(checkout, cwd, env);
 }
 
+/** The project key of a checkout already found; outside git (null), the folder's own real path. */
+function keyOf(checkout: Checkout | null, cwd: string): string {
+  return projectKey(
+    checkout === null ? realpathSync(cwd) : (checkout.mainCheckout ?? checkout.root),
+  );
+}
+
+/**
+ * A folder's project key alone, without the project's settings: one git call, inside a hook's
+ * budget when it gives one (`timeFor`). Throws as `locateCheckout` does (a folder that is not
+ * there, a git that did not answer in time).
+ */
+export function folderProject(
+  cwd: string,
+  options: Pick<ResolveOptions, "env" | "timeFor"> = {},
+): string {
+  return keyOf(locateCheckout(cwd, options), cwd);
+}
+
 /** The answer for a checkout already found (null: the folder is not in git). */
 function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContext {
   if (checkout === null) {
     return {
       ok: true,
-      project: projectKey(realpathSync(cwd)),
+      project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
-  const base = { ok: true as const, project: projectKey(repo), repo, checkoutRoot: checkout.root };
+  const base = {
+    ok: true as const,
+    project: keyOf(checkout, cwd),
+    repo,
+    checkoutRoot: checkout.root,
+  };
   let settings: NonNullable<ReturnType<typeof loadProjectConfig>["config"]>["tasks"];
   try {
     settings = loadProjectConfig(checkout).config?.tasks;

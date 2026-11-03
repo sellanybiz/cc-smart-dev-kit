@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "1.11.0",
+  version: "1.11.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -13150,8 +13150,8 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
 
 // src/portal/api/projects.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync62, mkdirSync as mkdirSync29, readFileSync as readFileSync76 } from "fs";
-import { basename as basename12, dirname as dirname28, join as join76, relative as relative11 } from "path";
+import { existsSync as existsSync63, mkdirSync as mkdirSync29, readFileSync as readFileSync76 } from "fs";
+import { basename as basename12, dirname as dirname29, join as join76, relative as relative11 } from "path";
 
 // src/crew/store.ts
 import {
@@ -14912,18 +14912,29 @@ async function taskContextAsync(cwd, env = process.env) {
   }
   return contextOf(checkout, cwd, env);
 }
+function keyOf(checkout, cwd) {
+  return projectKey(checkout === null ? realpathSync5(cwd) : checkout.mainCheckout ?? checkout.root);
+}
+function folderProject(cwd, options = {}) {
+  return keyOf(locateCheckout(cwd, options), cwd);
+}
 function contextOf(checkout, cwd, env) {
   if (checkout === null) {
     return {
       ok: true,
-      project: projectKey(realpathSync5(cwd)),
+      project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" }
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
-  const base = { ok: true, project: projectKey(repo), repo, checkoutRoot: checkout.root };
+  const base = {
+    ok: true,
+    project: keyOf(checkout, cwd),
+    repo,
+    checkoutRoot: checkout.root
+  };
   let settings;
   try {
     settings = loadProjectConfig(checkout).config?.tasks;
@@ -24068,7 +24079,7 @@ function legacyBrowserInfo(paths, deps) {
 
 // src/cli/live-check.ts
 import {
-  existsSync as existsSync36,
+  existsSync as existsSync37,
   mkdirSync as mkdirSync21,
   mkdtempSync as mkdtempSync3,
   readFileSync as readFileSync50,
@@ -24077,7 +24088,7 @@ import {
   writeFileSync as writeFileSync5
 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { dirname as dirname19, join as join47 } from "path";
+import { dirname as dirname20, join as join47 } from "path";
 
 // src/hooks/ask-log.ts
 import { join as join45 } from "path";
@@ -25708,9 +25719,16 @@ async function forgetSaid(stateDir, session) {
   return result;
 }
 
+// src/user-away/whose.ts
+import { existsSync as existsSync36 } from "fs";
+import { dirname as dirname19 } from "path";
+
 // src/user-away/words.ts
 var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
+function plural2(count, one, many) {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
 var TEXT_MAX = 4000;
 var COMMAND_MAX = 16000;
 var USER_USAGE = `Usage: ${COMMAND} user <command>
@@ -25730,11 +25748,152 @@ Commands:
                  Put one item on the list. An action names its exact command, a question its
                  options and the recommended one (counted from 1). --crew names the crew
                  session the item is for, when a lead parks its crew session's question.
-  list [--json]  The items, each with its exact command.
+  list [--json]  The items, each with who answers it and its exact command. Judged for the
+                 session that runs it: this session's, another session's, or no session's.
   clear <n>... | --all
                  Take answered items off the list.
 
 Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with them.`;
+
+// src/user-away/whose.ts
+function crewLeadOf(wanted, parkedBy, crew, leads) {
+  if (crew === null)
+    return "unknown";
+  const own = (one) => [one.sessionId, ...(one.earlierSessions ?? []).map((earlier) => earlier.sessionId)].filter((id) => id !== null && id !== "");
+  const leadOf = (one) => {
+    const sessions = new Set([one.leadSessionId]);
+    for (const set of leads?.records ?? [])
+      if (set.includes(one.leadSessionId))
+        for (const id of set)
+          sessions.add(id);
+    return [...sessions];
+  };
+  const byId = crew.records.filter((one) => one.id === wanted);
+  const named = crew.records.filter((one) => one.name === wanted);
+  const tied = named.filter((one) => parkedBy !== "" && (own(one).includes(parkedBy) || leadOf(one).includes(parkedBy)));
+  const record = byId.length === 1 ? byId[0] : byId.length > 1 ? undefined : tied.length === 1 ? tied[0] : tied.length === 0 && named.length === 1 ? named[0] : undefined;
+  if (record === undefined) {
+    return byId.length === 0 && named.length === 0 && crew.broken === 0 ? "none" : "unknown";
+  }
+  return {
+    lead: leadOf(record),
+    own: own(record),
+    complete: leads !== null && leads.broken === 0
+  };
+}
+var THIS = { whose: "this session", waitsIn: null };
+var NOBODY = { whose: "no session", waitsIn: null };
+var UNSEEN = { whose: "another session", waitsIn: null };
+function ownerOf(item, facts) {
+  const asker = facts.session;
+  const isAsker = (id) => asker !== null && id === asker;
+  if (isAsker(item.session))
+    return THIS;
+  const parker = item.session === "" ? [] : [item.session];
+  let owners = parker;
+  let complete = true;
+  if (item.crew !== "") {
+    const crew = facts.crewLead(item.crew, item.session);
+    if (crew === "unknown")
+      return UNSEEN;
+    if (crew !== "none") {
+      owners = [...crew.lead, ...parker.filter((id) => !crew.own.includes(id))];
+      complete = crew.complete;
+    }
+  }
+  if (owners.some(isAsker))
+    return THIS;
+  if (owners.length > 0) {
+    if (facts.live === null)
+      return UNSEEN;
+    const running = facts.live.find((one) => owners.includes(one.sessionId));
+    if (running !== undefined) {
+      return { whose: "another session", waitsIn: { name: running.name, cwd: running.cwd } };
+    }
+    if (!complete)
+      return UNSEEN;
+  }
+  const project = item.cwd === "" ? null : facts.projectOf(item.cwd);
+  return project !== null && project === facts.project ? THIS : NOBODY;
+}
+function orNull(fn) {
+  try {
+    return fn();
+  } catch {
+    return null;
+  }
+}
+function projectOnDisk(cwd, asker) {
+  let folder = cwd;
+  while (!existsSync36(folder) && dirname19(folder) !== folder)
+    folder = dirname19(folder);
+  return folderProject(folder, {
+    env: asker.env,
+    ...asker.timeFor === undefined ? {} : { timeFor: asker.timeFor }
+  });
+}
+function ownerFacts(asker, sources = {}) {
+  const projects = new Map;
+  const projectOf = (cwd) => {
+    const known = projects.get(cwd);
+    if (known !== undefined)
+      return known;
+    const key = orNull(() => sources.projectOf ? sources.projectOf(cwd) : projectOnDisk(cwd, asker));
+    projects.set(cwd, key);
+    return key;
+  };
+  let stores = null;
+  const crewLead = (wanted, parkedBy) => {
+    stores ??= {
+      crew: orNull(() => {
+        const listed = listAllCrew(asker.paths.stateDir);
+        return { records: listed.records, broken: listed.broken.length };
+      }),
+      leads: orNull(() => {
+        const listed = listAllLeads(asker.paths.stateDir);
+        return { records: listed.records.map(leadSessions), broken: listed.broken.length };
+      })
+    };
+    return crewLeadOf(wanted, parkedBy, stores.crew, stores.leads);
+  };
+  return {
+    session: asker.session,
+    project: asker.cwd === "" ? null : projectOf(asker.cwd),
+    live: orNull(() => (sources.sessions ?? (() => liveSessions(asker.paths.claudeConfigDir)))()),
+    crewLead,
+    projectOf
+  };
+}
+function ownedItems(items, asker, sources = {}) {
+  if (items.length === 0)
+    return [];
+  const facts = ownerFacts(asker, sources);
+  return items.map((item) => ({ ...item, ...ownerOf(item, facts) }));
+}
+function waitingLines(owned) {
+  const mine = owned.filter((one) => one.whose === "this session").length;
+  const ended = owned.filter((one) => one.whose === "no session").length;
+  const elsewhere = new Map;
+  for (const one of owned) {
+    if (one.whose !== "another session")
+      continue;
+    const name = one.waitsIn === null ? "a session it cannot name" : plainText(one.waitsIn.name);
+    elsewhere.set(name, (elsewhere.get(name) ?? 0) + 1);
+  }
+  const others = owned.length - mine - ended;
+  const lines = [];
+  if (mine > 0) {
+    lines.push(`${plural2(mine, "item waits", "items wait")} for this session: go through ${mine === 1 ? "it" : "them"} with ${AVAILABLE_SKILL}.`);
+  }
+  if (others > 0) {
+    const where = [...elsewhere].map(([name, count]) => `${name} (${String(count)})`).join(", ");
+    lines.push(`${plural2(others, "item waits", "items wait")} in other sessions, which go through their own: ${where}.`);
+  }
+  if (ended > 0) {
+    lines.push(`${plural2(ended, "item was", "items were")} parked in another project by a session that ended: ${AVAILABLE_SKILL} asks whether to take ${ended === 1 ? "it" : "them"} here.`);
+  }
+  return lines;
+}
 
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
@@ -25775,9 +25934,6 @@ var STATE_COMMANDS = [
 function inAwayDomain(input) {
   const tool = stringField(input.tool_name);
   return tool !== null && AWAY_ASK_TOOLS.includes(tool);
-}
-function plural2(count, one, many) {
-  return `${String(count)} ${count === 1 ? one : many}`;
 }
 function whenText(state, nowMs, options) {
   const clock = (iso) => {
@@ -25919,7 +26075,9 @@ async function noteAnswer(input, env, paths, nowMs, options) {
   if (!state.unavailable) {
     if (!await forgetSaid(paths.stateDir, session))
       return SILENT;
-    const left = count === 0 ? "Nothing is left parked." : `${plural2(count, "item still waits", "items still wait")} for them (${AVAILABLE_SKILL}).`;
+    const { timeFor } = startBudget(env, Date.now, SHORT_GUARD_BUDGET_MS, nowMs);
+    const asker = { session, cwd: stringField(input.cwd) ?? "", env, paths, timeFor };
+    const left = count === 0 ? "Nothing is left parked." : waitingLines(ownedItems(state.items, asker, options.owners)).join(" ");
     return addContext("UserPromptSubmit", `The person is available again: ask your questions as usual. ${left}`);
   }
   const when = whenText(state, nowMs, options);
@@ -25980,7 +26138,7 @@ function parseClaudeVersion(output) {
 }
 var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
 function readLog(file) {
-  if (!existsSync36(file))
+  if (!existsSync37(file))
     return [];
   return readFileSync50(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
@@ -25998,7 +26156,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join47(dirname19(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join47(dirname20(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -26042,13 +26200,13 @@ function proveIn(label, repo, expected, deps, env) {
     text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
     fix: LIVE_FIX
   });
-  const gone = !existsSync36(expected.folder) && branchLeft.exitCode !== 0;
+  const gone = !existsSync37(expected.folder) && branchLeft.exitCode !== 0;
   lines.push(gone && guardedThere ? {
     ok: true,
     text: `${label}: ExitWorktree removed the folder and the branch ${expected.branch}`
   } : {
     ok: false,
-    text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync36(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
+    text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync37(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
     fix: LIVE_FIX
   });
   return lines;
@@ -26101,7 +26259,7 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/gateway/commands.ts
-import { existsSync as existsSync40, readdirSync as readdirSync18, readFileSync as readFileSync53 } from "fs";
+import { existsSync as existsSync41, readdirSync as readdirSync18, readFileSync as readFileSync53 } from "fs";
 
 // src/gateway/commands-chains.ts
 var SLOT_WORDS = {
@@ -26195,7 +26353,7 @@ function printChanges(out, result, home) {
 }
 
 // src/gateway/commands-profile.ts
-import { existsSync as existsSync37 } from "fs";
+import { existsSync as existsSync38 } from "fs";
 function missingProfile(config, name) {
   const names = Object.keys(config.profiles ?? {}).sort();
   return `gateway.json has no profile "${name}" (profiles: ${names.length > 0 ? names.join(", ") : "none"}). Make it: ${COMMAND} gateway profile ${name} slot <slot> <targets>`;
@@ -26435,7 +26593,7 @@ async function commandProfile(ctx, args, usage) {
   if (!isProfileName(name))
     throw new Error(PROFILE_NAME_RULE);
   const configPath = ctx.paths.gatewayConfigFile;
-  if (!existsSync37(configPath)) {
+  if (!existsSync38(configPath)) {
     throw new Error(`the gateway has no config yet (${tildify(configPath, ctx.paths.home)}): a profile lives in it. Make one: ${COMMAND} gateway setup --no-backend-key`);
   }
   const config = loadConfigFile(configPath);
@@ -26528,7 +26686,7 @@ var PROFILE_HELP = `  profile <name> <command>
 import { resolve as resolve12 } from "path";
 
 // src/setup/managed-line.ts
-import { existsSync as existsSync38, readFileSync as readFileSync51 } from "fs";
+import { existsSync as existsSync39, readFileSync as readFileSync51 } from "fs";
 function renderWithLine(current, line) {
   const text = current === "" || current.endsWith(`
 `) ? current : `${current}
@@ -26539,7 +26697,7 @@ function renderWithLine(current, line) {
 function writeRendered(file, stateDir, render, options) {
   const target = realTarget(file);
   return retryOnConcurrentChange(target, () => {
-    const current = existsSync38(target) ? readFileSync51(target, "utf8") : null;
+    const current = existsSync39(target) ? readFileSync51(target, "utf8") : null;
     const { removed, text } = render(current ?? "");
     if (current === null && text === "") {
       return { backup: null, outcome: "unchanged", removed: removed ?? [] };
@@ -27535,8 +27693,8 @@ async function createOmnirouteKey(options) {
 }
 
 // src/gateway/service.ts
-import { existsSync as existsSync39, readFileSync as readFileSync52, rmSync as rmSync9 } from "fs";
-import { basename as basename9, dirname as dirname20, join as join48 } from "path";
+import { existsSync as existsSync40, readFileSync as readFileSync52, rmSync as rmSync9 } from "fs";
+import { basename as basename9, dirname as dirname21, join as join48 } from "path";
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -27681,7 +27839,7 @@ async function installRouter(options) {
     outcomes[definition.id] = write(definition.path, definition.text, true).outcome;
   }
   const filesUnchanged = copyPlan === "unchanged" && definitions.every((definition) => outcomes[definition.id] === "unchanged") && service.current(options.runner, options);
-  if (filesUnchanged && listenerUp && !existsSync39(marker)) {
+  if (filesUnchanged && listenerUp && !existsSync40(marker)) {
     if (options.dryRun)
       return "up-to-date";
     service.ensureRunning(options.runner);
@@ -27799,7 +27957,7 @@ function systemdService(options) {
       if (!plan.listenerUp) {
         return plan.outcomes.socket === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
       }
-      const oldPort = existsSync39(options.socketPath) ? socketPort(readFileSync52(options.socketPath, "utf8")) : null;
+      const oldPort = existsSync40(options.socketPath) ? socketPort(readFileSync52(options.socketPath, "utf8")) : null;
       return oldPort !== null && oldPort !== input.port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
     },
     running(runner) {
@@ -27808,7 +27966,7 @@ function systemdService(options) {
     async stop(runner, port, probe) {
       const state = port === null ? null : unitState(runner, unitName);
       const stop = stopUnits(runner, {
-        dir: dirname20(options.unitPath),
+        dir: dirname21(options.unitPath),
         names: [socketName, unitName]
       });
       const refused = stop.refused[0];
@@ -27842,7 +28000,7 @@ var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
 function stopUnits(runner, options) {
   const result = { missing: [], refused: [], stopped: [] };
   const there = options.names.filter((name) => {
-    if (existsSync39(join48(options.dir, name)))
+    if (existsSync40(join48(options.dir, name)))
       return true;
     result.missing.push(name);
     return false;
@@ -28298,7 +28456,7 @@ function defaultConfig(omnirouteKey, baseUrl = KNOWN_BACKENDS.omniroute ?? "") {
   };
 }
 function ensureConfig(configPath, key, options = {}) {
-  if (!existsSync40(configPath)) {
+  if (!existsSync41(configPath)) {
     if (key === null && options.allowNone === true) {
       return `no config at ${configPath} yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
     }
@@ -28331,10 +28489,10 @@ function ensureConfig(configPath, key, options = {}) {
   return `set the key of backend "${key.backend}" (${maskKey(key.value)})${moved} in ${configPath}`;
 }
 function configuredPort(configPath) {
-  return existsSync40(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
+  return existsSync41(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
 }
 function backendBaseUrl(configPath, backend) {
-  if (existsSync40(configPath)) {
+  if (existsSync41(configPath)) {
     const config = loadConfigFile(configPath);
     const existing = Object.hasOwn(config.backends, backend) ? config.backends[backend] : undefined;
     if (existing !== undefined)
@@ -28437,7 +28595,7 @@ async function discardMadeKey(made, error) {
   ! the key this run made in OmniRoute could not be removed (${made.name}, id ${made.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`);
 }
 function backupCount(backups) {
-  return existsSync40(backups) ? readdirSync18(backups).length : 0;
+  return existsSync41(backups) ? readdirSync18(backups).length : 0;
 }
 function keyBackupLine(backups, home) {
   return `  the file as it was before the change is in ${tildify(backups, home)}: copy it back to put the key that was there in place`;
@@ -28449,7 +28607,7 @@ var NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so ther
 async function setOmnirouteKey(ctx, given, options) {
   const { paths } = ctx;
   const configPath = paths.gatewayConfigFile;
-  if (!existsSync40(configPath))
+  if (!existsSync41(configPath))
     throw new Error(NOT_SET_UP_FOR_KEY);
   loadConfigFile(configPath);
   const omnirouteAt = () => backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute;
@@ -28468,7 +28626,7 @@ async function setOmnirouteKey(ctx, given, options) {
       saveUnchecked: options.saveUnchecked
     });
     await withLock(paths.stateDir, async () => {
-      if (!existsSync40(configPath))
+      if (!existsSync41(configPath))
         throw new Error(NOT_SET_UP_FOR_KEY);
       if (omnirouteAt() !== checkedAt) {
         throw new Error(`OmniRoute's address in ${configPath} changed while the key was checked. Nothing was saved: try again.`);
@@ -28562,7 +28720,7 @@ function withoutRetiredDefaultClaude(config) {
   return { config: { ...config, slots }, dropped };
 }
 function upgradeConfig(configPath, options = {}) {
-  if (!existsSync40(configPath))
+  if (!existsSync41(configPath))
     return [];
   const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
   if (options.dryRun !== true && dropped.length > 0) {
@@ -29118,7 +29276,7 @@ function printOverrides(report, out) {
 async function commandStatus(ctx) {
   const out = gatewayOut(ctx);
   const configPath = ctx.paths.gatewayConfigFile;
-  const setUp = existsSync40(configPath);
+  const setUp = existsSync41(configPath);
   let config = null;
   if (!setUp)
     out.line("info", `config: none yet (no ${tildify(configPath, ctx.paths.home)})`);
@@ -29499,9 +29657,9 @@ async function commandSetup(ctx, args) {
       if (upgraded.length > 0) {
         ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
-      if (existsSync40(configPath))
+      if (existsSync41(configPath))
         warnUntestedJudge(ctx);
-      const now = existsSync40(configPath) ? loadConfigFile(configPath) : null;
+      const now = existsSync41(configPath) ? loadConfigFile(configPath) : null;
       if (now !== null && Object.keys(now.slots).length === 0) {
         const saved = Object.keys(now.kept ?? {}).length;
         ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude, on your own login. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : "Every slot is Claude, so every Claude model stays plain Claude, on your own login.");
@@ -29543,7 +29701,7 @@ var SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the addres
 var STOPPED = "Stopped. Nothing was changed.";
 var OMNIROUTE = "omniroute";
 function savedOmniroute(configPath) {
-  if (!existsSync40(configPath))
+  if (!existsSync41(configPath))
     return null;
   const { backends } = loadConfigFile(configPath);
   return Object.hasOwn(backends, OMNIROUTE) ? backends[OMNIROUTE] ?? null : null;
@@ -29553,7 +29711,7 @@ function setupFacts(ctx) {
   return {
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
-    hasConfig: existsSync40(configPath),
+    hasConfig: existsSync41(configPath),
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
     print: ctx.print
@@ -29570,7 +29728,7 @@ function warnUntestedJudge(ctx) {
 async function proveWorkerTargets(ctx) {
   const configPath = ctx.paths.gatewayConfigFile;
   try {
-    if (!existsSync40(configPath))
+    if (!existsSync41(configPath))
       return;
     const tested = await testWorkerTargets(ctx, loadConfigFile(configPath));
     for (const line of tested.lines)
@@ -29609,7 +29767,7 @@ async function commandCheck(ctx) {
     });
     return CHECK_CODES.needsKey;
   };
-  if (!existsSync40(configPath))
+  if (!existsSync41(configPath))
     return noKeyYet(`the gateway has no config yet (no ${tildify(configPath, paths.home)})`);
   let config;
   try {
@@ -29782,10 +29940,10 @@ ${USAGE}`);
 }
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync41, readFileSync as readFileSync54 } from "fs";
+import { existsSync as existsSync42, readFileSync as readFileSync54 } from "fs";
 
 // src/gateway/claude-defaults.ts
-import { dirname as dirname21, join as join49 } from "path";
+import { dirname as dirname22, join as join49 } from "path";
 var CLAUDE_DEFAULTS_MARKER = "claude-by-default";
 var claudeDefaultsMarkerFile = (stateDir) => join49(stateDir, CLAUDE_DEFAULTS_MARKER);
 
@@ -29806,23 +29964,23 @@ async function gatewayChecks(options) {
     runner: options.runner,
     service: options.service
   });
-  if (existsSync41(restartPendingFile(paths.stateDir))) {
+  if (existsSync42(restartPendingFile(paths.stateDir))) {
     checks.push({
       ok: false,
       text: "a gateway setup did not finish",
       fix: SETUP
     });
   }
-  if (existsSync41(paths.gatewayConfigFile) && !existsSync41(claudeDefaultsMarkerFile(paths.stateDir))) {
+  if (existsSync42(paths.gatewayConfigFile) && !existsSync42(claudeDefaultsMarkerFile(paths.stateDir))) {
     checks.push({
       ok: true,
       info: true,
       text: `gateway.json was made before the Claude defaults (D66): ${COMMAND} setup moves, once, every slot to Claude, every fallback to off and the gateway to off, with a backup of the config first (setup --dry-run shows it)`
     });
   }
-  const installed = existsSync41(paths.routerCopy) || existsSync41(paths.routerUnitFile) || existsSync41(paths.routerSocketFile) || existsSync41(paths.routerTaskFile);
+  const installed = existsSync42(paths.routerCopy) || existsSync42(paths.routerUnitFile) || existsSync42(paths.routerSocketFile) || existsSync42(paths.routerTaskFile);
   if (!installed) {
-    checks.push(existsSync41(paths.gatewayConfigFile) ? {
+    checks.push(existsSync42(paths.gatewayConfigFile) ? {
       ok: true,
       info: true,
       text: `gateway.json kept (${short(paths.gatewayConfigFile)}); the gateway is not installed. To use it: ${COMMAND} gateway setup`
@@ -29844,9 +30002,9 @@ async function gatewayChecks(options) {
     const state = await service.stateAsync(read);
     checks.push(state.running ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP });
   }
-  if (!existsSync41(paths.routerCopy)) {
+  if (!existsSync42(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync41(options.bundle) && readFileSync54(paths.routerCopy, "utf8") !== readFileSync54(options.bundle, "utf8")) {
+  } else if (existsSync42(options.bundle) && readFileSync54(paths.routerCopy, "utf8") !== readFileSync54(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -29856,7 +30014,7 @@ async function gatewayChecks(options) {
     checks.push({ ok: true, text: `the router copy ${short(paths.routerCopy)} is up to date` });
   }
   let config;
-  if (!existsSync41(paths.gatewayConfigFile)) {
+  if (!existsSync42(paths.gatewayConfigFile)) {
     config = emptyConfig();
     checks.push({
       ok: true,
@@ -30111,7 +30269,7 @@ async function portHolderCheck(options, port) {
 async function taskDefinitionCheck(options) {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
-  if (!existsSync41(paths.routerTaskFile)) {
+  if (!existsSync42(paths.routerTaskFile)) {
     return {
       check: { ok: false, text: `no task definition at ${where}`, fix: SETUP },
       state: "other"
@@ -30146,7 +30304,7 @@ async function taskDefinitionCheck(options) {
 async function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
-  if (!existsSync41(paths.routerSocketFile)) {
+  if (!existsSync42(paths.routerSocketFile)) {
     return {
       check: {
         ok: false,
@@ -30195,7 +30353,7 @@ async function socketCheck(options, port) {
 }
 
 // src/machine/companions.ts
-import { existsSync as existsSync42 } from "fs";
+import { existsSync as existsSync43 } from "fs";
 var MARKETPLACE_SOURCES = {
   thedotmack: "thedotmack/claude-mem",
   "claude-plugins-official": "anthropics/claude-plugins-official",
@@ -30217,7 +30375,7 @@ function companions(dependencies = DEPENDENCIES) {
   });
 }
 function readJson2(file) {
-  if (!existsSync42(file))
+  if (!existsSync43(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -30242,7 +30400,7 @@ function comparableVersion(version) {
 }
 function companionState(paths, companion) {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  if (install === null || !existsSync42(install.installPath)) {
+  if (install === null || !existsSync43(install.installPath)) {
     return marketplaceAdded(paths, companion.marketplace) ? { kind: "not-installed" } : { kind: "no-marketplace" };
   }
   const version = install.version;
@@ -30461,18 +30619,18 @@ function warpCheckFrom(app, paths) {
 }
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync44, readFileSync as readFileSync56 } from "fs";
+import { existsSync as existsSync45, readFileSync as readFileSync56 } from "fs";
 
 // src/omniroute/install.ts
 import {
   accessSync,
   constants,
-  existsSync as existsSync43,
+  existsSync as existsSync44,
   readdirSync as readdirSync19,
   readFileSync as readFileSync55,
   realpathSync as realpathSync8
 } from "fs";
-import { dirname as dirname22, join as join50 } from "path";
+import { dirname as dirname23, join as join50 } from "path";
 var PACKAGE2 = "omniroute";
 var NAME = "OmniRoute";
 function tokenize(text) {
@@ -30568,11 +30726,11 @@ function versionOf(folder, name) {
   }
 }
 function packageFolderOf(script, name) {
-  let dir = dirname22(script);
+  let dir = dirname23(script);
   for (let step = 0;step < 8; step += 1) {
     if (versionOf(dir, name) !== null)
       return dir;
-    const up = dirname22(dir);
+    const up = dirname23(dir);
     if (up === dir)
       break;
     dir = up;
@@ -30584,13 +30742,13 @@ function globalRootOf(folder, which) {
   if (bun !== null) {
     const prefix = bun[1] ?? "";
     const own = join50(prefix, "bin", "bun");
-    return { kind: "bun", manager: existsSync43(own) ? own : which("bun") ?? "bun" };
+    return { kind: "bun", manager: existsSync44(own) ? own : which("bun") ?? "bun" };
   }
   const npm = /^(.*)\/lib\/node_modules\/[^/]+$/.exec(folder);
   if (npm !== null) {
     const prefix = npm[1] ?? "";
     const own = join50(prefix, "bin", "npm");
-    return { kind: "npm", manager: existsSync43(own) ? own : which("npm") ?? "npm" };
+    return { kind: "npm", manager: existsSync44(own) ? own : which("npm") ?? "npm" };
   }
   return null;
 }
@@ -30619,7 +30777,7 @@ function fromPath(which) {
 }
 function findOmniroute(options) {
   const { paths, env } = options;
-  const units = userUnits(dirname22(paths.routerUnitFile));
+  const units = userUnits(dirname23(paths.routerUnitFile));
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE2))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE2);
@@ -30684,7 +30842,7 @@ function writable(dir) {
   }
 }
 function installIsWritable(install) {
-  return writable(install.folder) && writable(dirname22(install.folder));
+  return writable(install.folder) && writable(dirname23(install.folder));
 }
 
 // src/omniroute/registry.ts
@@ -30842,7 +31000,7 @@ async function omnirouteFacts(ctx) {
   });
   let backend = null;
   let model = null;
-  if (found.install !== null && existsSync44(ctx.paths.gatewayConfigFile)) {
+  if (found.install !== null && existsSync45(ctx.paths.gatewayConfigFile)) {
     try {
       const config = loadConfigFile(ctx.paths.gatewayConfigFile);
       backend = omnirouteBackend(config, found.unit, readOrNull);
@@ -31168,7 +31326,7 @@ async function omnirouteDoctorLine(ctx) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync45, readFileSync as readFileSync58 } from "fs";
+import { existsSync as existsSync46, readFileSync as readFileSync58 } from "fs";
 import { join as join53 } from "path";
 
 // src/update/check.ts
@@ -31399,10 +31557,10 @@ async function applyUpdate(paths, claude, run, say, onMajor) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync45(paths.routerCopy))
+  if (install === null || !existsSync46(paths.routerCopy))
     return false;
   const bundle = join53(install.installPath, "dist", "router.js");
-  return existsSync45(bundle) && readFileSync58(bundle, "utf8") !== readFileSync58(paths.routerCopy, "utf8");
+  return existsSync46(bundle) && readFileSync58(bundle, "utf8") !== readFileSync58(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
@@ -31414,7 +31572,7 @@ function commandContext(env, home) {
 import { join as join55 } from "path";
 
 // src/cli/project-init.ts
-import { existsSync as existsSync46, readFileSync as readFileSync59 } from "fs";
+import { existsSync as existsSync47, readFileSync as readFileSync59 } from "fs";
 import { join as join54, relative as relative6 } from "path";
 var RUN_TIMEOUT_MS2 = 1e4;
 async function runGh2(ghPath, args, env) {
@@ -31511,17 +31669,17 @@ async function protectedFromGithub(runner, root) {
 }
 var FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"];
 function runnerOf(root) {
-  if (existsSync46(join54(root, "bun.lock")) || existsSync46(join54(root, "bun.lockb")))
+  if (existsSync47(join54(root, "bun.lock")) || existsSync47(join54(root, "bun.lockb")))
     return "bun run";
-  if (existsSync46(join54(root, "pnpm-lock.yaml")))
+  if (existsSync47(join54(root, "pnpm-lock.yaml")))
     return "pnpm run";
-  if (existsSync46(join54(root, "yarn.lock")))
+  if (existsSync47(join54(root, "yarn.lock")))
     return "yarn run";
   return "npm run";
 }
 function defaultFastCheck(root) {
   const file = join54(root, "package.json");
-  if (!existsSync46(file))
+  if (!existsSync47(file))
     return null;
   let scripts;
   try {
@@ -31639,7 +31797,7 @@ var QUESTIONS = [
 ];
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText(file) {
-  return existsSync46(file) ? readFileSync59(file, "utf8") : null;
+  return existsSync47(file) ? readFileSync59(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText(file);
@@ -33093,12 +33251,12 @@ function reportOf(output) {
 
 // src/portal/actions.ts
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync61, statSync as statSync20 } from "fs";
+import { existsSync as existsSync62, statSync as statSync20 } from "fs";
 import { isAbsolute as isAbsolute12, join as join74 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync57, readFileSync as readFileSync72 } from "fs";
-import { dirname as dirname27, join as join69 } from "path";
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync58, readFileSync as readFileSync72 } from "fs";
+import { dirname as dirname28, join as join69 } from "path";
 
 // src/hooks/desktop-alert.ts
 function hasDesktop(platform, env) {
@@ -33108,7 +33266,7 @@ function hasDesktop(platform, env) {
 }
 
 // src/machine/claude-mem.ts
-import { existsSync as existsSync47, readFileSync as readFileSync63, rmSync as rmSync11 } from "fs";
+import { existsSync as existsSync48, readFileSync as readFileSync63, rmSync as rmSync11 } from "fs";
 import { join as join59 } from "path";
 var CLAUDE_MEM_ID = "claude-mem@thedotmack";
 var CLAUDE_MEM_MIN_VERSION = "13.29.0";
@@ -33166,7 +33324,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
   if (after !== undefined) {
     config = after;
   } else {
-    if (!existsSync47(gatewayConfigFile))
+    if (!existsSync48(gatewayConfigFile))
       return { reason: "the gateway is not set up" };
     try {
       config = loadConfigFile(gatewayConfigFile);
@@ -33257,7 +33415,7 @@ function hasValue(record) {
 }
 function readStartBlocks(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync47(install.installPath))
+  if (install === null || !existsSync48(install.installPath))
     return null;
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -33393,7 +33551,7 @@ function isOldNestedForm(data) {
 }
 function claudeMemPlan(paths, gatewayAfter) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync47(install.installPath))
+  if (install === null || !existsSync48(install.installPath))
     return { notInstalled: true };
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -33501,11 +33659,11 @@ function autoUpdateState(paths) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync50, readdirSync as readdirSync21, readFileSync as readFileSync66, rmSync as rmSync13 } from "fs";
+import { existsSync as existsSync51, readdirSync as readdirSync21, readFileSync as readFileSync66, rmSync as rmSync13 } from "fs";
 import { join as join62, relative as relative8, sep as sep7 } from "path";
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync48, readFileSync as readFileSync64 } from "fs";
+import { existsSync as existsSync49, readFileSync as readFileSync64 } from "fs";
 import { join as join60 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
@@ -33517,7 +33675,7 @@ function isOwnedEntry(value) {
 }
 function readOwnedEntries(stateDir) {
   const file = join60(stateDir, OWNED_ENTRIES_FILE);
-  if (!existsSync48(file))
+  if (!existsSync49(file))
     return {};
   const parsed = JSON.parse(readFileSync64(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
@@ -33675,7 +33833,7 @@ function applyManagedEntries(options) {
 // src/setup/managed-folder.ts
 import { createHash as createHash7 } from "crypto";
 import {
-  existsSync as existsSync49,
+  existsSync as existsSync50,
   mkdirSync as mkdirSync22,
   readdirSync as readdirSync20,
   readFileSync as readFileSync65,
@@ -33683,14 +33841,14 @@ import {
   rmSync as rmSync12,
   writeFileSync as writeFileSync6
 } from "fs";
-import { basename as basename11, dirname as dirname23, join as join61, relative as relative7, sep as sep6 } from "path";
+import { basename as basename11, dirname as dirname24, join as join61, relative as relative7, sep as sep6 } from "path";
 var OWNED_FOLDERS_FILE = "owned-folders.json";
 var FILE_MODE = 420;
 var DIR_MODE = 493;
 var OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
 var OWNED_FOLDER_MARK_TEXT = "cc-smart-dev-kit made this folder and replaces it whole; `cc-smart-dev-kit restore` removes it.\n";
 function markedOwned(folder) {
-  return existsSync49(join61(folder, OWNED_FOLDER_MARK));
+  return existsSync50(join61(folder, OWNED_FOLDER_MARK));
 }
 function listFiles(folder) {
   return readdirSync20(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative7(folder, join61(entry.parentPath, entry.name)).split(sep6).join("/")).sort();
@@ -33699,7 +33857,7 @@ function hashFile(file) {
   return createHash7("sha256").update(readFileSync65(file)).digest("base64");
 }
 function sameFolder(target, source, files) {
-  if (!existsSync49(target) || !markedOwned(target))
+  if (!existsSync50(target) || !markedOwned(target))
     return false;
   const have = listFiles(target).filter((file) => file !== OWNED_FOLDER_MARK);
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
@@ -33712,7 +33870,7 @@ function ownedFoldersFile(stateDir) {
 }
 function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
-  if (!existsSync49(file))
+  if (!existsSync50(file))
     return [];
   const parsed = JSON.parse(readFileSync65(file, "utf8"));
   const folders = parsed?.folders;
@@ -33742,7 +33900,7 @@ function forgetOwnedFolder(stateDir, folder) {
 function copyFolder(source, into, files) {
   for (const file of files) {
     const to = join61(into, ...file.split("/"));
-    mkdirSync22(dirname23(to), { recursive: true, mode: DIR_MODE });
+    mkdirSync22(dirname24(to), { recursive: true, mode: DIR_MODE });
     writeFileSync6(to, readFileSync65(join61(source, ...file.split("/"))), { mode: FILE_MODE });
     setFileMode(to, FILE_MODE);
   }
@@ -33758,7 +33916,7 @@ function writeManagedFolder(target, source, options) {
       recordOwnedFolder(options.stateDir, real);
     return { files: files.length, outcome: "unchanged" };
   }
-  const outcome = existsSync49(real) ? "updated" : "created";
+  const outcome = existsSync50(real) ? "updated" : "created";
   if (outcome === "updated" && !markedOwned(real)) {
     throw new Error(`${real} is not a folder cc-smart-dev-kit made (it has no ${OWNED_FOLDER_MARK}): move it away, then run this again`);
   }
@@ -33766,17 +33924,17 @@ function writeManagedFolder(target, source, options) {
     return { files: files.length, outcome };
   recordOwnedFolder(options.stateDir, real);
   const token = `${process.pid}-${crypto.randomUUID()}`;
-  const temp = join61(dirname23(real), `.${basename11(real)}.cc-smart-dev-kit-tmp-${token}`);
-  const old = join61(dirname23(real), `.${basename11(real)}.cc-smart-dev-kit-old-${token}`);
+  const temp = join61(dirname24(real), `.${basename11(real)}.cc-smart-dev-kit-tmp-${token}`);
+  const old = join61(dirname24(real), `.${basename11(real)}.cc-smart-dev-kit-old-${token}`);
   try {
     copyFolder(source, temp, files);
-    const hadOld = existsSync49(real);
+    const hadOld = existsSync50(real);
     if (hadOld)
       renameSync3(real, old);
     try {
       renameSync3(temp, real);
     } catch (error) {
-      if (hadOld && !existsSync49(real))
+      if (hadOld && !existsSync50(real))
         renameSync3(old, real);
       throw error;
     }
@@ -33791,7 +33949,7 @@ function writeManagedFolder(target, source, options) {
 }
 function removeManagedFolder(target, stateDir) {
   const real = realTarget(target);
-  const ours = existsSync49(real) && markedOwned(real);
+  const ours = existsSync50(real) && markedOwned(real);
   if (ours)
     rmSync12(real, { force: true, recursive: true });
   forgetOwnedFolder(stateDir, real);
@@ -33816,11 +33974,11 @@ function versionStampFile(stateDir) {
   return join62(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
-  return existsSync50(optOutFile(stateDir));
+  return existsSync51(optOutFile(stateDir));
 }
 function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
-  if (!existsSync50(file))
+  if (!existsSync51(file))
     return null;
   const version = readFileSync66(file, "utf8").trim();
   return version === "" ? null : version;
@@ -33838,7 +33996,7 @@ function instructionsPaths(paths, source) {
 }
 function instructionsFolder(bundleDir) {
   const beside = join62(bundleDir, "..", "instructions");
-  return existsSync50(beside) ? beside : join62(bundleDir, "..", "..", "plugin", "instructions");
+  return existsSync51(beside) ? beside : join62(bundleDir, "..", "..", "plugin", "instructions");
 }
 function claudeImportPath(path, home) {
   const rest = path.slice(home.length);
@@ -33853,7 +34011,7 @@ function instructionsBlockBody(importPath) {
 `);
 }
 function listInstructionFiles(source) {
-  if (!existsSync50(source)) {
+  if (!existsSync51(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
   const files = readdirSync21(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative8(source, join62(entry.parentPath, entry.name)).split(sep7).join("/")).sort();
@@ -33883,7 +34041,7 @@ function copyDifferences(paths) {
   const out = [];
   for (const name of files) {
     const copy = join62(paths.target, name);
-    if (!existsSync50(copy))
+    if (!existsSync51(copy))
       out.push(`${name} is missing`);
     else if (readFileSync66(copy, "utf8") !== readFileSync66(join62(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
@@ -33892,7 +34050,7 @@ function copyDifferences(paths) {
   const root = realTarget(paths.target);
   const wanted = new Set(files.map((name) => realTarget(join62(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
-    if (!wanted.has(file) && existsSync50(file)) {
+    if (!wanted.has(file) && existsSync51(file)) {
       out.push(`${relative8(root, file).split(sep7).join("/")} is not shipped any more`);
     }
   }
@@ -33929,7 +34087,7 @@ async function tmuxPassthroughOf(run) {
 }
 
 // src/setup/user-notify-hook.ts
-import { existsSync as existsSync51 } from "fs";
+import { existsSync as existsSync52 } from "fs";
 
 // src/hooks/notify-types.ts
 var PLUGIN_NOTIFY_TYPES = [
@@ -33959,7 +34117,7 @@ function isEditedNotify(entry) {
   return entry.matcher === AGENT_VIEW_MATCHER && entry.hooks.some((h) => runsHookNotify(h.command));
 }
 function userNotifyHookState(file) {
-  if (!existsSync51(file))
+  if (!existsSync52(file))
     return "missing";
   let parsed;
   try {
@@ -34062,12 +34220,12 @@ function checkGitBash(platform, env, facts) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync56, readFileSync as readFileSync71 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync71 } from "fs";
 import { join as join68 } from "path";
 
 // src/hooks/after-merge.ts
 import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync52, mkdirSync as mkdirSync23, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync53, mkdirSync as mkdirSync23, writeFileSync as writeFileSync7 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join63 } from "path";
 
@@ -35583,7 +35741,7 @@ async function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync52(record),
+    announced: record !== null && existsSync53(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -36076,8 +36234,8 @@ async function stopFailureAnswer(input, id, repo, paths, env, options) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync53, mkdirSync as mkdirSync24, writeFileSync as writeFileSync8 } from "fs";
-import { dirname as dirname24, join as join64 } from "path";
+import { existsSync as existsSync54, mkdirSync as mkdirSync24, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname25, join as join64 } from "path";
 function fableSessionMessage(named) {
   return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
 }
@@ -36089,7 +36247,7 @@ function fableSessionMark(env, sessionId) {
 }
 function firstTime(mark) {
   try {
-    mkdirSync24(dirname24(mark), { recursive: true });
+    mkdirSync24(dirname25(mark), { recursive: true });
     writeFileSync8(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -36113,7 +36271,7 @@ function fableSession(input, env, paths) {
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
   const mark = fableSessionMark(env, sessionId);
-  if (existsSync53(mark))
+  if (existsSync54(mark))
     return SILENT;
   let model;
   if (event === "SessionStart")
@@ -36339,7 +36497,7 @@ function requestsIssueWrite(command, dialect) {
 }
 
 // src/hooks/job-route.ts
-import { existsSync as existsSync54 } from "fs";
+import { existsSync as existsSync55 } from "fs";
 
 // src/jobs/classify.ts
 import { isAbsolute as isAbsolute8, join as join65, normalize } from "path";
@@ -37597,7 +37755,7 @@ function rewriteAnswer(fields, command, background = false) {
   };
 }
 function bashToolExists(env, platform = process.platform, facts = {
-  exists: existsSync54,
+  exists: existsSync55,
   which: (command) => Bun.which(command, { PATH: env.PATH ?? env.Path ?? "" })
 }) {
   return platform !== "win32" || findGitBash(env, facts).path !== null;
@@ -38533,7 +38691,7 @@ async function reviewRecord(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname25, isAbsolute as isAbsolute11, posix as posix3, relative as relative9, resolve as resolve16, win32 as win324 } from "path";
+import { dirname as dirname26, isAbsolute as isAbsolute11, posix as posix3, relative as relative9, resolve as resolve16, win32 as win324 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -38745,7 +38903,7 @@ function movedTo2(invocation, folder, ctx, dialect) {
   return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname25(paths.workflowConfigFile);
+  const settings = dirname26(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative9(paths.home, folder);
@@ -38911,7 +39069,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname25);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname26);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
@@ -39109,8 +39267,8 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync55, mkdirSync as mkdirSync25, readFileSync as readFileSync70, writeFileSync as writeFileSync9 } from "fs";
-import { dirname as dirname26, join as join67 } from "path";
+import { existsSync as existsSync56, mkdirSync as mkdirSync25, readFileSync as readFileSync70, writeFileSync as writeFileSync9 } from "fs";
+import { dirname as dirname27, join as join67 } from "path";
 
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
@@ -39151,7 +39309,7 @@ function tierViewMark(env, sessionId) {
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);
-  if (gateway.gatewayOn && gateway.config === null && existsSync55(paths.gatewayConfigFile)) {
+  if (gateway.gatewayOn && gateway.config === null && existsSync56(paths.gatewayConfigFile)) {
     return tierNoteUnknown();
   }
   return tierNote(gateway, env);
@@ -39172,7 +39330,7 @@ function lastSaid(mark) {
 }
 function keep(mark, note) {
   try {
-    mkdirSync25(dirname26(mark), { recursive: true });
+    mkdirSync25(dirname27(mark), { recursive: true });
     writeFileSync9(mark, note);
     return true;
   } catch {
@@ -39789,7 +39947,7 @@ function renamedCommand(command) {
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
   const config = join68(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync56(config)) {
+  if (existsSync57(config)) {
     lines.push({
       ok: true,
       warn: true,
@@ -39797,7 +39955,7 @@ function oldNameLines(projectDir, sources, home) {
     });
   }
   const addons = join68(projectDir, ".claude", OLD_NAME);
-  if (existsSync56(addons)) {
+  if (existsSync57(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -39860,7 +40018,7 @@ async function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync56(file))
+    if (!existsSync57(file))
       continue;
     try {
       const parsed = JSON.parse(readFileSync71(file, "utf8"));
@@ -40027,7 +40185,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   let checkout;
   try {
-    checkout = existsSync56(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
+    checkout = existsSync57(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
@@ -40081,7 +40239,7 @@ async function projectTaskChecks(cwd, env) {
     return [
       { ok: false, text: `project tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` }
     ];
-  if (!existsSync56(tasks.dir) && tasks.legacyFolders.length === 0)
+  if (!existsSync57(tasks.dir) && tasks.legacyFolders.length === 0)
     return [];
   const lines = [];
   try {
@@ -40136,7 +40294,7 @@ async function coverGitLines(checkout, env) {
 var SETUP_FIX = `${COMMAND} setup`;
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync57(file))
+  if (!existsSync58(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -40164,7 +40322,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync57(install.installPath)) {
+  if (!existsSync58(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -40192,13 +40350,13 @@ function isExecutable(file) {
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync57(bun) : isExecutable(bun);
+  return platform === "win32" ? existsSync58(bun) : isExecutable(bun);
 }
 async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
   const launcher = join69(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync57(launcher))
+  if (!existsSync58(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable(launcher)) {
     return [
@@ -40238,7 +40396,7 @@ async function checkLauncher(paths, platform, read) {
 async function checkLauncherCmd(paths, shLauncher, read) {
   const cmd = join69(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync57(cmd)) {
+  if (!existsSync58(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
@@ -40286,7 +40444,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync57(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync58(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -40547,7 +40705,7 @@ function hasEntry(data, field, key) {
 async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject14(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync57(join69(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync58(join69(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -40561,14 +40719,14 @@ async function checkOldPlugin(settings, paths, read) {
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync57(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync58(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync57(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
+  const canRun = existsSync58(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -40605,7 +40763,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync57(where.claudeMd) ? readFileSync72(where.claudeMd, "utf8") : "";
+  const text = existsSync58(where.claudeMd) ? readFileSync72(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -40661,10 +40819,10 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname27(dir)) {
+  for (let dir = cwd;; dir = dirname28(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
       const from = join69(dir, name);
-      if (from === join69(paths.claudeConfigDir, "CLAUDE.md") || !existsSync57(from))
+      if (from === join69(paths.claudeConfigDir, "CLAUDE.md") || !existsSync58(from))
         continue;
       let text;
       try {
@@ -40677,12 +40835,12 @@ function checkProjectImports(paths, cwd) {
         imports.push({ from, path, file });
       }
     }
-    if (dirname27(dir) === dir)
+    if (dirname28(dir) === dir)
       break;
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync57(entry.file));
+  const missing = imports.filter((entry) => !existsSync58(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -40764,7 +40922,7 @@ function oldTodoToolsKeyCheck(paths) {
 }
 function taskStoreChecks(paths) {
   const file = workDbFile(paths);
-  if (!existsSync57(file))
+  if (!existsSync58(file))
     return [{ ok: true, info: true, text: "task work store: not made yet" }];
   const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)`;
   try {
@@ -41233,7 +41391,7 @@ import { join as join72 } from "path";
 
 // src/jobs/launch.ts
 import { spawn as spawn2, spawnSync as spawnSync2 } from "child_process";
-import { existsSync as existsSync58, mkdirSync as mkdirSync26, readFileSync as readFileSync73, rmSync as rmSync14 } from "fs";
+import { existsSync as existsSync59, mkdirSync as mkdirSync26, readFileSync as readFileSync73, rmSync as rmSync14 } from "fs";
 import { join as join70 } from "path";
 var SYSTEMD_TIMEOUT_MS = 1e4;
 function idleUnsupportedPath(stateDir) {
@@ -41246,7 +41404,7 @@ function readSystemdVersion(timeoutMs = SYSTEMD_TIMEOUT_MS) {
   return /^systemd \d+[^\r\n]*/.exec(result.stdout)?.[0];
 }
 function idleMarkerState(file, systemdVersion) {
-  if (!existsSync58(file))
+  if (!existsSync59(file))
     return "none";
   let recorded;
   try {
@@ -41263,7 +41421,7 @@ function idleMarkerState(file, systemdVersion) {
 // src/jobs/store.ts
 import {
   chmodSync as chmodSync3,
-  existsSync as existsSync59,
+  existsSync as existsSync60,
   mkdirSync as mkdirSync27,
   readdirSync as readdirSync22,
   readFileSync as readFileSync74,
@@ -41525,7 +41683,7 @@ function readMaxJobsFile(dir) {
     text = readFileSync74(file, "utf8");
   } catch (error) {
     const code = errorCode(error);
-    if (code === "ENOENT" && existsSync59(join71(dir, LEGACY_BUDGET_FILE))) {
+    if (code === "ENOENT" && existsSync60(join71(dir, LEGACY_BUDGET_FILE))) {
       return {
         problem: `it has only the old ${LEGACY_BUDGET_FILE} file (GB), and the queue counts jobs now: write the number of heavy jobs at once, for every user of the folder, into ${file} (a whole number, for example 3)`
       };
@@ -41636,7 +41794,7 @@ function networkFileSystem(dir, facts) {
   return subtype !== null && NETWORK_FUSE.has(subtype) ? `fuse.${subtype}` : null;
 }
 function openSharedStore(dir, options = {}) {
-  if (!existsSync59(dir)) {
+  if (!existsSync60(dir)) {
     return { note: `The shared folder ${dir} is missing: this job runs without its slots.` };
   }
   const network = networkFileSystem(dir, options.facts ?? realSharedFolderFacts);
@@ -41996,11 +42154,11 @@ function jobsFingerprint(home) {
 }
 
 // src/machine/claude-mem-choices.ts
-import { existsSync as existsSync60 } from "fs";
+import { existsSync as existsSync61 } from "fs";
 var KEY_MAX = 512;
 function readReady(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync60(install.installPath)) {
+  if (install === null || !existsSync61(install.installPath)) {
     return {
       blocked: {
         fix: `claude plugin install ${CLAUDE_MEM_ID}`,
@@ -42034,7 +42192,7 @@ function readReady(paths) {
   return { read, version };
 }
 function gatewayConfig(paths) {
-  if (!existsSync60(paths.gatewayConfigFile))
+  if (!existsSync61(paths.gatewayConfigFile))
     return null;
   try {
     return loadConfigFile(paths.gatewayConfigFile);
@@ -43541,7 +43699,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync61(folder) && statSync20(folder).isDirectory();
+    isFolder = existsSync62(folder) && statSync20(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -43613,7 +43771,7 @@ function browserTokenAction(action, body) {
   }
 }
 async function claudeMemTarget(action, text) {
-  if (!existsSync61(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+  if (!existsSync62(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const parsed = parseTarget(text);
@@ -44998,7 +45156,7 @@ function readAddedProjects(paths) {
 }
 function writeAddedProjects(paths, roots) {
   const file = paths.portalProjectsFile;
-  mkdirSync29(dirname28(file), { mode: 448, recursive: true });
+  mkdirSync29(dirname29(file), { mode: 448, recursive: true });
   const value = { roots, version: ADDED_VERSION };
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
@@ -45062,7 +45220,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf2(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync62(files.config);
+  const set = existsSync63(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -45406,7 +45564,7 @@ async function projectsAnswerFor(deps) {
 }
 
 // src/portal/command.ts
-import { existsSync as existsSync64 } from "fs";
+import { existsSync as existsSync65 } from "fs";
 import { join as join78 } from "path";
 
 // src/portal/health.ts
@@ -45469,7 +45627,7 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync63, readFileSync as readFileSync77, rmSync as rmSync15 } from "fs";
+import { existsSync as existsSync64, readFileSync as readFileSync77, rmSync as rmSync15 } from "fs";
 import { join as join77 } from "path";
 function portalStarterArgv(bunPath, bundle, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), bundle, "--ensure"];
@@ -45488,7 +45646,7 @@ function portalServerArgv(bunPath, copy, pluginDir) {
 var PORTAL_COPY_LOCK_WAIT_MS = 1e4;
 function refreshPortalCopy(paths, pluginFolder) {
   const bundle = join77(pluginFolder, "dist", "portal.js");
-  if (!existsSync63(bundle)) {
+  if (!existsSync64(bundle)) {
     return {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
@@ -45502,7 +45660,7 @@ function refreshPortalCopy(paths, pluginFolder) {
 function refreshPortalExport(paths, pluginFolder) {
   const source = join77(pluginFolder, "portal-ui");
   try {
-    if (existsSync63(join77(source, "index.html"))) {
+    if (existsSync64(join77(source, "index.html"))) {
       writeManagedFolder(paths.portalUiFolder, source, { stateDir: paths.stateDir });
     } else {
       removeManagedFolder(paths.portalUiFolder, paths.stateDir);
@@ -45520,7 +45678,7 @@ async function refreshCopyLocked(deps) {
   } catch (error) {
     if (!(error instanceof LockBusyError))
       throw error;
-    if (existsSync63(deps.paths.portalCopy)) {
+    if (existsSync64(deps.paths.portalCopy)) {
       return {
         copy: deps.paths.portalCopy,
         note: "another cc-smart-dev-kit run holds the lock; the copy that is already there was used"
@@ -45663,20 +45821,20 @@ function claudeCodeProfileHere(machine, home) {
 }
 function installedPluginFolder(paths, fallback) {
   const installed = findUserInstall(paths.installedPluginsFile);
-  if (installed !== null && existsSync64(join78(installed.installPath, "dist", "portal.js"))) {
+  if (installed !== null && existsSync65(join78(installed.installPath, "dist", "portal.js"))) {
     return { folder: installed.installPath, source: "installed", version: installed.version };
   }
   return { folder: fallback, source: "fallback", version: installed?.version ?? null };
 }
 
 // src/portal/plugin-folder.ts
-import { existsSync as existsSync65 } from "fs";
+import { existsSync as existsSync66 } from "fs";
 function resolvePluginFolder(installedPluginsFile, fallback) {
   const installed = findUserInstall(installedPluginsFile);
-  if (installed !== null && existsSync65(installed.installPath)) {
+  if (installed !== null && existsSync66(installed.installPath)) {
     return { folder: installed.installPath };
   }
-  if (fallback !== null && existsSync65(fallback))
+  if (fallback !== null && existsSync66(fallback))
     return { folder: fallback };
   return {
     error: "the plugin's own folder is gone, and Claude Code records no installed version: an update or an uninstall removed it while this portal was running. Nothing can be restarted or checked from here. Stop the portal (Ctrl+C) and start it again."
@@ -45684,7 +45842,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname29, join as join80 } from "path";
+import { dirname as dirname30, join as join80 } from "path";
 
 // src/portal/api/data.ts
 var NO_ROUTER = {
@@ -47759,7 +47917,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync66, readFileSync as readFileSync79, statSync as statSync22 } from "fs";
+import { existsSync as existsSync67, readFileSync as readFileSync79, statSync as statSync22 } from "fs";
 import { extname, join as join79, resolve as resolve17, sep as sep8 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -47826,7 +47984,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve17(folder);
-  if (!existsSync66(join79(absolute, "index.html")))
+  if (!existsSync67(join79(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -48769,7 +48927,7 @@ ${privacyStep(3, "Always true", [
 // src/portal/server.ts
 var SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
 function defaultExportFolder() {
-  return join80(dirname29(import.meta.path), "portal-ui");
+  return join80(dirname30(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });

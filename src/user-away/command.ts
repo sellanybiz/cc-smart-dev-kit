@@ -35,7 +35,8 @@ import {
   setAvailable,
   setUnavailable,
 } from "./state";
-import { AVAILABLE_SKILL, COMMAND_MAX, TEXT_MAX, USER_USAGE } from "./words";
+import { type Asker, type Owned, type OwnerSources, ownedItems, waitingLines } from "./whose";
+import { AVAILABLE_SKILL, COMMAND_MAX, plural, TEXT_MAX, USER_USAGE } from "./words";
 
 /** What a `user` command reads and prints through: the tests hand in their own. */
 export interface UserContext {
@@ -50,13 +51,22 @@ export interface UserContext {
   say: (line: string) => void;
   /** The zone the times show in; undefined: the machine's. */
   timeZone?: string;
+  /** Where whose an item is gets read from (`whose.ts`); the tests hand in their own. */
+  owners?: OwnerSources;
+}
+
+/** The session that runs the command, as `whose.ts` judges for: none in the person's own terminal. */
+function askerOf(ctx: UserContext): Asker {
+  const session = ctx.env.CLAUDE_CODE_SESSION_ID;
+  return {
+    session: session === undefined || session === "" ? null : session,
+    cwd: ctx.cwd,
+    env: ctx.env,
+    paths: ctx.paths,
+  };
 }
 
 const KINDS_TEXT = PARK_KINDS.join(", ").replace(/, ([a-z]+)$/, " or $1");
-
-function plural(count: number, one: string, many: string): string {
-  return `${String(count)} ${count === 1 ? one : many}`;
-}
 
 /** A time as the person reads it: `13:00` today, `Oct 18 22:46` on another day. */
 function clock(ctx: UserContext, iso: string): string {
@@ -169,8 +179,13 @@ async function runAvailable(args: string[], ctx: UserContext): Promise<number> {
   if (stray !== null) return stray;
   const state = await setAvailable(ctx.paths.stateDir);
   ctx.out.line("ok", "The person is available again.");
+  const asker = askerOf(ctx);
   if (state.items.length === 0) ctx.out.line("info", "Nothing was parked.");
-  else {
+  else if (asker.session !== null) {
+    // A session goes through its own items only: the others wait for their own sessions.
+    for (const line of waitingLines(ownedItems(state.items, asker, ctx.owners)))
+      ctx.out.line("info", line);
+  } else {
     ctx.out.line(
       "info",
       `${plural(state.items.length, "item waits", "items wait")} for the person: go through ${state.items.length === 1 ? "it" : "them"} with ${AVAILABLE_SKILL}.`,
@@ -211,12 +226,24 @@ function runStatus(args: string[], ctx: UserContext): number {
   return 0;
 }
 
-/** The words that say who parked an item and when: `crew UA1-x · session abc · 01:00`. */
-function whoText(ctx: UserContext, item: ParkedItem): string {
+/**
+ * The words that say who parked an item, when, and who answers it:
+ * `crew UA1-x · session abc · 01:00 · waits in my-app lead`.
+ */
+function whoText(ctx: UserContext, item: ParkedItem & Owned, asking: boolean): string {
+  const owner =
+    item.whose === "another session"
+      ? `waits in ${item.waitsIn === null ? "another session" : plainText(item.waitsIn.name)}`
+      : item.whose === "no session"
+        ? "its session ended"
+        : asking
+          ? "for this session"
+          : "";
   const parts = [
     item.crew === "" ? "" : `crew ${plainText(item.crew)}`,
     item.session === "" ? "" : `session ${plainText(item.session)}`,
     clock(ctx, item.at),
+    owner,
   ];
   return parts.filter((part) => part !== "").join(" · ");
 }
@@ -226,7 +253,8 @@ function runList(args: string[], ctx: UserContext): number {
   if ("error" in parsed) return usageProblem(ctx, parsed.error);
   const stray = strayWord(ctx, "list", parsed.positionals);
   if (stray !== null) return stray;
-  const { items } = readAway(ctx.paths.stateDir);
+  const asker = askerOf(ctx);
+  const items = ownedItems(readAway(ctx.paths.stateDir).items, asker, ctx.owners);
   if (parsed.flags.has("--json")) {
     ctx.out.json(items);
     return 0;
@@ -236,7 +264,9 @@ function runList(args: string[], ctx: UserContext): number {
     return 0;
   }
   for (const item of items) {
-    ctx.out.heading(`#${String(item.id)} ${item.kind} · ${whoText(ctx, item)}`);
+    ctx.out.heading(
+      `#${String(item.id)} ${item.kind} · ${whoText(ctx, item, asker.session !== null)}`,
+    );
     ctx.out.say(plainText(item.text), 3);
     // An action runs where the session that parked it stood: a branch, a build folder.
     if (item.kind === "action" && item.cwd !== "") ctx.out.say(`in ${plainText(item.cwd)}`, 3);

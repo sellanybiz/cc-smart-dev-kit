@@ -12,6 +12,14 @@ import { COMMAND, PLUGIN } from "../build-info/names";
 export const UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 export const AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
 
+/**
+ * `1 item`, `2 items`. The command's output module has its own, which a hook bundle may not reach
+ * (above), so the command, the hook and `whose.ts` share this one.
+ */
+export function plural(count: number, one: string, many: string): string {
+  return `${String(count)} ${count === 1 ? one : many}`;
+}
+
 /** The longest words and command a park keeps: a question, not a transcript. */
 export const TEXT_MAX = 4_000;
 export const COMMAND_MAX = 16_000;
@@ -34,7 +42,8 @@ Commands:
                  Put one item on the list. An action names its exact command, a question its
                  options and the recommended one (counted from 1). --crew names the crew
                  session the item is for, when a lead parks its crew session's question.
-  list [--json]  The items, each with its exact command.
+  list [--json]  The items, each with who answers it and its exact command. Judged for the
+                 session that runs it: this session's, another session's, or no session's.
   clear <n>... | --all
                  Take answered items off the list.
 
