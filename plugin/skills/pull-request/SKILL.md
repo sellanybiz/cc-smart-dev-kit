@@ -55,9 +55,9 @@ Task files travel with the change that needs them; closing and staging them is
 
 GitHub closes an issue only when a pull request that names it merges into the **default
 branch**: a fix merged into a release branch closes nothing, and a `Fixes` line in a pull
-request into any other branch is ignored. Where `workflow.issues.enabled` is on, the kit marked
-each issue marked fixed with the label `fixed-unreleased`; the pull request that ships
-them lists them. Run
+request into any other branch is ignored. Where `workflow.issues.enabled` is on, the main
+session labelled each issue a merged phase fixed `fixed-unreleased` (`issue mark-fixed`,
+`/cc-smart-dev-kit:build` § 5); the pull request that ships them lists them. Run
 
 ```
 cc-smart-dev-kit issue fixed --base <default branch> --head <this branch>

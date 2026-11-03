@@ -100,6 +100,12 @@ the integration conflicts in your scope and check affected code. Close all block
 then `task_done` the phase with its commits, checks and verdicts. In that same turn, start
 every phase this unblocked; do not wait for unrelated agents or reviews.
 
+A phase that fixes a GitHub issue its task names: once its branch is merged, run
+`cc-smart-dev-kit issue mark-fixed --issue <n> --base <plan branch> --branch <phase branch>
+--tip <its merged head>`, with `--merge <merge commit>` when there is one. It writes the
+issue's comment and its fixed label, and needs `workflow.issues.enabled` on. It never closes
+the issue: the release's pull request does (`/cc-smart-dev-kit:pull-request`).
+
 After the branch is merged and its work is preserved, remove that builder's worktree and
 branch (`/cc-smart-dev-kit:worktree`). Check it is clean and no process uses it first.
 Never remove another task's checkout or an unmerged branch. Repeat until all phases close.
