@@ -981,6 +981,19 @@ describe("Stop: the last line, one block, never context", () => {
     );
     if (!made.ok) throw new Error(made.why);
     db.close();
+    // The card lists it, apart from what holds the report: the lead may have laid it out.
+    expect(
+      await runHook(
+        crewRoleHook,
+        { hook_event_name: "SessionStart", session_id: "s", cwd, source: "resume" },
+        world.env,
+      ),
+    ).toEqual(
+      addContext(
+        "SessionStart",
+        `${roleCard(world.record, crewBriefFile(paths.stateDir, world.repo, CREW_ID))}\nNon-blocking, never holds your report:\n#3 [pending] Polish later`,
+      ),
+    );
     await step(world.stateDir, world.repo);
     expect(await runHook(crewRoleHook, stopInput(cwd), world.env)).toEqual(blockAnswer());
   });

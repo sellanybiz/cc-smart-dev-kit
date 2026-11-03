@@ -13,6 +13,7 @@ import {
   openSubtasks,
   searchTasks,
   subtreeProgress,
+  taskById,
 } from "./queries";
 import { crewPhaseState, hasOwnTask, leadOwnState, startView, statusTask } from "./read";
 import {
@@ -140,10 +141,11 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
     expect(state.value.total).toBe(2);
     expect(state.value.openSubtasks.map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
   }
-  // Alpha and Beta sit inside the phase: its crew's work, never the lead's own (D76).
+  // The lead's session made Alpha and Beta, so they are its own for the reminder (D76); inside an
+  // open phase they are its crew's to work, so Beta in progress never holds the lead's stop.
   const lead = leadOwnState(paths, "p", "plan", ["lead"]);
   if (lead.state !== "ready") throw Error("not ready");
-  expect(lead.value.total).toBe(0);
+  expect(lead.value.total).toBe(2);
   expect(lead.value.inProgress).toEqual([]);
   // The phase and its subtasks are the crew session's own: a session start shows the plan alone.
   const view = startView(paths, "p", who, { limit: 1 });
@@ -167,7 +169,11 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   });
   ok(systemClose(db, phase.id, "dropped", "removed", who, 20));
   expect(notesOf(db, b.id)[0]?.text).toBe("Automatically dropped: removed");
-  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: false });
+  // Beta was the crew session's (its crew id): dropped. Alpha was laid out (no crew id): it stays
+  // pending for the phase's next session, untouched, so it is still the lead's own.
+  expect(taskById(db, a.id).status).toBe("pending");
+  expect(notesOf(db, a.id)).toEqual([]);
+  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: true });
   db.close();
 });
 test("the start view leaves crew phases out, puts this process's claims first, and counts stale work it hides", () => {

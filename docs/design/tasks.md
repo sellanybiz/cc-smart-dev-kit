@@ -36,7 +36,7 @@ The store enforces these rules, not the caller:
 - A task blocked by an open task can neither start nor be done.
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
 - A system close on merge or removal drops open subtasks and leaves an automatic note; a merge
-  leaves non-blocking work open.
+  leaves non-blocking work open, and a removal hands the steps a lead laid out back to pending.
 - Delete is for a mistake with no notes or subtasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
 
@@ -68,10 +68,13 @@ It does walk on below a closed task, so a task closed early cannot hide open wor
 names tasks that must finish first. A task blocked by an open task cannot go to `in_progress`
 or `done`; a blocker that is done or dropped lets it go. The check runs on the change of status
 only, so a task already in progress when a blocker is added keeps going, and says it is
-blocked. `addBlockers` refuses a blocked-by cycle, a task of another project, and a task above
-this one: a parent waits for its subtasks, so a subtask blocked by its parent could never
-start, and neither could ever be done. The kit's own writes (a crew start, a merge's close, an
-import) are not held.
+blocked. `addBlockers` refuses a blocked-by cycle, a task of another project, a task above
+this one, and a task that already waits for this one through a parent: a parent waits for its
+blocking subtasks, so a subtask blocked by its parent, or by a task that waits for that parent,
+could never start, and none of them could ever be done. That last walk follows both kinds of
+wait (blocked-by, and a parent for the subtasks that hold it), so the order the blocks were
+added does not matter. The kit's own writes (a crew start, a merge's close, an import) are not
+held. Done is judged only on the move to done, so a done task's other fields still change.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
@@ -79,12 +82,14 @@ with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still open
 rule. No hook query names the column, and a row without it reads as blocking.
 
 **A lead lays out its phases ahead of its crew.** `task_create` with `phase` (its id, as
-`crew start` names it) makes the phase task under the plan task, once per plan and phase
-(`layPhase`); a second call answers with the phase that is there. `plan` is the slug `crew lead
---plan` names, the lead's own plan when left out. `plan` alone makes the plan task, and takes a
-subject only. Neither takes a `parent` or a `status`: a plan sits at the top and a phase under
-its plan, and each starts pending. A crew session cannot lay phases: it works inside its own. `crew start` finds the phase by plan and phase (`ensurePhaseTask`) and adopts it with what
-the lead put under it, so a phase has one task.
+`crew start` names it, refused by the same rule, `isPhase`) makes the phase task under the
+plan task, once per plan and phase (`layPhase`). A second call answers with the phase that is
+there, says so, and names the fields it did not use. `plan` is the slug `crew lead --plan`
+names, the lead's own plan when left out. `plan` alone makes the plan task, and takes a subject
+only. Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its
+plan, and each starts pending. A crew session cannot lay phases: it works inside its own.
+`crew start` finds the phase by plan and phase (`ensurePhaseTask`) and adopts it with what the
+lead put under it, so a phase has one task.
 
 ### A task's history
 
@@ -125,13 +130,17 @@ adopts the one its lead laid out (above). `--waits-for` adds those phases to its
 list. A continuation points the same task at the new crew id and takes over its predecessor's
 subtasks (their crew id moves too, with a history entry); new crew tasks default to its
 subtasks. Merge closes the phase done and drops its open blocking work; its non-blocking work
-stays open, for whoever picks it up. Removal drops the phase and everything open under it. A
+stays open, for whoever picks it up. Removal drops the phase and the crew session's own open
+work under it (the tasks with its crew id). The steps its lead laid out (no crew id) stay: each
+goes back to pending, its claim cleared, with a note, because the plan still needs them. A
 phase started again after either opens again for the new crew session; the old session's
-closed subtasks stay under it as its record, and stop counting (below).
-A lead has a plan task too. Its *own* tasks are those created by its sessions in
-`leadSessions`, outside every phase: not the plan or phase tasks, and not the tasks it laid out
-inside a phase, which are that phase's crew session's work. Adoption carries that ownership
-forward.
+closed subtasks stay under it as its record, and stop counting (below). The laid-out steps the
+old session closed take its crew id at that moment, so they stop counting too; those still
+open are the new session's work, on its role card.
+A lead has a plan task too. Its *own* tasks are the tasks its sessions in `leadSessions` made
+in its plan, the steps it laid out inside a phase too: they answer the reminder. Its Stop holds
+only for its own blocking work in progress outside an open phase; inside one, a step is that
+phase's crew session's to work. Adoption carries that ownership forward.
 
 ## Project tasks
 
@@ -217,7 +226,9 @@ has no writer holding it open. All gates use this view, including `crew report`:
   existed is let through. A refusal names the task tool and CLI fallback.
 - Crew Stop names an open blocking subtask (`holdingUnder` its phase) and says to continue;
   with none, it asks for the report. A done report is refused while one remains open.
-  Non-blocking work never holds either: it stays open after the merge.
+  Non-blocking work never holds either: it stays open after the merge. The role card lists it
+  apart, under "Non-blocking, never holds your report", so a crew session sees what its lead
+  laid out.
 - Lead Stop holds once for the lead's own blocking work in progress, unless the turn names
   `Waiting for:` or has background work other than its watch. The notifier yields to it.
 - The lead reminder asks for its own task when none exists.

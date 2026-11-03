@@ -31,8 +31,9 @@ branch, how you report and ask).
 - **Your role card** comes at the start, and again on a resume and after a compaction: it names
   your phase, the files it owns, your brief's path, how you report and ask, and the git rule.
 - **Before the first edit, break the phase into subtasks** with `task_create`; the parent
-  defaults to your phase task. Put each step's done-check in its description. Read existing
-  subtasks first on a resume; continue them rather than making a second list.
+  defaults to your phase task. Put each step's done-check in its description. Read the phase's
+  existing tasks first (your card lists them): your lead may have laid them out, and a resume
+  keeps your own. Work them rather than making a second list.
   The first-edit gate requires a subtask, and the done-report gate requires every blocking
   one done or dropped; a task your lead marked non-blocking does not hold you.
   Task tools need no lookup; the CLI fallback is in `/cc-smart-dev-kit:memory-routing`.

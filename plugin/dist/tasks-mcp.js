@@ -21791,6 +21791,34 @@ function claudeMemDataDir(env, home) {
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
 }
 
+// src/crew/names.ts
+var MAX_TAG = 12;
+var MAX_PHASE = 8;
+var MAX_SLUG = 32;
+var LEAD_ROLE = "LEAD";
+var CREW_ROLE = "C";
+var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
+function namePart(raw, max) {
+  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
+  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
+}
+function partRule(max) {
+  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+}
+var TAG_RULE = partRule(MAX_TAG);
+function isNameTag(value) {
+  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
+}
+function isPhase(value) {
+  return value !== "" && value.length <= MAX_PHASE && namePart(value, MAX_PHASE) === value;
+}
+var SLUG_RULE = partRule(MAX_SLUG);
+var PHASE_RULE = partRule(MAX_PHASE);
+var PART = "[A-Za-z0-9._-]+";
+var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
+var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
+var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
+
 // src/crew/store.ts
 import {
   appendFileSync,
@@ -22090,31 +22118,6 @@ function withoutBom(text) {
 function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
 }
-
-// src/crew/names.ts
-var MAX_TAG = 12;
-var MAX_PHASE = 8;
-var MAX_SLUG = 32;
-var LEAD_ROLE = "LEAD";
-var CREW_ROLE = "C";
-var EDGE_SEPARATORS = /^[._-]+|[._-]+$/g;
-function namePart(raw, max) {
-  const plain = raw.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/-{2,}/g, "-").replace(EDGE_SEPARATORS, "");
-  return plain.slice(0, Math.max(0, max)).replace(EDGE_SEPARATORS, "");
-}
-function partRule(max) {
-  return `1-${max} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
-}
-var TAG_RULE = partRule(MAX_TAG);
-function isNameTag(value) {
-  return value !== "" && value.length <= MAX_TAG && namePart(value, MAX_TAG) === value;
-}
-var SLUG_RULE = partRule(MAX_SLUG);
-var PHASE_RULE = partRule(MAX_PHASE);
-var PART = "[A-Za-z0-9._-]+";
-var HANDOFF = "(?:[2-9]|[1-9][0-9]+)";
-var LEAD_SHAPE = new RegExp(`^${LEAD_ROLE}( ${PART}){1,2}$`);
-var CREW_SHAPE = new RegExp(`^${CREW_ROLE}( ${PART}){2,4}( ${HANDOFF})?$`);
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -23577,6 +23580,18 @@ function addBlockers(db, task, refs) {
       seen.add(id);
       pending.push(...byId.get(id)?.waitsFor ?? []);
     }
+    const tasks = [...byId.values()];
+    const reached = new Set;
+    const waits = [ref];
+    while (waits.length) {
+      const id = waits.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === task.id)
+        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done`);
+      reached.add(id);
+      waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
+    }
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
@@ -23622,7 +23637,7 @@ function applyUpdate(db, id, change, who, now) {
   placeValid(db, task.project, task, parent, task.kind);
   if (change.waitsFor)
     dependencies(db, task, change.waitsFor);
-  if (status === "done")
+  if (status === "done" && task.status !== "done")
     doneValid(db, task);
   if ((status === "in_progress" || status === "done") && status !== task.status)
     unblockedValid(db, taskById(db, id));
@@ -24100,6 +24115,20 @@ var issueFeedFields = object({
   version: literal(1)
 });
 
+// src/tasks/words.ts
+var TASK_TOOL = {
+  create: "task_create",
+  update: "task_update",
+  done: "task_done",
+  note: "task_note",
+  list: "task_list",
+  get: "task_get",
+  search: "task_search",
+  delete: "task_delete"
+};
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
+
 // src/tasks/work/history.ts
 var FIELDS = [
   ["kind", "kind"],
@@ -24308,10 +24337,16 @@ function createTaskOps(options = {}) {
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug, as `crew lead --plan` names it)");
           if (input.phase === undefined) {
+            const there = allTasks(store, ctx.project).some((t) => t.kind === "plan" && t.plan === slug);
             const made = value(writeWork(store, () => planTask(store, { project: ctx.project, plan: slug, subject: input.subject }, who, now)));
-            return { ok: true, text: `${label2(made)} \xB7 plan ${slug}` };
+            return {
+              ok: true,
+              text: `${label2(made)} \xB7 plan ${slug}${there ? " \xB7 it was there already" : ""}`
+            };
           }
           const phaseId = input.phase;
+          if (!isPhase(phaseId))
+            throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const laid = value(writeWork(store, () => layPhase(store, {
             project: ctx.project,
             plan: slug,
@@ -24321,9 +24356,15 @@ function createTaskOps(options = {}) {
             ...input.type === undefined ? {} : { type: input.type },
             blockedBy
           }, who, now)));
+          const kept = [
+            ...input.description === undefined ? [] : ["description"],
+            ...input.type === undefined ? [] : ["type"],
+            ...blockedBy.length ? ["blocked_by"] : []
+          ];
+          const unchanged = kept.length ? `: its ${kept.join(", ")} stay as they were (${TASK_TOOL.update} changes them)` : "";
           return {
             ok: true,
-            text: `${label2(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : " \xB7 it was there already"}`
+            text: `${label2(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : ` \xB7 it was there already${unchanged}`}`
           };
         }
         const parent = input.parent ? work(input.parent) : phase;
@@ -24545,20 +24586,6 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
     }
   };
 }
-
-// src/tasks/words.ts
-var TASK_TOOL = {
-  create: "task_create",
-  update: "task_update",
-  done: "task_done",
-  note: "task_note",
-  list: "task_list",
-  get: "task_get",
-  search: "task_search",
-  delete: "task_delete"
-};
-var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
-var TASK_COMMAND = `${COMMAND} task`;
 
 // src/tasks/mcp.ts
 var TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.

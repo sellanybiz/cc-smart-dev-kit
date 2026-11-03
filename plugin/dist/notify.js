@@ -7655,6 +7655,9 @@ function allTasks(db, project) {
     type: row.blocking === 0 ? "non-blocking" : "blocking"
   }));
 }
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
 
 // src/tasks/work/read.ts
 import { existsSync as existsSync6 } from "fs";
@@ -7672,28 +7675,25 @@ function readWorkStore(paths, body) {
     db?.close();
   }
 }
-function phaseOf(task, byId) {
+function inOpenPhase(task, byId) {
   const seen = new Set;
   for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
     if (t.kind === "phase")
-      return t;
+      return isOpen(t);
     seen.add(t.id);
   }
-  return null;
-}
-function inPhase(task, byId) {
-  return phaseOf(task, byId) !== null;
+  return false;
 }
 function own2(db, project, sessionIds, plan) {
-  const all = allTasks(db, project);
-  const byId = new Map(all.map((t) => [t.id, t]));
-  return all.filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan) && !inPhase(t, byId));
+  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
 }
 function leadOwnState(paths, project, plan, sessionIds) {
   return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const byId = new Map(all.map((t) => [t.id, t]));
     const tasks = own2(db, project, sessionIds, plan);
     return {
-      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking"),
+      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId)),
       total: tasks.length
     };
   });

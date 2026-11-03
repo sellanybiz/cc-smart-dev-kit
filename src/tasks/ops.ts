@@ -5,6 +5,7 @@ import { type TaskOperation, taskSchemas } from "./schemas";
 export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
+import { isPhase, PHASE_RULE } from "../crew/names";
 import { leadSessions, listLeads, readCrew } from "../crew/store";
 import { runGit } from "../hooks/git";
 import { taskContext } from "./context";
@@ -16,6 +17,7 @@ import {
   updateProjectTask,
 } from "./project/files";
 import type { ProjectTask } from "./project/format";
+import { TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
@@ -215,6 +217,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               "A phase belongs to a plan: give plan (its slug, as `crew lead --plan` names it)",
             );
           if (input.phase === undefined) {
+            const there = allTasks(store, ctx.project).some(
+              (t) => t.kind === "plan" && t.plan === slug,
+            );
             const made = value(
               writeWork(store, () =>
                 planTask(
@@ -225,9 +230,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ),
               ),
             );
-            return { ok: true, text: `${label(made)} · plan ${slug}` };
+            return {
+              ok: true,
+              text: `${label(made)} · plan ${slug}${there ? " · it was there already" : ""}`,
+            };
           }
           const phaseId = input.phase;
+          // The id `crew start` takes it over by: one it would refuse could never be adopted.
+          if (!isPhase(phaseId))
+            throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const laid = value(
             writeWork(store, () =>
               layPhase(
@@ -246,9 +257,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               ),
             ),
           );
+          // A phase that was there keeps its own fields: say which of the call's were not used.
+          const kept = [
+            ...(input.description === undefined ? [] : ["description"]),
+            ...(input.type === undefined ? [] : ["type"]),
+            ...(blockedBy.length ? ["blocked_by"] : []),
+          ];
+          const unchanged = kept.length
+            ? `: its ${kept.join(", ")} stay as they were (${TASK_TOOL.update} changes them)`
+            : "";
           return {
             ok: true,
-            text: `${label(laid.task)} · phase ${phaseId} of plan ${slug}${laid.made ? "" : " · it was there already"}`,
+            text: `${label(laid.task)} · phase ${phaseId} of plan ${slug}${laid.made ? "" : ` · it was there already${unchanged}`}`,
           };
         }
         const parent = input.parent ? work(input.parent) : phase;

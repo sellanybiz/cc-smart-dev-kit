@@ -148,8 +148,8 @@ test("plan and phase upserts, hook views and claim classification", () => {
   db.close();
   expect(crewPhaseState(paths, "p", "new").state).toBe("ready");
   expect(leadOwnState(paths, "p", "plan", ["session"]).state).toBe("ready");
-  // A task inside a phase is the phase's work (D76), not its maker's own.
-  expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: false });
+  // A task its session made inside a phase is still its own for the reminder (D76): it laid it out.
+  expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: true });
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("ready");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {

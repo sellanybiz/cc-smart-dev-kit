@@ -210,9 +210,10 @@ function unblockedValid(db: WorkDb, task: WorkTask): void {
     );
 }
 /**
- * Adds blockers to a task: each in its project, never a cycle (a task waiting on itself), and
- * never a task above it. A parent waits for its blocking subtasks to be done, so a subtask
- * blocked by its parent could never start, and neither could ever be done.
+ * Adds blockers to a task: each in its project, never a cycle (a task waiting on itself), never
+ * a task above it, and never a task that already waits for this one through a parent. A parent
+ * waits for its blocking subtasks to be done, so a subtask blocked by its parent (or by a task
+ * that waits for that parent) could never start, and neither could ever be done.
  */
 function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void {
   for (const ref of refs) {
@@ -232,6 +233,22 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
       if (id === task.id) throw new Error("blocked-by would make a cycle");
       seen.add(id);
       pending.push(...(byId.get(id)?.waitsFor ?? []));
+    }
+    // A wait through a parent: a task waits for its blockers, and a parent for the subtasks that
+    // hold it (`holdingUnder`). When the blocker already waits for this task that way, at any
+    // depth and in either order the blocks were added, neither could ever be done.
+    const tasks = [...byId.values()];
+    const reached = new Set<string>();
+    const waits = [ref];
+    while (waits.length) {
+      const id = waits.pop();
+      if (!id || reached.has(id)) continue;
+      if (id === task.id)
+        throw new Error(
+          `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done`,
+        );
+      reached.add(id);
+      waits.push(...(byId.get(id)?.waitsFor ?? []), ...holdingUnder(tasks, id).map((t) => t.id));
     }
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
@@ -333,7 +350,8 @@ export function applyUpdate(
   placeValid(db, task.project, task, parent, task.kind);
   // The blockers change first, so one call can lift a block and start the task.
   if (change.waitsFor) dependencies(db, task, change.waitsFor);
-  if (status === "done") doneValid(db, task);
+  // Only the move to done is judged: a done task's other fields still change.
+  if (status === "done" && task.status !== "done") doneValid(db, task);
   if ((status === "in_progress" || status === "done") && status !== task.status)
     unblockedValid(db, taskById(db, id));
   const claiming =
@@ -429,7 +447,8 @@ export function systemClose(
  * `systemClose` inside a transaction the caller holds: the kit closes a task and drops its open
  * subtasks, each with an automatic note and a history entry that give the reason. Closed as done
  * (a merge), it drops only the open tasks that hold it (`holdingUnder`): non-blocking work stays
- * open for whoever picks it up. Dropped (a removal), it drops every open task under it.
+ * open for whoever picks it up. Dropped (a removal), it drops every open task under it, except
+ * under a phase the steps its lead laid out (no crew id): those go back to pending.
  */
 export function applySystemClose(
   db: WorkDb,
@@ -442,8 +461,30 @@ export function applySystemClose(
   const task = taskById(db, id);
   const open =
     status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  // A removed crew session's phase keeps the steps its lead laid out (they have no crew id): the
+  // plan still needs them, so each goes back to pending for the phase's next crew session.
+  const laidOut = (t: WorkTask) =>
+    status === "dropped" && task.kind === "phase" && t.crewId === null;
   for (const child of open) {
     const before = shape(db, child);
+    if (laidOut(child)) {
+      if (child.status === "pending" && child.claim === null) continue;
+      db.sqlite
+        .query(
+          "UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
+        )
+        .run(now, child.id);
+      recordChange(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(
+        db,
+        child.id,
+        `Back to pending: ${reason}. The phase's next crew session takes it.`,
+        who,
+        now,
+        reason,
+      );
+      continue;
+    }
     db.sqlite
       .query(
         "UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
@@ -550,6 +591,14 @@ export function ensurePhaseTask(db: WorkDb, input: PhaseTask, who: Who, now: num
       // Started again after its crew session was removed or merged: open for the new session.
       // The old session's closed subtasks stay as its record and stop counting (`countsToward`).
       db.sqlite.query("UPDATE tasks SET status='pending',closed_at=NULL WHERE id=?").run(task.id);
+      // The steps its lead laid out (no crew id) that the old session closed are its record too:
+      // they take its crew id, so they stop counting. Those still open are the new session's work.
+      if (task.crewId !== null)
+        for (const sub of descendants(db, task.id).filter((t) => t.crewId === null && !isOpen(t))) {
+          const old = shape(db, sub);
+          db.sqlite.query("UPDATE tasks SET crew_id=? WHERE id=?").run(task.crewId, sub.id);
+          recordChange(db, old, taskById(db, sub.id), who, now, reason);
+        }
     } else if (task.crewId !== null && task.crewId !== input.crewId) {
       // A continuation: its predecessor's subtasks are its own now, so they count on. Their
       // `updated_at` stays: their work did not change, and the history entry says who took them.

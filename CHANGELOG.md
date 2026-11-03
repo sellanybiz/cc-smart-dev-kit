@@ -9,7 +9,9 @@ Three task layers, a type on each task, blocked-by, and a Tasks tab in the porta
 
 **What to run** after the update: restart Claude Code, so each session's task server is the new
 one. Nothing else: the task store takes its new column by itself on the first write, and a
-session still on 1.10.x keeps reading and writing it.
+session still on 1.10.x keeps reading and writing it. Until it restarts, such a session (and a
+lead's watch started there) treats every task as blocking: its merge drops non-blocking work
+too, and its crew gates wait for it. That is the 1.10.x rule, stricter, never looser.
 
 What changed:
 
@@ -21,15 +23,18 @@ What changed:
   (the default, and every task from before) must be done or dropped before its parent is done.
   A non-blocking one holds nothing: the crew session's Stop and its done report, the lead's
   Stop and `task_done` wait only for blocking work. A crew merge leaves non-blocking work open,
-  for whoever picks it up, and a session start lists it; a removal still drops everything open.
+  for whoever picks it up, and a session start lists it. A removal drops the crew session's own
+  open work and hands the steps its lead laid out back to pending, for the next `crew start`.
 - **Blocked by.** `blocked_by` on create, `blocked_by_add` and `blocked_by_remove` on update
   (they were `waits_for`): a task cannot start or be done while a task it is blocked by is
-  open. A cycle is refused, and so is a task blocked by a task above it, which could never
-  finish. `crew start --waits-for` fills the phase's blocked-by list, as before.
+  open. A cycle is refused, and so is a task blocked by a task above it, or by a task that
+  waits for one, which could never finish. `crew start --waits-for` fills the phase's
+  blocked-by list, as before.
 - **A lead lays out its phases ahead of its crew.** `task_create` with `phase` (and `plan`, the
   lead's own when left out) makes the phase under the plan task, once; `crew start` for that phase
-  takes it over with the tasks the lead put under it. Those tasks are the crew session's work:
-  they no longer count as the lead's own.
+  takes it over with the tasks the lead put under it, and the crew session's card lists them.
+  They answer the lead's reminder, but never hold its Stop while the phase is open: they are the
+  crew session's to work. A phase id `crew start` would refuse is refused here too.
 - **The command:** `task add` takes `--type`, `--blocked-by`, `--phase` and `--plan`; the new
   `task set <ref>` changes a task's type, its blockers (`--block`, `--unblock`) or its parent
   (`--parent`, `--top`).

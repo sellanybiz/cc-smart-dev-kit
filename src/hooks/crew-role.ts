@@ -144,6 +144,9 @@ export const CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
 /** The longest piece of a line a record keeps: the session's last line, the person's first line. */
 export const LAST_LINE_MAX = 120;
 
+/** The most tasks the role card lists; the rest are counted, with the tool that lists them. */
+const CARD_TASK_LINES = 8;
+
 /** The reason of a Stop answer that reports nothing, and of the stop's one block. */
 export function reportStep(): string {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
@@ -523,16 +526,22 @@ async function startCard(
     crewId: id,
     listId: taskListId(env, sessionId),
   });
-  const open = tasks.open.slice(0, 8);
-  const lines = open.map(
-    (task) =>
-      `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`,
-  );
+  // At most `CARD_TASK_LINES` tasks in all: what holds the hand-back first, then the phase's
+  // non-blocking work (D76), which the lead may have laid out too.
+  const line = (task: { ref: string; status: string; subject: string }) =>
+    `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`;
+  const open = tasks.open.slice(0, CARD_TASK_LINES);
+  const aside = tasks.aside.slice(0, CARD_TASK_LINES - open.length);
+  const lines = open.map(line);
   if (tasks.open.length > open.length)
     lines.push(`+${tasks.open.length - open.length} more: task_list`);
+  const asideLines = aside.map(line);
+  if (tasks.aside.length > aside.length)
+    asideLines.push(`+${tasks.aside.length - aside.length} more: task_list`);
   const card = [
     roleCard(record, brief),
     ...(lines.length > 0 ? ["Open subtasks:", ...lines] : []),
+    ...(asideLines.length > 0 ? ["Non-blocking, never holds your report:", ...asideLines] : []),
   ].join("\n");
   const answer = addContext("SessionStart", card);
   return stderr === undefined ? answer : { ...answer, stderr };

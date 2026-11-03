@@ -8108,8 +8108,17 @@ function systemClose(db, id, status, reason, who, now) {
 function applySystemClose(db, id, status, reason, who, now) {
   const task = taskById(db, id);
   const open = status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  const laidOut = (t) => status === "dropped" && task.kind === "phase" && t.crewId === null;
   for (const child of open) {
     const before = shape(db, child);
+    if (laidOut(child)) {
+      if (child.status === "pending" && child.claim === null)
+        continue;
+      db.sqlite.query("UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, child.id);
+      recordChange(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Back to pending: ${reason}. The phase's next crew session takes it.`, who, now, reason);
+      continue;
+    }
     db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
     recordChange(db, before, taskById(db, child.id), who, now, reason);
     insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);

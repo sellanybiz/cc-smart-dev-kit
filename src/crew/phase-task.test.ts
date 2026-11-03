@@ -166,14 +166,16 @@ test.each([
     try {
       const phase = allTasks(db, projectKey(world.repo)).find((t) => t.kind === "phase");
       if (!phase) throw new Error("no phase task");
-      expect(
-        createTask(
-          db,
-          { project: projectKey(world.repo), subject: "Finish the test", parentId: phase.id },
-          WHO,
-          NOW,
-        ).ok,
-      ).toBe(true);
+      // The crew session's own subtask (its crew id, as its task_create gives it), and a step
+      // its lead laid out (no crew id): a merge drops both, a removal hands the step back (D76).
+      for (const task of [
+        { subject: "Finish the test", crewId: world.record.id },
+        { subject: "Laid out", crewId: null },
+      ])
+        expect(
+          createTask(db, { project: projectKey(world.repo), ...task, parentId: phase.id }, WHO, NOW)
+            .ok,
+        ).toBe(true);
     } finally {
       db.close();
     }
@@ -189,7 +191,9 @@ test.each([
     expect(read.state).toBe("ready");
     if (read.state !== "ready") throw new Error("no phase task");
     expect(read.value.phase?.status).toBe(outcome);
-    expect(read.value.openSubtasks).toEqual([]);
-    expect(read.value.total).toBe(1);
+    expect(read.value.openSubtasks.map((t) => [t.subject, t.status])).toEqual(
+      outcome === "done" ? [] : [["Laid out", "pending"]],
+    );
+    expect(read.value.total).toBe(2);
   },
 );

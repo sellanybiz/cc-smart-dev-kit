@@ -8,7 +8,7 @@ import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
 import { historyText } from "./history";
-import { allTasks, eventsOf, getTask, holdingUnder, layerOf, taskById } from "./queries";
+import { allTasks, eventsOf, getTask, holdingUnder, layerOf, notesOf, taskById } from "./queries";
 import { crewPhaseState, leadOwnState, readWorkStore, startView } from "./read";
 import {
   createTask,
@@ -227,7 +227,7 @@ test("a task blocked by an open task neither starts nor is done; a closed blocke
   db.close();
 });
 
-test("a merge keeps open non-blocking work; a removal drops everything", () => {
+test("a merge keeps open non-blocking work; a removal drops the crew's own and hands back the lead's", () => {
   const { db } = setup();
   const merged = add(db, "Merged", { kind: "phase", plan: "plan", phase: "A" });
   add(db, "Must", { parentId: merged.id });
@@ -238,17 +238,76 @@ test("a merge keeps open non-blocking work; a removal drops everything", () => {
     ["Must", "dropped"],
     ["Later", "pending"],
   ]);
-  const removed = add(db, "Removed", { kind: "phase", plan: "plan", phase: "B" });
-  add(db, "Later too", { parentId: removed.id, type: "non-blocking" });
+  const removed = add(db, "Removed", { kind: "phase", plan: "plan", phase: "B", crewId: "crew-b" });
+  // Laid out by the lead (no crew id): one the crew session had started, one it never touched.
+  const started = add(db, "Laid, started", { parentId: removed.id, status: "in_progress" });
+  const untouched = add(db, "Laid, untouched", { parentId: removed.id, type: "non-blocking" });
+  // The crew session's own work, a non-blocking one too: a removal drops it all.
+  add(db, "Its own", { parentId: removed.id, crewId: "crew-b" });
+  add(db, "Its own aside", { parentId: removed.id, crewId: "crew-b", type: "non-blocking" });
   ok(systemClose(db, removed.id, "dropped", "removed", who, 3));
-  expect(allTasks(db, "p").map((t) => t.status)).toEqual([
-    "done",
-    "dropped",
-    "pending",
-    "dropped",
-    "dropped",
+  expect(
+    allTasks(db, "p")
+      .slice(3)
+      .map((t) => [t.subject, t.status, t.claim === null]),
+  ).toEqual([
+    ["Removed", "dropped", true],
+    ["Laid, started", "pending", true],
+    ["Laid, untouched", "pending", true],
+    ["Its own", "dropped", true],
+    ["Its own aside", "dropped", true],
   ]);
+  expect(notesOf(db, started.id).map((n) => n.text)).toEqual([
+    "Back to pending: removed. The phase's next crew session takes it.",
+  ]);
+  expect(notesOf(db, untouched.id)).toEqual([]);
   db.close();
+});
+
+test("a phase started again takes the steps left open, and the old session's closed ones stop counting", () => {
+  const { db, paths } = setup();
+  const start = (crewId: string, now: number) =>
+    ok(
+      ensurePhaseTask(
+        db,
+        {
+          project: "p",
+          plan: "plan",
+          phase: "A",
+          subject: "A",
+          description: "",
+          crewId,
+          waitsForPhases: [],
+        },
+        who,
+        now,
+      ),
+    );
+  const phase = ok(
+    writeWork(db, () =>
+      layPhase(db, { project: "p", plan: "plan", phase: "A", subject: "Phase A" }, who, 1),
+    ),
+  ).task;
+  const finished = add(db, "Finished", { parentId: phase.id });
+  const left = add(db, "Left", { parentId: phase.id });
+  start("crew-1", 2);
+  ok(updateTask(db, finished.id, { status: "done" }, who, 3));
+  ok(systemClose(db, phase.id, "dropped", "removed", who, 4));
+  start("crew-2", 5);
+  db.close();
+  // "Left" is crew-2's work; "Finished" is crew-1's record now (its crew id), so it does not count.
+  const state = crewPhaseState(paths, "p", "crew-2");
+  expect(
+    state.state === "ready"
+      ? [state.value.total, state.value.openSubtasks.map((t) => t.subject)]
+      : null,
+  ).toEqual([1, ["Left"]]);
+  const db2 = openWorkDb(workDbFile(paths), { mode: "write" });
+  expect([taskById(db2, finished.id).crewId, taskById(db2, left.id).crewId]).toEqual([
+    "crew-1",
+    null,
+  ]);
+  db2.close();
 });
 
 test("a phase a lead lays out is the one crew start takes over, its tasks with it", () => {
@@ -295,25 +354,75 @@ test("a phase a lead lays out is the one crew start takes over, its tasks with i
       .map((t) => t.kind),
   ).toEqual(["plan", "phase"]);
   db.close();
-  // The crew session's hand-back waits for the blocking step only; the lead is held by neither.
+  // The crew session's hand-back waits for the blocking step only, and its card lists the other
+  // one aside. The lead laid both out, so they are its own for the reminder, and hold no stop.
   const crew = crewPhaseState(paths, "p", "crew-a");
-  expect(crew.state === "ready" ? crew.value.openSubtasks.map((t) => t.id) : null).toEqual([
-    step.id,
-  ]);
+  expect(
+    crew.state === "ready"
+      ? [crew.value.openSubtasks.map((t) => t.id), crew.value.aside.map((t) => t.subject)]
+      : null,
+  ).toEqual([[step.id], ["Nice to have"]]);
   const lead = leadOwnState(paths, "p", "plan", ["lead"]);
-  expect(lead).toEqual({ state: "ready", value: { inProgress: [], total: 0 } });
+  expect(lead).toEqual({ state: "ready", value: { inProgress: [], total: 2 } });
 });
 
 test("a lead's stop is held by its own blocking work in progress, not non-blocking work", () => {
   const { db, paths } = setup();
   add(db, "Mine", { plan: "plan", status: "in_progress" });
   add(db, "Aside", { plan: "plan", status: "in_progress", type: "non-blocking" });
+  // Inside an open phase a step is its crew session's to work; under a closed one it is anyone's.
+  const running = add(db, "Running", { kind: "phase", plan: "plan", phase: "A" });
+  add(db, "Its step", { parentId: running.id, plan: "plan", status: "in_progress" });
+  const closed = add(db, "Closed", { kind: "phase", plan: "plan", phase: "B" });
+  ok(updateTask(db, closed.id, { status: "dropped" }, who, 2));
+  add(db, "Picked up", { parentId: closed.id, plan: "plan", status: "in_progress" });
   db.close();
   const lead = leadOwnState(paths, "p", "plan", ["lead"]);
   expect(lead.state === "ready" ? lead.value.inProgress.map((t) => t.subject) : null).toEqual([
     "Mine",
+    "Picked up",
   ]);
-  expect(lead.state === "ready" ? lead.value.total : null).toBe(2);
+  // Every task its sessions made in the plan is its own for the reminder; a phase is not a task.
+  expect(lead.state === "ready" ? lead.value.total : null).toBe(4);
+});
+
+test("a block that would wait on itself through a parent is refused, at any depth, in either order", () => {
+  const { db } = setup();
+  const parent = add(db, "Parent");
+  const child = add(db, "Child", { parentId: parent.id });
+  const x = add(db, "X");
+  // Child waits for X; X blocked by Parent would wait for Child, as Parent waits for its subtask.
+  ok(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 2));
+  expect(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 3)).toEqual({
+    ok: false,
+    why: '#3 "X" cannot be blocked by #1 "Parent": #1 "Parent" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+  });
+  // The other order: X waits for Parent first, then Child blocked by X.
+  ok(updateTask(db, child.id, { waitsFor: { remove: [x.id] } }, who, 4));
+  ok(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 5));
+  expect(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 6)).toEqual({
+    ok: false,
+    why: '#2 "Child" cannot be blocked by #3 "X": #3 "X" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+  });
+  // A non-blocking child holds nothing, so the same chain waits on nothing: it is let through.
+  ok(updateTask(db, child.id, { type: "non-blocking" }, who, 7));
+  ok(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 8));
+  db.close();
+});
+
+test("a done task's other fields still change while a task under it is open; done again is judged", () => {
+  const { db } = setup();
+  const done = add(db, "Done");
+  ok(updateTask(db, done.id, { status: "done" }, who, 2));
+  // A step added after it closed: open and blocking, under a done task.
+  add(db, "Late", { parentId: done.id });
+  ok(updateTask(db, done.id, { subject: "Done, renamed", type: "non-blocking" }, who, 3));
+  ok(updateTask(db, done.id, { status: "in_progress" }, who, 4));
+  expect(updateTask(db, done.id, { status: "done" }, who, 5)).toEqual({
+    ok: false,
+    why: "open subtasks: #2 Late",
+  });
+  db.close();
 });
 
 test("a schema 1 store reads as all blocking, takes the column on its first write, and old code still writes", () => {
@@ -486,6 +595,28 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     expect(ops.call("create", { subject: "Build A again", phase: "A", plan: "my-plan" })).toEqual({
       ok: true,
       text: '#2 "Build A" · phase A of plan my-plan · it was there already',
+    });
+    // A call that finds what is there says so, and names what it did not use.
+    expect(
+      ops.call("create", {
+        subject: "Build A",
+        phase: "A",
+        plan: "my-plan",
+        description: "new brief",
+        type: "non-blocking",
+      }),
+    ).toEqual({
+      ok: true,
+      text: '#2 "Build A" · phase A of plan my-plan · it was there already: its description, type stay as they were (task_update changes them)',
+    });
+    expect(ops.call("create", { subject: "Renamed", plan: "my-plan" })).toEqual({
+      ok: true,
+      text: '#1 "The plan" · plan my-plan · it was there already',
+    });
+    // The id `crew start` takes a phase over by: one it would refuse is refused here too.
+    expect(ops.call("create", { subject: "Build C", phase: "Phase 1", plan: "my-plan" })).toEqual({
+      ok: false,
+      why: 'The phase "Phase 1" is not one: a phase is 1-8 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"',
     });
     expect(
       ops.call("create", { subject: "Build B", phase: "B", plan: "my-plan", parent: "#1" }),

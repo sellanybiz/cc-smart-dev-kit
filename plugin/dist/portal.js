@@ -15560,35 +15560,35 @@ function crewPhaseState(paths, project, crewId) {
   return readWorkStore(paths, (db) => {
     const tasks = allTasks(db, project);
     const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const holding = phase ? holdingUnder(tasks, phase.id) : [];
+    const held = new Set(holding.map((t) => t.id));
     return {
       phase,
-      openSubtasks: phase ? holdingUnder(tasks, phase.id) : [],
+      openSubtasks: holding,
+      aside: phase ? openSubtasks(db, phase.id).filter((t) => !held.has(t.id)) : [],
       total: phase ? countedUnder(tasks, phase.id).length : 0
     };
   });
 }
-function phaseOf(task, byId) {
+function inOpenPhase(task, byId) {
   const seen = new Set;
   for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
     if (t.kind === "phase")
-      return t;
+      return isOpen(t);
     seen.add(t.id);
   }
-  return null;
-}
-function inPhase(task, byId) {
-  return phaseOf(task, byId) !== null;
+  return false;
 }
 function own2(db, project, sessionIds, plan) {
-  const all = allTasks(db, project);
-  const byId = new Map(all.map((t) => [t.id, t]));
-  return all.filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan) && !inPhase(t, byId));
+  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
 }
 function leadOwnState(paths, project, plan, sessionIds) {
   return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const byId = new Map(all.map((t) => [t.id, t]));
     const tasks = own2(db, project, sessionIds, plan);
     return {
-      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking"),
+      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId)),
       total: tasks.length
     };
   });
@@ -15597,10 +15597,7 @@ function startView(paths, project, who, options) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    const open = all.filter((t) => {
-      const phase = phaseOf(t, byId);
-      return isOpen(t) && (phase === null || !isOpen(phase));
-    }).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+    const open = all.filter((t) => isOpen(t) && !inOpenPhase(t, byId)).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
     const shown = open.filter(({ task, claim }) => claim === "mine" || options.staleBefore === undefined || task.updatedAt >= options.staleBefore);
     shown.sort((a, b) => Number(b.claim === "mine") - Number(a.claim === "mine") || Number(b.task.status === "in_progress") - Number(a.task.status === "in_progress") || b.task.updatedAt - a.task.updatedAt || a.task.number - b.task.number);
     const limit = Math.max(0, Math.floor(options.limit));
@@ -15679,8 +15676,17 @@ function systemClose(db, id, status, reason, who, now) {
 function applySystemClose(db, id, status, reason, who, now) {
   const task = taskById(db, id);
   const open = status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  const laidOut = (t) => status === "dropped" && task.kind === "phase" && t.crewId === null;
   for (const child of open) {
     const before = shape(db, child);
+    if (laidOut(child)) {
+      if (child.status === "pending" && child.claim === null)
+        continue;
+      db.sqlite.query("UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, child.id);
+      recordChange2(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Back to pending: ${reason}. The phase's next crew session takes it.`, who, now, reason);
+      continue;
+    }
     db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
     recordChange2(db, before, taskById(db, child.id), who, now, reason);
     insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
@@ -21903,6 +21909,7 @@ function crewTaskView(where) {
     phase: ready?.phase ?? null,
     listed: (ready?.total ?? 0) > 0 || legacy.files > 0,
     open: [...(ready?.openSubtasks ?? []).map(kitLine), ...legacy.open],
+    aside: (ready?.aside ?? []).map(kitLine),
     unreadable
   };
 }
@@ -35617,6 +35624,7 @@ async function afterMerge(context) {
 var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
+var CARD_TASK_LINES = 8;
 function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
@@ -35818,13 +35826,19 @@ async function startCard(input, id, repo, paths, options, env) {
     crewId: id,
     listId: taskListId(env, sessionId)
   });
-  const open = tasks.open.slice(0, 8);
-  const lines = open.map((task) => `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`);
+  const line = (task) => `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`;
+  const open = tasks.open.slice(0, CARD_TASK_LINES);
+  const aside = tasks.aside.slice(0, CARD_TASK_LINES - open.length);
+  const lines = open.map(line);
   if (tasks.open.length > open.length)
     lines.push(`+${tasks.open.length - open.length} more: task_list`);
+  const asideLines = aside.map(line);
+  if (tasks.aside.length > aside.length)
+    asideLines.push(`+${tasks.aside.length - aside.length} more: task_list`);
   const card = [
     roleCard(record, brief),
-    ...lines.length > 0 ? ["Open subtasks:", ...lines] : []
+    ...lines.length > 0 ? ["Open subtasks:", ...lines] : [],
+    ...asideLines.length > 0 ? ["Non-blocking, never holds your report:", ...asideLines] : []
   ].join(`
 `);
   const answer = addContext("SessionStart", card);

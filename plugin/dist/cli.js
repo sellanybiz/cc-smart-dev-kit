@@ -15946,35 +15946,35 @@ function crewPhaseState(paths, project, crewId) {
   return readWorkStore(paths, (db) => {
     const tasks = allTasks(db, project);
     const phase = tasks.find((t) => t.kind === "phase" && t.crewId === crewId) ?? null;
+    const holding = phase ? holdingUnder(tasks, phase.id) : [];
+    const held = new Set(holding.map((t) => t.id));
     return {
       phase,
-      openSubtasks: phase ? holdingUnder(tasks, phase.id) : [],
+      openSubtasks: holding,
+      aside: phase ? openSubtasks(db, phase.id).filter((t) => !held.has(t.id)) : [],
       total: phase ? countedUnder(tasks, phase.id).length : 0
     };
   });
 }
-function phaseOf(task, byId) {
+function inOpenPhase(task, byId) {
   const seen = new Set;
   for (let t = task;t && !seen.has(t.id); t = byId.get(t.parentId ?? "")) {
     if (t.kind === "phase")
-      return t;
+      return isOpen(t);
     seen.add(t.id);
   }
-  return null;
-}
-function inPhase(task, byId) {
-  return phaseOf(task, byId) !== null;
+  return false;
 }
 function own2(db, project, sessionIds, plan) {
-  const all = allTasks(db, project);
-  const byId = new Map(all.map((t) => [t.id, t]));
-  return all.filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan) && !inPhase(t, byId));
+  return allTasks(db, project).filter((t) => t.kind === "task" && t.createdBy !== null && sessionIds.includes(t.createdBy) && (!plan || t.plan === plan));
 }
 function leadOwnState(paths, project, plan, sessionIds) {
   return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const byId = new Map(all.map((t) => [t.id, t]));
     const tasks = own2(db, project, sessionIds, plan);
     return {
-      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking"),
+      inProgress: tasks.filter((t) => t.status === "in_progress" && t.type === "blocking" && !inOpenPhase(t, byId)),
       total: tasks.length
     };
   });
@@ -15983,10 +15983,7 @@ function startView(paths, project, who, options) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    const open = all.filter((t) => {
-      const phase = phaseOf(t, byId);
-      return isOpen(t) && (phase === null || !isOpen(phase));
-    }).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+    const open = all.filter((t) => isOpen(t) && !inOpenPhase(t, byId)).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
     const shown = open.filter(({ task, claim }) => claim === "mine" || options.staleBefore === undefined || task.updatedAt >= options.staleBefore);
     shown.sort((a, b) => Number(b.claim === "mine") - Number(a.claim === "mine") || Number(b.task.status === "in_progress") - Number(a.task.status === "in_progress") || b.task.updatedAt - a.task.updatedAt || a.task.number - b.task.number);
     const limit = Math.max(0, Math.floor(options.limit));
@@ -16156,6 +16153,18 @@ function addBlockers(db, task, refs) {
       seen.add(id);
       pending.push(...byId.get(id)?.waitsFor ?? []);
     }
+    const tasks = [...byId.values()];
+    const reached = new Set;
+    const waits = [ref];
+    while (waits.length) {
+      const id = waits.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === task.id)
+        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done`);
+      reached.add(id);
+      waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
+    }
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
@@ -16201,7 +16210,7 @@ function applyUpdate(db, id, change, who, now) {
   placeValid(db, task.project, task, parent, task.kind);
   if (change.waitsFor)
     dependencies(db, task, change.waitsFor);
-  if (status === "done")
+  if (status === "done" && task.status !== "done")
     doneValid(db, task);
   if ((status === "in_progress" || status === "done") && status !== task.status)
     unblockedValid(db, taskById(db, id));
@@ -16251,8 +16260,17 @@ function systemClose(db, id, status, reason, who, now) {
 function applySystemClose(db, id, status, reason, who, now) {
   const task = taskById(db, id);
   const open = status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+  const laidOut = (t) => status === "dropped" && task.kind === "phase" && t.crewId === null;
   for (const child of open) {
     const before = shape(db, child);
+    if (laidOut(child)) {
+      if (child.status === "pending" && child.claim === null)
+        continue;
+      db.sqlite.query("UPDATE tasks SET status='pending',updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, child.id);
+      recordChange2(db, before, taskById(db, child.id), who, now, reason);
+      insertNote(db, child.id, `Back to pending: ${reason}. The phase's next crew session takes it.`, who, now, reason);
+      continue;
+    }
     db.sqlite.query("UPDATE tasks SET status='dropped',closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?").run(now, now, child.id);
     recordChange2(db, before, taskById(db, child.id), who, now, reason);
     insertNote(db, child.id, `Automatically dropped: ${reason}`, who, now, reason);
@@ -16296,6 +16314,12 @@ function ensurePhaseTask(db, input, who, now) {
     const before = shape(db, task);
     if (!isOpen(task) && task.crewId !== input.crewId) {
       db.sqlite.query("UPDATE tasks SET status='pending',closed_at=NULL WHERE id=?").run(task.id);
+      if (task.crewId !== null)
+        for (const sub of descendants(db, task.id).filter((t) => t.crewId === null && !isOpen(t))) {
+          const old = shape(db, sub);
+          db.sqlite.query("UPDATE tasks SET crew_id=? WHERE id=?").run(task.crewId, sub.id);
+          recordChange2(db, old, taskById(db, sub.id), who, now, reason);
+        }
     } else if (task.crewId !== null && task.crewId !== input.crewId) {
       for (const sub of descendants(db, task.id).filter((t) => t.crewId === task.crewId)) {
         const old = shape(db, sub);
@@ -33312,6 +33336,7 @@ function crewTaskView(where) {
     phase: ready?.phase ?? null,
     listed: (ready?.total ?? 0) > 0 || legacy.files > 0,
     open: [...(ready?.openSubtasks ?? []).map(kitLine), ...legacy.open],
+    aside: (ready?.aside ?? []).map(kitLine),
     unreadable
   };
 }
@@ -46660,10 +46685,16 @@ function createTaskOps(options = {}) {
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug, as `crew lead --plan` names it)");
           if (input.phase === undefined) {
+            const there = allTasks(store, ctx.project).some((t) => t.kind === "plan" && t.plan === slug);
             const made = value(writeWork(store, () => planTask(store, { project: ctx.project, plan: slug, subject: input.subject }, who, now)));
-            return { ok: true, text: `${label2(made)} \xB7 plan ${slug}` };
+            return {
+              ok: true,
+              text: `${label2(made)} \xB7 plan ${slug}${there ? " \xB7 it was there already" : ""}`
+            };
           }
           const phaseId = input.phase;
+          if (!isPhase(phaseId))
+            throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const laid = value(writeWork(store, () => layPhase(store, {
             project: ctx.project,
             plan: slug,
@@ -46673,9 +46704,15 @@ function createTaskOps(options = {}) {
             ...input.type === undefined ? {} : { type: input.type },
             blockedBy
           }, who, now)));
+          const kept = [
+            ...input.description === undefined ? [] : ["description"],
+            ...input.type === undefined ? [] : ["type"],
+            ...blockedBy.length ? ["blocked_by"] : []
+          ];
+          const unchanged = kept.length ? `: its ${kept.join(", ")} stay as they were (${TASK_TOOL.update} changes them)` : "";
           return {
             ok: true,
-            text: `${label2(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : " \xB7 it was there already"}`
+            text: `${label2(laid.task)} \xB7 phase ${phaseId} of plan ${slug}${laid.made ? "" : ` \xB7 it was there already${unchanged}`}`
           };
         }
         const parent = input.parent ? work(input.parent) : phase;
@@ -46901,10 +46938,12 @@ var TASK_LINE_CAP = 200, TASK_TEXT_CAP = 20000;
 var init_ops = __esm(() => {
   init_schemas3();
   init_paths2();
+  init_names2();
   init_store2();
   init_git();
   init_context();
   init_files();
+  init_words();
   init_db();
   init_history2();
   init_identity();
@@ -60538,6 +60577,7 @@ init_session_name();
 var CREW_ASK_TOOLS = ["AskUserQuestion", "ExitPlanMode"];
 var CREW_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var LAST_LINE_MAX = 120;
+var CARD_TASK_LINES = 8;
 function reportStep() {
   return `No report has been handed back for this phase. Hand it back with \`${REPORT_DONE_COMMAND}\` and the JSON part (tests, checks, review), or \`--status failed\` and why, then end the turn.`;
 }
@@ -60739,13 +60779,19 @@ async function startCard(input, id, repo, paths, options, env) {
     crewId: id,
     listId: taskListId(env, sessionId)
   });
-  const open = tasks.open.slice(0, 8);
-  const lines = open.map((task) => `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`);
+  const line = (task) => `${task.ref} [${task.status === "in_progress" ? "in progress" : task.status}] ${task.subject}`;
+  const open = tasks.open.slice(0, CARD_TASK_LINES);
+  const aside = tasks.aside.slice(0, CARD_TASK_LINES - open.length);
+  const lines = open.map(line);
   if (tasks.open.length > open.length)
     lines.push(`+${tasks.open.length - open.length} more: task_list`);
+  const asideLines = aside.map(line);
+  if (tasks.aside.length > aside.length)
+    asideLines.push(`+${tasks.aside.length - aside.length} more: task_list`);
   const card = [
     roleCard(record, brief),
-    ...lines.length > 0 ? ["Open subtasks:", ...lines] : []
+    ...lines.length > 0 ? ["Open subtasks:", ...lines] : [],
+    ...asideLines.length > 0 ? ["Non-blocking, never holds your report:", ...asideLines] : []
   ].join(`
 `);
   const answer = addContext("SessionStart", card);
