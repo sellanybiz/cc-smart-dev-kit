@@ -41,7 +41,8 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         title: "Needs you",
         href: "/needs",
         icon: BellDotIcon,
-        about: "Questions, prompts, failing checks and held updates that wait for you",
+        about:
+          "Permission prompts, failing checks, open breakers and held updates that wait for you",
       },
       {
         title: "Usage",

@@ -14,7 +14,7 @@
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
  * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges or opens a pull request, or writes to GitHub's issues (`merge-guard.ts`) |
  * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch and a poll are judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
+ * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch is judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
@@ -526,9 +526,10 @@ export const tierViewHook: HookSpec = {
  *
  * - **The launch judge** (`bash-judge.ts`) ignores the project's file, broken or not, and runs
  *   outside git: a raw `claude --bg` asks the person (and is refused in `claude -p`), `claude -p`
- *   is judged by the launch policy every Agent launch meets, and a polling loop over
- *   `claude agents --json` is denied. It is always on because it limits what the session itself
- *   may launch: a session must not switch it off by editing a file it owns.
+ *   is judged by the launch policy every Agent launch meets, and `workflow propose` asks while
+ *   the gate keeps the push or the pull request the person's. It is always on because it limits
+ *   what the session itself may launch: a session must not switch it off by editing a file it
+ *   owns.
  * - **The route** is the `switches.jobRoute` switch (the project's `"jobs": { "route": true }`
  *   over the person's machine-wide default, one resolver, off until one says on): a heavy command
  *   is rewritten to run through `cc-smart-dev-kit job run` (or refused with that command line),
@@ -545,7 +546,7 @@ export const jobRouteHook: HookSpec = {
     jobRouteConfigAnswer(message, input, context),
   outsideGit: (input, _event, _why, context) => jobRouteOutsideGit(input, context),
   logFacts: routeFacts,
-  // A crash must not let a launch or a poll through unjudged, nor a heavy command run raw: the
+  // A crash must not let a launch through unjudged, nor a heavy command run raw: the
   // guard asks about the calls in that domain, the same one its answers cover.
   onCrash: guardCrash("whether this launch or heavy command may run", jobRouteDomain),
   run: jobRoute,

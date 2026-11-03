@@ -62,8 +62,8 @@ function NeedsPage({ data }: { data: NeedsData }) {
                     title="Nothing needs you"
                     icon={<CircleCheckIcon className="size-6 text-ok" aria-hidden="true" />}
                   >
-                    Questions, prompts, failing checks and held updates show up here the moment they
-                    happen.
+                    Permission prompts, failing checks, open breakers and held updates show up here
+                    the moment they happen.
                   </EmptyState>
                 )
               }
@@ -75,7 +75,7 @@ function NeedsPage({ data }: { data: NeedsData }) {
   );
 }
 
-/** Needs you (D52): every question, prompt, failing check, open breaker and held update. */
+/** Needs you (D52): every permission prompt, failing check, open breaker and held update. */
 export function NeedsView() {
   const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
   return (

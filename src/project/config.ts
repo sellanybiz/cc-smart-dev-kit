@@ -119,7 +119,8 @@ export const WORKFLOW_ISSUES_SINCE = "1.4.0";
  */
 export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string>>> = {
   noSlotForFiles: "1.5.0",
-  light: "1.8.0",
+  // `light` (1.8.0) is ignored since 2.0 (`IGNORED_KIND_FIELDS`): it raises no floor, and
+  // doctor says it can go.
 };
 
 /**

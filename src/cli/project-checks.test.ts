@@ -562,7 +562,7 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     // (`shown`, the same for every project line): the rest is the same everywhere.
     expect(lines[0]).toStartWith("· project: ");
     expect(lines[0]).toEndWith(
-      "cc-smart-dev-kit.json sets size fields in jobs.kinds (e2e: gb, filesGb, workers; tsc: gb) that the job queue ignores: it counts jobs now, not gigabytes Fix: remove them from jobs.kinds; how many heavy jobs run at once is your own setting: cc-smart-dev-kit job set max-jobs <n>",
+      "cc-smart-dev-kit.json sets size fields in jobs.kinds (e2e: gb, filesGb, workers; tsc: gb) that the job queue ignores: it counts jobs now, not gigabytes Fix: remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says",
     );
   });
 

@@ -363,9 +363,9 @@ export async function fileIssue(world: IssueWorld, request: IssueRequest): Promi
   const clash = labelsProblem(policy.resolved);
   if (clash !== null) return refuse(clash);
 
-  // The ready label is the person's choice: a phase starts from an issue that carries it, added by
-  // someone with write access (`pickup.ts`). The kit files under that person's login, so it must
-  // never add the label itself, nor let the found label be the same word.
+  // The ready label is the person's choice: it marks an issue someone with write access chose.
+  // The kit files under that person's login, so it must never add the label itself, nor let the
+  // found label be the same word.
   const ready = policy.resolved.issues.readyLabel.value;
   const readyHit = [policy.resolved.issues.foundLabel.value, ...request.labels].find(
     (label) => label.toLowerCase() === ready.toLowerCase(),

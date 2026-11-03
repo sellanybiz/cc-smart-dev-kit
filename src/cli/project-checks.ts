@@ -449,7 +449,7 @@ function jobKindLines(
       ok: true,
       info: true,
       text: `project: ${shown(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
-      fix: `remove them from jobs.kinds; how many heavy jobs run at once is your own setting: ${COMMAND} job set max-jobs <n>`,
+      fix: "remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says",
     },
   ];
 }

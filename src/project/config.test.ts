@@ -93,7 +93,9 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.issues.fixedLabel": "1.4.0",
   "workflow.issues.readyLabel": "1.4.0",
   "jobs.kinds.*.noSlotForFiles": "1.5.0",
-  "jobs.kinds.*.light": "1.8.0",
+  // Ignored since 2.0 (`IGNORED_KIND_FIELDS`): the key stays in the schema so an old file loads,
+  // and it raises no floor, like `workflow.crew`.
+  "jobs.kinds.*.light": "0.5.2",
   tasks: "1.10.0",
   "tasks.dir": "1.10.0",
   "tasks.staleDays": "1.10.0",

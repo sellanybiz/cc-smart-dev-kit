@@ -13628,8 +13628,7 @@ var WORKTREE_REBUILDABLE_SINCE = "1.9.0";
 var CHECKS_SINCE = "1.1.0";
 var WORKFLOW_ISSUES_SINCE = "1.4.0";
 var JOB_KIND_KEYS_SINCE = {
-  noSlotForFiles: "1.5.0",
-  light: "1.8.0"
+  noSlotForFiles: "1.5.0"
 };
 var OWN_HOOK_NAMES_SINCE = {
   "subagent-background": "1.0.0",
@@ -35835,7 +35834,7 @@ function jobKindLines(config, configFile, projectDir, home) {
       ok: true,
       info: true,
       text: `project: ${shown2(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
-      fix: `remove them from jobs.kinds; how many heavy jobs run at once is your own setting: ${COMMAND} job set max-jobs <n>`
+      fix: "remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says"
     }
   ];
 }
