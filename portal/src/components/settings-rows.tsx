@@ -17,11 +17,6 @@ const CARDS: readonly { card: SettingsRow["card"]; title: string; about: string 
   { card: "flow", title: "Work flow", about: "What happens by itself once a step is finished." },
   { card: "alerts", title: "Alerts", about: "When the kit tells you something, and how." },
   { card: "switches", title: "Switches", about: "Parts of the kit you can turn on or off." },
-  {
-    card: "crew",
-    title: "Crew sessions",
-    about: "How many crew sessions run at once: per lead, on Opus, and on this machine.",
-  },
 ];
 
 /** Where a value comes from, on its badge: the project's file, the person's defaults, the kit. */

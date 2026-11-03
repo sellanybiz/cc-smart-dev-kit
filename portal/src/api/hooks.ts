@@ -29,7 +29,6 @@ function messageOf(error: unknown): string {
  */
 export type RefreshOn = readonly LiveEventName[] | ((message: LiveMessage) => boolean);
 
-/** How long a burst of events is gathered before one read: a crew step, an action's lines. */
 export const REFRESH_DEBOUNCE_MS = 300;
 
 function wants(refreshOn: RefreshOn | undefined, message: LiveMessage): boolean {

@@ -1,29 +1,18 @@
-/**
- * The facts B6d added to the API: Claude Code's version and live proof, the Bun the portal runs
- * on, the MCP servers, what holds the router's port, the plan's 5-hour window, the other
- * sessions' state, and the crew caps on Settings.
- *
- * A temp HOME holds every file a reader reads; `claude` and `systemctl` are fakes on the
- * test's own PATH or an injected runner. No test reaches the real machine, its Claude Code or
- * its router.
- */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
-import { createCrew, type NewCrew, updateCrew } from "../../crew/store";
 import { createHistoryWriter } from "../../gateway/history";
 import { renderSocket, SOCKET_NAME } from "../../gateway/service";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
-import { makeRepo } from "../../testing/hooks";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
-import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
+import { type ActionContext, portalOmnirouteContext } from "../actions";
 import type { PortalContext } from "../context";
 import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder, warpRow } from "../facts";
 import type { PageDataDeps } from "../page-data";
-import { gatewayKeyState, overviewAnswer, settingsAnswer } from "./data";
+import { gatewayKeyState, overviewAnswer } from "./data";
 import { testPortalContext } from "./test-context";
-import { SESSION_WORKING_MS, sessionStateOf, workAnswer } from "./work";
+import { SESSION_WORKING_MS, sessionStateOf } from "./work";
 
 const NOW = Date.UTC(2026, 9, 23, 12, 0, 0);
 
@@ -426,103 +415,5 @@ describe("another session's state", () => {
         NOW,
       ),
     ).toBe("idle");
-  });
-});
-
-describe("a crew session on Work", () => {
-  test("the files it owns, what it waits for, its newest line and its memory, from its store", async () => {
-    const { ctx, paths } = world({}, {}, true);
-    const repo = makeRepo("data-work");
-    const crew: NewCrew = {
-      base: null,
-      baseRef: "main",
-      branch: "crew/K-contracts",
-      effort: "high",
-      files: ["src/portal/api/**"],
-      id: "crew-K-contracts",
-      kind: "ui",
-      lastLine: null,
-      leadName: "LEAD my-app master-plan",
-      leadSessionId: "11111111-1111-4111-8111-111111111111",
-      memoryMb: null,
-      model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
-      name: "C my-app K contracts",
-      permissionMode: "auto",
-      phase: "K",
-      plan: ".claude/plans/master-plan.md",
-      pr: null,
-      questions: [],
-      reportPath: null,
-      repo,
-      sessionId: null,
-      shortId: null,
-      slug: "contracts",
-      state: "starting",
-      waitsFor: ["B8"],
-      worktree: join(repo, ".claude", "worktrees", "crew-K-contracts"),
-    };
-    await createCrew(paths.stateDir, crew, NOW - 600_000);
-    await updateCrew(
-      paths.stateDir,
-      repo,
-      crew.id,
-      { state: "working" },
-      NOW - 300_000,
-      "started in its worktree",
-      310,
-    );
-    // Another crew session of the same log, with newer events: none of them is this one's.
-    await createCrew(
-      paths.stateDir,
-      { ...crew, branch: "crew/L-other", id: "crew-L-other", name: "C my-app L other", phase: "L" },
-      NOW - 240_000,
-    );
-    await updateCrew(
-      paths.stateDir,
-      repo,
-      "crew-L-other",
-      { state: "working" },
-      NOW - 60_000,
-      "the other one's line",
-      900,
-    );
-    const deps = depsOf(ctx);
-    const answer = await workAnswer({ ...deps, action: { ...deps.action, cwd: repo } });
-    const summary = answer.crew.find((one) => one.id === crew.id);
-    expect(summary?.files).toEqual(["src/portal/api/**"]);
-    expect(summary?.waitsFor).toEqual(["B8"]);
-    expect(summary?.lastEvent).toEqual({
-      at: "2026-10-23T11:55:00.000Z",
-      text: "started in its worktree",
-      type: "state",
-    });
-    expect(summary?.memory).toEqual([{ at: "2026-10-23T11:55:00.000Z", mb: 310 }]);
-    // Its state began at its own newest state event, never at another event of the log.
-    expect(summary?.stateSince).toBe("2026-10-23T11:55:00.000Z");
-  });
-});
-
-describe("the crew caps on Settings", () => {
-  test("the four caps, in the crew card, with their values and where each came from", async () => {
-    const rows = (await settingsAnswer(depsOf(world().ctx))).rows.filter(
-      (row) => row.card === "crew",
-    );
-    expect(rows.map((row) => [row.key, row.value, row.source, row.readOnly, row.unit])).toEqual([
-      ["crew.perLead", 4, "default", false, undefined],
-      ["crew.perLeadOpus", 2, "default", false, undefined],
-      ["crew.max", 12, "default", false, undefined],
-      ["crew.usagePercent", 85, "default", false, "%"],
-    ]);
-  });
-
-  test("a cap is written as the person's own setting; a cap out of range is refused", async () => {
-    const deps = depsOf(world().ctx);
-    const written = await runAction("workflow.set", { key: "crew.perLead", value: 6 }, deps.action);
-    expect(written.ok).toBe(true);
-    const refused = await runAction("workflow.set", { key: "crew.max", value: 0 }, deps.action);
-    expect(refused).toEqual({ lines: ["crew.max is a whole number 1-100"], ok: false });
-    expect((deps.workflow as ReturnType<typeof fakeWorkflow>).calls.writePersonalSetting).toEqual([
-      { key: "crew.perLead", value: 6 },
-    ]);
   });
 });

@@ -53,7 +53,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         title: "Work",
         href: "/work",
         icon: UsersIcon,
-        about: "Each lead with its crew sessions, and your other sessions",
+        about: "Your Claude Code sessions",
       },
       {
         title: "Tasks",

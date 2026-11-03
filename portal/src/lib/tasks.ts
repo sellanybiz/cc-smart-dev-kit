@@ -24,7 +24,6 @@ export interface TaskView extends TaskFilter {
 /** The tab as it opens: open work, nothing else narrowed. */
 export const DEFAULT_FILTER: TaskFilter = { show: "open", blocked: false, nonBlocking: false };
 
-/** Everything the server sent: the crew page's phase tree shows its whole phase. */
 export const SHOW_ALL: TaskFilter = { show: "recent", blocked: false, nonBlocking: false };
 
 /** The tab on one project: the project page's link. */

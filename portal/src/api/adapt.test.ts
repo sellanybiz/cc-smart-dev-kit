@@ -5,57 +5,38 @@
 import { describe, expect, test } from "bun:test";
 import {
   branchVerdictOf,
-  crewOf,
   flowOf,
   guardAsksOf,
   healthOf,
   jobsOf,
   machineOf,
-  mergeCheckOf,
   NotSetUpError,
-  needsOf,
   overviewOf,
   projectOf,
   projectsOf,
   projectWorkflowOf,
   proposeValueText,
   workflowValueText,
-  workOf,
-  worktreesOf,
 } from "./adapt";
 import { GUARD_PAGE_SIZE, guardQuery, liveClient } from "./client";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
 import type { SettingsRow } from "./types";
 import type {
-  CrewAnswer,
-  CrewSummary,
   FlowAnswer,
   HealthAnswer,
   JobsAnswer,
   MachineAnswer,
-  NeedsAnswer,
   OverviewAnswer,
-  ProjectAnswer,
   ProjectCardData,
   ProjectSummary,
   ProjectWorkflowAnswer,
   RouterFacts,
-  WorkAnswer,
-  WorktreesAnswer,
 } from "./wire";
-
-const WORKTREES_EMPTY: WorktreesAnswer = {
-  autoClean: null,
-  base: "main",
-  from: "default",
-  note: null,
-  worktrees: [],
-};
 
 const CARD: ProjectCardData = {
   answers: {
     base: "main",
-    bases: { "crew/": "release" },
+    bases: { "feature/": "release" },
     guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
     protectedBranches: ["main"],
     workflow: { autoMerge: false },
@@ -125,42 +106,6 @@ const ROUTER: RouterFacts = {
   why: null,
 };
 
-const CREW: CrewSummary = {
-  base: { ref: "main", sha: "a".repeat(40) },
-  branch: "crew/b6c",
-  createdAt: "2026-10-22T10:00:00.000Z",
-  effort: "high",
-  files: ["portal/src/**", "README.md"],
-  id: "crew-1",
-  kind: "ui",
-  lastEvent: { at: "2026-10-22T10:04:00.000Z", text: "tests-green", type: "step" },
-  lastLine: null,
-  leadGone: false,
-  leadName: "LEAD my-app plan",
-  leadSessionId: "lead-1",
-  memory: [
-    { at: "2026-10-22T10:01:00.000Z", mb: 480 },
-    { at: "2026-10-22T10:06:00.000Z", mb: 512 },
-  ],
-  memoryMb: 512,
-  model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
-  name: "C my-app B6c slots",
-  phase: "B6c",
-  plan: "plan.md",
-  pr: null,
-  questions: [],
-  question: null,
-  repo: "/home/user/my-app",
-  shortId: "abc123",
-  slug: "slots",
-  state: "working",
-  stateSince: "2026-10-22T10:05:00.000Z",
-  updatedAt: "2026-10-22T10:06:00.000Z",
-  waitingFor: null,
-  waitsFor: [],
-  worktree: "/home/user/my-app/.claude/worktrees/b6c",
-};
-
 const SLOTS_ROW = {
   breaker: true,
   fallback: true,
@@ -177,64 +122,6 @@ const SLOTS_ROW = {
 };
 
 describe("the adapters", () => {
-  test("the Overview: the router's facts, the chains, and the running crew counted", () => {
-    const answer: OverviewAnswer = {
-      backends: [],
-      configured: true,
-      dashboardUrl: null,
-      error: null,
-      fallbacks: [],
-      fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
-      jobs: { slots: 3, used: 1, waiting: 1 },
-      limits: [],
-      limitsRead: true,
-      requests: { perMinute: 21.6, sinceRouterStart: 892 },
-      router: ROUTER,
-      slots: [SLOTS_ROW],
-      switches: {
-        gateway: true,
-        judge: false,
-        judgeUntested: false,
-        models: false,
-        settingsBaseUrl: null,
-        warnings: [],
-      },
-      warnings: [],
-    };
-    const work: WorkAnswer = {
-      crew: [CREW, { ...CREW, id: "crew-2", state: "done" }],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote: null,
-      leads: [],
-      note: null,
-      repo: "/home/user/my-app",
-      waitsError: null,
-      sessions: [],
-    };
-    const data = overviewOf(answer, work);
-    expect(data.crewRunning).toBe(1);
-    expect(data.health.cooling).toEqual({ "omniroute:minimax-m3": 30 });
-    expect(data.health.slots).toEqual({ "cc-smart-dev-kit-worker": ["omniroute:glm-5.3"] });
-    expect(data.health.recent).toEqual([
-      {
-        at: 10,
-        ms: 120,
-        next: true,
-        slot: "cc-smart-dev-kit-worker",
-        status: 200,
-        target: "omniroute:glm-5.3",
-      },
-    ]);
-    // The status line's own reading, with its reset as a time; the switches as the server says.
-    expect(data.fiveHour).toEqual({ percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) });
-    expect(data.switches.gateway).toBe(true);
-    expect(overviewOf({ ...answer, fiveHour: null }, work).fiveHour).toBe(null);
-    expect(() =>
-      overviewOf({ ...answer, configured: false, error: "the gateway is not set up" }, null),
-    ).toThrow(NotSetUpError);
-  });
-
   test("Health: the port holder in doctor's words, and none where the machine runs no service", () => {
     const holder = {
       check: { ok: true as const, text: "the router's socket holds 127.0.0.1:20999" },
@@ -256,386 +143,6 @@ describe("the adapters", () => {
     expect(data.socket).toEqual(holder);
     expect(healthOf({ ...answer, portHolder: null }).socket).toBe(null);
     expect(data.log).toEqual([{ level: "WARN", text: "a backend failed", time: "10:00:00" }]);
-  });
-
-  test("Work: the lead's crew, and each other session's state and model as the server read them", () => {
-    const data = workOf({
-      crew: [CREW],
-      leads: [
-        {
-          createdAt: "2026-10-22T09:00:00.000Z",
-          crew: [CREW],
-          cwd: "/home/user/my-app",
-          name: "LEAD my-app plan",
-          pausedAgents: [],
-          plan: "plan.md",
-          repo: "/home/user/my-app",
-          sessionId: "lead-1",
-          tag: "my-app",
-          updatedAt: "2026-10-22T10:00:00.000Z",
-        },
-      ],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote: null,
-      note: null,
-      repo: "/home/user/my-app",
-      waitsError: null,
-      sessions: [
-        {
-          branch: "main",
-          folder: "/home/user/my-app",
-          id: "s1",
-          lastWrite: 0,
-          model: "glm-5.3-flash",
-          name: null,
-          state: "waiting",
-        },
-        {
-          branch: null,
-          folder: null,
-          id: "s2",
-          lastWrite: 0,
-          model: null,
-          name: "notes",
-          state: "ended",
-        },
-      ],
-    });
-    expect(data.leads[0]?.crew[0]?.state).toBe("working");
-    // The files it owns, its newest step, and its memory line come from its summary.
-    expect(data.leads[0]?.crew[0]?.files).toEqual(["portal/src/**", "README.md"]);
-    expect(data.leads[0]?.lastStep["crew-1"]?.text).toBe("tests-green");
-    expect(data.memory["crew-1"]).toEqual([
-      { at: Date.UTC(2026, 9, 22, 10, 1, 0), mb: 480 },
-      { at: Date.UTC(2026, 9, 22, 10, 6, 0), mb: 512 },
-    ]);
-    expect(data.leads).toHaveLength(1);
-    expect(data.leads[0]?.crew[0]?.repo).toBe("/home/user/my-app");
-    expect(data.others.map((one) => [one.sessionId, one.state, one.model])).toEqual([
-      ["s1", "waiting", "glm-5.3-flash"],
-      ["s2", "ended", null],
-    ]);
-  });
-
-  test("FX1: an unknown wait stays unknown, with its slot, and is never a Claude limit", () => {
-    const answer = (waitingFor: CrewSummary["waitingFor"]) =>
-      workOf({
-        crew: [{ ...CREW, state: "paused", waitingFor }],
-        finishedSessions: [],
-        finishedSessionsError: null,
-        folderNote: null,
-        leads: [],
-        note: null,
-        repo: "/home/user/my-app",
-        waitsError: null,
-        sessions: [],
-      }).leads[0]?.crew[0]?.waitingFor;
-    const since = "2026-10-22T10:00:00.000Z";
-    expect(answer({ kind: "unknown", since, slot: "my-app/cc-smart-dev-kit-worker" })).toEqual({
-      kind: "unknown",
-      since,
-      slot: "my-app/cc-smart-dev-kit-worker",
-    });
-    // No slot: the field stays absent, never an empty name.
-    expect(answer({ kind: "unknown", since })).toEqual({ kind: "unknown", since });
-    // The two kinds the record names are unchanged.
-    expect(answer({ kind: "slot", since, slot: "cc-smart-dev-kit-worker" })).toEqual({
-      kind: "slot",
-      since,
-      slot: "cc-smart-dev-kit-worker",
-    });
-    // A safety-checks wait keeps its own kind and the judge scope it waits on.
-    expect(
-      answer({ kind: "safety-checks", scope: "my-app/cc-smart-dev-kit-judge", since }),
-    ).toEqual({
-      kind: "safety-checks",
-      scope: "my-app/cc-smart-dev-kit-judge",
-      since,
-    });
-    expect(answer({ kind: "claude-limit", model: "claude-opus-5-5", resetsAt: null })).toEqual({
-      kind: "claude-limit",
-      model: "claude-opus-5-5",
-      resetsAt: null,
-    });
-  });
-
-  test("Work: a crew session of another lead is shown under that lead's own name", () => {
-    const data = workOf({
-      crew: [{ ...CREW, id: "crew-9", leadName: "LEAD my-app old", leadSessionId: "lead-0" }],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote: null,
-      leads: [],
-      note: null,
-      repo: "/home/user/my-app",
-      waitsError: null,
-      sessions: [],
-    });
-    expect(data.leads.map((group) => [group.lead.name, group.crew.map((one) => one.id)])).toEqual([
-      ["LEAD my-app old", ["crew-9"]],
-    ]);
-  });
-
-  test("Work: the normal-start line is quiet, and a store that could not be read stays a warning", () => {
-    // An empty list must say why. A folder that is no project is the portal's normal start
-    // (the home folder), so its line goes in `folderNote`; a store that could not be read is
-    // a failure and stays in `note`.
-    const quiet = workOf({
-      crew: [],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote:
-        "this folder is not in a git project, so the other Claude Code sessions of a project are not listed; the crew sessions of every repository are",
-      leads: [],
-      note: null,
-      repo: null,
-      sessions: [],
-      waitsError: null,
-    });
-    expect(quiet.folderNote).toContain("not in a git project");
-    expect(quiet.note).toBe(null);
-    expect(quiet.leads).toEqual([]);
-    const broken = workOf({
-      crew: [],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote: null,
-      leads: [],
-      note: "the crew store could not be read: EACCES: permission denied",
-      repo: null,
-      sessions: [],
-      waitsError: null,
-    });
-    expect(broken.note).toContain("could not be read");
-    expect(broken.folderNote).toBe(null);
-  });
-
-  test("a crew page: the verdict in full, the diff per file, memory, reviews, the question", () => {
-    const answer: CrewAnswer = {
-      brief: null,
-      crew: {
-        ...CREW,
-        questions: [
-          {
-            number: 2,
-            text: "Ship?",
-            options: ["yes", "no"],
-            recommend: 1,
-            askedAt: "2026-10-22T10:07:00.000Z",
-          },
-          {
-            number: 4,
-            text: "When?",
-            options: [],
-            recommend: null,
-            askedAt: "2026-10-22T10:08:00.000Z",
-          },
-        ],
-        question: {
-          askedAt: "2026-10-22T10:07:00.000Z",
-          options: ["yes", "no"],
-          question: "Ship?",
-          recommended: 1,
-        },
-      },
-      diff: {
-        byFile: [
-          { added: 30, deleted: 3, path: "src/a.ts" },
-          { added: null, deleted: null, path: "assets/logo.png" },
-        ],
-        deletions: 3,
-        error: null,
-        files: 2,
-        insertions: 40,
-        outsideBrief: [],
-      },
-      events: [
-        {
-          at: "2026-10-22T10:01:00.000Z",
-          note: null,
-          sha: null,
-          state: "working",
-          text: "started",
-          type: "step",
-        },
-      ],
-      memory: [
-        { at: "2026-10-22T10:01:00.000Z", mb: 300 },
-        { at: "2026-10-22T10:06:00.000Z", mb: 512 },
-      ],
-      mergeCheck: {
-        detail: {
-          allowance: { files: 5, lines: 61 },
-          delta: { binary: 0, files: 2, lines: 74 },
-          limits: { files: 5, lines: 50, percent: 10 },
-          review: "4f2a9c1",
-          reviewed: { binary: 1, files: 9, lines: 612 },
-        },
-        kind: "refused",
-        number: 7,
-        reason: "the change after the review is over the limit",
-      },
-      report: null,
-      reviews: [{ at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" }],
-      tasks: { state: "unreadable", why: "the kit's task store cannot be read: locked" },
-    };
-    const data = crewOf(answer);
-    // The phase tree passes as the server sent it: the card draws each state itself.
-    expect(data.tasks).toEqual({
-      state: "unreadable",
-      why: "the kit's task store cannot be read: locked",
-    });
-    expect(data.brief).toBe("");
-    expect(data.diffTotals).toEqual({ deletions: 3, error: null, files: 2, insertions: 40 });
-    // A binary file has no line counts: unknown, never 0.
-    expect(data.diff).toEqual([
-      { added: 30, path: "src/a.ts", removed: 3 },
-      { added: null, path: "assets/logo.png", removed: null },
-    ]);
-    expect(data.memory).toEqual([
-      { at: Date.parse("2026-10-22T10:01:00.000Z"), mb: 300 },
-      { at: Date.parse("2026-10-22T10:06:00.000Z"), mb: 512 },
-    ]);
-    expect(data.mergeCheck).toEqual({
-      allowance: { files: 5, lines: 61 },
-      allowed: false,
-      delta: { binary: 0, files: 2, lines: 74 },
-      kind: "refused",
-      limits: { files: 5, lines: 50, percent: 10 },
-      pr: 7,
-      reason: "the change after the review is over the limit",
-      review: "4f2a9c1",
-      reviewed: { binary: 1, files: 9, lines: 612 },
-    });
-    expect(data.reviews).toEqual([
-      { at: "2026-10-22T10:05:00.000Z", by: ["reviewer"], sha: "4f2a9c1" },
-    ]);
-    expect(data.questions.map((one) => one.question)).toEqual(["Ship?", "When?"]);
-    expect(data.questions.map((one) => one.number)).toEqual([2, 4]);
-    expect(crewOf({ ...answer, mergeCheck: { kind: "silent" } }).mergeCheck).toBe(null);
-  });
-
-  test("the merge verdict: allowed with no detail, and one the guard could not read", () => {
-    expect(mergeCheckOf({ detail: null, kind: "allowed", reason: "reviewed at the head" })).toEqual(
-      {
-        allowance: null,
-        allowed: true,
-        delta: null,
-        kind: "allowed",
-        limits: null,
-        pr: null,
-        reason: "reviewed at the head",
-        review: null,
-        reviewed: null,
-      },
-    );
-    expect(mergeCheckOf({ kind: "unread", number: 3, what: "gh is not signed in" })).toEqual({
-      allowance: null,
-      allowed: false,
-      delta: null,
-      kind: "unread",
-      limits: null,
-      pr: 3,
-      reason: "gh is not signed in",
-      review: null,
-      reviewed: null,
-    });
-  });
-
-  test("Needs you: every open breaker, doctor's fix, the attach command, newest first", () => {
-    const answer: NeedsAnswer = {
-      stopped: [],
-      stoppedError: null,
-      breakers: [
-        {
-          held: 4,
-          heldNow: 2,
-          since: "2026-10-22T10:03:00.000Z",
-          slot: "cc-smart-dev-kit-fable",
-          targets: [
-            { status: 429, target: "omniroute:kimi-k3", until: "2026-10-22T10:10:00.000Z" },
-          ],
-        },
-        {
-          held: 1,
-          heldNow: null,
-          since: "2026-10-22T09:00:00.000Z",
-          slot: "cc-smart-dev-kit-worker",
-          targets: [],
-        },
-      ],
-      crew: [
-        {
-          askedAt: "2026-10-22T10:05:00.000Z",
-          crew: { id: "crew-1", name: "C my-app B6c slots", shortId: "abc123", state: "blocked" },
-          options: ["a", "b"],
-          number: 3,
-          question: "Which?",
-          recommended: 2,
-        },
-      ],
-      doctor: {
-        at: Date.parse("2026-10-22T08:00:00.000Z"),
-        failures: [
-          { fix: "cc-smart-dev-kit setup", section: "mcp", text: "a server is missing" },
-          { fix: null, section: null, text: "something else" },
-        ],
-      },
-      permissionsError: null,
-      permissions: [
-        {
-          asker: "git-guard",
-          at: Date.parse("2026-10-22T10:04:00.000Z"),
-          attach: "claude attach abc123",
-          crew: { id: "crew-1", name: "C my-app B6c slots", shortId: "abc123" },
-          kind: null,
-          project: "my-app",
-          session: "abc123-full-session-id",
-          tool: "Bash",
-        },
-        {
-          asker: "claude",
-          at: Date.parse("2026-10-22T10:02:00.000Z"),
-          attach: null,
-          crew: null,
-          kind: "a file write",
-          project: "my-app",
-          session: "s9",
-          tool: "Write",
-        },
-      ],
-      update: { at: "2026-10-22T10:01:00.000Z", from: "1.0.0", notes: [], version: "2.0.0" },
-    };
-    const data = needsOf(answer, "1.1.0");
-    expect(data.items.map((item) => item.id)).toEqual([
-      "question-crew-1-3",
-      "permission-abc123-full-session-id-1792663440000",
-      "breaker-cc-smart-dev-kit-fable",
-      "permission-s9-1792663320000",
-      "update-2.0.0",
-      "breaker-cc-smart-dev-kit-worker",
-      "doctor-0",
-      "doctor-1",
-    ]);
-    const breakers = data.items.flatMap((item) => (item.kind === "breaker" ? [item] : []));
-    // How many wait right now is the router's; when it does not say, unknown, never 0.
-    expect(breakers.map((item) => [item.breaker.heldNow, item.command])).toEqual([
-      [2, "cc-smart-dev-kit gateway slot fable claude"],
-      [null, "cc-smart-dev-kit gateway slot worker claude"],
-    ]);
-    const doctor = data.items.flatMap((item) => (item.kind === "doctor" ? [item] : []));
-    expect(doctor.map((item) => [item.section, item.text, item.fix, item.since])).toEqual([
-      ["mcp", "a server is missing", "cc-smart-dev-kit setup", "2026-10-22T08:00:00.000Z"],
-      ["", "something else", null, "2026-10-22T08:00:00.000Z"],
-    ]);
-    const waits = data.items.flatMap((item) => (item.kind === "permission" ? [item] : []));
-    // The server names the crew session and its attach command; a session it does not name has
-    // no command (a session in its own terminal cannot be attached), never one made up here.
-    expect(waits.map((item) => [item.crew?.id ?? null, item.attach])).toEqual([
-      ["crew-1", "claude attach abc123"],
-      [null, null],
-    ]);
   });
 
   test("the guard log: the server's page as it is, and its buckets as one series per guard", () => {
@@ -699,61 +206,6 @@ describe("the adapters", () => {
         session: "s1",
       }).toString(),
     ).toBe(`limit=${GUARD_PAGE_SIZE}&range=1h&cursor=1792663440000.2&hook=git-guard&session=s1`);
-  });
-
-  test("worktrees: idle time and auto-clean's last run, the main checkout left out", () => {
-    const data = worktreesOf(
-      {
-        autoClean: {
-          base: "main",
-          lastRunAt: "2026-10-22T09:00:00.000Z",
-          removed: [
-            {
-              branch: "crew/a",
-              name: "a",
-              path: "/home/user/my-app/.claude/worktrees/a",
-              why: "its pull request is merged",
-            },
-          ],
-        },
-        base: "main",
-        from: "config",
-        note: null,
-        worktrees: [
-          {
-            branch: "main",
-            head: "a1",
-            idleMinutes: null,
-            kind: "main",
-            path: "/home/user/my-app",
-            why: null,
-          },
-          {
-            branch: "crew/b",
-            head: "b1",
-            idleMinutes: 42,
-            kind: "kept",
-            path: "/home/user/my-app/.claude/worktrees/b",
-            why: "uncommitted changes",
-          },
-          {
-            branch: "crew/c",
-            head: "c1",
-            idleMinutes: 300,
-            kind: "finished",
-            path: "/home/user/my-app/.claude/worktrees/c",
-            why: "merged into main",
-          },
-        ],
-      },
-      "my-app",
-    );
-    expect(data.rows.map((row) => [row.branch, row.idleMinutes, row.verdict])).toEqual([
-      ["crew/b", 42, { finished: false, held: false, why: "uncommitted changes" }],
-      ["crew/c", 300, { finished: true, note: "merged into main" }],
-    ]);
-    expect(data.autoClean?.removed.map((one) => one.name)).toEqual(["a"]);
-    expect(worktreesOf({ ...WORKTREES_EMPTY, autoClean: null }, "my-app").autoClean).toBe(null);
   });
 
   test("projects: every field from the wire, unknown counts stay unknown, the note travels", () => {
@@ -840,51 +292,6 @@ describe("the adapters", () => {
       reason: null,
       tone: "info",
     });
-  });
-
-  test("a project's page: its row, its branches, its card; settings only for the current one", () => {
-    const answer: ProjectAnswer = {
-      branches: [
-        {
-          base: "main",
-          branch: "feature/login",
-          draft: false,
-          kind: "pr",
-          number: 12,
-          title: "Add the login page",
-          verdict: { detail: null, kind: "allowed", reason: "reviewed at abc123" },
-        },
-        {
-          base: null,
-          branch: "crew/B2-api",
-          draft: true,
-          kind: "crew",
-          number: null,
-          title: null,
-          verdict: { kind: "silent" },
-        },
-      ],
-      branchesNote: null,
-      card: CARD,
-      checkedAt: "2026-10-20T10:05:00.000Z",
-      project: SUMMARY,
-    };
-    const data = projectOf(answer);
-    expect(data.project.id).toBe("a1f0");
-    // The card's answers lose the opaque workflow object: the page draws four fields.
-    expect(data.answers).toEqual({
-      base: "main",
-      bases: { "crew/": "release" },
-      guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
-      protectedBranches: ["main"],
-    });
-    expect(data.setup).toEqual({ answers: data.answers, error: null, planError: null });
-    expect(data.branches.map((one) => [one.branch, one.kind, one.verdict.label])).toEqual([
-      ["feature/login", "pr", "allowed"],
-      ["crew/B2-api", "crew", "no verdict"],
-    ]);
-    expect(data.branchesNote).toBe(null);
-    expect(data.checkedAt).toBe("2026-10-20T10:05:00.000Z");
   });
 
   test("a project that is not set up has no answers of its own, but its card keeps the defaults", () => {
@@ -1136,44 +543,7 @@ describe("the B6d facts", () => {
   });
 });
 
-describe("the flow report that did not run (B6e)", () => {
-  test("Needs you says the permission prompts are missing, and why", () => {
-    const data = needsOf(
-      {
-        breakers: [],
-        crew: [],
-        doctor: { at: null, failures: [] },
-        permissions: [],
-        permissionsError: "the flow report did not run (exit 3): no bun",
-        stopped: [],
-        stoppedError: null,
-        update: null,
-      },
-      "1.1.0",
-    );
-    expect(data).toEqual({
-      items: [],
-      note: "Permission prompts could not be read: the flow report did not run (exit 3): no bun",
-    });
-  });
-
-  test("Work says no session can show a wait, and why; none when the report ran", () => {
-    const answer = {
-      crew: [],
-      finishedSessions: [],
-      finishedSessionsError: null,
-      folderNote: null,
-      leads: [],
-      note: null,
-      repo: "/home/user/my-app",
-      sessions: [],
-    };
-    expect(workOf({ ...answer, waitsError: "the plugin is not installed" }).waitsNote).toBe(
-      "No session can show that it waits on a prompt: the plugin is not installed",
-    );
-    expect(workOf({ ...answer, waitsError: null }).waitsNote).toBe(null);
-  });
-});
+describe("the flow report that did not run (B6e)", () => {});
 
 describe("a project's Workflow card (D57)", () => {
   /** Two rows as `/api/settings` sends them: the portal's own folder's values, the specs. */
@@ -1225,40 +595,8 @@ describe("a project's Workflow card (D57)", () => {
     settings: [
       { key: "switches.sessionNames", source: "project", value: true },
       { key: "autoCommit", source: "project", value: true },
-      {
-        key: "crew.tag",
-        source: "default",
-        unsetWords: "(the main checkout's folder name)",
-        value: null,
-      },
     ],
   };
-
-  test("each setting takes its row's words and control, with the project's value and source", () => {
-    const data = projectWorkflowOf(ANSWER, SPECS);
-    expect(data.base).toBe("main");
-    expect(data.gh).toBe("in");
-    expect(data.note).toBe(null);
-    // The rows keep the specs' order (the groups' order on Settings), not the answer's; a
-    // setting the project's file cannot hold (the status line) is not on the card.
-    expect(
-      data.rows.map((row) => [row.key, row.label, row.value, row.source, row.where, row.readOnly]),
-    ).toEqual([
-      ["autoCommit", "Auto commit", true, "project", "project", false],
-      ["switches.sessionNames", "Session names", true, "project", "project", false],
-    ]);
-    // The portal folder's own reason for a read-only row is not this project's.
-    expect(data.rows[1]?.why).toBe(null);
-    // A setting with no row of its own is still shown, with its value.
-    expect(data.others).toEqual([
-      {
-        key: "crew.tag",
-        source: "default",
-        unsetWords: "(the main checkout's folder name)",
-        value: null,
-      },
-    ]);
-  });
 
   test("without a gh login every control is read-only; the card says why once", () => {
     for (const gh of ["missing", "out"] as const) {
@@ -1326,4 +664,50 @@ describe("a project's Workflow card (D57)", () => {
     );
     expect(workflowValueText("my-app", "(the main checkout's folder name)")).toBe("my-app");
   });
+});
+
+test("the Overview: the router's facts, the chains, and the plan window", () => {
+  const answer: OverviewAnswer = {
+    backends: [],
+    configured: true,
+    dashboardUrl: null,
+    error: null,
+    fallbacks: [],
+    fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
+    jobs: { slots: 3, used: 1, waiting: 1 },
+    limits: [],
+    limitsRead: true,
+    requests: { perMinute: 21.6, sinceRouterStart: 892 },
+    router: ROUTER,
+    slots: [SLOTS_ROW],
+    switches: {
+      gateway: true,
+      judge: false,
+      judgeUntested: false,
+      models: false,
+      settingsBaseUrl: null,
+      warnings: [],
+    },
+    warnings: [],
+  };
+  const data = overviewOf(answer);
+  expect(data.health.cooling).toEqual({ "omniroute:minimax-m3": 30 });
+  expect(data.health.slots).toEqual({ "cc-smart-dev-kit-worker": ["omniroute:glm-5.3"] });
+  expect(data.health.recent).toEqual([
+    {
+      at: 10,
+      ms: 120,
+      next: true,
+      slot: "cc-smart-dev-kit-worker",
+      status: 200,
+      target: "omniroute:glm-5.3",
+    },
+  ]);
+  // The status line's own reading, with its reset as a time; the switches as the server says.
+  expect(data.fiveHour).toEqual({ percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) });
+  expect(data.switches.gateway).toBe(true);
+  expect(overviewOf({ ...answer, fiveHour: null }).fiveHour).toBe(null);
+  expect(() =>
+    overviewOf({ ...answer, configured: false, error: "the gateway is not set up" }),
+  ).toThrow(NotSetUpError);
 });

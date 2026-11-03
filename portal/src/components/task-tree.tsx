@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * The kit's work tasks as a tree (D75, D76): the one row the Tasks tab and a crew page's phase
- * card both draw. Plan › Phase › Task › Subtask read from the type's weight and the indent; each
- * row says its status as a glyph and its word (never colour alone), its type when non-blocking,
- * what blocks it while it is blocked, and its subtree's progress.
- */
-
 import type { WorkTaskNode } from "@/api/types";
 import { TonePill } from "@/components/status";
 import { Badge } from "@/components/ui/badge";

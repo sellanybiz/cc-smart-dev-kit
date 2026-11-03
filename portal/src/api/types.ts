@@ -1,13 +1,3 @@
-/**
- * The shapes the portal's pages draw. The server's own answers are in `wire.ts` (one mirror of
- * the kit's API types, checked by the kit's tests); `adapt.ts` turns each answer into these,
- * in one place. A shape here that is the server's own is an alias of it; one the server does
- * not send in full yet names the fields it lacks, which are `null` (the page says it does not
- * know) until a later phase sends them. The mock client (`mock.ts`) answers in these shapes.
- *
- * Times are milliseconds since the epoch unless the source keeps ISO text (the crew store).
- */
-
 import type {
   BackendRow,
   BunFacts,
@@ -15,9 +5,6 @@ import type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
-  CrewPhaseTasks,
-  CrewReport,
-  CrewReview,
   HistoryAnswer,
   HistoryRequest,
   JobCeilingState,
@@ -59,7 +46,6 @@ export type {
   ClaudeMemCurrent,
   ClaudeMemFacts,
   ClaudeMemSource,
-  CrewPhaseTasks,
   JobCeilingState,
   JobRouteState,
   JobWeightsState,
@@ -244,8 +230,7 @@ export interface OverviewData {
   fiveHour: null | PlanWindow;
   /** The gateway's three switches, as the Slots page reads them too. */
   switches: SwitchFacts;
-  /** Crew sessions in a running state (`starting`, `working`, `blocked`, `paused`, `quiet`). */
-  crewRunning: number;
+
   /** The heavy-job queue in one line: this machine's slots in use of its total, and jobs waiting. */
   jobs: { slots: number; used: number; waiting: number };
   /** The history's model requests: the rate, and the count since the router started (F4, F5). */
@@ -258,92 +243,6 @@ export interface OverviewRequests {
   sinceRouterStart: null | number;
 }
 
-// ── Work: the crew store ───────────────────────────────────────────────────────────────
-
-/** `src/crew/store.ts` › `CREW_STATES`. */
-export type CrewState =
-  | "queued"
-  | "starting"
-  | "working"
-  | "blocked"
-  | "paused"
-  | "quiet"
-  | "done"
-  | "failed"
-  | "stopped"
-  | "handoff"
-  | "merged"
-  | "removed";
-
-/** `src/crew/store.ts` › `WaitingFor`. */
-export type WaitingFor =
-  | { kind: "slot"; since: string; slot: string }
-  | { kind: "claude-limit"; model: string; resetsAt: null | string }
-  | { kind: "unknown"; since: string; slot?: string }
-  | { kind: "safety-checks"; scope: string; since: string };
-
-/** `src/crew/store.ts` › `CrewRecord` (the fields a page reads). */
-export interface CrewRecord {
-  id: string;
-  /** `C <tag> <plan> <phase> <slug>`, or `C <tag> <phase> <slug>` before 1.1.2 (`crewName`, `src/crew/names.ts`). */
-  name: string;
-  sessionId: null | string;
-  shortId: null | string;
-  leadSessionId: string;
-  leadName: string;
-  repo: string;
-  plan: string;
-  phase: string;
-  slug: string;
-  /** `src/models/launch-policy.ts` › `CREW_KINDS`. */
-  kind: string;
-  model: { named: string; slot: null | string; resolved: string; tier: null | string };
-  effort: string;
-  permissionMode: string;
-  worktree: string;
-  branch: string;
-  baseRef: string;
-  waitsFor: string[];
-  files: string[];
-  /** A `CrewState`, or a word a newer kit wrote (shown as itself). */
-  state: string;
-  lastLine: null | string;
-  pr: null | number;
-  memoryMb: null | number;
-  waitingFor?: WaitingFor;
-  startedAt?: null | string;
-  /** When its state began (ISO 8601): its newest state event; absent where the answer does not say. */
-  stateSince?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** `src/crew/store.ts` › `LeadRecord`. */
-export interface LeadRecord {
-  sessionId: string;
-  /** `LEAD <tag> <plan>` (`leadName`). */
-  name: string;
-  repo: string;
-  plan: string;
-  tag: string;
-  cwd: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/** `src/crew/store.ts` › `CrewEvent` (the fields a page reads). */
-export interface CrewEvent {
-  at: string;
-  type: string;
-  crew: string;
-  name: string;
-  lead: null | string;
-  state: string;
-  text: null | string;
-  note?: null | string;
-}
-
-/** A Claude session that is not a lead and not a crew session (`SessionSummary`, `src/sessions/`). */
 export interface OtherSession {
   sessionId: string;
   name: null | string;
@@ -361,23 +260,16 @@ export interface OtherSession {
 }
 
 export interface WorkData {
-  leads: { lead: LeadRecord; crew: CrewRecord[]; lastStep: Record<string, CrewEvent> }[];
   /**
    * A quiet line about this portal's own folder (it is no git project, the portal's normal
    * start), shown muted: the other sessions of a project are not listed; null when it is one.
    */
   folderNote: null | string;
-  /**
-   * Why the machine's crew store, or this folder's own sessions, could not be read; null when
-   * they were. Shown once on the page, in the warning colour, so an empty list is never left
-   * unexplained.
-   */
+
   note: null | string;
   others: OtherSession[];
   /** Why no session can say it waits on a prompt (the flow report did not run); null when it ran. */
   waitsNote: null | string;
-  /** Crew id → its memory over time, from the events log's `memoryMb` (`CrewEvent`). */
-  memory: Record<string, { at: number; mb: number }[]>;
 }
 
 // ── Flow: `src/sessions/flow.ts` ───────────────────────────────────────────────────────
@@ -568,7 +460,7 @@ export type SettingKind = "boolean" | "events" | "number" | "segment";
 
 /** `src/portal/settings.ts` › `SettingsRow` (`SettingSpec` with its value and source). */
 export interface SettingsRow {
-  card: "alerts" | "crew" | "flow" | "switches";
+  card: "alerts" | "flow" | "switches";
   /** A number row's unit, shown after its box; absent for a plain count. */
   unit?: "%";
   choices?: readonly { label: string; value: string }[];
@@ -677,14 +569,13 @@ export interface BranchVerdict {
   reason: null | string;
 }
 
-/** One open pull request or crew branch of a project, with the merge guard's verdict. */
 export interface ProjectBranchRow {
   branch: string;
   /** The branch it would merge into; null when it is not known. */
   base: null | string;
   draft: boolean;
-  kind: "crew" | "pr";
-  /** The pull request's number; null for a crew branch. */
+  kind: "pr";
+
   number: null | number;
   title: null | string;
   verdict: BranchVerdict;
@@ -761,25 +652,6 @@ export interface JobsData {
 
 // ── Needs you (owner decision D52; planned: `GET /api/needs`) ─────────────────────────
 
-/** Who an item is about: a crew session, by its id and its name. */
-export interface CrewRef {
-  id: string;
-  name: string;
-  shortId: null | string;
-}
-
-/** `src/crew/store.ts` › `CrewQuestion`: one question a crew session asked its lead. */
-export interface CrewQuestion {
-  number: number;
-  question: string;
-  options: string[];
-  /** The recommended option, counted from 1; null when none is. */
-  recommended: null | number;
-  askedAt: string;
-  answeredAt: null | string;
-  answer: null | string;
-}
-
 /** `src/update/state.ts` › `HeldMajor`: a major version found and held for the person (D33). */
 export interface HeldMajor {
   version: string;
@@ -790,19 +662,14 @@ export interface HeldMajor {
 
 /** One thing that waits for the person. `since` is ISO 8601. */
 export type NeedsItem =
-  | { kind: "question"; id: string; since: string; crew: CrewRef; ask: CrewQuestion }
   | {
       kind: "permission";
       id: string;
       since: string;
-      /** The crew session it is, or null for one of the person's own sessions. */
-      crew: null | CrewRef;
       /** Who asked (a guard, or Claude Code), the session, and the project it is in. */
       asker: string;
       session: string;
       project: string;
-      /** `claude attach <id>`, for a crew session the server names; null for any other session. */
-      attach: null | string;
       /** The tool the prompt is about, and its one line. */
       tool: string;
       detail: string;
@@ -833,74 +700,6 @@ export interface NeedsData {
   items: NeedsItem[];
   /** Why the permission prompts are missing from the list (the flow report did not run); null when they are not. */
   note: null | string;
-}
-
-// ── A crew session's page (D52; planned: `GET /api/crew/<id>`) ────────────────────────
-
-/** The hand-back report, as the server sends it (`src/crew/store.ts` › `HandBackReport`). */
-export type HandBackReport = CrewReport;
-
-/** Lines and files: a change, as `src/workflow/review-cover.ts` › `Cover` counts it. */
-export interface ChangeCount {
-  lines: number;
-  files: number;
-  /** Binary files in it: never counted in lines, and never covered by a review. */
-  binary: number;
-}
-
-/**
- * The merge guard's verdict on the branch (D17b, `workflow merge-check`): allowed, refused with
- * its reason, or not known (`unread`: the guard could not read it; `late`: the pull request
- * merged before it was judged), with the counts against the limit (`FixLimits`).
- */
-export interface MergeCheck {
-  kind: "allowed" | "refused" | "unread" | "late";
-  allowed: boolean;
-  /** The pull request the verdict is about; null when it does not name one. */
-  pr: null | number;
-  /** In words, the counts and the limit; null when it is allowed with nothing to say. */
-  reason: null | string;
-  /** The commit the last review covered; null when no review is recorded. */
-  review: null | string;
-  /** The change since that review. */
-  delta: null | ChangeCount;
-  /** The change that review covered. */
-  reviewed: null | ChangeCount;
-  /** Null when the verdict does not say. */
-  limits: null | { lines: number; files: number; percent: number };
-  /** What may still change after the review and stay covered (the gate's own count); null when it does not say. */
-  allowance: null | { lines: number; files: number };
-}
-
-/** One file of the diff against the base; `added` and `removed` are null for a binary file. */
-export interface DiffFile {
-  path: string;
-  added: null | number;
-  removed: null | number;
-}
-
-/** One review recorded for the branch (`src/workflow/reviews.ts`): when, by whom, at which commit. */
-export type CrewReviewRecord = CrewReview;
-
-export interface CrewDetail {
-  record: CrewRecord;
-  lead: LeadRecord;
-  /** The brief, as Markdown: the page renders it as React elements, never as raw HTML. */
-  brief: string;
-  /** Its events, oldest first (`src/crew/store.ts` › `CrewEvent`). */
-  events: CrewEvent[];
-  questions: CrewQuestion[];
-  report: null | HandBackReport;
-  diff: DiffFile[];
-  /** The branch against its base, in totals; `error` says why git could not give them. */
-  diffTotals: null | { deletions: number; error: null | string; files: number; insertions: number };
-  mergeCheck: null | MergeCheck;
-  /** Its memory over time, oldest first; empty when nothing was measured. */
-  memory: { at: number; mb: number }[];
-  /** The reviews recorded for its branch, oldest first. */
-  reviews: CrewReviewRecord[];
-  /** Its phase task and every subtask, from the kit's work store (D75). */
-  tasks: CrewPhaseTasks;
 }
 
 // ── Guard log (D52; planned: `GET /api/guard-asks?…`) ─────────────────────────────────

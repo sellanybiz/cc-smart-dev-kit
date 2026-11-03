@@ -1,11 +1,3 @@
-/**
- * The portal's one spawn of the CLI (`cli-child.ts`) and the short cache both of its readers
- * share: what the child is given (the plugin's two bun flags, the portal's own paths, no crew
- * marker), the words a failed run is shown in, and the cache's three rules.
- *
- * A temp plugin folder's `dist/cli.js` stands in for the CLI: it logs what it was given and
- * answers as `CHILD_MODE` says. No real CLI, no real git.
- */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -17,7 +9,6 @@ import type { PortalContext } from "./context";
 
 interface Run {
   args: string[];
-  crew: null | string;
   config: null | string;
   cwd: string;
   dotenv: null | string;
@@ -37,7 +28,6 @@ function fakePlugin(): { folder: string; runs: () => Run[] } {
 appendFileSync(${JSON.stringify(log)}, JSON.stringify({
   args: process.argv.slice(2),
   config: process.env.CLAUDE_CONFIG_DIR ?? null,
-  crew: process.env.CC_SMART_DEV_KIT_CREW ?? null,
   cwd: process.cwd(),
   dotenv: process.env.CLI_CHILD_DOTENV ?? null,
   execArgv: process.execArgv,
@@ -78,8 +68,7 @@ function world(env: Record<string, string> = {}) {
   const ctx = testPortalContext(
     paths,
     {
-      // A HOME and a crew marker the child must NOT take from the portal's environment.
-      CC_SMART_DEV_KIT_CREW: "1",
+      // A HOME and a session marker the child must NOT take from the portal's environment.
       HOME: "/home/user",
       PATH: process.env.PATH ?? "",
       ...env,
@@ -91,7 +80,7 @@ function world(env: Record<string, string> = {}) {
 }
 
 describe("the CLI child", () => {
-  test("the plugin's two bun flags, the portal's own paths, and no crew marker, for a read", async () => {
+  test("the plugin's two bun flags, the portal's own paths, and no session marker, for a read", async () => {
     const w = world();
     const read = await runCliChildText(w.ctx, ["report", "--json"], { subject: "the thing" });
     expect(read).toEqual({ output: "first line\nsecond line\n" });
@@ -99,7 +88,6 @@ describe("the CLI child", () => {
       {
         args: ["report", "--json"],
         config: w.config,
-        crew: null,
         // The portal's own home folder, as a child with no `cwd` of its own starts in.
         cwd: realpathSync(w.home),
         dotenv: null,
@@ -109,10 +97,10 @@ describe("the CLI child", () => {
     ]);
   });
 
-  test("an action's run gets the same child: the flags, the paths, no crew marker, its lines", async () => {
+  test("an action's run gets the same child: the flags, the paths, no session marker, its lines", async () => {
     const w = world();
     const seen: string[] = [];
-    const run = await runCliChild(w.ctx, ["crew", "stop", "abc"], {
+    const run = await runCliChild(w.ctx, ["sessions", "--finished"], {
       cwd: null,
       onLine: (line) => seen.push(line),
     });
@@ -125,10 +113,9 @@ describe("the CLI child", () => {
     expect(seen).toEqual(["first line", "second line"]);
     const [only, ...rest] = w.plugin.runs();
     expect(rest).toEqual([]);
-    expect(only?.args).toEqual(["crew", "stop", "abc"]);
+    expect(only?.args).toEqual(["sessions", "--finished"]);
     expect(only?.config).toBe(w.config);
     expect(only?.home).toBe(w.home);
-    expect(only?.crew).toBe(null);
     expect(only?.execArgv).toEqual([
       "--no-env-file",
       `--config=${join(w.plugin.folder, "bunfig.toml")}`,
@@ -139,7 +126,7 @@ describe("the CLI child", () => {
     const w = world();
     const repo = tempDir("cli-child-repo");
     await runCliChildText(w.ctx, ["worktrees", "--json"], { cwd: repo, subject: "the thing" });
-    await runCliChild(w.ctx, ["crew", "rm", "abc"], { cwd: repo });
+    await runCliChild(w.ctx, ["worktrees", "--clean"], { cwd: repo });
     expect(w.plugin.runs().map((run) => run.cwd)).toEqual([realpathSync(repo), realpathSync(repo)]);
   });
 
@@ -169,7 +156,7 @@ describe("the CLI child", () => {
     expect(await runCliChildText(ctx, ["report"], { subject: "the flow report" })).toEqual({
       error: "the plugin is not installed",
     });
-    expect(await runCliChild(ctx, ["crew", "stop", "abc"], { cwd: null })).toEqual({
+    expect(await runCliChild(ctx, ["sessions", "--finished"], { cwd: null })).toEqual({
       error: "the plugin is not installed",
       exitCode: null,
       lines: [],
@@ -183,7 +170,7 @@ describe("the CLI child", () => {
     const missing = join(w.home, "no-such-folder");
     const text = await runCliChildText(w.ctx, ["report"], { cwd: missing, subject: "the thing" });
     expect("error" in text ? text.error : "").toStartWith("the thing did not run: ");
-    const action = await runCliChild(w.ctx, ["crew", "rm", "abc"], { cwd: missing });
+    const action = await runCliChild(w.ctx, ["worktrees", "--clean"], { cwd: missing });
     expect(action.error ?? "").toStartWith("the command did not start: ");
     expect(action.exitCode).toBe(null);
     expect(w.plugin.runs()).toEqual([]);
@@ -192,7 +179,7 @@ describe("the CLI child", () => {
   test("a child a signal ended says that, not a timeout; one past its time is timed out", async () => {
     // A person's `kill`, or an OOM kill: the line names the signal and does not blame slowness.
     const killed = world({ CHILD_MODE: "kill" });
-    expect(await runCliChild(killed.ctx, ["crew", "rm", "abc"], { cwd: null })).toEqual({
+    expect(await runCliChild(killed.ctx, ["worktrees", "--clean"], { cwd: null })).toEqual({
       error: "the command was ended by a signal (SIGKILL) before it finished",
       exitCode: null,
       lines: [],
@@ -202,7 +189,7 @@ describe("the CLI child", () => {
     const slow = world({ CHILD_MODE: "sleep" });
     const started = performance.now();
     expect(
-      await runCliChild(slow.ctx, ["crew", "rm", "abc"], { cwd: null, timeoutMs: 1_000 }),
+      await runCliChild(slow.ctx, ["worktrees", "--clean"], { cwd: null, timeoutMs: 1_000 }),
     ).toEqual({ error: null, exitCode: null, lines: [], timedOut: true });
     expect(performance.now() - started).toBeLessThan(4_500);
   });

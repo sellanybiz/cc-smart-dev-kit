@@ -1,11 +1,6 @@
-/**
- * One project's tasks and a crew page's phase card, drawn from data alone: every state says what
- * it is in words, each row its layer, its type and what blocks it, and the markup holds no
- * `style` attribute (the portal's policy refuses one).
- */
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PhaseTasksCard, TasksBody } from "@/components/tasks-card";
+import { TasksBody } from "@/components/tasks-card";
 import { FULL, PHASE, words } from "@/components/tasks-fixtures";
 import { DEFAULT_FILTER, SHOW_ALL } from "@/lib/tasks";
 
@@ -162,46 +157,5 @@ describe("one project's tasks", () => {
     );
     expect(broken).toContain("The task list cannot be read");
     expect(broken).toContain("file is not a database. cc-smart-dev-kit doctor checks the store.");
-  });
-});
-
-describe("a crew page's phase card", () => {
-  test("its phase with its progress, and every task under it with the same row details", () => {
-    const html = renderToStaticMarkup(
-      <PhaseTasksCard tasks={{ more: 0, phase: PHASE, state: "ready" }} />,
-    );
-    expect(html).not.toContain("style=");
-    const text = words(html);
-    expect(text).toContain("#2 Build the store phase K");
-    expect(text).toContain("2 of 5 closed");
-    // The whole phase, closed tasks too.
-    expect(text).toContain("done: Write the schema");
-    expect(text).toContain("Task, in progress: Prove two writers");
-    expect(text).toContain("Subtask, pending: Time the lock non-blocking");
-    expect(text).toContain("! blocked by #3 ✓ (done: Write the schema) #5 ◐");
-  });
-
-  test("a session from before the task list, a phase with no task yet, and no store", () => {
-    expect(
-      words(
-        renderToStaticMarkup(<PhaseTasksCard tasks={{ more: 0, phase: null, state: "ready" }} />),
-      ),
-    ).toContain("This crew session started before the kit's task list, so it has no phase task.");
-    expect(
-      words(
-        renderToStaticMarkup(
-          <PhaseTasksCard
-            tasks={{
-              more: 0,
-              phase: { ...PHASE, children: [], closed: 0, total: 0 },
-              state: "ready",
-            }}
-          />,
-        ),
-      ),
-    ).toContain("No task under it yet: its first edit waits until it has one.");
-    expect(words(renderToStaticMarkup(<PhaseTasksCard tasks={{ state: "none" }} />))).toContain(
-      "The kit's task list has no store on this machine yet.",
-    );
   });
 });

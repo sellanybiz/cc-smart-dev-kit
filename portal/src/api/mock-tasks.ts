@@ -1,13 +1,5 @@
-/**
- * The kit's task list in mock data (D75, D76): the Tasks tab's projects and a crew page's phase
- * tree. Every name is a placeholder. The projects cover each state the tab draws: a full tree
- * with every layer (Plan › Phase › Task › Subtask), a non-blocking task, a blocked one, a task
- * left open under a done parent, and every kind of task file (one stale, one broken file); a
- * project with nothing open; one whose store has nothing yet; and a folder git cannot read.
- */
-
 import type { ProjectListRow, ProjectTasksData } from "./types";
-import type { CrewPhaseTasks, ProjectTaskRow, WorkTaskBlocker, WorkTaskNode } from "./wire";
+import type { ProjectTaskRow, WorkTaskBlocker, WorkTaskNode } from "./wire";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -61,7 +53,6 @@ function blocker(one: WorkTaskNode): WorkTaskBlocker {
   return { ref: one.ref, status: one.status, subject: one.subject };
 }
 
-/** The phase a mock crew session builds: two tasks done, one in progress, one dropped. */
 function storePhase(now: number): WorkTaskNode {
   const prove = node(
     7,
@@ -238,24 +229,4 @@ export function tasksPagesFor(
     }
   }
   return pages;
-}
-
-/** A crew page's phase tree: the running one builds its phase; a merged one shows it all closed. */
-export function phaseTasksFor(now: number, merged: boolean): CrewPhaseTasks {
-  const phase = storePhase(now);
-  if (!merged) return { more: 0, phase, state: "ready" };
-  // A merge closes the blocking tasks it finds open; non-blocking work stays open (D76).
-  const close = (one: WorkTaskNode): WorkTaskNode => {
-    const children = one.children.map(close);
-    const open = (task: WorkTaskNode): number =>
-      (task.status === "done" || task.status === "dropped" ? 0 : 1) +
-      task.children.reduce((sum, child) => sum + open(child), 0);
-    return {
-      ...one,
-      children,
-      closed: one.total - children.reduce((sum, child) => sum + open(child), 0),
-      status: one.type === "non-blocking" || one.status === "dropped" ? one.status : "done",
-    };
-  };
-  return { more: 0, phase: close(phase), state: "ready" };
 }

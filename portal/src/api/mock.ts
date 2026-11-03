@@ -4,24 +4,12 @@
  * a page looks the same on every load.
  */
 
-import { crewDetail, guardAsks, jobsData, needsData, updateData, worktreesData } from "./mock-d52";
-import {
-  flowBuckets,
-  historyFor,
-  historyKeys,
-  memorySeries,
-  requestsFor,
-  seeded,
-  TRAFFIC,
-} from "./mock-history";
-import { MOCK_PLAN, MOCK_TAG, mockCrewName } from "./mock-names";
+import { guardAsks, jobsData, needsData, updateData, worktreesData } from "./mock-d52";
+import { flowBuckets, historyFor, historyKeys, requestsFor, seeded, TRAFFIC } from "./mock-history";
 import { type ProjectMocks, projectMocks } from "./mock-projects";
 import { tasksPagesFor } from "./mock-tasks";
 import type {
   AskerCount,
-  CrewDetail,
-  CrewEvent,
-  CrewRecord,
   FlowReport,
   FlowWindow,
   GuardAsksPage,
@@ -31,7 +19,6 @@ import type {
   HistoryKeys,
   HistoryQuery,
   JobsData,
-  LeadRecord,
   LogLine,
   MachineData,
   NeedsData,
@@ -139,185 +126,24 @@ function recentRequests(now: number, count: number): RecentRequest[] {
 
 const PATH = "/home/user/code";
 
-function crewRecord(
-  now: number,
-  fields: Partial<CrewRecord> & Pick<CrewRecord, "id" | "phase" | "slug" | "state" | "kind">,
-): CrewRecord {
-  return {
-    name: mockCrewName(fields.phase, fields.slug),
-    sessionId: `${fields.id}-0000-4000-8000-000000000000`,
-    shortId: fields.id.slice(0, 8),
-    leadSessionId: "9c3a7e5d-lead",
-    leadName: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
-    repo: `${PATH}/${MOCK_TAG}`,
-    plan: MOCK_PLAN,
-    model: {
-      named: "sonnet",
-      slot: "cc-smart-dev-kit-worker",
-      resolved: "deepseek-v4.1-flash",
-      tier: null,
-    },
-    effort: "high",
-    permissionMode: "auto",
-    worktree: `${PATH}/${MOCK_TAG}/.claude/worktrees/${fields.phase.toLowerCase()}-${fields.slug}`,
-    branch: `crew/${fields.phase.toLowerCase()}-${fields.slug}`,
-    baseRef: MOCK_PLAN,
-    waitsFor: [],
-    files: [],
-    lastLine: null,
-    pr: null,
-    memoryMb: null,
-    startedAt: iso(now - 40 * MINUTE),
-    createdAt: iso(now - 45 * MINUTE),
-    updatedAt: iso(now - 2 * MINUTE),
-    ...fields,
-  };
-}
-
 function workData(now: number, empty: boolean): WorkData {
-  if (empty) {
-    return { folderNote: null, leads: [], note: null, others: [], memory: {}, waitsNote: null };
-  }
-  const lead: LeadRecord = {
-    sessionId: "9c3a7e5d-lead",
-    name: `LEAD ${MOCK_TAG} ${MOCK_PLAN}`,
-    repo: `${PATH}/${MOCK_TAG}`,
-    plan: MOCK_PLAN,
-    tag: MOCK_TAG,
-    cwd: `${PATH}/${MOCK_TAG}`,
-    createdAt: iso(now - 3 * HOUR),
-    updatedAt: iso(now - MINUTE),
-  };
-  const crew: CrewRecord[] = [
-    crewRecord(now, {
-      id: "a1f04c2e",
-      phase: "B6b",
-      slug: "live-stream",
-      state: "working",
-      kind: "security",
-      model: {
-        named: "sonnet",
-        slot: "cc-smart-dev-kit-worker",
-        resolved: "deepseek-v4.1-flash",
-        tier: null,
-      },
-      effort: "max",
-      files: ["src/portal/live/hub.ts", "src/portal/live/sources.ts", "src/portal/server.ts"],
-      lastLine: "The door's tests pass on /events; writing the leader-tab test next.",
-      memoryMb: 412,
-    }),
-    crewRecord(now, {
-      id: "b7c19d03",
-      phase: "B6c",
-      slug: "slots-page",
-      state: "paused",
-      kind: "ui",
-      model: { named: "opus", slot: null, resolved: "claude-opus-5-5", tier: "opus" },
-      effort: "high",
-      files: ["src/portal/actions.ts", "portal/src/views/slots.tsx"],
-      waitingFor: {
-        kind: "claude-limit",
-        model: "claude-opus-5-5",
-        resetsAt: iso(now + 52 * MINUTE),
-      },
-      lastLine: "Waiting for the Opus limit to reset.",
-      memoryMb: 388,
-    }),
-    crewRecord(now, {
-      id: "c2d84e11",
-      phase: "B8",
-      slug: "projects",
-      state: "queued",
-      kind: "ui",
-      model: { named: "opus", slot: null, resolved: "claude-opus-5-5", tier: "opus" },
-      waitsFor: ["B6c"],
-      files: ["src/portal/projects.ts"],
-      sessionId: null,
-      shortId: null,
-      startedAt: null,
-    }),
-    crewRecord(now, {
-      id: "d9e2f7a4",
-      phase: "C2",
-      slug: "skills-agents",
-      state: "blocked",
-      kind: "architecture",
-      model: {
-        named: "sonnet",
-        slot: "cc-smart-dev-kit-worker",
-        resolved: "claude-sonnet-5-5",
-        tier: null,
-      },
-      files: ["plugin/skills/", "plugin/agents/"],
-      lastLine: "Asked the lead: keep Grep in the reviewer's tools, or Bash only?",
-      memoryMb: 296,
-      pr: 41,
-    }),
-  ];
-  const step = (crew: string, name: string, minutes: number, text: string): CrewEvent => ({
-    at: iso(now - minutes * MINUTE),
-    type: "step",
-    crew,
-    name,
-    lead: "9c3a7e5d-lead",
-    state: "working",
-    text,
-  });
   return {
     folderNote: null,
-    memory: {
-      a1f04c2e: memorySeries(now, 3, 412),
-      b7c19d03: memorySeries(now, 5, 388),
-      d9e2f7a4: memorySeries(now, 8, 296),
-    },
     note: null,
-    leads: [
-      {
-        lead,
-        crew,
-        lastStep: {
-          a1f04c2e: step(
-            "a1f04c2e",
-            mockCrewName("B6b", "live-stream"),
-            3,
-            "GET /events behind the door",
-          ),
-          b7c19d03: step(
-            "b7c19d03",
-            mockCrewName("B6c", "slots-page"),
-            18,
-            "The chain editor's draft state",
-          ),
-          d9e2f7a4: step(
-            "d9e2f7a4",
-            mockCrewName("C2", "skills-agents"),
-            9,
-            "Agents' tool lists per R7",
-          ),
-        },
-      },
-    ],
     waitsNote: null,
-    others: [
-      {
-        sessionId: "e51a9b30",
-        name: "docs-site: fix the nav",
-        project: "docs-site",
-        branch: "fix/nav-links",
-        model: "claude-sonnet-5-5",
-        state: "waiting",
-        lastAt: iso(now - 6 * MINUTE),
-      },
-      {
-        sessionId: "f07c3d12",
-        name: null,
-        project: "api-service",
-        branch: "main",
-        model: "claude-opus-5-5",
-        state: "idle",
-        lastAt: iso(now - 2 * HOUR),
-      },
-    ],
+    others: empty
+      ? []
+      : [
+          {
+            sessionId: "e51a9b30",
+            name: "docs-site: fix the nav",
+            project: "docs-site",
+            branch: "fix/nav-links",
+            model: "claude-sonnet-5-5",
+            state: "waiting",
+            lastAt: iso(now - 6 * MINUTE),
+          },
+        ],
   };
 }
 
@@ -586,48 +412,6 @@ function settingsRows(): SettingsRow[] {
       where: "personal",
       value: false,
     }),
-    row({
-      card: "crew",
-      help: "At most this many crew sessions run for one lead at once, in every repository.",
-      id: "set-crew-lead",
-      key: "crew.perLead",
-      kind: "number",
-      label: "Crew sessions per lead",
-      where: "personal",
-      value: 4,
-    }),
-    row({
-      card: "crew",
-      help: "Of one lead's crew sessions, at most this many on the opus tier.",
-      id: "set-crew-lead-opus",
-      key: "crew.perLeadOpus",
-      kind: "number",
-      label: "On Opus, per lead",
-      where: "personal",
-      value: 2,
-    }),
-    row({
-      card: "crew",
-      help: "The machine's ceiling: at most this many crew sessions at once, across every lead.",
-      id: "set-crew-max",
-      key: "crew.max",
-      kind: "number",
-      label: "On this machine, at most",
-      where: "personal",
-      source: "personal",
-      value: 12,
-    }),
-    row({
-      card: "crew",
-      help: "Past this share of the 5-hour usage window, a new opus crew session waits, unless the opus slot has a fallback chain.",
-      id: "set-crew-usage",
-      key: "crew.usagePercent",
-      kind: "number",
-      unit: "%",
-      label: "Opus waits past",
-      where: "personal",
-      value: 85,
-    }),
   ];
 }
 
@@ -678,7 +462,6 @@ export interface MockData {
   keys: HistoryKeys;
   needs: NeedsData;
   jobs: JobsData;
-  crew: (id: string) => CrewDetail;
   guardAsks: (query: GuardQuery) => GuardAsksPage;
   worktrees: WorktreesData;
   update: UpdateData;
@@ -853,13 +636,6 @@ export function mockData(empty: boolean): MockData {
     keys: historyKeys(empty),
     jobs,
     needs: needsData(now, empty, breakers["cc-smart-dev-kit-fable"]),
-    crew: (id) => {
-      for (const entry of work.leads) {
-        const record = entry.crew.find((crew) => crew.id === id);
-        if (record !== undefined) return crewDetail(now, record, entry.lead, work.memory[id] ?? []);
-      }
-      throw new Error(`No crew session "${id}" is known on this machine.`);
-    },
     guardAsks: (query) =>
       guardAsks(
         now,
@@ -877,7 +653,6 @@ export function mockData(empty: boolean): MockData {
       fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
       requests: historyRate,
       switches: slots.switches,
-      crewRunning: empty ? 0 : 3,
       jobs: {
         slots: jobs.stores[0]?.slots ?? 0,
         used: jobs.stores[0]?.used ?? 0,

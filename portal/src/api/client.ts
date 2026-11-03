@@ -17,7 +17,6 @@ import { mockData } from "./mock";
 import { type LiveMessage, type LiveStream, startLiveStream } from "./stream";
 import type {
   Connection,
-  CrewDetail,
   FlowReport,
   FlowWindow,
   GuardAsksPage,
@@ -82,7 +81,6 @@ export interface PortalClient {
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
   needs(): Promise<NeedsData>;
-  crew(id: string): Promise<CrewDetail>;
   guardAsks(query: GuardQuery): Promise<GuardAsksPage>;
   worktrees(): Promise<WorktreesData>;
   update(): Promise<UpdateData>;
@@ -218,7 +216,6 @@ export function mockClient(scenario: MockScenario): PortalClient {
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
     onJobs: () => () => {},
     needs: () => answer(() => data.needs),
-    crew: (id) => answer(() => data.crew(id)),
     guardAsks: (query) => answer(() => data.guardAsks(query)),
     worktrees: () => answer(() => data.worktrees),
     update: () => answer(() => data.update),
@@ -282,11 +279,8 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     kind: "live",
     facts,
     overview: async () => {
-      const [answer, work] = await Promise.all([
-        get<Wire.OverviewAnswer>("/api/overview"),
-        get<Wire.WorkAnswer>("/api/work").catch(() => null),
-      ]);
-      return needingGateway(() => adapt.overviewOf(answer, work));
+      const answer = await get<Wire.OverviewAnswer>("/api/overview");
+      return needingGateway(() => adapt.overviewOf(answer));
     },
     history: (query) => get<Wire.HistoryAnswer>(`/api/history?${historyQuery(query)}`),
     historyKeys: async () =>
@@ -348,8 +342,6 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
       const [answer, frame] = await Promise.all([get<Wire.NeedsAnswer>("/api/needs"), facts()]);
       return adapt.needsOf(answer, frame.version);
     },
-    crew: async (id) =>
-      adapt.crewOf(await get<Wire.CrewAnswer>(`/api/crew/${encodeURIComponent(id)}`)),
     guardAsks: async (query) =>
       adapt.guardAsksOf(await get<Wire.GuardAsksAnswer>(`/api/guard-asks?${guardQuery(query)}`)),
     worktrees: async () => {

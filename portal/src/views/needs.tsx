@@ -12,7 +12,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 function NeedsPage({ data }: { data: NeedsData }) {
   const count = (kinds: string[]) => data.items.filter((item) => kinds.includes(item.kind)).length;
-  const questions = count(["question"]);
   const prompts = count(["permission"]);
   const machine = count(["doctor", "breaker"]);
   const updates = count(["update"]);
@@ -22,18 +21,11 @@ function NeedsPage({ data }: { data: NeedsData }) {
     <>
       <SectionCards columns={4}>
         <StatCard
-          label="Questions"
-          value={questions}
-          badge={tone(questions)}
-          headline="A crew session asks its lead"
-          detail="Answer here; it goes on at once"
-        />
-        <StatCard
           label="Permission prompts"
           value={prompts}
           badge={tone(prompts)}
           headline="A session waits in its terminal"
-          detail="Copy its claude attach command"
+          detail="Answer it in its own terminal"
         />
         <StatCard
           label="This machine"

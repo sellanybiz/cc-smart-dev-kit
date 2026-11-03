@@ -31,13 +31,6 @@ import {
 } from "../browser/legacy";
 import { VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
-import {
-  addCrewQuestion,
-  appendCrewEvent,
-  createCrew,
-  type NewCrew,
-  readCrew,
-} from "../crew/store";
 import { DEFAULT_ANTHROPIC_BASE_URL, loadConfigFile, saveConfig } from "../gateway/config";
 import { createHistoryWriter, type HistoryRow } from "../gateway/history";
 import { askLogFile } from "../hooks/ask-log";
@@ -52,7 +45,6 @@ import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { isOlder } from "../update/check";
-import { updateFiles, writeHeldMajor } from "../update/state";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { NO_SESSION_RECORDS, projectId } from "./api/projects";
@@ -174,7 +166,7 @@ const registry = (): Response =>
  * `dist/cli.js`: a test that runs a CLI child (`cli-child.ts`) then runs the code under test,
  * not the bundle a release builds (`build:check` is what proves the bundle current).
  */
-function sourceCliFolder(): () => PluginFolder {
+function _sourceCliFolder(): () => PluginFolder {
   const folder = tempDir("plugin-source");
   mkdirSync(join(folder, "dist"), { recursive: true });
   writeFileSync(join(folder, "bunfig.toml"), "");
@@ -843,116 +835,6 @@ describe("every answer", () => {
         expect(page.body).not.toContain("fonts.googleapis.com");
         expect([...page.body.matchAll(/https?:\/\/(?!127\.0\.0\.1|localhost)/g)].length).toBe(0);
       }
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("a key is never sent to a page", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const plugin = sourceCliPluginFolder();
-    // With an OmniRoute installed, so its own card and its own facts are drawn too — and a
-    // password in the backend's address (PB-7): the Overview's dashboard link took it raw.
-    const world = await open({
-      backendPort: backend.port,
-      backendUserinfo: "planted-user:PLANTED_PASSWORD",
-      omniroute: "3.8.51",
-      // A project of its own, so the crew page and the project page have one to answer for.
-      projectFiles: {},
-      // The flow report's child runs this branch's CLI, under the port guard.
-      env: subprocessGuard().env,
-      pluginFolder: () => ({ folder: plugin }),
-    });
-    try {
-      // claude-mem installed, its file holding the planted key (PM1): the Machine answer reads
-      // that file, and its card's actions write it.
-      const claudeMemInstall = join(world.paths.home, "plugins", "claude-mem");
-      mkdirSync(claudeMemInstall, { recursive: true });
-      mkdirSync(dirname(world.paths.installedPluginsFile), { recursive: true });
-      writeFileSync(
-        world.paths.installedPluginsFile,
-        JSON.stringify({
-          plugins: {
-            "claude-mem@thedotmack": [
-              { installPath: claudeMemInstall, scope: "user", version: "13.40.0" },
-            ],
-          },
-          version: 2,
-        }),
-      );
-      mkdirSync(dirname(world.paths.claudeMemSettingsFile), { recursive: true });
-      writeFileSync(
-        world.paths.claudeMemSettingsFile,
-        JSON.stringify({ CLAUDE_MEM_OPENAI_COMPAT_API_KEY: KEY, CLAUDE_MEM_PROVIDER: "claude" }),
-      );
-      const first = await world.call("/");
-      for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
-        const page = await world.call(path);
-        expect(page.body).not.toContain(KEY);
-        // The masked form may appear; the whole key never does, nor the address's password.
-        expect(page.body).not.toContain("PLANTED");
-        expect(page.body).not.toContain("planted-user");
-      }
-      // Every JSON read route, from the route table itself, and the two with a name in the
-      // path: a page draws from these, so they hold no key and no password either.
-      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
-      // A session record in the project's folder: what lists it as a project.
-      const records = join(world.paths.projectsDir, projectFolderName(world.cwd));
-      mkdirSync(records, { recursive: true });
-      writeFileSync(
-        join(records, "s1.jsonl"),
-        `${JSON.stringify({ cwd: world.cwd, type: "user" })}\n`,
-      );
-      const reads = [
-        ...Object.keys(API_READS),
-        "/api/crew/crew-K-contracts",
-        `/api/projects/${projectId(world.cwd)}`,
-        // Every part a card reads, from the table itself: the next part cannot be missed.
-        ...Object.keys(PROJECT_PARTS).map(
-          (part) => `/api/projects/${projectId(world.cwd)}/${part}`,
-        ),
-      ];
-      for (const path of reads) {
-        const answer = await world.call(path);
-        expect({ path, status: answer.status }).toEqual({ path, status: 200 });
-        expect(answer.body).not.toContain(KEY);
-        expect(answer.body).not.toContain("PLANTED");
-        expect(answer.body).not.toContain("planted-user");
-      }
-      // PB-7: the dashboard link is still there, at the address without its credential.
-      expect((await world.call("/")).body).toContain(
-        `href="http://127.0.0.1:${backend.port}/" rel="noreferrer">OmniRoute dashboard`,
-      );
-      expect(first.body).not.toContain(KEY);
-      // A JSON action answer holds none either: the testing action reads the backend with
-      // that key and answers details about it.
-      const tested = await world.post(
-        "slot.test",
-        { slot: "worker", targets: ["omniroute:glm-5.3-flash"] },
-        await world.csrfOf(),
-      );
-      expect(tested.body).not.toContain(KEY);
-      expect(tested.body).not.toContain("PLANTED");
-      expect(JSON.parse(tested.body).ok).toBe(true);
-      // The claude-mem card's writes: a route checked with the person's key, that key pasted
-      // again, the gateway's key, a Claude fallback: no answer holds the key.
-      const csrf = await world.csrfOf();
-      for (const [name, body] of [
-        ["claudemem.route", { confirm: true, target: "omniroute:glm-5.3-flash" }],
-        ["claudemem.key", { confirm: true, key: KEY, use: "other" }],
-        ["claudemem.key", { confirm: true, use: "gateway" }],
-        ["claudemem.fallback", { confirm: true, target: "claude" }],
-      ] as const) {
-        const answer = await world.post(name, body, csrf);
-        expect({ name, ok: JSON.parse(answer.body).ok }).toEqual({ name, ok: true });
-        expect(answer.body).not.toContain(KEY);
-        expect(answer.body).not.toContain("PLANTED");
-      }
-      // The machine answer after those writes holds none either.
-      expect((await world.call("/api/machine")).body).not.toContain("PLANTED");
-      // And the config file itself still holds it: nothing was rewritten.
-      expect(readFileSync(world.paths.gatewayConfigFile, "utf8")).toContain(KEY);
     } finally {
       world.portal.stop();
       backend.stop();
@@ -4055,40 +3937,6 @@ describe("the browser card", () => {
 
 // ── The JSON API and the live stream (B6b) ─────────────────────────────────────
 
-/** A queued crew session of this test's project, as the store writes one. */
-function crewFixture(repo: string): NewCrew {
-  return {
-    base: null,
-    baseRef: "main",
-    branch: "crew/K-contracts",
-    effort: "xhigh",
-    files: ["src/crew/store.ts"],
-    id: "crew-K-contracts",
-    kind: "schema",
-    lastLine: null,
-    leadName: "LEAD my-app master-plan",
-    leadSessionId: "11111111-1111-4111-8111-111111111111",
-    memoryMb: null,
-    model: { named: "opus", resolved: "claude-opus-5-5", slot: null, tier: "opus" },
-    name: "C my-app K contracts",
-    permissionMode: "auto",
-    phase: "K",
-    plan: ".claude/plans/master-plan.md",
-    pr: null,
-    questions: [],
-    reportPath: null,
-    repo,
-    sessionId: null,
-    shortId: null,
-    slug: "contracts",
-    state: "queued",
-    waitsFor: [],
-    worktree: `${repo}/.claude/worktrees/crew-K-contracts`,
-  };
-}
-
-/** One job record file, as the heavy-job store writes one: its own holder, and the queue's
- *  record inside. The holder is this test's own process, so the lease is alive. */
 function holderRecord(gb: number, what: string): string {
   return JSON.stringify({
     gb,
@@ -4108,51 +3956,6 @@ function holderRecord(gb: number, what: string): string {
 }
 
 describe("the JSON API", () => {
-  test("every read is a GET behind the door: a foreign Origin, a wrong Host and cross-site are refused", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
-    try {
-      // Every read route this version has, with a query each one accepts.
-      const paths = [
-        "/api/overview",
-        "/api/slots",
-        "/api/health",
-        "/api/machine",
-        "/api/settings",
-        "/api/projects",
-        "/api/projects/no-such-project",
-        "/api/work",
-        "/api/crew/crew-K-contracts",
-        "/api/flow?range=1d",
-        "/api/needs",
-        "/api/guard-asks?hook=git-guard",
-        "/api/worktrees",
-        "/api/update",
-        "/api/jobs",
-        "/api/history?range=1h&by=slot",
-        "/api/requests?cursor=x",
-        "/events",
-      ];
-      for (const path of paths) {
-        expect(
-          (await world.call(path, { headers: { origin: "http://evil.example" } })).status,
-        ).toBe(403);
-        expect((await world.call(path, { headers: { host: "evil.example" } })).status).toBe(403);
-        expect(
-          (await world.call(path, { headers: { "sec-fetch-site": "cross-site" } })).status,
-        ).toBe(403);
-      }
-      // Same-origin, as the portal's own page sends: served.
-      const page = await world.call("/api/overview", {
-        headers: { "sec-fetch-site": "same-origin" },
-      });
-      expect(page.status).toBe(200);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
   test("an action is still a POST: a GET on a write path is 405, on an unknown API path too", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
@@ -4372,303 +4175,6 @@ describe("the JSON API", () => {
     }
   });
 
-  test("work and a crew page: the lead's crew, its question, and the page's own fields", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port, projectFiles: {} });
-    try {
-      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
-      await addCrewQuestion(
-        world.paths.stateDir,
-        world.cwd,
-        "crew-K-contracts",
-        {
-          options: ["Use SQLite", "Use a file"],
-          question: "Where should the history live?",
-          recommended: 1,
-        },
-        Date.now(),
-      );
-      const work = JSON.parse((await world.call("/api/work")).body) as {
-        crew: { id: string; question: { options: string[]; recommended: number } | null }[];
-        leads: unknown[];
-        sessions: unknown[];
-      };
-      expect(work.crew).toHaveLength(1);
-      expect(work.crew[0]?.id).toBe("crew-K-contracts");
-      expect(work.crew[0]?.question).toMatchObject({
-        options: ["Use SQLite", "Use a file"],
-        recommended: 1,
-      });
-
-      const page = await world.call("/api/crew/crew-K-contracts");
-      expect(page.status).toBe(200);
-      const crew = JSON.parse(page.body) as {
-        brief: null;
-        crew: { id: string };
-        diff: { error: null | string };
-        events: { type: string }[];
-        mergeCheck: { kind: string };
-        report: null;
-        reviews: unknown[];
-      };
-      expect(crew.crew.id).toBe("crew-K-contracts");
-      expect(crew.brief).toBe(null);
-      // The record's creation and the question it asked: its log, newest last.
-      expect(crew.events.map((one) => one.type)).toEqual(["created", "question"]);
-      expect(crew.diff.error).toContain("no base");
-      expect(crew.mergeCheck.kind).toBe("refused");
-      expect(crew.report).toBe(null);
-      expect(crew.reviews).toEqual([]);
-
-      // A crew session the store does not know is a typed 404, in the machine-wide words.
-      const missing = await world.call("/api/crew/nobody");
-      expect(missing.status).toBe(404);
-      expect(JSON.parse(missing.body).error).toBe(
-        'No crew session on this machine is "nobody": the Work page lists them.',
-      );
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("a crew page: every changed file, and its memory series from the log and the record", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    // A fixed clock, so the record's own memory reading has an exact time.
-    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
-    const world = await open({
-      backendPort: backend.port,
-      env: { PATH: process.env.PATH ?? "" },
-      now: () => now,
-      projectFiles: {},
-    });
-    try {
-      // The project's policy on main, committed and known as origin/main: the merge check's
-      // gate. reviewBeforePush off, so no review is required and the detail is its limits.
-      writeFileSync(
-        join(world.cwd, ".claude", "cc-smart-dev-kit.json"),
-        `${JSON.stringify(
-          {
-            requires: ">=0.1",
-            workflow: { reviewBeforePush: false },
-            worktrees: { base: "main" },
-          },
-          null,
-          2,
-        )}\n`,
-      );
-      git(world.cwd, "add", "-A");
-      git(world.cwd, "commit", "-q", "-m", "base");
-      const base = git(world.cwd, "rev-parse", "HEAD").trim();
-      git(world.cwd, "update-ref", "refs/remotes/origin/main", base);
-      // The crew session's own branch: one text and one binary file changed against the base.
-      git(world.cwd, "checkout", "-q", "-b", "crew/K-contracts");
-      writeFileSync(join(world.cwd, "a.txt"), "one\ntwo\n");
-      writeFileSync(join(world.cwd, "b.bin"), Buffer.from([0, 1, 2]));
-      git(world.cwd, "add", "-A");
-      git(world.cwd, "commit", "-q", "-m", "change");
-
-      const crew = {
-        ...crewFixture(world.cwd),
-        base: { ref: "main", sha: base },
-        memoryMb: 512,
-        state: "working",
-        worktree: world.cwd,
-      };
-      await createCrew(world.paths.stateDir, crew, now - 300_000);
-      const step = (memoryMb: number) => ({
-        crew: crew.id,
-        lead: crew.leadSessionId,
-        memoryMb,
-        name: crew.name,
-        state: "working",
-        text: "a step",
-        type: "step",
-      });
-      await appendCrewEvent(world.paths.stateDir, world.cwd, step(128), now - 120_000);
-      await appendCrewEvent(world.paths.stateDir, world.cwd, step(256), now - 60_000);
-
-      const body = JSON.parse((await world.call(`/api/crew/${crew.id}`)).body) as {
-        diff: {
-          byFile: { added: null | number; deleted: null | number; path: string }[];
-          deletions: number;
-          error: null | string;
-          files: number;
-          insertions: number;
-        };
-        memory: { at: string; mb: number }[];
-        mergeCheck: {
-          detail: null | {
-            allowance: null | { files: number; lines: number };
-            delta: null | { files: number; lines: number };
-            limits: null | { files: number; lines: number; percent: number };
-            review: null | string;
-            reviewed: null | { files: number; lines: number };
-          };
-          kind: string;
-          reason: string;
-        };
-      };
-      expect(body.diff.error).toBe(null);
-      expect(body.diff.byFile).toEqual([
-        { added: 2, deleted: 0, path: "a.txt" },
-        { added: null, deleted: null, path: "b.bin" },
-      ]);
-      expect(body.diff.files).toBe(2);
-      expect(body.diff.insertions).toBe(2);
-      expect(body.diff.deletions).toBe(0);
-      // Oldest first: the two readings the log kept, then the record's now.
-      expect(body.memory).toEqual([
-        { at: new Date(now - 120_000).toISOString(), mb: 128 },
-        { at: new Date(now - 60_000).toISOString(), mb: 256 },
-        { at: new Date(now).toISOString(), mb: 512 },
-      ]);
-      // The merge check's own numbers reach the page: no review is required here, and the
-      // gate's limits are still what it judged by.
-      expect(body.mergeCheck).toEqual({
-        detail: {
-          allowance: null,
-          delta: null,
-          limits: { files: 10, lines: 200, percent: 20 },
-          review: null,
-          reviewed: null,
-        },
-        kind: "allowed",
-        reason: "reviewBeforePush is off, so no review is required for crew/K-contracts",
-      });
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("a crew page of an ended session: its memory series is the log's readings only", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const now = Date.UTC(2026, 9, 23, 12, 0, 0);
-    const world = await open({
-      backendPort: backend.port,
-      now: () => now,
-      projectFiles: {},
-    });
-    try {
-      // Its session ended: the record's last memory reading is not a reading at this time.
-      const crew = {
-        ...crewFixture(world.cwd),
-        branch: "crew/K-done",
-        id: "crew-K-done",
-        memoryMb: 999,
-        state: "done",
-      };
-      await createCrew(world.paths.stateDir, crew, now - 300_000);
-      await appendCrewEvent(
-        world.paths.stateDir,
-        world.cwd,
-        {
-          crew: crew.id,
-          lead: crew.leadSessionId,
-          memoryMb: 64,
-          name: crew.name,
-          state: "working",
-          text: "a step",
-          type: "step",
-        },
-        now - 120_000,
-      );
-      const body = JSON.parse((await world.call(`/api/crew/${crew.id}`)).body) as {
-        memory: { at: string; mb: number }[];
-      };
-      expect(body.memory).toEqual([{ at: new Date(now - 120_000).toISOString(), mb: 64 }]);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("needs: a crew question, doctor's failures, an open breaker and a held major", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({
-      backendPort: backend.port,
-      doctor: () => ({
-        browser: realBrowserDoctorDeps(worldMachine(), tempDir("home")),
-        bun: { path: process.execPath, version: Bun.version },
-        gateway: {
-          bundle: join(worldPluginFolder(), "dist", "router.js"),
-          machine: worldMachine(),
-          runner: () => ({ exitCode: 0, output: "" }),
-          service: "none",
-        },
-        live: null,
-        local: {
-          cwd: tempDir("cwd"),
-          instructionsSource: join(worldPluginFolder(), "instructions"),
-        },
-        project: null,
-      }),
-      projectFiles: {},
-    });
-    try {
-      await createCrew(world.paths.stateDir, crewFixture(world.cwd), Date.now());
-      await addCrewQuestion(
-        world.paths.stateDir,
-        world.cwd,
-        "crew-K-contracts",
-        { options: ["Yes", "No"], question: "Merge it?", recommended: 1 },
-        Date.now(),
-      );
-      mkdirSync(dirname(world.paths.gatewayStateFile), { recursive: true });
-      writeFileSync(
-        world.paths.gatewayStateFile,
-        JSON.stringify({
-          breakers: {
-            "cc-smart-dev-kit-worker": {
-              held: 3,
-              lastAt: Date.now(),
-              since: Date.now() - 60_000,
-              targets: [{ status: 429, target: "omniroute:x", until: Date.now() + 30_000 }],
-            },
-          },
-          fallbacks: {},
-          limits: {},
-          version: 1,
-        }),
-      );
-      writeHeldMajor(updateFiles(world.paths.stateDir), {
-        at: "2026-10-20T09:00:00.000Z",
-        from: "1.0.0",
-        notes: ["it refuses old fields"],
-        version: "2.0.0",
-      });
-      const body = JSON.parse((await world.call("/api/needs")).body) as {
-        breakers: { held: number; heldNow: null | number; slot: string }[];
-        crew: { question: string }[];
-        doctor: { failures: { fix: null | string; section: null | string; text: string }[] };
-        permissions: unknown[];
-        update: { notes: string[]; version: string } | null;
-      };
-      expect(body.crew[0]?.question).toBe("Merge it?");
-      expect(body.breakers).toHaveLength(1);
-      expect(body.breakers[0]?.slot).toBe("cc-smart-dev-kit-worker");
-      expect(body.breakers[0]?.held).toBe(3);
-      // The health page this test's machine answers lists no breakers: the router answered,
-      // so nothing waits there right now, and the count is 0 rather than an unknown.
-      expect(body.breakers[0]?.heldNow).toBe(0);
-      expect(body.update).toMatchObject({ notes: ["it refuses old fields"], version: "2.0.0" });
-      expect(body.doctor.failures.length).toBeGreaterThan(0);
-      // A failure keeps doctor's own words, the line that fixes it, and its report group.
-      for (const failure of body.doctor.failures) {
-        expect(Object.keys(failure).sort()).toEqual(["fix", "section", "text"]);
-        expect(typeof failure.text).toBe("string");
-        expect(failure.text).not.toBe("");
-        expect(typeof failure.fix).toBe("string");
-        expect(failure.section === null || typeof failure.section === "string").toBe(true);
-      }
-      expect(Array.isArray(body.permissions)).toBe(true);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
   test("needs: every open breaker, and the router's own count of what waits right now", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const now = Date.now();
@@ -4855,102 +4361,6 @@ describe("the JSON API", () => {
       // A range this version does not know, and a cursor that is not `<at>.<n>`, are refusals.
       expect((await world.call("/api/guard-asks?range=24h")).status).toBe(400);
       expect((await world.call("/api/guard-asks?cursor=yesterday")).status).toBe(400);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("worktrees: every worktree's verdict, its idle minutes, and the last auto-clean", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    // The read runs the CLI's own `worktrees --json` in a child (`worktrees-read.ts`): the
-    // source CLI, so the test runs this branch's code, not the committed bundle.
-    const plugin = sourceCliPluginFolder();
-    const world = await open({
-      backendPort: backend.port,
-      env: { PATH: process.env.PATH ?? "" },
-      pluginFolder: () => ({ folder: plugin }),
-      projectFiles: {},
-    });
-    try {
-      // A commit, so git has a HEAD and the worktree can be judged.
-      writeFileSync(join(world.cwd, "README.md"), "readme\n");
-      git(world.cwd, "add", "README.md");
-      git(world.cwd, "commit", "-q", "-m", "init");
-      // A linked worktree of this test's repo: git just wrote to it, so it is minutes old.
-      const linked = join(tempDir("worktree"), "one");
-      git(world.cwd, "worktree", "add", "-q", "-b", "feat", linked);
-      // And one whose folder was deleted: git still lists it, and its idle time is unknown.
-      const gone = join(tempDir("worktree"), "gone");
-      git(world.cwd, "worktree", "add", "-q", "-b", "old", gone);
-      rmSync(gone, { recursive: true, force: true });
-      // And one whose git folder cannot be read: nothing says when git last wrote to it.
-      const broken = join(tempDir("worktree"), "broken");
-      git(world.cwd, "worktree", "add", "-q", "-b", "drift", broken);
-      writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/cc-smart-dev-kit-worktree\n");
-      // Auto-clean's record, as the background clean writes it.
-      const files = autoCleanFiles(world.paths.stateDir, world.cwd);
-      mkdirSync(dirname(files.result), { recursive: true });
-      const ranAt = Date.UTC(2026, 9, 23, 10, 0, 0);
-      writeFileSync(
-        files.result,
-        `${JSON.stringify({
-          base: "main",
-          kept: [],
-          lastRunAt: ranAt,
-          removed: [
-            {
-              branch: "crew/old",
-              name: "crew-old",
-              path: "/home/user/my-app/.claude/worktrees/crew-old",
-              why: "every commit is on origin/main",
-            },
-          ],
-          repo: world.cwd,
-          seq: 1,
-        })}\n`,
-      );
-      const body = JSON.parse((await world.call("/api/worktrees")).body) as {
-        autoClean: null | {
-          base: string;
-          lastRunAt: string;
-          removed: { branch: null | string; name: string; path: string; why: string }[];
-        };
-        base: string;
-        note: null | string;
-        worktrees: { idleMinutes: null | number; kind: string; path: string }[];
-      };
-      expect(body.base).toBe("main");
-      // The temp repo has no origin: the answer says it judged against the local base.
-      expect(body.note).toContain("judges against the local main");
-      const main = body.worktrees.find((one) => one.kind === "main");
-      expect(main?.path).toBe(world.cwd);
-      // The main checkout is never one to clear, so it has no idle time.
-      expect(main?.idleMinutes).toBe(null);
-      const one = body.worktrees.find((one) => one.path === linked);
-      expect(one).toBeDefined();
-      expect(typeof one?.idleMinutes).toBe("number");
-      expect(one?.idleMinutes ?? 60).toBeLessThan(60);
-      // A worktree whose folder is gone has no git files to read: its idle time is unknown.
-      const missing = body.worktrees.find((one) => one.path === gone);
-      expect(missing?.kind).toBe("gone");
-      expect(missing?.idleMinutes).toBe(null);
-      // So does one whose `.git` cannot be read: never a made-up 0.
-      const unread = body.worktrees.find((one) => one.path === broken);
-      expect(unread).toBeDefined();
-      expect(unread?.idleMinutes).toBe(null);
-      expect(body.autoClean).toEqual({
-        base: "main",
-        lastRunAt: new Date(ranAt).toISOString(),
-        removed: [
-          {
-            branch: "crew/old",
-            name: "crew-old",
-            path: "/home/user/my-app/.claude/worktrees/crew-old",
-            why: "every commit is on origin/main",
-          },
-        ],
-      });
     } finally {
       world.portal.stop();
       backend.stop();
@@ -5703,82 +5113,249 @@ describe("owner bug: lag", () => {
   });
 });
 
-describe("the new actions (D52)", () => {
-  test("each refuses an input it cannot act on, and says what is missing", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
-    try {
-      const csrf = await world.csrfOf();
-      const answer = await world.post("crew.answer", { crew: "", answer: "" }, csrf);
-      expect(answer.status).toBe(400);
-      expect(JSON.parse(answer.body).lines).toEqual(["Pick the crew session and write an answer."]);
-      for (const action of ["crew.stop", "crew.resume", "crew.rm"]) {
-        const refused = await world.post(action, {}, csrf);
-        expect(refused.status).toBe(400);
-        expect(JSON.parse(refused.body).ok).toBe(false);
-      }
-      const clean = await world.post("worktrees.clean", {}, csrf);
-      expect(clean.status).toBe(400);
-      expect(JSON.parse(clean.body).lines[0]).toContain("confirmation");
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
+describe("the new actions (D52)", () => {});
 
-  test("an unknown crew session is refused before the CLI runs", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port, projectFiles: {} });
-    try {
-      const csrf = await world.csrfOf();
-      const stopped = await world.post("crew.stop", { confirm: true, crew: "nobody" }, csrf);
-      expect(stopped.status).toBe(400);
-      // The record is found on the machine (`listAllCrew`), not in the portal's own folder.
-      expect(JSON.parse(stopped.body).lines.join(" ")).toContain(
-        'No crew session on this machine has the id "nobody"',
+test("a key is never sent to a page", async () => {
+  const backend = fakeBackend(["glm-5.3-flash"]);
+  const plugin = sourceCliPluginFolder();
+  // With an OmniRoute installed, so its own card and its own facts are drawn too — and a
+  // password in the backend's address (PB-7): the Overview's dashboard link took it raw.
+  const world = await open({
+    backendPort: backend.port,
+    backendUserinfo: "planted-user:PLANTED_PASSWORD",
+    omniroute: "3.8.51",
+    projectFiles: {},
+    // The flow report's child runs this branch's CLI, under the port guard.
+    env: subprocessGuard().env,
+    pluginFolder: () => ({ folder: plugin }),
+  });
+  try {
+    // claude-mem installed, its file holding the planted key (PM1): the Machine answer reads
+    // that file, and its card's actions write it.
+    const claudeMemInstall = join(world.paths.home, "plugins", "claude-mem");
+    mkdirSync(claudeMemInstall, { recursive: true });
+    mkdirSync(dirname(world.paths.installedPluginsFile), { recursive: true });
+    writeFileSync(
+      world.paths.installedPluginsFile,
+      JSON.stringify({
+        plugins: {
+          "claude-mem@thedotmack": [
+            { installPath: claudeMemInstall, scope: "user", version: "13.40.0" },
+          ],
+        },
+        version: 2,
+      }),
+    );
+    mkdirSync(dirname(world.paths.claudeMemSettingsFile), { recursive: true });
+    writeFileSync(
+      world.paths.claudeMemSettingsFile,
+      JSON.stringify({ CLAUDE_MEM_OPENAI_COMPAT_API_KEY: KEY, CLAUDE_MEM_PROVIDER: "claude" }),
+    );
+    const first = await world.call("/");
+    for (const path of ["/", "/slots", "/health", "/machine", "/settings", "/privacy"]) {
+      const page = await world.call(path);
+      expect(page.body).not.toContain(KEY);
+      // The masked form may appear; the whole key never does, nor the address's password.
+      expect(page.body).not.toContain("PLANTED");
+      expect(page.body).not.toContain("planted-user");
+    }
+    // Every JSON read route, from the route table itself, and the two with a name in the
+    // path: a page draws from these, so they hold no key and no password either.
+    // A session record in the project's folder: what lists it as a project.
+    const records = join(world.paths.projectsDir, projectFolderName(world.cwd));
+    mkdirSync(records, { recursive: true });
+    writeFileSync(
+      join(records, "s1.jsonl"),
+      `${JSON.stringify({ cwd: world.cwd, type: "user" })}\n`,
+    );
+    const reads = [
+      ...Object.keys(API_READS),
+      `/api/projects/${projectId(world.cwd)}`,
+      // Every part a card reads, from the table itself: the next part cannot be missed.
+      ...Object.keys(PROJECT_PARTS).map((part) => `/api/projects/${projectId(world.cwd)}/${part}`),
+    ];
+    for (const path of reads) {
+      const answer = await world.call(path);
+      expect({ path, status: answer.status }).toEqual({ path, status: 200 });
+      expect(answer.body).not.toContain(KEY);
+      expect(answer.body).not.toContain("PLANTED");
+      expect(answer.body).not.toContain("planted-user");
+    }
+    // PB-7: the dashboard link is still there, at the address without its credential.
+    expect((await world.call("/")).body).toContain(
+      `href="http://127.0.0.1:${backend.port}/" rel="noreferrer">OmniRoute dashboard`,
+    );
+    expect(first.body).not.toContain(KEY);
+    // A JSON action answer holds none either: the testing action reads the backend with
+    // that key and answers details about it.
+    const tested = await world.post(
+      "slot.test",
+      { slot: "worker", targets: ["omniroute:glm-5.3-flash"] },
+      await world.csrfOf(),
+    );
+    expect(tested.body).not.toContain(KEY);
+    expect(tested.body).not.toContain("PLANTED");
+    expect(JSON.parse(tested.body).ok).toBe(true);
+    // The claude-mem card's writes: a route checked with the person's key, that key pasted
+    // again, the gateway's key, a Claude fallback: no answer holds the key.
+    const csrf = await world.csrfOf();
+    for (const [name, body] of [
+      ["claudemem.route", { confirm: true, target: "omniroute:glm-5.3-flash" }],
+      ["claudemem.key", { confirm: true, key: KEY, use: "other" }],
+      ["claudemem.key", { confirm: true, use: "gateway" }],
+      ["claudemem.fallback", { confirm: true, target: "claude" }],
+    ] as const) {
+      const answer = await world.post(name, body, csrf);
+      expect({ name, ok: JSON.parse(answer.body).ok }).toEqual({ name, ok: true });
+      expect(answer.body).not.toContain(KEY);
+      expect(answer.body).not.toContain("PLANTED");
+    }
+    // The machine answer after those writes holds none either.
+    expect((await world.call("/api/machine")).body).not.toContain("PLANTED");
+    // And the config file itself still holds it: nothing was rewritten.
+    expect(readFileSync(world.paths.gatewayConfigFile, "utf8")).toContain(KEY);
+  } finally {
+    world.portal.stop();
+    backend.stop();
+  }
+});
+
+test("every read is a GET behind the door: a foreign Origin, a wrong Host and cross-site are refused", async () => {
+  const backend = fakeBackend(["glm-5.3-flash"]);
+  const world = await open({ backendPort: backend.port });
+  try {
+    // Every read route this version has, with a query each one accepts.
+    const paths = [
+      "/api/overview",
+      "/api/slots",
+      "/api/health",
+      "/api/machine",
+      "/api/settings",
+      "/api/projects",
+      "/api/projects/no-such-project",
+      "/api/work",
+      "/api/flow?range=1d",
+      "/api/needs",
+      "/api/guard-asks?hook=git-guard",
+      "/api/worktrees",
+      "/api/update",
+      "/api/jobs",
+      "/api/history?range=1h&by=slot",
+      "/api/requests?cursor=x",
+      "/events",
+    ];
+    for (const path of paths) {
+      expect((await world.call(path, { headers: { origin: "http://evil.example" } })).status).toBe(
+        403,
       );
-    } finally {
-      world.portal.stop();
-      backend.stop();
+      expect((await world.call(path, { headers: { host: "evil.example" } })).status).toBe(403);
+      expect((await world.call(path, { headers: { "sec-fetch-site": "cross-site" } })).status).toBe(
+        403,
+      );
     }
-  });
-
-  test("crew.answer records the answer as the person, with no Claude Code session", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({
-      backendPort: backend.port,
-      pluginFolder: sourceCliFolder(),
-      projectFiles: { config: JSON.stringify({ workflow: { crew: { enabled: true } } }) },
+    // Same-origin, as the portal's own page sends: served.
+    const page = await world.call("/api/overview", {
+      headers: { "sec-fetch-site": "same-origin" },
     });
-    try {
-      const record = { ...crewFixture(world.cwd), state: "blocked" };
-      await createCrew(world.paths.stateDir, record, Date.now());
-      await addCrewQuestion(
-        world.paths.stateDir,
-        world.cwd,
-        "crew-K-contracts",
-        { options: ["Use SQLite", "Use a file"], question: "Where?", recommended: 1 },
-        Date.now(),
-      );
-      const csrf = await world.csrfOf();
-      const answered = await world.post(
-        "crew.answer",
-        { answer: "Use SQLite", crew: "crew-K-contracts" },
-        csrf,
-      );
-      expect(answered.status).toBe(200);
-      const body = JSON.parse(answered.body) as { lines: string[]; ok: boolean };
-      expect(body.ok).toBe(true);
-      // The CLI's own lines: the answer is recorded, and with no monitor running the person is told
-      // when the crew session hears it — never a SendMessage line they cannot send (AN1).
-      expect(body.lines.join("\n")).toContain("answered C my-app K contracts");
-      expect(body.lines.join("\n")).toContain("recorded, not delivered");
-      expect(body.lines.join("\n")).not.toContain("SendMessage");
-      const after = readCrew(world.paths.stateDir, world.cwd, "crew-K-contracts");
-      expect(after?.questions[0]?.answer).toBe("Use SQLite");
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
+    expect(page.status).toBe(200);
+  } finally {
+    world.portal.stop();
+    backend.stop();
+  }
+});
+
+test("worktrees: every worktree's verdict, its idle minutes, and the last auto-clean", async () => {
+  const backend = fakeBackend(["glm-5.3-flash"]);
+  // The read runs the CLI's own `worktrees --json` in a child (`worktrees-read.ts`): the
+  // source CLI, so the test runs this branch's code, not the committed bundle.
+  const plugin = sourceCliPluginFolder();
+  const world = await open({
+    backendPort: backend.port,
+    env: { PATH: process.env.PATH ?? "" },
+    pluginFolder: () => ({ folder: plugin }),
+    projectFiles: {},
   });
+  try {
+    // A commit, so git has a HEAD and the worktree can be judged.
+    writeFileSync(join(world.cwd, "README.md"), "readme\n");
+    git(world.cwd, "add", "README.md");
+    git(world.cwd, "commit", "-q", "-m", "init");
+    // A linked worktree of this test's repo: git just wrote to it, so it is minutes old.
+    const linked = join(tempDir("worktree"), "one");
+    git(world.cwd, "worktree", "add", "-q", "-b", "feat", linked);
+    // And one whose folder was deleted: git still lists it, and its idle time is unknown.
+    const gone = join(tempDir("worktree"), "gone");
+    git(world.cwd, "worktree", "add", "-q", "-b", "old", gone);
+    rmSync(gone, { recursive: true, force: true });
+    // And one whose git folder cannot be read: nothing says when git last wrote to it.
+    const broken = join(tempDir("worktree"), "broken");
+    git(world.cwd, "worktree", "add", "-q", "-b", "drift", broken);
+    writeFileSync(join(broken, ".git"), "gitdir: /nonexistent/cc-smart-dev-kit-worktree\n");
+    // Auto-clean's record, as the background clean writes it.
+    const files = autoCleanFiles(world.paths.stateDir, world.cwd);
+    mkdirSync(dirname(files.result), { recursive: true });
+    const ranAt = Date.UTC(2026, 9, 23, 10, 0, 0);
+    writeFileSync(
+      files.result,
+      `${JSON.stringify({
+        base: "main",
+        kept: [],
+        lastRunAt: ranAt,
+        removed: [
+          {
+            branch: "feature/old",
+            name: "finished-old",
+            path: "/home/user/my-app/.claude/worktrees/finished-old",
+            why: "every commit is on origin/main",
+          },
+        ],
+        repo: world.cwd,
+        seq: 1,
+      })}\n`,
+    );
+    const body = JSON.parse((await world.call("/api/worktrees")).body) as {
+      autoClean: null | {
+        base: string;
+        lastRunAt: string;
+        removed: { branch: null | string; name: string; path: string; why: string }[];
+      };
+      base: string;
+      note: null | string;
+      worktrees: { idleMinutes: null | number; kind: string; path: string }[];
+    };
+    expect(body.base).toBe("main");
+    // The temp repo has no origin: the answer says it judged against the local base.
+    expect(body.note).toContain("judges against the local main");
+    const main = body.worktrees.find((one) => one.kind === "main");
+    expect(main?.path).toBe(world.cwd);
+    // The main checkout is never one to clear, so it has no idle time.
+    expect(main?.idleMinutes).toBe(null);
+    const one = body.worktrees.find((one) => one.path === linked);
+    expect(one).toBeDefined();
+    expect(typeof one?.idleMinutes).toBe("number");
+    expect(one?.idleMinutes ?? 60).toBeLessThan(60);
+    // A worktree whose folder is gone has no git files to read: its idle time is unknown.
+    const missing = body.worktrees.find((one) => one.path === gone);
+    expect(missing?.kind).toBe("gone");
+    expect(missing?.idleMinutes).toBe(null);
+    // So does one whose `.git` cannot be read: never a made-up 0.
+    const unread = body.worktrees.find((one) => one.path === broken);
+    expect(unread).toBeDefined();
+    expect(unread?.idleMinutes).toBe(null);
+    expect(body.autoClean).toEqual({
+      base: "main",
+      lastRunAt: new Date(ranAt).toISOString(),
+      removed: [
+        {
+          branch: "feature/old",
+          name: "finished-old",
+          path: "/home/user/my-app/.claude/worktrees/finished-old",
+          why: "every commit is on origin/main",
+        },
+      ],
+    });
+  } finally {
+    world.portal.stop();
+    backend.stop();
+  }
 });

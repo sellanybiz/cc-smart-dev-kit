@@ -43,10 +43,6 @@ export function task(
   };
 }
 
-/**
- * A crew phase: two of its tasks closed, one in progress with a subtask (non-blocking) under it,
- * and one blocked by the one in progress and by a closed one.
- */
 export const PHASE = task(
   2,
   "Build the store",

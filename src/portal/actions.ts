@@ -1,26 +1,3 @@
-/**
- * What a POST to the portal really does. Every one of them runs the command line's own code:
- *
- *   - a slot, its mode (Claude or Custom), its fallback switch, the gateway switch, the
- *     judge, the opus and fable slots, the router restart and the
- *     OmniRoute update go through `runGateway` / `runOmniroute` — the same functions, the
- *     same checks, the same lock, and the same lines, with `print` collecting them;
- *   - `update`, `doctor`, the heavy-job queue and the companions call the modules the CLI
- *     calls, not a copy of them;
- *   - `crew answer|stop|resume|rm` and `worktrees --clean` run the CLI's own command in a child
- *     process (`cli-child.ts`): the functions behind them spawn git and `claude` synchronously
- *     (`Bun.spawnSync`), and running those in the server froze every page and the live stream.
- *     The child is the same command the terminal runs, in the crew record's own repository.
- *
- * So a page can never do something the command line would refuse. The one thing the portal
- * adds is the person's own yes: a terminal question cannot be asked from a browser, so the
- * page asks before it sends the POST (`data-confirm` in `views.ts`) and the action takes
- * `yes` for the CLI's own question — which is why each action that restarts or rewrites
- * something is reached only from a confirmed button.
- *
- * Nothing here writes HTML or JSON: it returns lines, and the page shows them.
- */
-
 import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -35,7 +12,6 @@ import { COMMAND } from "../build-info";
 import { type Check, checkLine, type DoctorOptions, doctorChecks } from "../cli/doctor";
 import { tildify } from "../cli/paths";
 import { runUpdate } from "../cli/update";
-import { type CrewRecord, listAllCrew, listAllLeads } from "../crew/store";
 import { listModels, probeModel } from "../gateway/backends";
 import {
   chainProblem,
@@ -96,7 +72,6 @@ import {
 import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
 import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import { readPortalAgents } from "./api/agents-read";
-import { readCleanupOffLoop } from "./api/cleanup-read";
 import { forgetPageReads } from "./api/page-reads";
 import {
   addProjectRoot,
@@ -940,18 +915,6 @@ async function setWorkflowSetting(
   }
 }
 
-/**
- * `project.workflow.propose` (D57): one of the project's workflow settings, changed through a
- * pull request. The page asks first (`confirm`), and the CLI's own `workflow propose` runs in a
- * child (`runCliChild`) in the project's folder: the command makes a branch, a worktree, a
- * commit and a push, and those must never run inside the server's process
- * (`.claude/rules/portal.md`). The child is the same command the terminal runs, with the same
- * checks and words; the answer carries the pull request's URL for the card's own link.
- *
- * A crew session cannot reach this: the session-escape guard denies a crew session's call into
- * the portal's port (D36), and the child of a click is the person's — `runCliChild` drops
- * `CC_SMART_DEV_KIT_CREW` whatever the portal's own environment says (D52).
- */
 async function projectWorkflowPropose(
   action: ActionContext,
   body: Record<string, unknown>,
@@ -1778,83 +1741,12 @@ async function gatewayKeyAction(
   }
 }
 
-// ── The crew, and the worktrees (D52) ───────────────────────────────────────────
-
-/** The longest answer a page may send to a crew session: a message, not a document. */
-const CREW_ANSWER_MAX = 2_000;
-
-/** The crew session's name or id, from the page's body; "" when it named none. */
-function crewRef(body: Record<string, unknown>): string {
-  return typeof body.crew === "string" ? body.crew.trim() : "";
-}
-
-/**
- * The crew record a page names, from **the machine's** store: the portal usually runs from the
- * home folder, which is no git project, so a crew action resolves its record here and acts in
- * the record's own repository (D52). The page sends the id it read (`CrewSummary.id`, the
- * `CrewActions` body), and an id is unique on the machine.
- */
-function crewById(action: ActionContext, ref: string): { record: CrewRecord } | { why: string } {
-  let records: CrewRecord[];
-  try {
-    const crew = listAllCrew(action.portal.paths.stateDir);
-    const leads = listAllLeads(action.portal.paths.stateDir);
-    if (crew.broken.length || leads.broken.length)
-      return {
-        why: "Could not read every crew and lead record; repair the crew store before removing sessions.",
-      };
-    records = crew.records;
-  } catch (error) {
-    return { why: `the crew store could not be read: ${messageOf(error)}` };
-  }
-  const record = records.find((one) => one.id === ref);
-  return record === undefined
-    ? { why: `No crew session on this machine has the id "${ref}": the Work page lists them.` }
-    : { record };
-}
-
 /** The refusal of an action that ends or removes something, without the page's own yes. */
 function notConfirmed(what: string): ActionResult {
   return {
     lines: [`Nothing was ${what}: the page's confirmation did not come with the request.`],
     ok: false,
   };
-}
-
-/**
- * One crew command that acts on a session — `crew answer|stop|resume|rm` — run by the CLI
- * itself in a child (`cli-child.ts`), in the record's own repository. A crew call inside the
- * server froze every page and the live stream for up to 30 s per synchronous spawn
- * (`Bun.spawnSync` in `realRunProgram` and `runGit`), and `crew answer` reaches one too when it
- * resumes a stopped session. The child keeps the server free, and it is the same command, with
- * the same checks and words, that the terminal runs.
- */
-async function crewCliAction(
-  action: ActionContext,
-  name: string,
-  args: string[],
-  record: CrewRecord,
-): Promise<ActionResult> {
-  const run = await runCliChild(action.portal, ["crew", ...args], {
-    cwd: record.repo,
-    onLine: (line) => action.publish?.("action", { action: name, line }),
-  });
-  // `crew rm` removes the crew session's worktree: the Worktrees page's kept answer is stale.
-  forgetWorktrees(action.portal);
-  const lines = [...run.lines];
-  if (run.error !== null) lines.push(run.error);
-  if (run.timedOut) lines.push(crewTimeoutLine(args[0] ?? "", record.id));
-  return { lines, ok: run.error === null && !run.timedOut && run.exitCode === 0 };
-}
-
-/**
- * The line a crew action shows when its child passed `CLI_CHILD_TIMEOUT_MS`: `crew stop`,
- * `crew resume` and `crew rm` each make several calls, so one cut at the limit may have done
- * part of its work. The line says so and names the two ways to find out where the crew session
- * stands: the same command again, or `crew status`.
- */
-export function crewTimeoutLine(command: string, recordId: string): string {
-  return `crew ${command} did not answer in time, so it may have done part of its work: run it again, or ${COMMAND} crew status ${recordId} to see where it is.`;
 }
 
 /**
@@ -1934,10 +1826,6 @@ export const ACTION_NAMES = [
   "claudemem.route",
   "claudemem.takeover",
   "companion.enable",
-  "crew.answer",
-  "crew.resume",
-  "crew.rm",
-  "crew.stop",
   "doctor.run",
   "gateway.key.make",
   "gateway.key.save",
@@ -2073,120 +1961,8 @@ async function runActionByName(
       return projectWorkflowPropose(action, body);
     case "project.add":
       return projectAdd(action, body);
-    case "crew.answer": {
-      if (
-        body.question !== undefined &&
-        (typeof body.question !== "number" ||
-          !Number.isSafeInteger(body.question) ||
-          body.question <= 0)
-      ) {
-        return { lines: ["The question number must be a whole number, 1 or more."], ok: false };
-      }
-      const crew = crewRef(body);
-      const answer = typeof body.answer === "string" ? body.answer.trim() : "";
-      if (crew === "" || answer === "") {
-        return { lines: ["Pick the crew session and write an answer."], ok: false };
-      }
-      if (answer.length > CREW_ANSWER_MAX) {
-        return {
-          lines: [`An answer is at most ${CREW_ANSWER_MAX} characters.`],
-          ok: false,
-        };
-      }
-      const found = crewById(action, crew);
-      if ("why" in found) return { lines: [found.why], ok: false };
-      // The CLI's own command, in the record's repository: the portal's own folder is usually
-      // the home folder, where this repository has no crew store. `--as-person` is the click
-      // (D52); the bare `--` keeps an answer that starts with `--` an answer.
-      return crewCliAction(
-        action,
-        "crew.answer",
-        [
-          "answer",
-          "--as-person",
-          ...(body.question === undefined ? [] : ["--question", String(body.question)]),
-          "--",
-          found.record.id,
-          answer,
-        ],
-        found.record,
-      );
-    }
-    case "crew.stop": {
-      const crew = crewRef(body);
-      if (crew === "") return { lines: ["Pick the crew session to stop."], ok: false };
-      if (body.confirm !== true) return notConfirmed("stopped");
-      const found = crewById(action, crew);
-      if ("why" in found) return { lines: [found.why], ok: false };
-      return crewCliAction(action, "crew.stop", ["stop", found.record.id], found.record);
-    }
-    case "crew.resume": {
-      const crew = crewRef(body);
-      if (crew === "") return { lines: ["Pick the crew session to resume."], ok: false };
-      const found = crewById(action, crew);
-      if ("why" in found) return { lines: [found.why], ok: false };
-      return crewCliAction(action, "crew.resume", ["resume", found.record.id], found.record);
-    }
     case "sessions.rm":
       return removeFinishedSession(action, body);
-    case "crew.rm": {
-      const crew = crewRef(body);
-      if (crew === "") return { lines: ["Pick the crew session to remove."], ok: false };
-      if (body.confirm !== true) return notConfirmed("removed");
-      if (body.discard === true && body.discardConfirm !== true) return notConfirmed("discarded");
-      const agents = await readPortalAgents(action.portal, action.cwd);
-      if (agents.crew === null)
-        return {
-          ok: false,
-          lines: ["Could not read Claude Code's agent list; nothing was removed."],
-        };
-      const found = crewById(action, crew);
-      if ("why" in found) return { lines: [found.why], ok: false };
-      if (body.discard === true) {
-        const cleanup = await readCleanupOffLoop(action.portal, found.record.repo);
-        if (cleanup.error !== null) return { ok: false, lines: [cleanup.error] };
-        const preview = cleanup.stopped.find(
-          (one) => one.crew.id === found.record.id && one.repo === found.record.repo,
-        )?.discard;
-        if (preview?.facts == null)
-          return {
-            ok: false,
-            lines: [
-              preview?.error ??
-                "This crew session no longer has a stopped-work discard preview; refresh Needs before trying again.",
-            ],
-          };
-        const facts = preview.facts;
-        if (body.discardToken !== facts.token)
-          return {
-            ok: false,
-            lines: [
-              "The work changed or its archive facts were not confirmed. Refresh Needs and confirm the new preview; nothing was discarded.",
-            ],
-          };
-        // Both reads were awaited: revalidate the agent view and ownership before spawning.
-        const latestAgents = await readPortalAgents(action.portal, found.record.repo);
-        if (latestAgents.crew === null)
-          return {
-            ok: false,
-            lines: ["Could not read Claude Code's agent list; nothing was discarded."],
-          };
-        const current = crewById(action, crew);
-        if ("why" in current) return { ok: false, lines: [current.why] };
-        if (current.record.repo !== found.record.repo)
-          return {
-            ok: false,
-            lines: ["The crew record changed; refresh Needs before trying again."],
-          };
-        return crewCliAction(
-          action,
-          "crew.rm",
-          ["rm", current.record.id, "--discard", "--yes", "--discard-token", facts.token],
-          current.record,
-        );
-      }
-      return crewCliAction(action, "crew.rm", ["rm", found.record.id], found.record);
-    }
     case "worktrees.clean":
       // The page asks first (`data-confirm`): this removes folders that hold no work.
       if (body.confirm !== true) return notConfirmed("removed");

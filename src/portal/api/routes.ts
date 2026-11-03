@@ -1,12 +1,3 @@
-/**
- * The JSON API's routes: one read-only GET per answer, and which builder each one uses.
- *
- * The server checks the door before this module runs. Nothing here changes anything: an
- * unknown path, a range this version does not know, or a missing crew session is a typed
- * refusal, never a guess. The pages that act are POSTs to `/api/<action>`
- * (`src/portal/actions.ts`).
- */
-
 import { historyKeys, RECENT_PAGE_DEFAULT, RECENT_PAGE_MAX } from "../../gateway/history-read";
 import type { PageDataDeps } from "../page-data";
 import {
@@ -25,7 +16,6 @@ import { projectTasksAnswerFor, tasksAnswer } from "./project-tasks";
 import { projectAnswerFor, projectWorkflowAnswerFor } from "./projects";
 import { HISTORY_RANGES, type HistoryBy, type HistoryRange } from "./types";
 import {
-  crewAnswerFor,
   flowAnswer,
   GUARD_ASKS_DEFAULT,
   guardAsksAnswer,
@@ -94,11 +84,6 @@ const badRange = (): ApiAnswer => ({
   status: 400,
 });
 
-/**
- * Every read route at a fixed path, and how it answers: the one list the server and the tests
- * read (a test that walks every route reads this, never a copy). The two routes with a name
- * in the path, `/api/projects/<id>` and `/api/crew/<id>`, follow in `answerApi`.
- */
 export const API_READS: Readonly<
   Record<string, (deps: PageDataDeps, query: URLSearchParams) => ApiAnswer | Promise<ApiAnswer>>
 > = {
@@ -254,19 +239,6 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       return "error" in answer ? { body: answer, status: 404 } : ok(answer);
     }
     const answer = await projectAnswerFor(deps, id);
-    return "error" in answer ? { body: answer, status: 404 } : ok(answer);
-  }
-  if (path.startsWith("/api/crew/")) {
-    let ref: string;
-    try {
-      ref = decodeURIComponent(path.slice("/api/crew/".length));
-    } catch {
-      return { body: { error: "name a crew session" }, status: 400 };
-    }
-    if (ref === "" || ref.includes("/")) {
-      return { body: { error: "name a crew session" }, status: 400 };
-    }
-    const answer = await crewAnswerFor(deps, ref);
     return "error" in answer ? { body: answer, status: 404 } : ok(answer);
   }
   return null;
