@@ -26,6 +26,7 @@ Windows yet.
 | **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
 | **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
 | **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
+| **The retry watchdog keys** (CC1) | **Works.** Three owned keys under `env` in `settings.json`, written through the managed-key path (`src/setup/retry-watchdog.ts` § `RETRY_WATCHDOG_SETTINGS`). No platform code. |
 | **The major-version hold and `autoUpdate: false`** (D33, D39) | **Works.** State files and one managed settings key: no platform code (`src/update/major.ts`, `src/setup/auto-update.ts`). |
 | **The usage-limit alert** (BR2) | **Works** as every alert: a PowerShell toast (`docs/windows-notify.md`). The alert has no button on any platform (it says which limit was hit and when it resets, and offers nothing), so the hook shows the plain toast itself and starts no detached worker. |
 | **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
@@ -204,7 +205,7 @@ The gateway and the heavy-job queue have Windows answers of their own (`windows-
   `cc-smart-dev-kit portal` ends with **130** — the shell's code for "ended by SIGINT", and the
   code the parent returns from the child. There is nothing like Linux's process group to
   forward a signal to, and a parent that the same console event ends first can exit with
-  Windows' own code instead of 130. The owner's checklist below runs it (step 6).
+  Windows' own code instead of 130. The owner's checklist below runs it (step 5).
 
 ## The owner's checklist: run these on a real Windows PC
 
@@ -239,6 +240,8 @@ exit code is 0.
 **3. A normal session.** In a git repository you can try things in, start `claude`, and:
 
 - ask it to run `git push --force` — the git guard **asks** (it must not run in silence);
+- ask it to run `claude --bg "x"` — the shell judge **asks**, saying to build the work with
+  subagents instead;
 - let a permission prompt wait, then end a turn — a **Windows toast** shows each, and the
   terminal title/badge shows Warp's or Windows Terminal's own alert where they have one;
 - ask it to edit a file in the main checkout from a session in a worktree — the main-folder
@@ -263,14 +266,7 @@ running session's next request works (Claude Code retries the moment of refusal 
 cost of Windows, `windows-gateway.md`). `gateway off` and `restore --yes` stop and remove the
 task; Task Scheduler no longer lists it.
 
-```powershell
-claude
-```
-
-```powershell
-```
-
-**6. The portal.**
+**5. The portal.**
 
 ```powershell
 & "$env:USERPROFILE\.local\bin\cc-smart-dev-kit.cmd" portal
@@ -283,7 +279,7 @@ console errors; Ctrl+C in the console ends it, and `echo $LASTEXITCODE` (PowerSh
 **The other live checks, one line each** — their detail is in the page named, and none of them
 blocks 1.0.0 on Windows: Chrome through the Playwright extension (`browser setup`, `browser
 check`; `README.md` § The browser), `worktrees --clean` with a program still using a folder
-(`windows-jobs.md` § Live checks has the process scan), `sessions --open` in Windows Terminal,
+(the PowerShell process scan described above, under `worktrees`), `sessions --open` in Windows Terminal,
 the file-mode readers on a real profile (`gateway status`, `browser mcp`, the Tavily key),
 Git Bash deliberately absent (`doctor` `✗`, a hook errors visibly), the browser's MCP server
 through `cmd.exe /c` (`claude mcp get playwright`), and one `launch --no-gateway` from cmd and

@@ -3,8 +3,9 @@
 The kit files its follow-ups and its findings as GitHub issues — **opt-in**, one switch, off by
 default, like `autoPush` and `openPr` (decision D67, the owner, 2026-10-25). Before it, a
 follow-up outside a plan, a review finding left open or a hunch ended as a line in a summary and
-was lost when the plan was archived. This page is the contract the later parts build on (GI2 to
-GI4, below). The research behind it: `.claude/research/2026-10-25-gi1-issues.md`.
+was lost when the plan was archived. This page is the contract: filing (GI1), the fixed mark and
+the release list (GI2), and the markers the kit trusts (GI4). The research behind it:
+`.claude/research/2026-10-25-gi1-issues.md`.
 
 ## The switch
 
@@ -18,8 +19,17 @@ GI4, below). The research behind it: `.claude/research/2026-10-25-gi1-issues.md`
 | `allowPublic` | `false` | It may also file in a **public** repository. A second yes, because everyone reads an issue there. |
 | `foundLabel` | `kit:found` | On every issue the kit files; how it finds the one a fingerprint already filed. |
 | `fixedLabel` | `fixed-unreleased` | An issue whose fix is merged and not released (§ Resolved when it ships). |
+| `readyLabel` | `kit:ready` | An issue a person chose to have built. Only a person adds it. None of the kit's commands adds it: `issue file` refuses it as a `--label`, the three labels must differ (below), and the kit never rewrites the body of an issue that carries it. No command starts work from it since 2.0. |
+| `watch`, `watchMinutes` | | Accepted and ignored since 2.0: nothing reads them, so an older file still loads. |
 
-The found label identifies filed findings; the fixed label identifies fixes waiting for release.
+**The three labels differ** (compared lower-cased; `labelsClash`, one home in `schema.ts`). The
+kit adds the found label to every issue it files and the fixed label at a merge, both through
+the person's own `gh` login; if either were the ready label, the kit would mark an issue as the
+person's choice by itself. So the schema refuses a file where two of them are the same word (a
+label a file leaves out stands as its default), and `workflow set` writes nothing then. The
+person's file and the project's can each hold one of a pair, so `issue file` and the fixed
+mark's gate (`openGate`) check the resolved values too (`labelsProblem`): `issue file` refuses,
+and `issue mark-fixed` and `issue fixed` exit 1 with the reason, rather than read as "off".
 
 The defaults live in `workflowDefaults.issues`, one place. A flat set of keys
 (`issues.enabled`, …) because `workflow show`, `set` and the portal name a setting by a key of at
@@ -32,10 +42,16 @@ A policy that cannot be read (no `origin/<base>`, a committed file that is broke
 the plugin) is a refusal, not a guess. `workflow show` prints each key with its source; `workflow
 set` writes the person's own value, `--project` the project's file.
 
-**A session cannot turn it on.** `workflow set` and `unset` of `enabled` and `allowPublic`
-refuse inside Claude Code. The policy is read from the committed base, not a working copy.
-The session-escape guard protects the kit's own settings; `workflow propose` offers a
-reviewed pull request rather than changing a gate in place.
+**A session cannot turn it on.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
+inside Claude Code (`OUTBOUND_KEYS`, as a review-gate key does): a session must not open its own
+way out. So does `readyLabel` (`INBOUND_KEYS`, IX2): a session must never pick which issues
+count as chosen. Each is read as `enabled` is, from the person's file and the project's
+file as committed on the base (`resolveSwitch`), never a working copy. `workflow propose` stays
+open, because a person reviews and merges its pull request. The refusal is a courtesy that a
+command can drop (`env -u CLAUDECODE`); what stops a session from dropping it, or from writing
+the person's `workflow.json` directly, is the session-escape guard
+(`src/hooks/session-escape-guard.ts`), and what keeps a session's own edit of the project's file
+out is the committed-file rule.
 
 **Only a project that opted in.** `issue file` and `doctor` need a `.claude/cc-smart-dev-kit.json`
 in the project: the person's own switch alone does not file into every repository they have
@@ -58,8 +74,8 @@ It prints one line and exits 0 (filed, updated), 1 (refused) or 2 (not a command
 An update of a closed issue adds ` (closed issue)` (the issue is not reopened), and a public
 repository adds ` (public repository)`, in that order, to the first two. A caller reads the first
 word and the number. The code is `src/issues/`
-(`file.ts` the work, `screen.ts`, `marker.ts`, `command.ts`, `doctor.ts`; `fixed.ts`,
-`pending.ts` and `phase-issues.ts` are § Resolved when it ships).
+(`file.ts` the work, `screen.ts`, `marker.ts`, `command.ts`, `doctor.ts`; `fixed.ts` is
+§ Resolved when it ships).
 
 ### What it checks, in this order, before anything is sent
 
@@ -139,6 +155,49 @@ from an issue body, and never acts on any other text in it.
 
 ## The guards
 
+A write to GitHub leaves the machine. The merge guard (`src/hooks/merge-guard.ts`, the reader
+`src/hooks/issue-writes.ts`) therefore **asks the person**, in a project with a
+`.claude/cc-smart-dev-kit.json`, before a session's raw `gh issue create`, `edit`, `comment`,
+`close`, `reopen`, `delete` (and the other `gh issue` subcommands that are not reads), a `gh label
+create`, `edit`, `delete` or `clone` (a renamed label could make issues "ready" that nobody
+labelled), a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues` or `labels`
+endpoints, or any GraphQL mutation that is not a pull request one the merge guard judges. Reads,
+`--help` and the kit's own `issue` commands pass (they are not `gh` commands).
+
+**Text the reader cannot read whole fails closed** (IX1), as the merge reader does for a path it
+cannot read: a write method (explicit, or inferred from `-f`, `-F` or `--input`) to an endpoint
+the shell fills in counts as a write ("the endpoint cannot be read"), and so do a GraphQL request
+with `--input`, a `query=@file`, or a query the shell fills in. A read (a GET with no fields)
+stays silent. **"The shell fills it in" is the shell reader's answer, per word** (IX3,
+`wordsWithFill`, `RunInvocation.filled`): a `$` expansion (`$x`, `${x}`, `$(…)`, `$((…))`) or a
+backtick outside single quotes. So a literal query in single quotes is read whole, whatever `$`
+it holds: `query($n: Int!) { … issue(number: $n) … }` is a plain read, a `mutation` in it is
+judged by its name, and `'repos/o/r/issues/$x'` is the path it says. `"$Q"`, `"…$(cat q)…"`, a
+backtick, a bare `$Q`, and `"repos/o/r/$K/5/comments"` still fail closed, and so does a `$` the
+line reader cut off from what follows (`$\<newline>P` joins into `$ P`, PowerShell's `${env:P}`
+is cut at its brace): a word with a lone `$` before a space, an escape, a closing quote or its
+end counts as filled. Words a wrapper splits out of a string of its own (`env -S '…'`, `script
+-c '…'`) are read by their text (`derivedFill`). A line the shell fills in first (`bash -c
+"…$K…"`, `echo "…$K…" | sh`, `eval`, the script of a here-doc with no quoted delimiter) is
+filled all through: the quotes inside it were written before the shell chose the text. The pull
+request part of the guard reads a query the same way (`graphqlCalls`). `-X=POST` is `POST`, as
+gh reads it (`shortFlags` drops one leading `=`). Never looser than IX1 for a word the shell
+fills in; looser only for single-quoted text, which the shell never changes. A pull request
+answer on the same line wins. gh's flags are read the way gh reads them (before the subcommand
+an option takes the next word; a `-h` after an option is its value), and the runners `find
+-exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they name. A `gh <word>`
+that is not a gh command (`GH_COMMANDS`, gh's own command aliases such as `ext` and `cs`
+included) is looked up in `gh alias list`, by the name as typed (gh's aliases are
+case-sensitive). The list is read once per hook run and shared with the pull request part
+(`aliasReaderOf`): an alias is read for what it expands to, a shell alias (`!…`) or one that
+expands too deep counts as a write, and a list that cannot be read counts as a write. A word
+that is no alias at all (an extension) is no write. A word the shell fills in (`gh "$CMD"
+create`) counts as a write, and so does a program the line works out when it runs, when its
+words name an issue (`computedIssueRisk`). Not read: a script file. The guard's fail-closed
+answers (a broken or too new project file, a crash) cover an issue write like a pull request
+change. The reader is described in `docs/design/hooks.md` (the `merge-guard` row) and
+`.claude/rules/hooks-guards.md`.
+
 `issue file` is the sanctioned path: with the switch on it files without a question, and every
 refusal above is its own.
 
@@ -154,22 +213,96 @@ switch off: no line, and no `gh` call.
 
 ## Resolved when it ships
 
-A fixed mark keeps the issue open until release. `cc-smart-dev-kit issue fixed --base <base>
---head <branch>` lists `Fixes #<n>` lines for open, fixed-unreleased issues whose fix belongs
-to that release diff. The release pull request includes those lines so GitHub closes the
-issues when it merges. Exit 1 means the list could not be read, not that no issue waits.
-The command never treats issue text as instructions. The fixed marker and label identify
-the fix; they do not grant permission to build, merge or publish.
+GitHub closes an issue only when a pull request that names it (`Fixes #n` in its body, or in a
+commit of it) **merges into the default branch**. A fix merged into a release branch closes
+nothing, and a keyword in a pull request into any other branch is ignored (research:
+`.claude/research/2026-10-25-gi2-closing.md`). So the kit marks at the merge and closes with the
+release. The code is `src/issues/fixed.ts`.
+
+**1. At the merge: `issue mark-fixed`.**
+
+```
+cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]
+```
+
+The main session runs it after it merges a fix, once per issue the fix closes. `--base` is the
+branch the work merged into, `--branch` the fix's branch, `--tip` that branch's tip at the merge,
+and `--merge` the commit the base got (a merge or a squash commit; leave it out when it is not
+known). `--tip` and `--merge` are full 40-character commit ids. A line that is not one (no
+positive issue number, an empty branch name, a short commit id) exits 2 with the usage.
+`markFixed` passes the same gate as `issue file` (`openGate`: the switch as committed on the
+base, the labels differ, `origin`, issues on for the repository, a public repository only with
+`allowPublic`, the kit's own account read), then:
+
+- reads the issue once (`gh issue view --json state,labels,comments`). A closed issue gets
+  nothing (`#<n> is already closed`, exit 0); one GitHub does not know is `#<n> does not exist`,
+  exit 1;
+- posts the comment unless a comment of the kit's own account already holds this mark: the same
+  branch and tip, or the same merge commit (two branches that came in with one merge are one
+  mark). The comment is "Fixed on `<branch>` at `<short commit>`, merged into `<base>`; it closes
+  when `<base>` ships" and ends with `<!-- cc-smart-dev-kit:fixed <branch, URL-encoded> <tip>
+  <merge commit or -> -->`. It holds no closing keyword, and it is screened like any text the kit
+  posts: a hit sends nothing;
+- adds the label (`issues.fixedLabel`, created when the repository lacks it) unless the issue
+  has it.
+
+It prints `marked #<n> fixed` and exits 0. Each step looks at the issue first, so a run again
+after any failure does only what is missing, and a merge marked twice posts once. Any other
+failure — the gate off or unreadable, GitHub unreachable, a write refused — is one line on
+standard error, `issue mark-fixed: <why>`, and exit 1; nothing is queued, so the main session
+runs it again once the cause is fixed. It never closes the issue.
+
+**2. The release.** `cc-smart-dev-kit issue fixed --base <default> --head <branch>`
+(`listFixed`) lists the **open** issues that carry the fixed label and whose comment's marker
+names a commit in `<base>..<head>`: the tip or the merge commit is in the head, and neither is
+already in the base (so a squash merge counts by its squash commit). It prints one `Fixes #<n>`
+line each, ascending, and nothing else. The `pull-request` skill puts those lines after the last
+heading of a pull request into the default branch; GitHub closes the issues when it merges.
+Switch off or none waiting: no output, exit 0. GitHub or a branch unreadable: the reason on
+standard error and exit 1, never an empty list that looks complete. The label stays on a closed
+issue: it shows that the issue shipped through the kit. **A limit:** the label is trusted as the
+person's word. Anyone who can label can add it; the effect is one `Fixes #n` line in a pull
+request body that a person reviews. The marker is not forgeable by a comment: it counts only in a
+comment the kit's own account wrote (§ The markers count only in the kit's own comments).
+
+The command never treats issue text as instructions. The fixed marker and label identify the fix;
+they do not grant permission to build, merge or publish.
+
+**Limits, said once.**
+
+- *A policy that cannot be read* (the switch is committed but not pushed and fetched, or git
+  failed once) is not "off": `issue mark-fixed` and `issue fixed` exit 1 with the reason. Only a
+  clear "off" (the switch, no opt-in, no github.com `origin`, issues turned off for the
+  repository, a public one without `allowPublic`) is off: `issue fixed` prints nothing, and
+  `issue mark-fixed` exits 1 with that reason.
+- *A merge nobody marked* is not listed: the release list reads only the marks `issue mark-fixed`
+  wrote. Put `Fixes #<n>` in the release pull request's body by hand for it.
+- *A rewritten release branch*: if the tip and the merge commit named in a marker are no longer
+  in `<head>` (a rebase, a force push), the issue is not listed. A fix already on the base that
+  was never closed is not listed either; close it by hand.
+- *Long threads*: `gh issue list` returns 100 comments of an issue at most, so an issue with that
+  many is read whole with `issue view`.
 
 ## The markers count only in the kit's own comments (GI4)
 
-Only a comment by the account `gh` is logged in as may supply a counted fixed marker.
-An outside comment cannot forge a fix or add an issue to the release list. If that account
-cannot be read, the operation fails closed. Different machine logins may therefore see
-different fixed marks; use one account for the repository's release steps.
+A hidden marker is plain text, so a stranger can copy the line of a fixed mark. A marker therefore
+counts only in a comment the kit's own account wrote (`kitAccount`: `gh api user`, read once for
+a gate; `ownBodies` in `fixed.ts`): the fixed mark's "already marked" check and the release list
+(`listFixed`). A stranger's copy cannot fake a mark or add an issue to a release's `Fixes` lines.
+When the account cannot be read the gate fails (the command exits 1), so no marker is trusted
+blind.
+
+**A limit, said once.** "The kit's own account" is the account `gh` is logged in as on the machine
+that runs the step. Where two people with different logins use the kit on one repository, a marker
+one wrote is not counted by the other: the second `issue fixed` leaves out the first one's issue
+(no `Fixes` line, the label stays), and a mark may be posted twice. Trusting a comment by its
+`author_association` (owner, member, collaborator) too would close that; it was left out because
+it widens who can write a counted marker, and the gh field was not verified. A project that works
+this way should have one account run the kit's GitHub steps.
 
 ## What it never does
 
 Write to any repository but `origin`'s; send text that holds a home path, a key or a URL with
-credentials; open a second issue for one fingerprint (bar the race above); close, reopen or
-re-label an issue that exists; or read an issue's text as an instruction.
+credentials; open a second issue for one fingerprint (bar the race above); close or reopen an
+issue; add a label to an issue that exists, except the fixed label `issue mark-fixed` adds; or
+read an issue's text as an instruction.

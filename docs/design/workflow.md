@@ -6,11 +6,26 @@ step, push the branch, open a pull request, merge it, and how. It is one module
 (`src/workflow/`) of small pieces, and none of them runs a git command: they decide, and
 whatever runs a command asks them first.
 
+**Resolution, field by field** (`resolve.ts`), the project over the person over the built-in
+default:
+
 | Where | What holds it |
 |---|---|
 | `"project"` | the `workflow` object in the project's `.claude/cc-smart-dev-kit.json`, committed with the code |
 | `"personal"` | `~/.config/cc-smart-dev-kit/workflow.json` (folder 0700, file 0600, atomic writes like the other config files) |
 | `"default"` | `workflowDefaults` in `schema.ts`: the safe ones — nothing is committed, pushed or merged without the person, and every alert is on |
+
+`resolveWorkflow(paths, projectConfig)` returns every value with the source it came from, so
+`cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
+it is; both read a key's value through one map, `resolvedValueOf`, so a new setting is one
+entry there (the type checker refuses a key without one). A group (`alerts`,
+`fixesAfterReview`) merges field by field like the rest. The one schema is reused by
+`src/project/config.ts` for the project's `workflow` object, so a field can never mean two
+things in the two files. A broken personal file throws `WorkflowConfigError`, which names the
+file and the field: the person must hear it. A field with a wrong kind can never be written
+(`write.ts` validates the whole file before the write), and a file it may not change is left
+alone rather than half-written. A `crew` group, from a file written before 2.0, is accepted and
+ignored: it still loads, and nothing reads it.
 
 **A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
 write the whole object again with `JSON.stringify`: that laid every line out anew, and a
@@ -79,6 +94,8 @@ place (`auto-merge.ts`).
 | Setting | Followed by |
 |---|---|
 | `autoCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
+| `autoPush` | the **git guard hook** (`src/hooks/git-guard.ts`), PreToolUse on Bash and PowerShell: while it is off (the default) the guard asks before every `git push` (D15), reading the value as committed on the base (`resolveGate`). |
+| `openPr` | the **merge guard hook** (`src/hooks/merge-guard.ts`): `off` asks before `gh pr create` and `gh pr ready`, `draft` asks for a pull request that does not open as a draft and for every `gh pr ready`, `ready` asks for neither (D16); read as committed on the base. |
 | `autoMerge` | the **merge guard hook** (`src/hooks/merge-guard.ts`), PreToolUse on Bash and PowerShell — the one step a hook can stand in front of. `mergeMethod` and `deleteBranch` stay instructions: they say how a merge the guard allowed is made. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the merge guard reads it. |
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
@@ -95,6 +112,35 @@ git — the policy is about the repository the work is in, so another one always
 required check `gh pr checks --required --json name,bucket` reports is green (a `skipping` check
 counts as passed, which is GitHub's own rule for a merge); and — with `reviewBeforePush` on —
 the head from `gh pr view` is covered by a review (D17, § The review record).
+
+**The judgment is one home**, `src/workflow/merge-check.ts`: `checkPullRequest` reads those
+facts and decides, `checkBranch` does the same for a local branch against a base (the review gate
+only: a local merge has no pull request's checks or `autoMerge`), and
+`cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
+(`allowed`, or the reason it asks; exit 0 when every one is allowed, 1 when any asks) — the
+guard's own words, without making a merge. The hook keeps the rules about the command line: what
+is a merge, `--admin`, and another repository; it reads `ownHooks` from the integration base
+before any gh call, so a project that runs its own merge guard answers alone.
+
+**D31: the exact merge is answered `allow`.** Auto mode's built-in "Merge Without Review" rule
+blocks every merge no person approved; a hook's `allow` skips the classifier for that call
+(proved live, L1a.5). So `merge-guard` answers `allow`, with a short reason, only when the WHOLE
+line is exactly `gh pr merge <n>` with flags gh 2.102.0 has (`exactMergeOf` in `after-merge.ts`:
+one reading, one command, no wrapper or assignment before gh, no pipe, no writing redirection, no
+alias, a number rather than a branch or URL) and the whole policy above passed. Any other
+passing form — `timeout 60 gh pr merge 7`, `gh pr merge 5 && gh pr merge 6`, an alias, an
+unknown flag, an armed `--auto` merge (it lands later, so a commit pushed after the check would
+merge unread) — stays silent, so auto mode's own rule still applies to it; an unknown
+`gh pr merge` flag asks.
+
+**It also governs opening a pull request** (D16, `openPr`): it reads `gh pr create`, `gh pr
+new` and `gh pr ready` — a `-R`, a `gh alias`, a `gh api` POST to the repository's pulls
+endpoint, the GraphQL `createPullRequest` and `markPullRequestReadyForReview` — and the
+committed `openPr` decides: `off` asks before any of them, `draft` lets a create that opens
+as a draft through (`--draft`, `-d`, `-fd`, `--draft=true`) and asks for one that opens
+ready and for every `gh pr ready`, `ready` asks for neither. `gh pr ready --undo` opens
+nothing. The value is read with `resolveGate` like the merge's, from the base this checkout
+names (`worktrees.base`); a policy it cannot read asks.
 
 **An opening outside the base its head branch belongs to asks** (WA1): `gh pr create`'s
 `--base` (`-B`) is compared with the base `worktrees.base` or the `worktrees.bases` prefix
@@ -161,6 +207,19 @@ and the plugin never writes the project's main checkout. `cc-smart-dev-kit workf
 
 A setting the project's file cannot hold — the status-line and update-hold switches, which are
 the person's, per machine — is refused before the fetch, with the command that does change it.
+
+A step that fails after the branch exists takes the worktree, the branch, and the pushed
+branch back, and the line says what is left if any of that fails. Two exceptions, both to
+avoid destroying what may be another run's: a `gh pr create` that does not answer in time
+leaves the pushed branch and the pull request it may have made, and a name another proposal
+took between the check and the add is skipped for the next free one rather than reused. The
+command pushes a branch and opens a pull request in children no hook sees, so **the shell judge
+asks the person first** (RF1-4, `src/hooks/bash-judge.ts`) whenever the gate the git and merge
+guards read has `autoPush` off or `openPr` short of `ready`: the question names the push, the
+pull request and the switch that says no; a gate or a project it cannot read is a question with
+its reason; in `claude -p`, where nobody answers, it is a denial. Inside Claude Code a gate key
+refuses, as `set` does; outside it — a terminal, the portal — every key is allowed: the pull
+request's review is the gate.
 
 **Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
 6` reads both, and the first the policy does not allow asks, naming that pull request
@@ -242,8 +301,7 @@ point of not paying a second review for a small fix. **The merge guard judges wi
 head on its head branch, and asks with the counts and the limit when the fixes are over it; a
 record of the exact head still covers at once, on any branch, with no git run.
 `cc-smart-dev-kit workflow merge-check --branch <branch> --base <base>` prints the same verdict
-for a local merge and `workflow show` prints the limits in
-force on one `gate fixesAfterReview in force:` line.
+for a local merge, and `workflow show` prints the limits in force on one `gate fixesAfterReview in force:` line.
 
 **Every write holds the record's own lock** (`withLock` on the
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the

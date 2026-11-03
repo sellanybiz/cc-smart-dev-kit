@@ -76,12 +76,51 @@ every move:
 A store an older kit nested deeper reads as it is: anything below a task is a subtask. The
 layer rules hold only a move, so each of those tasks still changes and closes where it sits.
 
+**The type** says whether a task holds the one above it. A `blocking` task (the default) must
+be closed before its parent is done. A `non-blocking` one (a nice-to-have, a later idea) holds
+nothing. `holdingUnder` (`queries.ts`) is the one answer to "what holds this task": the open
+tasks below it, reached through blocking tasks only, those in progress first. It never walks
+into a non-blocking task, so a blocking subtask of a non-blocking task holds only that task.
+It does walk on below a closed task, so a task closed early cannot hide open work under it.
+`doneValid`, the builder's hand-back check (`builder-finish`) and the portal's phase steps all
+use it.
+
+**Blocked-by** (`blocked_by` on create, `blocked_by_add` and `blocked_by_remove` on update)
+names tasks that must finish first. A task blocked by an open task cannot go to `in_progress`
+or `done`; a blocker that is done or dropped lets it go. The check runs on the change of status
+only, so a task already in progress when a blocker is added keeps going, and says it is
+blocked. `addBlockers` refuses a blocked-by cycle, a task of another project, a task above
+this one, and a task that already waits for this one through a parent: a parent waits for its
+blocking subtasks, so a subtask blocked by its parent, or by a task that waits for that parent,
+could never start, and none of them could ever be done. That last walk follows both kinds of
+wait (blocked-by, and a parent for the subtasks that hold it), so the order the blocks were
+added does not matter. Done is judged only on the move to done, so a done task's other fields
+still change.
+
+**The main session lays out its phases ahead of its builders.** `task_create` with `phase` (its
+id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
+under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
+that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
+out, it is the plan of the caller's latest task that has one (made or claimed by it). `plan` alone makes the plan task, and takes a subject only.
+Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
+each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
+
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
 1.11.0 migrated. A 1.10.x writer adds tasks with the default, blocking, which is the 1.10.x
 rule. No hook query names the column, and a row without it reads as blocking.
 
 ### A task's history
+
+Every write in `store.ts` adds one entry to `task_events`, in the same transaction as the
+change, so the two land together or not at all. An entry holds the time, what happened
+(`created`, `changed`, `noted`, `closed`, `deleted`), each field's value before and after
+(subject, description, status, type, parent, the four ledger fields, claim, blocked by), and who
+made it: the session id and name (the name Claude Code shows, read from its session record by
+`callerOf`) and the Claude process. A change the kit makes itself (an import, or the import's
+repair) carries its reason instead. A change that changes nothing adds no entry. Entries are
+never edited, and the table has no foreign key on purpose: a deleted task keeps its history,
+whose last entry holds the task as it was.
 
 `task_get` and `task show` print it as a timeline, oldest first, from `history.ts`, and a
 deleted task's too (`#12 "Subject" [deleted]`, then its history). A
@@ -152,6 +191,8 @@ fields rather than writing null. References and evidence keep the task understan
 
 ### The life of a project task
 
+- Create writes in the session's checkout, a builder's worktree included, so the task ships in
+  that branch's commit and pull request.
 - `task list --branch [--base <branch>]` lists task files changed against the base for the
   pull request's notes and still-owed sections. `task list --branches` finds open tasks on
   local branches not yet merged.
@@ -175,6 +216,38 @@ fields rather than writing null. References and evidence keep the task understan
 The CLI exposes the same operations, including import, branch lists, checks and release
 lists; [README](../../README.md) lists their arguments. `task_get` and `task show` cap
 long output and accept an offset. Search uses SQL `LIKE`, not FTS5.
+
+### The hooks and pages that read it
+
+Hooks open the work database with `PRAGMA query_only`, a short busy wait and fail-open handling
+(`src/tasks/work/db.ts`). A read-write open with query-only mode also works when a WAL file has
+no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's rules):
+
+- `task-start` (SessionStart) is machine-wide. At every start, clear and compaction it adds one
+  block of the project's open work tasks, without descriptions, at most eight lines
+  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first, then the
+  ones in progress, then the most recently touched. A task untouched for `tasks.staleDays`
+  (default 30) is not listed but counted in one line, unless this process claims it. Until
+  registration exists, the hook says to run setup.
+- `keep-going` (Stop) holds the main session's turn end once while a phase of its plan is in
+  progress and nothing runs, naming the next ready phase.
+- `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
+  has open blocking steps (`holdingUnder`).
+
+Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, `task_list` and the
+portal: the tasks under a task at every depth, closed (done or dropped) of all of them
+(`subtreeProgress`). Non-blocking tasks count too: progress says how much of the work is closed,
+and `holdingUnder` says what still holds the parent's done. A phase's steps on the portal are
+the one exception, and say so: they count blocking steps only, with a dropped step left out of
+both numbers ([portal](portal.md) § The pages' facts and actions (B6d)).
+
+The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
+each project's work tree as plan › phase › task › subtask, its open work and what closed in the
+last seven days, each row with its layer, type, blockers and progress, each phase with its
+ledger, then the open task files by kind, stale ones marked. Filters narrow it to one project,
+blocked work or non-blocking work, and keep each match under the tasks above it. A project's
+page keeps a one-line card that links there. Both read again on the live stream's `tasks`
+event, which fires when the store's file or its write-ahead log changes ([portal](portal.md)).
 
 
 

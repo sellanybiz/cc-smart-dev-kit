@@ -36,7 +36,28 @@ old names (`README.md` § Moving from anymodel).
 
 ## 1.11.0 — three task layers, blocking or not, and a Tasks tab (D76)
 
+Work tasks got three layers under a plan (phase › task › subtask), a type (blocking holds its
+parent, non-blocking holds nothing) and a blocked-by list that holds a task's start and done. A
+plan's phases can be laid out ahead of the work. The portal shows every project's tasks on a
+Tasks tab of its own. [The task design](design/tasks.md) § Layers, types and blocked-by (D76)
+holds the rules.
+
 ## 1.10.0 — keep going, with the kit's task list (D75)
+
+One task system for the kit. Local SQLite holds live work across worktrees; reviewed Markdown
+files hold production, database, teammate and follow-up obligations. The task tools and command
+share both stores. Setup replaces Claude Code's list tools and turns off claude-mem work state;
+memory stays. Start notes, status progress, checks, imports and release lists make open work
+visible. [The task design](design/tasks.md) records the boundary; live MCP, permissions and
+process-identity proofs remain release checks.
+
+## 1.0.1 — a hotfix of 1.0.0
+
+A fix to the crew sessions' start (H101), a part 2.0.0 removed.
+
+## 1.0.0 — safety, the crew, and native Windows
+
+The crew sessions this release brought were removed in 2.0.0; the rest stays.
 
 **Done in this release:**
 
@@ -57,6 +78,9 @@ old names (`README.md` § Moving from anymodel).
 - **An affordable model's thinking stays visible** (A1b): the router keeps it, marked as its
   own with the backend's signature inside, removes it only on a request to Claude (no
   "Invalid `signature`" 400), and gives a backend its own signature back.
+- **The breaker** (D42): while every target of a slot is limited or down, the router holds the
+  request (up to 240 s) and then answers a 429 Claude Code retries; a heartbeat-only target
+  rests like any other failure; the status line and the StopFailure alert name it.
 - **Claude judges first** (D44): auto mode's checks go to Claude first; while Claude is limited
   or down, the worker slot's tested targets judge in its place. WebSearch never falls back to
   them, and opus and fable keep no fallback.
@@ -68,6 +92,13 @@ old names (`README.md` § Moving from anymodel).
 - **The agent guard judges what really runs** (G1, G2): the model and effort Claude Code
   really gives a launch after its own overrides, and every Workflow run — by inline script,
   path, name or plugin. `medium` is now an allowed subagent effort.
+- **Less Opus** (D46, D50): Opus builds architecture and UI/UX work only, and the other kinds
+  build on the worker slot; a review runs on Opus only for a risky change set; UI/UX design
+  runs only on `opus` or `fable`, at `high` or above, and the agent guard refuses it anywhere
+  else.
+- **The hook frame fails closed** (A4), with the `session-escape-guard` (a session never
+  loosens its own limits) and the shell judge in `job-route` (a raw `claude --bg` and
+  `claude -p` judged, polling refused).
 - **A subagent never hands back with its own background work running** (D53): a SubagentStop
   check blocks the stop once, with one plain reason.
 - **Finished worktrees clean themselves** (D48): after a merge into the base, and at an
@@ -81,6 +112,8 @@ old names (`README.md` § Moving from anymodel).
   guard (A2).
 - **claude-mem's two start blocks are off** (D23): `setup` writes both keys off and turns
   Claude Code's own task tools on; `restore` puts them back.
+- **Claude Code's retry watchdog** (D42): `setup` offered it once (default no); since D56 it is on
+  by default (`docs/design/retry-watchdog.md`).
 - **Native Windows** (WIN): every 1.0.0 part checked against native Windows, a Windows CI job,
   and `docs/windows-setup.md` with the checklist for a real PC and what is still owed.
 
@@ -409,8 +442,8 @@ The release on every machine, `doctor` green on each.
 `cc-smart-dev-kit job run` makes heavy jobs (a type check, a test run, a build) take turns
 instead of freezing the machine: each job takes one slot (it reserved its gigabytes in the
 first version), waits its turn in one machine-wide queue, and runs in its own cgroup inside
-`cc-smart-dev-kit-heavy.slice`. How a job waits and runs, the kinds, the config and the
-shared view: [jobs.md](jobs.md).
+`cc-smart-dev-kit-heavy.slice`. Since 2.0.0 the queue has one slot and no slice, memory
+check or shared view. How a job waits and runs, the kinds and the limits: [jobs.md](jobs.md).
 
 ## After the rollout
 
@@ -426,6 +459,9 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   already goes quiet where the kit answers, that advice is wrong: it silences the kit's hook
   and wakes the project's old copy. A project should be able to mark such a hook as an
   extension, so `doctor` neither warns nor gives that advice.
+- **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
+  finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
+  for a removal by hand. Reading mount points there is a design decision.
 - **The launch judge and a wait loop that matches itself.** It let through
   `until ! pgrep -f "bun run check"; do sleep 3; done`, whose `pgrep -f` pattern matches the
   loop's own command line, so it never ends.
@@ -433,8 +469,14 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
   keep-alive pings are never cut, and the 120 s allowed for Anthropic is not measured.
 - **The merge guard's shell reader.** It does not test an endpoint or a method the shell fills
   in for a pull request, and it does not follow `cat <<EOF | sh` or `eval "$cmd"`.
+- **GitHub Issues limits.** The portal's settings writer has no protected-key check of its own
+  (it relies on the portal's door); `issue file` needs `gh api user` to succeed (an App token may
+  get 403); the `GH_COMMANDS` list must follow gh's own commands, or the issue-write reader takes
+  a new gh command for an extension and lets it through unasked.
 - **`resolveSwitch` and the base's name.** It takes the base branch's name from the working
   copy, as the merge guard does.
+- **`claudeLimitHolds` (`src/gateway/limit-holds.ts`) compares exact Claude model ids**, the
+  `[1m]` suffix aside. Check whether a variant of one model's id should count as the same model.
 - **A merge-guard test left its fake `gh` running.** In one full run on a loaded machine (load
   average about 30), "a gh call that hangs" (`src/hooks/merge-guard.test.ts`) passed but left its
   fake `gh` alive with its parent gone. The fake's `read x < /dev/zero` spins, so it ran 12

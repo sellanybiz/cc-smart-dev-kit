@@ -34,11 +34,19 @@ asked for (`src/sessions/`, `src/worktrees/`):
 
 ### Finished background sessions
 
-`sessions --finished` lists background jobs in `done` or `stopped`, older than a day by
-matching job-state timestamps. Unknown kinds, active states and damaged records stay out.
-`--remove` asks once, or accepts `--yes`; repeated `--id <short-id>` limits the selection.
-It reads candidates again before `claude rm`. A registered or locked worktree prevents
-removal. The portal uses the same targeted command. Nothing removes sessions by itself.
+`sessions --finished` uses `src/sessions/finished.ts` for both the command and the Work API. It
+accepts only `background` jobs in `done` or `stopped`, older than a day by their matched
+job-state end timestamps (`docs/claude-code-contract.md` § Background sessions, transcripts and
+messages). Unknown kinds, active or waiting states and damaged records keep a session out.
+`--remove` shows the list and asks once, or takes `--yes`; repeated `--id <short-id>` limits the
+selection to those exact eligible sessions, and any requested id that is not eligible refuses
+the whole selection before anything is removed. Each candidate is read again just before its
+`claude rm`; one the person resumed meanwhile is kept, with a line. The portal action uses that
+same targeted command. A still-registered or locked worktree refuses `claude rm`: its session
+uses `ExitWorktree`, or the project's finished-worktree clean (`worktrees --clean`) removes it
+first. One refusal does not block later eligible rows; the final exit is nonzero if any failed.
+The portal's child runs from the home folder, not from a session folder that may be gone.
+Nothing runs this removal by itself.
 
 ### Stale locks and local caches
 

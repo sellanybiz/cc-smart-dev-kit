@@ -45,6 +45,16 @@ An optional local router between Claude Code and the model providers
   per change, a marker so it runs once, never from a session start or the background update — and
   claude-mem follows the scout back to Claude. `docs/gateway.md` § Slots and defaults has the
   contract.
+- Auto mode's safety check is judged by Claude first. While Claude is limited or down, the
+  worker chain's targets that passed the judge test judge in its place (D44; the judge's switch
+  is on by default, `gateway fallback judge off` keeps Claude alone, and with no tested target
+  Claude judges alone either way; who may stand in has one home, `judgeStandInState`). A judge
+  chain the person sets wins, and may hold a `claude-…` target; its first usable target judges
+  every check (the next only with the judge's fallback on). A target must pass a test check
+  before it is used; the router uses only a target whose test proof is in the config (D44).
+  When a check still fails for want of capacity with nothing standing in, the router records it
+  (`checksDown`) and the status line, `gateway status`, `doctor` and the session say it once with
+  the fix (`src/gateway/checks-down.ts`).
 - A request that carries an Anthropic server tool (`web_search_*`, `web_fetch_*`) goes to
   Anthropic as sent, whatever its slot; at a Claude capacity failure the router answers it with a
   note that names the Tavily MCP server's search tool (D41, D44; `docs/gateway.md` § Anthropic's
