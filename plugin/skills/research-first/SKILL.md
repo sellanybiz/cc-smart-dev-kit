@@ -9,8 +9,9 @@ description: Use before using or recommending an external library, API or patter
 Where it differs, the add-on wins (`core.md`, top). It names the project's research tools and
 any library it prefers or bans.
 
-The rule — research before you build, reuse in a fixed order, never give up — is in the core
-instructions (§ Drive the work). This skill is how.
+The rule — check external libraries, APIs and patterns against current docs, reuse in a fixed
+order, and try another way or ask rather than guess — is in the core instructions (§ Drive the
+work). This skill is how.
 
 ## 1. Look in the project first
 
