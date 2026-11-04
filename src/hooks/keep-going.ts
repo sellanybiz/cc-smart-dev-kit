@@ -47,7 +47,7 @@ import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
-import { cappedHookList } from "./builder-finish";
+import { cappedHookList, HOOK_LIST_LIMIT } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
@@ -96,7 +96,7 @@ export function keepGoingReason(
   ready: readonly PhaseRef[],
 ): string {
   const one = inProgress.length === 1;
-  const shown = inProgress.slice(0, 8);
+  const shown = inProgress.slice(0, HOOK_LIST_LIMIT);
   const refs = shown.map((phase) => `#${phase.number}`).join(", ");
   const names = cappedHookList(inProgress, named, TASK_TOOL.list);
   const head = one

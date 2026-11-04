@@ -42,7 +42,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
-import { cappedHookList } from "./builder-finish";
+import { cappedHookList } from "./capped-list";
 import {
   GUARD_GIT_TIMEOUT_MS,
   hasChanges,

@@ -15,14 +15,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
-import { hookEnv, makeRepo, runEntry, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
 import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
-import { GUARD_BUNDLES, HOOKS, USER_HOOKS, userAwayHook } from "./specs";
+import { GUARD_BUNDLES, HOOKS, sessionNameHook, USER_HOOKS, userAwayHook } from "./specs";
 import { AWAY_ASK_TOOLS } from "./user-away";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -68,6 +68,36 @@ const bundleOf = (handler: Handler): string =>
 const SHELL = process.platform === "win32" ? (Bun.which("bash") ?? "bash") : "/bin/sh";
 
 describe("hooks.json", () => {
+  test("registered session-name matcher resets an unnamed context on clear", async () => {
+    const registered = wired.find(
+      ({ event, handler }) => event === "SessionStart" && bundleOf(handler) === "session-name",
+    );
+    expect(registered?.matcher).toBe("startup|resume|compact|clear");
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
+    const env = hookEnv();
+    const input = { session_id: "11111111-2222-3333-4444-555555555555", cwd: repo };
+    const prompt = { ...input, hook_event_name: "UserPromptSubmit" };
+    const first = await runHook(sessionNameHook, prompt, env);
+    expect(first.stdout).toContain("This session has no name yet.");
+    expect(await runHook(sessionNameHook, prompt, env)).toEqual({});
+    if (
+      registered?.matcher !== null &&
+      registered?.matcher !== undefined &&
+      new RegExp(`^(?:${registered.matcher})$`).test("clear")
+    ) {
+      const result = await runHook(
+        sessionNameHook,
+        { ...input, hook_event_name: "SessionStart", source: "clear" },
+        env,
+      );
+      expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
+        `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: cc-smart-dev-kit session-name ${input.session_id} "<the task, in a few words>"`,
+      );
+    }
+    expect(await runHook(sessionNameHook, prompt, env)).toEqual(first);
+    expect(await runHook(sessionNameHook, prompt, env)).toEqual({});
+  });
   test("every handler is shell form: the quoted .sh shim, the missing-bun mode and one quoted bundle in dist/, with its own timeout", () => {
     // The shim's first argument says what it does when bun is missing: a guard fails closed
     // by asking the person; every other hook is quiet, one line (`GUARD_BUNDLES`).

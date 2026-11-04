@@ -27,7 +27,7 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
-import { extname, join, resolve } from "node:path";
+import { extname, isAbsolute, join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -182,7 +182,7 @@ export interface SeenIn {
 export function seenIn(
   lines: readonly string[],
   check: string,
-  countsEdit: (block: Record<string, unknown>) => boolean,
+  countsEdit: (block: Record<string, unknown>, cwd: string | null) => boolean,
 ): SeenIn {
   const seen: SeenIn = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
   const failed = failedCalls(lines);
@@ -203,7 +203,8 @@ export function seenIn(
     for (const block of toolUses(record)) {
       const name = stringField(block.name);
       if (name !== null && (CHANGE_TOOLS as readonly string[]).includes(name)) {
-        if (!failed.has(stringField(block.id) ?? "") && countsEdit(block)) seen.lastEdit = index;
+        if (!failed.has(stringField(block.id) ?? "") && countsEdit(block, stringField(record.cwd)))
+          seen.lastEdit = index;
         continue;
       }
       // A shell line only: Bash or PowerShell, in that tool's own dialect.
@@ -257,10 +258,23 @@ export function verifyGateWouldBlock(
         : resolve(root, configured);
   }
   const excluded = [realPath(plans), realPath(join(root, ".claude/plans"))];
-  const seen = seenIn(lines, check, (block) => {
-    const file = editedFile({ tool_input: block.input }, cwd);
+  const seen = seenIn(lines, check, (block, editCwd) => {
+    const fields = objectOf(block.input);
+    const path = stringField(
+      block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path,
+    );
+    // Unknown paths cannot prove an exclusion. A relative path needs the edit's own cwd,
+    // since a session may change folders or enter a worktree before it stops.
+    if (
+      path === null ||
+      path.trim() === "" ||
+      path.includes("\0") ||
+      (!isAbsolute(path) && (editCwd === null || !isAbsolute(editCwd)))
+    )
+      return true;
+    const file = editedFile({ tool_input: { file_path: path } }, editCwd ?? cwd);
+    if (file === null) return true;
     return (
-      file !== null &&
       isInside(file, root) &&
       ![".md", ".mdx"].includes(extname(file).toLowerCase()) &&
       !excluded.some((folder) => isInside(file, folder))

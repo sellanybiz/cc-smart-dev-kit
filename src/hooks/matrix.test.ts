@@ -160,7 +160,7 @@ function seedOpenStep(env: Record<string, string>, repo: string): string {
 const BUILDER_FINISH_BLOCK = JSON.stringify({
   decision: "block",
   reason: [
-    "Task #1 still has open blocking steps. Close each one, then hand back:",
+    "Task #1 still has 1 open blocking step. Close each one, then hand back:",
     '- #2 Write the test: finish it and close it with `task_done` (task "#2", with evidence), or drop it with `task_done` (task "#2", outcome "dropped") and a note saying why.',
   ].join("\n"),
 });
