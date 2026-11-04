@@ -13,9 +13,11 @@ function write(file: string, text: string): void {
 function place() {
   const home = tempDir("agent-definitions");
   const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+  const checkout = join(home, "repo");
+  mkdirSync(checkout, { recursive: true });
   return {
     paths,
-    checkout: join(home, "repo"),
+    checkout,
     managedAgentsDir: join(home, "managed", ".claude", "agents"),
   };
 }
@@ -109,6 +111,58 @@ describe("agent definitions", () => {
     symlinkSync(source, join(folder, "linked.md"));
     symlinkSync(folder, join(folder, "loop"), "dir");
     expect(agentDefinition("checker", p)).toEqual({ model: "sonnet", effort: "high" });
+  });
+
+  it("a symlinked cwd walks from its real folder; one outside the checkout still scans the root", () => {
+    const p = place();
+    write(join(p.paths.claudeConfigDir, "agents", "user.md"), PINNED.replace("sonnet", "opus"));
+    write(join(p.checkout, ".claude", "agents", "root.md"), PINNED);
+    const nested = join(p.checkout, "src", "nested");
+    write(join(nested, ".claude", "agents", "nested.md"), PINNED.replace("sonnet", "haiku"));
+    const link = join(p.paths.home, "link");
+    symlinkSync(nested, link, "dir");
+    expect(agentDefinition("checker", { ...p, cwd: link })).toEqual({
+      model: "haiku",
+      effort: "high",
+    });
+    const outside = join(p.paths.home, "elsewhere");
+    mkdirSync(outside, { recursive: true });
+    expect(agentDefinition("checker", { ...p, cwd: outside })).toEqual({
+      model: "sonnet",
+      effort: "high",
+    });
+  });
+
+  it("a scan past the depth or entry cap refuses the whole lookup, never a partial answer", () => {
+    const deep = place();
+    write(join(deep.checkout, ".claude", "agents", "a.md"), PINNED);
+    const tree = join(deep.paths.home, "deep");
+    let at = tree;
+    for (let level = 0; level < 9; level += 1) at = join(at, `d${level}`);
+    mkdirSync(at, { recursive: true });
+    symlinkSync(tree, join(deep.checkout, ".claude", "agents", "tree"), "dir");
+    expect(agentDefinition("checker", deep)).toBeNull();
+
+    const wide = place();
+    write(join(wide.checkout, ".claude", "agents", "a.md"), PINNED);
+    const many = join(wide.paths.home, "many");
+    mkdirSync(many, { recursive: true });
+    for (let index = 0; index < 2001; index += 1) writeFileSync(join(many, `${index}.txt`), "");
+    symlinkSync(many, join(wide.checkout, ".claude", "agents", "many"), "dir");
+    expect(agentDefinition("checker", wide)).toBeNull();
+
+    // Just under both caps, the same definition is read.
+    const fits = place();
+    write(join(fits.checkout, ".claude", "agents", "a.md"), PINNED);
+    let level8 = join(fits.paths.home, "fits");
+    for (let level = 0; level < 7; level += 1) level8 = join(level8, `d${level}`);
+    mkdirSync(level8, { recursive: true });
+    symlinkSync(
+      join(fits.paths.home, "fits"),
+      join(fits.checkout, ".claude", "agents", "t"),
+      "dir",
+    );
+    expect(agentDefinition("checker", fits)).toEqual({ model: "sonnet", effort: "high" });
   });
 
   it("fixed built-ins supply models, dynamic built-ins do not guess", () => {

@@ -44,7 +44,7 @@
  * | any other name (`best`, `opusplan`, `default`, `inherit`, a name no rule knows) | the `opus` tier below (the strictest reading): only what the guard can read as Sonnet, Haiku or a backend target is judged as one |
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
- * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`): deny |
+ * | the `fable` tier | a read-only agent type (`READ_ONLY_AGENTS`, by its whole name: Claude Code's `Plan` and `Explore`, the kit's own under its plugin prefix) with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`): deny |
  * | no readable `model` / `effort` in the call or agent definition | deny (the call's, else the agent definition's choice must be readable) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
  * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
  * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
@@ -118,6 +118,7 @@
  * (`workflowRefusal`, `judgeWorkflowCall`).
  */
 
+import { PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import {
   type GatewayConfig,
@@ -127,7 +128,11 @@ import {
 } from "../gateway/config";
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl } from "../gateway/settings";
-import { type AgentDefinition, agentDefinition } from "../models/agent-definition";
+import {
+  type AgentDefinition,
+  agentDefinition,
+  managedAgentsDir,
+} from "../models/agent-definition";
 import {
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
@@ -182,6 +187,12 @@ import { lastClaudeModel } from "./transcript";
 export const AGENT_TOOLS = ["Agent", "Task"] as const;
 export const WORKFLOW_TOOLS = ["Workflow"] as const;
 
+/**
+ * The `tool` of a launch the Bash judge reads from a `claude -p` command (`bash-judge.ts`): a
+ * whole session in print mode, which no agent definition stands behind.
+ */
+export const PRINT_RUN = "claude -p";
+
 /** The subagent type a fork uses: it runs on the session's model and effort. */
 export const FORK = "fork";
 
@@ -191,34 +202,53 @@ const BUILDER_WORDS = [FABLE_BUILD_REASON] as const;
 /**
  * The subagent types that count as read-only on Fable: they read and report, never build, so
  * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
- * files and needs the one word `build` (`FABLE_BUILD_REASON`).
+ * files and needs the one word `build` (`FABLE_BUILD_REASON`). Each is matched by its whole
+ * name: Claude Code's own built-ins bare, the kit's agents under this plugin's prefix. Another
+ * plugin's or a project's agent of the same short name (`researcher`) is not read-only.
  */
 export const READ_ONLY_AGENTS = [
   "Plan",
   "Explore",
-  "auditor",
-  "edge-case-hunter",
-  "researcher",
+  `${PLUGIN}:auditor`,
+  `${PLUGIN}:edge-case-hunter`,
+  `${PLUGIN}:researcher`,
 ] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
 
-/** A subagent type as a list compares it: after any `plugin:`, `-`/`_`/space as one `-`. */
-export function agentKey(type: string): string {
-  const base = type.includes(":") ? (type.split(":").pop() ?? type) : type;
-  return base
+/** One part of a subagent type as a list compares it: lower case, `-`/`_`/space as one `-`. */
+function keyPart(part: string): string {
+  return part
     .trim()
     .toLowerCase()
     .replace(/[\s_-]+/g, "-");
 }
 
-function agentList(from: readonly string[], env: Env, name: string): Set<string> {
-  const listed = (env[name] ?? "")
+/** A subagent type as the person's list compares it: the name after any `plugin:`. */
+export function agentKey(type: string): string {
+  return keyPart(type.includes(":") ? (type.split(":").pop() ?? type) : type);
+}
+
+/** A subagent type as the kit's list compares it: the whole name, its `plugin:` kept. */
+function wholeAgentKey(type: string): string {
+  return type.split(":").map(keyPart).join(":");
+}
+
+/**
+ * True when a type is read-only: on the kit's list (or the context's) by its whole name, or
+ * on the person's own list (`READ_ONLY_AGENTS_ENV`) by the name after any `plugin:`, as the
+ * person writes it.
+ */
+function readOnlyType(type: string, ctx: GuardContext, env: Env): boolean {
+  const kit = new Set((ctx.readOnlyAgents ?? READ_ONLY_AGENTS).map(wholeAgentKey));
+  if (kit.has(wholeAgentKey(type))) return true;
+  if (ctx.readOnlyAgents !== undefined) return false;
+  const listed = (env[READ_ONLY_AGENTS_ENV] ?? "")
     .split(",")
     .map((one) => one.trim())
     .filter((one) => one !== "");
-  return new Set([...from, ...listed].map(agentKey));
+  return new Set(listed.map(agentKey)).has(agentKey(type));
 }
 
 /** The `model` (or one of its aliases) behind a launch, as Claude Code will send it. */
@@ -230,6 +260,7 @@ export interface Launch {
   model: null | string;
   prompt: string;
   subagentType: null | string;
+  /** What launches it: `Agent`, `Task`, `Workflow`, or `PRINT_RUN` for a `claude -p` run. */
   tool: string;
 }
 
@@ -274,6 +305,11 @@ export interface GuardContext extends GatewayFacts {
  *     of a reason line, so a Fable launch is denied and a launch whose `model` cannot be read
  *     is denied outright (an `opus`-tier launch needs no reason line, so its prompt does not
  *     matter);
+ *   - options that are not one plain object literal (`plainOptions`: a getter, a method, a
+ *     shorthand key, `__proto__`, a ternary or a second object) can set `model`, `effort` or
+ *     `agentType` where the guard never sees them, so none of the three is read: the launch is
+ *     denied before any agent definition is read, unless Claude Code's own overrides name both
+ *     its model and its effort;
  *   - options built at run time (a `...spread`, a computed `[…]` key) and a launch made
  *     through a **variable** (`const run = agent; run(…)`, `agent?.(…)`, `agent` passed
  *     around) hide every rule from the guard, so the whole Workflow is denied with the reason
@@ -289,6 +325,11 @@ export interface WorkflowLaunch {
   model: null | string;
   /** A policy key exists but is not a string literal; never replace it with frontmatter. */
   unreadable?: string;
+  /**
+   * True when the options are not one plain object literal (`plainOptions`): `model`, `effort`
+   * and `agentType` are then null, since the run can take each from what the guard cannot see.
+   */
+  optionsNotPlain?: true;
   /** The prompt, when the first argument is a string literal; null otherwise. */
   prompt: null | string;
   /** How the message names this launch: its `label`, else the first words of its prompt. */
@@ -553,6 +594,86 @@ function builtAtRuntime(call: string): boolean {
   return readOptions(call).hidden;
 }
 
+/**
+ * The parts of a bracketed list that starts just after `from`, split at its own commas, up to
+ * the bracket that closes it: each part as `[start, end)`, and where that bracket is. Strings and
+ * comments are skipped. Null when the text ends first.
+ */
+function topLevelParts(
+  text: string,
+  from: number,
+): null | { close: number; parts: Array<[number, number]> } {
+  const parts: Array<[number, number]> = [];
+  let depth = 0;
+  let start = from;
+  for (let index = from; index < text.length; index += 1) {
+    const char = text[index] ?? "";
+    if (char === '"' || char === "'" || char === "`") {
+      const literal = stringAt(text, index);
+      if (literal === null) return null;
+      index = literal.end - 1;
+    } else if (text.startsWith("//", index) || text.startsWith("/*", index)) {
+      const end = skipBlank(text, index);
+      if (end >= text.length) return null;
+      index = end - 1;
+    } else if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") {
+      if (depth === 0) {
+        parts.push([start, index]);
+        // A trailing comma leaves an empty last part: JavaScript has no argument there.
+        const last = parts.at(-1);
+        if (parts.length > 1 && last !== undefined && skipBlank(text, last[0]) >= last[1]) {
+          parts.pop();
+        }
+        return { close: index, parts };
+      }
+      depth -= 1;
+    } else if (char === "," && depth === 0) {
+      parts.push([start, index]);
+      start = index + 1;
+    }
+  }
+  return null;
+}
+
+/** Keys that set an object's prototype: `{ __proto__: { model: "opus" } }` hands down `model`. */
+const PROTOTYPE_KEY = "__proto__";
+
+/**
+ * True when a call's options are exactly one plain object literal — its second argument and its
+ * last — whose every key is a plain `key: value` pair. Anything else can hand the run a `model`,
+ * an `effort` or an `agentType` the guard does not read: a getter (`get model() {…}`), a method,
+ * a shorthand key (`{ model }`), `__proto__`, a ternary or any other expression in the options
+ * position, or a second object after them. (A spread, a computed key and a key written twice
+ * refuse the whole Workflow first: `workflowRefusal`.)
+ */
+function plainOptions(call: string): boolean {
+  const args = topLevelParts(call, 1);
+  if (args === null || args.parts.length !== 2) return false;
+  const [from, to] = args.parts[1] ?? [0, 0];
+  const open = skipBlank(call, from);
+  if (call[open] !== "{") return false;
+  const object = topLevelParts(call, open + 1);
+  if (object === null || skipBlank(call, object.close + 1) !== to) return false;
+  return object.parts.every(([start, end]) => {
+    const at = skipBlank(call, start);
+    // `{}` has one empty part: an object with no key at all is plain.
+    if (at >= end) return object.parts.length === 1;
+    const key = plainKeyAt(call, at, end);
+    return key !== null && key.value !== PROTOTYPE_KEY && call[skipBlank(call, key.end)] === ":";
+  });
+}
+
+/** An object key at `at`: a name or a quoted string (never a backtick); null for anything else. */
+function plainKeyAt(text: string, at: number, end: number): null | { end: number; value: string } {
+  if (text[at] === '"' || text[at] === "'") {
+    const quoted = stringAt(text, at);
+    return quoted === null ? null : { end: quoted.end, value: quoted.value };
+  }
+  const word = /^[A-Za-z_$][\w$]*/.exec(text.slice(at, end))?.[0];
+  return word === undefined ? null : { end: at + word.length, value: word };
+}
+
 /** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
 function callsOf(script: string): number[] {
   return mentionsOf(script, "agent")
@@ -662,11 +783,15 @@ export function readWorkflowScript(script: string): WorkflowLaunch[] {
     const unreadable = ["model", "effort", "agentType"].find(
       (key) => keys.has(key) && stringOption(call, key) === null,
     );
+    // Options that are not one plain object can hand the run any policy key: none is read.
+    const plain = plainOptions(call);
+    const policy = (key: string) => (plain ? stringOption(call, key) : null);
     launches.push({
       ...(unreadable === undefined ? {} : { unreadable }),
-      agentType: stringOption(call, "agentType"),
-      effort: stringOption(call, "effort"),
-      model: stringOption(call, "model"),
+      ...(plain ? {} : { optionsNotPlain: true as const }),
+      agentType: policy("agentType"),
+      effort: policy("effort"),
+      model: policy("model"),
       prompt,
       where: label ?? prompt?.split("\n")[0]?.slice(0, 60) ?? "(unreadable)",
     });
@@ -694,11 +819,17 @@ export interface WorkflowResult {
   verdict: Verdict;
 }
 
-const NO_WORKFLOW_MODEL = [
-  "This Workflow launch names no `model` the guard can read.",
-  "An agent given none runs on the session's model and effort, which nobody chose — and a `model` held in a variable is not visible to a hook.",
-  "Write `model` and `effort` as string literals in the `agent(...)` options.",
-].join("\n");
+/** Said when a Workflow launch's `model` or `effort` cannot be read from its options or its definition. */
+function noWorkflowField(field: "effort" | "model"): string {
+  return [
+    `This Workflow launch names no \`${field}\` the guard can read, in its options or its agent definition.`,
+    `A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, \`__proto__\`, a ternary, a second object), can set the run's \`${field}\` where a hook never sees it, so no agent definition stands in for it then.`,
+    'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "…", effort: "…" })`.',
+  ].join("\n");
+}
+
+const NO_WORKFLOW_MODEL = noWorkflowField("model");
+const NO_WORKFLOW_EFFORT = noWorkflowField("effort");
 
 /** Said in a Workflow launch's reason when its prompt is not a literal the guard can read. */
 const PROMPT_UNREADABLE =
@@ -715,6 +846,25 @@ export function judgeWorkflow(
   from: null | string = null,
 ): WorkflowResult[] {
   return readWorkflowScript(script).map((launch) => {
+    // What runs with no definition read: the denials below come before any lookup.
+    const bare = () =>
+      effectiveLaunch(
+        { model: null, effort: null, fork: false, workflow: true },
+        env,
+        ctx.sessionModel,
+      );
+    if (launch.optionsNotPlain === true) {
+      // Only an override of Claude Code's own can name the model or the effort such a launch
+      // runs on: its options can set either where the guard never sees it.
+      const ran = bare();
+      const missing =
+        ran.modelFrom === "call"
+          ? NO_WORKFLOW_MODEL
+          : ran.effort === null
+            ? NO_WORKFLOW_EFFORT
+            : null;
+      if (missing !== null) return { from, launch, verdict: { ...deny(null, missing), ran } };
+    }
     if (launch.unreadable !== undefined) {
       return {
         from,
@@ -724,11 +874,7 @@ export function judgeWorkflow(
             null,
             `This Workflow launch's \`${launch.unreadable}\` is not a string literal the guard can read. Write policy options as string literals.`,
           ),
-          ran: effectiveLaunch(
-            { model: null, effort: null, fork: false, workflow: true },
-            env,
-            ctx.sessionModel,
-          ),
+          ran: bare(),
         },
       };
     }
@@ -1004,10 +1150,31 @@ const NO_EFFORT = [
   EFFORT_USE,
 ].join("\n");
 
-/** Said when a launch names an effort a subagent never runs at: `low`, or a level no rule knows. */
-function effortDenial(effort: string): string {
+/** Said when a `claude -p` run (`PRINT_RUN`) names no model: it has no agent definition. */
+const PRINT_NO_MODEL = [
+  "This `claude -p` run names no `model` the guard can read.",
+  "A run given none starts on the default model, which nobody chose, and no agent definition stands behind a print run.",
+].join("\n");
+
+/** Said when a `claude -p` run names no effort. */
+const PRINT_NO_EFFORT = [
+  "This `claude -p` run names no `effort` the guard can read.",
+  `Name one of ${EFFORTS}.`,
+  EFFORT_USE,
+].join("\n");
+
+/**
+ * Said when a launch names an effort a subagent never runs at: `low`, or a level no rule knows.
+ * An effort the agent's frontmatter set says so, with how the call overrides it.
+ */
+function effortDenial(effort: string, fromFrontmatter: boolean): string {
   return [
     `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+    ...(fromFrontmatter
+      ? [
+          `Effort \`${effort}\` comes from the agent's frontmatter; pass \`effort\` on the call to override it.`,
+        ]
+      : []),
     `A subagent runs at ${EFFORTS} — never \`low\`, on any model.`,
     EFFORT_USE,
   ].join("\n");
@@ -1118,9 +1285,8 @@ function modelNote(ran: EffectiveLaunch): null | string {
 
 /** Said when `CLAUDE_CODE_EFFORT_LEVEL` sets the effort the launch runs at. */
 function effortNote(ran: EffectiveLaunch): null | string {
-  if (ran.effortFrom === "frontmatter")
-    return "(from the agent's frontmatter; pass `effort` on the call to override it)";
-  if (ran.effortFrom === null) return null;
+  // Only the variable is named on every reason; frontmatter is named by the effort rule's own.
+  if (ran.effortFrom !== EFFORT_LEVEL_ENV) return null;
   return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
 }
 
@@ -1130,6 +1296,13 @@ function effortNote(ran: EffectiveLaunch): null | string {
  * effort overrides, read from `env`), and an ask or a denial names the override that applied.
  */
 export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdict {
+  // A definition is read only when the call names an agent and leaves a field to its
+  // definition: a fork and a `claude -p` run never read one.
+  const needsDefinition =
+    !launch.fork &&
+    launch.tool !== PRINT_RUN &&
+    launch.subagentType !== null &&
+    (launch.model === null || launch.effort === null);
   const ran = effectiveLaunch(
     {
       effort: launch.effort,
@@ -1139,7 +1312,7 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     },
     env,
     ctx.sessionModel,
-    ctx.definition?.(launch.subagentType) ?? null,
+    needsDefinition ? (ctx.definition?.(launch.subagentType) ?? null) : null,
   );
   const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
   if (verdict.decision === "allow") return { ...verdict, ran };
@@ -1159,8 +1332,11 @@ function judgeRan(
   const judged = (verdict: Judged) => ({ namesEffortLevel: false, verdict });
   if (!launch.fork) {
     // A call that names no model, with no override to name it, would inherit the session's.
-    if (ran.modelFrom === "call" && ran.model === null) return judged(deny(null, NO_MODEL));
-    if (ran.effort === null) return judged(deny(null, NO_EFFORT));
+    const print = launch.tool === PRINT_RUN;
+    if (ran.modelFrom === "call" && ran.model === null) {
+      return judged(deny(null, print ? PRINT_NO_MODEL : NO_MODEL));
+    }
+    if (ran.effort === null) return judged(deny(null, print ? PRINT_NO_EFFORT : NO_EFFORT));
   }
   // A fork always runs on the session's own model and effort: Claude Code ignores a `model` a
   // fork is given (`docs/claude-code-contract.md`), so judging the name it carries would judge a
@@ -1176,7 +1352,7 @@ function judgeRan(
   const auto = ran.effortFrom === EFFORT_LEVEL_ENV && ran.effort === EFFORT_AUTO;
   if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
     return ran.effortFrom !== EFFORT_LEVEL_ENV
-      ? judged(deny(real, effortDenial(ran.effort)))
+      ? judged(deny(real, effortDenial(ran.effort, ran.effortFrom === "frontmatter")))
       : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
   return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
@@ -1185,11 +1361,7 @@ function judgeRan(
 /** The model rules, on the launch's real model and the effort it really runs at. */
 function judgeModel(launch: Launch, real: LaunchModel, ctx: GuardContext, env: Env): Judged {
   const type = launch.subagentType ?? "";
-  const readOnly =
-    ctx.readOnlyAgents === undefined
-      ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV)
-      : new Set(ctx.readOnlyAgents.map(agentKey));
-  const builder = !readOnly.has(agentKey(type));
+  const builder = !readOnlyType(type, ctx, env);
 
   // UI/UX work (D50) comes before every tier rule: a launch that declares it runs only on the
   // tiers and at the efforts `UI_POLICY` names, so a declared UI launch on Sonnet, Haiku or an
@@ -1373,8 +1545,17 @@ export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
   };
 }
 
-/** What the guard reads for `judgeLaunch`: the session's own gateway and model; never throws. */
-export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
+/**
+ * What the guard reads for `judgeLaunch`: the session's own gateway and model, and the agent
+ * definitions; never throws. `managedAgents` is the managed agents folder (a test passes a temp
+ * folder, so no test reads the machine's own).
+ */
+export function readGuardContext(
+  paths: CliPaths,
+  input: HookInput,
+  env: Env,
+  managedAgents: string = managedAgentsDir(),
+): GuardContext {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   const cwd = stringField(input.cwd);
   const definitions = new Map<string, AgentDefinition | null>();
@@ -1386,9 +1567,10 @@ export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): G
       // Qualified plugin names never need a project scan or git lookup.
       const checkout =
         !name.includes(":") && cwd !== null ? (locateCheckout(cwd)?.root ?? cwd) : null;
-      found = agentDefinition(name, { paths, checkout, cwd });
+      found = agentDefinition(name, { paths, checkout, cwd, managedAgentsDir: managedAgents });
     } catch {
-      // A failed checkout lookup makes the entire definition unknown, not user-only.
+      // A failed checkout lookup, or a cwd that cannot be resolved, makes the entire definition
+      // unknown, not user-only: the launch then needs its own `model` and `effort`.
     }
     definitions.set(name, found);
     return found;
@@ -1557,9 +1739,15 @@ type Judgement =
   | { kind: "launch"; launch: Launch; verdict: Verdict };
 
 /** The guard's judgment of one call, with no record written. */
-function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Judgement | null {
+function judgeCall(
+  input: HookInput,
+  env: Env,
+  paths: CliPaths,
+  cwd: string,
+  managedAgents: string,
+): Judgement | null {
   const tool = stringField(input.tool_name);
-  const context = readGuardContext(paths, input, env);
+  const context = readGuardContext(paths, input, env, managedAgents);
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
     const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
     // One answer for the whole call: a deny refuses it, so nothing in it runs; an ask names each
@@ -1593,8 +1781,9 @@ export function agentGuard(
   paths: CliPaths,
   cwd: string,
   nowMs: number = Date.now(),
+  managedAgents: string = managedAgentsDir(),
 ): HookResult {
-  const judged = judgeCall(input, env, paths, cwd);
+  const judged = judgeCall(input, env, paths, cwd, managedAgents);
   if (judged === null) return SILENT;
   const ran = afterTheCall(input);
   const file = agentLaunchesFile(paths.stateDir);

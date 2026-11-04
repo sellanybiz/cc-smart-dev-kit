@@ -6,12 +6,13 @@
  * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
+import { makeRepo } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import {
   agentGuard,
@@ -19,6 +20,8 @@ import {
   guardFacts,
   judgeLaunch,
   judgeWorkflow,
+  type Launch,
+  PRINT_RUN,
   readGuardContext,
   readLaunch,
   readWorkflowScript,
@@ -80,6 +83,11 @@ const WORKFLOW_PATHS = cliPaths({
   HOME: tempDir("workflow-home"),
 });
 
+/** A managed agents folder in a temp folder: no test reads the machine's own. */
+function managedFolder(): string {
+  return join(tempDir("managed-agents"), ".claude", "agents");
+}
+
 function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env = NO_ENV) {
   const launch = readLaunch(agentCall(fields));
   if (launch === null) throw new Error("not an Agent call");
@@ -127,7 +135,13 @@ describe("frontmatter launch fields", () => {
   });
 
   it("read-only specialist agents can advise on Fable with review", () => {
-    for (const name of ["cc-smart-dev-kit:edge-case-hunter", "cc-smart-dev-kit:researcher"]) {
+    for (const name of [
+      "cc-smart-dev-kit:auditor",
+      "cc-smart-dev-kit:edge-case-hunter",
+      "cc-smart-dev-kit:researcher",
+      "Plan",
+      "Explore",
+    ]) {
       const result = verdict({
         subagent_type: name,
         model: "fable",
@@ -135,6 +149,25 @@ describe("frontmatter launch fields", () => {
         prompt: "Fable reason: review - check it",
       });
       expect(result.decision).toBe("ask");
+    }
+  });
+
+  it("another plugin's or a project's agent of the same short name is not read-only", () => {
+    for (const name of [
+      "researcher",
+      "auditor",
+      "other-kit:researcher",
+      "other-kit:edge-case-hunter",
+      "other-kit:Plan",
+    ]) {
+      const result = verdict({
+        subagent_type: name,
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - check it",
+      });
+      expect(result.decision).toBe("deny");
+      expect(result.reason).toContain(`\`${name}\`, which can change files`);
     }
   });
 
@@ -170,7 +203,7 @@ describe("frontmatter launch fields", () => {
       "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
     );
     const input = { ...agentCall({ subagent_type: "checker" }), cwd };
-    const ctx = readGuardContext(paths, input, NO_ENV);
+    const ctx = readGuardContext(paths, input, NO_ENV, managedFolder());
     expect(verdict({ subagent_type: "checker" }, ctx).decision).toBe("allow");
     expect(
       judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV)[0]?.verdict
@@ -188,13 +221,95 @@ describe("frontmatter launch fields", () => {
       file,
       "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\n",
     );
-    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV);
+    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV, managedFolder());
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
     writeFileSync(file, "---\nname: checker\ndescription: Check.\nmodel: opus\n---\n");
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
-    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV);
+    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV, managedFolder());
     expect(bad.definition?.("checker")).toBeNull();
     expect(bad.definition?.("claude-code-guide")).toBeNull();
+  });
+
+  it("a symlinked cwd inside a real git checkout: the project files beat the user's", () => {
+    const repo = makeRepo("linked-app");
+    const home = tempDir("linked-home");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const pinned = (name: string, model: string) =>
+      `---\nname: ${name}\ndescription: Check.\nmodel: ${model}\neffort: high\n---\n`;
+    const put = (folder: string, name: string, model: string) => {
+      mkdirSync(join(folder, "agents"), { recursive: true });
+      writeFileSync(join(folder, "agents", `${name}.md`), pinned(name, model));
+    };
+    put(join(repo, ".claude"), "checker", "sonnet");
+    put(join(repo, "src", ".claude"), "nested", "haiku");
+    put(join(repo, ".claude"), "nested", "sonnet");
+    put(paths.claudeConfigDir, "checker", "opus");
+    put(paths.claudeConfigDir, "nested", "opus");
+    const link = join(home, "linked-src");
+    symlinkSync(join(repo, "src"), link, "dir");
+    const ctx = readGuardContext(paths, { cwd: link }, NO_ENV, managedFolder());
+    // The root's file beats the user's, and the folder the link really is beats the root's.
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    expect(ctx.definition?.("nested")).toEqual({ model: "haiku", effort: "high" });
+  });
+
+  it("a call that names both fields reads no definition; a fork never reads one", () => {
+    let reads = 0;
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    verdict({ subagent_type: "checker", model: "haiku", effort: "high" }, ctx);
+    verdict({ subagent_type: "fork" }, ctx);
+    expect(reads).toBe(0);
+    verdict({ subagent_type: "checker", model: "haiku" }, ctx);
+    expect(reads).toBe(1);
+  });
+
+  it("a `claude -p` run has no agent definition: none is read, and its reasons say so", () => {
+    let reads = 0;
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    const run = (fields: Partial<Launch>) =>
+      judgeLaunch(
+        {
+          effort: null,
+          fork: false,
+          model: null,
+          prompt: "do it",
+          subagentType: "general-purpose",
+          tool: PRINT_RUN,
+          ...fields,
+        },
+        ctx,
+        NO_ENV,
+      );
+    const noModel = run({});
+    expect(noModel.decision).toBe("deny");
+    expect(noModel.reason).toBe(
+      [
+        "This `claude -p` run names no `model` the guard can read.",
+        "A run given none starts on the default model, which nobody chose, and no agent definition stands behind a print run.",
+      ].join("\n"),
+    );
+    const noEffort = run({ model: "sonnet" });
+    expect(noEffort.decision).toBe("deny");
+    expect(noEffort.reason).toBe(
+      [
+        "This `claude -p` run names no `effort` the guard can read.",
+        "Name one of `medium`, `high`, `xhigh` or `max`.",
+        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).",
+      ].join("\n"),
+    );
+    expect(reads).toBe(0);
   });
 
   it("frontmatter auto or low is not an environment override", () => {
@@ -203,10 +318,108 @@ describe("frontmatter launch fields", () => {
       const result = verdict({ subagent_type: "checker" }, ctx);
       expect(result.decision).toBe("deny");
       expect(result.reason).not.toContain("CLAUDE_CODE_EFFORT_LEVEL");
-      expect(result.reason).toContain(
-        "(from the agent's frontmatter; pass `effort` on the call to override it)",
+      expect(result.reason).toBe(
+        [
+          `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+          `Effort \`${effort}\` comes from the agent's frontmatter; pass \`effort\` on the call to override it.`,
+          "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
+          "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).",
+        ].join("\n"),
       );
     }
+  });
+
+  it("a frontmatter effort is named only on the effort rule's own reason", () => {
+    const ctx: GuardContext = { ...CTX, definition: () => ({ model: "fable", effort: "high" }) };
+    const result = verdict({ subagent_type: "checker", prompt: "Fable reason: review - x" }, ctx);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toStartWith("This launch would run on Claude Fable");
+    expect(result.reason).not.toContain("frontmatter");
+  });
+});
+
+describe("a Workflow agent() whose options are not one plain object reads no definition", () => {
+  /** A context whose definition lookup counts its reads, and would allow anything. */
+  function counting() {
+    const seen = { reads: 0 };
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        seen.reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    return { ctx, seen };
+  }
+
+  const NO_MODEL_TEXT = [
+    "This Workflow launch names no `model` the guard can read, in its options or its agent definition.",
+    "A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, `__proto__`, a ternary, a second object), can set the run's `model` where a hook never sees it, so no agent definition stands in for it then.",
+    'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "…", effort: "…" })`.',
+  ].join("\n");
+
+  it("a getter, a ternary, a method, a shorthand, `__proto__` or a second object: denied", () => {
+    const forms = [
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      'await agent("x", pick ? { agentType: "checker" } : { agentType: "checker", model: "fable" });',
+      'await agent("x", { agentType: "checker", model() { return "opus"; } });',
+      'await agent("x", { agentType: "checker", model });',
+      'await agent("x", { agentType: "checker", __proto__: { model: "fable" } });',
+      'await agent("x", { agentType: "checker" }, { model: "fable" });',
+      // A literal the guard could read is no proof either: a getter can still replace it.
+      'await agent("x", { model: "haiku", effort: "high", get agentType() { return "checker"; } });',
+    ];
+    for (const script of forms) {
+      const { ctx, seen } = counting();
+      const result = judgeWorkflow(script, ctx, NO_ENV)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(result?.verdict.reason).toBe(NO_MODEL_TEXT);
+      expect(seen.reads).toBe(0);
+    }
+  });
+
+  it("the same for effort: a getter or a ternary, with the model set by Claude Code's override", () => {
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "sonnet" };
+    for (const script of [
+      'await agent("x", { agentType: "checker", get effort() { return "low"; } });',
+      'await agent("x", fast ? { agentType: "checker" } : { agentType: "checker", effort: "low" });',
+    ]) {
+      const { ctx, seen } = counting();
+      const result = judgeWorkflow(script, ctx, env)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(result?.verdict.reason).toBe(
+        [
+          "This Workflow launch names no `effort` the guard can read, in its options or its agent definition.",
+          "A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, `__proto__`, a ternary, a second object), can set the run's `effort` where a hook never sees it, so no agent definition stands in for it then.",
+          'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "…", effort: "…" })`.',
+        ].join("\n"),
+      );
+      expect(seen.reads).toBe(0);
+    }
+  });
+
+  it("Claude Code's overrides for both fields still judge such a launch", () => {
+    const { ctx, seen } = counting();
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "sonnet", CLAUDE_CODE_EFFORT_LEVEL: "high" };
+    const result = judgeWorkflow(
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      ctx,
+      env,
+    )[0];
+    expect(result?.verdict.decision).toBe("allow");
+    expect(seen.reads).toBe(0);
+  });
+
+  it("one plain object, with comments, quoted keys and a trailing comma, still reads its definition", () => {
+    const { ctx, seen } = counting();
+    const result = judgeWorkflow(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
+      'await agent(`look at ${x}`, {\n  "agentType": "checker", // who\n  label: cond ? "a" : "b",\n  schema: { type: "object" },\n},);',
+      ctx,
+      NO_ENV,
+    )[0];
+    expect(result?.verdict.decision).toBe("allow");
+    expect(seen.reads).toBe(1);
   });
 });
 
@@ -352,12 +565,13 @@ describe("the session's own model, for a fork", () => {
       transcript,
       `${JSON.stringify({ message: { content: [], model: "claude-haiku-4-5" }, type: "assistant" })}\n`,
     );
-    const call = (input: HookInput) => readGuardContext(paths(), input, NO_ENV);
+    const call = (input: HookInput) => readGuardContext(paths(), input, NO_ENV, managedFolder());
     expect(call({ transcript_path: transcript }).sessionModel).toBe("claude-haiku-4-5");
     expect(call({}).sessionModel).toBeNull();
     // The model the session was started on: no transcript yet (a session's first call).
     expect(
-      readGuardContext(paths(), {}, { ANTHROPIC_MODEL: "claude-sonnet-5-5" }).sessionModel,
+      readGuardContext(paths(), {}, { ANTHROPIC_MODEL: "claude-sonnet-5-5" }, managedFolder())
+        .sessionModel,
     ).toBe("claude-sonnet-5-5");
     // What answered wins over what the session was started on.
     expect(
@@ -367,6 +581,7 @@ describe("the session's own model, for a fork", () => {
         {
           ANTHROPIC_MODEL: "claude-opus-5-5",
         },
+        managedFolder(),
       ).sessionModel,
     ).toBe("claude-haiku-4-5");
   });
@@ -1924,7 +2139,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
       subagent_type: "Explore",
     });
     expect(unsaid.reason).toContain(
-      "Use a read-only agent type (Plan, Explore, auditor, edge-case-hunter, researcher) and put a line in the prompt saying why:",
+      "Use a read-only agent type (Plan, Explore, cc-smart-dev-kit:auditor, cc-smart-dev-kit:edge-case-hunter, cc-smart-dev-kit:researcher) and put a line in the prompt saying why:",
     );
     // The same line on a read-only type still asks the person.
     expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");

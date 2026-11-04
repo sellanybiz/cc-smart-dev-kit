@@ -389,7 +389,8 @@ which model a launch really runs on (`resolveLaunchModel`), the effort levels
 judge asks the guard's own `judgeLaunch`. The guard keeps the hook's own parts (reading a
 Workflow script, the agent types, the record, the messages). The one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
-read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
+read-only agent types the Fable rule reads; a name there matches by the part after any
+`plugin:`), and the answer is a PreToolUse `deny` (the rule, in
 words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
 person approves each one, and the opus-tier ask rests on the effort, not on a prompt).
 
@@ -446,17 +447,34 @@ override that points `opus` at a backend never becomes an affordable slot, and s
 `max`; the messages name both, `` `opus` (answered by
 openai:gpt-5.5) ``.
 
+**The agent definition.** The guard judges the call's model and effort, else the ones the
+agent's definition names (`src/models/agent-definition.ts`). It reads a definition only when
+the call names an agent and leaves `model` or `effort` to it; a fork, and a `claude -p` run
+the Bash judge reads (`PRINT_RUN`), never read one, and a print run's denial says it has none.
+The lookup reads the managed
+agents folder first, then the project's folders from the input's real cwd (symlinks
+resolved) up to the checkout root, closest first, then the user's agents. A cwd whose real
+folder is outside the checkout scans the checkout root alone. A qualified plugin name skips
+those scans. A local definition needs a valid name and a string description. Each name is
+read once per hook run, and only its frontmatter is read. Symlinked files and folders are
+followed without loops, at most 8 folders deep and 2000 files and folders per lookup
+(`AGENT_SCAN_MAX_DEPTH`, `AGENT_SCAN_MAX_ENTRIES`). Past a cap, a failed checkout lookup, or a
+cwd that cannot be resolved, the whole definition is unknown: the launch needs its own
+`model` and `effort`. A test passes its own managed folder to `readGuardContext`, so no test
+reads the machine's.
+
+In a Workflow script, a definition stands in only for options written as one plain object
+literal of `key: value` pairs. Options that are not (a getter, a method, a shorthand key,
+`__proto__`, a ternary, a second object) can set the model or the effort where the guard never
+sees them. Such a launch is denied before any definition is read, unless Claude Code's own
+overrides name both its model and its effort. A policy option that is present but not a string
+literal is denied before the lookup too.
+
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-The guard reads the call's, else the agent definition's model and effort. A Workflow
-option that is present but not a string literal is denied before definition lookup. Local
-definitions must have a valid name and string description. The lookup reads managed agents
-first, then project folders from the input's cwd up to the checkout root (closest first),
-then user agents; qualified plugin names skip those scans. Each name is cached for the hook
-run. Symlinked files are followed without directory loops, and only frontmatter is read.
-A failed checkout lookup leaves the whole definition unknown.
-
-- **A read-only agent** (Plan, Explore, auditor, edge-case-hunter, researcher) takes any word of
+- **A read-only agent** (`Plan`, `Explore`, `cc-smart-dev-kit:auditor`,
+  `cc-smart-dev-kit:edge-case-hunter`, `cc-smart-dev-kit:researcher`; `READ_ONLY_AGENTS`,
+  matched by the whole name, so another plugin's or a project's `researcher` is not one) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is

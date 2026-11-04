@@ -24,7 +24,22 @@ export interface AgentPlace {
   paths: Pick<CliPaths, "home" | "claudeConfigDir" | "installedPluginsFile">;
   checkout: null | string;
   cwd?: null | string;
-  managedAgentsDir?: string;
+  /** The managed agents folder: `managedAgentsDir()` in the hook, a temp folder in a test. */
+  managedAgentsDir: string;
+}
+
+/** The deepest folder a scan follows below an agents folder (symlinked folders included). */
+export const AGENT_SCAN_MAX_DEPTH = 8;
+
+/** The most files and folders one lookup reads, over every agents folder it scans. */
+export const AGENT_SCAN_MAX_ENTRIES = 2000;
+
+/** Thrown when a scan passes a cap: the lookup then refuses, rather than judge a partial scan. */
+class ScanTooLarge extends Error {}
+
+/** One lookup's scan budget, shared by every folder it reads. */
+interface Budget {
+  entries: number;
 }
 
 /** Paths and priority: https://code.claude.com/docs/en/sub-agents and
@@ -50,20 +65,30 @@ const BUILT_INS: Readonly<Record<string, null | string>> = {
   "general-purpose": null,
 };
 
-function files(path: string, visited = new Set<string>()): string[] {
+/**
+ * Every `.md` file under `path`, following symlinks; a folder seen twice (a loop) is read once.
+ * Throws `ScanTooLarge` past `AGENT_SCAN_MAX_DEPTH` or `AGENT_SCAN_MAX_ENTRIES`.
+ */
+function files(path: string, budget: Budget, depth = 0, visited = new Set<string>()): string[] {
+  const found = readable(() => ({ real: realpathSync(path), stat: statSync(path) }));
+  if (found === null || visited.has(found.real)) return [];
+  visited.add(found.real);
+  budget.entries += 1;
+  if (budget.entries > AGENT_SCAN_MAX_ENTRIES) throw new ScanTooLarge();
+  if (found.stat.isFile()) return path.endsWith(".md") ? [path] : [];
+  if (!found.stat.isDirectory()) return [];
+  if (depth > AGENT_SCAN_MAX_DEPTH) throw new ScanTooLarge();
+  const entries = readable(() => readdirSync(path).sort()) ?? [];
+  return entries.flatMap((entry) => files(join(path, entry), budget, depth + 1, visited));
+}
+
+/** What `read` returns; null when the file or folder is missing or unreadable. */
+function readable<T>(read: () => T): null | T {
   try {
-    const real = realpathSync(path);
-    if (visited.has(real)) return [];
-    visited.add(real);
-    const stat = statSync(path);
-    if (stat.isFile()) return path.endsWith(".md") ? [path] : [];
-    if (!stat.isDirectory()) return [];
-    return readdirSync(path)
-      .sort()
-      .flatMap((entry) => files(join(path, entry), visited));
+    return read();
   } catch {
-    // A missing/unreadable definition cannot supply fields to the guard.
-    return [];
+    // Missing or unreadable: Claude Code cannot load a definition from it either.
+    return null;
   }
 }
 
@@ -134,8 +159,8 @@ function inside(checkout: string, project: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
-function pluginFiles(root: string): string[] {
-  const defaults = files(join(root, "agents"));
+function pluginFiles(root: string, budget: Budget): string[] {
+  const defaults = files(join(root, "agents"), budget);
   let listed: unknown;
   try {
     listed = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))?.agents;
@@ -157,23 +182,50 @@ function pluginFiles(root: string): string[] {
   });
 }
 
-/** Project, user, then qualified plugin or built-in. Never merge fields across definitions. */
+/**
+ * The project agents folders, closest first: from the real cwd up to the checkout root. Both
+ * are resolved through symlinks, as git names the root. A cwd whose real folder is outside the
+ * checkout scans the checkout root alone. Throws when either folder cannot be resolved.
+ */
+function projectFolders(checkout: string, cwd: null | string | undefined): string[] {
+  const root = realpathSync(checkout);
+  const start = realpathSync(cwd ?? checkout);
+  const folders: string[] = [];
+  let at = inside(start, root) ? start : root;
+  for (;;) {
+    folders.push(join(at, ".claude", "agents"));
+    const up = dirname(at);
+    if (at === root || up === at) return folders;
+    at = up;
+  }
+}
+
+/**
+ * Managed, project (closest first), user, then a qualified plugin's or a built-in. Never merges
+ * fields across definitions. Null when nothing claims the name, or when a scan passes a cap
+ * (`AGENT_SCAN_MAX_DEPTH`, `AGENT_SCAN_MAX_ENTRIES`): a partial scan could miss the definition
+ * that wins. Throws when the cwd or the checkout cannot be resolved; the hook refuses then.
+ */
 export function agentDefinition(name: null | string, place: AgentPlace): AgentDefinition | null {
+  try {
+    return lookup(name, place, { entries: 0 });
+  } catch (error) {
+    if (error instanceof ScanTooLarge) return null;
+    throw error;
+  }
+}
+
+function lookup(name: null | string, place: AgentPlace, budget: Budget): AgentDefinition | null {
   if (name === null) return null;
   const colon = name.indexOf(":");
   if (colon === -1) {
-    const folders = [place.managedAgentsDir ?? managedAgentsDir()];
-    if (place.checkout !== null) {
-      let at = resolve(place.cwd ?? place.checkout);
-      while (inside(at, place.checkout)) {
-        folders.push(join(at, ".claude", "agents"));
-        if (at === resolve(place.checkout)) break;
-        at = dirname(at);
-      }
-    }
-    folders.push(join(place.paths.claudeConfigDir, "agents"));
+    const folders = [
+      place.managedAgentsDir,
+      ...(place.checkout === null ? [] : projectFolders(place.checkout, place.cwd)),
+      join(place.paths.claudeConfigDir, "agents"),
+    ];
     for (const folder of folders) {
-      const found = claiming(files(folder), name);
+      const found = claiming(files(folder, budget), name);
       if (found !== null) return found;
     }
   }
@@ -191,7 +243,9 @@ export function agentDefinition(name: null | string, place: AgentPlace): AgentDe
     const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) =>
       existsSync(one.installPath),
     )?.installPath;
-    return root === undefined ? null : claiming(pluginFiles(root), name.slice(colon + 1), false);
+    return root === undefined
+      ? null
+      : claiming(pluginFiles(root, budget), name.slice(colon + 1), false);
   }
   return Object.hasOwn(BUILT_INS, name) ? { model: BUILT_INS[name] ?? null, effort: null } : null;
 }
