@@ -18,6 +18,8 @@ const DENIED: Record<string, null | string[]> = {
   builder: ["AskUserQuestion", "Agent"],
   // Generates the scenarios that can break a plan or a change; it never fixes one.
   "edge-case-hunter": READ_ONLY,
+  // Answers one research question from current sources; it reports and changes nothing (2.2.0).
+  researcher: READ_ONLY,
   "rules-maintainer": ["AskUserQuestion"],
   // Every tool, always (the owner, 2.2.0): it reviews, and a consult may fix or build. Its text
   // keeps a review's findings ahead of any fix.

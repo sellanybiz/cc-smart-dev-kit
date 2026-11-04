@@ -36,6 +36,8 @@ Worked examples — judge new cases the same way:
 | Situation | Agent, slot, effort |
 |---|---|
 | Find files, read a module, a symbol's callers | `Explore`, `haiku`, `medium` |
+| A library or API question, or other research with a clear question | researcher, `sonnet`, `high` |
+| Ambiguous, hard or high-stakes research (an architecture choice, a security claim) | researcher, `opus`, `high`; `xhigh` when a decision rests on it alone |
 | Mechanical edits, a doc update, run the tests | builder, `sonnet`, `medium` |
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
@@ -87,6 +89,7 @@ Low usage never skips a test or a review: it means cheaper models, or stopping.
 | The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:senior-engineer`, its brief with the line `Mode: review` — `/cc-smart-dev-kit:review` § Second opinion |
 | Stuck on a root cause, a design or a fix after two failed tries | `cc-smart-dev-kit:senior-engineer` as the consult: no `Mode: review` line; the brief says whether it advises, fixes or builds |
 | Every scenario that can break a plan or a change, before or after the code exists | `cc-smart-dev-kit:edge-case-hunter` (read-only); for a plan, beside the second read, in one message |
+| One research question from current sources — a library, an API, a platform, a design choice — answered with a cited source per claim | `cc-smart-dev-kit:researcher` (read-only); a quick lookup stays with you, and a question with several angles goes to the `research-sweep` Workflow (`/cc-smart-dev-kit:research-first`) |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
 | Edits to instruction files: rules, skills, agents, `CLAUDE.md` | `cc-smart-dev-kit:rules-maintainer` |
 | Questions about Claude Code, the Agent SDK or the API | `claude-code-guide` (built-in) |

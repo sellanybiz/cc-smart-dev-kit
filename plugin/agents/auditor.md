@@ -18,8 +18,8 @@ message other sessions or ask the person.
 
 ## Read-only means
 
-The one home of this section: the `edge-case-hunter` agent, and the `senior-engineer` agent while
-it reviews, point here.
+The one home of this section: the `edge-case-hunter` and `researcher` agents, and the
+`senior-engineer` agent while it reviews, point here.
 
 - You edit nothing and create no file in the repo. A scratch file or a probe goes only in the
   system's temp folder. Delete only files you created yourself; never clean a shared folder.
