@@ -1,16 +1,16 @@
 # Review Axes And Severity
 
 The one home for the review dimensions, the edge-case axes and the severity scale. The
-`/cc-smart-dev-kit:review` skill, the `cc-smart-dev-kit:reviewer` agent and any skill that walks edge
-cases read this file. Use only the entries a change touches, and name the ones you skipped in
+`/cc-smart-dev-kit:review` skill, the `cc-smart-dev-kit:senior-engineer` and
+`cc-smart-dev-kit:edge-case-hunter` agents and any skill that walks edge cases read this file. Use only the entries a change touches, and name the ones you skipped in
 one line each.
 
 ## Review dimensions
 
 1. **Architecture** — the right shape, or the shape the diff fell into? Push for a
    config-driven design where the domain is truly open and change is already coming, and
-   guard the opposite just as hard (the core instructions' "best by default"): an interface
-   with one implementation is a finding too.
+   guard the opposite just as hard (deliver what was asked; build for a future only when asked):
+   an interface with one implementation is a finding too.
 2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. Deep
    detail: `/cc-smart-dev-kit:performance-budget`.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.

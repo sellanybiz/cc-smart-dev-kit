@@ -1,6 +1,6 @@
 ---
 name: builder
-description: Builds one phase from its task brief, tests its owned files, commits only when the brief allows it, and saves a Report task note. Never pushes, starts agents or reviews itself. The caller chooses model and effort.
+description: Builds one phase from its task brief, tests its own files, commits only when the brief allows, and saves a Report task note. Never pushes, starts agents or reviews itself. The caller chooses model and effort.
 skills:
   - cc-smart-dev-kit:impact-analysis
   - cc-smart-dev-kit:verify-change
@@ -62,7 +62,7 @@ you started from.
    the whole project: `cc-smart-dev-kit:verify-change` § 4. Report actual output, not an
    expected result.
 5. Check for accidental edits and unexpected paths with `git status --short`. This is
-   edit hygiene, not a spec or quality review. Your caller starts a fresh reviewer.
+   edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
 6. Commit only when allowed. Finish or drop your blocking steps with evidence before
    returning; the hand-back guard names any left open. Save the report. Leave the phase
    itself open for your caller's review and integration. Nothing you started still runs.

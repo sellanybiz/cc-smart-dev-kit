@@ -1,6 +1,6 @@
 ---
 name: research-first
-description: Use before using or recommending any external library, API or pattern, before an architecture decision, an AI or LLM integration, browser or platform behaviour, a migration or upgrade - and before hand-writing a solved problem (validation, formatting, parsing, dates, money, crypto, sanitization) or a component, utility, workflow or integration from scratch. Finds what already exists and checks it against current sources. Trigger phrases - "should I use", "best way to", "how does X work", "is this still valid", "upgrade", "migrate", "best practice", "is X deprecated", "add validation", "build a component".
+description: Use before using or recommending an external library, API or pattern, an architecture decision, an LLM integration, platform behaviour, a migration or upgrade, or hand-writing a solved problem or a component from scratch. Finds what exists and checks current sources. Trigger phrases - "should I use", "best way to", "is this still valid", "upgrade", "migrate", "is X deprecated", "add validation", "build a component".
 ---
 
 # Research Before You Build
@@ -9,8 +9,9 @@ description: Use before using or recommending any external library, API or patte
 Where it differs, the add-on wins (`core.md`, top). It names the project's research tools and
 any library it prefers or bans.
 
-The rule — research before you build, reuse in a fixed order, never give up — is in the core
-instructions (§ Drive the work). This skill is how.
+The rule — check external libraries, APIs and patterns against current docs, reuse in a fixed
+order, and try another way or ask rather than guess — is in the core instructions (§ Drive the
+work). This skill is how.
 
 ## 1. Look in the project first
 
