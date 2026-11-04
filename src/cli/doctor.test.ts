@@ -12,6 +12,7 @@ import {
   checkLine,
   checkPlugin,
   checkPortal,
+  checkReviewAgent,
   checkUserNotifyHook,
   claudeMemChecks,
   countChecks,
@@ -35,6 +36,33 @@ function line(hooks: unknown): string {
   }
   return checkLine(checkUserNotifyHook(paths));
 }
+
+describe("doctor: personal review agent migration", () => {
+  test("missing and current lists need no migration", () => {
+    const paths = cliPaths(hookEnv());
+    expect(checkReviewAgent(paths)).toBeNull();
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      JSON.stringify({ reviewAgents: ["cc-smart-dev-kit:senior-engineer"] }),
+    );
+    expect(checkReviewAgent(paths)).toBeNull();
+  });
+  test("the retired id fails with the base-list fix", () => {
+    const paths = cliPaths(hookEnv());
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      JSON.stringify({ reviewAgents: ["cc-smart-dev-kit:reviewer"] }),
+    );
+    const result = checkReviewAgent(paths);
+    expect(result).not.toBeNull();
+    if (result === null) throw new Error("missing migration check");
+    expect(checkLine(result)).toBe(
+      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
+    );
+  });
+});
 
 describe("doctor: agent view's notification hook", () => {
   test("missing: ✗, and the command to run", () => {

@@ -1,6 +1,6 @@
 /** `doctor`'s checks of the project in the folder it runs in (`project-checks.ts`). */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
@@ -69,6 +69,80 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
     hooks: { ...Object.fromEntries(events.map((event) => [event, ENGINE_HOOKS[event]])), ...extra },
   });
 }
+
+describe("the retired review agent", () => {
+  // Root reads a mode-000 file or folder all the same, so these two prove nothing as root.
+  test.skipIf(process.getuid?.() === 0)(
+    "skips unreadable Markdown and non-Markdown files",
+    async () => {
+      const repo = makeRepo();
+      const folder = join(repo, ".claude", "skills");
+      mkdirSync(folder, { recursive: true });
+      const unreadable = join(folder, "private.md");
+      writeFileSync(unreadable, "cc-smart-dev-kit:reviewer");
+      writeFileSync(join(folder, "data.bin"), "cc-smart-dev-kit:reviewer");
+      chmodSync(unreadable, 0o000);
+      try {
+        expect(await check(repo)).toEqual([]);
+      } finally {
+        chmodSync(unreadable, 0o600);
+      }
+    },
+  );
+  test.skipIf(process.getuid?.() === 0)(
+    "a folder it cannot read never crashes doctor, and the other folders are still searched",
+    async () => {
+      const repo = makeRepo();
+      for (const file of [
+        "cc-smart-dev-kit/review.md",
+        "agents/local.md",
+        "skills/open/SKILL.md",
+      ]) {
+        const path = join(repo, ".claude", file);
+        mkdirSync(join(path, ".."), { recursive: true });
+        writeFileSync(path, "cc-smart-dev-kit:reviewer");
+      }
+      const locked = join(repo, ".claude", "agents");
+      chmodSync(locked, 0o000);
+      try {
+        expect(await check(repo)).toEqual([
+          "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+          "! project: .claude/skills/open/SKILL.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+        ]);
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+    },
+  );
+  test("fails with the base-list migration fix", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      workflow: { reviewAgents: ["cc-smart-dev-kit:reviewer"] },
+    });
+    expect(await check(repo)).toContain(
+      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+    );
+  });
+  test("warns for add-ons, agents and nested skills, not unrelated files", async () => {
+    const repo = makeRepo();
+    for (const file of [
+      "cc-smart-dev-kit/review.md",
+      "agents/local.md",
+      "skills/local/SKILL.md",
+      "unrelated.md",
+    ]) {
+      const path = join(repo, ".claude", file);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "cc-smart-dev-kit:reviewer");
+    }
+    const lines = await check(repo);
+    expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
+      "! project: .claude/agents/local.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/skills/local/SKILL.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+    ]);
+  });
+});
 
 describe("Claude Code's own worktrees, and the retired engine", () => {
   test("outside git: nothing to say", async () => {

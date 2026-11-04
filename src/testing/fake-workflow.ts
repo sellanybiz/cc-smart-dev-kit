@@ -49,7 +49,7 @@ export function defaultResolved(): ResolvedWorkflow {
     mergeMethod: at("merge"),
     openPr: at("off"),
     reviewBeforePush: at(true),
-    reviewAgents: at(["cc-smart-dev-kit:reviewer"]),
+    reviewAgents: at(["cc-smart-dev-kit:senior-engineer"]),
     switches: {
       jobRoute: at(false),
       sessionNames: at(false),

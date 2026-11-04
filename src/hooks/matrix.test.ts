@@ -469,7 +469,7 @@ const CASES: Case[] = [
           session_id: SESSION,
           cwd: project(config),
           agent_id: AGENT,
-          agent_type: "cc-smart-dev-kit:reviewer",
+          agent_type: "cc-smart-dev-kit:senior-engineer",
         },
         env,
       };

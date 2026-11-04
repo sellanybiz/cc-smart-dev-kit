@@ -231,7 +231,7 @@ describe("the hook", () => {
     const env = hookEnv();
     seed(env, repo, [{ subject: "Write the test" }]);
     for (const agent of [
-      "cc-smart-dev-kit:reviewer",
+      "cc-smart-dev-kit:senior-engineer",
       "general-purpose",
       "builder-helper",
       "rules-maintainer-helper",

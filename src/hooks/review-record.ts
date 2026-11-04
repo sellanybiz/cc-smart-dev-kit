@@ -26,12 +26,24 @@
  * a block caused (`stop_hook_active`): the first stop took the start and recorded the review,
  * so the second has nothing to record and must not claim otherwise.
  *
- * Which agents count is the workflow's `reviewAgents` (default `["cc-smart-dev-kit:reviewer"]`,
+ * Which agents count is the workflow's `reviewAgents` (default `["cc-smart-dev-kit:senior-engineer"]`,
  * the plugin's own reviewer), compared by `recordsReview`: a `plugin:name` exactly, a bare
  * name only for an agent with no plugin prefix — so another plugin's `reviewer` never counts.
  * The list read here is the checkout's own; the record keeps the agent that wrote it, and
  * the merge guard judges that agent again against the list committed on the pull request's
  * base (`hasReview`), so a list a session edits in its own worktree records nothing it trusts.
+ *
+ * **Only a run that was a review records** (`isReviewRun`): the agent's brief — the first user
+ * entry of its transcript — holds the line `Mode: review` (trailing spaces and tabs allowed),
+ * and so does every prompt it was given after the brief: a resume, a message from the session
+ * that started it (a `user` entry or a `queued_command` attachment), a task notification, Stop
+ * hook feedback, a compaction summary. Tool results, and the meta entries Claude Code writes
+ * itself for a skill or a reminder, are no prompt (`runPrompts`). So a consult, a review agent
+ * resumed for a question, a missing, unreadable or oversized transcript, a review that
+ * compacted, and a review that a Stop hook sent back to work all record nothing: the safe
+ * side, where the merge guard asks.
+ * Start tracking still happens at SubagentStart; the stop consumes that start even for a run
+ * that records nothing.
  *
  * It records the commit the session's working folder (`cwd`) is on, in the repository's
  * record — one file per repository, the same one every worktree of it shares (`reviews.ts`),
@@ -64,6 +76,24 @@ import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
 import { subagentWorktreeOf } from "./subagent-worktree";
+import { runPrompts } from "./transcript";
+
+/** Only an explicit review brief can write a review record. */
+export const REVIEW_MODE_MARKER = "Mode: review";
+
+/** The marker alone on a line; trailing spaces, tabs and a CR are allowed. */
+const MARKER_LINE = new RegExp(`^${REVIEW_MODE_MARKER}[ \\t\\r]*$`, "m");
+
+/**
+ * True when the transcript shows a review run from start to end: the brief and every later
+ * prompt each hold `MARKER_LINE`. False when the transcript cannot be read, is too large, or
+ * has no brief.
+ */
+export function isReviewRun(transcriptPath: string): boolean {
+  const prompts = runPrompts(transcriptPath);
+  if (prompts === null || prompts.brief === null) return false;
+  return [prompts.brief, ...prompts.later].every((text) => MARKER_LINE.test(text));
+}
 
 /** The agent type a starting or stopping subagent names (`agent_type`), or null when it names none. */
 export function agentTypeOf(input: { agent_type?: unknown }): string | null {
@@ -148,6 +178,8 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
+    const transcript = stringField(input.agent_transcript_path);
+    if (transcript === null || !isReviewRun(transcript)) return SILENT;
     if (commit === null) return SILENT;
     if (start === null) {
       // The stop a block caused (`subagent-background` blocked the first one, say): that first

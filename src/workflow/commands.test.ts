@@ -71,7 +71,7 @@ describe("workflow show", () => {
       "mergeMethod = merge (default)",
       "deleteBranch = false (default)",
       "reviewBeforePush = true (default)",
-      "reviewAgents = cc-smart-dev-kit:reviewer (default)",
+      "reviewAgents = cc-smart-dev-kit:senior-engineer (default)",
       "fixesAfterReview.lines = 200 (default)",
       "fixesAfterReview.files = 10 (default)",
       "fixesAfterReview.percent = 20 (default)",
@@ -925,7 +925,7 @@ describe("the review gate (CM-1)", () => {
       "gate: what the merge guard judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
       "gate autoMerge = true (project, committed on origin/main)",
       "gate reviewBeforePush = true (default)",
-      "gate reviewAgents = cc-smart-dev-kit:reviewer (default)",
+      "gate reviewAgents = cc-smart-dev-kit:senior-engineer (default)",
       "gate fixesAfterReview.lines = 50 (project, committed on origin/main)",
       "gate fixesAfterReview.files = 10 (default)",
       "gate fixesAfterReview.percent = 20 (default)",
@@ -1029,7 +1029,7 @@ function recordReview(
       {
         [sha]: {
           at: "2026-10-21T10:00:00.000Z",
-          by: ["cc-smart-dev-kit:reviewer"],
+          by: ["cc-smart-dev-kit:senior-engineer"],
           branches: [branch],
         },
       },

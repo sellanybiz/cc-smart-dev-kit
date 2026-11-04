@@ -247,7 +247,7 @@ export const workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
   // The limits from the measured fix rounds (R5): 10% is covered, 105% and 160% ask.
   fixesAfterReview: {
     lines: 200,
@@ -488,7 +488,7 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
     if (named.length === 0) {
       return {
         ok: false,
-        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:reviewer",
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer",
       };
     }
     return { ok: true, value: [...new Set(named)] };

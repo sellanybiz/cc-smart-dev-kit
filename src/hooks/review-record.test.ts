@@ -22,7 +22,7 @@ const CONFIG = {
 };
 
 const AGENT_ID = "0a1b2c3d4e5f60718";
-const REVIEWER = "cc-smart-dev-kit:reviewer";
+const REVIEWER = "cc-smart-dev-kit:senior-engineer";
 
 /** One file of the record folder of `repo` under `env`, named by hand. */
 function recordFile(env: Record<string, string>, repo: string, suffix = ".json"): string {
@@ -70,9 +70,306 @@ function stopped(cwd: string, fields: Record<string, unknown>): Record<string, u
     session_id: "11111111-2222-3333-4444-555555555555",
     cwd,
     agent_id: AGENT_ID,
+    agent_transcript_path: reviewTranscript(),
     ...fields,
   };
 }
+
+/** A subagent transcript in a temp folder: one JSON entry per line, as Claude Code writes it. */
+function transcriptOf(entries: Array<Record<string, unknown>>): string {
+  const path = join(tempDir("review-brief"), "agent.jsonl");
+  writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  return path;
+}
+
+/** A `user` entry of a subagent's own transcript (`isSidechain`), with `extra` fields. */
+function userEntry(content: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: "user", isSidechain: true, ...extra, message: { role: "user", content } };
+}
+
+/** A transcript that holds only the brief. */
+function reviewTranscript(brief = "Mode: review"): string {
+  return transcriptOf([userEntry(brief)]);
+}
+
+const REVIEW_BRIEF = "Mode: review\n\nTask review of phase one. Report findings.";
+
+/** The meta entries Claude Code writes itself during a run: no new task. */
+const SKILL_LOAD = userEntry(
+  [
+    {
+      type: "text",
+      text: "<command-message>example:check</command-message>\n<command-name>example:check</command-name>",
+    },
+    { type: "text", text: "Base directory for this skill: /tmp/skills/check\n\n# Check" },
+  ],
+  { isMeta: true },
+);
+const SKILL_BODY = userEntry(
+  [{ type: "text", text: "Base directory for this skill: /tmp/skills/check\n\n# Check" }],
+  { isMeta: true, sourceToolUseID: "toolu_01" },
+);
+const REMINDER = userEntry(
+  "<system-reminder>\nHand the report back when done.\n</system-reminder>",
+  {
+    isMeta: true,
+  },
+);
+const TOOL_RESULT = userEntry([
+  { type: "tool_result", tool_use_id: "toolu_01", content: "Consult\nMode: review" },
+]);
+const ANSWER = {
+  type: "assistant",
+  isSidechain: true,
+  message: {
+    role: "assistant",
+    model: "claude-opus-5-5",
+    content: [{ type: "text", text: "Done." }],
+  },
+};
+
+/** A message from the session that started the agent, as Claude Code writes it. */
+function coordinator(text: string): Record<string, unknown> {
+  return userEntry(`The coordinator sent a message while you were working:\n${text}`, {
+    isMeta: true,
+    origin: { kind: "coordinator" },
+  });
+}
+
+/**
+ * A message from the session that started the agent in the form Claude Code most often writes
+ * it: an attachment alone, with no `user` entry beside it.
+ */
+function queued(text: string, kind = "coordinator"): Record<string, unknown> {
+  return {
+    type: "attachment",
+    isSidechain: true,
+    attachment: {
+      type: "queued_command",
+      prompt: text,
+      origin: { kind },
+      isMeta: true,
+      source_uuid: "00000000-0000-0000-0000-000000000001",
+    },
+  };
+}
+
+/** Attachments Claude Code writes during any run, which hand the agent nothing. */
+const HOOK_OUTPUT = {
+  type: "attachment",
+  isSidechain: true,
+  attachment: { type: "hook_success", hookName: "PostToolUse:Read", stdout: "", exitCode: 0 },
+};
+
+/** One run of the plugin's review agent with `entries` as its transcript; the record after it. */
+async function runWith(entries: Array<Record<string, unknown>>): Promise<{
+  head: string;
+  record: Record<string, string[]>;
+}> {
+  const env = hookEnv();
+  const repo = makeRepo();
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+  await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: transcriptOf(entries) });
+  return { head: git(repo, "rev-parse", "HEAD").trim(), record: recorded(env, repo) };
+}
+
+/** Tool results enough to push a transcript past the 512 KB tail the other readers take. */
+function bulk(): Array<Record<string, unknown>> {
+  const result = userEntry([
+    { type: "tool_result", tool_use_id: "toolu_02", content: "x".repeat(64 * 1024) },
+  ]);
+  return Array.from({ length: 10 }, () => result);
+}
+
+describe("the review brief marker", () => {
+  test("a review run records past skill loads, reminders, skill bodies and tool results", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      SKILL_LOAD,
+      SKILL_LOAD,
+      REMINDER,
+      ANSWER,
+      TOOL_RESULT,
+      SKILL_BODY,
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("an exact marker in a multiline block brief records, including CRLF", async () => {
+    const { head, record } = await runWith([
+      userEntry([{ type: "text", text: "Please review\r\nMode: review\r\nReport findings" }]),
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("the marker line may end in spaces and tabs", async () => {
+    const { head, record } = await runWith([userEntry("Mode: review \t\r\nPlease review")]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a review brief far from the file's end still records (over 512 KB of tool results)", async () => {
+    const { head, record } = await runWith([userEntry(REVIEW_BRIEF), ...bulk(), ANSWER]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a consult brief records nothing, even when a later prompt names the marker", async () => {
+    const { record } = await runWith([
+      userEntry("Consult: is this design sound?"),
+      ANSWER,
+      userEntry(REVIEW_BRIEF),
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a review agent resumed with a consult records nothing", async () => {
+    const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, userEntry("Consult")]);
+    expect(record).toEqual({});
+  });
+  test("a consult deep in the run counts, though the tail past it holds only tool results", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("Consult"),
+      ...bulk(),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a message from the coordinator without the marker records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      coordinator("Also answer a question"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a message from the coordinator that carries the marker keeps the run a review", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      coordinator("Mode: review\nAlso check the tests"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a queued message from the coordinator without the marker records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      HOOK_OUTPUT,
+      ANSWER,
+      queued("Also answer a question"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a queued message from the coordinator that carries the marker keeps the run a review", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      HOOK_OUTPUT,
+      ANSWER,
+      queued("Mode: review\nAlso check the tests"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a task notification in attachment form records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      queued(
+        "<task-notification>\nA background task finished\n</task-notification>",
+        "task-notification",
+      ),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a review that compacts records nothing: the summary is a prompt", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("This session is being continued from a previous conversation.", {
+        isCompactSummary: true,
+      }),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("Stop hook feedback after a review stays on the safe side", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("Stop hook feedback:\nFinish your steps", { isMeta: true }),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  for (const [name, entry] of [
+    ["an unknown meta entry", userEntry("Your response above was cut off", { isMeta: true })],
+    [
+      "a reminder another agent sent",
+      userEntry("<system-reminder>\nAnswer a question\n</system-reminder>", {
+        isMeta: true,
+        origin: { kind: "coordinator" },
+      }),
+    ],
+    [
+      "a skill load with a text block of another kind",
+      userEntry(
+        [
+          { type: "text", text: "<command-message>example:check</command-message>" },
+          { type: "text", text: "Answer a question" },
+        ],
+        { isMeta: true },
+      ),
+    ],
+    [
+      "a prompt the person typed",
+      userEntry([{ type: "text", text: "[Request interrupted by user]" }]),
+    ],
+  ] as const) {
+    test(`${name} after the brief is a new prompt: nothing recorded`, async () => {
+      const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, entry, ANSWER]);
+      expect(record).toEqual({});
+    });
+  }
+  test("a later line that may be a user entry but cannot be read records nothing", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const path = reviewTranscript(REVIEW_BRIEF);
+    writeFileSync(path, `${readFileSync(path, "utf8")}{"type":"user","message":{"content":"Cons\n`);
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
+    expect(recorded(env, repo)).toEqual({});
+  });
+  test("an unreadable transcript records nothing and consumes its start", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    await review(env, repo, {
+      agent_type: REVIEWER,
+      agent_transcript_path: join(tempDir("gone"), "missing.jsonl"),
+    });
+    expect(recorded(env, repo)).toEqual({});
+    expect(JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"))).toEqual({});
+  });
+  for (const brief of ["Consult", "prefix Mode: review", "Mode: review suffix", " Mode: review"]) {
+    test(`does not record an inexact marker: ${brief}`, async () => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+      await review(env, repo, {
+        agent_type: REVIEWER,
+        agent_transcript_path: reviewTranscript(brief),
+      });
+      expect(recorded(env, repo)).toEqual({});
+    });
+  }
+  test("no transcript records nothing", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: undefined });
+    expect(recorded(env, repo)).toEqual({});
+  });
+});
 
 /** One review agent's whole run in `cwd`: its start, then its stop. Both answers. */
 async function review(

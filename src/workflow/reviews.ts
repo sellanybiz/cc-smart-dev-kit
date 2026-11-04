@@ -70,7 +70,7 @@ export type ReviewRecord = Record<string, ReviewEntry>;
  * lists? The one home of that question. A `plugin:name` in the list matches that plugin's
  * agent only, exactly; a bare name matches only an agent with no plugin prefix, exactly — so
  * another plugin's `reviewer`, or a project agent of that name, never counts for this plugin's
- * `cc-smart-dev-kit:reviewer`. Claude Code reports a plugin agent as `plugin:name` and a
+ * `cc-smart-dev-kit:senior-engineer`. Claude Code reports a plugin agent as `plugin:name` and a
  * project agent by its frontmatter `name` (code.claude.com/docs/en/hooks § SubagentStart).
  */
 export function recordsReview(agent: string, agents: readonly string[]): boolean {

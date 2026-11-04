@@ -36,6 +36,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
+import { PLUGIN } from "../build-info/names";
 import { runGitAsync } from "../hooks/git";
 import {
   allWiredHandlers,
@@ -69,6 +70,7 @@ import { checkProjectTasks } from "../tasks/project/check";
 import { shippedIdsOn } from "../tasks/project/release";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
+import { workflowDefaults } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -90,6 +92,88 @@ function shown(file: string, projectDir: string, home: string): string {
   return file.startsWith(`${projectDir}/`)
     ? file.slice(projectDir.length + 1)
     : tildify(file, home);
+}
+
+/** A retired review agent is still parsed, so doctor can explain how to migrate it. */
+const OLD_REVIEW_AGENT = `${PLUGIN}:reviewer`;
+const NEW_REVIEW_AGENT = workflowDefaults.reviewAgents[0];
+const REPLACE_REVIEW_AGENT = `replace the old id ${OLD_REVIEW_AGENT} with the new one ${NEW_REVIEW_AGENT}`;
+
+/** Shared by the project and machine checks; never rewrites the person's settings. */
+export function retiredReviewAgentCheck(
+  file: string,
+  label: string,
+  personal = false,
+): Check | null {
+  if (!existsSync(file)) return null;
+  let parsed: unknown;
+  try {
+    parsed = readUserJson(file);
+  } catch (error) {
+    return {
+      ok: false,
+      text: `${label} cannot be read (${message(error)})`,
+      fix: "correct the JSON in this file",
+    };
+  }
+  const workflow = personal ? parsed : isObject(parsed) ? parsed.workflow : null;
+  if (
+    !isObject(workflow) ||
+    !Array.isArray(workflow.reviewAgents) ||
+    !workflow.reviewAgents.includes(OLD_REVIEW_AGENT)
+  )
+    return null;
+  return {
+    ok: false,
+    text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
+    fix: personal
+      ? `${REPLACE_REVIEW_AGENT}: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
+      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`,
+  };
+}
+
+/**
+ * The files `pattern` finds under `folder`. A folder this user may not read (mode 000) makes
+ * the scan throw: the scan then ends with the files it found so far, so doctor still runs and
+ * reports what it could read. These are optional instruction files; one it cannot read is one
+ * Claude Code cannot load either.
+ */
+function readableMatches(pattern: string, folder: string): string[] {
+  const found: string[] = [];
+  try {
+    for (const file of new Bun.Glob(pattern).scanSync({ cwd: folder, onlyFiles: true })) {
+      found.push(file);
+    }
+  } catch {
+    // The scan stops at the folder it cannot read; the files found before it stay, and an
+    // unreadable folder is skipped as an unreadable file is below.
+  }
+  return found;
+}
+
+/** The project's add-ons, agents and skills that still name the retired review agent: a `!` each. */
+function retiredReviewMentions(projectDir: string): ProjectLine[] {
+  const folder = join(projectDir, ".claude");
+  if (!existsSync(folder)) return [];
+  // One scan per folder, so a folder that cannot be read never hides the others.
+  const files = [`${PLUGIN}/*.md`, "agents/**/*.md", "skills/**/*.md"]
+    .flatMap((pattern) => readableMatches(pattern, folder))
+    .sort();
+  return files
+    .filter((file) => {
+      try {
+        return readFileSync(join(folder, file), "utf8").includes(OLD_REVIEW_AGENT);
+      } catch {
+        // An optional instruction file can be private or removed during the scan.
+        return false;
+      }
+    })
+    .map((file) => ({
+      ok: true,
+      warn: true,
+      text: `project: .claude/${file} mentions the retired ${OLD_REVIEW_AGENT}`,
+      fix: REPLACE_REVIEW_AGENT,
+    }));
 }
 
 /** The plugin's old name: 0.2.x wrote it into projects, and `migrate` moves no project's files. */
@@ -501,7 +585,16 @@ export async function projectChecks(
       ...engine,
     ];
   }
+  const retired =
+    configFile === null
+      ? null
+      : retiredReviewAgentCheck(
+          configFile,
+          `project: ${shown(configFile, projectDir, paths.home)}`,
+        );
   const lines = [
+    ...(retired === null ? [] : [retired]),
+    ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
