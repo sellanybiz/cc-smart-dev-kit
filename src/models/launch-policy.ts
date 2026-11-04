@@ -385,14 +385,14 @@ export interface LaunchAsked {
  * `SUBAGENT_MODEL_FORCE_ENV` with `SUBAGENT_MODEL_ENV` (`force`) or without it
  * (`force-session`: the session's own model), or `WORKFLOW_SUBAGENT_MODEL_ENV`.
  */
-export type ModelSource = "call" | "fork" | "force" | "force-session" | "workflow";
+export type ModelSource = "call" | "frontmatter" | "fork" | "force" | "force-session" | "workflow";
 
 /** The model and effort a launch really runs on, and which override set each. */
 export interface EffectiveLaunch {
   /** The effort it runs at; null when nothing names one (a fork runs at the session's own). */
   effort: null | string;
   /** `EFFORT_LEVEL_ENV` when that variable set the effort; null when the call (or a fork) did. */
-  effortFrom: null | typeof EFFORT_LEVEL_ENV;
+  effortFrom: null | "frontmatter" | typeof EFFORT_LEVEL_ENV;
   /**
    * The model name it runs on; null when the call names none and no override names one, or when
    * it runs on the session's own model and the session's model cannot be read.
@@ -419,9 +419,9 @@ function modelVariable(env: Env, name: string): null | string {
  * - **Model.** `SUBAGENT_MODEL_FORCE_ENV` comes first: the model in `SUBAGENT_MODEL_ENV`, else
  *   the session's own. Then `WORKFLOW_SUBAGENT_MODEL_ENV`, for a Workflow agent only. Then the
  *   call's own `model`. A plain `SUBAGENT_MODEL_ENV` never beats the call's model: it is only a
- *   default for a call that names none, after the agent's own definition, which no hook can
- *   read — so such a call stays one that names no model.
- * - **Effort.** `EFFORT_LEVEL_ENV` beats the call's `effort` and the session's own.
+ *   default for a call that names none, after the agent's own definition. The caller supplies
+ *   that definition; an unseen definition stays refused rather than guessing a default.
+ * - **Effort.** `EFFORT_LEVEL_ENV` beats the call's `effort`, then definition, then session.
  * - **A fork** runs on the session's own model under every override (the docs: "These
  *   subagents still run on the main conversation's model: a fork"), and is judged at the effort
  *   it names, else at the session's own — the guard's rule before these overrides.
@@ -440,6 +440,7 @@ export function effectiveLaunch(
   launch: LaunchAsked,
   env: Env,
   sessionModel: null | string,
+  definition: { model: null | string; effort: null | string } | null = null,
 ): EffectiveLaunch {
   // A fork keeps the guard's own rule: the session's model, and the effort the call names, if
   // any (none: the session's own, which the person chose).
@@ -449,7 +450,12 @@ export function effectiveLaunch(
   const level = stringField(env[EFFORT_LEVEL_ENV])?.trim().toLowerCase() ?? "";
   const effort: Pick<EffectiveLaunch, "effort" | "effortFrom"> =
     level === ""
-      ? { effort: launch.effort, effortFrom: null }
+      ? launch.effort !== null
+        ? { effort: launch.effort, effortFrom: null }
+        : {
+            effort: definition?.effort ?? null,
+            effortFrom: definition?.effort ? "frontmatter" : null,
+          }
       : { effort: level, effortFrom: EFFORT_LEVEL_ENV };
   if (switchOn(env[SUBAGENT_MODEL_FORCE_ENV])) {
     const forced = modelVariable(env, SUBAGENT_MODEL_ENV);
@@ -459,5 +465,11 @@ export function effectiveLaunch(
   }
   const workflowModel = launch.workflow ? modelVariable(env, WORKFLOW_SUBAGENT_MODEL_ENV) : null;
   if (workflowModel !== null) return { ...effort, model: workflowModel, modelFrom: "workflow" };
-  return { ...effort, model: launch.model, modelFrom: "call" };
+  if (launch.model !== null) return { ...effort, model: launch.model, modelFrom: "call" };
+  const model = definition?.model?.trim() ?? "";
+  if (model !== "" && model.toLowerCase() !== "inherit") {
+    return { ...effort, model, modelFrom: "frontmatter" };
+  }
+  // Deliberately require a chosen model; environment defaults cannot prove unseen SDK definitions.
+  return { ...effort, model: null, modelFrom: "call" };
 }
