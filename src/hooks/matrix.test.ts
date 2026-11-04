@@ -746,6 +746,48 @@ const CASES: Case[] = [
   },
 ];
 
+describe.each(["clear", "compact"])("session-name SessionStart (%s)", (source) => {
+  test.each([false, true])(
+    "ownHooks listed: %s — only the active hook resets the prompt mark",
+    async (listed) => {
+      const repo = project(FULL_CONFIG);
+      const env = hookEnv();
+      const prompt = { hook_event_name: "UserPromptSubmit", session_id: SESSION, cwd: repo };
+      const note = `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: cc-smart-dev-kit session-name ${SESSION} "<the task, in a few words>"`;
+      const promptAnswer = {
+        stdout: JSON.stringify({
+          hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: note },
+        }),
+      };
+      expect(await runHook(sessionNameHook, prompt, env)).toEqual(promptAnswer);
+      expect(await runHook(sessionNameHook, prompt, env)).toEqual({});
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+        ...FULL_CONFIG,
+        ownHooks: listed ? ["session-name"] : [],
+      });
+      wireProjectHook(repo, "SessionStart", source);
+      const start = await runHook(
+        sessionNameHook,
+        { ...prompt, hook_event_name: "SessionStart", source },
+        env,
+      );
+      expect(start).toEqual(
+        listed
+          ? {}
+          : {
+              stdout: JSON.stringify({
+                hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: note },
+              }),
+            },
+      );
+      // Re-enable the plugin after a silenced start: that start must not have cleared its mark.
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", FULL_CONFIG);
+      expect(await runHook(sessionNameHook, prompt, env)).toEqual(listed ? {} : promptAnswer);
+      expect(await runHook(sessionNameHook, prompt, env)).toEqual({});
+    },
+  );
+});
+
 test("the table covers every hook", () => {
   expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
 });
