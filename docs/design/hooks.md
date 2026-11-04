@@ -205,7 +205,7 @@ that, so the plugin ships no worktree hook at all.
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. `--admin` always asks. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. A `gh pr create` outside the base its head branch belongs to (`worktrees.base`, or `worktrees.bases` for that branch; with no `--base`, the repository's default branch) asks, naming both branches, and never denies (WA1). **A raw write to GitHub's issues is the person's yes too** (D67, `issue-writes.ts`): `gh issue create`, `edit`, `comment`, `close`, `reopen`, `delete` and every other `gh issue` subcommand that is not a read, `gh label create`, `edit`, `delete` and `clone`, a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues` or `labels` endpoints, and any GraphQL mutation that is not a pull request one this guard judges, ask (the project's file must exist, like every project part); text the reader cannot read whole (an endpoint or query the shell fills in — a `$` expansion or a backtick outside single quotes; `--input`, `query=@file`) counts as a write, and `gh -X=POST` is `POST`; `gh issue list`/`view`/`status`, a GET and `--help` pass, and so does the kit's own `cc-smart-dev-kit issue file`, which is no `gh` command. The question names the kit's way. A pull request answer on the same line wins. A `gh` alias is read for what it expands to (a shell alias, or a list that cannot be read, counts as a write); a program worked out when the line runs whose words name an issue or a label is asked about. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Asks the person before a message to a session that works outside this repo (from Claude Code's session records): the question names the session and its folder, and the person decides each time. A name with no record, or one of several sessions of that name inside this repo, goes through. That rule reads nothing from the project's file (only git's worktree list and the session records), so a broken or too new file gets the same judgement, and the question also names the file's problem. |
-| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on `haiku` or `sonnet` when the task wants it, with no restriction, whatever model answers them (the owner, 2026-10-25 and 2026-10-26: no level is forced on an affordable backend; a person who wants a backend at one level pins it in the router, D64) — D13); the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no readable `model`/`effort` in the call or agent definition → deny (the call's, else the agent definition's choice); `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on `haiku` or `sonnet` when the task wants it, with no restriction, whatever model answers them (the owner, 2026-10-25 and 2026-10-26: no level is forced on an affordable backend; a person who wants a backend at one level pins it in the router, D64) — D13); the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read the Agent guard's way through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
@@ -389,7 +389,8 @@ which model a launch really runs on (`resolveLaunchModel`), the effort levels
 judge asks the guard's own `judgeLaunch`. The guard keeps the hook's own parts (reading a
 Workflow script, the agent types, the record, the messages). The one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
-read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
+read-only agent types the Fable rule reads; a name there matches by the part after any
+`plugin:`), and the answer is a PreToolUse `deny` (the rule, in
 words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
 person approves each one, and the opus-tier ask rests on the effort, not on a prompt).
 
@@ -446,9 +447,50 @@ override that points `opus` at a backend never becomes an affordable slot, and s
 `max`; the messages name both, `` `opus` (answered by
 openai:gpt-5.5) ``.
 
+**The agent definition.** The guard judges the call's model and effort, else the ones the
+agent's definition names (`src/models/agent-definition.ts`). It reads a definition only when
+the call names an agent and leaves `model` or `effort` to it; a fork, and a `claude -p` run
+the Bash judge reads (`PRINT_RUN`), never read one, and a print run's denial says it has none.
+The lookup reads the managed
+agents folder first, then the project's folders from the input's real cwd (symlinks
+resolved) up to the checkout root, closest first, then the user's agents. A cwd whose real
+folder is outside the checkout scans the checkout root alone. A qualified plugin name skips
+those scans. A plugin's `plugin:x` is the file `agents/x.md` at the top of that folder, or a
+file the plugin's manifest lists; a file in a subfolder registers under another name. A
+project-scope install of the plugin matches when the cwd as given, or its real folder, is
+inside the install's project. A local definition needs a valid name and a string description. Each name is
+read once per hook run, and only its frontmatter is read. Symlinked files and folders are
+followed without loops, at most 8 folders deep and 2000 files and folders per lookup
+(`AGENT_SCAN_MAX_DEPTH`, `AGENT_SCAN_MAX_ENTRIES`). Past a cap, a failed checkout lookup, or a
+cwd that cannot be resolved, the whole definition is unknown: the launch needs its own
+`model` and `effort`. The managed folder is `CliPaths.managedAgentsDir`, from the machine's
+own platform: no variable moves it, since a project's settings `env` reaches a hook and must
+not hide the managed definitions. A test names a temp folder there.
+
+**One lexer reads every script** (`src/hooks/script-lexer.ts`). Every scanner of a Workflow
+script reads it through the one lexer: the `agent` and `workflow` mentions, a call's end, its
+options and its arguments. The lexer says which text is code and where each string, template,
+comment and regular expression ends, and a template's `${…}` is code again, to any depth. A
+`/` is a regular expression where an expression starts: after punctuation, a block's `}`, an
+`if (…)` head, or a word like `return`. It is a division after a value. A regular expression
+must close on its line. Without that, a quote inside `s.replace(/"/g, "'")` would open a
+string that swallows the launches after it. A script with a regular expression, string,
+template or comment that does not close is refused whole, saying where.
+
+In a Workflow script, a definition stands in only for options written as one plain object
+literal of `key: value` pairs. Options that are not (a getter, a method, a shorthand key,
+`__proto__`, a ternary, a second object) can set the model or the effort where the guard never
+sees them. Such a launch is denied before any definition is read, unless Claude Code's own
+overrides name both its model and its effort. A policy option that is present but not a string
+literal is denied before the lookup too.
+
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-- **A read-only agent** (Plan, Reviewer, Explore, auditor) takes any word of
+- **A read-only agent** (`Plan`, `Explore`, `cc-smart-dev-kit:auditor`,
+  `cc-smart-dev-kit:edge-case-hunter`, `cc-smart-dev-kit:researcher`; `READ_ONLY_AGENTS`,
+  matched by the whole name as written, so another plugin's or a project's `researcher` is
+  not one; a bare `Plan` or `Explore` counts only while Claude Code's built-in answers that
+  name, since a managed, project or user file of that name overrides it) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is
