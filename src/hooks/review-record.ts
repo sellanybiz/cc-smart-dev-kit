@@ -36,10 +36,12 @@
  * **Only a run that was a review records** (`isReviewRun`): the agent's brief — the first user
  * entry of its transcript — holds the line `Mode: review` (trailing spaces and tabs allowed),
  * and so does every prompt it was given after the brief: a resume, a message from the session
- * that started it, Stop hook feedback. Tool results, and the meta entries Claude Code writes
+ * that started it (a `user` entry or a `queued_command` attachment), a task notification, Stop
+ * hook feedback, a compaction summary. Tool results, and the meta entries Claude Code writes
  * itself for a skill or a reminder, are no prompt (`runPrompts`). So a consult, a review agent
- * resumed for a question, a missing, unreadable or oversized transcript, and a review that a
- * Stop hook sent back to work all record nothing: the safe side, where the merge guard asks.
+ * resumed for a question, a missing, unreadable or oversized transcript, a review that
+ * compacted, and a review that a Stop hook sent back to work all record nothing: the safe
+ * side, where the merge guard asks.
  * Start tracking still happens at SubagentStart; the stop consumes that start even for a run
  * that records nothing.
  *

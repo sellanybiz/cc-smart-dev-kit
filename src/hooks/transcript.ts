@@ -255,17 +255,22 @@ function messageText(content: unknown): string | null {
  */
 export const PROMPT_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 
+/** The tags a system reminder from Claude Code opens and closes with. */
+const SYSTEM_REMINDER_OPEN = "<system-reminder>";
+const SYSTEM_REMINDER_CLOSE = "</system-reminder>";
+
 /**
  * How the text of a meta entry starts when Claude Code wrote it itself and it gives the agent
  * no new task: a skill it loaded (`<command-message>`, `<command-name>`, and the skill's body,
- * `Base directory for this skill:`) and a system reminder. It is an allowlist: any other meta
- * entry — a message from the session that started the agent ("… sent a message while you were
- * working"), a notification, Stop hook feedback — is a new prompt.
+ * `Base directory for this skill:`) and a system reminder. A system reminder must also end at
+ * its first closing tag, with no text after it (`harmlessText`). It is an allowlist: any other
+ * meta entry — a message from the session that started the agent ("… sent a message while you
+ * were working"), a notification, Stop hook feedback — is a new prompt.
  */
 export const HARMLESS_META_PREFIXES: readonly string[] = [
   "<command-message>",
   "<command-name>",
-  "<system-reminder>",
+  SYSTEM_REMINDER_OPEN,
   "Base directory for this skill:",
 ];
 
@@ -276,6 +281,34 @@ export const HARMLESS_META_PREFIXES: readonly string[] = [
  */
 const USER_WORD = '"user"';
 
+/**
+ * True when a line may hold an attachment that carries a prompt (`attachmentPrompt`): it names
+ * `"attachment"` and one of the keys or the type such an attachment has. Most attachments (hook
+ * output, tool lists, the prompt snapshot) have none of them and are not parsed.
+ */
+function mayHoldQueuedPrompt(line: string): boolean {
+  return (
+    line.includes('"attachment"') &&
+    (line.includes('"queued_command"') || line.includes('"origin"') || line.includes('"prompt"'))
+  );
+}
+
+/**
+ * The prompt an `attachment` entry hands the agent, or null when it hands none. Claude Code
+ * writes a message from the session that started the agent, and a task notification, as an
+ * attachment of type `queued_command` with a `prompt` and an `origin` — most often with no
+ * `user` entry beside it. An attachment of that type, or any attachment with an `origin` or a
+ * string `prompt`, is a prompt: its text is `prompt`, or "" when that is not a string.
+ */
+function attachmentPrompt(entry: Record<string, unknown>): string | null {
+  if (entry.type !== "attachment" || !isJsonObject(entry.attachment)) return null;
+  const attachment = entry.attachment;
+  const hasOrigin = attachment.origin !== undefined && attachment.origin !== null;
+  if (attachment.type !== "queued_command" && !hasOrigin && typeof attachment.prompt !== "string")
+    return null;
+  return typeof attachment.prompt === "string" ? attachment.prompt : "";
+}
+
 /** A subagent's brief and the prompts it was given after it (`runPrompts`). */
 export interface RunPrompts {
   /** The first `user` entry's text: the brief the agent started with. Null when it has none. */
@@ -285,19 +318,33 @@ export interface RunPrompts {
 }
 
 /**
+ * True when `text` is one Claude Code writes itself: it starts with one of
+ * `HARMLESS_META_PREFIXES`, and a system reminder ends at its first closing tag (trailing
+ * whitespace allowed), so no text can ride along after it.
+ */
+function harmlessText(text: unknown): boolean {
+  if (typeof text !== "string") return false;
+  if (text.startsWith(SYSTEM_REMINDER_OPEN)) {
+    const close = text.indexOf(SYSTEM_REMINDER_CLOSE);
+    return close !== -1 && close + SYSTEM_REMINDER_CLOSE.length === text.trimEnd().length;
+  }
+  return HARMLESS_META_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
+/**
  * True when `entry` is a meta entry Claude Code wrote itself that gives no new task: it is
  * marked `isMeta`, names no `origin` (a message another agent sent names one), and its text is
- * one string or text blocks only, each starting with one of `HARMLESS_META_PREFIXES`.
+ * one string or text blocks only, each one `harmlessText`.
  */
 function harmlessMeta(entry: Record<string, unknown>, content: unknown): boolean {
   if (entry.isMeta !== true || (entry.origin !== undefined && entry.origin !== null)) return false;
-  const starts = (text: unknown) =>
-    typeof text === "string" && HARMLESS_META_PREFIXES.some((prefix) => text.startsWith(prefix));
-  if (typeof content === "string") return starts(content);
+  if (typeof content === "string") return harmlessText(content);
   return (
     Array.isArray(content) &&
     content.length > 0 &&
-    content.every((block) => isJsonObject(block) && block.type === "text" && starts(block.text))
+    content.every(
+      (block) => isJsonObject(block) && block.type === "text" && harmlessText(block.text),
+    )
   );
 }
 
@@ -313,15 +360,16 @@ function onlyToolResults(content: unknown): boolean {
 /**
  * The prompts in a transcript's text, read forward. The brief is the first line that parses as
  * a `user` entry with a message; a line that is not JSON before it is skipped. After it, every
- * `user` entry is a prompt except tool results and `harmlessMeta`; a line that may be one
- * (`USER_WORD`) but does not parse counts as a prompt with no text: the safe side. `briefOnly`
- * stops at the brief.
+ * `user` entry is a prompt except tool results and `harmlessMeta`, and so is every attachment
+ * that carries one (`attachmentPrompt`); a line that may be either (`USER_WORD`,
+ * `mayHoldQueuedPrompt`) but does not parse counts as a prompt with no text: the safe side.
+ * `briefOnly` stops at the brief.
  */
 function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
   let brief: string | null | undefined; // undefined: not seen yet
   const later: string[] = [];
   for (const line of text.split("\n")) {
-    if (!line.includes(USER_WORD)) continue;
+    if (!line.includes(USER_WORD) && (brief === undefined || !mayHoldQueuedPrompt(line))) continue;
     let entry: unknown;
     try {
       entry = JSON.parse(line);
@@ -331,7 +379,15 @@ function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
       if (brief !== undefined) later.push("");
       continue;
     }
-    if (!isJsonObject(entry) || entry.type !== "user") continue;
+    if (!isJsonObject(entry)) continue;
+    if (brief !== undefined) {
+      const queued = attachmentPrompt(entry);
+      if (queued !== null) {
+        later.push(queued);
+        continue;
+      }
+    }
+    if (entry.type !== "user") continue;
     const message = isJsonObject(entry.message) ? entry.message : null;
     if (brief === undefined) {
       if (message === null) continue;
@@ -371,7 +427,8 @@ export function firstPromptText(transcriptPath: string): string | null {
 /**
  * A subagent run's prompts: its brief (the first `user` entry, as `firstPromptText` finds it)
  * and every prompt it was given after it — a resume, a message from the session that started
- * it, Stop hook feedback, anything a person typed. Tool results and the meta entries Claude
+ * it (a `user` entry or a `queued_command` attachment), a task notification, Stop hook
+ * feedback, a compaction summary, anything a person typed. Tool results and the meta entries Claude
  * Code writes itself for a skill or a reminder (`HARMLESS_META_PREFIXES`) are no prompt. The
  * whole file is read, forward, so a prompt far from both ends still counts. Null when the file
  * cannot be read or is larger than `maxBytes` (default `PROMPT_SCAN_MAX_BYTES`).

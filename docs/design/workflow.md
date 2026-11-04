@@ -310,15 +310,20 @@ state folder's shared lock, whose 10 s wait is as long as the hook may run.
 A stop records a review only for a run that was a review from start to end (`isReviewRun`).
 The agent's brief — the first user entry of its transcript — holds the line `Mode: review`
 (trailing spaces and tabs allowed), and so does every prompt it was given after the brief: a
-resume, a message from the session that started it, Stop hook feedback, anything typed. Tool
-results are no prompt, nor are the meta entries Claude Code writes itself for a skill it loads
-or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
-`src/hooks/transcript.ts`). Any other entry, an unknown meta entry included, is a prompt. The
-reader (`runPrompts`) reads the whole transcript forward, up to 16 MB, so a prompt far from
-both ends still counts. A consult, a review agent resumed for a question, a review a Stop hook
-sent back to work, and a missing, unreadable or larger transcript record nothing: the safe
-side, where the merge guard asks. The same module reads the brief alone, from the file's
-head, for the builder hand-back hook.
+resume, a message from the session that started it, a task notification, Stop hook feedback,
+anything typed. Claude Code most often writes a message from the session that started the
+agent, and a task notification, as an attachment alone (`type: "attachment"`,
+`attachment.type: "queued_command"`, with a `prompt` and an `origin`), not as a user entry: an
+attachment of that type, or any attachment with an `origin` or a string `prompt`, is a prompt
+too. Tool results are no prompt, nor are the meta entries Claude Code writes itself for a skill
+it loads or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
+`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Any other entry,
+an unknown meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
+transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a
+review agent resumed for a question, a review a Stop hook sent back to work, a review that
+compacted (the summary counts as a prompt: a known limit, on the safe side), and a missing,
+unreadable or larger transcript record nothing: the safe side, where the merge guard asks.
+The same module reads the brief alone, from the file's head, for the builder hand-back hook.
 
 **Who writes it: the review agent's own start and end** (`src/hooks/review-record.ts`,
 `SubagentStart` and `SubagentStop`). A record a session writes for itself is only the

@@ -136,6 +136,31 @@ function coordinator(text: string): Record<string, unknown> {
   });
 }
 
+/**
+ * A message from the session that started the agent in the form Claude Code most often writes
+ * it: an attachment alone, with no `user` entry beside it.
+ */
+function queued(text: string, kind = "coordinator"): Record<string, unknown> {
+  return {
+    type: "attachment",
+    isSidechain: true,
+    attachment: {
+      type: "queued_command",
+      prompt: text,
+      origin: { kind },
+      isMeta: true,
+      source_uuid: "00000000-0000-0000-0000-000000000001",
+    },
+  };
+}
+
+/** Attachments Claude Code writes during any run, which hand the agent nothing. */
+const HOOK_OUTPUT = {
+  type: "attachment",
+  isSidechain: true,
+  attachment: { type: "hook_success", hookName: "PostToolUse:Read", stdout: "", exitCode: 0 },
+};
+
 /** One run of the plugin's review agent with `entries` as its transcript; the record after it. */
 async function runWith(entries: Array<Record<string, unknown>>): Promise<{
   head: string;
@@ -223,6 +248,49 @@ describe("the review brief marker", () => {
       ANSWER,
     ]);
     expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a queued message from the coordinator without the marker records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      HOOK_OUTPUT,
+      ANSWER,
+      queued("Also answer a question"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a queued message from the coordinator that carries the marker keeps the run a review", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      HOOK_OUTPUT,
+      ANSWER,
+      queued("Mode: review\nAlso check the tests"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a task notification in attachment form records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      queued(
+        "<task-notification>\nA background task finished\n</task-notification>",
+        "task-notification",
+      ),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a review that compacts records nothing: the summary is a prompt", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("This session is being continued from a previous conversation.", {
+        isCompactSummary: true,
+      }),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
   });
   test("Stop hook feedback after a review stays on the safe side", async () => {
     const { record } = await runWith([

@@ -226,6 +226,90 @@ describe("runPrompts", () => {
     expect(runPrompts(path)).toEqual({ brief: "Brief", later: ["Later", ""] });
   });
 
+  it("an attachment that hands the agent a prompt counts after the brief; other attachments do not", () => {
+    const attachment = (fields: Record<string, unknown>) => ({
+      type: "attachment",
+      isSidechain: true,
+      attachment: fields,
+    });
+    const path = write([
+      attachment({ type: "queued_command", prompt: "Before the brief", origin: { kind: "x" } }),
+      user("Brief"),
+      attachment({ type: "hook_success", hookName: "PostToolUse", stdout: "", exitCode: 0 }),
+      attachment({ type: "skill_listing", content: "- example:check", skillCount: 1 }),
+      attachment({ type: "prompt_snapshot", systemPrompt: "You are an agent" }),
+      attachment({
+        type: "queued_command",
+        prompt: "The coordinator says one",
+        origin: { kind: "coordinator" },
+        isMeta: true,
+        source_uuid: "00000000-0000-0000-0000-000000000001",
+      }),
+      attachment({
+        type: "queued_command",
+        prompt: "<task-notification>\nTwo\n</task-notification>",
+        origin: { kind: "task-notification" },
+        commandMode: "task-notification",
+      }),
+      attachment({ type: "queued_command", prompt: [{ type: "text", text: "Three" }] }),
+      attachment({ type: "note", origin: { kind: "peer" } }),
+      attachment({ type: "note", prompt: "Four" }),
+      user("This session is being continued from a previous conversation.", {
+        isCompactSummary: true,
+      }),
+    ]);
+    expect(runPrompts(path)).toEqual({
+      brief: "Brief",
+      later: [
+        "The coordinator says one",
+        "<task-notification>\nTwo\n</task-notification>",
+        "",
+        "",
+        "Four",
+        "This session is being continued from a previous conversation.",
+      ],
+    });
+  });
+
+  it("an attachment line that may carry a prompt but does not parse is a prompt with no text", () => {
+    const path = join(tempDir("transcript"), "agent.jsonl");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify(user("Brief")),
+        '{"type":"attachment","attachment":{"type":"queued_command","prompt":"Cut',
+        '{"type":"attachment","attachment":{"type":"hook_success","stdout":"Cut',
+        "",
+      ].join("\n"),
+    );
+    expect(runPrompts(path)).toEqual({ brief: "Brief", later: [""] });
+  });
+
+  it("a system reminder is harmless only when it ends at its closing tag", () => {
+    const path = write([
+      user("Brief"),
+      user("<system-reminder>\nOne\n</system-reminder>\n", { isMeta: true }),
+      user("<system-reminder>\nTwo\n</system-reminder>\nAnswer a question", { isMeta: true }),
+      user("<system-reminder>\nThree, never closed", { isMeta: true }),
+      user(
+        [
+          { type: "text", text: "<system-reminder>\nFour\n</system-reminder>" },
+          { type: "text", text: "<system-reminder>\nFive\n</system-reminder>Six" },
+        ],
+        { isMeta: true },
+      ),
+      user("<system-reminder>\nSeven\n</system-reminder><system-reminder>Eight</system-reminder>", {
+        isMeta: true,
+      }),
+    ]);
+    expect(runPrompts(path)?.later).toEqual([
+      "<system-reminder>\nTwo\n</system-reminder>\nAnswer a question",
+      "<system-reminder>\nThree, never closed",
+      "<system-reminder>\nFour\n</system-reminder>\n<system-reminder>\nFive\n</system-reminder>Six",
+      "<system-reminder>\nSeven\n</system-reminder><system-reminder>Eight</system-reminder>",
+    ]);
+  });
+
   it("no user entry: no brief and no later prompt", () => {
     const path = write([{ type: "assistant", message: { role: "assistant", content: [] } }]);
     expect(runPrompts(path)).toEqual({ brief: null, later: [] });
