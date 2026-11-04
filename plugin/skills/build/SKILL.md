@@ -1,6 +1,6 @@
 ---
 name: build
-description: Use when "the plan is approved", "start building", "run the plan", "next wave" or "build it" means execute an approved plan. Drives parallel subagents in worktrees, task reviews, fixes, merges and the final branch review. The kit's task system is the ledger.
+description: Use to execute an approved plan - parallel builders, task reviews, fixes, merges and the final review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
 ---
 
 # Build The Approved Plan
@@ -12,6 +12,12 @@ The main session coordinates. Fresh builders implement phases; they never start 
 review themselves. Keep narration to a short line. Do not ask whether to continue between
 phases. Speed comes from parallel work, not skipped checks.
 
+The kit's plan, build, review and commit flows, and the project's own release steps, govern
+the work the kit drives. Another plugin's build, run or release skills (claude-mem's `build`,
+`do`, `release`, `version-bump`, `build-and-release`) run only when the person asks for one, and
+then the project's workflow settings (`cc-smart-dev-kit workflow show`) still decide what is
+committed, pushed or merged.
+
 ## 1. Read the design and ledger
 
 Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"` and
@@ -22,25 +28,27 @@ Task fields and the CLI fallback belong to `/cc-smart-dev-kit:memory-routing`.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
 side effects. Record the plan's starting commit on its task. Check each phase's files,
-contracts and blockers. Order phases sharing a file with `blocked_by`; disjoint phases
-run together. Batch small same-shape edits into one phase dispatch.
-Scale dispatches to the work: one for a small fix, two to four for a few independent parts,
-and up to the session cap for a large plan with clearly divided files. The core table
-chooses model and effort per job; delegation alone does not improve an answer.
+contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
+disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
+follow-up is a project task, never a blocker. Batch small same-shape edits into one phase
+dispatch. Scale dispatches to the work: one for a small fix, two to four for a few independent
+parts, and up to the session cap for a large plan with clearly divided files. Model and effort
+per job: `/cc-smart-dev-kit:subagent-decision` § The lead's judgment.
 
 The kit defaults to 10 running subagents per session through Claude Code's own
 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Setup writes the managed value and preserves a
 person's own value; `setup --max-subagents <n>` changes the kit's. This is not a kit queue.
 If a launch fails at the cap, wait for a hand-back, then dispatch the next ready task;
-never retry the refused launch in a loop. Count reviewers and scouts in the same capacity.
+never retry the refused launch in a loop. Count reviews, hunts and scouts in the same capacity.
 
 ## 2. Start the ready wave in one message
 
 For each ready phase, mark it `in_progress` and record its starting commit as `base`.
 Choose a fresh builder (or rules-maintainer for instruction files) and explicit `model`
-and `effort` from the core table. Announce the slot, model and effort. Send all independent
-`Agent` calls in one message, each with `isolation: "worktree"` and
-`run_in_background: true`. Do not start one and wait before starting the others.
+and `effort` by the job. Announce the slot, model and effort. Send all independent `Agent`
+calls in one message, each with `isolation: "worktree"`; they run in the background (Claude
+Code's default, or `run_in_background: true`). Do not start one and wait before starting the
+others.
 
 Put caller rulings first: commit or not, allowed checks, how to meet a refusal (the builder
 agent tells the three kinds apart), and decide small calls with a `Ruling:` note. The brief has four parts:
@@ -58,10 +66,11 @@ brief names the plan branch and its head commit at launch (`git rev-parse HEAD`)
 commit is the phase's `base`. The builder brings its worktree there before its first edit
 (`plugin/agents/builder.md`). Never pretend `HEAD~1` covers a multi-commit phase.
 
-Never wait on work you do not need. While agents run, prepare reviews, update tasks or do
-shared integration work that does not change files a running check reads. Do not poll;
-completion notifications bring results back. End a turn while builders run only with a
-`Waiting for: <agents>` line. Otherwise close or start phases before ending. The keep-going
+Never wait on work you do not need: wait only for a result the next step needs. While agents
+run, prepare reviews, update tasks or do shared integration work that does not change files a
+running check reads. Long checks run in the background too, and `Monitor` watches CI and logs.
+Do not poll; completion notifications bring results back. End a turn while builders run only
+with a `Waiting for: <agents>` line. Otherwise close or start phases before ending. The keep-going
 Stop guard refuses a turn end when a phase is `in_progress`, no subagent runs, and no
 `Waiting for:` line explains the wait. It blocks once per stalled state, naming the builder
 to resume and the next ready phase. Do not invent a wait to pass it, and never move a phase
@@ -77,10 +86,18 @@ worktree check needs no yes from the person, since no yes lifts that check: resu
 `SendMessage` and the ruling to split its commands. Ask the person only for a real
 permission they alone can give, and pass their answer on the same way.
 
-Dispatch a fresh `cc-smart-dev-kit:reviewer` on that checkout with the task number, report note,
-base and head commits, owned files and binding constraints. Ask for two verdicts:
-**spec compliance** and **task quality**. Use the core review model policy. The builder
-never dispatches this review. Keep the reviewed head unchanged until it returns.
+Dispatch a fresh `cc-smart-dev-kit:senior-engineer` on that checkout with the task number,
+report note, base and head commits, owned files and binding constraints. Its brief carries
+this exact line, alone on its line; without it the review is not recorded:
+
+```
+Mode: review
+```
+
+Ask for two verdicts: **spec compliance** and **task quality**. Model and effort by the job:
+`sonnet` at `high` for an ordinary phase, `medium` when small and low-risk, `opus` at `xhigh`
+for security, money, permissions, a schema or deploy. The builder never dispatches this
+review. Keep the reviewed head unchanged until it returns.
 
 Verify findings against the code. Record both verdicts and evidence on the task. Missing
 verdicts or unresolved material findings do not pass the gate.
@@ -90,10 +107,12 @@ verdicts or unresolved material findings do not pass the gate.
 Use `SendMessage` with the recorded builder id to resume its context. Send confirmed
 findings, required changes and targeted checks. Have it commit fixes and append a new
 `Report:` note. Record the round and resulting commits on the phase task. Request a
-scoped reviewer check of the fixes, not another open-ended review of untouched code.
+scoped review of the fixes (`Mode: review` again), not another open-ended review of untouched
+code.
 
-Allow at most three fix rounds with that builder. If it is still stuck, dispatch a fresh
-builder on a stronger model, using the same task, current branch, findings and rulings.
+Allow at most three fix rounds with that builder. If it is still stuck, ask the senior
+engineer's consult (`opus`, `xhigh`, no `Mode: review` line) for the root cause, or dispatch a
+fresh builder on a stronger model, using the same task, current branch, findings and rulings.
 Update the task's execution fields. Escalation does not permit Fable building without the
 person's request. If no permitted stronger model is available, reassess the approach and
 record a ruling; do not repeat the failed loop or silently waive a material defect.
@@ -122,8 +141,8 @@ Never remove another task's checkout or an unmerged branch. Repeat until all pha
 
 ## 6. Finish the whole branch once
 
-Start one final `cc-smart-dev-kit:reviewer` on `opus`, effort `xhigh`, over the plan's
-complete base-to-head range, including integration work. Review cross-phase behavior,
+Start one final `cc-smart-dev-kit:senior-engineer` on `opus`, effort `xhigh`, with the
+`Mode: review` line, over the plan's complete base-to-head range, including integration work. Review cross-phase behavior,
 spec compliance and quality. Do one fix pass for confirmed findings, then run the full
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
 success while a material defect remains; record the blocker and remaining work.

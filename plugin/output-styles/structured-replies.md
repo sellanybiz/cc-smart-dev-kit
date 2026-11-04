@@ -47,4 +47,6 @@ terminal.
 - Use emoji as decoration.
 - Repeat in prose what a table above already said.
 
-Questions with options: the core instructions' "Ending a turn".
+Questions with options: the core instructions' "Ending a turn". How to word a question, its
+options and a summary, with before/after examples: the `explain` skill's
+`references/plain-english.md`.

@@ -60,10 +60,12 @@ Missing one? Make a fresh analogy — but only after you checked how the thing r
 
 ## Words
 
-The plain-language habits and a word list: `references/plain-english.md`. In short: the
-project's own words for its parts; a code word defined in three or four plain words the first
-time; short sentences, one idea each; no idioms; three or more new words → a tiny glossary at
-the end.
+The plain-language habits, a word list, how to word a question and its options, and
+before/after examples of a question and a status summary: `references/plain-english.md`. It is
+the one detailed home for plain English in every reply, not only in an explanation. In short:
+the project's own words for its parts; a code word defined in three or four plain words the
+first time; short sentences, one idea each; no idioms; three or more new words → a tiny
+glossary at the end.
 
 ## Never
 

@@ -83,9 +83,38 @@ every turn and points to the skill that holds each procedure: the research steps
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
-owner's D12). They tie no effort to the backend that answers a tier: every tier but `opus` and `fable`
-takes the effort its task needs, whatever model answers, and a backend's effort is the person's
-pin at the router (`docs/gateway.md` § A backend target's effort pin).
+owner's D12). They tie no effort to the backend that answers a tier: the backend behind a slot
+never changes the choice, and a backend's effort is the person's pin at the router
+(`docs/gateway.md` § A backend target's effort pin).
+
+**The model and effort policy: the lead's judgment (owner, 2026-11-05).** For each launch the
+lead weighs three things: how hard the job is, what a miss costs, and whether it is the last
+check before it is too late (a plan's second read, the final review). It spends effort where
+those are high and saves it elsewhere. Why: in Claude Code, Opus, Sonnet and Haiku 5.5 default
+to `medium`, and Opus 5.5 at `medium` already matches Opus 5 at `high`
+(code.claude.com/docs/en/model-config); on the owner's Opus 5.5 benchmarks `high` gives most of
+the gain for about three times `medium`'s cost, while `xhigh` and `max` cost two to three times
+more again for a few points, and the docs call `max` "prone to overthinking". So the lead is
+recommended on Claude Opus at `high`, and briefs are full for every tier, whatever model answers
+it: there is no lighter brief for a backend. `core.md` keeps the short form (§ Subagents);
+`subagent-decision` holds the whole policy: the worked examples, delegation and parallel work,
+task types, the usage-left rule, how to brief, and the order Claude Code reads `model` and
+`effort` in (the call first, then an agent's frontmatter, so frontmatter is only a default; the
+kit's own agents carry none).
+
+**Delegate only what pays for its own context.** Anthropic's Opus 5 prompting guide says not to
+delegate work a handful of tool calls finish, and Claude Code's sub-agents page keeps a quick,
+targeted change in the main conversation: a subagent spends its own tokens and does not read the
+lead's prompt cache. So `core.md` gives a subagent work that is independent and big enough (a
+phase, a broad search, a fresh-eyes review, a scenario hunt), and the orchestrator-only rule
+holds for an approved plan, not for every change; a change small enough to need no plan file
+stays with the lead (`plan-task`). One exception to "a subagent starts no agents": the senior
+engineer may start research agents, and it still reports to its caller and never asks the person.
+
+**Plain English in replies: one home.** `core.md` § Ending a turn holds the rule: a question and
+each option stand alone, with what is decided, why it matters, what each option does and what it
+costs; sentences stay short, the meaning does not. The detail and the before/after examples live
+in `explain`'s `references/plain-english.md`; `plan-task` § 2 and the output style point to it.
 
 **Checks: what you changed while building, the full check once (owner, 2026-10-26).** In a big
 project a whole type check takes tens of seconds and a whole test run many minutes, and sessions
@@ -227,5 +256,20 @@ to use when they are missing.
 ## Building a plan in 2.0
 
 `build` runs the subagent-driven workflow. The main session orchestrates one builder per
-phase, parallel worktrees for disjoint files, a fresh phase reviewer and a final review on
-`opus`. The task system holds briefs, reports and rulings; see [tasks](tasks.md).
+phase, parallel worktrees for disjoint files, a fresh senior engineer for each phase's review and
+a final review on `opus` at `xhigh`. Each review brief carries the line `Mode: review` alone on
+its line; the review-record hook records a review only with it, so a consult of the same agent
+records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
+logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real
+dependency or a shared file; noted work is `non-blocking`. The task system holds briefs, reports
+and rulings; see [tasks](tasks.md).
+
+The kit's plan, build, review and commit flows govern the work the kit drives. claude-mem
+also ships `build`, `do`, `release`, `version-bump` and `build-and-release` skills, and some of
+them push, merge or commit everything without asking; so `build` says they run only when the
+person asks for one, and the project's workflow settings still decide what is committed, pushed
+or merged.
+
+`plan-task` starts two agents in one message for a big or risky plan: the edge-case hunter,
+which lists every scenario that can break it, and the senior engineer's second read on `opus`
+at `xhigh`.

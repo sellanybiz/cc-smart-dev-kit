@@ -1,6 +1,6 @@
 ---
 name: plan-task
-description: Use before building a change whose design is not settled or that spans several parts of the code - a new feature, a refactor, an architecture decision, an ambiguous request. Plans in plan mode - research, ask, write the plan file, get the person's approval - then splits it into phases with owners and keeps it live. Not for a question about a library or an API (research-first), nor a settled fix of a file or two. Trigger phrases - "implement X", "build Y", "refactor Z", "plan this", "how should we approach".
+description: Use before building a change whose design is not settled or that spans several parts of the code - a feature, a refactor, an architecture decision, an ambiguous request. Research, ask, write the plan file, get approval, split it into phases. Not for a settled fix of a file or two. Trigger phrases - "implement X", "build Y", "refactor Z", "plan this", "how should we approach".
 ---
 
 # Plan The Task
@@ -23,8 +23,7 @@ The phase task description holds its brief. Do not copy briefs or progress into 
 folder or ledger; `/cc-smart-dev-kit:build` reads the tasks to execute the plan.
 
 **No plan file** for a small fix (`/cc-smart-dev-kit:review` defines it) or a change of two files or
-fewer whose design is settled — the task is the plan. Its separable pieces still go to
-subagents.
+fewer whose design is settled — the task is the plan, and a change that small stays with you.
 
 **Plan in plan mode** — steps 1 to 4 — when a person is there to approve: call
 `EnterPlanMode` (the person can also press Shift+Tab, or type `/plan`). Plan mode lets you
@@ -53,8 +52,11 @@ keeps a condensed version and the link.
 ## 2. Ask with `AskUserQuestion`
 
 Never as numbered prose. One to four questions per call, two to four options each; the
-recommended option first, with `(Recommended)` on its label. Labels of one to five words; the
-trade-off goes in the description. `multiSelect` when the choices do not exclude each other.
+recommended option first, with `(Recommended)` on its label. Labels of one to five words. Each
+question says what is decided and why it matters; each description says what happens, the main
+benefit and the downside, and the recommended one says why it fits here. The person may see
+nothing else, so each must stand alone (examples: `/cc-smart-dev-kit:explain`). `multiSelect`
+when the choices do not exclude each other.
 
 Ask about: a data-model change; edge cases the request does not settle; a change across
 several systems (all now, or phased?); two valid approaches; a known risk in the person's
@@ -96,9 +98,12 @@ setting). The built-in `Plan` agent is read-only: it returns the text, and you w
 ## 4. Self-check, then approval
 
 Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved
-away? For a big or risky plan, ask a second read from `cc-smart-dev-kit:reviewer` (a read of the
-plan, not of a change set). When the plan adds UI or a new architecture, show it — a diagram
-or a mockup — rather than only describing it.
+away? For a big or risky plan, start two agents in one message: the
+`cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
+`cc-smart-dev-kit:senior-engineer`'s second read (`opus`, `xhigh`; a read of the plan, not of a
+change set), its brief with the line `Mode: review` alone on its line. Fold what they find into
+the plan's approach and edge cases. When the plan adds UI or a new architecture, show it — a
+diagram or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
