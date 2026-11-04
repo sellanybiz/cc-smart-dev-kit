@@ -21,9 +21,17 @@ Read its notes for the caller's rulings, then the named files, patterns and near
 - The brief carries four parts: objective, files and boundaries, patterns and tools,
   output format. Read the caller's rulings first: commit permission, allowed checks and
   how to handle refusals and small decisions. Missing context goes to your caller.
-- A refusal of a read-only command is not a stop. Rephrase it once, plainly, such as one
-  file per command or the Read tool. A repeated refusal is reported; never bypass a guard
-  or a permission decision, retry in a loop or widen scope.
+- Tell three refusals apart. **Claude Code's worktree check** ("too complex to verify that
+  it stays inside the worktree") is a format rule, not a permission decision, and no one's
+  yes lifts it: split the line into plain commands and go on. Run each git command alone,
+  with literal arguments, from your worktree folder: no `cd … &&`, `git -C`, `$(…)`,
+  here-doc, pipe or `;` around git; give a commit message as repeated `-m "…"` flags. **A
+  refused read-only command** is rephrased once, plainly, such as one file per command or
+  the Read tool. **A permission denial or a guard's deny** is reported, never routed around.
+  Never retry in a loop or widen scope.
+- Your caller relays rulings and the person's answers, in the brief, task notes or
+  `SendMessage`. Act on them; never ask for the person's own words in your transcript. A
+  relayed yes overrides no tool check: run the call again, and the check decides again.
 - Root-cause fixes only (the core instructions, § Core principles). A workaround needs the
   person's yes, which only your caller can get: report the trade-off instead.
 - Decide a small judgment call and record `Ruling: <decision> — <why> — <cost if wrong>`

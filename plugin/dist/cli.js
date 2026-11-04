@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.1.0",
+  version: "2.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -19629,6 +19629,33 @@ import { closeSync as closeSync6, fstatSync as fstatSync2, openSync as openSync6
 function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function stopFeedbackTexts(entry) {
+  if (!isJsonObject10(entry) || !isJsonObject10(entry.message))
+    return [];
+  const content = entry.message.content;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject10(block) && typeof block.text === "string" ? [block.text] : []) : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
+}
+function stopFeedbackGiven(transcriptPath, text) {
+  const lines = tailLines2(transcriptPath);
+  if (lines === null)
+    return false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject10(entry) || entry.isSidechain === true)
+      continue;
+    if (stopFeedbackTexts(entry).some((said) => said.includes(text)))
+      return true;
+  }
+  return false;
+}
 function tailLines2(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   let text;
   try {
@@ -19732,7 +19759,7 @@ function startedByPeer(transcriptPath) {
   }
   return false;
 }
-var TRANSCRIPT_TAIL_BYTES;
+var TRANSCRIPT_TAIL_BYTES, STOP_FEEDBACK = "Stop hook feedback:";
 var init_transcript = __esm(() => {
   TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 });
@@ -47034,7 +47061,7 @@ init_identity();
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  return { number: task.number, subject: task.subject, plan: task.plan };
+  return { number: task.number, subject: task.subject, plan: task.plan, agent: task.agent };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
@@ -47063,6 +47090,7 @@ function openPhasesOf(paths, project, caller) {
 // src/hooks/keep-going.ts
 init_io();
 init_transcript();
+var RESUME_TOOL = "SendMessage";
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
 var LEADING_MARKS2 = /^(?:[*_>#\- ]|\d+[.)])+/;
@@ -47085,7 +47113,22 @@ function keepGoingReason(inProgress, ready) {
   const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named2).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
   const next = ready[0];
-  return next === undefined ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.` : `${head} Start ${named2(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
+  const options = [];
+  for (const phase of inProgress) {
+    if (phase.agent !== null) {
+      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${RESUME_TOOL}\``);
+    }
+  }
+  const fresh = inProgress.filter((phase) => phase.agent === null);
+  if (fresh.length > 0) {
+    options.push(`start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`);
+  }
+  if (next !== undefined)
+    options.push(`start ${named2(next)} now (dispatch its builder)`);
+  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
+  const recovery = options.join(", ");
+  return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
 }
 function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
   if (input.stop_hook_active === true)
@@ -47103,12 +47146,11 @@ function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
     return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0)
     return SILENT;
-  return {
-    stdout: JSON.stringify({
-      decision: "block",
-      reason: keepGoingReason(view.value.inProgress, view.value.ready)
-    })
-  };
+  const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  const transcript = stringField(input.transcript_path);
+  if (transcript !== null && stopFeedbackGiven(transcript, reason))
+    return SILENT;
+  return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
 function keepGoing(context) {
   if (context.event !== "Stop")
@@ -48218,7 +48260,6 @@ init_io();
 init_transcript();
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
-var STOP_FEEDBACK = "Stop hook feedback:";
 var REMINDER_MARK = "has not run the project's fast check since";
 function verifyGateReason(check) {
   return `This session changed files and has not run the project's fast check since: run \`${check}\`, then stop.`;
@@ -48306,9 +48347,7 @@ function ranCheck(command, check, dialect) {
   });
 }
 function isOwnReminder(line) {
-  const content = objectOf(line.message)?.content;
-  const texts = typeof content === "string" ? [content] : blocksOf(line).map((block) => typeof block.text === "string" ? block.text : "").filter((text) => text !== "");
-  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+  return stopFeedbackTexts(line).some((text) => text.includes(REMINDER_MARK));
 }
 function seenIn(lines, check) {
   const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };

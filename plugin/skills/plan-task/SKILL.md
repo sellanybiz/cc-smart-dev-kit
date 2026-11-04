@@ -111,8 +111,8 @@ After approval, use `task_create` for the plan (`plan`: its slug, subject: its t
 one phase task per phase (`phase`: its id). Put the complete builder brief in each phase's
 description, in four parts: objective; files and boundaries; patterns and tools; output
 format (`Report:` task note and short status). Include interfaces, edge cases and done-check.
-Put caller rulings up front: commit permission, allowed checks, rephrase a refused read-only
-command once, decide small calls and note them as `Ruling:`.
+Put caller rulings up front: commit permission, allowed checks, the refusal handling the
+builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
 hand-back guard that reads it. Under each phase create steps with their checks. Steps may have subtasks;
 subtasks have none. Set `blocked_by` for real dependencies and shared-file phases.

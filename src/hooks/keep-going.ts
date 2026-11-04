@@ -44,7 +44,7 @@ import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { lastAssistantText, STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
+import { lastAssistantText, stopFeedbackGiven } from "./transcript";
 
 /** The tool that resumes a stopped builder. */
 const RESUME_TOOL = "SendMessage";
@@ -138,20 +138,9 @@ export function keepGoingAnswer(
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
   const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  // Once per stalled state: the same reason already given in this session stays given.
   const transcript = stringField(input.transcript_path);
-  const lines = transcript === null ? null : tailLines(transcript);
-  for (const line of lines ?? []) {
-    if (!line.includes(STOP_FEEDBACK)) continue;
-    let entry: unknown;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue; // The tail may start or end with a partial entry.
-    }
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
-    if ("isSidechain" in entry && entry.isSidechain === true) continue;
-    if (stopFeedbackTexts(entry).some((text) => text.includes(reason))) return SILENT;
-  }
+  if (transcript !== null && stopFeedbackGiven(transcript, reason)) return SILENT;
   return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
 

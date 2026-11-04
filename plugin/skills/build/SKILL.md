@@ -42,8 +42,8 @@ and `effort` from the core table. Announce the slot, model and effort. Send all 
 `Agent` calls in one message, each with `isolation: "worktree"` and
 `run_in_background: true`. Do not start one and wait before starting the others.
 
-Put caller rulings first: commit or not, allowed checks, rephrase a refused read-only
-command once, and decide small calls with a `Ruling:` note. The brief has four parts:
+Put caller rulings first: commit or not, allowed checks, how to meet a refusal (the builder
+agent tells the three kinds apart), and decide small calls with a `Ruling:` note. The brief has four parts:
 objective, files and boundaries, patterns/tools, and output format.
 Every launch brief includes the exact line `Your task: #<n>` with the phase number.
 The hand-back guard reads that line and refuses a return while blocking steps remain open.
@@ -63,15 +63,19 @@ shared integration work that does not change files a running check reads. Do not
 completion notifications bring results back. End a turn while builders run only with a
 `Waiting for: <agents>` line. Otherwise close or start phases before ending. The keep-going
 Stop guard refuses a turn end when a phase is `in_progress`, no subagent runs, and no
-`Waiting for:` line explains the wait; it names the next ready phase. Do not invent a wait
-to pass it: dispatch ready work, or record the real blocker.
+`Waiting for:` line explains the wait. It blocks once per stalled state, naming the builder
+to resume and the next ready phase. Do not invent a wait to pass it, and never move a phase
+back to `pending` to pass it: resume or dispatch the work, or record the real blocker.
 
 ## 3. Handle each hand-back and review the task
 
 Read its `Report:` note and check its claims against the actual branch. Record `agent`,
 `branch`, `worktree` and `base` on the phase task with `task_update`. Check its full
 `base..branch` diff and file list; a report is not proof. A blocked builder gets a ruling
-or the missing context, not an automatic phase close.
+or the missing context, not an automatic phase close. A builder stopped by Claude Code's
+worktree check needs no yes from the person, since no yes lifts that check: resume it with
+`SendMessage` and the ruling to split its commands. Ask the person only for a real
+permission they alone can give, and pass their answer on the same way.
 
 Dispatch a fresh `cc-smart-dev-kit:reviewer` on that checkout with the task number, report note,
 base and head commits, owned files and binding constraints. Ask for two verdicts:

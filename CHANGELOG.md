@@ -3,6 +3,24 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 2.1.1
+
+- **A builder no longer stalls on Claude Code's worktree check.** A subagent isolated in a
+  worktree may be refused a git line that Claude Code calls "too complex to verify that it
+  stays inside the worktree". That is a format rule, not a permission denial, and no approval
+  lifts it. The builder now splits such a line into plain git commands and goes on. The main
+  session resumes a stopped builder with that ruling, instead of asking you to approve.
+- **A builder acts on what its caller relays.** A ruling or your answer that the main session
+  sends counts. The builder no longer asks for your own words in its transcript. A relayed
+  yes still passes no tool check by itself: the check decides again.
+- **The keep-going stop guard reminds once per stalled state.** It used to block every turn
+  end while a phase stayed in progress with no subagent running, even turns that only
+  answered your question. Now it blocks once for a given state. Its message names the
+  builder to resume with `SendMessage`, and says never to move a phase back to pending just
+  to end the turn.
+
+**What to run:** nothing. Update as usual.
+
 ## 2.1.0
 
 - **Choose the machine's heavy-job limit.** `cc-smart-dev-kit job set max <n>` accepts 1–8;

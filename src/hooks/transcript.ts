@@ -42,6 +42,29 @@ export function stopFeedbackTexts(entry: unknown): string[] {
 }
 
 /**
+ * True when the transcript's tail already holds Stop feedback with `text` in it (a hook's own
+ * reason), in an entry of the session itself: a sidechain entry is a subagent's own
+ * conversation and does not count. Only a line that names the feedback is parsed. False when
+ * the file cannot be read.
+ */
+export function stopFeedbackGiven(transcriptPath: string, text: string): boolean {
+  const lines = tailLines(transcriptPath);
+  if (lines === null) return false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK)) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // The tail may start or end with a partial entry.
+    }
+    if (!isJsonObject(entry) || entry.isSidechain === true) continue;
+    if (stopFeedbackTexts(entry).some((said) => said.includes(text))) return true;
+  }
+  return false;
+}
+
+/**
  * The transcript's last `bytes` bytes (default `TRANSCRIPT_TAIL_BYTES`), one line per entry.
  * The first line may be cut by the tail and the last one may be half written; the readers
  * skip those. `bytes` is for a reader that needs more of the session than a model or a title
