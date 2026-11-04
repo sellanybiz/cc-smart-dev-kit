@@ -6,7 +6,8 @@
  *   - the turn's last answer (the notifier's "finished" message);
  *   - who started the turn (the notifier stays quiet for a turn another session started);
  *   - the session's own file changes and its runs of the project's fast check (the
- *     verification gate, `verify-gate.ts`).
+ *     verification gate, `verify-gate.ts`);
+ *   - Stop feedback already given (the verification gate and keep-going guard).
  *
  * Claude Code writes a session's conversation to
  * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
@@ -20,6 +21,24 @@ export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The words Claude Code writes before a blocked stop's reason in the transcript. */
+export const STOP_FEEDBACK = "Stop hook feedback:";
+
+/** Stop-feedback texts in one entry, from string content or content blocks. */
+export function stopFeedbackTexts(entry: unknown): string[] {
+  if (!isJsonObject(entry) || !isJsonObject(entry.message)) return [];
+  const content = entry.message.content;
+  const texts =
+    typeof content === "string"
+      ? [content]
+      : Array.isArray(content)
+        ? content.flatMap((block) =>
+            isJsonObject(block) && typeof block.text === "string" ? [block.text] : [],
+          )
+        : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
 }
 
 /**

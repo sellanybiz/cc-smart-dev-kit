@@ -18,6 +18,7 @@ export interface PhaseRef {
   number: number;
   subject: string;
   plan: string;
+  agent: string | null;
 }
 
 export interface OpenPhases {
@@ -33,7 +34,7 @@ export interface OpenPhases {
 const NOTHING_OPEN: OpenPhases = { inProgress: [], ready: [] };
 
 function refOf(task: WorkTask & { plan: string }): PhaseRef {
-  return { number: task.number, subject: task.subject, plan: task.plan };
+  return { number: task.number, subject: task.subject, plan: task.plan, agent: task.agent };
 }
 
 /** A plan phase: a `phase` task with its plan and phase id set. */

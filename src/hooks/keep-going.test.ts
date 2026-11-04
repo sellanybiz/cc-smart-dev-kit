@@ -38,12 +38,12 @@ const OTHER: Who = { sessionId: "other", pid: 999_999, procStart: "1" };
 const BLOCK_WITH_NEXT = JSON.stringify({
   decision: "block",
   reason:
-    "Phase #2 G1 the guard is still in progress, and no subagent runs. Start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or end the turn with a `Waiting for: <what>` line.",
+    "Phase #2 G1 the guard is still in progress, and no subagent runs. Start a fresh builder on it, start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
 });
 const BLOCK_NO_NEXT = JSON.stringify({
   decision: "block",
   reason:
-    "Phase #2 G1 the guard is still in progress, and no subagent runs. Close #2 with `task_done`, or record its blocker with `task_note` and end the turn with a `Waiting for: <what>` line.",
+    "Phase #2 G1 the guard is still in progress, and no subagent runs. Start a fresh builder on it, close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
 });
 
 interface World {
@@ -82,11 +82,12 @@ function start(w: World, task: WorkTask, who: Who): void {
 }
 
 /** Plan `plan-a`: #1 the plan, #2 G1 in progress by this process, #3 G2 ready, #4 G3 blocked by #3. */
-function busyPlan(w: World): void {
+function busyPlan(w: World): { g1: WorkTask; g2: WorkTask } {
   const g1 = phase(w, "plan-a", "G1", "G1 the guard");
   const g2 = phase(w, "plan-a", "G2", "G2 the portal view");
   phase(w, "plan-a", "G3", "G3 the docs", [g2.id]);
   start(w, g1, ME);
+  return { g1, g2 };
 }
 
 function stop(repo: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -138,7 +139,7 @@ describe("keep-going: the block", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line.",
+          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Start fresh builders on #2, #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
       }),
     });
   });
@@ -178,6 +179,150 @@ describe("keep-going: the block", () => {
     const input = stop(w.repo, { transcript_path: file });
     delete input.last_assistant_message;
     expect(await runHook(keepGoingHook, input, w.env)).toEqual({ stdout: BLOCK_WITH_NEXT });
+  });
+});
+
+describe("keep-going: stalled state", () => {
+  const reason =
+    "Phase #2 G1 the guard is still in progress, and no subagent runs. Start a fresh builder on it, start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.";
+
+  test.each([
+    [
+      "string feedback",
+      { type: "user", isMeta: true, message: { content: `Stop hook feedback:\n${reason}` } },
+      {},
+    ],
+    [
+      "array feedback with other hooks",
+      {
+        type: "user",
+        message: {
+          content: [{ type: "text", text: `Stop hook feedback:\nOther reminder\n${reason}` }],
+        },
+      },
+      {},
+    ],
+    [
+      "sidechain feedback",
+      { type: "user", isSidechain: true, message: { content: `Stop hook feedback:\n${reason}` } },
+      { stdout: BLOCK_WITH_NEXT },
+    ],
+    [
+      "different reason",
+      {
+        type: "user",
+        message: { content: "Stop hook feedback:\nPhase #9 Other is still in progress." },
+      },
+      { stdout: BLOCK_WITH_NEXT },
+    ],
+    [
+      "ordinary prose",
+      { type: "assistant", message: { content: reason } },
+      { stdout: BLOCK_WITH_NEXT },
+    ],
+  ])("%s", async (_name, entry, expected) => {
+    const w = world();
+    busyPlan(w);
+    w.db.close();
+    const file = join(tempDir("keep-going-feedback"), "session.jsonl");
+    writeFileSync(file, `broken first line\n${JSON.stringify(entry)}\n{`);
+    const input = stop(w.repo, { transcript_path: file });
+    expect(await runHook(keepGoingHook, input, w.env)).toEqual(expected);
+    expect(keepGoingWouldBlockAt(input, w.env)).toBe("stdout" in expected);
+  });
+
+  test.each([
+    [
+      "another agent",
+      { agent: "d4e5f6" },
+      "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`d4e5f6`) with `SendMessage`, start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+    ],
+    [
+      "changed phase",
+      { subject: "G1 the reader" },
+      "Phase #2 G1 the reader is still in progress, and no subagent runs. Start a fresh builder on it, start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+    ],
+  ])("same prior feedback but %s blocks again", async (_name, patch, expectedReason) => {
+    const w = world();
+    const { g1 } = busyPlan(w);
+    const changed = updateTask(w.db, g1.id, patch, ME, 3);
+    if (!changed.ok) throw new Error(changed.why);
+    w.db.close();
+    const file = join(tempDir("changed-feedback"), "session.jsonl");
+    writeFileSync(
+      file,
+      `${JSON.stringify({ type: "user", isMeta: true, message: { content: `Stop hook feedback:\n${reason}` } })}\n`,
+    );
+    expect(await runHook(keepGoingHook, stop(w.repo, { transcript_path: file }), w.env)).toEqual({
+      stdout: JSON.stringify({ decision: "block", reason: expectedReason }),
+    });
+  });
+
+  test("a changed next ready phase earns another reminder", async () => {
+    const w = world();
+    const { g2 } = busyPlan(w);
+    const changed = updateTask(w.db, g2.id, { subject: "G2 the reader" }, ME, 3);
+    if (!changed.ok) throw new Error(changed.why);
+    w.db.close();
+    const file = join(tempDir("changed-ready"), "session.jsonl");
+    writeFileSync(
+      file,
+      `${JSON.stringify({ type: "user", message: { content: `Stop hook feedback:\n${reason}` } })}\n`,
+    );
+    expect(await runHook(keepGoingHook, stop(w.repo, { transcript_path: file }), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          "Phase #2 G1 the guard is still in progress, and no subagent runs. Start a fresh builder on it, start #3 G2 the reader now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+      }),
+    });
+  });
+
+  test("an unreadable transcript keeps today's decision", async () => {
+    const w = world();
+    busyPlan(w);
+    w.db.close();
+    expect(
+      await runHook(
+        keepGoingHook,
+        stop(w.repo, { transcript_path: join(tempDir("missing-transcript"), "absent") }),
+        w.env,
+      ),
+    ).toEqual({ stdout: BLOCK_WITH_NEXT });
+  });
+
+  test("a recorded agent is named for resumption", async () => {
+    const w = world();
+    const g1 = phase(w, "plan-a", "G1", "G1 the guard");
+    start(w, g1, ME);
+    const changed = updateTask(w.db, g1.id, { agent: "a1b2c3" }, ME, 3);
+    if (!changed.ok) throw new Error(changed.why);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`a1b2c3`) with `SendMessage`, close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+      }),
+    });
+  });
+
+  test("mixed phases name which builder to resume and which to start", async () => {
+    const w = world();
+    const g1 = phase(w, "plan-a", "G1", "G1 the guard");
+    const g2 = phase(w, "plan-a", "G2", "G2 the portal view");
+    start(w, g1, ME);
+    start(w, g2, OTHER);
+    const changed = updateTask(w.db, g1.id, { agent: "a1b2c3" }, ME, 3);
+    if (!changed.ok) throw new Error(changed.why);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Resume the builder for #2 (`a1b2c3`) with `SendMessage`, start a fresh builder on #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+      }),
+    });
   });
 });
 

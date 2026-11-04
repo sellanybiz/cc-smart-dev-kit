@@ -5,8 +5,9 @@
  * In subagent-driven work the main session dispatches each phase's builder and hears it hand
  * back. A turn that ends while a phase is `in_progress`, with no builder running and no word on
  * what it waits for, leaves the plan stalled until the person notices. So the hook blocks such a
- * stop **once**, with one plain paragraph: the phase in progress, and the next ready phase of
- * the same plan to start now — or how to close the phase, or record why it waits. The build
+ * stop **once per stalled state**, with one plain paragraph: resume the recorded builder, or
+ * start a fresh one; start the next ready phase, close the phase, or record why it waits. Never
+ * move a phase back to pending only to end the turn. The build
  * skill says the same (`plugin/skills/build/SKILL.md`).
  *
  * It blocks only when all of these hold, cheapest first:
@@ -21,6 +22,10 @@
  *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). The store is
  *    read first; the caller is looked up only when some phase is in progress, since off Linux
  *    that lists the running processes. Another session's plan is not this one's business.
+ * 5. **No identical Stop feedback** in the main session's transcript tail. Only after finding
+ *    a phase in progress, read the default tail (`TRANSCRIPT_TAIL_BYTES`). String content and
+ *    text blocks count; sidechains do not. A changed reason earns another reminder. Missing
+ *    or unreadable transcripts keep the decision above; feedback outside the tail is not seen.
  *
  * **Fail open everywhere.** It needs no `cc-smart-dev-kit.json` (the task store is the person's
  * own), and is silent outside git, with no task store, with no caller, and on any read it
@@ -39,7 +44,10 @@ import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { lastAssistantText } from "./transcript";
+import { lastAssistantText, STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
+
+/** The tool that resumes a stopped builder. */
+const RESUME_TOOL = "SendMessage";
 
 /** The hook's name: its bundle, its `ownHooks` entry, its stderr prefix. */
 export const KEEP_GOING = "keep-going";
@@ -85,9 +93,25 @@ export function keepGoingReason(
   const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
   const next = ready[0];
-  return next === undefined
-    ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.`
-    : `${head} Start ${named(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
+  const options: string[] = [];
+  for (const phase of inProgress) {
+    if (phase.agent !== null) {
+      options.push(
+        `resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${RESUME_TOOL}\``,
+      );
+    }
+  }
+  const fresh = inProgress.filter((phase) => phase.agent === null);
+  if (fresh.length > 0) {
+    options.push(
+      `start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`,
+    );
+  }
+  if (next !== undefined) options.push(`start ${named(next)} now (dispatch its builder)`);
+  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
+  const recovery = options.join(", ");
+  return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
 }
 
 /**
@@ -113,12 +137,22 @@ export function keepGoingAnswer(
   );
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
-  return {
-    stdout: JSON.stringify({
-      decision: "block",
-      reason: keepGoingReason(view.value.inProgress, view.value.ready),
-    }),
-  };
+  const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  const transcript = stringField(input.transcript_path);
+  const lines = transcript === null ? null : tailLines(transcript);
+  for (const line of lines ?? []) {
+    if (!line.includes(STOP_FEEDBACK)) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // The tail may start or end with a partial entry.
+    }
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
+    if ("isSidechain" in entry && entry.isSidechain === true) continue;
+    if (stopFeedbackTexts(entry).some((text) => text.includes(reason))) return SILENT;
+  }
+  return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
 
 export function keepGoing(context: HookContext): HookResult {

@@ -41,16 +41,13 @@ import {
 } from "../shell/command";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { tailLines } from "./transcript";
+import { STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
 
 /** How much of the transcript's end the hook reads: one turn's edits and its check runs. */
 export const VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 
 /** The tools that change a file: what the gate counts as work a check should follow. */
 export const CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"] as const;
-
-/** The words Claude Code writes before a blocked stop's reason in the transcript. */
-const STOP_FEEDBACK = "Stop hook feedback:";
 
 /** The stable words of this hook's own reminder: the command that follows may be long. */
 const REMINDER_MARK = "has not run the project's fast check since";
@@ -166,14 +163,7 @@ export function ranCheck(command: string, check: string, dialect?: Dialect): boo
 
 /** True when this line carries the Stop feedback of this hook's own reminder. */
 function isOwnReminder(line: Record<string, unknown>): boolean {
-  const content = objectOf(line.message)?.content;
-  const texts =
-    typeof content === "string"
-      ? [content]
-      : blocksOf(line)
-          .map((block) => (typeof block.text === "string" ? block.text : ""))
-          .filter((text) => text !== "");
-  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+  return stopFeedbackTexts(line).some((text) => text.includes(REMINDER_MARK));
 }
 
 /** Where the last change, the last run of the check and the last reminder are: -1 when absent. */
