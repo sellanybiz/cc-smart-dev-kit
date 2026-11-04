@@ -1,12 +1,20 @@
 /**
- * What the hooks read from a transcript's tail (`transcript.ts`): the session's own model,
- * its name, the turn's last answer, and who started the turn.
+ * What the hooks read from a transcript (`transcript.ts`): from its tail the session's own
+ * model, its name, the turn's last answer, and who started the turn; from its head a subagent's
+ * brief; from the whole file the prompts of a subagent's run.
  */
 import { describe, expect, it } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { lastAssistantText, lastClaudeModel, lastCustomTitle, startedByPeer } from "./transcript";
+import {
+  firstPromptText,
+  lastAssistantText,
+  lastClaudeModel,
+  lastCustomTitle,
+  runPrompts,
+  startedByPeer,
+} from "./transcript";
 
 /** A transcript in a temp folder: one JSON entry per line. */
 function write(lines: Array<Record<string, unknown>>): string {
@@ -127,5 +135,135 @@ describe("startedByPeer", () => {
     expect(startedByPeer(path)).toBe(false);
     const onlySummary = write([{ isCompactSummary: true, turnOrigin: "peer" }]);
     expect(startedByPeer(onlySummary)).toBe(false);
+  });
+});
+
+/** A `user` entry of a subagent's own transcript, shaped as Claude Code writes it. */
+function user(content: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: "user", isSidechain: true, ...extra, message: { role: "user", content } };
+}
+
+describe("runPrompts", () => {
+  it("the brief, then every later prompt in order; tool results and Claude Code's own skill and reminder entries are none", () => {
+    const path = write([
+      { type: "summary", note: "no user entry" },
+      user("Brief"),
+      user(
+        [
+          { type: "text", text: "<command-message>example:check</command-message>" },
+          { type: "text", text: "Base directory for this skill: /tmp/skills/check" },
+        ],
+        { isMeta: true },
+      ),
+      user([{ type: "text", text: "<command-name>example:check</command-name>" }], {
+        isMeta: true,
+      }),
+      user("<system-reminder>\nA reminder\n</system-reminder>", { isMeta: true }),
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "Ok" }] },
+      },
+      user([{ type: "tool_result", tool_use_id: "toolu_01", content: "Result" }]),
+      user([{ type: "text", text: "Base directory for this skill: /tmp/skills/check" }], {
+        isMeta: true,
+        sourceToolUseID: "toolu_01",
+      }),
+      user("The coordinator sent a message while you were working:\nOne", {
+        isMeta: true,
+        origin: { kind: "coordinator" },
+      }),
+      user("Stop hook feedback:\nTwo", { isMeta: true }),
+      user("Three, an unknown meta entry", { isMeta: true }),
+      user("<system-reminder>\nFour\n</system-reminder>", {
+        isMeta: true,
+        origin: { kind: "coordinator" },
+      }),
+      user(
+        [
+          { type: "text", text: "<system-reminder>\nFive" },
+          { type: "text", text: "Six" },
+        ],
+        { isMeta: true },
+      ),
+      user([
+        { type: "tool_result", tool_use_id: "toolu_02", content: "Result" },
+        { type: "text", text: "Seven" },
+      ]),
+      user([{ type: "image", source: { type: "base64", data: "" } }]),
+      user([]),
+      user("Eight, typed"),
+    ]);
+    expect(runPrompts(path)).toEqual({
+      brief: "Brief",
+      later: [
+        "The coordinator sent a message while you were working:\nOne",
+        "Stop hook feedback:\nTwo",
+        "Three, an unknown meta entry",
+        "<system-reminder>\nFour\n</system-reminder>",
+        "<system-reminder>\nFive\nSix",
+        "Seven",
+        "",
+        "",
+        "Eight, typed",
+      ],
+    });
+  });
+
+  it("a line written with other spacing still counts; one that may be a user entry but does not parse is a prompt with no text", () => {
+    const path = join(tempDir("transcript"), "agent.jsonl");
+    writeFileSync(
+      path,
+      [
+        "not json at all",
+        '{"type":"user","message":{"content":"Cut bef',
+        '{ "type": "user", "message": { "role": "user", "content": "Brief" } }',
+        '{ "type": "user", "message": { "role": "user", "content": "Later" } }',
+        '{"type":"user","message":{"content":"Cut',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"said \\"user\\""}]}}',
+        "",
+      ].join("\n"),
+    );
+    expect(runPrompts(path)).toEqual({ brief: "Brief", later: ["Later", ""] });
+  });
+
+  it("no user entry: no brief and no later prompt", () => {
+    const path = write([{ type: "assistant", message: { role: "assistant", content: [] } }]);
+    expect(runPrompts(path)).toEqual({ brief: null, later: [] });
+  });
+
+  it("reads the whole file up to the cap, and nothing above it", () => {
+    const path = write([user("Brief"), user("x".repeat(600 * 1024)), user("Last")]);
+    const size = statSync(path).size;
+    expect(runPrompts(path, size)?.later.at(-1)).toBe("Last");
+    expect(runPrompts(path, size - 1)).toBeNull();
+    expect(runPrompts(join(tempDir("transcript"), "none.jsonl"))).toBeNull();
+  });
+});
+
+describe("firstPromptText", () => {
+  it("the first user entry's text from the head, past lines that are not JSON", () => {
+    const path = join(tempDir("transcript"), "agent.jsonl");
+    writeFileSync(
+      path,
+      [
+        "not json at all",
+        JSON.stringify({ type: "summary" }),
+        JSON.stringify(
+          user([
+            { type: "text", text: "A" },
+            { type: "text", text: "B" },
+          ]),
+        ),
+        JSON.stringify(user("Later")),
+      ].join("\n"),
+    );
+    expect(firstPromptText(path)).toBe("A\nB");
+    expect(firstPromptText(join(tempDir("transcript"), "none.jsonl"))).toBeNull();
+  });
+
+  it("a brief longer than the head is not read: the next entry the head holds whole is taken", () => {
+    const path = join(tempDir("transcript"), "agent.jsonl");
+    writeFileSync(path, `${JSON.stringify(user("x".repeat(1024 * 1024)))}\n`);
+    expect(firstPromptText(path)).toBeNull();
   });
 });

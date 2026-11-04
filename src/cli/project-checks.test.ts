@@ -71,20 +71,49 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
 }
 
 describe("the retired review agent", () => {
-  test("skips unreadable Markdown and non-Markdown files", async () => {
-    const repo = makeRepo();
-    const folder = join(repo, ".claude", "skills");
-    mkdirSync(folder, { recursive: true });
-    const unreadable = join(folder, "private.md");
-    writeFileSync(unreadable, "cc-smart-dev-kit:reviewer");
-    writeFileSync(join(folder, "data.bin"), "cc-smart-dev-kit:reviewer");
-    chmodSync(unreadable, 0o000);
-    try {
-      expect(await check(repo)).toEqual([]);
-    } finally {
-      chmodSync(unreadable, 0o600);
-    }
-  });
+  // Root reads a mode-000 file or folder all the same, so these two prove nothing as root.
+  test.skipIf(process.getuid?.() === 0)(
+    "skips unreadable Markdown and non-Markdown files",
+    async () => {
+      const repo = makeRepo();
+      const folder = join(repo, ".claude", "skills");
+      mkdirSync(folder, { recursive: true });
+      const unreadable = join(folder, "private.md");
+      writeFileSync(unreadable, "cc-smart-dev-kit:reviewer");
+      writeFileSync(join(folder, "data.bin"), "cc-smart-dev-kit:reviewer");
+      chmodSync(unreadable, 0o000);
+      try {
+        expect(await check(repo)).toEqual([]);
+      } finally {
+        chmodSync(unreadable, 0o600);
+      }
+    },
+  );
+  test.skipIf(process.getuid?.() === 0)(
+    "a folder it cannot read never crashes doctor, and the other folders are still searched",
+    async () => {
+      const repo = makeRepo();
+      for (const file of [
+        "cc-smart-dev-kit/review.md",
+        "agents/local.md",
+        "skills/open/SKILL.md",
+      ]) {
+        const path = join(repo, ".claude", file);
+        mkdirSync(join(path, ".."), { recursive: true });
+        writeFileSync(path, "cc-smart-dev-kit:reviewer");
+      }
+      const locked = join(repo, ".claude", "agents");
+      chmodSync(locked, 0o000);
+      try {
+        expect(await check(repo)).toEqual([
+          "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+          "! project: .claude/skills/open/SKILL.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+        ]);
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+    },
+  );
   test("fails with the base-list migration fix", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {

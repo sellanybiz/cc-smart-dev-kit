@@ -8,12 +8,14 @@
  *   - the session's own file changes and its runs of the project's fast check (the
  *     verification gate, `verify-gate.ts`);
  *   - Stop feedback already given (the verification gate and keep-going guard);
- *   - the initial brief (builder hand-back) and latest text prompt (review recording).
+ *   - a subagent's brief (the builder hand-back reads it from the head), and its brief with
+ *     every prompt it was given after it (the review record reads the whole file).
  *
  * Claude Code writes a session's conversation to
- * `<config>/projects/<project folder>/<session id>.jsonl`. Reads are bounded: the initial
- * brief uses the head, other readers use the tail. A transcript grows to megabytes, and a
- * hook has a 10 s timeout.
+ * `<config>/projects/<project folder>/<session id>.jsonl`, and a subagent's to
+ * `<session id>/subagents/agent-<id>.jsonl` beside it. Reads are bounded: the brief reads the
+ * head, the prompts of a run read the whole file up to a size cap, the other readers read the
+ * tail. A transcript grows to megabytes, and a hook has a 10 s timeout.
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -116,18 +118,6 @@ export function tailLines(
     return null;
   }
   return text.split("\n");
-}
-
-/** The latest user text prompt, not a tool result; null when absent from the bounded tail. */
-export function lastPromptText(transcriptPath: string): string | null {
-  const lines = tailLines(transcriptPath);
-  if (lines === null) return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "user" || !isJsonObject(entry.message)) continue;
-    const text = messageText(entry.message.content);
-    if (text !== null && text !== "") return text;
-  }
-  return null;
 }
 
 /** Every line from the end backwards, parsed; the ones that are not JSON objects are skipped. */
@@ -260,6 +250,103 @@ function messageText(content: unknown): string | null {
 }
 
 /**
+ * The most of a transcript `runPrompts` reads. A subagent's own transcript stays far below it;
+ * a bigger file reads as null, and the caller stays on its safe side.
+ */
+export const PROMPT_SCAN_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * How the text of a meta entry starts when Claude Code wrote it itself and it gives the agent
+ * no new task: a skill it loaded (`<command-message>`, `<command-name>`, and the skill's body,
+ * `Base directory for this skill:`) and a system reminder. It is an allowlist: any other meta
+ * entry — a message from the session that started the agent ("… sent a message while you were
+ * working"), a notification, Stop hook feedback — is a new prompt.
+ */
+export const HARMLESS_META_PREFIXES: readonly string[] = [
+  "<command-message>",
+  "<command-name>",
+  "<system-reminder>",
+  "Base directory for this skill:",
+];
+
+/**
+ * A line that may hold a `user` entry: `"user"` is its `type` and its message's `role`, so this
+ * cheap test passes every one of them, whatever the spacing, before the line is parsed. The
+ * same word inside a string is written `\"user\"` and does not pass.
+ */
+const USER_WORD = '"user"';
+
+/** A subagent's brief and the prompts it was given after it (`runPrompts`). */
+export interface RunPrompts {
+  /** The first `user` entry's text: the brief the agent started with. Null when it has none. */
+  brief: string | null;
+  /** The text of every later prompt, in order; "" for one with no text, or that cannot be read. */
+  later: string[];
+}
+
+/**
+ * True when `entry` is a meta entry Claude Code wrote itself that gives no new task: it is
+ * marked `isMeta`, names no `origin` (a message another agent sent names one), and its text is
+ * one string or text blocks only, each starting with one of `HARMLESS_META_PREFIXES`.
+ */
+function harmlessMeta(entry: Record<string, unknown>, content: unknown): boolean {
+  if (entry.isMeta !== true || (entry.origin !== undefined && entry.origin !== null)) return false;
+  const starts = (text: unknown) =>
+    typeof text === "string" && HARMLESS_META_PREFIXES.some((prefix) => text.startsWith(prefix));
+  if (typeof content === "string") return starts(content);
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every((block) => isJsonObject(block) && block.type === "text" && starts(block.text))
+  );
+}
+
+/** True when `content` is one or more tool results and nothing else: an answer, not a prompt. */
+function onlyToolResults(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every((block) => isJsonObject(block) && block.type === "tool_result")
+  );
+}
+
+/**
+ * The prompts in a transcript's text, read forward. The brief is the first line that parses as
+ * a `user` entry with a message; a line that is not JSON before it is skipped. After it, every
+ * `user` entry is a prompt except tool results and `harmlessMeta`; a line that may be one
+ * (`USER_WORD`) but does not parse counts as a prompt with no text: the safe side. `briefOnly`
+ * stops at the brief.
+ */
+function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
+  let brief: string | null | undefined; // undefined: not seen yet
+  const later: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes(USER_WORD)) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // Before the brief: skipped, as the brief reader always has (the head read may cut the
+      // brief's own line). After it: an entry nobody can judge, so a prompt with no text.
+      if (brief !== undefined) later.push("");
+      continue;
+    }
+    if (!isJsonObject(entry) || entry.type !== "user") continue;
+    const message = isJsonObject(entry.message) ? entry.message : null;
+    if (brief === undefined) {
+      if (message === null) continue;
+      brief = messageText(message.content);
+      if (briefOnly) break;
+      continue;
+    }
+    const content = message?.content;
+    if (onlyToolResults(content) || harmlessMeta(entry, content)) continue;
+    later.push(messageText(content) ?? "");
+  }
+  return { brief: brief ?? null, later };
+}
+
+/**
  * The text of a transcript's first `user` entry: a subagent's brief. Only the file's first
  * `BRIEF_HEAD_BYTES` are read; a line that is not JSON is skipped. Null when the file cannot be
  * read or holds no such entry there.
@@ -278,17 +365,36 @@ export function firstPromptText(transcriptPath: string): string | null {
   } catch {
     return null;
   }
-  for (const line of text.split("\n")) {
-    if (line.trim() === "") continue;
-    let entry: unknown;
+  return scanPrompts(text, true).brief;
+}
+
+/**
+ * A subagent run's prompts: its brief (the first `user` entry, as `firstPromptText` finds it)
+ * and every prompt it was given after it — a resume, a message from the session that started
+ * it, Stop hook feedback, anything a person typed. Tool results and the meta entries Claude
+ * Code writes itself for a skill or a reminder (`HARMLESS_META_PREFIXES`) are no prompt. The
+ * whole file is read, forward, so a prompt far from both ends still counts. Null when the file
+ * cannot be read or is larger than `maxBytes` (default `PROMPT_SCAN_MAX_BYTES`).
+ */
+export function runPrompts(
+  transcriptPath: string,
+  maxBytes: number = PROMPT_SCAN_MAX_BYTES,
+): RunPrompts | null {
+  let text: string;
+  try {
+    const fd = openSync(transcriptPath, "r");
     try {
-      entry = JSON.parse(line);
-    } catch {
-      // A line cut by the read's end, or one that is not JSON at all.
-      continue;
+      const size = fstatSync(fd).size;
+      if (size > maxBytes) return null;
+      const buffer = Buffer.alloc(size);
+      const read = readSync(fd, buffer, 0, size, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
     }
-    if (!isJsonObject(entry) || entry.type !== "user" || !isJsonObject(entry.message)) continue;
-    return messageText(entry.message.content);
+  } catch {
+    // No transcript, or not readable: nothing is known about the run.
+    return null;
   }
-  return null;
+  return scanPrompts(text, false);
 }

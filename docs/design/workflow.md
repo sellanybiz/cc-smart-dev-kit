@@ -307,11 +307,18 @@ for a local merge, and `workflow show` prints the limits in force on one `gate f
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the
 state folder's shared lock, whose 10 s wait is as long as the hook may run.
 
-A stop records a review only when the latest user text prompt in its agent transcript
-contains `Mode: review`, alone on its line (trailing spaces and tabs allowed). Tool results
-are skipped. A resumed consult replaces the original review brief; a missing marker or
-unreadable or missing prompt records nothing. The shared transcript module reads the latest
-prompt for this hook and the initial brief for the builder hand-back hook.
+A stop records a review only for a run that was a review from start to end (`isReviewRun`).
+The agent's brief — the first user entry of its transcript — holds the line `Mode: review`
+(trailing spaces and tabs allowed), and so does every prompt it was given after the brief: a
+resume, a message from the session that started it, Stop hook feedback, anything typed. Tool
+results are no prompt, nor are the meta entries Claude Code writes itself for a skill it loads
+or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
+`src/hooks/transcript.ts`). Any other entry, an unknown meta entry included, is a prompt. The
+reader (`runPrompts`) reads the whole transcript forward, up to 16 MB, so a prompt far from
+both ends still counts. A consult, a review agent resumed for a question, a review a Stop hook
+sent back to work, and a missing, unreadable or larger transcript record nothing: the safe
+side, where the merge guard asks. The same module reads the brief alone, from the file's
+head, for the builder hand-back hook.
 
 **Who writes it: the review agent's own start and end** (`src/hooks/review-record.ts`,
 `SubagentStart` and `SubagentStop`). A record a session writes for itself is only the

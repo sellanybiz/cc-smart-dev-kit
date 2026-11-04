@@ -127,18 +127,38 @@ export function retiredReviewAgentCheck(
     ok: false,
     text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
     fix: personal
-      ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
+      ? `${REPLACE_REVIEW_AGENT}: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
       : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`,
   };
 }
 
+/**
+ * The files `pattern` finds under `folder`. A folder this user may not read (mode 000) makes
+ * the scan throw: the scan then ends with the files it found so far, so doctor still runs and
+ * reports what it could read. These are optional instruction files; one it cannot read is one
+ * Claude Code cannot load either.
+ */
+function readableMatches(pattern: string, folder: string): string[] {
+  const found: string[] = [];
+  try {
+    for (const file of new Bun.Glob(pattern).scanSync({ cwd: folder, onlyFiles: true })) {
+      found.push(file);
+    }
+  } catch {
+    // The scan stops at the folder it cannot read; the files found before it stay, and an
+    // unreadable folder is skipped as an unreadable file is below.
+  }
+  return found;
+}
+
+/** The project's add-ons, agents and skills that still name the retired review agent: a `!` each. */
 function retiredReviewMentions(projectDir: string): ProjectLine[] {
   const folder = join(projectDir, ".claude");
   if (!existsSync(folder)) return [];
-  const files = [
-    ...new Bun.Glob(`${PLUGIN}/*.md`).scanSync({ cwd: folder, onlyFiles: true }),
-    ...new Bun.Glob("{agents,skills}/**/*.md").scanSync({ cwd: folder, onlyFiles: true }),
-  ].sort();
+  // One scan per folder, so a folder that cannot be read never hides the others.
+  const files = [`${PLUGIN}/*.md`, "agents/**/*.md", "skills/**/*.md"]
+    .flatMap((pattern) => readableMatches(pattern, folder))
+    .sort();
   return files
     .filter((file) => {
       try {

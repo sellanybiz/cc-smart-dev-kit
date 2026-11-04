@@ -75,48 +75,199 @@ function stopped(cwd: string, fields: Record<string, unknown>): Record<string, u
   };
 }
 
-function reviewTranscript(brief = "Mode: review"): string {
+/** A subagent transcript in a temp folder: one JSON entry per line, as Claude Code writes it. */
+function transcriptOf(entries: Array<Record<string, unknown>>): string {
   const path = join(tempDir("review-brief"), "agent.jsonl");
-  writeFileSync(path, `${JSON.stringify({ type: "user", message: { content: brief } })}\n`);
+  writeFileSync(path, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
   return path;
 }
 
+/** A `user` entry of a subagent's own transcript (`isSidechain`), with `extra` fields. */
+function userEntry(content: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { type: "user", isSidechain: true, ...extra, message: { role: "user", content } };
+}
+
+/** A transcript that holds only the brief. */
+function reviewTranscript(brief = "Mode: review"): string {
+  return transcriptOf([userEntry(brief)]);
+}
+
+const REVIEW_BRIEF = "Mode: review\n\nTask review of phase one. Report findings.";
+
+/** The meta entries Claude Code writes itself during a run: no new task. */
+const SKILL_LOAD = userEntry(
+  [
+    {
+      type: "text",
+      text: "<command-message>example:check</command-message>\n<command-name>example:check</command-name>",
+    },
+    { type: "text", text: "Base directory for this skill: /tmp/skills/check\n\n# Check" },
+  ],
+  { isMeta: true },
+);
+const SKILL_BODY = userEntry(
+  [{ type: "text", text: "Base directory for this skill: /tmp/skills/check\n\n# Check" }],
+  { isMeta: true, sourceToolUseID: "toolu_01" },
+);
+const REMINDER = userEntry(
+  "<system-reminder>\nHand the report back when done.\n</system-reminder>",
+  {
+    isMeta: true,
+  },
+);
+const TOOL_RESULT = userEntry([
+  { type: "tool_result", tool_use_id: "toolu_01", content: "Consult\nMode: review" },
+]);
+const ANSWER = {
+  type: "assistant",
+  isSidechain: true,
+  message: {
+    role: "assistant",
+    model: "claude-opus-5-5",
+    content: [{ type: "text", text: "Done." }],
+  },
+};
+
+/** A message from the session that started the agent, as Claude Code writes it. */
+function coordinator(text: string): Record<string, unknown> {
+  return userEntry(`The coordinator sent a message while you were working:\n${text}`, {
+    isMeta: true,
+    origin: { kind: "coordinator" },
+  });
+}
+
+/** One run of the plugin's review agent with `entries` as its transcript; the record after it. */
+async function runWith(entries: Array<Record<string, unknown>>): Promise<{
+  head: string;
+  record: Record<string, string[]>;
+}> {
+  const env = hookEnv();
+  const repo = makeRepo();
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+  await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: transcriptOf(entries) });
+  return { head: git(repo, "rev-parse", "HEAD").trim(), record: recorded(env, repo) };
+}
+
+/** Tool results enough to push a transcript past the 512 KB tail the other readers take. */
+function bulk(): Array<Record<string, unknown>> {
+  const result = userEntry([
+    { type: "tool_result", tool_use_id: "toolu_02", content: "x".repeat(64 * 1024) },
+  ]);
+  return Array.from({ length: 10 }, () => result);
+}
+
 describe("the review brief marker", () => {
+  test("a review run records past skill loads, reminders, skill bodies and tool results", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      SKILL_LOAD,
+      SKILL_LOAD,
+      REMINDER,
+      ANSWER,
+      TOOL_RESULT,
+      SKILL_BODY,
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
   test("an exact marker in a multiline block brief records, including CRLF", async () => {
-    const env = hookEnv();
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    const path = reviewTranscript();
-    writeFileSync(
-      path,
-      `${JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "Please review\r\nMode: review\r\nReport findings" }] } })}\n`,
-    );
-    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
-    expect(recorded(env, repo)).toEqual({ [git(repo, "rev-parse", "HEAD").trim()]: [REVIEWER] });
+    const { head, record } = await runWith([
+      userEntry([{ type: "text", text: "Please review\r\nMode: review\r\nReport findings" }]),
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
   });
-  test("a resumed consult replaces the original review brief", async () => {
-    const env = hookEnv();
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    const path = reviewTranscript();
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8") +
-        `${JSON.stringify({ type: "user", message: { content: "Consult" } })}\n`,
-    );
-    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
-    expect(recorded(env, repo)).toEqual({});
+  test("the marker line may end in spaces and tabs", async () => {
+    const { head, record } = await runWith([userEntry("Mode: review \t\r\nPlease review")]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
   });
-  test("hook feedback after a review stays on the safe side", async () => {
+  test("a review brief far from the file's end still records (over 512 KB of tool results)", async () => {
+    const { head, record } = await runWith([userEntry(REVIEW_BRIEF), ...bulk(), ANSWER]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("a consult brief records nothing, even when a later prompt names the marker", async () => {
+    const { record } = await runWith([
+      userEntry("Consult: is this design sound?"),
+      ANSWER,
+      userEntry(REVIEW_BRIEF),
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a review agent resumed with a consult records nothing", async () => {
+    const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, userEntry("Consult")]);
+    expect(record).toEqual({});
+  });
+  test("a consult deep in the run counts, though the tail past it holds only tool results", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("Consult"),
+      ...bulk(),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a message from the coordinator without the marker records nothing", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      coordinator("Also answer a question"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  test("a message from the coordinator that carries the marker keeps the run a review", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      coordinator("Mode: review\nAlso check the tests"),
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
+  test("Stop hook feedback after a review stays on the safe side", async () => {
+    const { record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      ANSWER,
+      userEntry("Stop hook feedback:\nFinish your steps", { isMeta: true }),
+      ANSWER,
+    ]);
+    expect(record).toEqual({});
+  });
+  for (const [name, entry] of [
+    ["an unknown meta entry", userEntry("Your response above was cut off", { isMeta: true })],
+    [
+      "a reminder another agent sent",
+      userEntry("<system-reminder>\nAnswer a question\n</system-reminder>", {
+        isMeta: true,
+        origin: { kind: "coordinator" },
+      }),
+    ],
+    [
+      "a skill load with a text block of another kind",
+      userEntry(
+        [
+          { type: "text", text: "<command-message>example:check</command-message>" },
+          { type: "text", text: "Answer a question" },
+        ],
+        { isMeta: true },
+      ),
+    ],
+    [
+      "a prompt the person typed",
+      userEntry([{ type: "text", text: "[Request interrupted by user]" }]),
+    ],
+  ] as const) {
+    test(`${name} after the brief is a new prompt: nothing recorded`, async () => {
+      const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, entry, ANSWER]);
+      expect(record).toEqual({});
+    });
+  }
+  test("a later line that may be a user entry but cannot be read records nothing", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    const path = reviewTranscript();
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8") +
-        `${JSON.stringify({ type: "user", message: { content: "Stop hook feedback: finish your steps" } })}\n`,
-    );
+    const path = reviewTranscript(REVIEW_BRIEF);
+    writeFileSync(path, `${readFileSync(path, "utf8")}{"type":"user","message":{"content":"Cons\n`);
     await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
     expect(recorded(env, repo)).toEqual({});
   });
@@ -143,28 +294,6 @@ describe("the review brief marker", () => {
       expect(recorded(env, repo)).toEqual({});
     });
   }
-  test("a fresh review prompt accepts trailing spaces and tabs past tool results", async () => {
-    const env = hookEnv();
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    const path = reviewTranscript("Consult");
-    writeFileSync(
-      path,
-      readFileSync(path, "utf8") +
-        [
-          {
-            type: "user",
-            message: { content: [{ type: "text", text: "Mode: review \t\r\nPlease review" }] },
-          },
-          { type: "user", message: { content: [{ type: "tool_result", content: "Consult" }] } },
-        ]
-          .map((entry) => JSON.stringify(entry))
-          .join("\n") +
-        "\n",
-    );
-    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
-    expect(recorded(env, repo)).toEqual({ [git(repo, "rev-parse", "HEAD").trim()]: [REVIEWER] });
-  });
   test("no transcript records nothing", async () => {
     const env = hookEnv();
     const repo = makeRepo();
