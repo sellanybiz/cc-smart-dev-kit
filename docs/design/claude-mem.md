@@ -8,6 +8,18 @@ seeds `"true"` itself, so a `"true"` setup never wrote over is no choice). It wi
 to move open lists. Restore undoes only managed changes. Memory still uses `save_memory`;
 work notes and to-dos use the kit's task tools. Doctor checks that split.
 
+Setup also keeps `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false"`. The kit owns instruction
+routing, and the memory-use block still points at the retired `work_state_write` tools.
+The overflow in [#5180](https://github.com/thedotmack/claude-mem/issues/5180) was fixed in
+claude-mem 15.7.0 (PR #5181); it is no longer the reason to disable the block.
+Recall uses `/claude-mem:mem-search` (`search` → `timeline` → `get_observations`), then
+`save_memory` for a new lasting fact. `mem_search` was removed in 15.0.0.
+
+Doctor reads `CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH` from claude-mem's settings, including the
+configured data directory and old nested form. My Work auto-refresh defaults on and can
+run logged-in agents outside the note-taker route shown by the kit. Doctor reports this as
+information, not a failure. Set the key to `"false"` to turn it off; setup leaves it alone.
+
 ## D68's earlier split
 
 The rest of this section records D68, not the current setup contract. D68 (2026-10-29)
@@ -39,9 +51,9 @@ budget guarantee comes from its CHANGELOG.
     before a save, and where an instruction for next time goes instead.
   - It writes a to-do with `work_state_write`; a lead writes its own with `TaskCreate`.
 
-  claude-mem has been asked to count the block in its budget without TeamBrain too
-  ([thedotmack/claude-mem#5180](https://github.com/thedotmack/claude-mem/issues/5180)). Once a
-  release does, the block can come back on.
+  At the time, #5180 asked claude-mem to budget the block without TeamBrain too. Version
+  15.7.0 fixed that overflow. D75 still keeps the block off for instruction ownership,
+  rather than restoring it as D68 had proposed.
 - **Doctor explains the source.** The start-blocks line fails when the unchosen memory-use
   block is on or work state is still off from an older setup, with `cc-smart-dev-kit setup`
   as the fix. A person's value is information, not a failure. The task-tools line belongs to

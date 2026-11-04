@@ -1,6 +1,6 @@
 ---
 name: extract-or-duplicate
-description: Use when similar logic shows up in two or more places, when placing a new file, or when picking the layer for a new helper or component. Decides extract now or wait, where the shared piece lives, and how it is named. Trigger phrases - "where should this go", "duplicate code", "similar logic", "extract", "new file", "new component".
+description: Use for duplicate or similar logic, placing a new file, helper or component, or choosing its layer. Decides whether and where to extract. Triggers include "where should this go", "duplicate code", "extract", "new component".
 ---
 
 # Placement, Naming, Extract Or Duplicate

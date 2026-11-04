@@ -1,6 +1,6 @@
 ---
 name: gateway
-description: Use when the person wants another model behind Claude Code's subagents or main session, wants to switch the model behind a slot, hits the plan's usage limit, or when the local AI gateway (cc-smart-dev-kit-router), OmniRoute or a backend model misbehaves. Covers setting it up, giving a slot (scout, worker, opus, fable, judge) a chain, each slot's fallback and breaker switches, the judge for auto mode, the status line, the usage report, checking health, turning it on or off, running one session on plain Claude, the gateway or a profile (`launch`), and what never to do. Trigger phrases - "use another model for subagents", "switch back to Claude subagents", "which models can I use", "ai gateway", "cc-smart-dev-kit-router", "the router is down", "subagents are failing", "usage limit", "hit my limit", "every target is limited", "use another model until it resets", "how much is on Opus".
+description: Use for the AI gateway, cc-smart-dev-kit-router or OmniRoute to set up or switch models for subagents or the main session, diagnose failures and usage limits, check health or usage, or launch on plain Claude or a profile. Triggers include "switch models", "router is down", "subagents are failing", "usage limit", "every target is limited".
 ---
 
 # The AI Gateway

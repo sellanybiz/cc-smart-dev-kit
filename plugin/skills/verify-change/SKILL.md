@@ -1,6 +1,6 @@
 ---
 name: verify-change
-description: Use after a batch of code edits, while you are still building - the cheap loop. Read your own diff, check only what you changed (its tests, its lint, its type errors), check the blast radius of anything shared, run the full check once at the end (the session's own, never a subagent's), and at the plan's end test with the person what only they can judge. Not for a turn that edited no code; the deeper pass before a commit is the review skill. Trigger phrases - "run the tests", "check my changes", "does it still work", "implementation complete".
+description: Use after code edits to check changed files and shared callers; the main session owns the final full check. Not for a turn with no code changes or a deeper review. Triggers include "run the tests", "check my changes", "does it still work", "implementation complete".
 ---
 
 # Verify A Change — The Cheap Loop
