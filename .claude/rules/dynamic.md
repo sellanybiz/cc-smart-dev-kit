@@ -33,6 +33,7 @@ exactly where a copied value can slip in. The general rule for every project is 
 ## The limit
 
 Make a value configurable when people or projects really differ; a knob for a guessed future is
-its own defect (`plugin/instructions/core.md` § Best by default). `check:neutral`,
+its own defect (`plugin/instructions/core.md` § Core principles: "configurable only where people
+or projects really differ"). `check:neutral`,
 `check:duplicates` and `check:core-lines` are the mechanical half of this rule; the review is
 the rest.
