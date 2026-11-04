@@ -229,7 +229,7 @@ describe("the review-split workflow", () => {
       args: { base: "main", budget: 1, tracks: ["craft"] },
     });
     expect(String(run.result)).toContain(
-      "No checked finding was confirmed; 1 are listed under Hunches. The unchecked ones are listed below.",
+      "No checked finding was confirmed; 1 is listed under Hunches. The unchecked ones are listed below.",
     );
   });
 

@@ -173,7 +173,8 @@ finding confirmed, the headline points to the Hunches. A refuted one is counted 
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
 call, so the run's return records the review for the merge guard (Claude Code's nudge to make
-that call, `[structured-output-enforce]`, is no new prompt: `src/hooks/transcript.ts`); a
+that call, `[structured-output-enforce] …`, matched as its whole text, is no new prompt:
+`src/hooks/transcript.ts`); a
 refuter's brief has no marker, because it checks one finding, not the whole change
 (`src/workflows/review-split.test.ts` fails when either link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every

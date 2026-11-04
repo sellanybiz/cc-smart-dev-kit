@@ -260,7 +260,7 @@ return [
   verified.length > 0
     ? `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`
     : unprovenHunches.length > 0
-      ? `No checked finding was confirmed; ${unprovenHunches.length} are listed under Hunches.${unchecked.length === 0 ? '' : ' The unchecked ones are listed below.'}`
+      ? `No checked finding was confirmed; ${unprovenHunches.length} ${unprovenHunches.length === 1 ? 'is' : 'are'} listed under Hunches.${unchecked.length === 0 ? '' : ' The unchecked ones are listed below.'}`
       : unchecked.length === 0
         ? 'No finding survived refutation.'
         : 'No checked finding survived refutation; the unchecked ones are listed below.',
