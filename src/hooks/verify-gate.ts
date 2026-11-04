@@ -11,8 +11,8 @@
  * fails does not trap the turn.
  *
  * **The session's own transcript is the record.** The hook reads it as JSONL, line by line,
- * in order: a `tool_use` of Edit, Write or NotebookEdit is a change (unless its result was an
- * error: a refused or failed edit changed nothing); a `tool_use` of Bash or PowerShell whose
+ * in order: an Edit, Write or NotebookEdit of code inside the current checkout is a change
+ * (not Markdown, a plan, or a refused or failed call); a `tool_use` of Bash or PowerShell whose
  * line runs the check (`ranCheck`, through the one shell reader) is the check. A change after
  * the check — or with no check at all — is the block. Only the session's own work counts: a
  * subagent keeps its own transcript, and a sidechain line is skipped.
@@ -27,8 +27,11 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
+import { extname, join, resolve } from "node:path";
+import { cliPaths } from "../cli/paths";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { readJsonObject } from "../setup/managed-json";
 import {
   type Dialect,
   dialectOfTool,
@@ -39,7 +42,9 @@ import {
   shellSteps,
   wordsOf,
 } from "../shell/command";
+import { isInside, realPath } from "./git";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
+import { editedFile } from "./main-folder-guard";
 import type { Env, HookContext } from "./run";
 import { STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
 
@@ -174,7 +179,11 @@ export interface SeenIn {
 }
 
 /** The transcript's last change, last check and last reminder of this hook, from its lines. */
-export function seenIn(lines: readonly string[], check: string): SeenIn {
+export function seenIn(
+  lines: readonly string[],
+  check: string,
+  countsEdit: (block: Record<string, unknown>) => boolean,
+): SeenIn {
   const seen: SeenIn = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
   const failed = failedCalls(lines);
   for (let index = 0; index < lines.length; index += 1) {
@@ -194,7 +203,7 @@ export function seenIn(lines: readonly string[], check: string): SeenIn {
     for (const block of toolUses(record)) {
       const name = stringField(block.name);
       if (name !== null && (CHANGE_TOOLS as readonly string[]).includes(name)) {
-        if (!failed.has(stringField(block.id) ?? "")) seen.lastEdit = index;
+        if (!failed.has(stringField(block.id) ?? "") && countsEdit(block)) seen.lastEdit = index;
         continue;
       }
       // A shell line only: Bash or PowerShell, in that tool's own dialect.
@@ -214,6 +223,7 @@ export function seenIn(lines: readonly string[], check: string): SeenIn {
 export function verifyGateWouldBlock(
   input: HookInput,
   config: CcSmartDevKitConfig | null,
+  env: Env,
 ): boolean {
   // A project that never opted in must not notice the plugin.
   if (config === null) return false;
@@ -228,7 +238,34 @@ export function verifyGateWouldBlock(
   // Fail open: without the transcript the hook cannot tell what changed.
   const lines = tailLines(transcript, VERIFY_GATE_TAIL_BYTES);
   if (lines === null) return false;
-  const seen = seenIn(lines, check);
+  const cwd = stringField(input.cwd);
+  if (cwd === null) return false;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null) return false;
+  const root = realPath(checkout.root);
+  const paths = cliPaths(env);
+  let plans = join(paths.claudeConfigDir, "plans");
+  for (const settings of [
+    paths.settingsFile,
+    join(root, ".claude/settings.json"),
+    join(root, ".claude/settings.local.json"),
+  ]) {
+    const configured = stringField(readJsonObject(settings).data.plansDirectory);
+    if (configured !== null)
+      plans = configured.startsWith("~/")
+        ? join(paths.home, configured.slice(2))
+        : resolve(root, configured);
+  }
+  const excluded = [realPath(plans), realPath(join(root, ".claude/plans"))];
+  const seen = seenIn(lines, check, (block) => {
+    const file = editedFile({ tool_input: block.input }, cwd);
+    return (
+      file !== null &&
+      isInside(file, root) &&
+      ![".md", ".mdx"].includes(extname(file).toLowerCase()) &&
+      !excluded.some((folder) => isInside(file, folder))
+    );
+  });
   // One reminder per change: a change already reminded about earns no second one, and a
   // change made after that reminder earns the next one.
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
@@ -240,7 +277,9 @@ export function verifyGateWouldBlockAt(input: HookInput, env: Env): boolean {
   if (cwd === null) return false;
   try {
     const checkout = locateCheckout(cwd, { env });
-    return checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config);
+    return (
+      checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config, env)
+    );
   } catch {
     // A project that cannot be read asks nothing of a sibling hook either.
     return false;
@@ -249,7 +288,7 @@ export function verifyGateWouldBlockAt(input: HookInput, env: Env): boolean {
 
 export function verifyGate(context: HookContext): HookResult {
   if (context.event !== "Stop") return SILENT;
-  if (!verifyGateWouldBlock(context.input, context.project.config)) return SILENT;
+  if (!verifyGateWouldBlock(context.input, context.project.config, context.env)) return SILENT;
   const check = context.project.config?.checks?.fast ?? "";
   return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
 }

@@ -47,6 +47,7 @@ import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
+import { cappedHookList } from "./builder-finish";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
@@ -95,26 +96,32 @@ export function keepGoingReason(
   ready: readonly PhaseRef[],
 ): string {
   const one = inProgress.length === 1;
-  const refs = inProgress.map((phase) => `#${phase.number}`).join(", ");
-  const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
+  const shown = inProgress.slice(0, 8);
+  const refs = shown.map((phase) => `#${phase.number}`).join(", ");
+  const names = cappedHookList(inProgress, named, TASK_TOOL.list);
+  const head = one
+    ? `Phase ${names} is still in progress, and no subagent runs.`
+    : `${inProgress.length} phases are still in progress, and no subagent runs: ${names}.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
   const next = ready[0];
   const options: string[] = [];
-  for (const phase of inProgress) {
+  for (const phase of shown) {
     if (phase.agent !== null) {
       options.push(
         `resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`,
       );
     }
   }
-  const fresh = inProgress.filter((phase) => phase.agent === null);
+  const fresh = shown.filter((phase) => phase.agent === null);
   if (fresh.length > 0) {
     options.push(
       `start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`,
     );
   }
   if (next !== undefined) options.push(`start ${named(next)} now (dispatch its builder)`);
-  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(
+    `close ${inProgress.length > shown.length ? "every phase (including those not shown)" : refs} with \`${TASK_TOOL.done}\``,
+  );
   options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
   const recovery = options.join(", ");
   return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;

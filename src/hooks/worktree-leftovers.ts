@@ -42,6 +42,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
+import { cappedHookList } from "./builder-finish";
 import {
   GUARD_GIT_TIMEOUT_MS,
   hasChanges,
@@ -142,14 +143,16 @@ export function leftoversNote(
   if (finished.length > 0) {
     // A worktree the last background clean looked at and kept (a program runs from it, say)
     // is named with its reason, so the person is not told it can go when it cannot yet.
-    const names = finished
-      .map((worktree) => {
+    const names = cappedHookList(
+      finished,
+      (worktree) => {
         const why = keptBy.get(worktree.path);
         return why === undefined
           ? basename(worktree.path)
           : `${basename(worktree.path)} (kept by the last clean: ${why})`;
-      })
-      .join(", ");
+      },
+      "git worktree list --porcelain",
+    );
     const count =
       finished.length === 1
         ? "1 finished worktree is"
@@ -161,7 +164,7 @@ export function leftoversNote(
   }
   if (gone.length > 0) {
     parts.push(
-      `${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`,
+      `${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${cappedHookList(gone, (worktree) => worktree.path, "git worktree list --porcelain")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`,
     );
   }
   return parts.length === 0 ? null : parts.join("\n");

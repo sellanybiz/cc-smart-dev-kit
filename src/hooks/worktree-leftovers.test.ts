@@ -15,6 +15,27 @@ import { autoCleanFiles, recordRun, recordStart } from "../worktrees/auto-state"
 import { worktreeLeftoversHook } from "./specs";
 import { leftoversNote } from "./worktree-leftovers";
 
+test.each([8, 10])("caps each worktree list at eight (%i total)", (count) => {
+  const trees = Array.from({ length: count }, (_, index) => ({
+    path: `/repo/wt-${index + 1}`,
+    head: "abc",
+    branch: "topic",
+    locked: false,
+    prunable: false,
+  }));
+  const text = leftoversNote("main", trees, trees);
+  expect(text).toContain(
+    `${count} finished worktrees are left in this repo: wt-1, wt-2, wt-3, wt-4, wt-5, wt-6, wt-7, wt-8`,
+  );
+  expect(text).toContain(
+    `${count} worktrees are still listed, but their folders are gone: /repo/wt-1, /repo/wt-2, /repo/wt-3, /repo/wt-4, /repo/wt-5, /repo/wt-6, /repo/wt-7, /repo/wt-8`,
+  );
+  expect(text).not.toContain("wt-9");
+  expect(text?.split("+2 more: git worktree list --porcelain").length).toBe(count === 10 ? 3 : 1);
+  expect(text).toContain("`cc-smart-dev-kit worktrees --clean`");
+  expect(text).toContain("`git worktree prune`");
+});
+
 /** Makes git's own files of a worktree look an hour and a half old. */
 function makeIdle(worktree: string): void {
   const admin = resolve(

@@ -87,6 +87,25 @@ describe("the hook", () => {
     expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
   });
 
+  test("one unnamed prompt reminder per context, reset by compact and clear starts", async () => {
+    const { repo, env } = setup();
+    const expected = {
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "UserPromptSubmit",
+          additionalContext: `This session has no name yet. Name it once, as soon as its main task is clear: people and other sessions find it by this name in ListAgents and /resume. Run: cc-smart-dev-kit session-name ${SESSION} "<the task, in a few words>"`,
+        },
+      }),
+    };
+    for (const source of ["startup", "compact", "clear"]) {
+      expect((await runHook(sessionNameHook, { ...start(repo), source }, env)).stdout).toContain(
+        "This session has no name yet.",
+      );
+      expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual(expected);
+      expect(await runHook(sessionNameHook, prompt(repo), env)).toEqual({});
+    }
+  });
+
   test("off unless cc-smart-dev-kit.json turns it on", async () => {
     const { repo, env } = setup(false);
     expect(await runHook(sessionNameHook, start(repo), env)).toEqual({});
