@@ -47,8 +47,6 @@ import { agentTypeOf } from "./review-record";
 import type { HookContext } from "./run";
 import { firstPromptText } from "./transcript";
 
-export { firstPromptText } from "./transcript";
-
 /**
  * The ends of the agent types this hook judges: the plugin's builder
  * (`cc-smart-dev-kit:builder`) and its rules-maintainer (`cc-smart-dev-kit:rules-maintainer`).

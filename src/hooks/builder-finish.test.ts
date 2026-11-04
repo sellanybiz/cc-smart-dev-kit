@@ -15,8 +15,9 @@ import { createTask, updateTask } from "../tasks/work/store";
 import type { Result, WorkTask, WorkType } from "../tasks/work/types";
 import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { briefTaskNumber, firstPromptText, handBackReason } from "./builder-finish";
+import { briefTaskNumber, handBackReason } from "./builder-finish";
 import { builderFinishHook } from "./specs";
+import { firstPromptText } from "./transcript";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const AGENT = "0a1b2c3d4e5f60718";
