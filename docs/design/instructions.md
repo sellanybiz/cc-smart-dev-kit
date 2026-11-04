@@ -203,16 +203,26 @@ agent starts.
 **Agents pin no model and no effort.** The caller passes both on each launch, so an agent
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
-in its context from the start (proved live: `claude-code-contract.md` § Instructions). All
-five load `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
+in its context from the start (proved live: `claude-code-contract.md` § Instructions). Every
+agent loads `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
 file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
-loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when. The `reviewer` does not
-load the review skill: half of it is the author's (commit, fix, start the reviewer), which
-contradicts a read-only agent. It reads the review dimensions, edge-case axes and severity
-scale from `skills/review/references/axes.md` instead, found from the base directory Claude
-Code prints above each loaded skill (the plugin's folder has the version in its name, so no
-fixed path reaches it). `auditor` reads the same axes file the same way. No agent has `memory:`
-(only the main session saves memories) or `Agent` (an agent starts no agents).
+loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when. The
+`senior-engineer` does not load the review skill: half of it is the author's (commit, fix, start
+the second opinion), which contradicts a reviewer that writes its findings before it touches anything.
+It reads the review dimensions, edge-case axes and severity scale from
+`skills/review/references/axes.md` instead, found from the base directory Claude Code prints
+above each loaded skill (the plugin's folder has the version in its name, so no fixed path
+reaches it). `auditor`, `edge-case-hunter` and `ui-verifier` read the same axes file the same
+way. No agent has `memory:` (only the main session saves memories). No agent starts agents,
+except the senior engineer, which may start read-only research agents: the `researcher` for a
+question outside the repo, `Explore` for a search inside it.
+
+`researcher` (2.2.0) is the read-only R&D agent: one question, answered from current primary
+sources (docs, changelogs, release notes, source code, specs), each claim cited with its URL and
+marked confirmed or not. Before it, the research sweep borrowed the auditor, whose job is defects
+in code, and only the senior engineer researched the web. Its § How to research is the one home
+of the method for agents; the senior engineer points to it, and the lead's own method stays in
+`research-first`.
 
 **The tools each agent has: every tool of the session, less a short deny list** (the owner,
 2026-10-27). An agent file names no `tools:`, so the agent inherits the session's whole set, its
@@ -222,11 +232,13 @@ for a builder. Each file's `disallowedTools` takes out only what its role forbid
 
 | Agent | Denied | Why |
 |---|---|---|
-| `reviewer` | Edit, Write, NotebookEdit, AskUserQuestion | read-only: it reports, the caller fixes; only the main session asks the person |
-| `auditor` | Edit, Write, NotebookEdit, AskUserQuestion | a read-only sweep |
+| `senior-engineer` | nothing | it reviews, and a consult may fix or build; its text keeps a review's findings ahead of any fix (the owner, 2.2.0) |
+| `auditor` | Edit, Write, NotebookEdit, AskUserQuestion | a read-only sweep; only the main session asks the person |
+| `edge-case-hunter` | Edit, Write, NotebookEdit, AskUserQuestion | it lists the scenarios; the author designs the fix |
+| `researcher` | Edit, Write, NotebookEdit, AskUserQuestion | it reports sources and claims; it changes nothing |
 | `ui-verifier` | Edit, Write, NotebookEdit, AskUserQuestion | facts only, no fix |
-| `builder` | AskUserQuestion | builds code; an open question goes back in its hand-back |
-| `rules-maintainer` | AskUserQuestion | the same |
+| `builder` | AskUserQuestion, Agent | builds code; an open question goes back in its hand-back, and it starts no agents |
+| `rules-maintainer` | AskUserQuestion | the same as the builder's first reason |
 
 The list names only tools every session has. In a Workflow run, an entry that matches no tool
 in the session only logs a warning, and a deny list that took out the structured-output tool
