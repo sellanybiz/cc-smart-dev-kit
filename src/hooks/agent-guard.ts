@@ -45,7 +45,7 @@
  * | Claude Sonnet or Haiku (the gateway off, the family's slot off, or its chain starting with a `claude-…` model) | allow (the effort rule above still holds) |
  * | the `opus` tier | read as the Opus family (the `opus` name, a Claude Opus id, the opus slot, an id the person's own override names for it): effort `medium`, `high` or `xhigh`: allow, for any agent and any purpose; effort `max`: **ask** (the person approves each one, and sees the model and the effort); a fork names no effort: it runs at the session's own, which the person chose, so it is allowed. A reading with no family (a name no rule knows, an id the guard cannot read): **ask** at any effort — it may stand for a higher tier |
  * | the `fable` tier | a read-only agent type with a prompt line `Fable reason: <one of FABLE_REASONS> - <why>`, and a person to answer: **ask** (the word `build` is not one of them: a read-only agent never builds); an agent that can change files (any other type, a fork included) with `Fable reason: build - <why>`: **ask** (the person asked for it); no line, a builder without the word `build`, or a session nobody watches (`claude -p`): deny |
- * | no `model` / no `effort` | deny (a launch that names neither would inherit the session's, which nobody chose) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
+ * | no readable `model` / `effort` in the call or agent definition | deny (the call's, else the agent definition's choice must be readable) — except a `fork`, which always inherits both, and a launch whose model or effort one of Claude Code's overrides sets (below) |
  * | a launch that declares UI/UX work (`Opus reason: ui`, `Fable reason: ui-design`) | allow only on the `opus` or `fable` tier at `high`, `xhigh` or `max` (`UI_POLICY`, D50); anything else — Sonnet, Haiku, an affordable slot, or a tier below `high` — is denied with the rule in words |
  * | a session nobody watches (`claude -p`) | every premium launch that would ask is denied (there is nobody to approve it): the `opus` tier at `max` says to run it at `medium`, `high` or `xhigh`, or in an interactive session; a reading with no family says to name `opus`; the Opus family below `max` stays allowed |
  *
@@ -118,7 +118,6 @@
  * (`workflowRefusal`, `judgeWorkflowCall`).
  */
 
-import { existsSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import {
   type GatewayConfig,
@@ -194,7 +193,13 @@ const BUILDER_WORDS = [FABLE_BUILD_REASON] as const;
  * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
  * files and needs the one word `build` (`FABLE_BUILD_REASON`).
  */
-export const READ_ONLY_AGENTS = ["Plan", "Explore", "auditor"] as const;
+export const READ_ONLY_AGENTS = [
+  "Plan",
+  "Explore",
+  "auditor",
+  "edge-case-hunter",
+  "researcher",
+] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
@@ -282,6 +287,8 @@ export interface WorkflowLaunch {
   agentType: null | string;
   effort: null | string;
   model: null | string;
+  /** A policy key exists but is not a string literal; never replace it with frontmatter. */
+  unreadable?: string;
   /** The prompt, when the first argument is a string literal; null otherwise. */
   prompt: null | string;
   /** How the message names this launch: its `label`, else the first words of its prompt. */
@@ -651,7 +658,12 @@ export function readWorkflowScript(script: string): WorkflowLaunch[] {
     const call = callText(script, open);
     const prompt = firstArgument(call);
     const label = stringOption(call, "label");
+    const keys = readOptions(call).keys;
+    const unreadable = ["model", "effort", "agentType"].find(
+      (key) => keys.has(key) && stringOption(call, key) === null,
+    );
     launches.push({
+      ...(unreadable === undefined ? {} : { unreadable }),
       agentType: stringOption(call, "agentType"),
       effort: stringOption(call, "effort"),
       model: stringOption(call, "model"),
@@ -703,6 +715,23 @@ export function judgeWorkflow(
   from: null | string = null,
 ): WorkflowResult[] {
   return readWorkflowScript(script).map((launch) => {
+    if (launch.unreadable !== undefined) {
+      return {
+        from,
+        launch,
+        verdict: {
+          ...deny(
+            null,
+            `This Workflow launch's \`${launch.unreadable}\` is not a string literal the guard can read. Write policy options as string literals.`,
+          ),
+          ran: effectiveLaunch(
+            { model: null, effort: null, fork: false, workflow: true },
+            env,
+            ctx.sessionModel,
+          ),
+        },
+      };
+    }
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
     // A model the script builds at run time cannot be read by a hook: refused, never guessed —
     // unless an override names the model it runs on whatever the script says.
@@ -1089,7 +1118,9 @@ function modelNote(ran: EffectiveLaunch): null | string {
 
 /** Said when `CLAUDE_CODE_EFFORT_LEVEL` sets the effort the launch runs at. */
 function effortNote(ran: EffectiveLaunch): null | string {
-  if (ran.effortFrom === null || ran.effortFrom === "frontmatter") return null;
+  if (ran.effortFrom === "frontmatter")
+    return "(from the agent's frontmatter; pass `effort` on the call to override it)";
+  if (ran.effortFrom === null) return null;
   return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
 }
 
@@ -1346,17 +1377,26 @@ export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
 export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   const cwd = stringField(input.cwd);
-  let checkout: null | string = null;
-  try {
-    if (cwd !== null && existsSync(cwd)) checkout = locateCheckout(cwd)?.root ?? cwd;
-  } catch {
-    // A stale or non-directory cwd supplies no project definition; user definitions still apply.
-    checkout = null;
-  }
+  const definitions = new Map<string, AgentDefinition | null>();
+  const definition = (name: null | string): AgentDefinition | null => {
+    if (name === null) return null;
+    if (definitions.has(name)) return definitions.get(name) ?? null;
+    let found: AgentDefinition | null = null;
+    try {
+      // Qualified plugin names never need a project scan or git lookup.
+      const checkout =
+        !name.includes(":") && cwd !== null ? (locateCheckout(cwd)?.root ?? cwd) : null;
+      found = agentDefinition(name, { paths, checkout, cwd });
+    } catch {
+      // A failed checkout lookup makes the entire definition unknown, not user-only.
+    }
+    definitions.set(name, found);
+    return found;
+  };
   return {
     config,
     gatewayOn,
-    definition: (name) => agentDefinition(name, { paths, checkout }),
+    definition,
     // The session's own model, for a fork: what last answered, else the model the session was
     // started on, else unknowable.
     sessionModel: sessionModelOf(input, env),

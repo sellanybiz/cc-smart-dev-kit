@@ -51,7 +51,7 @@ function modelName(real: LaunchModel): string {
 }
 
 /** The note's last line: how to choose, and the two launches the guard asks about. */
-export const TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch ask the person.`;
+export const TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
 
 /** The note's line for one tier: the tier and the model behind it. */
 export function tierLine(tier: (typeof TIERS)[number], gateway: GatewayFacts, env: Env): string {

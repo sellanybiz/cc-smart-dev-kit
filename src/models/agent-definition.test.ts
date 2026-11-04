@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
@@ -13,10 +13,15 @@ function write(file: string, text: string): void {
 function place() {
   const home = tempDir("agent-definitions");
   const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
-  return { paths, checkout: join(home, "repo") };
+  return {
+    paths,
+    checkout: join(home, "repo"),
+    managedAgentsDir: join(home, "managed", ".claude", "agents"),
+  };
 }
 
-const PINNED = "---\nname: checker\nmodel: sonnet\neffort: high\n---\nRead only.\n";
+const PINNED =
+  "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\nRead only.\n";
 
 describe("agent definitions", () => {
   it("matches frontmatter name, not filename, in project and user folders", () => {
@@ -34,7 +39,7 @@ describe("agent definitions", () => {
     write(join(p.paths.claudeConfigDir, "agents", "user.md"), PINNED);
     write(
       join(p.checkout, ".claude", "agents", "project.md"),
-      "---\nname: checker\nmodel: inherit\n---\n",
+      "---\nname: checker\ndescription: Check.\nmodel: inherit\n---\n",
     );
     expect(agentDefinition("checker", p)).toEqual({ model: null, effort: null });
   });
@@ -67,6 +72,43 @@ describe("agent definitions", () => {
     write(join(p.checkout, ".claude", "agents", "bad.md"), "---\nname: [\n---\n");
     expect(agentDefinition("sdk-only", p)).toBeNull();
     expect(agentDefinition("bad", p)).toBeNull();
+  });
+
+  it("skips invalid local definitions and never lets a qualified name claim a local file", () => {
+    for (const scope of ["project", "user"]) {
+      for (const name of ["checker", "-checker", "probe:checker", "x".repeat(257)]) {
+        const p = place();
+        const root = scope === "project" ? join(p.checkout, ".claude") : p.paths.claudeConfigDir;
+        const text = name === "checker" ? PINNED.replace("description: Check.\n", "") : PINNED;
+        write(join(root, "agents", "bad.md"), text.replace("checker", name));
+        expect(agentDefinition(name, p)).toBeNull();
+      }
+    }
+  });
+
+  it("nearest project and then managed definitions win as whole definitions", () => {
+    const p = place();
+    const cwd = join(p.checkout, "src", "nested");
+    write(join(p.checkout, ".claude", "agents", "root.md"), PINNED);
+    write(join(cwd, ".claude", "agents", "nested.md"), PINNED.replace("sonnet", "haiku"));
+    expect(agentDefinition("checker", { ...p, cwd })).toEqual({ model: "haiku", effort: "high" });
+    const managedAgentsDir = join(p.paths.home, "managed", ".claude", "agents");
+    write(join(managedAgentsDir, "managed.md"), PINNED.replace("sonnet", "opus"));
+    expect(agentDefinition("checker", { ...p, cwd, managedAgentsDir })).toEqual({
+      model: "opus",
+      effort: "high",
+    });
+  });
+
+  it("follows symlinked files and directories without looping", () => {
+    const p = place();
+    const folder = join(p.checkout, ".claude", "agents");
+    const source = join(p.paths.home, "source.md");
+    write(source, PINNED);
+    mkdirSync(folder, { recursive: true });
+    symlinkSync(source, join(folder, "linked.md"));
+    symlinkSync(folder, join(folder, "loop"), "dir");
+    expect(agentDefinition("checker", p)).toEqual({ model: "sonnet", effort: "high" });
   });
 
   it("fixed built-ins supply models, dynamic built-ins do not guess", () => {

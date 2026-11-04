@@ -110,6 +110,45 @@ describe("frontmatter launch fields", () => {
     expect(workflow[0]?.verdict.decision).toBe("allow");
   });
 
+  it("denies nonliteral Workflow fields before reading a definition", () => {
+    for (const field of ["model: chosen", "effort: chosen", "agentType: chosen"]) {
+      let reads = 0;
+      const ctx: GuardContext = {
+        ...CTX,
+        definition: () => {
+          reads += 1;
+          return { model: "sonnet", effort: "high" };
+        },
+      };
+      const result = judgeWorkflow(`await agent("check", { ${field} });`, ctx, NO_ENV)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(reads).toBe(0);
+    }
+  });
+
+  it("read-only specialist agents can advise on Fable with review", () => {
+    for (const name of ["cc-smart-dev-kit:edge-case-hunter", "cc-smart-dev-kit:researcher"]) {
+      const result = verdict({
+        subagent_type: name,
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - check it",
+      });
+      expect(result.decision).toBe("ask");
+    }
+  });
+
+  it("a senior engineer on Fable needs build, not review", () => {
+    const result = verdict({
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
+      model: "fable",
+      effort: "high",
+      prompt: "Fable reason: review - check it",
+    });
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("build");
+  });
+
   it("refuses unseen SDK agents, inherit, and missing effort with accurate text", () => {
     expect(verdict({ subagent_type: "sdk-only" }).reason).toStartWith(
       "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
@@ -128,7 +167,7 @@ describe("frontmatter launch fields", () => {
     mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
     writeFileSync(
       join(cwd, ".claude", "agents", "checker.md"),
-      "---\nname: checker\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
+      "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
     );
     const input = { ...agentCall({ subagent_type: "checker" }), cwd };
     const ctx = readGuardContext(paths, input, NO_ENV);
@@ -139,12 +178,34 @@ describe("frontmatter launch fields", () => {
     ).toBe("allow");
   });
 
+  it("caches definitions once per hook run and fails the whole lookup on a bad cwd", () => {
+    const home = tempDir("definition-cache");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const folder = join(paths.claudeConfigDir, "agents");
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "checker.md");
+    writeFileSync(
+      file,
+      "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\n",
+    );
+    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV);
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    writeFileSync(file, "---\nname: checker\ndescription: Check.\nmodel: opus\n---\n");
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV);
+    expect(bad.definition?.("checker")).toBeNull();
+    expect(bad.definition?.("claude-code-guide")).toBeNull();
+  });
+
   it("frontmatter auto or low is not an environment override", () => {
     for (const effort of ["auto", "low"]) {
       const ctx: GuardContext = { ...CTX, definition: () => ({ model: "sonnet", effort }) };
       const result = verdict({ subagent_type: "checker" }, ctx);
       expect(result.decision).toBe("deny");
       expect(result.reason).not.toContain("CLAUDE_CODE_EFFORT_LEVEL");
+      expect(result.reason).toContain(
+        "(from the agent's frontmatter; pass `effort` on the call to override it)",
+      );
     }
   });
 });
@@ -398,7 +459,12 @@ describe("the verdict", () => {
     expect(max.reason).toContain("Run it at `medium`, `high` or `xhigh`");
     expect(
       verdict(
-        { effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        {
+          effort: "high",
+          model: "opus",
+          prompt: "review",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         CTX,
         unattended,
       ).decision,
@@ -434,8 +500,12 @@ describe("the verdict", () => {
 
   it("a review agent on Opus is allowed below max; at effort max it asks the person", () => {
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" })
-        .decision,
+      verdict({
+        effort: "xhigh",
+        model: "opus",
+        prompt: "review",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }).decision,
     ).toBe("allow");
     expect(
       verdict({
@@ -450,18 +520,23 @@ describe("the verdict", () => {
       effort: "max",
       model: "opus",
       prompt: "review",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(max.decision).toBe("ask");
     expect(max.reason).toContain("Claude Opus launch at effort `max`");
-    expect(max.reason).toContain("`Reviewer`");
+    expect(max.reason).toContain("`cc-smart-dev-kit:senior-engineer`");
     expect(max.why).toBe("opus:max");
   });
 
   it("a review at effort max under `claude -p` is denied: nobody is there to approve it", () => {
     const where = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
     const max = verdict(
-      { effort: "max", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+      {
+        effort: "max",
+        model: "opus",
+        prompt: "review",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      },
       CTX,
       where,
     );
@@ -470,7 +545,12 @@ describe("the verdict", () => {
     // The usual effort stays allowed there.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        {
+          effort: "xhigh",
+          model: "opus",
+          prompt: "review",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         CTX,
         where,
       ).decision,
@@ -697,16 +777,26 @@ describe("the verdict", () => {
       effort: "xhigh",
       model: "best",
       prompt: "r",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(unread.decision).toBe("ask");
     expect(unread.why).toBe("opus:unreadable");
-    const max = verdict({ effort: "max", model: "best", prompt: "r", subagent_type: "Reviewer" });
+    const max = verdict({
+      effort: "max",
+      model: "best",
+      prompt: "r",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
+    });
     expect(max.decision).toBe("ask");
     expect(max.why).toBe("opus:unreadable");
     // A review on a readable Opus is allowed with no question the same way.
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
+      verdict({
+        effort: "xhigh",
+        model: "opus",
+        prompt: "r",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }).decision,
     ).toBe("allow");
   });
 
@@ -715,7 +805,7 @@ describe("the verdict", () => {
       effort: "max",
       model: "opus",
       prompt: "r",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(review.reason).toContain("at effort `max`");
     const opus = verdict({
@@ -896,13 +986,23 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     // A review on the tier: allowed at high, an ask at max, naming the model behind it.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+        {
+          effort: "xhigh",
+          model: "opus",
+          prompt: "r",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         ON,
         OPENAI_OPUS,
       ).decision,
     ).toBe("allow");
     const deep = verdict(
-      { effort: "max", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+      {
+        effort: "max",
+        model: "opus",
+        prompt: "r",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      },
       ON,
       OPENAI_OPUS,
     );
@@ -1055,7 +1155,7 @@ describe("a Workflow script", () => {
     // The opus tier at `max` asks for the effort: a prompt the guard cannot read does not matter.
     const review =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
-      'await agent(`review ${x}`, { agentType: "Reviewer", model: "opus", effort: "max", label: "deep" });';
+      'await agent(`review ${x}`, { agentType: "cc-smart-dev-kit:senior-engineer", model: "opus", effort: "max", label: "deep" });';
     const deep = judgeWorkflow(review, CTX, NO_ENV);
     expect(deep[0]?.verdict.decision).toBe("ask");
     expect(deep[0]?.verdict.why).toBe("opus:max");
@@ -1075,7 +1175,9 @@ describe("a Workflow script", () => {
       NO_ENV,
     );
     expect(model[0]?.verdict.decision).toBe("deny");
-    expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
+    expect(model[0]?.verdict.reason).toBe(
+      "This Workflow launch's `model` is not a string literal the guard can read. Write policy options as string literals.",
+    );
     const prompt = judgeWorkflow(
       'await agent(thePrompt, { model: "fable", effort: "high", agentType: "Plan" });',
       CTX,
@@ -1098,7 +1200,9 @@ describe("a Workflow script", () => {
       NO_ENV,
     );
     expect(model[0]?.verdict.decision).toBe("deny");
-    expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
+    expect(model[0]?.verdict.reason).toBe(
+      "This Workflow launch's `model` is not a string literal the guard can read. Write policy options as string literals.",
+    );
     // A backtick literal with no placeholder is a fixed string, and read like any other.
     expect(
       judgeWorkflow('await agent("x", { model: `haiku`, effort: "high" });', CTX, NO_ENV)[0]
@@ -1247,7 +1351,7 @@ describe("the hook's answer, and the record", () => {
         effort: "xhigh",
         model: "opus",
         prompt: "review it",
-        subagent_type: "Reviewer",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
       }),
       NO_ENV,
       where,
@@ -1258,7 +1362,7 @@ describe("the hook's answer, and the record", () => {
     expect(launch?.family).toBe("opus");
     expect(launch?.reason).toBe("opus:xhigh");
     expect(launch?.project).toBe("/tmp/app");
-    expect(launch?.subagentType).toBe("Reviewer");
+    expect(launch?.subagentType).toBe("cc-smart-dev-kit:senior-engineer");
   });
 
   it("an asked Opus launch is recorded once it ran, and once only for one call", async () => {
@@ -1354,7 +1458,12 @@ describe("the hook's answer, and the record", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const result = await agentGuard(
-      agentCall({ effort: "max", model: "opus", prompt: "review it", subagent_type: "Reviewer" }),
+      agentCall({
+        effort: "max",
+        model: "opus",
+        prompt: "review it",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }),
       NO_ENV,
       where,
       "/tmp/app",
@@ -1367,7 +1476,7 @@ describe("the hook's answer, and the record", () => {
           effort: "max",
           model: "opus",
           prompt: "review it",
-          subagent_type: "Reviewer",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
         }),
         hook_event_name: "PostToolUse",
       },
@@ -1378,7 +1487,7 @@ describe("the hook's answer, and the record", () => {
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
     expect(launch?.reason).toBe("opus:max");
-    expect(launch?.subagentType).toBe("Reviewer");
+    expect(launch?.subagentType).toBe("cc-smart-dev-kit:senior-engineer");
   });
 
   it("a Sonnet launch is not recorded, and a record of another shape is skipped", async () => {
@@ -1582,7 +1691,7 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
         effort: "xhigh",
         model: "opus",
         prompt: "r",
-        subagent_type: "Reviewer",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
       }),
     ).toBeNull();
     // Fable: a read-only agent with its reason asks, naming what answers it; a builder without
@@ -1815,7 +1924,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
       subagent_type: "Explore",
     });
     expect(unsaid.reason).toContain(
-      "Use a read-only agent type (Plan, Explore, auditor) and put a line in the prompt saying why:",
+      "Use a read-only agent type (Plan, Explore, auditor, edge-case-hunter, researcher) and put a line in the prompt saying why:",
     );
     // The same line on a read-only type still asks the person.
     expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");
@@ -1957,7 +2066,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     const where = paths();
     const script = [
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
-      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });',
+      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "cc-smart-dev-kit:senior-engineer" });',
     ].join("\n");
     const asked = await agentGuard(
       at("PreToolUse", workflowCall(script)),
@@ -1976,7 +2085,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     // A Workflow the guard allows outright is recorded on PreToolUse, and not again after it.
     const quiet = paths();
     const opusOnly =
-      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });';
+      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "cc-smart-dev-kit:senior-engineer" });';
     expect(
       await agentGuard(at("PreToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app"),
     ).toEqual({});
@@ -2615,7 +2724,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
       join(repo, ".claude", "workflows", "probe.js"),
       script(
         "probe",
-        'await agent("Opus reason: security - a", { label: "a", model: "opus", effort: "xhigh", agentType: "Reviewer" });',
+        'await agent("Opus reason: security - a", { label: "a", model: "opus", effort: "xhigh", agentType: "cc-smart-dev-kit:senior-engineer" });',
         'await agent("b", { label: "b", model: "opus", effort: "high" });',
         'await agent("c", { label: "cheap", model: "haiku", effort: "medium" });',
         // The nested workflow's launch is the third premium one.
@@ -2665,7 +2774,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
           effort: "xhigh",
           model: "opus",
           prompt: "Opus reason: security - check it",
-          subagent_type: "Reviewer",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
         }),
         session_id: "s",
         tool_use_id: "toolu_a",
