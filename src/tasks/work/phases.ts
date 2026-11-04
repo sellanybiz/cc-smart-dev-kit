@@ -18,6 +18,7 @@ export interface PhaseRef {
   number: number;
   subject: string;
   plan: string;
+  agent: string | null;
 }
 
 export interface OpenPhases {
@@ -33,7 +34,9 @@ export interface OpenPhases {
 const NOTHING_OPEN: OpenPhases = { inProgress: [], ready: [] };
 
 function refOf(task: WorkTask & { plan: string }): PhaseRef {
-  return { number: task.number, subject: task.subject, plan: task.plan };
+  // A blank agent names no builder to resume: the same as none.
+  const agent = task.agent?.trim() || null;
+  return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 
 /** A plan phase: a `phase` task with its plan and phase id set. */

@@ -95,7 +95,7 @@ function claudeMemDataDir(env, home) {
 
 // src/build-info/index.ts
 var info = {
-  version: "2.1.0",
+  version: "2.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7533,7 +7533,8 @@ function readWorkStore(paths, body) {
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  return { number: task.number, subject: task.subject, plan: task.plan };
+  const agent = task.agent?.trim() || null;
+  return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
@@ -7558,204 +7559,6 @@ function openPhasesOf(paths, project, caller) {
   const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
-
-// src/hooks/transcript.ts
-import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
-var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
-  let text;
-  try {
-    const fd = openSync2(transcriptPath, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.alloc(length);
-      readSync(fd, buffer, 0, length, size - length);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync2(fd);
-    }
-  } catch {
-    return null;
-  }
-  return text.split(`
-`);
-}
-function* entriesFromEnd(lines) {
-  for (let index = lines.length - 1;index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (line === "")
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (isJsonObject(entry))
-      yield entry;
-  }
-}
-function lastClaudeModel(transcriptPath) {
-  const lines = tailLines(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.isSidechain === true)
-      continue;
-    if (entry.type !== "assistant" || !isJsonObject(entry.message))
-      continue;
-    const model = entry.message.model;
-    if (typeof model === "string" && model.startsWith("claude-"))
-      return model;
-  }
-  return null;
-}
-function lastCustomTitle(transcriptPath) {
-  const lines = tailLines(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    const title = entry.customTitle;
-    if (typeof title === "string" && title.trim() !== "")
-      return title;
-  }
-  return null;
-}
-function lastAssistantText(transcriptPath) {
-  const lines = tailLines(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject(entry.message))
-      continue;
-    const content = entry.message.content;
-    if (!Array.isArray(content))
-      continue;
-    return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
-  }
-  return null;
-}
-function startedByPeer(transcriptPath) {
-  const lines = tailLines(transcriptPath);
-  if (lines === null)
-    return false;
-  for (let index = lines.length - 1;index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (!line.includes('"turnOrigin"') && !line.includes('"humanTurn":true'))
-      continue;
-    if (line.includes('"isCompactSummary":true'))
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isJsonObject(entry))
-      continue;
-    const attachment = isJsonObject(entry.attachment) ? entry.attachment : null;
-    const origin = isJsonObject(entry.origin) ? entry.origin : null;
-    if (attachment?.humanTurn === true)
-      return false;
-    if (origin !== null && origin.senderTaskId !== null && origin.senderTaskId !== undefined) {
-      return false;
-    }
-    return entry.turnOrigin === "peer";
-  }
-  return false;
-}
-
-// src/hooks/keep-going.ts
-var KEEP_GOING = "keep-going";
-var WAIT_MARK = "Waiting for:";
-var LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;
-function waitsOnSomething(said) {
-  const mark = WAIT_MARK.toLowerCase();
-  return said.split(/\r?\n/).some((line) => line.trim().replace(LEADING_MARKS, "").toLowerCase().startsWith(mark));
-}
-function lastSaid(input) {
-  if (typeof input.last_assistant_message === "string")
-    return input.last_assistant_message;
-  const transcript = stringField(input.transcript_path);
-  return transcript === null ? null : lastAssistantText(transcript);
-}
-function named(phase) {
-  return `#${phase.number} ${phase.subject}`;
-}
-function keepGoingReason(inProgress, ready) {
-  const one = inProgress.length === 1;
-  const refs = inProgress.map((phase) => `#${phase.number}`).join(", ");
-  const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
-  const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
-  const next = ready[0];
-  return next === undefined ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.` : `${head} Start ${named(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
-}
-function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
-  if (input.stop_hook_active === true)
-    return SILENT;
-  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
-    return SILENT;
-  const said = lastSaid(input);
-  if (said === null || waitsOnSomething(said))
-    return SILENT;
-  const cwd = stringField(input.cwd);
-  if (cwd === null)
-    return SILENT;
-  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () => findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }));
-  if (view.state === "unreadable")
-    return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
-  if (view.state === "none" || view.value.inProgress.length === 0)
-    return SILENT;
-  return {
-    stdout: JSON.stringify({
-      decision: "block",
-      reason: keepGoingReason(view.value.inProgress, view.value.ready)
-    })
-  };
-}
-function keepGoingWouldBlockAt(input, env) {
-  const cwd = stringField(input.cwd);
-  if (cwd === null)
-    return false;
-  try {
-    const checkout = locateCheckout(cwd, { env });
-    if (checkout === null || ownHooksOf(checkout).includes(KEEP_GOING))
-      return false;
-    return keepGoingAnswer(input, checkout, cliPaths(env), env).stdout !== undefined;
-  } catch {
-    return false;
-  }
-}
-
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
-
-// src/hooks/session-name.ts
-var MAX_SESSION_NAME = 60;
-function cleanSessionName(raw) {
-  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
-  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
-  if (plain === "")
-    return null;
-  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
-}
-
-// src/hooks/stop-failure.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync2 } from "fs";
-import { join as join11 } from "path";
 
 // src/gateway/config.ts
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync9, statSync as statSync4 } from "fs";
@@ -8169,6 +7972,501 @@ ${parsed.error}`);
   return parsed.config;
 }
 
+// src/setup/managed-json.ts
+import { createHash as createHash2 } from "crypto";
+import { existsSync as existsSync8, readFileSync as readFileSync10 } from "fs";
+import { join as join10 } from "path";
+var OWNED_FILE = "owned.json";
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function samePath2(a, b) {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+function readJsonObject(file) {
+  if (!existsSync8(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync10(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  return { data: parsed, indent: detectIndent(text), text };
+}
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
+    if (entry.taken === true)
+      record.taken = true;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
+function readOwned(stateDir) {
+  const file = join10(stateDir, OWNED_FILE);
+  if (!existsSync8(file))
+    return {};
+  const parsed = JSON.parse(readFileSync10(file, "utf8"));
+  if (!isObject2(parsed))
+    throw new Error(`Invalid ${file}: expected an object`);
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
+}
+function ownedRecords(stateDir, file) {
+  return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash2("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath2(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "changed";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
+}
+function getKey(data, path) {
+  let node = data;
+  for (const segment of path) {
+    if (!isObject2(node) || !Object.hasOwn(node, segment))
+      return { found: false, value: undefined };
+    node = node[segment];
+  }
+  return { found: true, value: node };
+}
+
+// src/gateway/settings.ts
+function gatewayEnv(port) {
+  return {
+    ENABLE_TOOL_SEARCH: "true",
+    ANTHROPIC_BASE_URL: routerBaseUrl(port)
+  };
+}
+function routerBaseUrl(port) {
+  return `http://127.0.0.1:${port}`;
+}
+var REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
+function normalizedBaseUrl(url) {
+  return url.replace(/\/+$/, "");
+}
+function baseUrlPointsAtGateway(url) {
+  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
+}
+var RETIRED_GATEWAY_ENV_KEYS = [
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
+];
+var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
+var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+
+// src/gateway/project-state.ts
+var PERSONAL_FILE = "settings.local.json";
+var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
+function profileUrlOf(routerUrl, name) {
+  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
+}
+function urlMeaning(url, routerUrl) {
+  if (url === null)
+    return { profile: null, state: "default" };
+  if (!baseUrlPointsAtGateway(url))
+    return { profile: null, state: "off" };
+  const clean = normalizedBaseUrl(url);
+  if (clean === routerUrl)
+    return { profile: null, state: "on" };
+  const prefix = profileUrlOf(routerUrl, "");
+  if (clean.startsWith(prefix)) {
+    const name = clean.slice(prefix.length);
+    if (isProfileName(name))
+      return { profile: name, state: "on" };
+  }
+  return { profile: null, state: "other" };
+}
+
+// src/models/launch-policy.ts
+var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
+var OPUS_ASK_EFFORT = "max";
+var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
+var UI_POLICY = {
+  minEffort: "high",
+  tiers: ["opus", "fable"]
+};
+function uiEffortAllowed(effort) {
+  if (effort === null)
+    return false;
+  const levels = ALLOWED_EFFORTS;
+  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
+}
+var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
+var EFFORT_AUTO = "auto";
+
+// src/hooks/agent-guard-workflows.ts
+var FAIL = Symbol("not a pure literal");
+
+// src/hooks/agent-launches.ts
+var SESSION_EFFORT = "session-effort";
+var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
+var RECORD_TAIL_BYTES = 64 * 1024;
+
+// src/hooks/transcript.ts
+import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var STOP_FEEDBACK = "Stop hook feedback:";
+function stopFeedbackTexts(entry) {
+  if (!isJsonObject(entry) || !isJsonObject(entry.message))
+    return [];
+  const content = entry.message.content;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject(block) && typeof block.text === "string" ? [block.text] : []) : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
+}
+function toolUseNames(entry) {
+  const content = isJsonObject(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content))
+    return [];
+  return content.flatMap((block) => isJsonObject(block) && block.type === "tool_use" && typeof block.name === "string" ? [block.name] : []);
+}
+function stopFeedbackGiven(transcriptPath, text, resetBy) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return false;
+  let given = false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject(entry) || entry.isSidechain === true)
+      continue;
+    if (entry.type === "user" && stopFeedbackTexts(entry).some((said) => said.includes(text))) {
+      given = true;
+    } else if (given && toolUseNames(entry).some((name) => resetBy.includes(name))) {
+      given = false;
+    }
+  }
+  return given;
+}
+function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
+  let text;
+  try {
+    const fd = openSync2(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, bytes);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync2(fd);
+    }
+  } catch {
+    return null;
+  }
+  return text.split(`
+`);
+}
+function* entriesFromEnd(lines) {
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (line === "")
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isJsonObject(entry))
+      yield entry;
+  }
+}
+function lastClaudeModel(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true)
+      continue;
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+      continue;
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+function lastCustomTitle(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    const title = entry.customTitle;
+    if (typeof title === "string" && title.trim() !== "")
+      return title;
+  }
+  return null;
+}
+function lastAssistantText(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+      continue;
+    const content = entry.message.content;
+    if (!Array.isArray(content))
+      continue;
+    return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+  }
+  return null;
+}
+function startedByPeer(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return false;
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (!line.includes('"turnOrigin"') && !line.includes('"humanTurn":true'))
+      continue;
+    if (line.includes('"isCompactSummary":true'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject(entry))
+      continue;
+    const attachment = isJsonObject(entry.attachment) ? entry.attachment : null;
+    const origin = isJsonObject(entry.origin) ? entry.origin : null;
+    if (attachment?.humanTurn === true)
+      return false;
+    if (origin !== null && origin.senderTaskId !== null && origin.senderTaskId !== undefined) {
+      return false;
+    }
+    return entry.turnOrigin === "peer";
+  }
+  return false;
+}
+
+// src/hooks/agent-guard.ts
+var AGENT_TOOLS = ["Agent", "Task"];
+var WORKFLOW_TOOLS = ["Workflow"];
+var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
+var HANDED_AROUND = {
+  agent: [
+    THROUGH_A_VARIABLE,
+    'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
+  ].join(`
+`),
+  workflow: [
+    THROUGH_A_VARIABLE,
+    'Write every nested workflow as a direct `workflow("<name>")` call.'
+  ].join(`
+`)
+};
+var OPTIONS_BUILT_AT_RUNTIME = [
+  "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
+  "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
+].join(`
+`);
+var NO_WORKFLOW_MODEL = [
+  "This Workflow launch names no `model` the guard can read.",
+  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
+  "Write `model` and `effort` as string literals in the `agent(...)` options."
+].join(`
+`);
+var NO_MODEL = [
+  "This Agent launch names no `model`.",
+  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
+].join(`
+`);
+function levelsText(levels) {
+  const named = levels.map((one) => `\`${one}\``);
+  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
+}
+var EFFORTS = levelsText(ALLOWED_EFFORTS);
+var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
+var NO_EFFORT = [
+  "This Agent launch names no `effort`.",
+  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  EFFORT_USE
+].join(`
+`);
+function gatewayConfigOf(paths) {
+  try {
+    return loadConfigFile(paths.gatewayConfigFile);
+  } catch {
+    return null;
+  }
+}
+function sessionGatewayOf(paths, env) {
+  const raw = env.ANTHROPIC_BASE_URL;
+  const url = raw === undefined || raw === "" ? null : raw;
+  const config = gatewayConfigOf(paths);
+  if (!baseUrlPointsAtGateway(url))
+    return { config, gatewayOn: false, profile: null };
+  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
+  if (config === null || profile === null)
+    return { config, gatewayOn: true, profile: null };
+  return {
+    config: profileView(config, profile) ?? plainClaudeView(config),
+    gatewayOn: true,
+    profile
+  };
+}
+
+// src/hooks/message-guard.ts
+var SEND_MESSAGE_TOOL = "SendMessage";
+
+// src/hooks/keep-going.ts
+var SUBAGENT_WORK = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
+var KEEP_GOING = "keep-going";
+var WAIT_MARK = "Waiting for:";
+var LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;
+function waitsOnSomething(said) {
+  const mark = WAIT_MARK.toLowerCase();
+  return said.split(/\r?\n/).some((line) => line.trim().replace(LEADING_MARKS, "").toLowerCase().startsWith(mark));
+}
+function lastSaid(input) {
+  if (typeof input.last_assistant_message === "string")
+    return input.last_assistant_message;
+  const transcript = stringField(input.transcript_path);
+  return transcript === null ? null : lastAssistantText(transcript);
+}
+function named(phase) {
+  return `#${phase.number} ${phase.subject}`;
+}
+function keepGoingReason(inProgress, ready) {
+  const one = inProgress.length === 1;
+  const refs = inProgress.map((phase) => `#${phase.number}`).join(", ");
+  const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
+  const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
+  const next = ready[0];
+  const options = [];
+  for (const phase of inProgress) {
+    if (phase.agent !== null) {
+      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`);
+    }
+  }
+  const fresh = inProgress.filter((phase) => phase.agent === null);
+  if (fresh.length > 0) {
+    options.push(`start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`);
+  }
+  if (next !== undefined)
+    options.push(`start ${named(next)} now (dispatch its builder)`);
+  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
+  const recovery = options.join(", ");
+  return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
+}
+function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
+  if (input.stop_hook_active === true)
+    return SILENT;
+  if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0)
+    return SILENT;
+  const said = lastSaid(input);
+  if (said === null || waitsOnSomething(said))
+    return SILENT;
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return SILENT;
+  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () => findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }));
+  if (view.state === "unreadable")
+    return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
+  if (view.state === "none" || view.value.inProgress.length === 0)
+    return SILENT;
+  const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  const transcript = stringField(input.transcript_path);
+  if (transcript !== null && stopFeedbackGiven(transcript, reason, SUBAGENT_WORK))
+    return SILENT;
+  return { stdout: JSON.stringify({ decision: "block", reason }) };
+}
+function keepGoingWouldBlockAt(input, env) {
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return false;
+  try {
+    const checkout = locateCheckout(cwd, { env });
+    if (checkout === null || ownHooksOf(checkout).includes(KEEP_GOING))
+      return false;
+    return keepGoingAnswer(input, checkout, cliPaths(env), env).stdout !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+// src/hooks/notify-types.ts
+var PLUGIN_NOTIFY_TYPES = [
+  "permission_prompt",
+  "elicitation_dialog",
+  "elicitation_url_dialog",
+  "worker_permission_prompt"
+];
+var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
+var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
+var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
+var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
+
+// src/hooks/session-name.ts
+var MAX_SESSION_NAME = 60;
+function cleanSessionName(raw) {
+  const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
+  const plain = firstLine.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
+  if (plain === "")
+    return null;
+  return [...plain].slice(0, MAX_SESSION_NAME).join("").trimEnd();
+}
+
+// src/hooks/stop-failure.ts
+import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync2 } from "fs";
+import { join as join11 } from "path";
+
 // src/gateway/limit-state.ts
 var NO_RESET_FRESH_MS = 15 * 60000;
 var limitSchema = object({
@@ -8288,104 +8586,6 @@ function claudeLimitHolds(key, model, inUse) {
   return first === undefined || withoutContextSuffix(first) === model;
 }
 
-// src/setup/managed-json.ts
-import { createHash as createHash2 } from "crypto";
-import { existsSync as existsSync8, readFileSync as readFileSync10 } from "fs";
-import { join as join10 } from "path";
-var OWNED_FILE = "owned.json";
-function isObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function samePath2(a, b) {
-  return a.length === b.length && a.every((segment, index) => segment === b[index]);
-}
-function detectIndent(text) {
-  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-}
-function readJsonObject(file) {
-  if (!existsSync8(file))
-    return { data: {}, indent: "  ", text: null };
-  const text = readFileSync10(file, "utf8");
-  if (text.trim() === "")
-    return { data: {}, indent: "  ", text };
-  let parsed;
-  try {
-    parsed = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
-  }
-  if (!isObject2(parsed))
-    throw new Error(`${file} must hold a JSON object.`);
-  return { data: parsed, indent: detectIndent(text), text };
-}
-function toRecord(entry, file) {
-  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
-    return { path: [...entry] };
-  }
-  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
-    const record = { path: [...entry.path] };
-    if (Object.hasOwn(entry, "value"))
-      record.value = entry.value;
-    if (typeof entry.sha256 === "string")
-      record.sha256 = entry.sha256;
-    if (Object.hasOwn(entry, "was"))
-      record.was = entry.was;
-    if (typeof entry.wasSha256 === "string")
-      record.wasSha256 = entry.wasSha256;
-    if (entry.taken === true)
-      record.taken = true;
-    return record;
-  }
-  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
-}
-function readOwned(stateDir) {
-  const file = join10(stateDir, OWNED_FILE);
-  if (!existsSync8(file))
-    return {};
-  const parsed = JSON.parse(readFileSync10(file, "utf8"));
-  if (!isObject2(parsed))
-    throw new Error(`Invalid ${file}: expected an object`);
-  const owned = {};
-  for (const [target, entries] of Object.entries(parsed)) {
-    if (!Array.isArray(entries))
-      throw new Error(`Invalid ${file}: expected a list per file`);
-    owned[target] = entries.map((entry) => toRecord(entry, file));
-  }
-  return owned;
-}
-function ownedRecords(stateDir, file) {
-  return readOwned(stateDir)[file] ?? [];
-}
-function hashOf(value) {
-  return createHash2("sha256").update(JSON.stringify(value)).digest("hex");
-}
-function ownership(records, path, current, unchosen) {
-  const record = records.find((entry) => samePath2(entry.path, path));
-  if (record === undefined)
-    return "none";
-  if (!current.found)
-    return "changed";
-  if (record.sha256 !== undefined) {
-    if (hashOf(current.value) === record.sha256)
-      return "ours";
-  } else if (!Object.hasOwn(record, "value")) {
-    return "ours";
-  } else if (Bun.deepEquals(current.value, record.value, true)) {
-    return "ours";
-  }
-  return unchosen?.(path, current.value) ? "ours" : "changed";
-}
-function getKey(data, path) {
-  let node = data;
-  for (const segment of path) {
-    if (!isObject2(node) || !Object.hasOwn(node, segment))
-      return { found: false, value: undefined };
-    node = node[segment];
-  }
-  return { found: true, value: node };
-}
-
 // src/setup/retry-watchdog.ts
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
@@ -8419,147 +8619,6 @@ function retryWatchdogState(paths) {
   if (ownership(records, RETRY_WATCHDOG_KEY, current) === "ours")
     return "ours";
   return turnsOn(current.value) ? "yours" : "disabled";
-}
-
-// src/gateway/settings.ts
-function gatewayEnv(port) {
-  return {
-    ENABLE_TOOL_SEARCH: "true",
-    ANTHROPIC_BASE_URL: routerBaseUrl(port)
-  };
-}
-function routerBaseUrl(port) {
-  return `http://127.0.0.1:${port}`;
-}
-var REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
-function normalizedBaseUrl(url) {
-  return url.replace(/\/+$/, "");
-}
-function baseUrlPointsAtGateway(url) {
-  return url !== null && normalizedBaseUrl(url) !== DEFAULT_ANTHROPIC_BASE_URL;
-}
-var RETIRED_GATEWAY_ENV_KEYS = [
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
-];
-var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
-
-// src/gateway/project-state.ts
-var PERSONAL_FILE = "settings.local.json";
-var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
-function profileUrlOf(routerUrl, name) {
-  return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
-}
-function urlMeaning(url, routerUrl) {
-  if (url === null)
-    return { profile: null, state: "default" };
-  if (!baseUrlPointsAtGateway(url))
-    return { profile: null, state: "off" };
-  const clean = normalizedBaseUrl(url);
-  if (clean === routerUrl)
-    return { profile: null, state: "on" };
-  const prefix = profileUrlOf(routerUrl, "");
-  if (clean.startsWith(prefix)) {
-    const name = clean.slice(prefix.length);
-    if (isProfileName(name))
-      return { profile: name, state: "on" };
-  }
-  return { profile: null, state: "other" };
-}
-
-// src/models/launch-policy.ts
-var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
-var OPUS_ASK_EFFORT = "max";
-var OPUS_FREE_EFFORTS = ALLOWED_EFFORTS.filter((one) => one !== OPUS_ASK_EFFORT);
-var UI_POLICY = {
-  minEffort: "high",
-  tiers: ["opus", "fable"]
-};
-function uiEffortAllowed(effort) {
-  if (effort === null)
-    return false;
-  const levels = ALLOWED_EFFORTS;
-  return levels.indexOf(effort.toLowerCase()) >= levels.indexOf(UI_POLICY.minEffort);
-}
-var UI_EFFORTS = ALLOWED_EFFORTS.filter((one) => uiEffortAllowed(one));
-var EFFORT_AUTO = "auto";
-
-// src/hooks/agent-guard-workflows.ts
-var FAIL = Symbol("not a pure literal");
-
-// src/hooks/agent-launches.ts
-var SESSION_EFFORT = "session-effort";
-var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
-var RECORD_TAIL_BYTES = 64 * 1024;
-
-// src/hooks/agent-guard.ts
-var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
-var HANDED_AROUND = {
-  agent: [
-    THROUGH_A_VARIABLE,
-    'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call.'
-  ].join(`
-`),
-  workflow: [
-    THROUGH_A_VARIABLE,
-    'Write every nested workflow as a direct `workflow("<name>")` call.'
-  ].join(`
-`)
-};
-var OPTIONS_BUILT_AT_RUNTIME = [
-  "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
-  "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
-].join(`
-`);
-var NO_WORKFLOW_MODEL = [
-  "This Workflow launch names no `model` the guard can read.",
-  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
-  "Write `model` and `effort` as string literals in the `agent(...)` options."
-].join(`
-`);
-var NO_MODEL = [
-  "This Agent launch names no `model`.",
-  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
-].join(`
-`);
-function levelsText(levels) {
-  const named = levels.map((one) => `\`${one}\``);
-  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
-}
-var EFFORTS = levelsText(ALLOWED_EFFORTS);
-var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
-var NO_EFFORT = [
-  "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
-  EFFORT_USE
-].join(`
-`);
-function gatewayConfigOf(paths) {
-  try {
-    return loadConfigFile(paths.gatewayConfigFile);
-  } catch {
-    return null;
-  }
-}
-function sessionGatewayOf(paths, env) {
-  const raw = env.ANTHROPIC_BASE_URL;
-  const url = raw === undefined || raw === "" ? null : raw;
-  const config = gatewayConfigOf(paths);
-  if (!baseUrlPointsAtGateway(url))
-    return { config, gatewayOn: false, profile: null };
-  const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;
-  if (config === null || profile === null)
-    return { config, gatewayOn: true, profile: null };
-  return {
-    config: profileView(config, profile) ?? plainClaudeView(config),
-    gatewayOn: true,
-    profile
-  };
 }
 
 // src/hooks/stop-failure.ts
@@ -10058,7 +10117,6 @@ function nestedDialect(program) {
 // src/hooks/verify-gate.ts
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
-var STOP_FEEDBACK = "Stop hook feedback:";
 var REMINDER_MARK = "has not run the project's fast check since";
 function objectOf(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
@@ -10143,9 +10201,7 @@ function ranCheck(command, check, dialect) {
   });
 }
 function isOwnReminder(line) {
-  const content = objectOf(line.message)?.content;
-  const texts = typeof content === "string" ? [content] : blocksOf(line).map((block) => typeof block.text === "string" ? block.text : "").filter((text) => text !== "");
-  return texts.some((text) => text.includes(STOP_FEEDBACK) && text.includes(REMINDER_MARK));
+  return stopFeedbackTexts(line).some((text) => text.includes(REMINDER_MARK));
 }
 function seenIn(lines, check) {
   const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };

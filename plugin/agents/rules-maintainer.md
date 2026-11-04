@@ -16,7 +16,7 @@ The brief is your task. When given a task number, read it with `task_get` before
 Commit on your own worktree branch only if the brief says so. Never push, dispatch agents,
 review your own work, contact peers or ask the person. Delete only files you created yourself;
 never clean a shared folder. Track each file or check with kit tasks under your phase.
-Follow `cc-smart-dev-kit:builder` for caller rulings, refused reads, allowed checks and the
+Follow `cc-smart-dev-kit:builder` for caller rulings, refusals, allowed checks and the
 `Report:` task note. Return this report's details there and only a short status to your caller.
 Use `cc-smart-dev-kit:memory-routing` for the CLI fallback; no second ledger.
 

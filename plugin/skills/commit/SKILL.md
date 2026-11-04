@@ -64,8 +64,12 @@ and the merge order.
    `git diff --staged --stat`; investigate any unexpected path before committing.
 5. **The message:** follow the style in `git log` (for example conventional commits:
    `feat`, `fix`, `refactor`, `docs`, `test`, `chore`). A title under 70 characters; a body
-   about **why**, not what. Write it with a heredoc. End with the attribution lines the
-   harness gives you in its git instructions — you write them; nothing adds them for you.
+   about **why**, not what. Write it with a heredoc, except in a session or agent isolated
+   in a worktree: Claude Code refuses there any git line it cannot read as plain, so pass the
+   message as repeated single-quoted `-m '…'` flags with no apostrophe in them
+   (`cc-smart-dev-kit:builder`). End with
+   the attribution lines the harness gives you in its git instructions — you write them;
+   nothing adds them for you.
 6. A plan covers this work? Add `Plan: <path>` at the end of the body. Never end a commit
    turn with an uncommitted edit to the plan file.
 7. Report the commit's short hash and title in one line, and carry on with the plan.

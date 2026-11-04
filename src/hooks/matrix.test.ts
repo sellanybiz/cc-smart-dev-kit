@@ -111,7 +111,7 @@ function seedBusyPhase(env: Record<string, string>, repo: string): void {
 const KEEP_GOING_BLOCK = JSON.stringify({
   decision: "block",
   reason:
-    "Phase #2 G1 the guard is still in progress, and no subagent runs. Close #2 with `task_done`, or record its blocker with `task_note` and end the turn with a `Waiting for: <what>` line.",
+    "Phase #2 G1 the guard is still in progress, and no subagent runs. Start a fresh builder on it, close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
 });
 
 /**

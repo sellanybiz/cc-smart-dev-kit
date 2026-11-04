@@ -6,7 +6,8 @@
  *   - the turn's last answer (the notifier's "finished" message);
  *   - who started the turn (the notifier stays quiet for a turn another session started);
  *   - the session's own file changes and its runs of the project's fast check (the
- *     verification gate, `verify-gate.ts`).
+ *     verification gate, `verify-gate.ts`);
+ *   - Stop feedback already given (the verification gate and keep-going guard).
  *
  * Claude Code writes a session's conversation to
  * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
@@ -20,6 +21,70 @@ export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The words Claude Code writes before a blocked stop's reason in the transcript. */
+export const STOP_FEEDBACK = "Stop hook feedback:";
+
+/** Stop-feedback texts in one entry, from string content or content blocks. */
+export function stopFeedbackTexts(entry: unknown): string[] {
+  if (!isJsonObject(entry) || !isJsonObject(entry.message)) return [];
+  const content = entry.message.content;
+  const texts =
+    typeof content === "string"
+      ? [content]
+      : Array.isArray(content)
+        ? content.flatMap((block) =>
+            isJsonObject(block) && typeof block.text === "string" ? [block.text] : [],
+          )
+        : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
+}
+
+/** The names of the `tool_use` blocks in one entry's message, in order. */
+function toolUseNames(entry: Record<string, unknown>): string[] {
+  const content = isJsonObject(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) =>
+    isJsonObject(block) && block.type === "tool_use" && typeof block.name === "string"
+      ? [block.name]
+      : [],
+  );
+}
+
+/**
+ * True when the transcript's tail already holds Stop feedback with `text` in it (a hook's own
+ * reason), and the session called none of the `resetBy` tools after it. The feedback counts
+ * only as Claude Code writes it: a `user` entry of the session itself. A sidechain entry is a
+ * subagent's own conversation, and an assistant entry that merely quotes the words is no
+ * feedback. A call of a `resetBy` tool after the feedback (new subagent work) makes it count as
+ * not given, so a later stall in the same state earns a new reminder. Only a line that names the
+ * feedback or a tool call is parsed. False when the file cannot be read.
+ */
+export function stopFeedbackGiven(
+  transcriptPath: string,
+  text: string,
+  resetBy: readonly string[],
+): boolean {
+  const lines = tailLines(transcriptPath);
+  if (lines === null) return false;
+  let given = false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"')) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // The tail may start or end with a partial entry.
+    }
+    if (!isJsonObject(entry) || entry.isSidechain === true) continue;
+    if (entry.type === "user" && stopFeedbackTexts(entry).some((said) => said.includes(text))) {
+      given = true;
+    } else if (given && toolUseNames(entry).some((name) => resetBy.includes(name))) {
+      given = false;
+    }
+  }
+  return given;
 }
 
 /**

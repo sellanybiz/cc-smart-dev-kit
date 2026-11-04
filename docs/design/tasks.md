@@ -234,8 +234,12 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
   ones in progress, then the most recently touched. A task untouched for `tasks.staleDays`
   (default 30) is not listed but counted in one line, unless this process claims it. Until
   registration exists, the hook says to run setup.
-- `keep-going` (Stop) holds the main session's turn end once while a phase of its plan is in
-  progress and nothing runs, naming the next ready phase.
+- `keep-going` (Stop) holds the main session's turn end once per stalled state while a phase
+  of its plan is in progress and nothing runs. The same reason already given, with no subagent
+  started or resumed since, keeps it silent. It names the agent to resume with `SendMessage`,
+  or says to start a fresh builder, then the next ready phase, closing with `task_done`, or
+  recording a blocker with `task_note` and a `Waiting for:` line, and warns against moving a
+  phase back to pending to end the turn (`docs/design/hooks.md` § The keep-going guard).
 - `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
   has open blocking steps (`holdingUnder`).
 

@@ -5,8 +5,9 @@
  * In subagent-driven work the main session dispatches each phase's builder and hears it hand
  * back. A turn that ends while a phase is `in_progress`, with no builder running and no word on
  * what it waits for, leaves the plan stalled until the person notices. So the hook blocks such a
- * stop **once**, with one plain paragraph: the phase in progress, and the next ready phase of
- * the same plan to start now — or how to close the phase, or record why it waits. The build
+ * stop **once per stalled state**, with one plain paragraph: resume the recorded builder, or
+ * start a fresh one; start the next ready phase, close the phase, or record why it waits; and a
+ * warning against moving the phase back to pending to end the turn. The build
  * skill says the same (`plugin/skills/build/SKILL.md`).
  *
  * It blocks only when all of these hold, cheapest first:
@@ -21,11 +22,19 @@
  *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). The store is
  *    read first; the caller is looked up only when some phase is in progress, since off Linux
  *    that lists the running processes. Another session's plan is not this one's business.
+ * 5. **This reason not already given** (`stopFeedbackGiven`): read only after a phase in
+ *    progress is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
+ *    reason in the session's own Stop feedback, with no subagent started or resumed since
+ *    (`Agent`, `Task`, `Workflow`, `SendMessage`), keeps the hook silent: turns that answer the
+ *    person without starting a subagent are not blocked again. A changed reason, or new subagent work after the feedback, earns
+ *    another reminder. A missing or unreadable transcript keeps the decision above; feedback
+ *    older than the tail is not seen.
  *
- * **Fail open everywhere.** It needs no `cc-smart-dev-kit.json` (the task store is the person's
- * own), and is silent outside git, with no task store, with no caller, and on any read it
- * cannot make. A store it cannot read and a broken or too-new project file are one stderr line;
- * a crash is the frame's one line. A reminder must never hold a person's work.
+ * **Fail open everywhere else.** It needs no `cc-smart-dev-kit.json` (the task store is the
+ * person's own), and is silent outside git, with no task store, with no caller, and on any read
+ * of the task store it cannot make. A store it cannot read and a broken or too-new project file
+ * are one stderr line; a crash is the frame's one line. A reminder must never hold a person's
+ * work.
  *
  * **`notify` may ask this module's decision** (`keepGoingWouldBlockAt`), as it asks
  * `verify-gate`'s: a stop this hook blocks is not the end of the turn.
@@ -37,9 +46,14 @@ import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
+import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
+import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
-import { lastAssistantText } from "./transcript";
+import { lastAssistantText, stopFeedbackGiven } from "./transcript";
+
+/** The calls that start or resume a subagent: after one, a given reminder counts as not given. */
+const SUBAGENT_WORK: readonly string[] = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 
 /** The hook's name: its bundle, its `ownHooks` entry, its stderr prefix. */
 export const KEEP_GOING = "keep-going";
@@ -85,9 +99,25 @@ export function keepGoingReason(
   const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
   const next = ready[0];
-  return next === undefined
-    ? `${head} Close ${refs} with \`${TASK_TOOL.done}\`, or record ${one ? "its" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}.`
-    : `${head} Start ${named(next)} now (dispatch its builder), close ${refs} with \`${TASK_TOOL.done}\`, or ${wait}.`;
+  const options: string[] = [];
+  for (const phase of inProgress) {
+    if (phase.agent !== null) {
+      options.push(
+        `resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`,
+      );
+    }
+  }
+  const fresh = inProgress.filter((phase) => phase.agent === null);
+  if (fresh.length > 0) {
+    options.push(
+      `start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`,
+    );
+  }
+  if (next !== undefined) options.push(`start ${named(next)} now (dispatch its builder)`);
+  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
+  const recovery = options.join(", ");
+  return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
 }
 
 /**
@@ -113,12 +143,11 @@ export function keepGoingAnswer(
   );
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
-  return {
-    stdout: JSON.stringify({
-      decision: "block",
-      reason: keepGoingReason(view.value.inProgress, view.value.ready),
-    }),
-  };
+  const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  // Once per stalled state: the same reason, given with no subagent work since, stays given.
+  const transcript = stringField(input.transcript_path);
+  if (transcript !== null && stopFeedbackGiven(transcript, reason, SUBAGENT_WORK)) return SILENT;
+  return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
 
 export function keepGoing(context: HookContext): HookResult {

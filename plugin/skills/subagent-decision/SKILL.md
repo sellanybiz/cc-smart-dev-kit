@@ -43,8 +43,8 @@ it has not seen the builder's reasoning; delegation alone does not improve an an
 A subagent has none of your conversation, and an under-briefed agent costs more than doing the
 work yourself. Every brief has four parts: objective; files and boundaries; patterns/tools;
 output format (`Report:` task note plus short status for a phase). Put the caller's rulings
-first: commit or not, allowed checks, rephrase a refused read-only command once, and decide
-small calls with a `Ruling:` note. Treat the agent as a smart colleague who just walked in:
+first: commit or not, allowed checks, what to do on a refusal, and decide small calls with a
+`Ruling:` note. Treat the agent as a smart colleague who just walked in:
 
 - **The goal and why it matters**, and whether you want research or code.
 - **Exact paths, symbols and test cases.**
@@ -65,7 +65,9 @@ small calls with a `Ruling:` note. Treat the agent as a smart colleague who just
   hands back early is blocked once and told to wait or stop it — and Claude Code keeps such an
   agent open until the work lands.
 - **When it is blocked, it reports and stops.** It never retries in a loop, never works
-  around a guard, a hook or a permission refusal, and never widens its scope.
+  around a guard, a hook or a permission refusal, and never widens its scope. A command
+  Claude Code's worktree check refuses as too complex is no block: the agent splits it into
+  plain commands and goes on (`cc-smart-dev-kit:builder`).
 - **A dense report:** findings with `file:line` evidence and the commands it actually ran. No
   restating the brief, no pasted code you can read yourself.
 - `Explore` and `Plan` load no `CLAUDE.md`: restate every constraint they must respect.

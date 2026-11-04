@@ -5,6 +5,8 @@
  * second reader imports it, never a copy.
  */
 
+import { STOP_FEEDBACK } from "./transcript";
+
 /**
  * The wrappers and labels Claude Code puts around a turn that is not the person's own words.
  * Proved live on 2.1.309 (`docs/claude-code-contract.md`): the hook input carries no field that
@@ -24,7 +26,7 @@ export const NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
-  "Stop hook feedback:",
+  STOP_FEEDBACK,
 ] as const;
 
 /** True when `prompt` starts with one of the wrappers: a turn that is not the person's words. */

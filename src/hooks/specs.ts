@@ -20,7 +20,7 @@
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
  * | builder-finish | SubagentStop | machine-wide: it reads no project setting, so a broken file judges the same; one block when a builder hands back while its brief's task (`Your task: #<n>`) has open blocking steps (`builder-finish.ts`) |
  * | verify-gate | Stop | one block when the session changed files and the project's fast check did not run after the last change |
- * | keep-going | Stop | machine-wide: it reads no project setting, so a broken file judges the same; one block when a phase of this session's plan is in progress, nothing runs and no `Waiting for:` line says the wait (`keep-going.ts`) |
+ * | keep-going | Stop | machine-wide: it reads no project setting, so a broken file judges the same; one block per stalled state when a phase of this session's plan is in progress, nothing runs and no `Waiting for:` line says the wait; names the builder to resume (`keep-going.ts`) |
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
@@ -70,7 +70,7 @@ import {
 import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
-import { messageGuard, messageGuardConfigProblem } from "./message-guard";
+import { messageGuard, messageGuardConfigProblem, SEND_MESSAGE_TOOL } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
@@ -242,7 +242,7 @@ export const messageGuardHook: HookSpec = {
   // to judge.
   onCrash: guardCrash(
     "whether this message may go to that session",
-    (input) => toolOf(input) === "SendMessage",
+    (input) => toolOf(input) === SEND_MESSAGE_TOOL,
   ),
   run: messageGuard,
 };
@@ -340,13 +340,17 @@ export const verifyGateHook: HookSpec = {
 };
 
 /**
- * The keep-going guard (`keep-going.ts`): Stop, one **block** when a phase of a plan this Claude
- * process works on is `in_progress`, no background work runs (`background_tasks`), and the
- * turn's last answer has no `Waiting for:` line. It names the phase and the next ready phase of
- * the same plan. It reads no setting and needs no cc-smart-dev-kit.json: the task store is the
- * person's own, so it runs in a project with no file and honors `ownHooks` where there is one.
- * Silent outside git (the frame's default), on the stop its own block caused
- * (`stop_hook_active`), and on any read it cannot make. A broken or too new file changes
+ * The keep-going guard (`keep-going.ts`): Stop, one **block per stalled state** when a phase of
+ * a plan this Claude process works on is `in_progress`, no background work runs
+ * (`background_tasks`), and the turn's last answer has no `Waiting for:` line. The same reason
+ * already given, with no subagent started or resumed since, keeps it silent
+ * (`stopFeedbackGiven`). It names the builder to resume with `SendMessage` (or a phase needing a
+ * fresh builder), the next ready phase, and how to close or record a blocker, and warns against
+ * moving a phase back to pending to end the turn. It reads no setting
+ * and needs no cc-smart-dev-kit.json: the task store is the person's own, so it runs in a project
+ * with no file and honors `ownHooks` where there is one. Silent outside git (the frame's
+ * default), on the stop its own block caused (`stop_hook_active`), or with no readable task
+ * store or caller. An unreadable transcript keeps the decision. A broken or too new file changes
  * nothing: the hook reads no setting of it, so it judges the same way
  * (`.claude/rules/hooks-guards.md` § Fail closed).
  */

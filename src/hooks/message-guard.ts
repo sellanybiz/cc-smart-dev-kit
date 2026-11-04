@@ -33,6 +33,9 @@ import { liveSessions, type SessionRecord } from "./sessions";
 
 type Env = Record<string, string | undefined>;
 
+/** Claude Code's tool that messages another agent or session: what this guard judges. */
+export const SEND_MESSAGE_TOOL = "SendMessage";
+
 /**
  * A name without the ` [ref]` ListAgents prints after it, trimmed: the guard looks a target up
  * by the name this leaves.

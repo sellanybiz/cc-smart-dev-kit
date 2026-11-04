@@ -51,8 +51,8 @@ test("a plan this process holds a claim in: its phase in progress, and its next 
   expect(openPhasesOf(paths, "p", () => me)).toEqual({
     state: "ready",
     value: {
-      inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a" }],
-      ready: [{ number: g2.number, subject: "Portal view", plan: "plan-a" }],
+      inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a", agent: null }],
+      ready: [{ number: g2.number, subject: "Portal view", plan: "plan-a", agent: null }],
     },
   });
 });
@@ -68,7 +68,10 @@ test("a claim on a task under a phase makes its plan this process's own", () => 
   db.close();
   expect(openPhasesOf(paths, "p", () => me)).toEqual({
     state: "ready",
-    value: { inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a" }], ready: [] },
+    value: {
+      inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a", agent: null }],
+      ready: [],
+    },
   });
 });
 
@@ -100,7 +103,10 @@ test("only the plans of the phases in progress offer a ready phase; a blocked on
   db.close();
   expect(openPhasesOf(paths, "p", () => me)).toEqual({
     state: "ready",
-    value: { inProgress: [{ number: a1.number, subject: "First", plan: "plan-a" }], ready: [] },
+    value: {
+      inProgress: [{ number: a1.number, subject: "First", plan: "plan-a", agent: null }],
+      ready: [],
+    },
   });
 });
 
@@ -161,7 +167,10 @@ test("off Linux (no start time) a reused pid is not the claimer: the session mus
   });
   expect(openPhasesOf(paths, "p", () => claimer)).toEqual({
     state: "ready",
-    value: { inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a" }], ready: [] },
+    value: {
+      inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a", agent: null }],
+      ready: [],
+    },
   });
 });
 
