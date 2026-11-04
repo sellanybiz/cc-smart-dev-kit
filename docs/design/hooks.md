@@ -514,12 +514,16 @@ It blocks the stop **once per stalled state** when all of these hold, cheapest f
    time, so a `/clear` keeps the plan; off Linux, with no start time, the session id too, so a
    reused pid never inherits a dead process's plan. A phase in progress in another session's
    plan does not count, and no write ever stamps another session's plan on a task.
-5. The main session's transcript tail has no Stop feedback containing the exact reason it
-   would give now. Only after the store finds a phase in progress does it read that tail
-   (`tailLines`, default `TRANSCRIPT_TAIL_BYTES`). Both string content and text blocks count;
-   sidechain entries do not. Several hooks may share one feedback entry. A different phase,
-   next ready phase or builder changes the reason and earns a new block. Missing or unreadable
-   transcripts keep the decision above. Feedback outside the tail is not seen.
+5. This reason was not already given (`stopFeedbackGiven`, `src/hooks/transcript.ts`). Only
+   after the store finds a phase in progress does it read the transcript's tail (`tailLines`,
+   default `TRANSCRIPT_TAIL_BYTES`). The reason counts as given when a `user` entry of the
+   session itself holds Stop feedback with the exact reason, as string content or text blocks
+   (several hooks may share one entry), and the session started or resumed no subagent after it
+   (`Agent`, `Task`, `SendMessage`). So turns that only answer the person are not blocked
+   again, while a new stall after a fix round gets one new reminder. A sidechain entry, and an
+   answer that only quotes the words, are no feedback. A different phase, next ready phase or
+   builder changes the reason and earns a new block. A missing or unreadable transcript keeps
+   the decision above. Feedback older than the tail is not seen.
 
 **Known limits, all fail open.** Any `background_tasks` entry keeps it silent, a long-running
 shell (a dev server, a watch) too: which entry is an agent is not proved yet. And after another
@@ -527,18 +531,19 @@ Stop hook's block (`verify-gate`), the turn's next stop has `stop_hook_active` s
 hook does not judge that stop.
 
 The reason is one short paragraph. It names each phase in progress as `#n subject`, then
-says to resume its recorded builder with `SendMessage`, naming the agent, or start a fresh
-builder when none is recorded. For several phases it pairs each agent with its phase and
+says to resume its recorded builder with `SendMessage`, naming the agent (or start a fresh
+one), or to start a fresh builder when none is recorded; a blank agent counts as none. For several phases it pairs each agent with its phase and
 names the phases that need fresh builders. Next comes the next ready phase of the same plan —
 the lowest-numbered phase that is `pending` with no open blocker — to start now (dispatch its
 builder). Then it offers to close the phases with `task_done`, or record the blocker with
 `task_note` and end the turn with a `Waiting for: <what>` line. It ends: "Never move a phase
 back to pending only to end the turn."
 
-**Fail open everywhere.** The task store is the person's own, so the hook needs no
+**Fail open everywhere else.** The task store is the person's own, so the hook needs no
 cc-smart-dev-kit.json and runs in a project with none; a project that runs its own copy lists
 `keep-going` in `ownHooks`. It is silent outside git, with no task store, with no caller (no
-live session record and so no Claude process to hold a claim), and on any read it cannot make.
+live session record and so no Claude process to hold a claim), and on any read of the task
+store it cannot make; an unreadable transcript only keeps the decision (item 5).
 A store it cannot read and a broken or too new project file are one stderr line; a crash is the
 frame's one line. `keepGoingWouldBlockAt` gives the same decision to a sibling Stop hook, the
 way `verifyGateWouldBlockAt` does, so the notifier can wait for the stop that really ends the

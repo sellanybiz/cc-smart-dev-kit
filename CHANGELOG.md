@@ -9,15 +9,19 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   worktree may be refused a git line that Claude Code calls "too complex to verify that it
   stays inside the worktree". That is a format rule, not a permission denial, and no approval
   lifts it. The builder now splits such a line into plain git commands and goes on. The main
-  session resumes a stopped builder with that ruling, instead of asking you to approve.
-- **A builder acts on what its caller relays.** A ruling or your answer that the main session
-  sends counts. The builder no longer asks for your own words in its transcript. A relayed
-  yes still passes no tool check by itself: the check decides again.
+  session resumes a stopped builder with that ruling, instead of asking you to approve. The
+  same check covers a session that entered a worktree, so the commit skill now writes the
+  message there as single-quoted `-m` flags instead of a here-doc.
+- **A builder acts on what its caller relays.** Your answer to a question the builder sent up,
+  passed on by the main session, counts. The builder no longer asks for your own words in its
+  transcript. A relayed yes still lifts no tool check: a call that was denied is tried again
+  only when the permission itself changed.
 - **The keep-going stop guard reminds once per stalled state.** It used to block every turn
   end while a phase stayed in progress with no subagent running, even turns that only
-  answered your question. Now it blocks once for a given state. Its message names the
-  builder to resume with `SendMessage`, and says never to move a phase back to pending just
-  to end the turn.
+  answered your question. Now it blocks once for a given state, and once more only after new
+  subagent work stalls again. Its message names the builder to resume with `SendMessage` (or
+  a fresh one to start), and warns against moving a phase back to pending just to end the
+  turn.
 
 **What to run:** nothing. Update as usual.
 

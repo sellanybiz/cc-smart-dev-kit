@@ -41,17 +41,36 @@ export function stopFeedbackTexts(entry: unknown): string[] {
   return texts.filter((text) => text.includes(STOP_FEEDBACK));
 }
 
+/** The names of the `tool_use` blocks in one entry's message, in order. */
+function toolUseNames(entry: Record<string, unknown>): string[] {
+  const content = isJsonObject(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((block) =>
+    isJsonObject(block) && block.type === "tool_use" && typeof block.name === "string"
+      ? [block.name]
+      : [],
+  );
+}
+
 /**
  * True when the transcript's tail already holds Stop feedback with `text` in it (a hook's own
- * reason), in an entry of the session itself: a sidechain entry is a subagent's own
- * conversation and does not count. Only a line that names the feedback is parsed. False when
- * the file cannot be read.
+ * reason), and the session called none of the `resetBy` tools after it. The feedback counts
+ * only as Claude Code writes it: a `user` entry of the session itself. A sidechain entry is a
+ * subagent's own conversation, and an assistant entry that merely quotes the words is no
+ * feedback. A call of a `resetBy` tool after the feedback (new subagent work) makes it count as
+ * not given, so a later stall in the same state earns a new reminder. Only a line that names the
+ * feedback or a tool call is parsed. False when the file cannot be read.
  */
-export function stopFeedbackGiven(transcriptPath: string, text: string): boolean {
+export function stopFeedbackGiven(
+  transcriptPath: string,
+  text: string,
+  resetBy: readonly string[],
+): boolean {
   const lines = tailLines(transcriptPath);
   if (lines === null) return false;
+  let given = false;
   for (const line of lines) {
-    if (!line.includes(STOP_FEEDBACK)) continue;
+    if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"')) continue;
     let entry: unknown;
     try {
       entry = JSON.parse(line);
@@ -59,9 +78,13 @@ export function stopFeedbackGiven(transcriptPath: string, text: string): boolean
       continue; // The tail may start or end with a partial entry.
     }
     if (!isJsonObject(entry) || entry.isSidechain === true) continue;
-    if (stopFeedbackTexts(entry).some((said) => said.includes(text))) return true;
+    if (entry.type === "user" && stopFeedbackTexts(entry).some((said) => said.includes(text))) {
+      given = true;
+    } else if (given && toolUseNames(entry).some((name) => resetBy.includes(name))) {
+      given = false;
+    }
   }
-  return false;
+  return given;
 }
 
 /**

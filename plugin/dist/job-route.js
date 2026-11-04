@@ -9523,12 +9523,120 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
+// src/hooks/transcript.ts
+import { closeSync as closeSync3, fstatSync, openSync as openSync3, readSync } from "fs";
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function isJsonObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var STOP_FEEDBACK = "Stop hook feedback:";
+function stopFeedbackTexts(entry) {
+  if (!isJsonObject(entry) || !isJsonObject(entry.message))
+    return [];
+  const content = entry.message.content;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject(block) && typeof block.text === "string" ? [block.text] : []) : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
+}
+function toolUseNames(entry) {
+  const content = isJsonObject(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content))
+    return [];
+  return content.flatMap((block) => isJsonObject(block) && block.type === "tool_use" && typeof block.name === "string" ? [block.name] : []);
+}
+function stopFeedbackGiven(transcriptPath, text, resetBy) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return false;
+  let given = false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject(entry) || entry.isSidechain === true)
+      continue;
+    if (entry.type === "user" && stopFeedbackTexts(entry).some((said) => said.includes(text))) {
+      given = true;
+    } else if (given && toolUseNames(entry).some((name) => resetBy.includes(name))) {
+      given = false;
+    }
+  }
+  return given;
+}
+function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
+  let text;
+  try {
+    const fd = openSync3(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, bytes);
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync3(fd);
+    }
+  } catch {
+    return null;
+  }
+  return text.split(`
+`);
+}
+function* entriesFromEnd(lines) {
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (line === "")
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isJsonObject(entry))
+      yield entry;
+  }
+}
+function lastClaudeModel(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true)
+      continue;
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+      continue;
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+function lastAssistantText(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "assistant" || !isJsonObject(entry.message))
+      continue;
+    const content = entry.message.content;
+    if (!Array.isArray(content))
+      continue;
+    return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+  }
+  return null;
+}
+
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
-  "Stop hook feedback:"
+  STOP_FEEDBACK
 ];
 function hasNotPersonWrapper(prompt) {
   return NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix));
@@ -12482,12 +12590,12 @@ function scriptByName(name, place) {
 // src/hooks/agent-launches.ts
 import {
   appendFileSync as appendFileSync4,
-  closeSync as closeSync3,
-  fstatSync,
+  closeSync as closeSync4,
+  fstatSync as fstatSync2,
   mkdirSync as mkdirSync10,
-  openSync as openSync3,
+  openSync as openSync4,
   readFileSync as readFileSync15,
-  readSync
+  readSync as readSync2
 } from "fs";
 import { dirname as dirname9, join as join18 } from "path";
 var SESSION_EFFORT = "session-effort";
@@ -12506,32 +12614,32 @@ function agentLaunchesFile(stateDir) {
   return join18(stateDir, "agent-launches.jsonl");
 }
 var RECORD_TAIL_BYTES = 64 * 1024;
-function tailLines(file) {
+function tailLines2(file) {
   let fd;
   try {
-    fd = openSync3(file, "r");
+    fd = openSync4(file, "r");
   } catch {
     return [];
   }
   try {
-    const size = fstatSync(fd).size;
+    const size = fstatSync2(fd).size;
     const from = Math.max(0, size - RECORD_TAIL_BYTES);
     const buffer = Buffer.alloc(size - from);
-    const read = readSync(fd, buffer, 0, buffer.length, from);
+    const read = readSync2(fd, buffer, 0, buffer.length, from);
     const lines = buffer.subarray(0, read).toString("utf8").split(`
 `);
     return (from > 0 ? lines.slice(1) : lines).filter((line) => line.trim() !== "");
   } catch {
     return [];
   } finally {
-    closeSync3(fd);
+    closeSync4(fd);
   }
 }
 function launchKey(launch) {
   return `${launch.session}\x00${launch.toolUseId}\x00${launch.launchIndex}`;
 }
 function appendAgentLaunches(file, launches) {
-  const written = new Set(tailLines(file).map(parseAgentLaunch).filter((one) => one !== null && one.toolUseId !== "").map(launchKey));
+  const written = new Set(tailLines2(file).map(parseAgentLaunch).filter((one) => one !== null && one.toolUseId !== "").map(launchKey));
   const fresh = launches.filter((one) => {
     if (one.toolUseId === "")
       return true;
@@ -12549,7 +12657,7 @@ function appendAgentLaunches(file, launches) {
 `).join(""));
   } catch {}
 }
-function isJsonObject(value) {
+function isJsonObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOrNull(value) {
@@ -12562,7 +12670,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject(value))
+  if (!isJsonObject2(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -12583,104 +12691,6 @@ function parseAgentLaunch(line) {
     toolUseId: typeof value.toolUseId === "string" ? value.toolUseId : "",
     word: parts.word
   };
-}
-
-// src/hooks/transcript.ts
-import { closeSync as closeSync4, fstatSync as fstatSync2, openSync as openSync4, readSync as readSync2 } from "fs";
-var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-var STOP_FEEDBACK = "Stop hook feedback:";
-function stopFeedbackTexts(entry) {
-  if (!isJsonObject2(entry) || !isJsonObject2(entry.message))
-    return [];
-  const content = entry.message.content;
-  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject2(block) && typeof block.text === "string" ? [block.text] : []) : [];
-  return texts.filter((text) => text.includes(STOP_FEEDBACK));
-}
-function stopFeedbackGiven(transcriptPath, text) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return false;
-  for (const line of lines) {
-    if (!line.includes(STOP_FEEDBACK))
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isJsonObject2(entry) || entry.isSidechain === true)
-      continue;
-    if (stopFeedbackTexts(entry).some((said) => said.includes(text)))
-      return true;
-  }
-  return false;
-}
-function tailLines2(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
-  let text;
-  try {
-    const fd = openSync4(transcriptPath, "r");
-    try {
-      const size = fstatSync2(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.alloc(length);
-      readSync2(fd, buffer, 0, length, size - length);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync4(fd);
-    }
-  } catch {
-    return null;
-  }
-  return text.split(`
-`);
-}
-function* entriesFromEnd(lines) {
-  for (let index = lines.length - 1;index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (line === "")
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (isJsonObject2(entry))
-      yield entry;
-  }
-}
-function lastClaudeModel(transcriptPath) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.isSidechain === true)
-      continue;
-    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
-      continue;
-    const model = entry.message.model;
-    if (typeof model === "string" && model.startsWith("claude-"))
-      return model;
-  }
-  return null;
-}
-function lastAssistantText(transcriptPath) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject2(entry.message))
-      continue;
-    const content = entry.message.content;
-    if (!Array.isArray(content))
-      continue;
-    return content.filter((block) => isJsonObject2(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
-  }
-  return null;
 }
 
 // src/hooks/agent-guard.ts
@@ -16175,7 +16185,8 @@ function routeFacts(input, context) {
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  return { number: task.number, subject: task.subject, plan: task.plan, agent: task.agent };
+  const agent = task.agent?.trim() ? task.agent : null;
+  return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
@@ -16201,8 +16212,61 @@ function openPhasesOf(paths, project, caller) {
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 
+// src/hooks/message-guard.ts
+var SEND_MESSAGE_TOOL = "SendMessage";
+function withoutListRef(name) {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+}
+function messageLeavesRepo(to, sessions, repoFolders) {
+  const name = withoutListRef(to);
+  const named = sessions.filter((session) => session.name === name);
+  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
+  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
+}
+function otherRepoFolder(to, repo, env, claudeConfigDir) {
+  let sessions;
+  try {
+    sessions = liveSessions(claudeConfigDir);
+  } catch {
+    return null;
+  }
+  const name = withoutListRef(to);
+  if (!sessions.some((session) => session.name === name))
+    return null;
+  const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
+  return messageLeavesRepo(to, sessions, folders);
+}
+function otherRepoQuestion(to, folder) {
+  return [
+    `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
+    "ListAgents lists every Claude session on the machine, other projects too."
+  ].join(`
+`);
+}
+function otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem) {
+  const to = stringField(toolInput(input).to);
+  if (to === null)
+    return SILENT;
+  const folder = otherRepoFolder(to, repo, env, claudeConfigDir);
+  if (folder === null)
+    return SILENT;
+  const question = otherRepoQuestion(to, folder);
+  return toolDecision("ask", configProblem === null ? question : `${question}
+The project's settings file cannot be used, and this rule reads nothing from it: ${configProblem}`);
+}
+function messageGuardConfigProblem(configProblem, input, env, repo, claudeConfigDir) {
+  return otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem);
+}
+function messageGuard(context) {
+  const { project, input, env, paths } = context;
+  if (project.config === null)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  return otherRepoAnswer(input, env, repo, paths.claudeConfigDir, null);
+}
+
 // src/hooks/keep-going.ts
-var RESUME_TOOL = "SendMessage";
+var SUBAGENT_WORK = [...AGENT_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
 var LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;
@@ -16228,7 +16292,7 @@ function keepGoingReason(inProgress, ready) {
   const options = [];
   for (const phase of inProgress) {
     if (phase.agent !== null) {
-      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${RESUME_TOOL}\``);
+      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`);
     }
   }
   const fresh = inProgress.filter((phase) => phase.agent === null);
@@ -16260,7 +16324,7 @@ function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
     return SILENT;
   const reason = keepGoingReason(view.value.inProgress, view.value.ready);
   const transcript = stringField(input.transcript_path);
-  if (transcript !== null && stopFeedbackGiven(transcript, reason))
+  if (transcript !== null && stopFeedbackGiven(transcript, reason, SUBAGENT_WORK))
     return SILENT;
   return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
@@ -17236,58 +17300,6 @@ async function pullRequestGuard(context) {
   return SILENT;
 }
 
-// src/hooks/message-guard.ts
-function withoutListRef(name) {
-  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
-}
-function messageLeavesRepo(to, sessions, repoFolders) {
-  const name = withoutListRef(to);
-  const named = sessions.filter((session) => session.name === name);
-  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
-  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
-}
-function otherRepoFolder(to, repo, env, claudeConfigDir) {
-  let sessions;
-  try {
-    sessions = liveSessions(claudeConfigDir);
-  } catch {
-    return null;
-  }
-  const name = withoutListRef(to);
-  if (!sessions.some((session) => session.name === name))
-    return null;
-  const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
-  return messageLeavesRepo(to, sessions, folders);
-}
-function otherRepoQuestion(to, folder) {
-  return [
-    `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
-    "ListAgents lists every Claude session on the machine, other projects too."
-  ].join(`
-`);
-}
-function otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem) {
-  const to = stringField(toolInput(input).to);
-  if (to === null)
-    return SILENT;
-  const folder = otherRepoFolder(to, repo, env, claudeConfigDir);
-  if (folder === null)
-    return SILENT;
-  const question = otherRepoQuestion(to, folder);
-  return toolDecision("ask", configProblem === null ? question : `${question}
-The project's settings file cannot be used, and this rule reads nothing from it: ${configProblem}`);
-}
-function messageGuardConfigProblem(configProblem, input, env, repo, claudeConfigDir) {
-  return otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem);
-}
-function messageGuard(context) {
-  const { project, input, env, paths } = context;
-  if (project.config === null)
-    return SILENT;
-  const repo = project.mainCheckout ?? project.root;
-  return otherRepoAnswer(input, env, repo, paths.claudeConfigDir, null);
-}
-
 // src/hooks/push-policy.ts
 function autoPushQuestion(context) {
   const { env, paths, project } = context;
@@ -18182,7 +18194,7 @@ function verifyGateWouldBlock(input, config) {
   const transcript = stringField(input.transcript_path);
   if (transcript === null)
     return false;
-  const lines = tailLines2(transcript, VERIFY_GATE_TAIL_BYTES);
+  const lines = tailLines(transcript, VERIFY_GATE_TAIL_BYTES);
   if (lines === null)
     return false;
   const seen = seenIn(lines, check);
@@ -18547,7 +18559,7 @@ var messageGuardHook = {
   name: "message-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message, input, _event, checkout, { env, paths }) => messageGuardConfigProblem(message, input, env, checkout.mainCheckout ?? checkout.root, paths.claudeConfigDir),
-  onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === "SendMessage"),
+  onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === SEND_MESSAGE_TOOL),
   run: messageGuard
 };
 var afterMergeHook = {

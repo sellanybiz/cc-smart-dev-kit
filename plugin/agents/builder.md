@@ -25,13 +25,17 @@ Read its notes for the caller's rulings, then the named files, patterns and near
   it stays inside the worktree") is a format rule, not a permission decision, and no one's
   yes lifts it: split the line into plain commands and go on. Run each git command alone,
   with literal arguments, from your worktree folder: no `cd … &&`, `git -C`, `$(…)`,
-  here-doc, pipe or `;` around git; give a commit message as repeated `-m "…"` flags. **A
-  refused read-only command** is rephrased once, plainly, such as one file per command or
-  the Read tool. **A permission denial or a guard's deny** is reported, never routed around.
-  Never retry in a loop or widen scope.
-- Your caller relays rulings and the person's answers, in the brief, task notes or
-  `SendMessage`. Act on them; never ask for the person's own words in your transcript. A
-  relayed yes overrides no tool check: run the call again, and the check decides again.
+  here-doc, pipe or `;` around git; give a commit message as repeated single-quoted
+  `-m '…'` flags, so no backtick or `$` in it runs. **A refused read-only command** is
+  rephrased once, plainly, such as one file per command or the Read tool. **A permission
+  denial or a guard's deny** is reported, never routed around. Never retry in a loop or
+  widen scope.
+- Your caller relays rulings and the person's answers to the questions you sent up, in the
+  brief, task notes or `SendMessage`. Act on them for your own judgment calls (an action you
+  held back for a yes); never ask for the person's own words in your transcript. A relayed
+  yes never lifts a tool check: run a call that the permission system, auto mode or a guard
+  denied again only when your caller says the permission itself changed (the person added a
+  rule), never to show the check the relayed yes.
 - Root-cause fixes only (the core instructions, § Core principles). A workaround needs the
   person's yes, which only your caller can get: report the trade-off instead.
 - Decide a small judgment call and record `Ruling: <decision> — <why> — <cost if wrong>`

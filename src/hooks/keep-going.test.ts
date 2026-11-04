@@ -220,6 +220,14 @@ describe("keep-going: stalled state", () => {
       { type: "assistant", message: { content: reason } },
       { stdout: BLOCK_WITH_NEXT },
     ],
+    [
+      "an answer that quotes the whole feedback",
+      {
+        type: "assistant",
+        message: { content: [{ type: "text", text: `Stop hook feedback:\n${reason}` }] },
+      },
+      { stdout: BLOCK_WITH_NEXT },
+    ],
   ])("%s", async (_name, entry, expected) => {
     const w = world();
     busyPlan(w);
@@ -231,11 +239,57 @@ describe("keep-going: stalled state", () => {
     expect(keepGoingWouldBlockAt(input, w.env)).toBe("stdout" in expected);
   });
 
+  /** A main-session answer that calls `name`, as Claude Code records a tool call. */
+  function callOf(name: string): Record<string, unknown> {
+    return {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu_1", name, input: {} }] },
+    };
+  }
+  const feedback = {
+    type: "user",
+    isMeta: true,
+    message: { content: `Stop hook feedback:\n${reason}` },
+  };
+
+  test.each([
+    ["an Agent launch after the reminder blocks again", [feedback, callOf("Agent")], true],
+    ["a builder resumed after the reminder blocks again", [feedback, callOf("SendMessage")], true],
+    ["an old Task launch after the reminder blocks again", [feedback, callOf("Task")], true],
+    ["other tool calls after the reminder stay silent", [feedback, callOf("Bash")], false],
+    ["a launch before the reminder stays silent", [callOf("Agent"), feedback], false],
+    [
+      "a launch inside a subagent's own conversation stays silent",
+      [feedback, { ...callOf("Agent"), isSidechain: true }],
+      false,
+    ],
+  ])("%s", async (_name, entries, blocks) => {
+    const w = world();
+    busyPlan(w);
+    w.db.close();
+    const file = join(tempDir("keep-going-reset"), "session.jsonl");
+    writeFileSync(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    expect(await runHook(keepGoingHook, stop(w.repo, { transcript_path: file }), w.env)).toEqual(
+      blocks ? { stdout: BLOCK_WITH_NEXT } : {},
+    );
+  });
+
+  test("a blank agent names no builder: start a fresh one", async () => {
+    const w = world();
+    const { g1 } = busyPlan(w);
+    const changed = updateTask(w.db, g1.id, { agent: "  " }, ME, 3);
+    if (!changed.ok) throw new Error(changed.why);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: BLOCK_WITH_NEXT,
+    });
+  });
+
   test.each([
     [
       "another agent",
       { agent: "d4e5f6" },
-      "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`d4e5f6`) with `SendMessage`, start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+      "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`d4e5f6`) with `SendMessage` (or start a fresh one), start #3 G2 the portal view now (dispatch its builder), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
     ],
     [
       "changed phase",
@@ -302,7 +356,7 @@ describe("keep-going: stalled state", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`a1b2c3`) with `SendMessage`, close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+          "Phase #2 G1 the guard is still in progress, and no subagent runs. Resume its builder (`a1b2c3`) with `SendMessage` (or start a fresh one), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
       }),
     });
   });
@@ -320,7 +374,7 @@ describe("keep-going: stalled state", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Resume the builder for #2 (`a1b2c3`) with `SendMessage`, start a fresh builder on #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Resume the builder for #2 (`a1b2c3`) with `SendMessage` (or start a fresh one), start a fresh builder on #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
       }),
     });
   });

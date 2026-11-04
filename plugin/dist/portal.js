@@ -19370,12 +19370,120 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
+// src/hooks/transcript.ts
+import { closeSync as closeSync5, fstatSync, openSync as openSync5, readSync as readSync2 } from "fs";
+var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+function isJsonObject7(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var STOP_FEEDBACK = "Stop hook feedback:";
+function stopFeedbackTexts(entry) {
+  if (!isJsonObject7(entry) || !isJsonObject7(entry.message))
+    return [];
+  const content = entry.message.content;
+  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject7(block) && typeof block.text === "string" ? [block.text] : []) : [];
+  return texts.filter((text) => text.includes(STOP_FEEDBACK));
+}
+function toolUseNames(entry) {
+  const content = isJsonObject7(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content))
+    return [];
+  return content.flatMap((block) => isJsonObject7(block) && block.type === "tool_use" && typeof block.name === "string" ? [block.name] : []);
+}
+function stopFeedbackGiven(transcriptPath, text, resetBy) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return false;
+  let given = false;
+  for (const line of lines) {
+    if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"'))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isJsonObject7(entry) || entry.isSidechain === true)
+      continue;
+    if (entry.type === "user" && stopFeedbackTexts(entry).some((said) => said.includes(text))) {
+      given = true;
+    } else if (given && toolUseNames(entry).some((name) => resetBy.includes(name))) {
+      given = false;
+    }
+  }
+  return given;
+}
+function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
+  let text;
+  try {
+    const fd = openSync5(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const length = Math.min(size, bytes);
+      const buffer = Buffer.alloc(length);
+      readSync2(fd, buffer, 0, length, size - length);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync5(fd);
+    }
+  } catch {
+    return null;
+  }
+  return text.split(`
+`);
+}
+function* entriesFromEnd(lines) {
+  for (let index = lines.length - 1;index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (line === "")
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (isJsonObject7(entry))
+      yield entry;
+  }
+}
+function lastClaudeModel(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.isSidechain === true)
+      continue;
+    if (entry.type !== "assistant" || !isJsonObject7(entry.message))
+      continue;
+    const model = entry.message.model;
+    if (typeof model === "string" && model.startsWith("claude-"))
+      return model;
+  }
+  return null;
+}
+function lastAssistantText(transcriptPath) {
+  const lines = tailLines(transcriptPath);
+  if (lines === null)
+    return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "assistant" || !isJsonObject7(entry.message))
+      continue;
+    const content = entry.message.content;
+    if (!Array.isArray(content))
+      continue;
+    return content.filter((block) => isJsonObject7(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
+  }
+  return null;
+}
+
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
-  "Stop hook feedback:"
+  STOP_FEEDBACK
 ];
 function hasNotPersonWrapper(prompt2) {
   return NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix));
@@ -20265,7 +20373,7 @@ var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 var envPath = (key) => ["env", key];
-function isJsonObject7(value) {
+function isJsonObject8(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
@@ -20280,10 +20388,10 @@ function readSettings(path) {
   } catch {
     throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
   }
-  if (!isJsonObject7(parsed))
+  if (!isJsonObject8(parsed))
     throw new Error(`${path} is not a JSON object; not touching it`);
   const env = parsed.env;
-  if (env !== undefined && !isJsonObject7(env))
+  if (env !== undefined && !isJsonObject8(env))
     throw new Error(`${path} has an "env" that is not an object`);
   return parsed;
 }
@@ -20315,7 +20423,7 @@ function shownValue(value) {
 }
 function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const env = readSettings(settingsFile).env;
-  if (!isJsonObject7(env))
+  if (!isJsonObject8(env))
     return;
   const owned = ownedKeys(stateDir, realTarget(settingsFile));
   const owns = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
@@ -20363,7 +20471,7 @@ function turnOff(options) {
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
   const foreign = [
-    ...result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject7(env) && Object.hasOwn(env, key)),
+    ...result.skipped.map((skip) => skip.path[1]).filter((key) => key !== undefined && isJsonObject8(env) && Object.hasOwn(env, key)),
     ...address.kind === "theirs" && address.present ? [BASE_URL_KEY] : []
   ];
   return {
@@ -20384,7 +20492,7 @@ function foreignRouting(foreign, settingsFile) {
 }
 function readGatewaySettings(settingsPath) {
   const settings = readSettings(settingsPath);
-  const env = isJsonObject7(settings.env) ? settings.env : {};
+  const env = isJsonObject8(settings.env) ? settings.env : {};
   const held = env.ANTHROPIC_BASE_URL;
   const usable = typeof held === "string" && held.trim() !== "";
   const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
@@ -22427,7 +22535,7 @@ function routerService(ctx) {
     taskPath: paths.routerTaskFile
   }) : systemdService({ socketPath: paths.routerSocketFile, unitPath: paths.routerUnitFile });
 }
-function isJsonObject8(value) {
+function isJsonObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var KNOWN_BACKENDS = {
@@ -23287,14 +23395,14 @@ async function commandStatus(ctx) {
       fix: "setup starts it again"
     });
   } else {
-    const body = isJsonObject8(health.body) ? health.body : {};
+    const body = isJsonObject9(health.body) ? health.body : {};
     out.line("ok", `router: up on 127.0.0.1:${String(body.port)} for ${String(body.uptimeSec)} s, ${String(body.requests)} requests, ${String(body.fallbacks)} fallbacks`);
     if (body.port !== port) {
       out.line("warn", `the config says port ${port}; restart the router to move it`, {
         indent: 2
       });
     }
-    const cooling = isJsonObject8(body.cooling) ? Object.entries(body.cooling) : [];
+    const cooling = isJsonObject9(body.cooling) ? Object.entries(body.cooling) : [];
     for (const [target, seconds] of cooling) {
       out.line("info", `resting: ${target} for ${String(seconds)} s more`, { indent: 2 });
     }
@@ -24892,11 +25000,11 @@ function installIsWritable(install) {
 var REGISTRY = "https://registry.npmjs.org";
 var MIN_RELEASE_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 var STABLE = /^\d+\.\d+\.\d+$/;
-function isJsonObject9(value) {
+function isJsonObject10(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isDeprecated(entry) {
-  return isJsonObject9(entry) && typeof entry.deprecated === "string";
+  return isJsonObject10(entry) && typeof entry.deprecated === "string";
 }
 function parseReleases(text, nowMs) {
   let raw;
@@ -26157,16 +26265,16 @@ async function shellFacts(ctx, portalPort, found) {
   const health = await routerHealth(port, ctx.probe.fetch);
   return { platform, portalPort, router: { port, up: !("error" in health) }, version: VERSION };
 }
-function isJsonObject10(value) {
+function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function entriesOf2(value) {
-  if (!isJsonObject10(value))
+  if (!isJsonObject11(value))
     return [];
   return Object.entries(value).filter((entry) => typeof entry[1] === "number").sort(([a], [b]) => a < b ? -1 : 1);
 }
 function recentEntryOf(value) {
-  if (!isJsonObject10(value))
+  if (!isJsonObject11(value))
     return null;
   const { at, ms, nextTarget, slot, status, target } = value;
   if (typeof at !== "number" || typeof ms !== "number" || typeof status !== "number")
@@ -26176,11 +26284,11 @@ function recentEntryOf(value) {
   return { at, ms, nextTarget: nextTarget === true, slot, status, target };
 }
 function breakersOf(value) {
-  if (!isJsonObject10(value))
+  if (!isJsonObject11(value))
     return {};
   const out = {};
   for (const [slot, raw] of Object.entries(value)) {
-    if (!isJsonObject10(raw))
+    if (!isJsonObject11(raw))
       continue;
     const { held, heldNow, since, targets } = raw;
     if (typeof held !== "number" || typeof heldNow !== "number" || typeof since !== "number") {
@@ -26191,7 +26299,7 @@ function breakersOf(value) {
       heldNow,
       since,
       targets: (Array.isArray(targets) ? targets : []).flatMap((one) => {
-        if (!isJsonObject10(one) || typeof one.target !== "string" || typeof one.until !== "number") {
+        if (!isJsonObject11(one) || typeof one.target !== "string" || typeof one.until !== "number") {
           return [];
         }
         return [
@@ -26221,7 +26329,7 @@ async function routerFacts(ctx, port) {
       why: health.error
     };
   }
-  const body = isJsonObject10(health.body) ? health.body : {};
+  const body = isJsonObject11(health.body) ? health.body : {};
   const number = (key) => typeof body[key] === "number" ? body[key] : 0;
   return {
     breakers: breakersOf(body.breakers),
@@ -26256,7 +26364,7 @@ function parseJournalLine(text, nowMs) {
     } catch {
       return null;
     }
-    if (!isJsonObject10(raw))
+    if (!isJsonObject11(raw))
       return null;
     const message = typeof raw.MESSAGE === "string" ? raw.MESSAGE : null;
     if (message === null)
@@ -26826,12 +26934,12 @@ function safetyCheckWindow(state, options) {
 // src/hooks/agent-launches.ts
 import {
   appendFileSync as appendFileSync3,
-  closeSync as closeSync5,
-  fstatSync,
+  closeSync as closeSync6,
+  fstatSync as fstatSync2,
   mkdirSync as mkdirSync16,
-  openSync as openSync5,
+  openSync as openSync6,
   readFileSync as readFileSync47,
-  readSync as readSync2
+  readSync as readSync3
 } from "fs";
 import { dirname as dirname18, join as join43 } from "path";
 
@@ -26996,32 +27104,32 @@ function agentLaunchesFile(stateDir) {
   return join43(stateDir, "agent-launches.jsonl");
 }
 var RECORD_TAIL_BYTES = 64 * 1024;
-function tailLines(file) {
+function tailLines2(file) {
   let fd;
   try {
-    fd = openSync5(file, "r");
+    fd = openSync6(file, "r");
   } catch {
     return [];
   }
   try {
-    const size = fstatSync(fd).size;
+    const size = fstatSync2(fd).size;
     const from = Math.max(0, size - RECORD_TAIL_BYTES);
     const buffer = Buffer.alloc(size - from);
-    const read = readSync2(fd, buffer, 0, buffer.length, from);
+    const read = readSync3(fd, buffer, 0, buffer.length, from);
     const lines = buffer.subarray(0, read).toString("utf8").split(`
 `);
     return (from > 0 ? lines.slice(1) : lines).filter((line) => line.trim() !== "");
   } catch {
     return [];
   } finally {
-    closeSync5(fd);
+    closeSync6(fd);
   }
 }
 function launchKey(launch) {
   return `${launch.session}\x00${launch.toolUseId}\x00${launch.launchIndex}`;
 }
 function appendAgentLaunches(file, launches) {
-  const written = new Set(tailLines(file).map(parseAgentLaunch).filter((one) => one !== null && one.toolUseId !== "").map(launchKey));
+  const written = new Set(tailLines2(file).map(parseAgentLaunch).filter((one) => one !== null && one.toolUseId !== "").map(launchKey));
   const fresh = launches.filter((one) => {
     if (one.toolUseId === "")
       return true;
@@ -27039,7 +27147,7 @@ function appendAgentLaunches(file, launches) {
 `).join(""));
   } catch {}
 }
-function isJsonObject11(value) {
+function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOrNull(value) {
@@ -27052,7 +27160,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject11(value))
+  if (!isJsonObject12(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -27082,14 +27190,14 @@ var AGENT_USAGE_FILE = "agent-usage.jsonl";
 function agentUsageFile(stateDir) {
   return join44(stateDir, AGENT_USAGE_FILE);
 }
-function isJsonObject12(value) {
+function isJsonObject13(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function count(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 function tokensOf2(usage) {
-  if (!isJsonObject12(usage))
+  if (!isJsonObject13(usage))
     return { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
   return {
     cacheRead: count(usage.cache_read_input_tokens),
@@ -27112,13 +27220,13 @@ function repliesOfTranscript(text, agentId = "") {
     } catch {
       continue;
     }
-    if (!isJsonObject12(line) || line.type !== "assistant")
+    if (!isJsonObject13(line) || line.type !== "assistant")
       continue;
     const lineAgent = stringField(line.agentId);
     if (agentId !== "" && lineAgent !== null && lineAgent !== agentId)
       continue;
     const message = line.message;
-    if (!isJsonObject12(message))
+    if (!isJsonObject13(message))
       continue;
     const model = stringField(message.model) ?? UNKNOWN_MODEL;
     const id = stringField(message.id);
@@ -30620,104 +30728,6 @@ function scriptByName(name, place) {
   return noFile(name);
 }
 
-// src/hooks/transcript.ts
-import { closeSync as closeSync6, fstatSync as fstatSync2, openSync as openSync6, readSync as readSync3 } from "fs";
-var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
-function isJsonObject13(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-var STOP_FEEDBACK = "Stop hook feedback:";
-function stopFeedbackTexts(entry) {
-  if (!isJsonObject13(entry) || !isJsonObject13(entry.message))
-    return [];
-  const content = entry.message.content;
-  const texts = typeof content === "string" ? [content] : Array.isArray(content) ? content.flatMap((block) => isJsonObject13(block) && typeof block.text === "string" ? [block.text] : []) : [];
-  return texts.filter((text) => text.includes(STOP_FEEDBACK));
-}
-function stopFeedbackGiven(transcriptPath, text) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return false;
-  for (const line of lines) {
-    if (!line.includes(STOP_FEEDBACK))
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isJsonObject13(entry) || entry.isSidechain === true)
-      continue;
-    if (stopFeedbackTexts(entry).some((said) => said.includes(text)))
-      return true;
-  }
-  return false;
-}
-function tailLines2(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
-  let text;
-  try {
-    const fd = openSync6(transcriptPath, "r");
-    try {
-      const size = fstatSync2(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.alloc(length);
-      readSync3(fd, buffer, 0, length, size - length);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync6(fd);
-    }
-  } catch {
-    return null;
-  }
-  return text.split(`
-`);
-}
-function* entriesFromEnd(lines) {
-  for (let index = lines.length - 1;index >= 0; index -= 1) {
-    const line = lines[index] ?? "";
-    if (line === "")
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (isJsonObject13(entry))
-      yield entry;
-  }
-}
-function lastClaudeModel(transcriptPath) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.isSidechain === true)
-      continue;
-    if (entry.type !== "assistant" || !isJsonObject13(entry.message))
-      continue;
-    const model = entry.message.model;
-    if (typeof model === "string" && model.startsWith("claude-"))
-      return model;
-  }
-  return null;
-}
-function lastAssistantText(transcriptPath) {
-  const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return null;
-  for (const entry of entriesFromEnd(lines)) {
-    if (entry.type !== "assistant" || !isJsonObject13(entry.message))
-      continue;
-    const content = entry.message.content;
-    if (!Array.isArray(content))
-      continue;
-    return content.filter((block) => isJsonObject13(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(" ");
-  }
-  return null;
-}
-
 // src/hooks/agent-guard.ts
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
@@ -33665,7 +33675,8 @@ function routeFacts(input, context) {
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  return { number: task.number, subject: task.subject, plan: task.plan, agent: task.agent };
+  const agent = task.agent?.trim() ? task.agent : null;
+  return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 function isPhase(task) {
   return task.kind === "phase" && task.plan !== null && task.phase !== null;
@@ -33691,8 +33702,61 @@ function openPhasesOf(paths, project, caller) {
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 
+// src/hooks/message-guard.ts
+var SEND_MESSAGE_TOOL = "SendMessage";
+function withoutListRef(name) {
+  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
+}
+function messageLeavesRepo(to, sessions, repoFolders) {
+  const name = withoutListRef(to);
+  const named = sessions.filter((session) => session.name === name);
+  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
+  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
+}
+function otherRepoFolder(to, repo, env, claudeConfigDir) {
+  let sessions;
+  try {
+    sessions = liveSessions(claudeConfigDir);
+  } catch {
+    return null;
+  }
+  const name = withoutListRef(to);
+  if (!sessions.some((session) => session.name === name))
+    return null;
+  const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
+  return messageLeavesRepo(to, sessions, folders);
+}
+function otherRepoQuestion(to, folder) {
+  return [
+    `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
+    "ListAgents lists every Claude session on the machine, other projects too."
+  ].join(`
+`);
+}
+function otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem) {
+  const to = stringField(toolInput(input).to);
+  if (to === null)
+    return SILENT;
+  const folder = otherRepoFolder(to, repo, env, claudeConfigDir);
+  if (folder === null)
+    return SILENT;
+  const question = otherRepoQuestion(to, folder);
+  return toolDecision("ask", configProblem === null ? question : `${question}
+The project's settings file cannot be used, and this rule reads nothing from it: ${configProblem}`);
+}
+function messageGuardConfigProblem(configProblem, input, env, repo, claudeConfigDir) {
+  return otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem);
+}
+function messageGuard(context) {
+  const { project, input, env, paths } = context;
+  if (project.config === null)
+    return SILENT;
+  const repo = project.mainCheckout ?? project.root;
+  return otherRepoAnswer(input, env, repo, paths.claudeConfigDir, null);
+}
+
 // src/hooks/keep-going.ts
-var RESUME_TOOL = "SendMessage";
+var SUBAGENT_WORK = [...AGENT_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
 var LEADING_MARKS2 = /^(?:[*_>#\- ]|\d+[.)])+/;
@@ -33718,7 +33782,7 @@ function keepGoingReason(inProgress, ready) {
   const options = [];
   for (const phase of inProgress) {
     if (phase.agent !== null) {
-      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${RESUME_TOOL}\``);
+      options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`);
     }
   }
   const fresh = inProgress.filter((phase) => phase.agent === null);
@@ -33750,7 +33814,7 @@ function keepGoingAnswer(input, project, paths, env, findCaller = callerOf) {
     return SILENT;
   const reason = keepGoingReason(view.value.inProgress, view.value.ready);
   const transcript = stringField(input.transcript_path);
-  if (transcript !== null && stopFeedbackGiven(transcript, reason))
+  if (transcript !== null && stopFeedbackGiven(transcript, reason, SUBAGENT_WORK))
     return SILENT;
   return { stdout: JSON.stringify({ decision: "block", reason }) };
 }
@@ -34111,58 +34175,6 @@ async function pullRequestGuard(context) {
     return toolDecision("allow", allowed);
   }
   return SILENT;
-}
-
-// src/hooks/message-guard.ts
-function withoutListRef(name) {
-  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
-}
-function messageLeavesRepo(to, sessions, repoFolders) {
-  const name = withoutListRef(to);
-  const named = sessions.filter((session) => session.name === name);
-  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
-  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
-}
-function otherRepoFolder(to, repo, env, claudeConfigDir) {
-  let sessions;
-  try {
-    sessions = liveSessions(claudeConfigDir);
-  } catch {
-    return null;
-  }
-  const name = withoutListRef(to);
-  if (!sessions.some((session) => session.name === name))
-    return null;
-  const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
-  return messageLeavesRepo(to, sessions, folders);
-}
-function otherRepoQuestion(to, folder) {
-  return [
-    `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
-    "ListAgents lists every Claude session on the machine, other projects too."
-  ].join(`
-`);
-}
-function otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem) {
-  const to = stringField(toolInput(input).to);
-  if (to === null)
-    return SILENT;
-  const folder = otherRepoFolder(to, repo, env, claudeConfigDir);
-  if (folder === null)
-    return SILENT;
-  const question = otherRepoQuestion(to, folder);
-  return toolDecision("ask", configProblem === null ? question : `${question}
-The project's settings file cannot be used, and this rule reads nothing from it: ${configProblem}`);
-}
-function messageGuardConfigProblem(configProblem, input, env, repo, claudeConfigDir) {
-  return otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem);
-}
-function messageGuard(context) {
-  const { project, input, env, paths } = context;
-  if (project.config === null)
-    return SILENT;
-  const repo = project.mainCheckout ?? project.root;
-  return otherRepoAnswer(input, env, repo, paths.claudeConfigDir, null);
 }
 
 // src/hooks/push-policy.ts
@@ -34972,7 +34984,7 @@ function verifyGateWouldBlock(input, config) {
   const transcript = stringField(input.transcript_path);
   if (transcript === null)
     return false;
-  const lines = tailLines2(transcript, VERIFY_GATE_TAIL_BYTES);
+  const lines = tailLines(transcript, VERIFY_GATE_TAIL_BYTES);
   if (lines === null)
     return false;
   const seen = seenIn(lines, check);
@@ -35337,7 +35349,7 @@ var messageGuardHook = {
   name: "message-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message, input, _event, checkout, { env, paths }) => messageGuardConfigProblem(message, input, env, checkout.mainCheckout ?? checkout.root, paths.claudeConfigDir),
-  onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === "SendMessage"),
+  onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === SEND_MESSAGE_TOOL),
   run: messageGuard
 };
 var afterMergeHook = {
