@@ -11,21 +11,21 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { stringField } from "../hooks/io";
-import { hostPlatform } from "../machine/host";
 import { installsOfPlugin } from "../setup/installed-plugins";
 
 /** The fields a definition supplies to the launch policy. `inherit` supplies no model. */
 export interface AgentDefinition {
   model: null | string;
   effort: null | string;
+  /** True when Claude Code's own built-in answers the name: no managed, project or user file claims it. */
+  builtIn?: true;
 }
 
 export interface AgentPlace {
-  paths: Pick<CliPaths, "home" | "claudeConfigDir" | "installedPluginsFile">;
+  /** The folders: the managed agents folder too (`CliPaths.managedAgentsDir`; a temp one in a test). */
+  paths: Pick<CliPaths, "home" | "claudeConfigDir" | "installedPluginsFile" | "managedAgentsDir">;
   checkout: null | string;
   cwd?: null | string;
-  /** The managed agents folder: `managedAgentsDir()` in the hook, a temp folder in a test. */
-  managedAgentsDir: string;
 }
 
 /** The deepest folder a scan follows below an agents folder (symlinked folders included). */
@@ -40,18 +40,6 @@ class ScanTooLarge extends Error {}
 /** One lookup's scan budget, shared by every folder it reads. */
 interface Budget {
   entries: number;
-}
-
-/** Paths and priority: https://code.claude.com/docs/en/sub-agents and
- * https://code.claude.com/docs/en/managed-settings#delivery-mechanisms (2026-11-05). */
-export function managedAgentsDir(platform = hostPlatform()): string {
-  const root =
-    platform === "darwin"
-      ? "/Library/Application Support/ClaudeCode"
-      : platform === "win32"
-        ? "C:\\Program Files\\ClaudeCode"
-        : "/etc/claude-code";
-  return join(root, ".claude", "agents");
 }
 
 /** Fixed built-ins on 2.1.318; conditional/inherited models are deliberately unknown.
@@ -159,8 +147,22 @@ function inside(checkout: string, project: string): boolean {
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
 }
 
+/**
+ * The `.md` files directly in `folder`, symlinks followed. A plugin's `plugin:x` is
+ * `agents/x.md` alone: a file in a subfolder registers as `plugin:sub:x`, another name.
+ */
+function topFiles(folder: string, budget: Budget): string[] {
+  const entries = readable(() => readdirSync(folder).sort()) ?? [];
+  return entries.flatMap((entry) => {
+    budget.entries += 1;
+    if (budget.entries > AGENT_SCAN_MAX_ENTRIES) throw new ScanTooLarge();
+    const file = join(folder, entry);
+    return file.endsWith(".md") && readable(() => statSync(file).isFile()) === true ? [file] : [];
+  });
+}
+
 function pluginFiles(root: string, budget: Budget): string[] {
-  const defaults = files(join(root, "agents"), budget);
+  const defaults = topFiles(join(root, "agents"), budget);
   let listed: unknown;
   try {
     listed = JSON.parse(readFileSync(join(root, ".claude-plugin", "plugin.json"), "utf8"))?.agents;
@@ -220,7 +222,7 @@ function lookup(name: null | string, place: AgentPlace, budget: Budget): AgentDe
   const colon = name.indexOf(":");
   if (colon === -1) {
     const folders = [
-      place.managedAgentsDir,
+      place.paths.managedAgentsDir,
       ...(place.checkout === null ? [] : projectFolders(place.checkout, place.cwd)),
       join(place.paths.claudeConfigDir, "agents"),
     ];
@@ -231,13 +233,16 @@ function lookup(name: null | string, place: AgentPlace, budget: Budget): AgentDe
   }
   if (colon !== -1) {
     const installs = installsOfPlugin(place.paths.installedPluginsFile, name.slice(0, colon));
+    // The cwd as given and as it really is: a symlinked cwd still belongs to its project.
+    const given = place.cwd ?? place.checkout;
+    const real = given == null ? null : readable(() => realpathSync(given));
+    const cwds = [given, real].filter((one): one is string => one != null);
     const project = installs
       .filter(
         (one) =>
           one.scope !== "user" &&
           one.projectPath !== null &&
-          (place.cwd ?? place.checkout) != null &&
-          inside(place.cwd ?? place.checkout ?? "", one.projectPath),
+          cwds.some((cwd) => inside(cwd, one.projectPath ?? "")),
       )
       .sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
     const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) =>
@@ -247,5 +252,7 @@ function lookup(name: null | string, place: AgentPlace, budget: Budget): AgentDe
       ? null
       : claiming(pluginFiles(root, budget), name.slice(colon + 1), false);
   }
-  return Object.hasOwn(BUILT_INS, name) ? { model: BUILT_INS[name] ?? null, effort: null } : null;
+  return Object.hasOwn(BUILT_INS, name)
+    ? { model: BUILT_INS[name] ?? null, effort: null, builtIn: true }
+    : null;
 }

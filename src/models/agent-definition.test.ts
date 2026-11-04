@@ -12,14 +12,13 @@ function write(file: string, text: string): void {
 
 function place() {
   const home = tempDir("agent-definitions");
-  const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
-  const checkout = join(home, "repo");
-  mkdirSync(checkout, { recursive: true });
-  return {
-    paths,
-    checkout,
+  const paths = {
+    ...cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") }),
     managedAgentsDir: join(home, "managed", ".claude", "agents"),
   };
+  const checkout = join(home, "repo");
+  mkdirSync(checkout, { recursive: true });
+  return { paths, checkout };
 }
 
 const PINNED =
@@ -69,6 +68,52 @@ describe("agent definitions", () => {
     expect(agentDefinition("checker", p)).toBeNull();
   });
 
+  it("a project-scope plugin install matches a symlinked cwd by its real folder too", () => {
+    const p = place();
+    const project = join(p.paths.home, "project-copy");
+    const user = join(p.paths.home, "user-copy");
+    write(join(project, "agents", "checker.md"), PINNED.replace("sonnet", "haiku"));
+    write(join(user, "agents", "checker.md"), PINNED);
+    write(
+      p.paths.installedPluginsFile,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "probe-kit@example-market": [
+            { installPath: user, scope: "user" },
+            { installPath: project, projectPath: p.checkout, scope: "project" },
+          ],
+        },
+      }),
+    );
+    mkdirSync(join(p.checkout, "src"), { recursive: true });
+    const link = join(p.paths.home, "linked-src");
+    symlinkSync(join(p.checkout, "src"), link, "dir");
+    for (const cwd of [join(p.checkout, "src"), link]) {
+      expect(agentDefinition("probe-kit:checker", { ...p, cwd })).toEqual({
+        model: "haiku",
+        effort: "high",
+      });
+    }
+  });
+
+  it("`plugin:x` is a top-level file of the plugin's agents folder, never one in a subfolder", () => {
+    const p = place();
+    const root = join(p.paths.home, "plugin");
+    write(
+      p.paths.installedPluginsFile,
+      JSON.stringify({
+        version: 2,
+        plugins: { "probe-kit@example-market": [{ installPath: root, scope: "user" }] },
+      }),
+    );
+    // `agents/sub/checker.md` registers as `probe-kit:sub:checker`, not `probe-kit:checker`.
+    write(join(root, "agents", "sub", "checker.md"), PINNED);
+    expect(agentDefinition("probe-kit:checker", p)).toBeNull();
+    write(join(root, "agents", "checker.md"), PINNED.replace("sonnet", "haiku"));
+    expect(agentDefinition("probe-kit:checker", p)).toEqual({ model: "haiku", effort: "high" });
+  });
+
   it("unseen SDK definitions and missing or malformed files supply nothing", () => {
     const p = place();
     write(join(p.checkout, ".claude", "agents", "bad.md"), "---\nname: [\n---\n");
@@ -94,9 +139,8 @@ describe("agent definitions", () => {
     write(join(p.checkout, ".claude", "agents", "root.md"), PINNED);
     write(join(cwd, ".claude", "agents", "nested.md"), PINNED.replace("sonnet", "haiku"));
     expect(agentDefinition("checker", { ...p, cwd })).toEqual({ model: "haiku", effort: "high" });
-    const managedAgentsDir = join(p.paths.home, "managed", ".claude", "agents");
-    write(join(managedAgentsDir, "managed.md"), PINNED.replace("sonnet", "opus"));
-    expect(agentDefinition("checker", { ...p, cwd, managedAgentsDir })).toEqual({
+    write(join(p.paths.managedAgentsDir, "managed.md"), PINNED.replace("sonnet", "opus"));
+    expect(agentDefinition("checker", { ...p, cwd })).toEqual({
       model: "opus",
       effort: "high",
     });
@@ -167,10 +211,21 @@ describe("agent definitions", () => {
 
   it("fixed built-ins supply models, dynamic built-ins do not guess", () => {
     const p = place();
-    expect(agentDefinition("claude-code-guide", p)).toEqual({ model: "haiku", effort: null });
-    expect(agentDefinition("statusline-setup", p)).toEqual({ model: "sonnet", effort: null });
+    expect(agentDefinition("claude-code-guide", p)).toEqual({
+      model: "haiku",
+      effort: null,
+      builtIn: true,
+    });
+    expect(agentDefinition("statusline-setup", p)).toEqual({
+      model: "sonnet",
+      effort: null,
+      builtIn: true,
+    });
     for (const name of ["Explore", "Plan", "general-purpose", "web-fetch"]) {
-      expect(agentDefinition(name, p)).toEqual({ model: null, effort: null });
+      expect(agentDefinition(name, p)).toEqual({ model: null, effort: null, builtIn: true });
     }
+    // A local file of a built-in's name overrides it, and is no built-in.
+    write(join(p.checkout, ".claude", "agents", "e.md"), PINNED.replace("checker", "Explore"));
+    expect(agentDefinition("Explore", p)).toEqual({ model: "sonnet", effort: "high" });
   });
 });

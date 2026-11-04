@@ -455,13 +455,27 @@ The lookup reads the managed
 agents folder first, then the project's folders from the input's real cwd (symlinks
 resolved) up to the checkout root, closest first, then the user's agents. A cwd whose real
 folder is outside the checkout scans the checkout root alone. A qualified plugin name skips
-those scans. A local definition needs a valid name and a string description. Each name is
+those scans. A plugin's `plugin:x` is the file `agents/x.md` at the top of that folder, or a
+file the plugin's manifest lists; a file in a subfolder registers under another name. A
+project-scope install of the plugin matches when the cwd as given, or its real folder, is
+inside the install's project. A local definition needs a valid name and a string description. Each name is
 read once per hook run, and only its frontmatter is read. Symlinked files and folders are
 followed without loops, at most 8 folders deep and 2000 files and folders per lookup
 (`AGENT_SCAN_MAX_DEPTH`, `AGENT_SCAN_MAX_ENTRIES`). Past a cap, a failed checkout lookup, or a
 cwd that cannot be resolved, the whole definition is unknown: the launch needs its own
-`model` and `effort`. A test passes its own managed folder to `readGuardContext`, so no test
-reads the machine's.
+`model` and `effort`. The managed folder is `CliPaths.managedAgentsDir`, from the machine's
+own platform: no variable moves it, since a project's settings `env` reaches a hook and must
+not hide the managed definitions. A test names a temp folder there.
+
+**One lexer reads every script** (`src/hooks/script-lexer.ts`). Every scanner of a Workflow
+script reads it through the one lexer: the `agent` and `workflow` mentions, a call's end, its
+options and its arguments. The lexer says which text is code and where each string, template,
+comment and regular expression ends, and a template's `${…}` is code again, to any depth. A
+`/` is a regular expression where an expression starts: after punctuation, a block's `}`, an
+`if (…)` head, or a word like `return`. It is a division after a value. A regular expression
+must close on its line. Without that, a quote inside `s.replace(/"/g, "'")` would open a
+string that swallows the launches after it. A script with a regular expression, string,
+template or comment that does not close is refused whole, saying where.
 
 In a Workflow script, a definition stands in only for options written as one plain object
 literal of `key: value` pairs. Options that are not (a getter, a method, a shorthand key,
@@ -474,7 +488,9 @@ The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
 - **A read-only agent** (`Plan`, `Explore`, `cc-smart-dev-kit:auditor`,
   `cc-smart-dev-kit:edge-case-hunter`, `cc-smart-dev-kit:researcher`; `READ_ONLY_AGENTS`,
-  matched by the whole name, so another plugin's or a project's `researcher` is not one) takes any word of
+  matched by the whole name as written, so another plugin's or a project's `researcher` is
+  not one; a bare `Plan` or `Explore` counts only while Claude Code's built-in answers that
+  name, since a managed, project or user file of that name overrides it) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is

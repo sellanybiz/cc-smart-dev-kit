@@ -78,7 +78,7 @@ function workflowCall(script: string): HookInput {
 }
 
 /** The paths a Workflow judgement uses (no gateway config, nothing on disk). */
-const WORKFLOW_PATHS = cliPaths({
+const WORKFLOW_PATHS = testPaths({
   CLAUDE_CONFIG_DIR: join(tempDir("workflow-home"), ".claude"),
   HOME: tempDir("workflow-home"),
 });
@@ -86,6 +86,11 @@ const WORKFLOW_PATHS = cliPaths({
 /** A managed agents folder in a temp folder: no test reads the machine's own. */
 function managedFolder(): string {
   return join(tempDir("managed-agents"), ".claude", "agents");
+}
+
+/** Every path a test here uses: the CLI's, with a temp managed agents folder. */
+function testPaths(env: Record<string, string | undefined>): CliPaths {
+  return { ...cliPaths(env), managedAgentsDir: managedFolder() };
 }
 
 function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env = NO_ENV) {
@@ -152,6 +157,51 @@ describe("frontmatter launch fields", () => {
     }
   });
 
+  it("a bare `Plan` or `Explore` is read-only only while the built-in answers that name", () => {
+    const fable = (subagent_type: string, ctx: GuardContext) =>
+      verdict(
+        { subagent_type, model: "fable", effort: "high", prompt: "Fable reason: review - x" },
+        ctx,
+      ).decision;
+    const builtIn: GuardContext = {
+      ...CTX,
+      definition: () => ({ model: null, effort: null, builtIn: true }),
+    };
+    expect(fable("Explore", builtIn)).toBe("ask");
+    // A project's, a user's or a managed `Explore` overrides the built-in (the sub-agents docs).
+    const local: GuardContext = { ...CTX, definition: () => ({ model: null, effort: null }) };
+    expect(fable("Explore", local)).toBe("deny");
+    expect(fable("Plan", local)).toBe("deny");
+    // A lookup that failed proves nothing: not read-only.
+    expect(fable("Plan", { ...CTX, definition: () => null })).toBe("deny");
+    // Names match as written.
+    expect(fable("explore", builtIn)).toBe("deny");
+    expect(fable("Cc-Smart-Dev-Kit:researcher", builtIn)).toBe("deny");
+  });
+
+  it("the hook sees a project's own `Explore` file: that Explore is not read-only", () => {
+    const home = tempDir("explore-home");
+    const cwd = join(home, "repo");
+    mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude", "agents", "explore.md"),
+      "---\nname: Explore\ndescription: Mine.\n---\nWrite files too.\n",
+    );
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const ctx = readGuardContext(paths, { cwd }, NO_ENV);
+    const result = verdict(
+      {
+        subagent_type: "Explore",
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - x",
+      },
+      ctx,
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("`Explore`, which can change files");
+  });
+
   it("another plugin's or a project's agent of the same short name is not read-only", () => {
     for (const name of [
       "researcher",
@@ -196,14 +246,14 @@ describe("frontmatter launch fields", () => {
   it("the hook reads project frontmatter through its input cwd and injected user paths", () => {
     const home = tempDir("frontmatter-hook");
     const cwd = join(home, "repo");
-    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
     writeFileSync(
       join(cwd, ".claude", "agents", "checker.md"),
       "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
     );
     const input = { ...agentCall({ subagent_type: "checker" }), cwd };
-    const ctx = readGuardContext(paths, input, NO_ENV, managedFolder());
+    const ctx = readGuardContext(paths, input, NO_ENV);
     expect(verdict({ subagent_type: "checker" }, ctx).decision).toBe("allow");
     expect(
       judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV)[0]?.verdict
@@ -213,7 +263,7 @@ describe("frontmatter launch fields", () => {
 
   it("caches definitions once per hook run and fails the whole lookup on a bad cwd", () => {
     const home = tempDir("definition-cache");
-    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     const folder = join(paths.claudeConfigDir, "agents");
     mkdirSync(folder, { recursive: true });
     const file = join(folder, "checker.md");
@@ -221,11 +271,11 @@ describe("frontmatter launch fields", () => {
       file,
       "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\n",
     );
-    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV, managedFolder());
+    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV);
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
     writeFileSync(file, "---\nname: checker\ndescription: Check.\nmodel: opus\n---\n");
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
-    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV, managedFolder());
+    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV);
     expect(bad.definition?.("checker")).toBeNull();
     expect(bad.definition?.("claude-code-guide")).toBeNull();
   });
@@ -233,7 +283,7 @@ describe("frontmatter launch fields", () => {
   it("a symlinked cwd inside a real git checkout: the project files beat the user's", () => {
     const repo = makeRepo("linked-app");
     const home = tempDir("linked-home");
-    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
     const pinned = (name: string, model: string) =>
       `---\nname: ${name}\ndescription: Check.\nmodel: ${model}\neffort: high\n---\n`;
     const put = (folder: string, name: string, model: string) => {
@@ -247,7 +297,7 @@ describe("frontmatter launch fields", () => {
     put(paths.claudeConfigDir, "nested", "opus");
     const link = join(home, "linked-src");
     symlinkSync(join(repo, "src"), link, "dir");
-    const ctx = readGuardContext(paths, { cwd: link }, NO_ENV, managedFolder());
+    const ctx = readGuardContext(paths, { cwd: link }, NO_ENV);
     // The root's file beats the user's, and the folder the link really is beats the root's.
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
     expect(ctx.definition?.("nested")).toEqual({ model: "haiku", effort: "high" });
@@ -335,6 +385,73 @@ describe("frontmatter launch fields", () => {
     expect(result.decision).toBe("deny");
     expect(result.reason).toStartWith("This launch would run on Claude Fable");
     expect(result.reason).not.toContain("frontmatter");
+  });
+});
+
+describe("a Workflow script is read through one lexer: a regular expression hides nothing", () => {
+  /** The hook's answer for a Workflow call with this inline script. */
+  async function answer(script: string) {
+    const result = await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app");
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput ?? {};
+  }
+
+  const FABLE = 'await agent("p", { model: "fable", effort: "high" });';
+
+  it("a quote inside a regular expression opens no string: the launch after it is judged", async () => {
+    for (const before of [
+      `s.replace(/"/g, "'");`,
+      `const r = /["']/;`,
+      `if (ok) /"/.test(s);`,
+      `if (ok) { go(); } /"/.test(s);`,
+      `function f(s) { return /'/.test(s); }`,
+      `const t = x ? /"/ : /'/;`,
+      `const u = typeof /"/;`,
+    ]) {
+      const said = await answer(`${before}\n${FABLE}`);
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a getter between two regular expressions that hold a quote: denied", () => {
+    const script = [
+      'const a = /"/;',
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      'const b = /"/;',
+    ].join("\n");
+    const results = judgeWorkflow(script, CTX, NO_ENV);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verdict.decision).toBe("deny");
+  });
+
+  it("a backtick nested inside a template's placeholder starts a new template", async () => {
+    const said = await answer(`const t = \`a \${\`"\`} b\`;\n${FABLE}`);
+    expect(said.permissionDecision).toBe("deny");
+    expect(said.permissionDecisionReason).toContain('the launch "p"');
+  });
+
+  it("a division stays a division: `a / b`, `f(x) / 2`, `a[i] / 2`, `({}) / 2` and `/=`", async () => {
+    const script = [
+      "const n = a / b / 2;",
+      "const m = f(x) / 2 + a[i] / 3;",
+      "let k = ({}).size / 2; k /= 2;",
+      'await agent("p", { model: "haiku", effort: "high" });',
+    ].join("\n");
+    expect(workflowRefusal(script)).toBeNull();
+    expect((await answer(script)).permissionDecision).toBeUndefined();
+  });
+
+  it("a `/` the lexer cannot classify, or a literal that never closes, refuses the whole Workflow", async () => {
+    for (const script of [
+      `const r = (/"\n);\n${FABLE.replace("fable", "haiku")}`,
+      `const s = "open\n${FABLE.replace("fable", "haiku")}`,
+      `/* never closed\n${FABLE.replace("fable", "haiku")}`,
+    ]) {
+      expect(workflowRefusal(script)).toContain("cannot be read");
+      const said = await answer(script);
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toContain("cannot be read at line");
+    }
   });
 });
 
@@ -554,7 +671,7 @@ describe("which model a launch runs on", () => {
 
 describe("the session's own model, for a fork", () => {
   const paths = () =>
-    cliPaths({
+    testPaths({
       CLAUDE_CONFIG_DIR: join(tempDir("guard-session"), ".claude"),
       HOME: tempDir("guard-session"),
     });
@@ -565,13 +682,12 @@ describe("the session's own model, for a fork", () => {
       transcript,
       `${JSON.stringify({ message: { content: [], model: "claude-haiku-4-5" }, type: "assistant" })}\n`,
     );
-    const call = (input: HookInput) => readGuardContext(paths(), input, NO_ENV, managedFolder());
+    const call = (input: HookInput) => readGuardContext(paths(), input, NO_ENV);
     expect(call({ transcript_path: transcript }).sessionModel).toBe("claude-haiku-4-5");
     expect(call({}).sessionModel).toBeNull();
     // The model the session was started on: no transcript yet (a session's first call).
     expect(
-      readGuardContext(paths(), {}, { ANTHROPIC_MODEL: "claude-sonnet-5-5" }, managedFolder())
-        .sessionModel,
+      readGuardContext(paths(), {}, { ANTHROPIC_MODEL: "claude-sonnet-5-5" }).sessionModel,
     ).toBe("claude-sonnet-5-5");
     // What answered wins over what the session was started on.
     expect(
@@ -581,7 +697,6 @@ describe("the session's own model, for a fork", () => {
         {
           ANTHROPIC_MODEL: "claude-opus-5-5",
         },
-        managedFolder(),
       ).sessionModel,
     ).toBe("claude-haiku-4-5");
   });
@@ -1542,7 +1657,7 @@ describe("a Workflow script", () => {
 describe("the hook's answer, and the record", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-home");
-    return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    return testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   }
 
   it("denied: a PreToolUse deny on stdout, and nothing recorded", async () => {
@@ -1805,7 +1920,7 @@ function guardMachine(
   options: { profiles?: Record<string, unknown>; userFileUrl?: string } = {},
 ): GuardMachine {
   const home = tempDir("guard-family");
-  const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   mkdirSync(join(where.gatewayConfigFile, ".."), { recursive: true });
   writeFileSync(
     where.gatewayConfigFile,
@@ -2149,7 +2264,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
 describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-c3");
-    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
     mkdirSync(where.stateDir, { recursive: true });
     return where;
   }
@@ -2369,7 +2484,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
 describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.306)", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-g1");
-    return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    return testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   }
   const FORCE = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1" };
   const WHERE =
@@ -2680,7 +2795,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     const home = tempDir("g2-home");
     const repo = join(home, "code", "my-app");
     mkdirSync(join(repo, ".git"), { recursive: true });
-    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
     mkdirSync(where.stateDir, { recursive: true });
     return { home, repo, where };
   }

@@ -128,11 +128,7 @@ import {
 } from "../gateway/config";
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl } from "../gateway/settings";
-import {
-  type AgentDefinition,
-  agentDefinition,
-  managedAgentsDir,
-} from "../models/agent-definition";
+import { type AgentDefinition, agentDefinition } from "../models/agent-definition";
 import {
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
@@ -181,6 +177,7 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookEnvContext } from "./run";
+import { lexScript, type ScriptLex } from "./script-lexer";
 import { lastClaudeModel } from "./transcript";
 
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
@@ -230,19 +227,19 @@ export function agentKey(type: string): string {
   return keyPart(type.includes(":") ? (type.split(":").pop() ?? type) : type);
 }
 
-/** A subagent type as the kit's list compares it: the whole name, its `plugin:` kept. */
-function wholeAgentKey(type: string): string {
-  return type.split(":").map(keyPart).join(":");
-}
-
 /**
- * True when a type is read-only: on the kit's list (or the context's) by its whole name, or
- * on the person's own list (`READ_ONLY_AGENTS_ENV`) by the name after any `plugin:`, as the
- * person writes it.
+ * True when a type is read-only: on the kit's list (or the context's) by its whole name, as
+ * written, or on the person's own list (`READ_ONLY_AGENTS_ENV`) by the name after any
+ * `plugin:`, as the person writes it. A bare name on the kit's list (`Plan`, `Explore`) is
+ * Claude Code's built-in only while no managed, project or user file claims that name (such a
+ * file overrides the built-in, per the sub-agents docs): the definition must say `builtIn`. A
+ * context with no lookup at all (a pure caller) knows no local file.
  */
 function readOnlyType(type: string, ctx: GuardContext, env: Env): boolean {
-  const kit = new Set((ctx.readOnlyAgents ?? READ_ONLY_AGENTS).map(wholeAgentKey));
-  if (kit.has(wholeAgentKey(type))) return true;
+  if ((ctx.readOnlyAgents ?? READ_ONLY_AGENTS).includes(type)) {
+    if (type.includes(":") || ctx.definition === undefined) return true;
+    return ctx.definition(type)?.builtIn === true;
+  }
   if (ctx.readOnlyAgents !== undefined) return false;
   const listed = (env[READ_ONLY_AGENTS_ENV] ?? "")
     .split(",")
@@ -299,6 +296,8 @@ export interface GuardContext extends GatewayFacts {
  * `judgeWorkflowCall` when the input holds none) and judges each launch it can see.
  *
  * What it cannot see is refused, never guessed:
+ *   - a text the one lexer cannot read (`script-lexer.ts`: a regular expression, string,
+ *     template or comment that does not close) refuses the whole Workflow (`workflowRefusal`);
  *   - a value held in a variable (`model: chosen`), a prompt built at run time, a literal an
  *     operator changes (`effort: "high" && "max"`, `"a" + b`), and a backtick literal that
  *     builds its text (`` `${…}` ``) leave that launch's verdict short
@@ -336,19 +335,33 @@ export interface WorkflowLaunch {
   where: string;
 }
 
-/** Where a `{…}` object or a `(…)` call ends, skipping string literals; the text's end. */
-function endOf(text: string, from: number, open: string, close: string): number {
+/** Thrown when a scanner meets a text the lexer cannot read; `workflowRefusal` says it first. */
+class UnreadableScript extends Error {}
+
+/**
+ * A text as the one lexer reads it (`lexScript`). Every scanner below reads through it, so a
+ * regular expression, a comment or a nested template is skipped the same way everywhere. A text
+ * it cannot read throws: `workflowRefusal` refuses such a script before any scanner runs, so a
+ * throw here is a guard's crash, which asks (`guardCrash`) — never an allow.
+ */
+function lexOf(text: string): ScriptLex {
+  const lexed = lexScript(text);
+  if (!lexed.ok) throw new UnreadableScript(lexed.why);
+  return lexed.lex;
+}
+
+/** Where the `(…)` call whose `(` is at `from` ends: its `)`; the text's end when it never closes. */
+function endOf(text: string, lex: ScriptLex, from: number): number {
   let depth = 0;
   for (let index = from; index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === '"' || char === "'" || char === "`") {
-      const literal = stringAt(text, index);
-      if (literal === null) return text.length;
-      index = literal.end - 1;
+    const end = lex.ends.get(index);
+    if (end !== undefined) {
+      index = end - 1;
       continue;
     }
-    if (char === open) depth += 1;
-    else if (char === close) {
+    const char = text[index] ?? "";
+    if (char === "(") depth += 1;
+    else if (char === ")") {
       depth -= 1;
       if (depth === 0) return index;
     }
@@ -357,8 +370,8 @@ function endOf(text: string, from: number, open: string, close: string): number 
 }
 
 /** The text of the call whose `(` is at `open`, to the matching `)`. */
-function callText(script: string, open: number): string {
-  return script.slice(open, endOf(script, open, "(", ")") + 1);
+function callText(script: string, lex: ScriptLex, open: number): string {
+  return script.slice(open, endOf(script, lex, open) + 1);
 }
 
 /**
@@ -405,74 +418,13 @@ function callOpen(mention: Mention, script: string): number {
  * Every mention of `name` (`agent`, `workflow`) in the script's code, and whether it is a
  * direct call. In code only: the word inside a prompt, a string or a comment is not a mention,
  * and neither is a property (`x.agent`) or a longer name (`agentType`, `agents`). A template
- * literal's `${…}` is code again — a launch written there is a launch — so the scan keeps a
- * stack of the contexts it is inside.
+ * literal's `${…}` is code again — a launch written there is a launch — and a regular
+ * expression is not: the lexer (`lexOf`) says which is which.
  */
-function mentionsOf(script: string, name: ScriptFunction): Mention[] {
-  type Frame = {
-    braces: number;
-    kind: "block" | "code" | "double" | "line" | "single" | "template";
-  };
+function mentionsOf(script: string, name: ScriptFunction, lex = lexOf(script)): Mention[] {
   const mentions: Mention[] = [];
-  const stack: Frame[] = [{ braces: 0, kind: "code" }];
   for (let index = 0; index < script.length; index += 1) {
-    const frame = stack.at(-1);
-    if (frame === undefined) break;
-    const char = script[index] ?? "";
-    const next = script[index + 1] ?? "";
-    if (frame.kind === "line") {
-      if (char === "\n") stack.pop();
-      continue;
-    }
-    if (frame.kind === "block") {
-      if (char === "*" && next === "/") {
-        stack.pop();
-        index += 1;
-      }
-      continue;
-    }
-    if (frame.kind === "single" || frame.kind === "double") {
-      if (char === "\\") index += 1;
-      else if (char === (frame.kind === "single" ? "'" : '"')) stack.pop();
-      continue;
-    }
-    if (frame.kind === "template") {
-      if (char === "\\") index += 1;
-      else if (char === "`") stack.pop();
-      else if (char === "$" && next === "{") {
-        stack.push({ braces: 0, kind: "code" });
-        index += 1;
-      }
-      continue;
-    }
-    // Code.
-    if (char === "/" && next === "/") {
-      stack.push({ braces: 0, kind: "line" });
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      stack.push({ braces: 0, kind: "block" });
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      stack.push({ braces: 0, kind: char === "'" ? "single" : "double" });
-      continue;
-    }
-    if (char === "`") {
-      stack.push({ braces: 0, kind: "template" });
-      continue;
-    }
-    if (char === "{") {
-      frame.braces += 1;
-      continue;
-    }
-    if (char === "}") {
-      if (frame.braces > 0) frame.braces -= 1;
-      else if (stack.length > 1) stack.pop();
-      continue;
-    }
+    if (lex.code[index] !== 1 || lex.code[index + name.length - 1] !== 1) continue;
     if (
       script.startsWith(name, index) &&
       (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))
@@ -507,12 +459,18 @@ interface CallOptions {
   keys: Map<string, number>;
 }
 
+/** True when the unit the lexer found at `index` is a comment: it is not a token. */
+function commentAt(text: string, index: number): boolean {
+  return text.startsWith("//", index) || text.startsWith("/*", index);
+}
+
 /**
- * Scans a call's text once, skipping string literals and comments: the keys of its own options
- * object, and whether any option is hidden from the guard. A scan that meets an unclosed
- * literal or comment stops there with what it has read.
+ * Scans a call's text once, skipping strings, templates, comments and regular expressions the
+ * one lexer's way (`lexOf`): the keys of its own options object, and whether any option is
+ * hidden from the guard.
  */
 function readOptions(call: string): CallOptions {
+  const lex = lexOf(call);
   const stack: string[] = [];
   /** The keys seen so far, one set per open object literal. */
   const seen: Array<Set<string>> = [];
@@ -533,27 +491,19 @@ function readOptions(call: string): CallOptions {
   };
   for (let index = 1; index < call.length; index += 1) {
     const char = call[index] ?? "";
-    const next = call[index + 1] ?? "";
-    if (char === '"' || char === "'" || char === "`") {
-      const literal = stringAt(call, index);
-      if (literal === null) return found(false);
+    const end = lex.ends.get(index);
+    if (end !== undefined) {
+      // A comment is not code (the `...` a person writes in one is not a spread), and a key may
+      // still follow it.
+      if (commentAt(call, index)) {
+        index = end - 1;
+        continue;
+      }
       // A quoted key (`"model": …`) is a key like any other: JavaScript keeps the last of two.
-      if (keyExpected && char !== "`" && twice(literal.value, literal.end)) return found(true);
-      index = literal.end - 1;
+      const quoted = char === '"' || char === "'" ? stringAt(call, index) : null;
+      if (keyExpected && quoted !== null && twice(quoted.value, end)) return found(true);
+      index = end - 1;
       keyExpected = false;
-      continue;
-    }
-    // A comment is not code: the `...` a person writes in one is not a spread.
-    if (char === "/" && next === "/") {
-      const end = call.indexOf("\n", index);
-      if (end === -1) return found(false);
-      index = end;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      const end = call.indexOf("*/", index + 2);
-      if (end === -1) return found(false);
-      index = end + 1;
       continue;
     }
     if (call.startsWith("...", index)) return found(true);
@@ -596,11 +546,13 @@ function builtAtRuntime(call: string): boolean {
 
 /**
  * The parts of a bracketed list that starts just after `from`, split at its own commas, up to
- * the bracket that closes it: each part as `[start, end)`, and where that bracket is. Strings and
- * comments are skipped. Null when the text ends first.
+ * the bracket that closes it: each part as `[start, end)`, and where that bracket is. Strings,
+ * templates, comments and regular expressions are skipped the one lexer's way (`lexOf`). Null
+ * when the text ends first.
  */
 function topLevelParts(
   text: string,
+  lex: ScriptLex,
   from: number,
 ): null | { close: number; parts: Array<[number, number]> } {
   const parts: Array<[number, number]> = [];
@@ -608,15 +560,9 @@ function topLevelParts(
   let start = from;
   for (let index = from; index < text.length; index += 1) {
     const char = text[index] ?? "";
-    if (char === '"' || char === "'" || char === "`") {
-      const literal = stringAt(text, index);
-      if (literal === null) return null;
-      index = literal.end - 1;
-    } else if (text.startsWith("//", index) || text.startsWith("/*", index)) {
-      const end = skipBlank(text, index);
-      if (end >= text.length) return null;
-      index = end - 1;
-    } else if (char === "(" || char === "[" || char === "{") depth += 1;
+    const end = lex.ends.get(index);
+    if (end !== undefined) index = end - 1;
+    else if (char === "(" || char === "[" || char === "{") depth += 1;
     else if (char === ")" || char === "]" || char === "}") {
       if (depth === 0) {
         parts.push([start, index]);
@@ -648,12 +594,13 @@ const PROTOTYPE_KEY = "__proto__";
  * refuse the whole Workflow first: `workflowRefusal`.)
  */
 function plainOptions(call: string): boolean {
-  const args = topLevelParts(call, 1);
+  const lex = lexOf(call);
+  const args = topLevelParts(call, lex, 1);
   if (args === null || args.parts.length !== 2) return false;
   const [from, to] = args.parts[1] ?? [0, 0];
   const open = skipBlank(call, from);
   if (call[open] !== "{") return false;
-  const object = topLevelParts(call, open + 1);
+  const object = topLevelParts(call, lex, open + 1);
   if (object === null || skipBlank(call, object.close + 1) !== to) return false;
   return object.parts.every(([start, end]) => {
     const at = skipBlank(call, start);
@@ -675,10 +622,19 @@ function plainKeyAt(text: string, at: number, end: number): null | { end: number
 }
 
 /** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
-function callsOf(script: string): number[] {
-  return mentionsOf(script, "agent")
+function callsOf(script: string, lex: ScriptLex): number[] {
+  return mentionsOf(script, "agent", lex)
     .filter((mention) => mention.call)
     .map((mention) => callOpen(mention, script));
+}
+
+/** Said when the lexer cannot read a script: what it met, and where. */
+function unreadableScript(script: string, at: number, why: string): string {
+  return [
+    `This Workflow's script cannot be read at line ${lineOf(script, at)}: ${why}.`,
+    "The guard reads strings, templates, comments and regular expressions the way JavaScript does, and one it cannot read could hide a launch.",
+    'Write a regular expression where an expression starts (after `=`, `(` or `,`), or build it with `new RegExp("…")`; close every string, template and comment.',
+  ].join("\n");
 }
 
 /** Why a function handed around hides what it runs. */
@@ -705,8 +661,10 @@ const OPTIONS_BUILT_AT_RUNTIME = [
 
 /**
  * The reason this whole Workflow call is refused, or null when every launch in it can be
- * read. Two things hide the rules from the guard, and a hook must refuse what it cannot see
+ * read. Three things hide the rules from the guard, and a hook must refuse what it cannot see
  * rather than let it run unchecked:
+ *   - a text the one lexer cannot read (`lexScript`): a regular expression, a string, a
+ *     template or a comment that does not close, where a launch could hide;
  *   - `agent` or `workflow` mentioned without being called at once (`const run = agent;
  *     run(…)`, `agent?.(…)`, either passed around as a value);
  *   - an `agent(…)` call whose options are not what they seem (`builtAtRuntime`).
@@ -714,16 +672,19 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * `nestedWorkflows`.
  */
 export function workflowRefusal(script: string): null | string {
+  const lexed = lexScript(script);
+  if (!lexed.ok) return unreadableScript(script, lexed.at, lexed.why);
+  const { lex } = lexed;
   for (const name of ["agent", "workflow"] as const) {
-    const handed = mentionsOf(script, name).find((mention) => !mention.call);
+    const handed = mentionsOf(script, name, lex).find((mention) => !mention.call);
     if (handed === undefined) continue;
     return [
       `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(…)\`), or it is passed as a value.`,
       HANDED_AROUND[name],
     ].join("\n");
   }
-  for (const mention of mentionsOf(script, "agent")) {
-    if (!builtAtRuntime(callText(script, callOpen(mention, script)))) {
+  for (const mention of mentionsOf(script, "agent", lex)) {
+    if (!builtAtRuntime(callText(script, lex, callOpen(mention, script)))) {
       continue;
     }
     return [
@@ -745,9 +706,10 @@ type NestedCall = { line: number } & ({ name: string } | { scriptPath: string })
  */
 export function nestedWorkflows(script: string): { calls: NestedCall[] } | { refusal: string } {
   const calls: NestedCall[] = [];
-  for (const mention of mentionsOf(script, "workflow")) {
+  const lex = lexOf(script);
+  for (const mention of mentionsOf(script, "workflow", lex)) {
     if (!mention.call) continue;
-    const call = callText(script, callOpen(mention, script));
+    const call = callText(script, lex, callOpen(mention, script));
     const line = lineOf(script, mention.at);
     const name = firstArgument(call);
     const path =
@@ -771,12 +733,14 @@ export function nestedWorkflows(script: string): { calls: NestedCall[] } | { ref
 /**
  * Every `agent(...)` call of a Workflow script, in order. A call is found by its name, in code
  * only (the word inside a prompt, a string or a comment is not a call); its text runs to the
- * matching `)`. Nothing is evaluated: only fixed string literals are read.
+ * matching `)`. Nothing is evaluated: only fixed string literals are read. A script the lexer
+ * cannot read throws; `workflowRefusal` refuses it first, in every hook path.
  */
 export function readWorkflowScript(script: string): WorkflowLaunch[] {
   const launches: WorkflowLaunch[] = [];
-  for (const open of callsOf(script)) {
-    const call = callText(script, open);
+  const lex = lexOf(script);
+  for (const open of callsOf(script, lex)) {
+    const call = callText(script, lex, open);
     const prompt = firstArgument(call);
     const label = stringOption(call, "label");
     const keys = readOptions(call).keys;
@@ -996,15 +960,16 @@ export function judgeWorkflowCall(
       continue;
     }
     const from = "name" in call ? call.name : found.file;
+    // The refusal first: it is what reads a script the lexer cannot, before any scan of it.
+    const childRefusal = workflowRefusal(found.script);
+    if (childRefusal !== null) {
+      return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
+    }
     const deeper = mentionsOf(found.script, "workflow")[0];
     if (deeper !== undefined) {
       return refused(
         `The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`,
       );
-    }
-    const childRefusal = workflowRefusal(found.script);
-    if (childRefusal !== null) {
-      return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
     }
     scripts.push({ from, script: found.script });
   }
@@ -1547,15 +1512,10 @@ export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
 
 /**
  * What the guard reads for `judgeLaunch`: the session's own gateway and model, and the agent
- * definitions; never throws. `managedAgents` is the managed agents folder (a test passes a temp
- * folder, so no test reads the machine's own).
+ * definitions; never throws. The managed agents folder comes from `paths.managedAgentsDir` (a
+ * test's paths name a temp folder, so it never reads the machine's own).
  */
-export function readGuardContext(
-  paths: CliPaths,
-  input: HookInput,
-  env: Env,
-  managedAgents: string = managedAgentsDir(),
-): GuardContext {
+export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
   const cwd = stringField(input.cwd);
   const definitions = new Map<string, AgentDefinition | null>();
@@ -1567,7 +1527,7 @@ export function readGuardContext(
       // Qualified plugin names never need a project scan or git lookup.
       const checkout =
         !name.includes(":") && cwd !== null ? (locateCheckout(cwd)?.root ?? cwd) : null;
-      found = agentDefinition(name, { paths, checkout, cwd, managedAgentsDir: managedAgents });
+      found = agentDefinition(name, { paths, checkout, cwd });
     } catch {
       // A failed checkout lookup, or a cwd that cannot be resolved, makes the entire definition
       // unknown, not user-only: the launch then needs its own `model` and `effort`.
@@ -1739,15 +1699,9 @@ type Judgement =
   | { kind: "launch"; launch: Launch; verdict: Verdict };
 
 /** The guard's judgment of one call, with no record written. */
-function judgeCall(
-  input: HookInput,
-  env: Env,
-  paths: CliPaths,
-  cwd: string,
-  managedAgents: string,
-): Judgement | null {
+function judgeCall(input: HookInput, env: Env, paths: CliPaths, cwd: string): Judgement | null {
   const tool = stringField(input.tool_name);
-  const context = readGuardContext(paths, input, env, managedAgents);
+  const context = readGuardContext(paths, input, env);
   if (tool !== null && (WORKFLOW_TOOLS as readonly string[]).includes(tool)) {
     const call = judgeWorkflowCall(toolInput(input), context, env, workflowPlace(paths, env, cwd));
     // One answer for the whole call: a deny refuses it, so nothing in it runs; an ask names each
@@ -1781,9 +1735,8 @@ export function agentGuard(
   paths: CliPaths,
   cwd: string,
   nowMs: number = Date.now(),
-  managedAgents: string = managedAgentsDir(),
 ): HookResult {
-  const judged = judgeCall(input, env, paths, cwd, managedAgents);
+  const judged = judgeCall(input, env, paths, cwd);
   if (judged === null) return SILENT;
   const ran = afterTheCall(input);
   const file = agentLaunchesFile(paths.stateDir);
