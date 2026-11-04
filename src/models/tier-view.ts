@@ -1,18 +1,17 @@
 /**
- * What each subagent tier runs now, and the effort rule that follows, as the note a session reads
- * (`src/hooks/tier-view.ts` says it at a start and when it changes).
+ * What each subagent tier runs now, as the note a session reads (`src/hooks/tier-view.ts` says it
+ * at a start and when it changes).
  *
  * The four tiers are the names the Agent tool's `model` accepts (`TIERS`). Each is resolved the
  * way the Agent guard resolves a launch (`resolveLaunchModel`), so this note and the guard read
- * one thing and never two lists. The effort rule per tier is the guard's, from the same
- * constants (`launch-policy.ts`):
+ * one thing and never two lists.
  *
- * - `haiku` or `sonnet`, whatever model answers them — Claude or a backend: the effort the task
- *   needs, `ALLOWED_EFFORTS` first to last, `max` included (the owner, 2026-10-25 and
- *   2026-10-26: no level is forced on a backend; a person who wants one pins it in the router);
- * - the `opus` tier (whatever model answers it): the levels below `OPUS_ASK_EFFORT`; that one
- *   asks the person;
- * - the `fable` tier: asks the person, with a reason line.
+ * The note names the model behind each tier, so Claude can say it when it launches. It gives no
+ * effort range per tier (2.2.0, the owner, 2026-11-05): Claude picks the tier and the effort by
+ * the job — how hard it is, what a miss costs — never by which model answers a tier
+ * (`/cc-smart-dev-kit:subagent-decision`). It keeps the two launches the guard asks about, from
+ * the guard's own constants (`launch-policy.ts`), so Claude learns them from the note and not
+ * from a refusal: the `opus` tier at `OPUS_ASK_EFFORT`, and any `fable` launch.
  *
  * A name the person's override or a slot answers with a stricter premium Claude model reads as
  * that tier (`sonnet` whose worker chain starts with a Claude Opus id is the `opus` tier).
@@ -21,11 +20,9 @@
 import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
 import type { Env } from "../hooks/run";
 import {
-  ALLOWED_EFFORTS,
   type GatewayFacts,
   type LaunchModel,
   OPUS_ASK_EFFORT,
-  OPUS_FREE_EFFORTS,
   resolveLaunchModel,
 } from "./launch-policy";
 
@@ -53,23 +50,20 @@ function modelName(real: LaunchModel): string {
   return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 
-/** The effort rule for the model behind a tier. */
-function effortRule(real: LaunchModel): string {
-  if (real.tier === "fable") return "asks the person, with a `Fable reason:` line";
-  if (real.tier === "opus") {
-    const free = OPUS_FREE_EFFORTS;
-    return `${free[0]} to ${free[free.length - 1]}; ${OPUS_ASK_EFFORT} asks the person`;
-  }
-  return `the effort the task needs, ${ALLOWED_EFFORTS[0]} to ${ALLOWED_EFFORTS[ALLOWED_EFFORTS.length - 1]}`;
-}
+/** The note's last line: how to choose, and the two launches the guard asks about. */
+export const TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch ask the person.`;
 
-/** The note's line for one tier. */
+/** The note's line for one tier: the tier and the model behind it. */
 export function tierLine(tier: (typeof TIERS)[number], gateway: GatewayFacts, env: Env): string {
-  const real = resolveLaunchModel(tier, gateway, env);
-  return `- ${tier} → ${modelName(real)}: ${effortRule(real)}.`;
+  const real: LaunchModel = resolveLaunchModel(tier, gateway, env);
+  return `- ${tier} → ${modelName(real)}.`;
 }
 
-/** The note: a header and one line per tier. */
+/** The note: a header, one line per tier, and how to choose. */
 export function tierNote(gateway: GatewayFacts, env: Env): string {
-  return [TIER_NOTE_HEADER, ...TIERS.map((tier) => tierLine(tier, gateway, env))].join("\n");
+  return [
+    TIER_NOTE_HEADER,
+    ...TIERS.map((tier) => tierLine(tier, gateway, env)),
+    TIER_NOTE_FOOTER,
+  ].join("\n");
 }

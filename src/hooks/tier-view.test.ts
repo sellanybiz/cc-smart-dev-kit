@@ -16,14 +16,16 @@ const SESSION = "11111111-2222-3333-4444-555555555555";
 const ROUTER = "http://127.0.0.1:39999";
 
 const HEADER = "Subagent tiers now (the Agent tool's `model`):";
-const HAIKU_CLAUDE = "- haiku → Claude Haiku: the effort the task needs, medium to max.";
-const SONNET_CLAUDE = "- sonnet → Claude Sonnet: the effort the task needs, medium to max.";
-const OPUS_CLAUDE = "- opus → Claude Opus: medium to xhigh; max asks the person.";
-const FABLE_CLAUDE = "- fable → Claude Fable: asks the person, with a `Fable reason:` line.";
+const HAIKU_CLAUDE = "- haiku → Claude Haiku.";
+const SONNET_CLAUDE = "- sonnet → Claude Sonnet.";
+const OPUS_CLAUDE = "- opus → Claude Opus.";
+const FABLE_CLAUDE = "- fable → Claude Fable.";
+const FOOTER =
+  "Choose the tier and effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier. `opus` at `max` and any `fable` launch ask the person.";
 
-/** The note for a view, written by hand from its four lines. */
+/** The note for a view, written by hand from its four lines and the footer. */
 function note(...lines: string[]): string {
-  return [HEADER, ...lines].join("\n");
+  return [HEADER, ...lines, FOOTER].join("\n");
 }
 
 /** Every tier Claude: the gateway off, or every slot on Claude alone. */
@@ -102,12 +104,7 @@ describe("the note at a session start", () => {
     });
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
-      note(
-        HAIKU_CLAUDE,
-        "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note(HAIKU_CLAUDE, "- sonnet → omniroute:glm-x (a backend).", OPUS_CLAUDE, FABLE_CLAUDE),
     );
   });
 
@@ -129,12 +126,7 @@ describe("the note at a session start", () => {
     });
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
-      note(
-        "- haiku → omniroute:glm-s (a backend): the effort the task needs, medium to max.",
-        SONNET_CLAUDE,
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note("- haiku → omniroute:glm-s (a backend).", SONNET_CLAUDE, OPUS_CLAUDE, FABLE_CLAUDE),
     );
   });
 
@@ -143,22 +135,12 @@ describe("the note at a session start", () => {
     writeGateway(env, { "cc-smart-dev-kit-scout": ["claude-sonnet-5-5"] });
     const slot = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(slot)).toBe(
-      note(
-        "- haiku → Claude Sonnet: the effort the task needs, medium to max.",
-        SONNET_CLAUDE,
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note("- haiku → Claude Sonnet.", SONNET_CLAUDE, OPUS_CLAUDE, FABLE_CLAUDE),
     );
     const plain = hookEnv();
     const override = { ...plain, ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-sonnet-5-5" };
     expect(said(await runHook(tierViewHook, event("SessionStart", makeRepo()), override))).toBe(
-      note(
-        "- haiku → Claude Sonnet: the effort the task needs, medium to max.",
-        SONNET_CLAUDE,
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note("- haiku → Claude Sonnet.", SONNET_CLAUDE, OPUS_CLAUDE, FABLE_CLAUDE),
     );
   });
 
@@ -167,12 +149,7 @@ describe("the note at a session start", () => {
     writeGateway(env, { "cc-smart-dev-kit-opus": ["omniroute:glm-o"] });
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
-      note(
-        HAIKU_CLAUDE,
-        SONNET_CLAUDE,
-        "- opus → omniroute:glm-o (a backend): medium to xhigh; max asks the person.",
-        FABLE_CLAUDE,
-      ),
+      note(HAIKU_CLAUDE, SONNET_CLAUDE, "- opus → omniroute:glm-o (a backend).", FABLE_CLAUDE),
     );
   });
 
@@ -181,12 +158,7 @@ describe("the note at a session start", () => {
     writeGateway(env, { "cc-smart-dev-kit-fable": ["omniroute:glm-f"] });
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
-      note(
-        HAIKU_CLAUDE,
-        SONNET_CLAUDE,
-        OPUS_CLAUDE,
-        "- fable → omniroute:glm-f (a backend): asks the person, with a `Fable reason:` line.",
-      ),
+      note(HAIKU_CLAUDE, SONNET_CLAUDE, OPUS_CLAUDE, "- fable → omniroute:glm-f (a backend)."),
     );
   });
 
@@ -195,12 +167,7 @@ describe("the note at a session start", () => {
     writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-opus-5-5"] });
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(result)).toBe(
-      note(
-        HAIKU_CLAUDE,
-        "- sonnet → Claude Opus: medium to xhigh; max asks the person.",
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note(HAIKU_CLAUDE, "- sonnet → Claude Opus.", OPUS_CLAUDE, FABLE_CLAUDE),
     );
   });
 
@@ -217,12 +184,7 @@ describe("the note at a session start", () => {
       onRouter(env, `${ROUTER}/p/cheap`),
     );
     expect(said(profile)).toBe(
-      note(
-        HAIKU_CLAUDE,
-        "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
-        OPUS_CLAUDE,
-        FABLE_CLAUDE,
-      ),
+      note(HAIKU_CLAUDE, "- sonnet → omniroute:glm-x (a backend).", OPUS_CLAUDE, FABLE_CLAUDE),
     );
     const plain = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(said(plain)).toBe(ALL_CLAUDE);
@@ -295,7 +257,7 @@ describe("the note when the view changes", () => {
           hookEventName: "UserPromptSubmit",
           additionalContext: note(
             HAIKU_CLAUDE,
-            "- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.",
+            "- sonnet → omniroute:glm-x (a backend).",
             OPUS_CLAUDE,
             FABLE_CLAUDE,
           ),

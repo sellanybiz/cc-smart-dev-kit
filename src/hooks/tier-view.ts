@@ -1,8 +1,7 @@
 /**
- * SessionStart and UserPromptSubmit: tell Claude what each subagent tier runs now, so it picks
- * the effort the task needs (the owner, 2026-10-25). Claude models are not cheap models: a
- * Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task, and `max` when the
- * task wants it, and so does a backend that answers the tier (the owner, 2026-10-26). Nothing
+ * SessionStart and UserPromptSubmit: tell Claude what each subagent tier runs now, so it can name
+ * the model when it launches. The tier and the effort are chosen by the job, never by the model
+ * behind a tier (2.2.0, the owner, 2026-11-05; `/cc-smart-dev-kit:subagent-decision`). Nothing
  * used to tell a session what answered its tiers: the Agent guard knew, and the session read
  * "the gateway is on".
  *

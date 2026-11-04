@@ -884,26 +884,25 @@ twice.
 ### The tier note
 
 `tier-view` (SessionStart, UserPromptSubmit) tells **Claude** what each subagent tier runs now,
-so it picks the effort the task needs (the owner, 2026-10-25). Claude models are not cheap
-models: a Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task and may take
-`max` when the task wants it, with no restriction; so does a backend that answers the tier (the
-owner, 2026-10-26: no level is forced on a backend; a person who wants one pins it in the router,
-D64); the `opus` tier keeps the guard's rule (`max` asks the person). Before the note, a session
-read "the gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and the plan
-paid for.
+so it can name the model when it launches. Claude picks the tier and the effort by the job — how
+hard it is, what a miss costs — never by the model behind a tier (2.2.0, the owner, 2026-11-05;
+`/cc-smart-dev-kit:subagent-decision`). The guard still allows any level from `ALLOWED_EFFORTS`
+on `haiku` and `sonnet` (no level is forced on a backend; a person who wants one pins it in the
+router, D64); the instructions teach that `max` rarely pays. Before the note, a session read "the
+gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and the plan paid for.
 
-- **What it says** (`tierNote`, `src/models/tier-view.ts`): a header and one line per tier the
-  Agent tool's `model` names — `- sonnet → Claude Sonnet: the effort the task needs, medium to
-  max.`, or `- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.` The model is the guard's own
+- **What it says** (`tierNote`, `src/models/tier-view.ts`): a header, one line per tier the
+  Agent tool's `model` names — `- sonnet → Claude Sonnet.`, or
+  `- sonnet → omniroute:glm-x (a backend).` — and one closing line: choose the tier and effort by
+  the job, and `opus` at `max` and any `fable` launch ask the person. The model is the guard's own
   reading (`resolveLaunchModel`: the person's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then the
   family's slot while it has a chain, its **first** target answering) through the session's own
   gateway view (`sessionGatewayOf`: the effective `ANTHROPIC_BASE_URL`, a profile's chains). The
-  levels come from the guard's constants (`ALLOWED_EFFORTS`, `OPUS_FREE_EFFORTS`,
-  `OPUS_ASK_EFFORT`), never a second list. A Claude-first chain with a
+  level that asks comes from the guard's constant (`OPUS_ASK_EFFORT`), never a second list. A Claude-first chain with a
   backend fallback is Claude, as the guard reads it. A name a slot answers with a stricter
   premium Claude model reads as that tier (`sonnet` → Claude Opus).
-- **The gateway off** says the same four lines, all Claude: the instructions' effort rule reads
-  the note, and a session without a gateway needs it as much as one with.
+- **The gateway off** says the same lines, all Claude: a session without a gateway needs the
+  note as much as one with.
 - **A config that cannot be read** (`gateway.json` is there and unusable, while the session's
   address is a gateway's) is one plain line that the view is not known. An address with no
   `gateway.json` is another program's proxy, and reads as Claude, the guard's way.
