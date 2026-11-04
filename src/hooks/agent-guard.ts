@@ -118,6 +118,7 @@
  * (`workflowRefusal`, `judgeWorkflowCall`).
  */
 
+import { existsSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
 import {
   type GatewayConfig,
@@ -127,6 +128,7 @@ import {
 } from "../gateway/config";
 import { urlMeaning } from "../gateway/project-state";
 import { baseUrlPointsAtGateway, routerBaseUrl } from "../gateway/settings";
+import { type AgentDefinition, agentDefinition } from "../models/agent-definition";
 import {
   ALLOWED_EFFORTS,
   EFFORT_AUTO,
@@ -149,6 +151,7 @@ import {
   uiTierAllowed,
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
+import { locateCheckout } from "../project/resolve";
 import {
   scriptAtPath,
   scriptByName,
@@ -191,7 +194,7 @@ const BUILDER_WORDS = [FABLE_BUILD_REASON] as const;
  * any word of `FABLE_REASONS` is enough. Every other type — a fork included — can change
  * files and needs the one word `build` (`FABLE_BUILD_REASON`).
  */
-export const READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "auditor"] as const;
+export const READ_ONLY_AGENTS = ["Plan", "Explore", "auditor"] as const;
 
 /** The environment variable a person may extend that list with (comma-separated). */
 export const READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
@@ -243,6 +246,8 @@ export function readLaunch(input: HookInput): Launch | null {
 
 /** What the guard reads from this machine; a test passes its own. */
 export interface GuardContext extends GatewayFacts {
+  /** Definition lookup injected from the hook's paths; pure callers can pass their own. */
+  definition?: (name: null | string) => AgentDefinition | null;
   /** The session's own model, for a fork; null when it cannot be read. */
   sessionModel: null | string;
   /** The subagent types a Fable launch may use; the plugin's list by default. */
@@ -947,8 +952,8 @@ function uiDeclaration(prompt: string): null | string {
 }
 
 const NO_MODEL = [
-  "This Agent launch names no `model`.",
-  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch.",
+  "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
+  "Pass `model` on the launch or set it in the agent's frontmatter; `inherit` does not choose a model.",
 ].join("\n");
 
 /** Levels as the guard's messages name them: `` `high` or `xhigh` ``. */
@@ -965,8 +970,8 @@ const EFFORT_USE =
   "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 
 const NO_EFFORT = [
-  "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  "Neither this Agent launch nor its agent definition names an `effort` the guard can read.",
+  `Pass \`effort\` on the launch or set it in the agent's frontmatter: ${EFFORTS}.`,
   EFFORT_USE,
 ].join("\n");
 
@@ -1084,7 +1089,7 @@ function modelNote(ran: EffectiveLaunch): null | string {
 
 /** Said when `CLAUDE_CODE_EFFORT_LEVEL` sets the effort the launch runs at. */
 function effortNote(ran: EffectiveLaunch): null | string {
-  if (ran.effortFrom === null) return null;
+  if (ran.effortFrom === null || ran.effortFrom === "frontmatter") return null;
   return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
 }
 
@@ -1103,6 +1108,7 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     },
     env,
     ctx.sessionModel,
+    ctx.definition?.(launch.subagentType) ?? null,
   );
   const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
   if (verdict.decision === "allow") return { ...verdict, ran };
@@ -1136,9 +1142,9 @@ function judgeRan(
   // and an affordable slot alike. A level no rule knows is refused, not guessed.
   // `CLAUDE_CODE_EFFORT_LEVEL=auto` is the person's own choice (`EFFORT_AUTO`): the model picks
   // its default, which is never `max`, so it passes the effort rule and the opus tier's ask.
-  const auto = ran.effortFrom !== null && ran.effort === EFFORT_AUTO;
+  const auto = ran.effortFrom === EFFORT_LEVEL_ENV && ran.effort === EFFORT_AUTO;
   if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
-    return ran.effortFrom === null
+    return ran.effortFrom !== EFFORT_LEVEL_ENV
       ? judged(deny(real, effortDenial(ran.effort)))
       : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
@@ -1339,9 +1345,18 @@ export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
 /** What the guard reads for `judgeLaunch`: the session's own gateway and model; never throws. */
 export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  const cwd = stringField(input.cwd);
+  let checkout: null | string = null;
+  try {
+    if (cwd !== null && existsSync(cwd)) checkout = locateCheckout(cwd)?.root ?? cwd;
+  } catch {
+    // A stale or non-directory cwd supplies no project definition; user definitions still apply.
+    checkout = null;
+  }
   return {
     config,
     gatewayOn,
+    definition: (name) => agentDefinition(name, { paths, checkout }),
     // The session's own model, for a fork: what last answered, else the model the session was
     // started on, else unknowable.
     sessionModel: sessionModelOf(input, env),

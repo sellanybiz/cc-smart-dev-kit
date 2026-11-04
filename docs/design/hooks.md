@@ -299,8 +299,18 @@ Claude Code's own docs and code):
 |---|---|
 | `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes` or `on`, the values Claude Code reads as on) | `CLAUDE_CODE_SUBAGENT_MODEL`; unset or `inherit`: the session's own model (step 3's reading; unknown → the `opus` tier). The call's `model` does not count. |
 | `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (not empty, not `inherit`) | its model, for a Workflow `agent()` only; FORCE comes first; an Agent call is not touched |
-| neither | the call's own `model`. A plain `CLAUDE_CODE_SUBAGENT_MODEL` is only a default for a call that names none, after the agent's own definition, which no hook can read — so such a call is still refused for naming no model |
+| neither | the call's own `model`, else its agent definition's frontmatter model. A plain `CLAUDE_CODE_SUBAGENT_MODEL` is only a default after the definition; the guard still refuses an unseen definition or `inherit` without an explicit choice |
 | `CLAUDE_CODE_EFFORT_LEVEL` (not empty) | that effort for every launch, whatever the call names |
+
+The definition lookup (`src/models/agent-definition.ts`) matches frontmatter `name`, first in
+this checkout's `.claude/agents`, then the user's agents, then a qualified plugin agent from
+`installed_plugins.json`. A plugin manifest's `agents` paths replace its default scan. The
+higher-priority definition wins as a whole: missing fields never come from a lower one. The
+same lookup serves Agent and Workflow `agent()` calls. Effort comes from the call, else that
+definition, with `CLAUDE_CODE_EFFORT_LEVEL` above both. Unknown SDK/`--agents` definitions
+remain refused. Only fixed built-in model choices are supplied; inherited or conditional
+built-ins still need a call choice. The senior engineer can change files, so its Fable launch
+needs the `build` reason, not a read-only review reason.
 
 The guard reads them from its own environment. **A settings file's `env` reaches a hook's
 environment** (proved live on 2.1.306, for `--settings` and for a project's

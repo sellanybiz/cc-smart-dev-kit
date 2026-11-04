@@ -86,6 +86,69 @@ function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env =
   return judgeLaunch(launch, ctx, env);
 }
 
+describe("frontmatter launch fields", () => {
+  it("uses one definition for Agent and Workflow launches, with call and env overrides", () => {
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: (name) => (name === "checker" ? { model: "sonnet", effort: "high" } : null),
+    };
+    const agent = verdict({ subagent_type: "checker" }, ctx);
+    expect(agent.decision).toBe("allow");
+    expect(agent.ran).toEqual({
+      model: "sonnet",
+      modelFrom: "frontmatter",
+      effort: "high",
+      effortFrom: "frontmatter",
+    });
+    expect(verdict({ subagent_type: "checker", model: "opus", effort: "max" }, ctx).decision).toBe(
+      "ask",
+    );
+    expect(
+      verdict({ subagent_type: "checker" }, ctx, { CLAUDE_CODE_EFFORT_LEVEL: "max" }).ran.effort,
+    ).toBe("max");
+    const workflow = judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV);
+    expect(workflow[0]?.verdict.decision).toBe("allow");
+  });
+
+  it("refuses unseen SDK agents, inherit, and missing effort with accurate text", () => {
+    expect(verdict({ subagent_type: "sdk-only" }).reason).toStartWith(
+      "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
+    );
+    const ctx: GuardContext = { ...CTX, definition: () => ({ model: "inherit", effort: "high" }) };
+    expect(verdict({ subagent_type: "inherited" }, ctx).decision).toBe("deny");
+    expect(verdict({ model: "sonnet" }).reason).toStartWith(
+      "Neither this Agent launch nor its agent definition names an `effort` the guard can read.",
+    );
+  });
+
+  it("the hook reads project frontmatter through its input cwd and injected user paths", () => {
+    const home = tempDir("frontmatter-hook");
+    const cwd = join(home, "repo");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude", "agents", "checker.md"),
+      "---\nname: checker\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
+    );
+    const input = { ...agentCall({ subagent_type: "checker" }), cwd };
+    const ctx = readGuardContext(paths, input, NO_ENV);
+    expect(verdict({ subagent_type: "checker" }, ctx).decision).toBe("allow");
+    expect(
+      judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV)[0]?.verdict
+        .decision,
+    ).toBe("allow");
+  });
+
+  it("frontmatter auto or low is not an environment override", () => {
+    for (const effort of ["auto", "low"]) {
+      const ctx: GuardContext = { ...CTX, definition: () => ({ model: "sonnet", effort }) };
+      const result = verdict({ subagent_type: "checker" }, ctx);
+      expect(result.decision).toBe("deny");
+      expect(result.reason).not.toContain("CLAUDE_CODE_EFFORT_LEVEL");
+    }
+  });
+});
+
 describe("which model a launch runs on", () => {
   it("a family name with no override and no gateway: the family itself, and its tier", () => {
     expect(resolveLaunchModel("opus", NO_GATEWAY, NO_ENV)).toEqual({
