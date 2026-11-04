@@ -90,9 +90,8 @@ internal helper with no outside API.
 
 ## A research sweep, for a question with many sources
 
-A few calls answer most questions: a quick one stays with you. A broad one goes to the
-`cc-smart-dev-kit:researcher` agent (`/cc-smart-dev-kit:subagent-decision` § Which agent), and
-one with several angles to the sweep below. Offer the `research-sweep` Workflow when the question has
+A few calls answer most questions; a broad one goes to the researcher
+(`/cc-smart-dev-kit:subagent-decision` § Which agent). Offer the `research-sweep` Workflow when the question has
 several sources to read (the current docs, the project's code, the issue trackers, a comparison
 of alternatives), or when a decision rests on facts you cannot check in a few calls and reading
 them all would fill this session. It reads one angle per researcher in parallel, then has a

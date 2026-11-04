@@ -204,8 +204,10 @@ agent starts.
 never runs on a model nobody chose. Plugin agents and skills are named `cc-smart-dev-kit:<name>`.
 An agent that works by a skill loads it with `skills:` in its frontmatter: the skill's text is
 in its context from the start (proved live: `claude-code-contract.md` § Instructions). Every
-agent loads `cc-smart-dev-kit:impact-analysis`, the one home for finding a symbol's callers and a
-file's shape; `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
+agent but the `researcher` loads `cc-smart-dev-kit:impact-analysis`, the one home for finding a
+symbol's callers and a file's shape (the researcher only reads the project's versions, types and
+docs, and the skill would be about two and a half times its own text on every launch, up to
+eight per research sweep); `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
 loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when. The
 `senior-engineer` does not load the review skill: half of it is the author's (commit, fix, start
 the second opinion), which contradicts a reviewer that writes its findings before it touches anything.

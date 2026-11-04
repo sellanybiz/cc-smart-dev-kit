@@ -36,8 +36,8 @@ Worked examples — judge new cases the same way:
 | Situation | Agent, slot, effort |
 |---|---|
 | Find files, read a module, a symbol's callers | `Explore`, `haiku`, `medium` |
-| A library or API question, or research whose answer is unclear | researcher, `sonnet`, `high` |
-| Hard or high-stakes research: an architecture choice, a security claim | researcher, `opus`, `xhigh` |
+| A library or API question, or other research with a clear question | researcher, `sonnet`, `high` |
+| Ambiguous, hard or high-stakes research (an architecture choice, a security claim) | researcher, `opus`, `high`; `xhigh` when a decision rests on it alone |
 | Mechanical edits, a doc update, run the tests | builder, `sonnet`, `medium` |
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
