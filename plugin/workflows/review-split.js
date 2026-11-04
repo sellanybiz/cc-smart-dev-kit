@@ -120,16 +120,20 @@ log(
 // guard; a refuter's brief does not, because it checks one finding, not the whole change.
 //
 // The senior engineer has every tool. The tracks run at once on one checkout, so each launch
-// takes the editing tools away: no track changes the code another one is reading.
+// takes the editing tools away: no track changes the code another one is reading. It takes
+// `Agent` away too: an agent a track started would send it a completion notice, which the
+// review record counts as a later prompt, and the run would record no review. The prompt also
+// asks for the StructuredOutput call, so Claude Code's nudge to make it is rarely needed (the
+// record reads that nudge as harmless, `src/hooks/transcript.ts`).
 const reviews = await pipeline(tracks, (track) => {
-  const prompt = `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.\n\nYour track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone. Change no file: report only.\n\nAnswer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. What you cannot prove goes in \`hunches\`. In \`coverage\`, name what you read and where you stopped.`
+  const prompt = `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.\n\nYour track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone. Change no file: report only.\n\nAnswer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. What you cannot prove goes in \`hunches\`. In \`coverage\`, name what you read and where you stopped.\n\nEnd by calling the StructuredOutput tool; never end with plain text.`
   return risky
     ? agent(prompt, {
         label: `review: ${track}`,
         model: 'opus',
         effort: 'xhigh',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
         schema: FINDINGS,
       })
     : agent(prompt, {
@@ -137,7 +141,7 @@ const reviews = await pipeline(tracks, (track) => {
         model: 'sonnet',
         effort: 'high',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
         schema: FINDINGS,
       })
 })
@@ -184,7 +188,7 @@ const verdicts = await pipeline(checked, (finding) => {
         model: 'opus',
         effort: 'xhigh',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
         schema: VERDICT,
       })
     : agent(prompt, {
@@ -192,7 +196,7 @@ const verdicts = await pipeline(checked, (finding) => {
         model: 'sonnet',
         effort: 'high',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
         schema: VERDICT,
       })
 })
@@ -217,7 +221,8 @@ const placeOf = (finding) =>
 const refuted = judged.filter((one) => verdictOf(one) === 'refuted').length
 
 // A finding the refuter could not settle, or that got no answer, is not proved and not refuted:
-// it is listed with the hunches, with the refuter's reason, so the author still sees it.
+// it is listed with the hunches, with the refuter's reason, its trigger and its fix, so the
+// author still sees it and can check it.
 const unprovenHunches = judged
   .filter((one) => verdictOf(one) !== 'confirmed' && verdictOf(one) !== 'refuted')
   .map((one) => {
@@ -225,7 +230,7 @@ const unprovenHunches = judged
       one.verdict && typeof one.verdict.reason === 'string' && one.verdict.reason !== ''
         ? one.verdict.reason
         : 'the refuter returned no answer'
-    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why})`
+    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why})\n  trigger: ${one.finding.trigger}\n  fix: ${one.finding.fix}`
   })
 
 // What the reviewers could not prove, and how far each got: reported apart, never as findings.
@@ -252,17 +257,20 @@ return [
   `# Second opinion - ${base === '' ? 'the change on this branch' : `${base}...${head}`}`,
   `Tier: ${risky ? 'risky (`opus` at `xhigh`)' : 'ordinary (`sonnet` at `high`)'} · tracks: ${tracks.length} · written for: ${intent}`,
   '',
-  verified.length === 0
-    ? unchecked.length === 0
-      ? 'No finding survived refutation.'
-      : 'No checked finding survived refutation; the unchecked ones are listed below.'
-    : `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`,
+  verified.length > 0
+    ? `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`
+    : unprovenHunches.length > 0
+      ? `No checked finding was confirmed; ${unprovenHunches.length} are listed under Hunches.${unchecked.length === 0 ? '' : ' The unchecked ones are listed below.'}`
+      : unchecked.length === 0
+        ? 'No finding survived refutation.'
+        : 'No checked finding survived refutation; the unchecked ones are listed below.',
   '',
   refuted === 0
     ? ''
     : `${refuted} of ${checked.length} checked finding(s) were refuted, and are not listed.`,
   '',
-  unprovenHunches.length === 0
+  // With no finding confirmed, the headline above already says this.
+  verified.length === 0 || unprovenHunches.length === 0
     ? ''
     : `${unprovenHunches.length} of ${checked.length} checked finding(s) were left unproven: they are listed under Hunches.`,
   '',

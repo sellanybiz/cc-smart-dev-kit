@@ -20,8 +20,11 @@ import { runScript } from "./script-runner";
 const REVIEW_SPLIT = join(import.meta.dir, "..", "..", "plugin", "workflows", "review-split.js");
 const NO_ENV = {} as Record<string, string | undefined>;
 const REVIEWER = "cc-smart-dev-kit:senior-engineer";
-/** The tools each launch takes away: the tracks share one checkout. */
-const NO_EDITS = ["Edit", "Write", "NotebookEdit"];
+/**
+ * The tools each launch takes away: the tracks share one checkout, and an agent a track started
+ * would send it a notice the review record counts as a later prompt.
+ */
+const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
 
 /** A finding, as a reviewer's schema returns it. */
 function finding(title: string, severity = "warning", file = "src/a.ts", line = 1) {
@@ -78,6 +81,9 @@ describe("the review-split workflow", () => {
     }
     const prompt = reviews[0]?.prompt ?? "";
     expect(prompt).toContain("Change no file");
+    expect(prompt).toContain(
+      "\n\nEnd by calling the StructuredOutput tool; never end with plain text.",
+    );
     expect(prompt).toContain("`git diff main...HEAD`");
     expect(prompt).toContain("adds the response cache");
     expect(prompt).toContain("Your track: state and timing");
@@ -187,7 +193,7 @@ describe("the review-split workflow", () => {
       "1 of 3 checked finding(s) were left unproven: they are listed under Hunches.",
     );
     expect(report).toContain(
-      "## Hunches (unproven, never findings)\n\n- [CRITICAL] not settled — src/c.ts:4 (unproven: the caller is in another repo)\n- maybe B",
+      "## Hunches (unproven, never findings)\n\n- [CRITICAL] not settled — src/c.ts:4 (unproven: the caller is in another repo)\n  trigger: a call with an empty value\n  fix: check the value before the call\n- maybe B",
     );
   });
 
@@ -199,9 +205,32 @@ describe("the review-split workflow", () => {
     });
     const report = String(run.result);
     expect(report).toContain(
-      "- [WARNING] no answer — src/q.ts:2 (unproven: the refuter returned no answer)",
+      "- [WARNING] no answer — src/q.ts:2 (unproven: the refuter returned no answer)\n  trigger:",
     );
     expect(report).not.toContain("were refuted");
+  });
+
+  test("no checked finding confirmed, some unproven: the headline sends the reader to Hunches", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A"), finding("B", "critical", "src/b.ts", 2)], "unproven"),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain(
+      "Tier: ordinary (`sonnet` at `high`) · tracks: 1 · written for: what its commits and the diff say it does\nNo checked finding was confirmed; 2 are listed under Hunches.\n## Hunches",
+    );
+    expect(report).not.toContain("survived refutation");
+    expect(report).not.toContain("were left unproven");
+  });
+
+  test("none confirmed, some unproven and some past the budget: the headline names both", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A"), finding("B", "suggestion", "src/b.ts", 2)], "unproven"),
+      args: { base: "main", budget: 1, tracks: ["craft"] },
+    });
+    expect(String(run.result)).toContain(
+      "No checked finding was confirmed; 1 are listed under Hunches. The unchecked ones are listed below.",
+    );
   });
 
   test("the caller's budget caps the findings refuted", async () => {

@@ -144,7 +144,7 @@ describe("the audit-run workflow", () => {
     });
     const prompt = run.calls.find(isReport)?.prompt ?? "";
     expect(prompt).toContain(
-      'Hunches:\n[\n  "[CRITICAL] not settled — src/a.ts:1 (unproven: the caller is in another repo)",\n  "[WARNING] no answer — src/b.ts:7 (unproven: the verifier returned no answer)",\n  "maybe B"\n]',
+      'Hunches:\n[\n  "[CRITICAL] not settled — src/a.ts:1 (unproven: the caller is in another repo); trigger: a call with an empty value; missing guard: nothing checks the value",\n  "[WARNING] no answer — src/b.ts:7 (unproven: the verifier returned no answer); trigger: a call with an empty value; missing guard: nothing checks the value",\n  "maybe B"\n]',
     );
     expect(prompt).toContain("Confirmed findings:\n[]");
   });

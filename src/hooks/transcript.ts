@@ -262,16 +262,20 @@ const SYSTEM_REMINDER_CLOSE = "</system-reminder>";
 /**
  * How the text of a meta entry starts when Claude Code wrote it itself and it gives the agent
  * no new task: a skill it loaded (`<command-message>`, `<command-name>`, and the skill's body,
- * `Base directory for this skill:`) and a system reminder. A system reminder must also end at
- * its first closing tag, with no text after it (`harmlessText`). It is an allowlist: any other
- * meta entry — a message from the session that started the agent ("… sent a message while you
- * were working"), a notification, Stop hook feedback — is a new prompt.
+ * `Base directory for this skill:`), a system reminder, and the nudge a Workflow `agent()` with
+ * a schema gets when it ends without calling the StructuredOutput tool
+ * (`[structured-output-enforce]`, which restates the same task; read in Claude Code 2.1.318's
+ * binary). A system reminder must also end at its first closing tag, with no text after it
+ * (`harmlessText`). It is an allowlist: any other meta entry — a message from the session that
+ * started the agent ("… sent a message while you were working"), a notification, Stop hook
+ * feedback, Claude Code's other nudges such as `[handback-send-enforce]` — is a new prompt.
  */
 export const HARMLESS_META_PREFIXES: readonly string[] = [
   "<command-message>",
   "<command-name>",
   SYSTEM_REMINDER_OPEN,
   "Base directory for this skill:",
+  "[structured-output-enforce]",
 ];
 
 /**

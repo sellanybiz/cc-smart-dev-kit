@@ -144,7 +144,8 @@ const placeOf = (finding) =>
   finding.line === undefined ? finding.file : finding.file + ':' + finding.line
 
 // A finding the verifier could not settle, or that got no answer, is not proved and not refuted:
-// it goes to the writer with the hunches, with the verifier's reason, never counted away.
+// it goes to the writer with the hunches, with the verifier's reason, its trigger and its
+// missing guard (an audit finding names no fix), never counted away.
 const unprovenHunches = judged
   .filter((one) => verdictOf(one) !== 'confirmed' && verdictOf(one) !== 'refuted')
   .map((one) => {
@@ -152,7 +153,7 @@ const unprovenHunches = judged
       one.verdict && typeof one.verdict.reason === 'string' && one.verdict.reason !== ''
         ? one.verdict.reason
         : 'the verifier returned no answer'
-    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why})`
+    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why}); trigger: ${one.finding.trigger}; missing guard: ${one.finding.missingGuard}`
   })
 
 // What the auditors could not prove, and how far each got: reported apart, never as findings.

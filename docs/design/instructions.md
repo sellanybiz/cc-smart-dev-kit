@@ -164,12 +164,17 @@ dropped from both scripts, and the writer, whose judgment is already made, runs 
 The senior engineer has every tool, and the tracks of one run share one checkout, so each
 reviewer, auditor and refuter launch passes `disallowedTools: ['Edit', 'Write', 'NotebookEdit']`
 (Claude Code merges it with the agent's own deny list, `claude-code-contract.md` § Hooks):
-no track edits the code another is reading. A finding its refuter leaves `unproven`, or that gets
-no answer, is neither proved nor refuted: it is listed under **Hunches** with the refuter's
-reason, never only counted; a refuted one is counted and left out. The reviewers carry
-`cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default, and each track's
-brief holds the line `Mode: review` alone, so the run's return records the review for the merge
-guard; a refuter's brief does not, because it checks one finding, not the whole change
+no track edits the code another is reading. `review-split` also denies `Agent`: a child agent's
+completion notice would reach the track as a later prompt, and the review record would then
+record nothing. A finding its refuter leaves `unproven`, or that gets no answer, is neither
+proved nor refuted: it is listed under **Hunches** with the refuter's reason, its trigger and its
+fix (the audit's writer gets the trigger and the missing guard), never only counted; with no
+finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
+The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
+and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
+call, so the run's return records the review for the merge guard (Claude Code's nudge to make
+that call, `[structured-output-enforce]`, is no new prompt: `src/hooks/transcript.ts`); a
+refuter's brief has no marker, because it checks one finding, not the whole change
 (`src/workflows/review-split.test.ts` fails when either link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
 `agent(...)` launch in the script before the run starts (§ The agent guard); so every launch
@@ -197,10 +202,11 @@ runs agents, so the two stay self-contained (the checks are code, which `check:d
 reading sentences, does not flag).
 
 The third, `plugin/workflows/research-sweep.js`, is the run the `research-first` skill starts for a question
-with several sources (D28's third): one read-only `auditor` per angle on `sonnet` at `max`, then
-one refuter per claim on `opus` at `high` that opens the cited source and confirms or refutes the
-claim with the quote. The researchers stay on `max`, like the audit's auditors. The
-refuters are the judgment, so they take the premium tier, which runs at `high` with no question.
+with several sources (D28's third): one read-only `researcher` per angle on `sonnet` at `high`,
+then one `researcher` per claim on `opus` at `high` that opens the cited source and confirms or
+refutes the claim with the quote. The researchers run at `high`, like the audit's auditors, and
+their brief says the schema replaces the researcher's usual report. The refuters are the
+judgment, so they take the premium tier, which runs at `high` with no question.
 The decisive claims are checked first, taken in turn from each angle so one angle cannot use the
 whole `budget` (1 to 40), which cuts the rest, and the cut claims come back
 as `unchecked`, never dropped; so do a claim a refuter could not settle (`unproven`) and an angle
