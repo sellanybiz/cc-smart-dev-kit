@@ -1561,24 +1561,27 @@ The plugin ships three workflows. The `audit` skill starts `audit-run`
 (`plugin/workflows/audit-run.js`): one read-only `auditor` per track, a second one to refute each
 finding, and a `builder` to write the report. For a big change set, the `review` skill takes its
 second opinion from `review-split` (`plugin/workflows/review-split.js`) instead of one reviewer:
-one read-only `reviewer` per track, a second one to refute each finding, and the verified findings
-merged and ranked. The `research-first` skill starts `research-sweep`
-(`plugin/workflows/research-sweep.js`) for a question with several sources: one read-only
-researcher per angle, then one refuter per claim that opens the cited source, and the verified
+one `senior-engineer` per track, kept from editing, a second one to refute each finding, and the
+verified findings merged and ranked; a finding nobody could prove or refute is listed under
+Hunches, never dropped. The `research-first` skill starts `research-sweep`
+(`plugin/workflows/research-sweep.js`) for a question with several sources: one `researcher`
+per angle, then one refuter per claim that opens the cited source, and the verified
 claims come back with their sources. Each script fixes its agents' models and efforts — `review-split`'s on `opus` at
-`xhigh` for a risky change set and `sonnet` at `max` for any other — and `agent-guard` reads them
+`xhigh` for a risky change set and `sonnet` at `high` for any other — and `agent-guard` reads them
 before the run starts.
 
-**5 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
-none is pinned in their files). Each loads the `impact-analysis` skill at start, through its
-`skills:` field, and `rules-maintainer` also loads `self-evolve`. Each can use claude-mem's
+**7 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
+none is pinned in their files). Each but `researcher` loads the `impact-analysis` skill at start,
+through its `skills:` field, and `rules-maintainer` also loads `self-evolve`. Each can use claude-mem's
 `smart_outline`, `smart_search` and `smart_unfold`, and Claude Code's `LSP` tool where a
 language server runs; without them, Grep and Read do the job (why each agent has the tools it
 has: `docs/design/instructions.md` § Instructions, skills and agents):
 
 | Agent | Job | Needs |
 |---|---|---|
-| `reviewer` | The read-only second opinion on a change set. | — |
+| `senior-engineer` | The second opinion on a change set or a plan (a brief with the line `Mode: review`), and the consult when a session is stuck. All tools; it researches outside the repo with sources, and reports its findings before any fix. | — |
+| `edge-case-hunter` | Every scenario that can break a plan or a change: the trigger, what should happen, the gap, and the test that catches it. Read-only. | — |
+| `researcher` | The R&D expert: one research question answered from current primary sources, each claim cited and marked confirmed or not. Read-only. | — |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
 | `ui-verifier` | Drives the running app in a browser and measures; the design verdict stays with you, on `opus` or `fable`. | the **Playwright** MCP server |
 | `auditor` | The read-only sweep of an area for one class of defect; findings with evidence, hunches apart, and its coverage. | — |
@@ -1605,14 +1608,14 @@ Code installs and turns them on with it:
 
 | Plugin | Marketplace (`claude plugin marketplace add …`) | Version |
 |---|---|---|
-| `claude-mem@thedotmack` (memory across sessions) | `thedotmack/claude-mem` | 13.36.0 or newer |
+| `claude-mem@thedotmack` (memory across sessions) | `thedotmack/claude-mem` | 15.0.0 or newer |
 | `frontend-design@claude-plugins-official` | `anthropics/claude-plugins-official` | any |
 
 - **Claude Code installs a dependency only from a marketplace you added.** Without it,
   `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` succeeds with a warning, and cc-smart-dev-kit does not
   load. `cc-smart-dev-kit setup` adds each missing marketplace, and that installs the companion.
 - **A companion you have already stays as it is.** A claude-mem in the range is not
-  updated or reinstalled. One older than 13.36.0 stops the install: run
+  updated or reinstalled. One older than 15.0.0 stops the install: run
   `claude plugin update claude-mem@thedotmack` first. (Setup still turns the
   memory-use block off for an older one: see [claude-mem's start blocks](#claude-mems-start-blocks).)
 - **You turned one off?** Setup leaves it off and says how to turn it on; cc-smart-dev-kit does
@@ -1649,7 +1652,7 @@ the note-taker route shown by the kit. To turn it off, set
 
 claude-mem's summaries run, by default, with Claude Haiku on your own Claude
 login. Its work is Haiku's, so it follows the gateway's scout slot: when the
-[gateway](#the-ai-gateway-optional) is set up, claude-mem is installed (13.36.0 or newer), and
+[gateway](#the-ai-gateway-optional) is set up, claude-mem is installed (15.0.0 or newer), and
 you gave the scout a chain whose first target is a `<backend>:<model>`, `setup`
 points claude-mem at that model, straight at its backend. A scout with no chain (the default,
 D66), or one that starts with a Claude model, puts claude-mem on Claude, on your own login, with
@@ -2391,8 +2394,9 @@ holds: it locks a worktree while a session uses it, marks it for its own cleanup
 - **A new task starts from the main checkout:** `claude -w <task-name>`. Use dashes, not
   slashes: a `/` in a name becomes `+` in both the folder and the branch. An existing
   worktree opens the same way by its name — `claude -w <name>`, or `EnterWorktree` with its
-  `name`, which resumes it as it was left — while `EnterWorktree` with a `path` only switches
-  between worktrees for a session already inside one.
+  `name`, which resumes it as it was left — and `EnterWorktree` with a `path` enters an
+  existing one: from the launch folder when the path is in `git worktree list`, and from
+  inside a worktree when it is another one under `.claude/worktrees/` of the same repo.
 - **The branch is cut from `origin`'s default branch** by default (`fresh`: it fetches that
   branch only when the repo was not fetched in the last 24 hours). A project whose work
   branches from another branch sets `"worktree": {"baseRef": "head"}` in its committed

@@ -38,16 +38,16 @@ describe("check-context-budget", () => {
   });
 
   test("inside both budgets it passes, and says how far each is from its target", () => {
-    expect(checkBudget(3_000, 2_000)).toEqual({
+    expect(checkBudget(2_600, 2_000)).toEqual({
       lines: [
-        "Always-on: ~3000 tokens (budget 3300, target 2000, 1000 above the target).",
-        "plugin/instructions/core.md: ~2000 tokens (budget 2400, target 1900, 100 above the target).",
-        "Every session starts with ~5000 tokens from the plugin.",
+        "Always-on: ~2600 tokens (budget 2700, target 2000, 600 above the target).",
+        "plugin/instructions/core.md: ~2000 tokens (budget 2350, target 1900, 100 above the target).",
+        "Every session starts with ~4600 tokens from the plugin.",
       ],
       ok: true,
     });
     expect(checkBudget(1_500, 1_000).lines[0]).toBe(
-      "Always-on: ~1500 tokens (budget 3300, target 2000).",
+      "Always-on: ~1500 tokens (budget 2700, target 2000).",
     );
   });
 
@@ -56,12 +56,12 @@ describe("check-context-budget", () => {
     const alwaysOnOver = checkBudget(ALWAYS_ON.max + 1, CORE.max);
     expect(alwaysOnOver.ok).toBe(false);
     expect(alwaysOnOver.lines[0]).toBe(
-      "Always-on: ~3301 tokens, over its 3300-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
+      "Always-on: ~2701 tokens, over its 2700-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
     );
     const coreOver = checkBudget(ALWAYS_ON.max, CORE.max + 1);
     expect(coreOver.ok).toBe(false);
     expect(coreOver.lines[1]).toBe(
-      "plugin/instructions/core.md: ~2401 tokens, over its 2400-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
+      "plugin/instructions/core.md: ~2351 tokens, over its 2350-token budget. Every session carries it: trim it, or move text into a skill that loads only when used.",
     );
   });
 

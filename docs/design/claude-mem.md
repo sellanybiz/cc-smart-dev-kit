@@ -29,7 +29,7 @@ both blocks off; its overflow came from the memory-use block, not work state.
 The [research](../../.claude/research/archive/2026-10-29-claude-mem-work-state.md) reads
 claude-mem 15.4.0's worker and CHANGELOG. Work state is capped at 3,000 characters, with
 its room reserved inside the 10,000-character context budget since 13.29.0; the kit requires
-`>=13.36.0`. The 2,466-character memory-use block has no room reserved unless TeamBrain is
+`>=15.0.0`. The 2,466-character memory-use block has no room reserved unless TeamBrain is
 set up. Measured on one machine with memory-use off, context grew from 4,824 to 7,053
 characters when work state was enabled. The worker code was checked in 15.4.0; the earlier
 budget guarantee comes from its CHANGELOG.
@@ -110,7 +110,7 @@ set or changed stays. A removal alone sends no check to the backend.
   this case: the keys are taken out (above).
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
-  (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no
+  (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 15.0.0 or newer, so no
   warning is needed below it.
 
 ## claude-mem from the portal (PM1)

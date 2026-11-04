@@ -17,7 +17,7 @@
     "check:core-lines": "\"$npm_execpath\" scripts/check-core-lines.ts",
     "check:context-budget": "\"$npm_execpath\" scripts/check-context-budget.ts",
     "evals": "\"$npm_execpath\" evals/run.ts",
-    "check": "\"$npm_execpath\" run typecheck && \"$npm_execpath\" run lint && \"$npm_execpath\" run check:neutral && \"$npm_execpath\" run check:duplicates && \"$npm_execpath\" run check:docs && \"$npm_execpath\" run check:core-lines && \"$npm_execpath\" run test && \"$npm_execpath\" run build:check"
+    "check": "\"$npm_execpath\" run typecheck && \"$npm_execpath\" run lint && \"$npm_execpath\" run check:neutral && \"$npm_execpath\" run check:duplicates && \"$npm_execpath\" run check:docs && \"$npm_execpath\" run check:core-lines && \"$npm_execpath\" run check:context-budget && \"$npm_execpath\" run test && \"$npm_execpath\" run build:check"
   },
   "engines": {
     "bun": ">=1.4.3"
