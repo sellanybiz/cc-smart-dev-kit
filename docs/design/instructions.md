@@ -149,20 +149,28 @@ every session, used or not, so both descriptions stay to one short sentence or t
 (`check:context-budget`).
 
 **The shipped Workflows.** `plugin/workflows/audit-run.js` is the run the `audit` skill starts:
-one read-only `auditor` per track on `sonnet` at `max`, a second auditor on `opus` at `xhigh` to
-refute every finding (the judgment, D46), one `builder` on `sonnet` at `max` to write the
+one read-only `auditor` per track on `sonnet` at `high`, a second auditor on `opus` at `xhigh` to
+refute every finding (the judgment, D46), one `builder` on `sonnet` at `medium` to write the
 findings file. `plugin/workflows/review-split.js` is the second opinion the `review` skill takes
-on a big change set instead of its single reviewer: one read-only `reviewer` per track, a second
+on a big change set instead of its single reviewer: one `senior-engineer` per track, a second
 one to refute every finding, and the verified findings merged and ranked. Its launches follow
 D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
-`sonnet` at `max` otherwise — and the refuters run on that same tier, because they make the
+`sonnet` at `high` otherwise — and the refuters run on that same tier, because they make the
 review's judgment; the audit's verifier is `opus` because the auditors are only the breadth.
 Because a literal cannot depend on the change set, the script writes both fixed launch sets and
 the caller picks one: a second script would repeat every prompt, which `check:duplicates` fails.
-`sonnet` at `max` runs above the `high` the core instructions give a review: a split review
-and an audit are the deep reads, and the script's literal is fixed. The reviewers carry `cc-smart-dev-kit:reviewer`, the type `reviewAgents`
-lists by default, so the run's return records the review for the merge guard
-(`src/workflows/review-split.test.ts` fails when that link breaks). Claude Code loads a
+`high` gives most of the gain of a deeper effort for a fraction of its cost (2.2.0); `max` was
+dropped from both scripts, and the writer, whose judgment is already made, runs at `medium`.
+The senior engineer has every tool, and the tracks of one run share one checkout, so each
+reviewer, auditor and refuter launch passes `disallowedTools: ['Edit', 'Write', 'NotebookEdit']`
+(Claude Code merges it with the agent's own deny list, `claude-code-contract.md` § Hooks):
+no track edits the code another is reading. A finding its refuter leaves `unproven`, or that gets
+no answer, is neither proved nor refuted: it is listed under **Hunches** with the refuter's
+reason, never only counted; a refuted one is counted and left out. The reviewers carry
+`cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default, and each track's
+brief holds the line `Mode: review` alone, so the run's return records the review for the merge
+guard; a refuter's brief does not, because it checks one finding, not the whole change
+(`src/workflows/review-split.test.ts` fails when either link breaks). Claude Code loads a
 plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
 `agent(...)` launch in the script before the run starts (§ The agent guard); so every launch
 names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.test.ts` runs each

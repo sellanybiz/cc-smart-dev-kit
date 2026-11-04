@@ -109,29 +109,35 @@ log(
 )
 
 // The model rule is D46's: the review of a risky change set runs on `opus` at `xhigh`, every
-// other on `sonnet` at `max`. A literal cannot depend on the change set, so both fixed launch
-// sets are written out here and the caller's `risky` picks one — the simplest shape that keeps
-// every launch a literal the agent guard reads (two scripts would repeat every prompt and the
-// orchestration, which `check:duplicates` fails). The refuters run on the same tier: they make
-// the review's judgment, so D46's rule covers them too.
+// other on `sonnet` at `high`, which gives most of the gain. A literal cannot depend on the
+// change set, so both fixed launch sets are written out here and the caller's `risky` picks one —
+// the simplest shape that keeps every launch a literal the agent guard reads (two scripts would
+// repeat every prompt and the orchestration, which `check:duplicates` fails). The refuters run
+// on the same tier: they make the review's judgment, so D46's rule covers them too.
 //
-// The agent type is the review-record hook's default `reviewAgents` name, so the run's reviewers
-// are the ones whose return records the review for the merge guard.
+// The agent type is the review-record hook's default `reviewAgents` name. A track reviewer's
+// brief carries the `Mode: review` line alone, so its return records the review for the merge
+// guard; a refuter's brief does not, because it checks one finding, not the whole change.
+//
+// The senior engineer has every tool. The tracks run at once on one checkout, so each launch
+// takes the editing tools away: no track changes the code another one is reading.
 const reviews = await pipeline(tracks, (track) => {
-  const prompt = `One track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.\n\nYour track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone.\n\nAnswer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. What you cannot prove goes in \`hunches\`. In \`coverage\`, name what you read and where you stopped.`
+  const prompt = `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.\n\nYour track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone. Change no file: report only.\n\nAnswer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. What you cannot prove goes in \`hunches\`. In \`coverage\`, name what you read and where you stopped.`
   return risky
     ? agent(prompt, {
         label: `review: ${track}`,
         model: 'opus',
         effort: 'xhigh',
-        agentType: 'cc-smart-dev-kit:reviewer',
+        agentType: 'cc-smart-dev-kit:senior-engineer',
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
         schema: FINDINGS,
       })
     : agent(prompt, {
         label: `review: ${track}`,
         model: 'sonnet',
-        effort: 'max',
-        agentType: 'cc-smart-dev-kit:reviewer',
+        effort: 'high',
+        agentType: 'cc-smart-dev-kit:senior-engineer',
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
         schema: FINDINGS,
       })
 })
@@ -171,28 +177,32 @@ log(
 // A second reviewer tries to refute each finding. Only what survives the code is reported: the
 // evidence bar is the review's (`plugin/instructions/core.md` § Review).
 const verdicts = await pipeline(checked, (finding) => {
-  const prompt = `Refute one finding before it reaches the author: read the file and line it names, then the path around it, and look for what already stops it — a validator upstream, a database constraint, a type, a caller that can never pass that value.\n\nAnswer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when something already stops it; \`unproven\` when the code does not settle it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`
+  const prompt = `Refute one finding before it reaches the author: read the file and line it names, then the path around it, and look for what already stops it — a validator upstream, a database constraint, a type, a caller that can never pass that value. Change no file.\n\nAnswer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when something already stops it; \`unproven\` when the code does not settle it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`
   return risky
     ? agent(prompt, {
         label: `refute: ${finding.file}`,
         model: 'opus',
         effort: 'xhigh',
-        agentType: 'cc-smart-dev-kit:reviewer',
+        agentType: 'cc-smart-dev-kit:senior-engineer',
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
         schema: VERDICT,
       })
     : agent(prompt, {
         label: `refute: ${finding.file}`,
         model: 'sonnet',
-        effort: 'max',
-        agentType: 'cc-smart-dev-kit:reviewer',
+        effort: 'high',
+        agentType: 'cc-smart-dev-kit:senior-engineer',
+        disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
         schema: VERDICT,
       })
 })
 
+const judged = checked.map((finding, index) => ({ finding, verdict: verdicts[index] }))
+const verdictOf = (one) => (one.verdict ? one.verdict.verdict : undefined)
+
 // The reviewed findings, merged, verified and ranked: most severe first, then by file and line.
-const verified = checked
-  .map((finding, index) => ({ finding, verdict: verdicts[index] }))
-  .filter((one) => one.verdict && one.verdict.verdict === 'confirmed')
+const verified = judged
+  .filter((one) => verdictOf(one) === 'confirmed')
   .sort((a, b) => {
     const bySeverity = rankOf(a.finding.severity) - rankOf(b.finding.severity)
     if (bySeverity !== 0) return bySeverity
@@ -202,9 +212,25 @@ const verified = checked
     return (a.finding.line || 0) - (b.finding.line || 0)
   })
 
+const placeOf = (finding) =>
+  finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`
+const refuted = judged.filter((one) => verdictOf(one) === 'refuted').length
+
+// A finding the refuter could not settle, or that got no answer, is not proved and not refuted:
+// it is listed with the hunches, with the refuter's reason, so the author still sees it.
+const unprovenHunches = judged
+  .filter((one) => verdictOf(one) !== 'confirmed' && verdictOf(one) !== 'refuted')
+  .map((one) => {
+    const why =
+      one.verdict && typeof one.verdict.reason === 'string' && one.verdict.reason !== ''
+        ? one.verdict.reason
+        : 'the refuter returned no answer'
+    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why})`
+  })
+
 // What the reviewers could not prove, and how far each got: reported apart, never as findings.
-const hunches = reviews.flatMap((report) =>
-  report && Array.isArray(report.hunches) ? report.hunches : [],
+const hunches = unprovenHunches.concat(
+  reviews.flatMap((report) => (report && Array.isArray(report.hunches) ? report.hunches : [])),
 )
 const coverage = reviews
   .map((report, index) =>
@@ -214,20 +240,17 @@ const coverage = reviews
   )
   .filter((one) => one !== null)
 
-const placeOf = (finding) =>
-  finding.line === undefined ? finding.file : `${finding.file}:${finding.line}`
 const lines = verified.map(
   (one, index) =>
     `${index + 1}. [${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)}\n   trigger: ${one.finding.trigger}\n   outcome: ${one.finding.outcome}\n   missing guard: ${one.finding.missingGuard}\n   fix: ${one.finding.fix}\n   confidence: ${one.finding.confidence}`,
 )
-const dropped = checked.length - verified.length
 const uncheckedLines = unchecked.map(
   (finding) => `- [${String(finding.severity).toUpperCase()}] ${finding.title} — ${placeOf(finding)}`,
 )
 
 return [
   `# Second opinion - ${base === '' ? 'the change on this branch' : `${base}...${head}`}`,
-  `Tier: ${risky ? 'risky (`opus` at `xhigh`)' : 'ordinary (`sonnet` at `max`)'} · tracks: ${tracks.length} · written for: ${intent}`,
+  `Tier: ${risky ? 'risky (`opus` at `xhigh`)' : 'ordinary (`sonnet` at `high`)'} · tracks: ${tracks.length} · written for: ${intent}`,
   '',
   verified.length === 0
     ? unchecked.length === 0
@@ -235,9 +258,13 @@ return [
       : 'No checked finding survived refutation; the unchecked ones are listed below.'
     : `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`,
   '',
-  dropped === 0
+  refuted === 0
     ? ''
-    : `${dropped} of ${checked.length} checked finding(s) were refuted or left unproven, and are not listed.`,
+    : `${refuted} of ${checked.length} checked finding(s) were refuted, and are not listed.`,
+  '',
+  unprovenHunches.length === 0
+    ? ''
+    : `${unprovenHunches.length} of ${checked.length} checked finding(s) were left unproven: they are listed under Hunches.`,
   '',
   unchecked.length === 0
     ? ''
