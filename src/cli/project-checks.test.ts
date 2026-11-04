@@ -1,6 +1,6 @@
 /** `doctor`'s checks of the project in the folder it runs in (`project-checks.ts`). */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
@@ -71,13 +71,27 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
 }
 
 describe("the retired review agent", () => {
+  test("skips unreadable Markdown and non-Markdown files", async () => {
+    const repo = makeRepo();
+    const folder = join(repo, ".claude", "skills");
+    mkdirSync(folder, { recursive: true });
+    const unreadable = join(folder, "private.md");
+    writeFileSync(unreadable, "cc-smart-dev-kit:reviewer");
+    writeFileSync(join(folder, "data.bin"), "cc-smart-dev-kit:reviewer");
+    chmodSync(unreadable, 0o000);
+    try {
+      expect(await check(repo)).toEqual([]);
+    } finally {
+      chmodSync(unreadable, 0o600);
+    }
+  });
   test("fails with the base-list migration fix", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       workflow: { reviewAgents: ["cc-smart-dev-kit:reviewer"] },
     });
     expect(await check(repo)).toContain(
-      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: change the list to cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
     );
   });
   test("warns for add-ons, agents and nested skills, not unrelated files", async () => {
@@ -94,9 +108,9 @@ describe("the retired review agent", () => {
     }
     const lines = await check(repo);
     expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
-      "! project: .claude/agents/local.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
-      "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
-      "! project: .claude/skills/local/SKILL.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/agents/local.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/skills/local/SKILL.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
     ]);
   });
 });

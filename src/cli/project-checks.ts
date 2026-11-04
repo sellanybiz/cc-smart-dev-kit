@@ -36,6 +36,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
+import { PLUGIN } from "../build-info/names";
 import { runGitAsync } from "../hooks/git";
 import {
   allWiredHandlers,
@@ -69,6 +70,7 @@ import { checkProjectTasks } from "../tasks/project/check";
 import { shippedIdsOn } from "../tasks/project/release";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
+import { workflowDefaults } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -93,7 +95,9 @@ function shown(file: string, projectDir: string, home: string): string {
 }
 
 /** A retired review agent is still parsed, so doctor can explain how to migrate it. */
-const OLD_REVIEW_AGENT = "cc-smart-dev-kit:reviewer";
+const OLD_REVIEW_AGENT = `${PLUGIN}:reviewer`;
+const NEW_REVIEW_AGENT = workflowDefaults.reviewAgents[0];
+const REPLACE_REVIEW_AGENT = `replace the old id ${OLD_REVIEW_AGENT} with the new one ${NEW_REVIEW_AGENT}`;
 
 /** Shared by the project and machine checks; never rewrites the person's settings. */
 export function retiredReviewAgentCheck(
@@ -122,7 +126,9 @@ export function retiredReviewAgentCheck(
   return {
     ok: false,
     text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
-    fix: "change the list to cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+    fix: personal
+      ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
+      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`,
   };
 }
 
@@ -130,15 +136,23 @@ function retiredReviewMentions(projectDir: string): ProjectLine[] {
   const folder = join(projectDir, ".claude");
   if (!existsSync(folder)) return [];
   const files = [
-    ...new Bun.Glob("cc-smart-dev-kit/*.md").scanSync({ cwd: folder, onlyFiles: true }),
-    ...new Bun.Glob("{agents,skills}/**/*").scanSync({ cwd: folder, onlyFiles: true }),
+    ...new Bun.Glob(`${PLUGIN}/*.md`).scanSync({ cwd: folder, onlyFiles: true }),
+    ...new Bun.Glob("{agents,skills}/**/*.md").scanSync({ cwd: folder, onlyFiles: true }),
   ].sort();
   return files
-    .filter((file) => readFileSync(join(folder, file), "utf8").includes(OLD_REVIEW_AGENT))
+    .filter((file) => {
+      try {
+        return readFileSync(join(folder, file), "utf8").includes(OLD_REVIEW_AGENT);
+      } catch {
+        // An optional instruction file can be private or removed during the scan.
+        return false;
+      }
+    })
     .map((file) => ({
       ok: true,
       warn: true,
-      text: `project: .claude/${file} mentions the retired ${OLD_REVIEW_AGENT}: change it to cc-smart-dev-kit:senior-engineer`,
+      text: `project: .claude/${file} mentions the retired ${OLD_REVIEW_AGENT}`,
+      fix: REPLACE_REVIEW_AGENT,
     }));
 }
 

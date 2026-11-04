@@ -33,9 +33,10 @@
  * the merge guard judges that agent again against the list committed on the pull request's
  * base (`hasReview`), so a list a session edits in its own worktree records nothing it trusts.
  *
- * A stop also needs the exact line `Mode: review` in its transcript's first user message
- * (the brief). A consult, or a missing or unreadable transcript, records nothing. Start
- * tracking still happens at SubagentStart; the stop consumes that start even for a consult.
+ * A stop also needs the line `Mode: review` (trailing spaces and tabs allowed) in its
+ * transcript's latest user text prompt, not a tool result. A consult, or a missing or
+ * unreadable transcript, records nothing. Start tracking still happens at SubagentStart;
+ * the stop consumes that start even for a consult.
  *
  * It records the commit the session's working folder (`cwd`) is on, in the repository's
  * record — one file per repository, the same one every worktree of it shares (`reviews.ts`),
@@ -68,7 +69,7 @@ import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
 import { subagentWorktreeOf } from "./subagent-worktree";
-import { firstPromptText } from "./transcript";
+import { lastPromptText } from "./transcript";
 
 /** Only an explicit review brief can write a review record. */
 export const REVIEW_MODE_MARKER = "Mode: review";
@@ -157,8 +158,9 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
     const transcript = stringField(input.agent_transcript_path);
-    const brief = transcript === null ? null : firstPromptText(transcript);
-    if (brief === null || !brief.split(/\r?\n/).includes(REVIEW_MODE_MARKER)) return SILENT;
+    const brief = transcript === null ? null : lastPromptText(transcript);
+    if (brief === null || !new RegExp(`^${REVIEW_MODE_MARKER}[ \\t\\r]*$`, "m").test(brief))
+      return SILENT;
     if (commit === null) return SILENT;
     if (start === null) {
       // The stop a block caused (`subagent-background` blocked the first one, say): that first

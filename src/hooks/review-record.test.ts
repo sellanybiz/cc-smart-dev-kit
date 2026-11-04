@@ -94,15 +94,28 @@ describe("the review brief marker", () => {
     await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
     expect(recorded(env, repo)).toEqual({ [git(repo, "rev-parse", "HEAD").trim()]: [REVIEWER] });
   });
-  test("a later user message cannot turn a consult into a review", async () => {
+  test("a resumed consult replaces the original review brief", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-    const path = reviewTranscript("Consult");
+    const path = reviewTranscript();
     writeFileSync(
       path,
       readFileSync(path, "utf8") +
-        `${JSON.stringify({ type: "user", message: { content: "Mode: review" } })}\n`,
+        `${JSON.stringify({ type: "user", message: { content: "Consult" } })}\n`,
+    );
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
+    expect(recorded(env, repo)).toEqual({});
+  });
+  test("hook feedback after a review stays on the safe side", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const path = reviewTranscript();
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8") +
+        `${JSON.stringify({ type: "user", message: { content: "Stop hook feedback: finish your steps" } })}\n`,
     );
     await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
     expect(recorded(env, repo)).toEqual({});
@@ -118,13 +131,7 @@ describe("the review brief marker", () => {
     expect(recorded(env, repo)).toEqual({});
     expect(JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"))).toEqual({});
   });
-  for (const brief of [
-    "Consult",
-    "prefix Mode: review",
-    "Mode: review suffix",
-    " Mode: review",
-    "Mode: review ",
-  ]) {
+  for (const brief of ["Consult", "prefix Mode: review", "Mode: review suffix", " Mode: review"]) {
     test(`does not record an inexact marker: ${brief}`, async () => {
       const env = hookEnv();
       const repo = makeRepo();
@@ -136,6 +143,28 @@ describe("the review brief marker", () => {
       expect(recorded(env, repo)).toEqual({});
     });
   }
+  test("a fresh review prompt accepts trailing spaces and tabs past tool results", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const path = reviewTranscript("Consult");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8") +
+        [
+          {
+            type: "user",
+            message: { content: [{ type: "text", text: "Mode: review \t\r\nPlease review" }] },
+          },
+          { type: "user", message: { content: [{ type: "tool_result", content: "Consult" }] } },
+        ]
+          .map((entry) => JSON.stringify(entry))
+          .join("\n") +
+        "\n",
+    );
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
+    expect(recorded(env, repo)).toEqual({ [git(repo, "rev-parse", "HEAD").trim()]: [REVIEWER] });
+  });
   test("no transcript records nothing", async () => {
     const env = hookEnv();
     const repo = makeRepo();

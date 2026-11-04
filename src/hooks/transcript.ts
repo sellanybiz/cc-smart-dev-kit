@@ -1,5 +1,5 @@
 /**
- * What the plugin reads from the tail of Claude Code's transcript — one home, for the hooks
+ * What the plugin reads from Claude Code's transcript — one home, for the hooks
  * that need it:
  *   - the session's own model (the StopFailure usage-limit alert, the Agent guard);
  *   - the session's name (the notifier names the session in its alert);
@@ -7,11 +7,13 @@
  *   - who started the turn (the notifier stays quiet for a turn another session started);
  *   - the session's own file changes and its runs of the project's fast check (the
  *     verification gate, `verify-gate.ts`);
- *   - Stop feedback already given (the verification gate and keep-going guard).
+ *   - Stop feedback already given (the verification gate and keep-going guard);
+ *   - the initial brief (builder hand-back) and latest text prompt (review recording).
  *
  * Claude Code writes a session's conversation to
- * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
- * session's transcript grows to megabytes, and a hook has a 10 s timeout.
+ * `<config>/projects/<project folder>/<session id>.jsonl`. Reads are bounded: the initial
+ * brief uses the head, other readers use the tail. A transcript grows to megabytes, and a
+ * hook has a 10 s timeout.
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -114,6 +116,18 @@ export function tailLines(
     return null;
   }
   return text.split("\n");
+}
+
+/** The latest user text prompt, not a tool result; null when absent from the bounded tail. */
+export function lastPromptText(transcriptPath: string): string | null {
+  const lines = tailLines(transcriptPath);
+  if (lines === null) return null;
+  for (const entry of entriesFromEnd(lines)) {
+    if (entry.type !== "user" || !isJsonObject(entry.message)) continue;
+    const text = messageText(entry.message.content);
+    if (text !== null && text !== "") return text;
+  }
+  return null;
 }
 
 /** Every line from the end backwards, parsed; the ones that are not JSON objects are skipped. */

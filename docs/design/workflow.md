@@ -307,10 +307,11 @@ for a local merge, and `workflow show` prints the limits in force on one `gate f
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the
 state folder's shared lock, whose 10 s wait is as long as the hook may run.
 
-A stop records a review only when the first user message in its agent transcript (the brief)
-contains the exact line `Mode: review`, alone on its line. A consult brief, a missing marker
-or an unreadable or missing transcript records nothing. The shared `firstPromptText` reader
-in `src/hooks/transcript.ts` reads that brief for this hook and the builder hand-back hook.
+A stop records a review only when the latest user text prompt in its agent transcript
+contains `Mode: review`, alone on its line (trailing spaces and tabs allowed). Tool results
+are skipped. A resumed consult replaces the original review brief; a missing marker or
+unreadable or missing prompt records nothing. The shared transcript module reads the latest
+prompt for this hook and the initial brief for the builder hand-back hook.
 
 **Who writes it: the review agent's own start and end** (`src/hooks/review-record.ts`,
 `SubagentStart` and `SubagentStop`). A record a session writes for itself is only the
