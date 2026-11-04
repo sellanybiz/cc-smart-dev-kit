@@ -70,6 +70,37 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
   });
 }
 
+describe("the retired review agent", () => {
+  test("fails with the base-list migration fix", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      workflow: { reviewAgents: ["cc-smart-dev-kit:reviewer"] },
+    });
+    expect(await check(repo)).toContain(
+      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: change the list to cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+    );
+  });
+  test("warns for add-ons, agents and nested skills, not unrelated files", async () => {
+    const repo = makeRepo();
+    for (const file of [
+      "cc-smart-dev-kit/review.md",
+      "agents/local.md",
+      "skills/local/SKILL.md",
+      "unrelated.md",
+    ]) {
+      const path = join(repo, ".claude", file);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "cc-smart-dev-kit:reviewer");
+    }
+    const lines = await check(repo);
+    expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
+      "! project: .claude/agents/local.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/cc-smart-dev-kit/review.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/skills/local/SKILL.md mentions the retired cc-smart-dev-kit:reviewer: change it to cc-smart-dev-kit:senior-engineer",
+    ]);
+  });
+});
+
 describe("Claude Code's own worktrees, and the retired engine", () => {
   test("outside git: nothing to say", async () => {
     expect(await check(tempDir("nogit"))).toEqual([]);

@@ -38,7 +38,7 @@ const INPUT = {
       type: "local_agent",
     },
     {
-      agentType: "cc-smart-dev-kit:reviewer",
+      agentType: "cc-smart-dev-kit:senior-engineer",
       description: "Review the diff",
       effort: "xhigh",
       id: "b1",

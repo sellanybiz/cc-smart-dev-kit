@@ -22,7 +22,7 @@ const CONFIG = {
 };
 
 const AGENT_ID = "0a1b2c3d4e5f60718";
-const REVIEWER = "cc-smart-dev-kit:reviewer";
+const REVIEWER = "cc-smart-dev-kit:senior-engineer";
 
 /** One file of the record folder of `repo` under `env`, named by hand. */
 function recordFile(env: Record<string, string>, repo: string, suffix = ".json"): string {
@@ -70,9 +70,80 @@ function stopped(cwd: string, fields: Record<string, unknown>): Record<string, u
     session_id: "11111111-2222-3333-4444-555555555555",
     cwd,
     agent_id: AGENT_ID,
+    agent_transcript_path: reviewTranscript(),
     ...fields,
   };
 }
+
+function reviewTranscript(brief = "Mode: review"): string {
+  const path = join(tempDir("review-brief"), "agent.jsonl");
+  writeFileSync(path, `${JSON.stringify({ type: "user", message: { content: brief } })}\n`);
+  return path;
+}
+
+describe("the review brief marker", () => {
+  test("an exact marker in a multiline block brief records, including CRLF", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const path = reviewTranscript();
+    writeFileSync(
+      path,
+      `${JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "Please review\r\nMode: review\r\nReport findings" }] } })}\n`,
+    );
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
+    expect(recorded(env, repo)).toEqual({ [git(repo, "rev-parse", "HEAD").trim()]: [REVIEWER] });
+  });
+  test("a later user message cannot turn a consult into a review", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const path = reviewTranscript("Consult");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8") +
+        `${JSON.stringify({ type: "user", message: { content: "Mode: review" } })}\n`,
+    );
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: path });
+    expect(recorded(env, repo)).toEqual({});
+  });
+  test("an unreadable transcript records nothing and consumes its start", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    await review(env, repo, {
+      agent_type: REVIEWER,
+      agent_transcript_path: join(tempDir("gone"), "missing.jsonl"),
+    });
+    expect(recorded(env, repo)).toEqual({});
+    expect(JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"))).toEqual({});
+  });
+  for (const brief of [
+    "Consult",
+    "prefix Mode: review",
+    "Mode: review suffix",
+    " Mode: review",
+    "Mode: review ",
+  ]) {
+    test(`does not record an inexact marker: ${brief}`, async () => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+      await review(env, repo, {
+        agent_type: REVIEWER,
+        agent_transcript_path: reviewTranscript(brief),
+      });
+      expect(recorded(env, repo)).toEqual({});
+    });
+  }
+  test("no transcript records nothing", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: undefined });
+    expect(recorded(env, repo)).toEqual({});
+  });
+});
 
 /** One review agent's whole run in `cwd`: its start, then its stop. Both answers. */
 async function review(

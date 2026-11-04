@@ -225,3 +225,56 @@ export function startedByPeer(transcriptPath: string): boolean {
   }
   return false;
 }
+
+/**
+ * How much of a transcript's start is read for the brief. The brief is the first line; a
+ * brief longer than this is not one a person wrote, and the hook stays silent.
+ */
+export const BRIEF_HEAD_BYTES = 1024 * 1024;
+
+/** A message's text: its `content` as a string, or its text blocks joined by a newline. */
+function messageText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  return content
+    .filter(
+      (block): block is { text: string } =>
+        isJsonObject(block) && block.type === "text" && typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * The text of a transcript's first `user` entry: a subagent's brief. Only the file's first
+ * `BRIEF_HEAD_BYTES` are read; a line that is not JSON is skipped. Null when the file cannot be
+ * read or holds no such entry there.
+ */
+export function firstPromptText(transcriptPath: string): string | null {
+  let text: string;
+  try {
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const buffer = Buffer.alloc(BRIEF_HEAD_BYTES);
+      const read = readSync(fd, buffer, 0, BRIEF_HEAD_BYTES, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  for (const line of text.split("\n")) {
+    if (line.trim() === "") continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // A line cut by the read's end, or one that is not JSON at all.
+      continue;
+    }
+    if (!isJsonObject(entry) || entry.type !== "user" || !isJsonObject(entry.message)) continue;
+    return messageText(entry.message.content);
+  }
+  return null;
+}

@@ -64,7 +64,7 @@ function recordReview(
         [sha]: {
           at: "2026-10-21T10:00:00.000Z",
           branches: [branch],
-          by: ["cc-smart-dev-kit:reviewer"],
+          by: ["cc-smart-dev-kit:senior-engineer"],
         },
       },
       null,

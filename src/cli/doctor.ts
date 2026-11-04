@@ -104,9 +104,18 @@ import {
 import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
-import { projectChecks } from "./project-checks";
+import { projectChecks, retiredReviewAgentCheck } from "./project-checks";
 import { type Mark, markText, type Out, plural } from "./ui/out";
 import type { Terminal } from "./ui/terminal";
+
+/** The personal workflow file must name an agent this release still ships. */
+export function checkReviewAgent(paths: CliPaths): Check | null {
+  return retiredReviewAgentCheck(
+    paths.workflowConfigFile,
+    tildify(paths.workflowConfigFile, paths.home),
+    true,
+  );
+}
 
 /** The fix most checks name: setup puts the plugin's files back in place. */
 const SETUP_FIX = `${COMMAND} setup`;
@@ -1347,6 +1356,7 @@ function doctorGroups(
           ...taskStoreChecks(paths),
           oldTodoToolsKeyCheck(paths),
           checkNameClash(settings),
+          checkReviewAgent(paths),
           await checkOldPlugin(settings, paths, readCommand),
         ]),
     },

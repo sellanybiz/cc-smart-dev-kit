@@ -2606,7 +2606,7 @@ switches.sessionNames = true (project)
 gate: what the merge guard judges with, from origin/dev:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)
 gate autoMerge = true (project, committed on origin/dev)
 gate reviewBeforePush = true (default)
-gate reviewAgents = cc-smart-dev-kit:reviewer (default)
+gate reviewAgents = cc-smart-dev-kit:senior-engineer (default)
 gate fixesAfterReview.lines = 200 (default)
 gate fixesAfterReview.files = 10 (default)
 gate fixesAfterReview.percent = 20 (default)
@@ -2645,7 +2645,7 @@ merge.
 | `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
-| `reviewAgents` | `["cc-smart-dev-kit:reviewer"]` | The subagent types whose return records a review (§ The review record), by the exact name Claude Code reports: `plugin:name` for a plugin's agent, the frontmatter `name` for a project's own. |
+| `reviewAgents` | `["cc-smart-dev-kit:senior-engineer"]` | The subagent types whose return records a review (§ The review record), by the exact name Claude Code reports: `plugin:name` for a plugin's agent, the frontmatter `name` for a project's own. |
 | `fixesAfterReview.lines` | `200` | How many lines (added plus deleted) may change on the branch after its review while the review still counts — or `fixesAfterReview.percent` of the reviewed change's lines, when that is more. The base's own changes, and files the base marks `linguist-generated`, are not counted (§ The review record). A whole number, 0 or more. |
 | `fixesAfterReview.files` | `10` | The same for the files changed after the review: both limits must hold. |
 | `fixesAfterReview.percent` | `20` | The share, in percent of the reviewed change, a fix round may reach in lines and in files, when that is more than `lines` and `files`. `0` for all three: only the exact reviewed commit counts. |
@@ -2722,7 +2722,7 @@ the limit in the question.
 
 A name matches exactly: a
 `plugin:name` only that plugin's agent, a bare name only an agent with no plugin prefix, so
-another plugin's `reviewer` never counts for `cc-smart-dev-kit:reviewer`. An agent that stopped
+another plugin's `reviewer` never counts for `cc-smart-dev-kit:senior-engineer`. An agent that stopped
 inside its own worktree records nothing: that worktree's branch is a fresh one from the base,
 never the commit a reviewer read. `cc-smart-dev-kit workflow review-done [--sha <commit>]`
 records one by hand for the person's own terminal: it refuses inside Claude Code, where a

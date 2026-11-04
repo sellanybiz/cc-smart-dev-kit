@@ -162,7 +162,7 @@ function recordReviewHere(
   env: Record<string, string>,
   repo: string,
   sha: string,
-  by = "cc-smart-dev-kit:reviewer",
+  by = "cc-smart-dev-kit:senior-engineer",
   branches: string[] = [],
 ): void {
   const file = join(
@@ -486,7 +486,7 @@ describe("D17: a review covers the fixes after it", () => {
   test("review → a small fix → the merge is allowed", async () => {
     const { repo, env: base } = d17Repo();
     const reviewed = reviewedChange(repo);
-    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:senior-engineer", ["feat"]);
     const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
     const { env } = withGh(base, head);
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({
@@ -499,7 +499,7 @@ describe("D17: a review covers the fixes after it", () => {
   test("review → the base merged in → a fix → still allowed (the base counts for nothing)", async () => {
     const { repo, env: base } = d17Repo();
     const reviewed = reviewedChange(repo);
-    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:senior-engineer", ["feat"]);
     // The base moves on, as a merge into it would: 30 lines in one file, fetched.
     git(repo, "checkout", "-q", "dev");
     const moved = commitFiles(repo, { "docs/notes.txt": numbered(30, "n") }, "base work");
@@ -518,7 +518,7 @@ describe("D17: a review covers the fixes after it", () => {
   test("review → a 600-line rewrite → asks, naming the counts and the limit", async () => {
     const { repo, env: base } = d17Repo();
     const reviewed = reviewedChange(repo);
-    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:senior-engineer", ["feat"]);
     rmSync(join(repo, "src/a.txt"));
     rmSync(join(repo, "src/b.txt"));
     const head = commitFiles(repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
@@ -540,7 +540,7 @@ describe("D17: a review covers the fixes after it", () => {
       },
     });
     const reviewed = reviewedChange(repo);
-    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["feat"]);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:senior-engineer", ["feat"]);
     const fixed = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
     const fixedGh = withGh(base, fixed);
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), fixedGh.env)).toEqual({
@@ -561,7 +561,7 @@ describe("D17: a review covers the fixes after it", () => {
   test("a review on another branch never covers", async () => {
     const { repo, env: base } = d17Repo();
     const reviewed = reviewedChange(repo);
-    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:reviewer", ["other"]);
+    recordReviewHere(base, repo, reviewed, "cc-smart-dev-kit:senior-engineer", ["other"]);
     const head = commitFiles(repo, { "src/a.txt": numbered(65, "a") }, "fix");
     const { env } = withGh(base, head);
     expect(await runHook(mergeGuardHook, input(repo, "gh pr merge 7"), env)).toEqual({

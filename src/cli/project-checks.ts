@@ -92,6 +92,56 @@ function shown(file: string, projectDir: string, home: string): string {
     : tildify(file, home);
 }
 
+/** A retired review agent is still parsed, so doctor can explain how to migrate it. */
+const OLD_REVIEW_AGENT = "cc-smart-dev-kit:reviewer";
+
+/** Shared by the project and machine checks; never rewrites the person's settings. */
+export function retiredReviewAgentCheck(
+  file: string,
+  label: string,
+  personal = false,
+): Check | null {
+  if (!existsSync(file)) return null;
+  let parsed: unknown;
+  try {
+    parsed = readUserJson(file);
+  } catch (error) {
+    return {
+      ok: false,
+      text: `${label} cannot be read (${message(error)})`,
+      fix: "correct the JSON in this file",
+    };
+  }
+  const workflow = personal ? parsed : isObject(parsed) ? parsed.workflow : null;
+  if (
+    !isObject(workflow) ||
+    !Array.isArray(workflow.reviewAgents) ||
+    !workflow.reviewAgents.includes(OLD_REVIEW_AGENT)
+  )
+    return null;
+  return {
+    ok: false,
+    text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
+    fix: "change the list to cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+  };
+}
+
+function retiredReviewMentions(projectDir: string): ProjectLine[] {
+  const folder = join(projectDir, ".claude");
+  if (!existsSync(folder)) return [];
+  const files = [
+    ...new Bun.Glob("cc-smart-dev-kit/*.md").scanSync({ cwd: folder, onlyFiles: true }),
+    ...new Bun.Glob("{agents,skills}/**/*").scanSync({ cwd: folder, onlyFiles: true }),
+  ].sort();
+  return files
+    .filter((file) => readFileSync(join(folder, file), "utf8").includes(OLD_REVIEW_AGENT))
+    .map((file) => ({
+      ok: true,
+      warn: true,
+      text: `project: .claude/${file} mentions the retired ${OLD_REVIEW_AGENT}: change it to cc-smart-dev-kit:senior-engineer`,
+    }));
+}
+
 /** The plugin's old name: 0.2.x wrote it into projects, and `migrate` moves no project's files. */
 const OLD_NAME = "anymodel";
 
@@ -501,7 +551,16 @@ export async function projectChecks(
       ...engine,
     ];
   }
+  const retired =
+    configFile === null
+      ? null
+      : retiredReviewAgentCheck(
+          configFile,
+          `project: ${shown(configFile, projectDir, paths.home)}`,
+        );
   const lines = [
+    ...(retired === null ? [] : [retired]),
+    ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),

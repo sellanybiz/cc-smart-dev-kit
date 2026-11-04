@@ -106,7 +106,7 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "mergeMethod", source: "default", value: "merge" },
   { key: "deleteBranch", source: "default", value: false },
   { key: "reviewBeforePush", source: "default", value: true },
-  { key: "reviewAgents", source: "default", value: ["cc-smart-dev-kit:reviewer"] },
+  { key: "reviewAgents", source: "default", value: ["cc-smart-dev-kit:senior-engineer"] },
   { key: "fixesAfterReview.lines", source: "default", value: 200 },
   { key: "fixesAfterReview.files", source: "default", value: 10 },
   { key: "fixesAfterReview.percent", source: "default", value: 20 },

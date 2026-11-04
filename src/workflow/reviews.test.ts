@@ -28,7 +28,7 @@ function keyOf(repo: string): string {
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
-const REVIEWER = "cc-smart-dev-kit:reviewer";
+const REVIEWER = "cc-smart-dev-kit:senior-engineer";
 const AGENTS = [REVIEWER];
 
 /** A record file in a fresh temp folder, with `content` written into it. */
