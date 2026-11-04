@@ -42,7 +42,7 @@ Worked examples — judge new cases the same way:
 | Ordinary phase review | senior engineer, `sonnet`, `high`; small and low-risk → `medium` |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
 | Scenarios for a plan or a change | edge-case hunter, `sonnet`, `high`; risky (security, money, data, concurrency) → `opus`, `xhigh` |
-| A release, or a change set that touches security, money, permissions, a schema or deploy | senior engineer, `opus`, `xhigh` |
+| A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
 | Stuck: two failed tries on the same problem | senior engineer, `opus`, `xhigh`; still stuck → `max` with the reason (asks) |
 | The person is unhappy with an answer | `fable` advice (asks) |
 
@@ -66,7 +66,8 @@ Worked examples — judge new cases the same way:
 The kit adds a line when the plan's usage window first passes 50, 75 or 90%. Judge from it:
 
 - **Plenty:** the worked examples above.
-- **Low:** `opus` only for the final risky review.
+- **Low:** `opus` only for the final risky review. UI/UX design runs only on `opus` or
+  `fable`, so it waits for usage to come back, or for the person to say go.
 - **Near the limit:** finish the step, save state in the task ledger, start no new agents, and
   say so.
 

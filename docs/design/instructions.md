@@ -83,7 +83,9 @@ every turn and points to the skill that holds each procedure: the research steps
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
-owner's D12). They tie no effort to the backend that answers a tier: the backend behind a slot
+owner's D12). The one launch line the skills do teach is the `Mode: review` marker in a review
+brief (`build`, `plan-task`, `subagent-decision`): it is not the guard's, but the review-record
+hook's, which records a review only with it. They tie no effort to the backend that answers a tier: the backend behind a slot
 never changes the choice, and a backend's effort is the person's pin at the router
 (`docs/gateway.md` § A backend target's effort pin).
 

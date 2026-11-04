@@ -95,8 +95,7 @@ Mode: review
 ```
 
 Ask for two verdicts: **spec compliance** and **task quality**. Model and effort by the job:
-`sonnet` at `high` for an ordinary phase, `medium` when small and low-risk, `opus` at `xhigh`
-for security, money, permissions, a schema or deploy. The builder never dispatches this
+`/cc-smart-dev-kit:subagent-decision` § The lead's judgment. The builder never dispatches this
 review. Keep the reviewed head unchanged until it returns.
 
 Verify findings against the code. Record both verdicts and evidence on the task. Missing
@@ -142,8 +141,8 @@ Never remove another task's checkout or an unmerged branch. Repeat until all pha
 ## 6. Finish the whole branch once
 
 Start one final `cc-smart-dev-kit:senior-engineer` on `opus`, effort `xhigh`, with the
-`Mode: review` line, over the plan's complete base-to-head range, including integration work. Review cross-phase behavior,
-spec compliance and quality. Do one fix pass for confirmed findings, then run the full
+`Mode: review` line, over the plan's complete base-to-head range, including integration work.
+Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings, then run the full
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
 success while a material defect remains; record the blocker and remaining work.
 

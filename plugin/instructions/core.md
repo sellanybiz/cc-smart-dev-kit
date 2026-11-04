@@ -51,9 +51,10 @@ Brief every agent fully, whatever model answers it — it has none of your conve
 `model` and `effort` on every launch. **Choose both by judging the job, never by the backend
 behind a slot:** how hard is it; what does a miss cost (caught later, or shipped, lost data, a
 wasted build); is it the last check before it is too late (a plan's second read, the final
-review)? Spend effort where those are high: `high` gives most of the gain, and `xhigh` or `max`
-cost two to three times more for a few points. The lead works best on Claude Opus at `high`.
-Worked examples, briefs and usage left: `/cc-smart-dev-kit:subagent-decision`.
+review)? Spend effort only where those matter. The `high` level gives most of the gain;
+`xhigh` and `max` cost two to three times more for a few points. The person picks the lead's
+model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usage left:
+`/cc-smart-dev-kit:subagent-decision`.
 
 | `model` | What it is | Give it |
 |---|---|---|
@@ -80,7 +81,8 @@ Worked examples, briefs and usage left: `/cc-smart-dev-kit:subagent-decision`.
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
   deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary task
-  reviews get `sonnet` at `high`. Your own pass: `/cc-smart-dev-kit:review`.
+  reviews get `sonnet` at `high` (`medium` when small and low-risk). Your own pass:
+  `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,
   the real code path (`file:line`), the real outcome and the missing guard, checked in the code.
   Anything less is a hunch: say so, or drop it.
@@ -91,8 +93,9 @@ Worked examples, briefs and usage left: `/cc-smart-dev-kit:subagent-decision`.
   export, a column, an environment variable or a type is as you remember it: read the source,
   the types or the docs. Never relay a finding, yours or a subagent's, unchecked.
 - **Root-cause fixes only** — never a cast or suppress comment to quiet a checker, a sleep to
-  dodge a race, an empty catch, a retry-until-success loop, a skipped or weakened test, or
-  copy-paste from a similar place (extract and parameterize). A workaround needs the person's
+  dodge a race (find the race), an empty catch (handle, log, or fail loudly), a
+  retry-until-success loop (find why it fails), a skipped or weakened test (fix the cause,
+  re-enable it), or copy-paste from a similar place (extract and parameterize). A workaround needs the person's
   explicit yes and a comment saying why; a fix that needs a broader change (a contract, a
   migration, a refactor) is asked with the trade-off.
 - **One home for everything.** Every function, component, constant, type and helper has one
@@ -110,11 +113,12 @@ Worked examples, briefs and usage left: `/cc-smart-dev-kit:subagent-decision`.
 A question buried in a long final message does not get read. When you stop, give a short
 summary: what you did, what broke, what you left out. A decision between real options goes to
 `AskUserQuestion`, the recommended option first, never in prose or a numbered list in chat; an
-open question with no real options is one plain question at the end. Each question and option
-stands alone: what is decided, why it matters, what the option does and costs, in the person's
-words. Keep the sentences short, not the meaning. Nothing to decide: summary, then stop. Write
-plainly — short sentences, plain words, active voice, a technical word explained the first time
-— and never trade accuracy for simplicity (examples: `/cc-smart-dev-kit:explain`).
+open question with no real options is one plain question at the end, not made-up options. Each
+question and option stands alone: what is decided, why it matters, what the option does and
+costs, in the person's words. Keep the sentences short, not the meaning. Nothing to decide:
+summary, then stop. Write plainly — short sentences, plain words, active voice, a technical word
+explained the first time — and never trade accuracy for simplicity (examples:
+`/cc-smart-dev-kit:explain`).
 
 ## Keep the docs true
 

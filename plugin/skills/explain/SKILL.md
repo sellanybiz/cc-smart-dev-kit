@@ -1,6 +1,6 @@
 ---
 name: explain
-description: Use when someone wants to UNDERSTAND something, not change code - a piece of code, a word or idea ("what is a webhook"), or how a part of the system works. Teach it in plain words, with a real-life analogy, in layers, with a picture. Trigger phrases - "explain", "what is", "what does this do", "how does X work", "why does this work", "I don't get it", "ELI5", "teach me", "walk me through".
+description: Use when someone wants to UNDERSTAND something, not change code - a piece of code, a word or idea ("what is a webhook"), or how a part of the system works. Teach it in plain words, with a real-life analogy, in layers, with a picture. Also covers how to word a question, its options or a status summary in plain English. Trigger phrases - "explain", "what is", "what does this do", "how does X work", "why does this work", "I don't get it", "ELI5", "teach me", "walk me through".
 ---
 
 # Explain It Simply
@@ -8,6 +8,9 @@ description: Use when someone wants to UNDERSTAND something, not change code - a
 **Project add-on:** `.claude/cc-smart-dev-kit/explain.md` — read it first when it exists. Where it
 differs, the add-on wins (`core.md`, top). It gives the project's own words for its parts,
 and who the readers usually are.
+
+**Only wording a question, its options or a summary?** Then only `references/plain-english.md`
+applies; the teaching steps below do not.
 
 The person wants to **learn**, not to get code. Slow down and teach. The reader may be new to
 code, or read English as a second language. Make the hard thing feel easy, and never make
