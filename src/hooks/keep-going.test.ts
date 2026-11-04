@@ -18,7 +18,12 @@ import type { Who, WorkTask } from "../tasks/work/types";
 import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from "../testing/hooks";
 import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
-import { keepGoingAnswer, keepGoingWouldBlockAt, waitsOnSomething } from "./keep-going";
+import {
+  keepGoingAnswer,
+  keepGoingReason,
+  keepGoingWouldBlockAt,
+  waitsOnSomething,
+} from "./keep-going";
 import { keepGoingHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -102,6 +107,24 @@ function stop(repo: string, extra: Record<string, unknown> = {}): Record<string,
 }
 
 describe("keep-going: the block", () => {
+  test.each([8, 10])("caps %i phases and their recovery actions", (count) => {
+    const phases = Array.from({ length: count }, (_, index) => ({
+      number: index + 1,
+      subject: "Phase",
+      plan: "plan",
+      agent: `builder-${index + 1}`,
+    }));
+    const text = keepGoingReason(phases, []);
+    expect(text).toStartWith(`${count} phases are still in progress`);
+    expect(text).toContain(
+      "#1 Phase, #2 Phase, #3 Phase, #4 Phase, #5 Phase, #6 Phase, #7 Phase, #8 Phase",
+    );
+    expect(text).toContain("resume the builder for #8 (`builder-8`) with `SendMessage`");
+    expect(text).not.toContain("builder-9");
+    expect(text.includes("+2 more: task_list")).toBe(count === 10);
+    expect(text).toContain("`task_done`");
+    expect(text).toContain("`task_note`");
+  });
   test("a phase in progress and nothing running: one block naming the next ready phase", async () => {
     const w = world();
     writeClaudeFile(w.repo, "cc-smart-dev-kit.json", {});
@@ -139,7 +162,7 @@ describe("keep-going: the block", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Start fresh builders on #2, #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+          "2 phases are still in progress, and no subagent runs: #2 G1 the guard, #3 G2 the portal view. Start fresh builders on #2, #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
       }),
     });
   });
@@ -380,7 +403,7 @@ describe("keep-going: stalled state", () => {
       stdout: JSON.stringify({
         decision: "block",
         reason:
-          "Phases #2 G1 the guard, #3 G2 the portal view are still in progress, and no subagent runs. Resume the builder for #2 (`a1b2c3`) with `SendMessage` (or start a fresh one), start a fresh builder on #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+          "2 phases are still in progress, and no subagent runs: #2 G1 the guard, #3 G2 the portal view. Resume the builder for #2 (`a1b2c3`) with `SendMessage` (or start a fresh one), start a fresh builder on #3, close #2, #3 with `task_done`, or record each blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
       }),
     });
   });

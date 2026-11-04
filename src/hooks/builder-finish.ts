@@ -42,6 +42,7 @@ import type { Project } from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
 import { holdingSteps } from "../tasks/work/read";
+import { cappedHookList } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { agentTypeOf } from "./review-record";
 import type { HookContext } from "./run";
@@ -132,11 +133,16 @@ export interface OpenStep {
 /** What the builder reads when it hands back with steps still open: each step and its close. */
 export function handBackReason(task: number, open: readonly OpenStep[]): string {
   return [
-    `Task #${task} still has open blocking steps. Close each one, then hand back:`,
-    ...open.map((step) => {
-      const ref = `"#${step.number}"`;
-      return `- #${step.number} ${step.subject.replace(/\s+/g, " ")}: finish it and close it with \`${TASK_TOOL.done}\` (task ${ref}, with evidence), or drop it with \`${TASK_TOOL.done}\` (task ${ref}, outcome "dropped") and a note saying why.`;
-    }),
+    `Task #${task} still has ${open.length} open blocking ${open.length === 1 ? "step" : "steps"}. Close each one, then hand back:`,
+    cappedHookList(
+      open,
+      (step) => {
+        const ref = `"#${step.number}"`;
+        return `- #${step.number} ${step.subject.replace(/\s+/g, " ")}: finish it and close it with \`${TASK_TOOL.done}\` (task ${ref}, with evidence), or drop it with \`${TASK_TOOL.done}\` (task ${ref}, outcome "dropped") and a note saying why.`;
+      },
+      TASK_TOOL.list,
+      "\n",
+    ),
   ].join("\n");
 }
 
