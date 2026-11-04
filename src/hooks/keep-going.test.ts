@@ -256,7 +256,13 @@ describe("keep-going: stalled state", () => {
     ["an Agent launch after the reminder blocks again", [feedback, callOf("Agent")], true],
     ["a builder resumed after the reminder blocks again", [feedback, callOf("SendMessage")], true],
     ["an old Task launch after the reminder blocks again", [feedback, callOf("Task")], true],
+    ["a workflow run after the reminder blocks again", [feedback, callOf("Workflow")], true],
     ["other tool calls after the reminder stay silent", [feedback, callOf("Bash")], false],
+    [
+      "the same reminder given again after new work stays silent",
+      [feedback, callOf("Agent"), feedback],
+      false,
+    ],
     ["a launch before the reminder stays silent", [callOf("Agent"), feedback], false],
     [
       "a launch inside a subagent's own conversation stays silent",

@@ -26,16 +26,16 @@ Read its notes for the caller's rulings, then the named files, patterns and near
   yes lifts it: split the line into plain commands and go on. Run each git command alone,
   with literal arguments, from your worktree folder: no `cd … &&`, `git -C`, `$(…)`,
   here-doc, pipe or `;` around git; give a commit message as repeated single-quoted
-  `-m '…'` flags, so no backtick or `$` in it runs. **A refused read-only command** is
-  rephrased once, plainly, such as one file per command or the Read tool. **A permission
-  denial or a guard's deny** is reported, never routed around. Never retry in a loop or
-  widen scope.
+  `-m '…'` flags, so no backtick or `$` in it runs; write it with no apostrophe, since one
+  ends the quote. **A refused read-only command** is rephrased once, plainly, such as one
+  file per command or the Read tool. **A permission denial or a guard's deny** is reported,
+  never routed around. Never retry in a loop or widen scope.
 - Your caller relays rulings and the person's answers to the questions you sent up, in the
   brief, task notes or `SendMessage`. Act on them for your own judgment calls (an action you
   held back for a yes); never ask for the person's own words in your transcript. A relayed
   yes never lifts a tool check: run a call that the permission system, auto mode or a guard
   denied again only when your caller says the permission itself changed (the person added a
-  rule), never to show the check the relayed yes.
+  rule), never just to try the relayed yes on the check.
 - Root-cause fixes only (the core instructions, § Core principles). A workaround needs the
   person's yes, which only your caller can get: report the trade-off instead.
 - Decide a small judgment call and record `Ruling: <decision> — <why> — <cost if wrong>`

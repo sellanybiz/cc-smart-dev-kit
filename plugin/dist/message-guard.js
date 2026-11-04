@@ -16185,7 +16185,7 @@ function routeFacts(input, context) {
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  const agent = task.agent?.trim() ? task.agent : null;
+  const agent = task.agent?.trim() || null;
   return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 function isPhase(task) {
@@ -16266,7 +16266,7 @@ function messageGuard(context) {
 }
 
 // src/hooks/keep-going.ts
-var SUBAGENT_WORK = [...AGENT_TOOLS, SEND_MESSAGE_TOOL];
+var SUBAGENT_WORK = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
 var LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;

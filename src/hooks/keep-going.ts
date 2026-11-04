@@ -25,8 +25,8 @@
  * 5. **This reason not already given** (`stopFeedbackGiven`): read only after a phase in
  *    progress is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
  *    reason in the session's own Stop feedback, with no subagent started or resumed since
- *    (`Agent`, `Task`, `SendMessage`), keeps the hook silent: turns that only answer the person
- *    are not blocked again. A changed reason, or new subagent work after the feedback, earns
+ *    (`Agent`, `Task`, `Workflow`, `SendMessage`), keeps the hook silent: turns that answer the
+ *    person without starting a subagent are not blocked again. A changed reason, or new subagent work after the feedback, earns
  *    another reminder. A missing or unreadable transcript keeps the decision above; feedback
  *    older than the tail is not seen.
  *
@@ -46,14 +46,14 @@ import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
-import { AGENT_TOOLS } from "./agent-guard";
+import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
 import { lastAssistantText, stopFeedbackGiven } from "./transcript";
 
 /** The calls that start or resume a subagent: after one, a given reminder counts as not given. */
-const SUBAGENT_WORK: readonly string[] = [...AGENT_TOOLS, SEND_MESSAGE_TOOL];
+const SUBAGENT_WORK: readonly string[] = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 
 /** The hook's name: its bundle, its `ownHooks` entry, its stderr prefix. */
 export const KEEP_GOING = "keep-going";

@@ -35,7 +35,7 @@ const NOTHING_OPEN: OpenPhases = { inProgress: [], ready: [] };
 
 function refOf(task: WorkTask & { plan: string }): PhaseRef {
   // A blank agent names no builder to resume: the same as none.
-  const agent = task.agent?.trim() ? task.agent : null;
+  const agent = task.agent?.trim() || null;
   return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 

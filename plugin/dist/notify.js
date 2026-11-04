@@ -7533,7 +7533,7 @@ function readWorkStore(paths, body) {
 // src/tasks/work/phases.ts
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
-  const agent = task.agent?.trim() ? task.agent : null;
+  const agent = task.agent?.trim() || null;
   return { number: task.number, subject: task.subject, plan: task.plan, agent };
 }
 function isPhase(task) {
@@ -8296,6 +8296,7 @@ function startedByPeer(transcriptPath) {
 
 // src/hooks/agent-guard.ts
 var AGENT_TOOLS = ["Agent", "Task"];
+var WORKFLOW_TOOLS = ["Workflow"];
 var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
 var HANDED_AROUND = {
   agent: [
@@ -8364,7 +8365,7 @@ function sessionGatewayOf(paths, env) {
 var SEND_MESSAGE_TOOL = "SendMessage";
 
 // src/hooks/keep-going.ts
-var SUBAGENT_WORK = [...AGENT_TOOLS, SEND_MESSAGE_TOOL];
+var SUBAGENT_WORK = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
 var LEADING_MARKS = /^(?:[*_>#\- ]|\d+[.)])+/;

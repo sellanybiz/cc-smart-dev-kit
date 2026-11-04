@@ -65,8 +65,9 @@ and the merge order.
 5. **The message:** follow the style in `git log` (for example conventional commits:
    `feat`, `fix`, `refactor`, `docs`, `test`, `chore`). A title under 70 characters; a body
    about **why**, not what. Write it with a heredoc, except in a session or agent isolated
-   in a worktree: Claude Code refuses a git line there it cannot read as plain, so pass the
-   message as repeated single-quoted `-m '…'` flags (`cc-smart-dev-kit:builder`). End with
+   in a worktree: Claude Code refuses there any git line it cannot read as plain, so pass the
+   message as repeated single-quoted `-m '…'` flags with no apostrophe in them
+   (`cc-smart-dev-kit:builder`). End with
    the attribution lines the harness gives you in its git instructions — you write them;
    nothing adds them for you.
 6. A plan covers this work? Add `Plan: <path>` at the end of the body. Never end a commit
