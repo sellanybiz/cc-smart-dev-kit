@@ -1,6 +1,6 @@
 ---
 name: ui-verifier
-description: Drives the running app through the Playwright MCP server to verify a frontend change - navigates, reads the accessibility tree, runs measured checks, walks the edge-case matrix across breakpoints and colour schemes, and saves the named key screenshots the caller judges the design from. Facts only, no design verdict. One at a time within a session (its agents share that session's browser connection). Needs the Playwright MCP server, which `cc-smart-dev-kit setup` registers.
+description: Verifies a frontend change in the running app through the Playwright MCP server - measured checks, the edge-case matrix across breakpoints and colour schemes, and the key screenshots the caller judges the design from. Facts only. One at a time per session (they share its browser).
 skills:
   - cc-smart-dev-kit:impact-analysis
 disallowedTools:

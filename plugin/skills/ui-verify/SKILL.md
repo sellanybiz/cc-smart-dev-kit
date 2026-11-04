@@ -1,6 +1,6 @@
 ---
 name: ui-verify
-description: Use for a UI check - `/cc-smart-dev-kit:ui-verify <route>`, a plan's UI step, or a visible frontend change. Launches the cc-smart-dev-kit ui-verifier agent to drive the running app through the Playwright matrix (breakpoints, colour schemes, edge cases), then you judge the design yourself from the key screenshots it saved.
+description: Use for a UI check - `/cc-smart-dev-kit:ui-verify <route>`, a plan's UI step, or a visible frontend change. The ui-verifier agent drives the running app through the Playwright matrix; you judge the design from its key screenshots.
 argument-hint: "[route]"
 ---
 

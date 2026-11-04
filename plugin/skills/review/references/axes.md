@@ -1,8 +1,8 @@
 # Review Axes And Severity
 
 The one home for the review dimensions, the edge-case axes and the severity scale. The
-`/cc-smart-dev-kit:review` skill, the `cc-smart-dev-kit:reviewer` agent and any skill that walks edge
-cases read this file. Use only the entries a change touches, and name the ones you skipped in
+`/cc-smart-dev-kit:review` skill, the `cc-smart-dev-kit:senior-engineer` and
+`cc-smart-dev-kit:edge-case-hunter` agents and any skill that walks edge cases read this file. Use only the entries a change touches, and name the ones you skipped in
 one line each.
 
 ## Review dimensions

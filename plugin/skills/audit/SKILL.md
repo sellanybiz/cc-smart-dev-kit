@@ -1,6 +1,6 @@
 ---
 name: audit
-description: Use when asked to sweep an area for a class of defect rather than review a diff - "audit the hooks", "find every place where a request is retried", "is our error handling safe", "sweep the codebase for X". Scopes the target, the question and the tracks, asks before a run nobody started, starts the audit-run Workflow, then proves every finding against the code and says what it did not cover.
+description: Use when asked to sweep an area for a class of defect rather than review a diff - "audit the hooks", "find every place where a request is retried", "sweep the codebase for X". Scopes the tracks, starts the audit-run Workflow, then proves every finding in the code and names what it did not cover.
 ---
 
 # Audit — An Area, Not A Diff
