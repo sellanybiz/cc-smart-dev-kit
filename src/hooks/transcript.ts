@@ -265,7 +265,8 @@ const SYSTEM_REMINDER_CLOSE = "</system-reminder>";
  * `Base directory for this skill:`) and a system reminder. A system reminder must also end at
  * its first closing tag, with no text after it (`harmlessText`). It is an allowlist: any other
  * meta entry — a message from the session that started the agent ("… sent a message while you
- * were working"), a notification, Stop hook feedback — is a new prompt.
+ * were working"), a notification, Stop hook feedback, Claude Code's other nudges such as
+ * `[handback-send-enforce]` — is a new prompt.
  */
 export const HARMLESS_META_PREFIXES: readonly string[] = [
   "<command-message>",
@@ -273,6 +274,16 @@ export const HARMLESS_META_PREFIXES: readonly string[] = [
   SYSTEM_REMINDER_OPEN,
   "Base directory for this skill:",
 ];
+
+/**
+ * The nudge a Workflow `agent()` with a schema gets when it ends without calling the
+ * StructuredOutput tool. It restates the same task, so it is no new prompt. Matched whole, never
+ * by its prefix, so no text can ride along after it: this is the one string Claude Code 2.1.318
+ * writes (read in its binary). If a later version rewords it, the match fails and the nudge
+ * counts as a prompt: a review run then records nothing, the safe side.
+ */
+const STRUCTURED_OUTPUT_NUDGE =
+  "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
 
 /**
  * A line that may hold a `user` entry: `"user"` is its `type` and its message's `role`, so this
@@ -318,12 +329,13 @@ export interface RunPrompts {
 }
 
 /**
- * True when `text` is one Claude Code writes itself: it starts with one of
- * `HARMLESS_META_PREFIXES`, and a system reminder ends at its first closing tag (trailing
- * whitespace allowed), so no text can ride along after it.
+ * True when `text` is one Claude Code writes itself: it is `STRUCTURED_OUTPUT_NUDGE` exactly, or
+ * it starts with one of `HARMLESS_META_PREFIXES`, and a system reminder ends at its first
+ * closing tag. Trailing whitespace is allowed after both, so no text can ride along after them.
  */
 function harmlessText(text: unknown): boolean {
   if (typeof text !== "string") return false;
+  if (text.trimEnd() === STRUCTURED_OUTPUT_NUDGE) return true;
   if (text.startsWith(SYSTEM_REMINDER_OPEN)) {
     const close = text.indexOf(SYSTEM_REMINDER_CLOSE);
     return close !== -1 && close + SYSTEM_REMINDER_CLOSE.length === text.trimEnd().length;
