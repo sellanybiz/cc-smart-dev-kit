@@ -1,6 +1,6 @@
 ---
 name: pull-request
-description: Use before gh pr create, merging or reviewing a pull request. Defines its body: what changed and why, configuration, data changes, verification, follow-ups and work still owed.
+description: Use before gh pr create, merging or reviewing a pull request. Defines its body, including what changed and why, configuration, data changes, verification, follow-ups and work still owed.
 ---
 
 # Pull Request Bodies

@@ -1,6 +1,6 @@
 ---
 name: performance-budget
-description: Use for frontend code (React, Next.js, fetching, rendering, lists, forms, caching, animations) and performance work: slow loading, skeletons, re-renders, bundle size, N+1 queries or Core Web Vitals. Not for CLI tools, scripts or config.
+description: Use for frontend code (React, Next.js, fetching, rendering, lists, forms, caching, animations) and performance work such as slow loading, skeletons, re-renders, bundle size, N+1 queries or Core Web Vitals. Not for CLI tools, scripts or config.
 ---
 
 # Performance And UX Budget

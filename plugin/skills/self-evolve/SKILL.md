@@ -1,6 +1,6 @@
 ---
 name: self-evolve
-description: Use for a correction, new convention or repeated mistake: an instruction for next time, not a fact to remember. Picks a rule, skill, hook, doc or memory within size budgets. Triggers include "always", "never again", "make this a rule", "from now on".
+description: Use for a correction, new convention or repeated mistake that calls for an instruction for next time, not a fact to remember. Picks a rule, skill, hook, doc or memory within size budgets. Triggers include "always", "never again", "make this a rule", "from now on".
 ---
 
 # Keep The Instructions Sharp And Small
