@@ -1,6 +1,6 @@
 ---
 name: pull-request
-description: Before every `gh pr create`, and before merging or reviewing someone else's pull request - what every pull request body carries (what changes and why, configuration, follow-up notes, data changes, how it was verified including what was not, what is still owed), so the person who merges, the teammate who pulls and the release that ships it all know what it needs.
+description: Use before gh pr create, merging or reviewing a pull request. Defines its body: what changed and why, configuration, data changes, verification, follow-ups and work still owed.
 ---
 
 # Pull Request Bodies

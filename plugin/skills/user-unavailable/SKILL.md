@@ -1,6 +1,6 @@
 ---
 name: user-unavailable
-description: Use when the person says they are away, or a hook note says they cannot answer. Never stop to ask - park their questions and the actions that need their yes, and go on.
+description: Use when the person is away or cannot answer. Park questions and actions needing their yes; continue unblocked work.
 ---
 
 # While The Person Cannot Answer

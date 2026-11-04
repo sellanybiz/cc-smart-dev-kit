@@ -1,6 +1,6 @@
 ---
 name: user-available
-description: Use when the person is back and can answer again. Switches the unavailable state off, shows what was done while they were away, and goes through the parked list with them.
+description: Use when the person is back and can answer. Turn off unavailable state, report work done and go through parked questions.
 ---
 
 # The Person Is Back

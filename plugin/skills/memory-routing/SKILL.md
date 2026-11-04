@@ -1,6 +1,6 @@
 ---
 name: memory-routing
-description: Use when the person states a fact, a decision or a preference to keep, or asks you to remember or track something. Routes it to its one right home - memory, a doc, the to-do list, the plan file, the live system - by who needs it and how fast it goes stale; an instruction for next time goes on to self-evolve. Trigger phrases - "remember that", "save this", "note that", "keep track of", "I prefer", "for the record".
+description: Use to keep a fact, decision or preference, or remember and track work. Routes it to memory, docs, tasks, plans or the live system; instructions go to self-evolve. Triggers include "remember that", "save this", "note that", "keep track of", "I prefer".
 ---
 
 # Where Knowledge Goes
@@ -82,8 +82,9 @@ The build skill owns when to write them; no separate progress file.
 **Only the main session saves** — the one the person talks to. A subagent
 puts what is worth keeping in its report, and the session it reports to saves it.
 
-**Search before you save.** With claude-mem: `mem_search` first — the fact may be there
-already — then `save_memory` with one plain, self-contained line. A memory tool that keeps what
+**Search before you save.** With claude-mem, recall through `/claude-mem:mem-search`
+(`search` → `timeline` → `get_observations`) — the fact may already be there — then
+`save_memory` with one plain, self-contained line. A memory tool that keeps what
 you **write**, not what a tool returned, gets that line in your reply:
 
 - "Decision: X, because Y."

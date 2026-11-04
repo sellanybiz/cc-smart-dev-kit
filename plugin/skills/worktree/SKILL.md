@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: For projects that work one session per git worktree - starting a task in a worktree, switching or leaving one, clearing it after its merge or when left over, finding a lost session, picking up a merged hook change, or an edit that landed in the wrong folder.
+description: Use to start, switch, leave or clear a git worktree, find a lost session, pick up merged hooks, or fix an edit in the wrong folder. For projects with one worktree per session.
 ---
 
 # Worktrees — The Steps
@@ -33,11 +33,11 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
    `origin`'s default branch.
    **Already in a worktree and starting an unrelated task?** `ExitWorktree` first, then start
    the new one from the main checkout.
-2. **`EnterWorktree` with `path` only switches between worktrees, for a session already
-   inside one.** From the main checkout it fails: the session's working directory must already
-   be inside a worktree of this repo. Only that form makes the person approve a prompt; the
-   name needs none. **A worktree outside `.claude/worktrees/`:** the person starts a session
-   in that folder.
+2. **`EnterWorktree` with `path` enters an existing worktree.** On first entry from the
+   launch folder, the path must appear in `git worktree list` for this repo, or for a repo
+   nested in a multi-repo workspace. From inside a worktree, or from a pinned agent folder,
+   switching requires a worktree under `.claude/worktrees/` of the same repo. Entering by
+   path leaves the worktree on disk when you exit; use `ExitWorktree` with `action: "keep"`.
 3. **Bring it up to date.** A worktree that already held the branch comes back as it was
    left. So after entering it: `git fetch origin <base>`, then
    `git rev-list --count HEAD..origin/<base>`, and merge `origin/<base>` when it is behind —

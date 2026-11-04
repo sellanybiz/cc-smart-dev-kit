@@ -1,6 +1,6 @@
 ---
 name: performance-budget
-description: Use when writing or changing frontend code - React or Next.js components, data fetching, rendering, lists, forms, animations, client caching - and on performance work (a slow page, bundle size, re-renders, N+1 queries, Core Web Vitals). Targets, the questions to ask before a change, banned patterns, and a deep React and Next.js playbook read on purpose. Not for a command-line tool, a script or a config change. Trigger phrases - "slow", "loading", "skeleton", "re-render", "bundle", "performance", "Core Web Vitals".
+description: Use for frontend code (React, Next.js, fetching, rendering, lists, forms, caching, animations) and performance work: slow loading, skeletons, re-renders, bundle size, N+1 queries or Core Web Vitals. Not for CLI tools, scripts or config.
 ---
 
 # Performance And UX Budget

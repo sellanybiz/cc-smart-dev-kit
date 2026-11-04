@@ -22,6 +22,7 @@ import { hasDesktop } from "../hooks/desktop-alert";
 import { heavyJobChecks } from "../jobs/doctor";
 import {
   MEMORY_USE_KEY,
+  readClaudeMemSettings,
   readStartBlocks,
   START_BLOCK_KEYS,
   type StartBlockReading,
@@ -918,7 +919,7 @@ function claudeMemStartBlocksCheck(
   const reasons: string[] = [];
   if (memory && memory.value !== "false" && memory.by !== "person") {
     reasons.push(
-      ". The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit",
+      ". The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write",
     );
   }
   if (work && work.value !== "false" && work.by !== "person") {
@@ -1029,10 +1030,24 @@ export function taskStoreChecks(paths: CliPaths): Check[] {
   }
 }
 
-/** D68's start-block reading, when claude-mem is installed. */
+/** Start blocks and model work outside the note-taker route, when claude-mem is installed. */
 export function claudeMemChecks(paths: CliPaths): Check[] {
   const readings = readStartBlocks(paths);
-  return readings === null ? [] : [claudeMemStartBlocksCheck(paths, readings)];
+  if (readings === null) return [];
+  const checks = [claudeMemStartBlocksCheck(paths, readings)];
+  const read = readClaudeMemSettings(paths);
+  if ("problem" in read) return checks;
+  const key = "CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH";
+  const setting = getKey(read.data, read.at(key));
+  const off = setting.value === "false" || setting.value === false;
+  checks.push({
+    ok: true,
+    info: true,
+    text: off
+      ? `claude-mem's My Work auto-refresh is off in ${read.short}; it will not launch logged-in agents outside the note-taker route`
+      : `claude-mem's My Work auto-refresh is on${setting.found ? "" : " (default)"}. It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set ${key} to "false" in ${read.short}`,
+  });
+  return checks;
 }
 
 /**
