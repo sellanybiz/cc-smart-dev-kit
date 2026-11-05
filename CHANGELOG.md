@@ -38,6 +38,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **Claude sees the plan usage left.** When the status line's 5-hour or 7-day window first
   passes 50, 75 or 90 %, Claude gets one line, and picks cheaper agents as usage runs low. It
   never skips a test or a review for it. Only on your plan's login.
+- **Every running session hears when you go away.** `/cc-smart-dev-kit:user-unavailable` used
+  to reach other sessions only when you next typed in them, so a session working on its own
+  could stop with a question for you. Now each session is told once, at the end of its turn,
+  and parks what needs you instead. The session you switched in is not told twice, and no
+  "finished" alert fires for the turn end that the note holds back. "Available again" still
+  reaches a session at your next message there.
 - **Prompt-cache misses show.** The status line names the cause of a new prompt-cache miss
   for a minute, and `doctor --live` reports it.
 - **The shipped workflows cost less and lose less.** Their `sonnet` agents run at `high`, not
