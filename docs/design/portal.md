@@ -570,8 +570,8 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   (`src/gateway/doctor.ts`) for systemd's socket unit or the Windows task; null where the machine
   runs neither. The router-down card names the unit from that socket, so the page never types it.
 - **Overview**: the plan's 5-hour window as the status line recorded it
-  (`src/cli/usage-window.ts`, null for a window that is over). The 7-day windows are written
-  nowhere, so the page says so. Counting Claude's replies from the transcripts was the other
+  (`src/cli/usage-window.ts`, null for a window that is over). The file holds the 7-day window
+  too since 2.2.0, but no page shows it yet, so the page says there is none. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
   read must never block the server. **The request rate comes from the history database**, not
   the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
@@ -735,10 +735,10 @@ Two numbers the design's mockups show are not invented, and the pages say so ins
 
 - **Claude Code's plan-usage percentages, but the 5-hour window's.** Claude Code computes them
   from the headers of its own answers and hands them to the status line on stdin
-  (`src/cli/statusline.ts`), which writes down the 5-hour window alone
-  (`<stateDir>/usage-window.json`, D54; the Overview above shows it). The 7-day window and the
-  plan's other windows are stored nowhere; the router records only the limits it saw — which
-  model, which window, when it resets.
+  (`src/cli/statusline.ts`), which writes down the 5-hour and (since 2.2.0) the 7-day window
+  (`<stateDir>/usage-window.json`, D54; the Overview above shows the 5-hour one). No page shows
+  the 7-day one yet, and the plan's other windows are stored nowhere; the router records only
+  the limits it saw — which model, which window, when it resets.
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.

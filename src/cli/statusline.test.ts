@@ -11,7 +11,7 @@ import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
 import { runStatusline, statuslineText } from "./statusline";
 
-import { readUsageWindow } from "./usage-window";
+import { readUsageWindow, readUsageWindows } from "./usage-window";
 
 /** 2026-10-15 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
@@ -179,6 +179,51 @@ describe("statusline", () => {
       console.log = original;
     }
     expect(printed).toEqual(["Opus 5.5 · ⚠ 5h 87% (resets 13:00) · 7d 41%", "Opus 5.5"]);
+  });
+
+  it("2.2.0: records the 7-day window too", async () => {
+    const paths = cliPaths({ HOME: tempDir("home") });
+    mkdirSync(paths.stateDir, { recursive: true });
+    const original = console.log;
+    console.log = () => {};
+    try {
+      await runStatusline(paths, async () => JSON.stringify(input(87, 41)), NOW);
+    } finally {
+      console.log = original;
+    }
+    expect(readUsageWindows(paths, NOW)).toEqual({
+      fiveHour: { percent: 87, resetsAt: AT_13 },
+      sevenDay: { percent: 41, resetsAt: IN_3_DAYS },
+    });
+  });
+
+  it("2.2.0: a new prompt-cache miss shows once, after the numbers", async () => {
+    const paths = cliPaths({ HOME: tempDir("home") });
+    const env = { TMPDIR: tempDir("statusline-tmp") };
+    const withMiss = (at: number, causes: string[]) => ({
+      ...input(30, null),
+      prompt_cache: { last_miss_at: at, last_miss_cause: { causes }, misses: 1, warm: true },
+      session_id: "11111111-2222-3333-4444-555555555555",
+    });
+    const printed: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => {
+      printed.push(parts.map(String).join(" "));
+    };
+    try {
+      const run = (data: unknown) =>
+        runStatusline(paths, async () => JSON.stringify(data), NOW, undefined, env);
+      await run(withMiss(100, ["tools_changed"]));
+      await run(withMiss(100, ["tools_changed"]));
+      await run(withMiss(200, ["ttl_expired_5m"]));
+    } finally {
+      console.log = original;
+    }
+    expect(printed).toEqual([
+      "Opus 5.5 · 5h 30% · cache miss: tools_changed",
+      "Opus 5.5 · 5h 30%",
+      "Opus 5.5 · 5h 30% · cache miss: ttl_expired_5m",
+    ]);
   });
 });
 

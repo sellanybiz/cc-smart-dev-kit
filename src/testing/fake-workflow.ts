@@ -52,6 +52,7 @@ export function defaultResolved(): ResolvedWorkflow {
     reviewAgents: at(["cc-smart-dev-kit:senior-engineer"]),
     switches: {
       jobRoute: at(false),
+      leadHint: at(true),
       sessionNames: at(false),
       statusLine: at(false),
       updateHold: at(false),
@@ -230,7 +231,11 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
     writeProjectSetting(cwd, key, value, env = {}): string {
       calls.writeProjectSetting.push({ cwd, env, key, value });
       if (options.unwired === true) unwired();
-      if (key === "switches.statusLine" || key === "switches.updateHold") {
+      if (
+        key === "switches.statusLine" ||
+        key === "switches.updateHold" ||
+        key === "switches.leadHint"
+      ) {
         throw new Error(`${key} is your own setting, not the project's`);
       }
       return `~ ${cwd}/.claude/cc-smart-dev-kit.json: ${key} = ${String(value)}`;

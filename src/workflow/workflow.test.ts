@@ -8,7 +8,13 @@ import { statuslineSetting } from "../setup/statusline";
 import { hookEnv } from "../testing/hooks";
 import { hold, updateFiles } from "../update/state";
 import { autoMergeAllowed } from "./auto-merge";
-import { jobRouteFrom, resolveJobRoute, resolveWorkflow } from "./resolve";
+import {
+  jobRouteFrom,
+  leadHintFrom,
+  resolveJobRoute,
+  resolveLeadHint,
+  resolveWorkflow,
+} from "./resolve";
 import {
   isPersonalFileSwitch,
   PERSONAL_FILE_SWITCH_NAMES,
@@ -422,11 +428,13 @@ describe("switches.jobRoute: the person's default, and the project wins", () => 
     expect(() => resolveWorkflow(paths, null)).toThrow(/not valid JSON/);
   });
 
-  test("only the person's file has the switches group, and only for jobRoute", () => {
+  test("only the person's file has the switches group, and only for jobRoute and leadHint", () => {
     expect(personalWorkflowSchema.safeParse({ switches: { jobRoute: true } }).success).toBe(true);
+    expect(personalWorkflowSchema.safeParse({ switches: { leadHint: false } }).success).toBe(true);
     expect(personalWorkflowSchema.safeParse({ switches: {} }).success).toBe(true);
     for (const bad of [
       { switches: { jobRoute: "yes" } },
+      { switches: { leadHint: "off" } },
       { switches: { sessionNames: true } },
       { switches: { statusLine: true } },
       { switches: { updateHold: true } },
@@ -439,8 +447,9 @@ describe("switches.jobRoute: the person's default, and the project wins", () => 
       ccSmartDevKitConfigSchema.safeParse({ workflow: { switches: { jobRoute: true } } }).success,
     ).toBe(false);
     // The names the writer lets into the person's file are the fields its schema has.
-    expect([...PERSONAL_FILE_SWITCH_NAMES]).toEqual(["jobRoute"]);
+    expect([...PERSONAL_FILE_SWITCH_NAMES]).toEqual(["jobRoute", "leadHint"]);
     expect(isPersonalFileSwitch("switches.jobRoute")).toBe(true);
+    expect(isPersonalFileSwitch("switches.leadHint")).toBe(true);
     for (const key of ["switches.sessionNames", "switches.statusLine", "autoCommit"]) {
       expect(isPersonalFileSwitch(key)).toBe(false);
     }
@@ -453,6 +462,40 @@ describe("switches.jobRoute: the person's default, and the project wins", () => 
       ok: false,
       why: "switches.jobRoute is true or false",
     });
+  });
+});
+
+describe("switches.leadHint: the person's own, on by default", () => {
+  test("on when nobody says otherwise; the person's file decides; no project field", () => {
+    const env = hookEnv();
+    const paths = pathsFor(env);
+    expect(resolveWorkflow(paths, null).switches.leadHint).toEqual({
+      value: true,
+      source: "default",
+    });
+    expect(resolveLeadHint(paths)).toEqual({ value: true, source: "default" });
+    writePersonal(env, { switches: { leadHint: false } });
+    expect(resolveWorkflow(paths, null).switches.leadHint).toEqual({
+      value: false,
+      source: "personal",
+    });
+    expect(resolveLeadHint(paths)).toEqual({ value: false, source: "personal" });
+    expect(leadHintFrom({ switches: { leadHint: true } })).toEqual({
+      value: true,
+      source: "personal",
+    });
+    // A project's workflow object cannot hold it: the hint is about the session's model.
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { switches: { leadHint: false } } }).success,
+    ).toBe(false);
+  });
+
+  test("a personal file that cannot be used: the hook's reader keeps the default, on", () => {
+    const env = hookEnv();
+    const paths = pathsFor(env);
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, "{not json");
+    expect(resolveLeadHint(paths)).toEqual({ value: true, source: "default" });
   });
 });
 

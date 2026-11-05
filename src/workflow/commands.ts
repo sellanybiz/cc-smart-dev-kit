@@ -95,6 +95,8 @@ switches.sessionNames needs --project, and switches.statusLine and switches.upda
 it. switches.jobRoute (heavy commands go through the job queue) is the exception: without
 --project it is your own default for every project, in your file; with --project it is the
 project's jobs.route, which wins over yours. Off until one of them says on.
+switches.leadHint (one line a session when the lead model is not Claude Opus) is yours alone,
+in your file: on until you set it false; --project refuses it.
 propose changes one of the project's own settings through a pull request: a branch and a
 worktree cut from origin/<worktrees.base>, the setting written by the same writer set
 --project uses, committed, pushed, and the pull request opened with gh. It counts once it

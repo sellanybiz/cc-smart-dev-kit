@@ -3,14 +3,14 @@
  * what the four subagent tiers run changes. The expected notes are written out by hand.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo, runHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { tierViewHook } from "./specs";
-import { tierViewMark } from "./tier-view";
+import { tierView, tierViewMark, usageLevel, usageMark } from "./tier-view";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const ROUTER = "http://127.0.0.1:39999";
@@ -419,5 +419,164 @@ describe("the line while auto mode's safety checks are failing (the owner, 2026-
       ALL_CLAUDE,
     );
     expect(await runHook(tierViewHook, event("UserPromptSubmit", repo), live)).toEqual({});
+  });
+});
+
+describe("the plan-usage line at a prompt (2.2.0)", () => {
+  /** 2026-10-15 10:00 UTC; the hook is called with this clock and the UTC zone. */
+  const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
+  const AT_13 = NOW / 1000 + 3 * 3600;
+  const IN_3_DAYS = NOW / 1000 + 3 * 86_400;
+  const POINTER = "Follow /cc-smart-dev-kit:subagent-decision § Usage left.";
+
+  /** Writes the usage file the status line keeps; a window left out is not there. */
+  function writeUsage(
+    env: Record<string, string>,
+    windows: {
+      fiveHour?: { percent: number; resetsAt: null | number };
+      sevenDay?: { percent: number; resetsAt: null | number };
+    },
+  ): void {
+    const paths = cliPaths(env);
+    mkdirSync(paths.stateDir, { recursive: true });
+    writeFileSync(
+      join(paths.stateDir, "usage-window.json"),
+      JSON.stringify({ ...windows, readAt: "2026-10-15T09:00:00.000Z" }),
+    );
+  }
+
+  /** The context at a prompt, at `nowMs` in UTC, or null when the hook said nothing. */
+  function prompt(env: Record<string, string>, nowMs = NOW): string | null {
+    const result = tierView(
+      event("UserPromptSubmit", "/nowhere"),
+      env,
+      cliPaths(env),
+      nowMs,
+      "UTC",
+    );
+    return said(result);
+  }
+
+  /** A session whose start was seen: its tiers' note is said, so a prompt adds only the usage. */
+  function started(): Record<string, string> {
+    const env = hookEnv();
+    tierView(event("SessionStart", "/nowhere"), env, cliPaths(env), NOW, "UTC");
+    return env;
+  }
+
+  it("each threshold once: 49 → 51, 74 → 76, 89 → 91", () => {
+    const env = started();
+    const five = (percent: number) => writeUsage(env, { fiveHour: { percent, resetsAt: AT_13 } });
+    five(49);
+    expect(prompt(env)).toBeNull();
+    five(51);
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 51% used (resets 13:00). ${POINTER}`);
+    expect(prompt(env)).toBeNull();
+    five(74);
+    expect(prompt(env)).toBeNull();
+    five(76);
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 76% used (resets 13:00). ${POINTER}`);
+    five(89);
+    expect(prompt(env)).toBeNull();
+    five(91);
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 91% used (resets 13:00). ${POINTER}`);
+    five(99);
+    expect(prompt(env)).toBeNull();
+  });
+
+  it("a jump past two thresholds is one line, and the lower one is not told after it", () => {
+    const env = started();
+    writeUsage(env, { fiveHour: { percent: 80, resetsAt: AT_13 } });
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 80% used (resets 13:00). ${POINTER}`);
+    writeUsage(env, { fiveHour: { percent: 82, resetsAt: AT_13 } });
+    expect(prompt(env)).toBeNull();
+  });
+
+  it("a new window starts again: told at 50% of the next window", () => {
+    const env = started();
+    writeUsage(env, { fiveHour: { percent: 91, resetsAt: AT_13 } });
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 91% used (resets 13:00). ${POINTER}`);
+    // 13:30: the old window reset at 13:00, and the new one resets at 18:30.
+    const later = NOW + 3.5 * 3_600_000;
+    writeUsage(env, { fiveHour: { percent: 55, resetsAt: later / 1000 + 5 * 3600 } });
+    expect(prompt(env, later)).toBe(
+      `Plan usage: 5-hour window 55% used (resets 18:30). ${POINTER}`,
+    );
+    expect(prompt(env, later)).toBeNull();
+  });
+
+  it("the 7-day window on its own, and both windows in one line", () => {
+    const env = started();
+    writeUsage(env, { sevenDay: { percent: 52, resetsAt: IN_3_DAYS } });
+    expect(prompt(env)).toBe(`Plan usage: 7-day window 52% used (resets Oct 18 10:00). ${POINTER}`);
+    writeUsage(env, {
+      fiveHour: { percent: 77, resetsAt: AT_13 },
+      sevenDay: { percent: 90, resetsAt: IN_3_DAYS },
+    });
+    expect(prompt(env)).toBe(
+      `Plan usage: 5-hour window 77% used (resets 13:00); 7-day window 90% used (resets Oct 18 10:00). ${POINTER}`,
+    );
+    expect(prompt(env)).toBeNull();
+  });
+
+  it("no file: no line", () => {
+    const env = started();
+    expect(prompt(env)).toBeNull();
+    expect(existsSync(usageMark(env, SESSION))).toBe(false);
+  });
+
+  it("a window past its reset, or with no reset time: no line", () => {
+    const env = started();
+    writeUsage(env, { fiveHour: { percent: 95, resetsAt: AT_13 } });
+    expect(prompt(env, AT_13 * 1000)).toBeNull();
+    writeUsage(env, { fiveHour: { percent: 95, resetsAt: null } });
+    expect(prompt(env)).toBeNull();
+  });
+
+  it("the file a kit before 2.2.0 wrote (fiveHour alone) is read", () => {
+    const env = started();
+    const paths = cliPaths(env);
+    mkdirSync(paths.stateDir, { recursive: true });
+    writeFileSync(
+      join(paths.stateDir, "usage-window.json"),
+      JSON.stringify({
+        fiveHour: { percent: 60, resetsAt: AT_13 },
+        readAt: "2026-10-15T09:00:00Z",
+      }),
+    );
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 60% used (resets 13:00). ${POINTER}`);
+  });
+
+  it("never at a start: the start's note is the tiers alone, and the prompt after it tells", () => {
+    const env = hookEnv();
+    writeUsage(env, { fiveHour: { percent: 60, resetsAt: AT_13 } });
+    const start = tierView(event("SessionStart", "/nowhere"), env, cliPaths(env), NOW, "UTC");
+    expect(said(start)).toBe(ALL_CLAUDE);
+    expect(prompt(env)).toBe(`Plan usage: 5-hour window 60% used (resets 13:00). ${POINTER}`);
+  });
+
+  it("a prompt whose tiers changed too says both, the tiers first, in one context", () => {
+    const env = hookEnv();
+    writeUsage(env, { fiveHour: { percent: 60, resetsAt: AT_13 } });
+    // No start seen: the tiers' note is due, and so is the usage line.
+    expect(prompt(env)).toBe(
+      `${ALL_CLAUDE}\n\nPlan usage: 5-hour window 60% used (resets 13:00). ${POINTER}`,
+    );
+    expect(prompt(env)).toBeNull();
+  });
+
+  it("each session is told its own: the mark is per session", () => {
+    const env = started();
+    writeUsage(env, { fiveHour: { percent: 60, resetsAt: AT_13 } });
+    expect(prompt(env)).not.toBeNull();
+    const other = "99999999-2222-3333-4444-555555555555";
+    const result = tierView(event("UserPromptSubmit", "/nowhere", other), env, cliPaths(env), NOW);
+    expect(said(result)).toContain("Plan usage: 5-hour window 60% used");
+  });
+
+  it("the threshold reading", () => {
+    expect([0, 49.9, 50, 74.9, 75, 89.9, 90, 100].map(usageLevel)).toEqual([
+      0, 0, 50, 50, 75, 75, 90, 90,
+    ]);
   });
 });

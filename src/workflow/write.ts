@@ -10,9 +10,11 @@
  *   line someone else set is never overwritten), `switches.updateHold` is the update-hold file
  *   behind `update --hold`, and `switches.sessionNames` is the project's `sessionNames`. So each
  *   is written where it really lives, and a request for the other place is refused with a line
- *   saying where to run it instead. The exception is `switches.jobRoute`: without `--project` it
- *   is the person's machine-wide default, a `switches.jobRoute` field in their own file; with
- *   `--project` it is the project's `jobs.route`, which wins (`resolve.ts`).
+ *   saying where to run it instead. The exceptions are the switches the person's own file holds
+ *   (`PERSONAL_FILE_SWITCH_NAMES`). `switches.jobRoute`: without `--project` it is the person's
+ *   machine-wide default, a `switches.jobRoute` field in their own file; with `--project` it is
+ *   the project's `jobs.route`, which wins (`resolve.ts`). `switches.leadHint` is a field in
+ *   the person's file alone; `--project` refuses it.
  * - **`value` `undefined` removes the setting**, so the value falls back: the project's, the
  *   person's, then the built-in default (`resolve.ts`).
  *
@@ -111,8 +113,9 @@ function shownNothing(shown: string, key: WorkflowKey, value: unknown): string {
 }
 
 /**
- * One policy key in the person's own defaults: `~/.config/cc-smart-dev-kit/workflow.json`, and
- * the machine-wide default of `switches.jobRoute` (the project's `jobs.route` wins over it).
+ * One policy key in the person's own defaults: `~/.config/cc-smart-dev-kit/workflow.json`, the
+ * machine-wide default of `switches.jobRoute` (the project's `jobs.route` wins over it), and
+ * `switches.leadHint`.
  * `value` undefined removes it, so the built-in default (or the project's value) holds again.
  */
 export function writePersonalSetting(paths: CliPaths, key: string, value: unknown): string {
@@ -149,7 +152,12 @@ export function writeProjectSetting(
 ): string {
   const wanted = requireKey(key);
   if (!isProjectKey(wanted)) {
-    const reason = wanted === "switches.statusLine" ? "the status line is" : "the update hold is";
+    const reason =
+      wanted === "switches.statusLine"
+        ? "the status line is"
+        : wanted === "switches.leadHint"
+          ? "the lead-model hint is"
+          : "the update hold is";
     throw new Error(
       `${wanted} is your own setting, not the project's: run it without --project (${reason} per person, per machine)`,
     );
