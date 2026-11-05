@@ -83,9 +83,10 @@ every turn and points to the skill that holds each procedure: the research steps
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
 the skills say which model and effort fit which job, never what the agent guard blocks or asks
 or which line a launch needs: the guard's own message says that, at the launch it judges (the
-owner's D12). The one launch line the skills do teach is the `Mode: review` marker in a review
-brief (`build`, `plan-task`, `subagent-decision`): it is not the guard's, but the review-record
-hook's, which records a review only with it. They tie no effort to the backend that answers a tier: the backend behind a slot
+owner's D12). The launch lines the skills do teach are the senior engineer's two markers:
+`Mode: review` in a review brief (`build`, `review`, `subagent-decision`) and `Mode: plan-review` in a
+plan's second read (`plan-task`, `subagent-decision`). They are not the guard's, but the
+review-record hook's, which records a review only with the first. They tie no effort to the backend that answers a tier: the backend behind a slot
 never changes the choice, and a backend's effort is the person's pin at the router
 (`docs/gateway.md` § A backend target's effort pin).
 
@@ -111,7 +112,10 @@ lead's prompt cache. So `core.md` gives a subagent work that is independent and 
 phase, a broad search, a fresh-eyes review, a scenario hunt), and the orchestrator-only rule
 holds for an approved plan, not for every change; a change small enough to need no plan file
 stays with the lead (`plan-task`). One exception to "a subagent starts no agents": the senior
-engineer may start research agents, and it still reports to its caller and never asks the person.
+engineer's consult may start research agents, and it still reports to its caller and never asks
+the person. In `Mode: review` or `Mode: plan-review` it starts none: a child's completion notice
+reaches it as a later prompt without the marker, so `review-record` would record nothing for a
+review that happened.
 
 **Plain English in replies: one home.** `core.md` § Ending a turn holds the rule: a question and
 each option stand alone, with what is decided, why it matters, what each option does and what it
@@ -164,9 +168,10 @@ dropped from both scripts, and the writer, whose judgment is already made, runs 
 The senior engineer has every tool, and the tracks of one run share one checkout, so each
 reviewer, auditor and refuter launch passes `disallowedTools: ['Edit', 'Write', 'NotebookEdit']`
 (Claude Code merges it with the agent's own deny list, `claude-code-contract.md` § Hooks):
-no track edits the code another is reading. `review-split` also denies `Agent`: a child agent's
-completion notice would reach the track as a later prompt, and the review record would then
-record nothing. A finding its refuter leaves `unproven`, or that gets no answer, is neither
+no track edits the code another is reading. Both scripts also deny `Agent`, to review and audit
+tracks alike. A child agent is a launch of its own, outside the deny list the script set, so it
+could edit the shared checkout; and its completion notice would reach a review track as a later
+prompt, so the review record would record nothing. A finding its refuter leaves `unproven`, or that gets no answer, is neither
 proved nor refuted: it is listed under **Hunches** with the refuter's reason, its trigger and its
 fix (the audit's writer gets the trigger and the missing guard), never only counted; with no
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
@@ -231,8 +236,11 @@ It reads the review dimensions, edge-case axes and severity scale from
 above each loaded skill (the plugin's folder has the version in its name, so no fixed path
 reaches it). `auditor`, `edge-case-hunter` and `ui-verifier` read the same axes file the same
 way. No agent has `memory:` (only the main session saves memories). No agent starts agents,
-except the senior engineer, which may start read-only research agents: the `researcher` for a
-question outside the repo, `Explore` for a search inside it.
+except the senior engineer in a consult, which may start read-only research agents: the
+`researcher` for a question outside the repo, `Explore` for a search inside it. Its two review
+modes start none (above). A plan's second read carries
+`Mode: plan-review`, not `Mode: review`: the hook matches `Mode: review` as the whole line, so a
+plan read records nothing, and no plan read can cover code the merge guard later checks.
 
 `researcher` (2.2.0) is the read-only R&D agent: one question, answered from current primary
 sources (docs, changelogs, release notes, source code, specs), each claim cited with its URL and
@@ -303,4 +311,4 @@ or merged.
 
 `plan-task` starts two agents in one message for a big or risky plan: the edge-case hunter,
 which lists every scenario that can break it, and the senior engineer's second read on `opus`
-at `xhigh`.
+at `xhigh`, whose brief carries `Mode: plan-review`, so it records no review.

@@ -57,8 +57,8 @@ fix. How setup writes a file: `setup-and-managed-files.md`. What setup may run:
   group; `--json` prints `DoctorReport` and nothing else, and **the installers read only that**,
   never the text a person reads (its folds, wraps and marks change with the terminal). A part
   the person may leave out (the gateway, never set up; Warp, with or without its plugin) is a
-  `·` line: information, never a failure. A `!` line is a warning (claude-mem older than
-  13.35.0), never a failure either. The list of checks is in `README.md` § `doctor`; keep it in
+  `·` line: information, never a failure. A `!` line is a warning (a portal still running
+  an older version), never a failure either. The list of checks is in `README.md` § `doctor`; keep it in
   step.
 - Exit codes: 0 done, 1 a failed check or an error, 2 a wrong command or option.
 - A check that reaches the network has a timeout and no password prompt in a terminal:

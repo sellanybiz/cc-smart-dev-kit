@@ -86,8 +86,9 @@ Low usage never skips a test or a review: it means cheaper models, or stopping.
 | A phase with a task brief and done-check | `cc-smart-dev-kit:builder`, or `rules-maintainer` for instruction files; execute through `/cc-smart-dev-kit:build` |
 | A piece of a phase, or a job whose scope is still open that both explores and edits | `general-purpose` |
 | An area swept for one class of defect, not a diff — "audit the hooks", "find every place where X" | the `audit` skill's run: an `auditor` per track, a second one to refute each finding, one `builder` for the report — `/cc-smart-dev-kit:audit` |
-| The second opinion on a change set, or a second read of a big plan | `cc-smart-dev-kit:senior-engineer`, its brief with the line `Mode: review` — `/cc-smart-dev-kit:review` § Second opinion |
-| Stuck on a root cause, a design or a fix after two failed tries | `cc-smart-dev-kit:senior-engineer` as the consult: no `Mode: review` line; the brief says whether it advises, fixes or builds |
+| The second opinion on a change set | `cc-smart-dev-kit:senior-engineer`, its brief with the line `Mode: review` — `/cc-smart-dev-kit:review` § Second opinion |
+| A second read of a big plan | `cc-smart-dev-kit:senior-engineer`, its brief with the line `Mode: plan-review` (it records no review) — `/cc-smart-dev-kit:plan-task` § 4 |
+| Stuck on a root cause, a design or a fix after two failed tries | `cc-smart-dev-kit:senior-engineer` as the consult: no `Mode:` line; the brief says whether it advises, fixes or builds |
 | Every scenario that can break a plan or a change, before or after the code exists | `cc-smart-dev-kit:edge-case-hunter` (read-only); for a plan, beside the second read, in one message |
 | One research question from current sources — a library, an API, a platform, a design choice — answered with a cited source per claim | `cc-smart-dev-kit:researcher` (read-only); a quick lookup stays with you, and a question with several angles goes to the `research-sweep` Workflow (`/cc-smart-dev-kit:research-first`) |
 | Driving the running app in a browser | `cc-smart-dev-kit:ui-verifier` (needs the Playwright MCP server) — `/cc-smart-dev-kit:ui-verify`: the facts on `sonnet`, the design verdict on `opus` or `fable` |
@@ -173,7 +174,8 @@ facts and screenshots, and you make the design verdict on `opus` or `fable`
 work, hard architecture, a rewrite or a complex UI/UX design, a strong second opinion, refining
 a plan — and a fresh attempt when the person is not satisfied with your answer.
 
-- **Advice runs on a read-only agent** (`Plan`, `Explore`, an auditor, the edge-case hunter).
+- **Advice runs on a read-only agent** (`Plan`, `Explore`, an auditor, the edge-case hunter, a
+  researcher).
   It returns a design, a plan, a review or a fix for a builder to build. The senior engineer can
   edit, so a Fable launch of it is a build.
 - **Fable builds only when the person asks for that build** — an agent that can change files,

@@ -1591,7 +1591,7 @@ has: `docs/design/instructions.md` § Instructions, skills and agents):
 
 | Agent | Job | Needs |
 |---|---|---|
-| `senior-engineer` | The second opinion on a change set or a plan (a brief with the line `Mode: review`), and the consult when a session is stuck. All tools; it researches outside the repo with sources, and reports its findings before any fix. | — |
+| `senior-engineer` | The second opinion on a change set (a brief with the line `Mode: review`, which the review record counts) or on a plan (`Mode: plan-review`, which it does not), and the consult when a session is stuck. All tools; it researches outside the repo with sources, and reports its findings before any fix. Only a consult may start research agents: a review starts none. | — |
 | `edge-case-hunter` | Every scenario that can break a plan or a change: the trigger, what should happen, the gap, and the test that catches it. Read-only. | — |
 | `researcher` | The R&D expert: one research question answered from current primary sources, each claim cited and marked confirmed or not. Read-only. | — |
 | `rules-maintainer` | Edits to instruction files, with a duplicate and conflict check. | — |
