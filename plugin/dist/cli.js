@@ -19869,8 +19869,9 @@ function toolUseNames(entry) {
 }
 function stopFeedbackGiven(transcriptPath, text, resetBy) {
   const lines = tailLines2(transcriptPath);
-  if (lines === null)
-    return false;
+  return lines !== null && stopFeedbackIn(lines, text, resetBy);
+}
+function stopFeedbackIn(lines, text, resetBy) {
   let given = false;
   for (const line of lines) {
     if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"'))
@@ -44325,14 +44326,23 @@ var stateSchema3 = object({
   until: string2().nullable(),
   items: array(itemSchema),
   nextId: number2().int().positive(),
-  said: record(string2(), string2())
+  said: record(string2(), string2()),
+  stopSaid: record(string2(), string2()).default({})
 });
 
 class AwayStateError extends Error {
   name = "AwayStateError";
 }
 function freshState() {
-  return { unavailable: false, since: null, until: null, items: [], nextId: 1, said: {} };
+  return {
+    unavailable: false,
+    since: null,
+    until: null,
+    items: [],
+    nextId: 1,
+    said: {},
+    stopSaid: {}
+  };
 }
 function awayDir(stateDir) {
   return join74(stateDir, "user-away");
@@ -44415,27 +44425,45 @@ async function clearItems(stateDir, ids) {
   });
   return result;
 }
+function periodKey(state) {
+  return `${state.since}|${state.until}`;
+}
+function saidKey(state) {
+  return `${periodKey(state)}|${String(state.items.length)}`;
+}
+function saidCovers(state, session) {
+  return state.said[session]?.startsWith(`${periodKey(state)}|`) === true;
+}
 async function sayOnce(stateDir, session, key) {
-  if (readAway(stateDir).said[session] === key)
+  return await recordOnce(stateDir, "said", session, key);
+}
+async function stopSayOnce(stateDir, session, key) {
+  return await recordOnce(stateDir, "stopSaid", session, key);
+}
+async function recordOnce(stateDir, mark, session, key) {
+  if (readAway(stateDir)[mark][session] === key)
     return false;
   const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === key)
+    const heard = state[mark];
+    if (heard[session] === key)
       return false;
-    delete state.said[session];
-    state.said[session] = key;
-    for (const old of Object.keys(state.said).slice(0, -MAX_SAID))
-      delete state.said[old];
+    delete heard[session];
+    heard[session] = key;
+    for (const old of Object.keys(heard).slice(0, -MAX_SAID))
+      delete heard[old];
     return true;
   });
   return result;
 }
 async function forgetSaid(stateDir, session) {
-  if (readAway(stateDir).said[session] === undefined)
+  const heard = (state) => state.said[session] !== undefined || state.stopSaid[session] !== undefined;
+  if (!heard(readAway(stateDir)))
     return false;
   const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === undefined)
+    if (!heard(state))
       return false;
     delete state.said[session];
+    delete state.stopSaid[session];
     return true;
   });
   return result;
@@ -44560,6 +44588,41 @@ var NOT_PERSON_PREFIXES = [
 ];
 function hasNotPersonWrapper(prompt2) {
   return NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix));
+}
+
+// src/hooks/user-away-stop.ts
+init_io();
+init_transcript();
+function periodTag(state) {
+  return `[away period ${periodKey(state)}]`;
+}
+function awayStopBlock(input, stateDir) {
+  if (input.stop_hook_active === true)
+    return null;
+  const session = stringField(input.session_id);
+  if (session === null)
+    return null;
+  const state = readAway(stateDir);
+  if (!state.unavailable)
+    return null;
+  if (saidCovers(state, session))
+    return null;
+  const transcript = stringField(input.transcript_path);
+  const lines = transcript === null ? null : tailLines2(transcript);
+  if (lines === null)
+    return null;
+  if (stopFeedbackIn(lines, periodTag(state), []))
+    return null;
+  return { session, state };
+}
+function awayStopWouldBlock(input, paths) {
+  try {
+    return awayStopBlock(input, paths.stateDir) !== null;
+  } catch (error) {
+    if (error instanceof AwayStateError)
+      return false;
+    throw error;
+  }
 }
 
 // src/hooks/user-away.ts
@@ -44703,6 +44766,27 @@ function parkedText(count) {
     return "Nothing is parked yet.";
   return `${plural2(count, "item is", "items are")} parked.`;
 }
+function unavailableNote(when, count) {
+  return `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`;
+}
+async function stopAnswer(input, paths, nowMs, options) {
+  const block = awayStopBlock(input, paths.stateDir);
+  if (block === null)
+    return SILENT;
+  const { session, state } = block;
+  const reason = `${unavailableNote(whenText(state, nowMs, options), state.items.length)} Do not end the turn on a question for them: park it with \`${COMMAND} user park\` and go on with the work it does not block. If nothing is left to do, end the turn. ${periodTag(state)}`;
+  const answer = { stdout: JSON.stringify({ decision: "block", reason }) };
+  try {
+    await stopSayOnce(paths.stateDir, session, saidKey(state));
+    return answer;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ...answer,
+      stderr: `cc-smart-dev-kit user-away: could not record the stop note: ${why}`
+    };
+  }
+}
 async function noteAnswer(input, env, paths, nowMs, options) {
   const session = stringField(input.session_id);
   if (session === null)
@@ -44718,14 +44802,16 @@ async function noteAnswer(input, env, paths, nowMs, options) {
     return addContext("UserPromptSubmit", `The person is available again: ask your questions as usual. ${left}`);
   }
   const when = whenText(state, nowMs, options);
-  const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
+  const key = saidKey(state);
+  const heardAtStop = state.stopSaid[session] === key && !saidCovers(state, session);
+  const first = await sayOnce(paths.stateDir, session, key) && !heardAtStop;
   if (isPersonsPrompt(input)) {
     const waiting = count === 0 ? "Nothing is parked yet." : `${plural2(count, "item waits", "items wait")} for ${AVAILABLE_SKILL}.`;
     return addContext("UserPromptSubmit", `The person wrote, and is still marked unavailable${when}: a message does not switch it back (it may come from a phone). Do what it asks, and keep following ${UNAVAILABLE_SKILL}. ${waiting}`);
   }
   if (!first)
     return SILENT;
-  return addContext("UserPromptSubmit", `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`);
+  return addContext("UserPromptSubmit", unavailableNote(when, count));
 }
 async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
   try {
@@ -44742,6 +44828,8 @@ async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
       return await permissionAnswer(input, paths, nowMs, options);
     if (event === "UserPromptSubmit")
       return await noteAnswer(input, env, paths, nowMs, options);
+    if (event === "Stop")
+      return await stopAnswer(input, paths, nowMs, options);
     return SILENT;
   } catch (error) {
     if (error instanceof AwayStateError)
@@ -49589,11 +49677,11 @@ var sessionNameHook = {
 };
 var userAwayHook = {
   name: "user-away",
-  events: ["PreToolUse", "PermissionRequest", "UserPromptSubmit"],
+  events: ["PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"],
   alwaysOn: true,
   onConfigProblem: (_message, input, event, _checkout, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   outsideGit: (input, event, _why, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  onCrash: (why, input, event, context) => event === "PermissionRequest" || event === "UserPromptSubmit" ? { stderr: `cc-smart-dev-kit user-away: ${why}` } : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
+  onCrash: (why, input, event, context) => event === "PermissionRequest" || event === "UserPromptSubmit" || event === "Stop" ? { stderr: `cc-smart-dev-kit user-away: ${why}` } : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
   run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs)
 };
 var agentGuardHook = {
@@ -54091,7 +54179,7 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
-  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || keepGoingWouldBlockAt(input, deps.env) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || keepGoingWouldBlockAt(input, deps.env) || awayStopWouldBlock(input, deps.paths) : false;
   const alert = alertFor(input, event, {
     failed,
     finished,
@@ -54776,6 +54864,17 @@ function usageProblem(ctx, line) {
 function strayWord(ctx, command, positionals) {
   return positionals.length === 0 ? null : usageProblem(ctx, `${command} takes no text: ${positionals.join(" ")}`);
 }
+async function markSwitchingSession(ctx, state) {
+  const { session } = askerOf(ctx);
+  if (session === null)
+    return;
+  try {
+    await sayOnce(ctx.paths.stateDir, session, saidKey(state));
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    ctx.out.line("warn", `This session could not be marked as told (${why}): its turn end is blocked once, with the note.`);
+  }
+}
 async function runUnavailable(args, ctx) {
   const parsed = parseOptions(args, ["--until"]);
   if ("error" in parsed)
@@ -54796,6 +54895,7 @@ async function runUnavailable(args, ctx) {
   }
   const state = await setUnavailable(ctx.paths.stateDir, ctx.nowMs, until);
   ctx.out.line("ok", `The person is unavailable${sinceText(ctx, state.since, state.until)}.`);
+  await markSwitchingSession(ctx, state);
   const waiting = state.items.length === 0 ? "Nothing is parked yet." : `${plural2(state.items.length, "item is", "items are")} parked already.`;
   ctx.out.line("info", `Sessions park what needs the person instead of asking. ${waiting}`);
   ctx.out.blank();

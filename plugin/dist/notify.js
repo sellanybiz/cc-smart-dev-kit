@@ -6193,14 +6193,23 @@ var stateSchema = object({
   until: string2().nullable(),
   items: array(itemSchema),
   nextId: number2().int().positive(),
-  said: record(string2(), string2())
+  said: record(string2(), string2()),
+  stopSaid: record(string2(), string2()).default({})
 });
 
 class AwayStateError extends Error {
   name = "AwayStateError";
 }
 function freshState() {
-  return { unavailable: false, since: null, until: null, items: [], nextId: 1, said: {} };
+  return {
+    unavailable: false,
+    since: null,
+    until: null,
+    items: [],
+    nextId: 1,
+    said: {},
+    stopSaid: {}
+  };
 }
 function awayDir(stateDir) {
   return join5(stateDir, "user-away");
@@ -6224,6 +6233,12 @@ function readAway(stateDir) {
     throw new AwayStateError(`${file} is not a state file (${error.message.split(`
 `)[0]}). Fix it or remove it.`);
   }
+}
+function periodKey(state) {
+  return `${state.since}|${state.until}`;
+}
+function saidCovers(state, session) {
+  return state.said[session]?.startsWith(`${periodKey(state)}|`) === true;
 }
 
 // src/project/config.ts
@@ -8214,8 +8229,9 @@ function toolUseNames(entry) {
 }
 function stopFeedbackGiven(transcriptPath, text, resetBy) {
   const lines = tailLines(transcriptPath);
-  if (lines === null)
-    return false;
+  return lines !== null && stopFeedbackIn(lines, text, resetBy);
+}
+function stopFeedbackIn(lines, text, resetBy) {
   let given = false;
   for (const line of lines) {
     if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"'))
@@ -8851,6 +8867,39 @@ var spawnRunner = ({ argv, timeoutMs }) => {
     return { exitCode: null, stdout: "", timedOut: false };
   }
 };
+
+// src/hooks/user-away-stop.ts
+function periodTag(state) {
+  return `[away period ${periodKey(state)}]`;
+}
+function awayStopBlock(input, stateDir) {
+  if (input.stop_hook_active === true)
+    return null;
+  const session = stringField(input.session_id);
+  if (session === null)
+    return null;
+  const state = readAway(stateDir);
+  if (!state.unavailable)
+    return null;
+  if (saidCovers(state, session))
+    return null;
+  const transcript = stringField(input.transcript_path);
+  const lines = transcript === null ? null : tailLines(transcript);
+  if (lines === null)
+    return null;
+  if (stopFeedbackIn(lines, periodTag(state), []))
+    return null;
+  return { session, state };
+}
+function awayStopWouldBlock(input, paths) {
+  try {
+    return awayStopBlock(input, paths.stateDir) !== null;
+  } catch (error) {
+    if (error instanceof AwayStateError)
+      return false;
+    throw error;
+  }
+}
 
 // src/hooks/verify-gate.ts
 import { extname, isAbsolute as isAbsolute2, join as join13, resolve as resolve5 } from "path";
@@ -10787,7 +10836,7 @@ function notifyHook(input, event, deps) {
     platform: deps.platform,
     which: deps.which
   }) : false;
-  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || keepGoingWouldBlockAt(input, deps.env) : false;
+  const stopWouldBlock = event === "Stop" ? verifyGateWouldBlockAt(input, deps.env) || keepGoingWouldBlockAt(input, deps.env) || awayStopWouldBlock(input, deps.paths) : false;
   const alert = alertFor(input, event, {
     failed,
     finished,
