@@ -31,6 +31,11 @@ import {
 } from "./agent-guard";
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";
 import type { HookInput } from "./io";
+import { loadScriptParser } from "./script-parser";
+import { useScriptParser } from "./workflow-script";
+
+// The guard's bundle loads its Workflow script parser in its entry; this file judges scripts too.
+loadScriptParser();
 
 const NO_ENV = {} as Record<string, string | undefined>;
 const OPUS_ID = "claude-opus-5-5";
@@ -388,7 +393,7 @@ describe("frontmatter launch fields", () => {
   });
 });
 
-describe("a Workflow script is read through one lexer: a regular expression hides nothing", () => {
+describe("a Workflow script is parsed: a regular expression hides nothing", () => {
   /** The hook's answer for a Workflow call with this inline script. */
   async function answer(script: string) {
     const result = await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app");
@@ -441,7 +446,7 @@ describe("a Workflow script is read through one lexer: a regular expression hide
     expect((await answer(script)).permissionDecision).toBeUndefined();
   });
 
-  it("a `/` the lexer cannot classify, or a literal that never closes, refuses the whole Workflow", async () => {
+  it("a regular expression, string or comment that never closes refuses the whole Workflow", async () => {
     for (const script of [
       `const r = (/"\n);\n${FABLE.replace("fable", "haiku")}`,
       `const s = "open\n${FABLE.replace("fable", "haiku")}`,
@@ -452,6 +457,178 @@ describe("a Workflow script is read through one lexer: a regular expression hide
       expect(said.permissionDecision).toBe("deny");
       expect(said.permissionDecisionReason).toContain("cannot be read at line");
     }
+  });
+});
+
+describe("round 3: shapes a hand-written lexer misread are parsed, and their launch is judged", () => {
+  /** The hook's answer for a Workflow call with this inline script. */
+  async function answer(script: string) {
+    const result = await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app");
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput ?? {};
+  }
+
+  /** A Fable launch with no reason line: the guard denies it once it sees it. */
+  const LAUNCH = 'agent("p", { model: "fable", effort: "high" })';
+
+  it("a division a lexer reads as a regular expression hides no launch", async () => {
+    for (const script of [
+      `const n = i++ / ${LAUNCH} / 1;`,
+      `const n = i-- / ${LAUNCH} / 1;`,
+      `const n = o.return / ${LAUNCH} / 1;`,
+      `const n = function () {} / ${LAUNCH} / 1;`,
+      `const n = class {} / ${LAUNCH} / 1;`,
+      `const t = \`\${{} / ${LAUNCH} / 1}\`;`,
+    ]) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a regular expression a lexer reads as a division hides no launch", async () => {
+    for (const before of [
+      "if (a) {} else {} /[/*]/.test(s);",
+      "switch (k) { case 1: {} /[/*]/.test(s); }",
+      "here: {} /[/*]/.test(s);",
+    ]) {
+      const script = `${before}\nawait ${LAUNCH};\n// */`;
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a line comment ends at every line terminator JavaScript knows", async () => {
+    for (const end of ["\r", " ", " "]) {
+      const script = `// a note${end}await ${LAUNCH};`;
+      const said = await answer(script);
+      expect({ end, decision: said.permissionDecision }).toEqual({ end, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("an HTML-like comment (`<!--`, `-->` at a line's start) refuses the whole Workflow", async () => {
+    // A script reads it as a comment, a module as code: the guard judges neither reading.
+    for (const [script, line] of [
+      [`x = 1;\n--> /*\nawait ${LAUNCH};\n// */`, 2],
+      [`x = 1; <!-- /*\nawait ${LAUNCH};\n// */`, 1],
+      [`a <!--b, ${LAUNCH};`, 1],
+    ] as const) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toStartWith(
+        `This Workflow's script cannot be read at line ${line}: an HTML-like comment (\`<!--\`, or \`-->\` at a line's start), which a script reads as a comment and a module as code, so a launch could hide in it.`,
+      );
+    }
+  });
+
+  it("valid JavaScript a lexer refused is read: a postfix division, a function's division, a CRLF continuation", async () => {
+    const haiku = 'await agent("p", { model: "haiku", effort: "high" });';
+    for (const before of [
+      "const r = count++ / total;",
+      "const f = function () {} / 2;",
+      'const s = "a\\\r\nb";',
+    ]) {
+      const script = `${before}\n${haiku}`;
+      expect(workflowRefusal(script)).toBeNull();
+      expect(await answer(script)).toEqual({});
+    }
+  });
+
+  it("a script that does not parse is refused whole, with the parser's message and line", () => {
+    expect(
+      workflowRefusal('await agent("p", { model: "haiku", effort: "high" });\nconst s = "open\n;'),
+    ).toBe(
+      [
+        "This Workflow's script cannot be read at line 2: Unterminated string constant.",
+        "The guard parses the script the way Claude Code runs it (the body of an async function), and a script it cannot parse could hide a launch.",
+        "Fix the script so it runs as JavaScript.",
+      ].join("\n"),
+    );
+  });
+
+  it("a route around the names refuses the whole Workflow, naming what and where", async () => {
+    const opts = '{ model: "fable", effort: "high" }';
+    const routes: Array<[string, string, number]> = [
+      [`await eval('agent("p", ${opts})');`, "`eval`", 1],
+      [`await eval("ag" + "ent")("p", ${opts});`, "`eval`", 1],
+      [
+        `async function f() {\n  return arguments[0]("p", ${opts});\n}\nawait f(agent);`,
+        "`arguments`",
+        2,
+      ],
+      [
+        `async function f() {\n  for (const a of arguments) await a("p", ${opts});\n}`,
+        "`arguments`",
+        2,
+      ],
+      [`await globalThis.agent("p", ${opts});`, "`globalThis`", 1],
+      [`await globalThis["ag" + "ent"]("p", ${opts});`, "`globalThis`", 1],
+      [
+        `await this.agent("p", ${opts});`,
+        "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+        1,
+      ],
+      [`const { agent: a } = globalThis;\nawait a("p", ${opts});`, "`globalThis`", 1],
+      [`await Function("return agent")()("p", ${opts});`, "`Function`", 1],
+      [
+        `await (async () => {}).constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      [
+        `await ({}).constructor.constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      ['await import("./launch.js");', "`import(…)`", 1],
+      [`await self.agent("p", ${opts});`, "`self` (even as a name of your own: rename it)", 1],
+      [`await global.agent("p", ${opts});`, "`global` (even as a name of your own: rename it)", 1],
+    ];
+    for (const [script, what, line] of routes) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toBe(
+        [
+          `This Workflow uses ${what} (line ${line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+          'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
+        ].join("\n"),
+      );
+    }
+  });
+
+  it("`self` is refused even when the script declares it itself, and the message says to rename it", async () => {
+    const said = await answer("const o = { m() { const self = this; return self.x } }");
+    expect(said.permissionDecision).toBe("deny");
+    expect(said.permissionDecisionReason).toBe(
+      [
+        "This Workflow uses `self` (even as a name of your own: rename it) (line 1): that can reach `agent` under another name, or build code at run time, so it could launch an agent the guard never sees.",
+        'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
+      ].join("\n"),
+    );
+  });
+
+  it("a hook program that was never handed the parser denies every Workflow", async () => {
+    useScriptParser(null);
+    try {
+      const said = await answer('await agent("p", { model: "haiku", effort: "high" });');
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toStartWith(
+        "This Workflow's script cannot be read: the guard's script parser is not loaded in this program.",
+      );
+    } finally {
+      loadScriptParser();
+    }
+  });
+
+  it("`export const meta` as the first statement is read; an `export` anywhere else does not parse", () => {
+    const meta = "// the meta\nexport const meta = { name: 'probe', description: 'x' };";
+    const launch = 'await agent("p", { model: "haiku", effort: "high" });';
+    expect(workflowRefusal(`${meta}\n${launch}`)).toBeNull();
+    expect(readWorkflowScript(`${meta}\n${launch}`).map((one) => one.model)).toEqual(["haiku"]);
+    expect(workflowRefusal(`${launch}\n${meta}`)).toContain(
+      "This Workflow's script cannot be read at line 3:",
+    );
   });
 });
 
@@ -1555,7 +1732,7 @@ describe("a Workflow script", () => {
       'const helpers = [agent];\nawait helpers[0]("x", { model: "haiku", effort: "low" });',
       // A use inside a template literal's placeholder is code too: the scan reads it.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture hands `agent` around inside a template.
-      "const label = `run: ${agent}`;\nexport const meta = { label };",
+      "const label = `run: ${agent}`;\nconst meta = { label };",
     ].join("\n");
     const refusal = workflowRefusal(script);
     expect(refusal).toContain("without calling it at once");

@@ -19,9 +19,13 @@ import { describe, expect, test } from "bun:test";
 import { basename, join } from "node:path";
 import { type GuardContext, judgeWorkflow, readWorkflowScript } from "../hooks/agent-guard";
 import { workflowMetaName } from "../hooks/agent-guard-workflows";
+import { loadScriptParser } from "../hooks/script-parser";
 import { hookEnv } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { readScript, runScript, shippedScripts } from "./script-runner";
+
+// The guard's bundle loads its script parser in its entry; this file judges the scripts too.
+loadScriptParser();
 
 const ROOT = join(import.meta.dir, "..", "..");
 const DIST_GUARD = join(ROOT, "plugin", "dist", "agent-guard.js");

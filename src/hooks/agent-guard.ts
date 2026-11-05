@@ -152,14 +152,7 @@ import {
   WORKFLOW_SUBAGENT_MODEL_ENV,
 } from "../models/launch-policy";
 import { locateCheckout } from "../project/resolve";
-import {
-  scriptAtPath,
-  scriptByName,
-  skipBlank,
-  stringAt,
-  type WorkflowPlace,
-  wholeLiteralAt,
-} from "./agent-guard-workflows";
+import { scriptAtPath, scriptByName, type WorkflowPlace } from "./agent-guard-workflows";
 import {
   type AgentLaunch,
   agentLaunchesFile,
@@ -177,8 +170,13 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookEnvContext } from "./run";
-import { lexScript, type ScriptLex } from "./script-lexer";
 import { lastClaudeModel } from "./transcript";
+import {
+  type AgentCallRead,
+  type ParsedScript,
+  parseScript,
+  type ScriptFunction,
+} from "./workflow-script";
 
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
 export const AGENT_TOOLS = ["Agent", "Task"] as const;
@@ -295,16 +293,17 @@ export interface GuardContext extends GatewayFacts {
  * passes the hooks. So the guard reads the script (`readWorkflowScript`; found by
  * `judgeWorkflowCall` when the input holds none) and judges each launch it can see.
  *
- * What it cannot see is refused, never guessed:
- *   - a text the one lexer cannot read (`script-lexer.ts`: a regular expression, string,
- *     template or comment that does not close) refuses the whole Workflow (`workflowRefusal`);
+ * The script is parsed the way Claude Code runs it (`workflow-script.ts`, with acorn). What the
+ * guard cannot see is refused, never guessed:
+ *   - a script that does not parse refuses the whole Workflow (`workflowRefusal`), naming the
+ *     parser's message and line;
  *   - a value held in a variable (`model: chosen`), a prompt built at run time, a literal an
  *     operator changes (`effort: "high" && "max"`, `"a" + b`), and a backtick literal that
  *     builds its text (`` `${…}` ``) leave that launch's verdict short
  *     of a reason line, so a Fable launch is denied and a launch whose `model` cannot be read
  *     is denied outright (an `opus`-tier launch needs no reason line, so its prompt does not
  *     matter);
- *   - options that are not one plain object literal (`plainOptions`: a getter, a method, a
+ *   - options that are not one plain object literal (`AgentCallRead.plain`: a getter, a method, a
  *     shorthand key, `__proto__`, a ternary or a second object) can set `model`, `effort` or
  *     `agentType` where the guard never sees them, so none of the three is read: the launch is
  *     denied before any agent definition is read, unless Claude Code's own overrides name both
@@ -315,7 +314,8 @@ export interface GuardContext extends GatewayFacts {
  *     (`workflowRefusal`).
  *
  * A launch written as a direct `agent(…)` call is read and judged wherever it is — inside a
- * helper function defined in the script too, and inside a template literal's `${…}`.
+ * helper function defined in the script too, and inside a template literal's `${…}`. A name
+ * that is not a use of the function (a property `x.agent`, a key `{ agent: … }`) is not one.
  */
 export interface WorkflowLaunch {
   /** `agentType` of the call's options; null when the call names none or not as a literal. */
@@ -325,8 +325,9 @@ export interface WorkflowLaunch {
   /** A policy key exists but is not a string literal; never replace it with frontmatter. */
   unreadable?: string;
   /**
-   * True when the options are not one plain object literal (`plainOptions`): `model`, `effort`
-   * and `agentType` are then null, since the run can take each from what the guard cannot see.
+   * True when the options are not one plain object literal (`AgentCallRead.plain`): `model`,
+   * `effort` and `agentType` are then null, since the run can take each from what the guard
+   * cannot see.
    */
   optionsNotPlain?: true;
   /** The prompt, when the first argument is a string literal; null otherwise. */
@@ -335,305 +336,27 @@ export interface WorkflowLaunch {
   where: string;
 }
 
-/** Thrown when a scanner meets a text the lexer cannot read; `workflowRefusal` says it first. */
+/** Thrown when a script that does not parse is read anyway; `workflowRefusal` says it first. */
 class UnreadableScript extends Error {}
 
 /**
- * A text as the one lexer reads it (`lexScript`). Every scanner below reads through it, so a
- * regular expression, a comment or a nested template is skipped the same way everywhere. A text
- * it cannot read throws: `workflowRefusal` refuses such a script before any scanner runs, so a
- * throw here is a guard's crash, which asks (`guardCrash`) — never an allow.
+ * What the parser found in a script (`parseScript`). A script that does not parse throws:
+ * `workflowRefusal` refuses such a script before anything reads it, so a throw here is a guard's
+ * crash, which asks (`guardCrash`) — never an allow.
  */
-function lexOf(text: string): ScriptLex {
-  const lexed = lexScript(text);
-  if (!lexed.ok) throw new UnreadableScript(lexed.why);
-  return lexed.lex;
+function parsedScript(script: string): ParsedScript {
+  const read = parseScript(script);
+  if (!read.ok) throw new UnreadableScript(read.why);
+  return read;
 }
 
-/** Where the `(…)` call whose `(` is at `from` ends: its `)`; the text's end when it never closes. */
-function endOf(text: string, lex: ScriptLex, from: number): number {
-  let depth = 0;
-  for (let index = from; index < text.length; index += 1) {
-    const end = lex.ends.get(index);
-    if (end !== undefined) {
-      index = end - 1;
-      continue;
-    }
-    const char = text[index] ?? "";
-    if (char === "(") depth += 1;
-    else if (char === ")") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return text.length;
-}
-
-/** The text of the call whose `(` is at `open`, to the matching `)`. */
-function callText(script: string, lex: ScriptLex, open: number): string {
-  return script.slice(open, endOf(script, lex, open) + 1);
-}
-
-/**
- * The first argument of a call, when it is a fixed string literal and the whole argument (no
- * `"a" + b` after it); null otherwise.
- */
-function firstArgument(call: string): null | string {
-  return wholeLiteralAt(call, skipBlank(call, 1), ",)");
-}
-
-/**
- * A fixed string option of a call (`model: "opus"`), or null when absent or not a literal — and
- * not when an operator follows it (`effort: "high" && "max"` runs at `max`). Only a key of the
- * call's own options object counts — never the same words in the prompt or in a nested object
- * (`schema: { effort: … }`), which would let them stand in for the real option.
- */
-function stringOption(call: string, name: string): null | string {
-  const at = readOptions(call).keys.get(name);
-  if (at === undefined) return null;
-  const colon = /^\s*:/.exec(call.slice(at));
-  if (colon === null) return null;
-  return wholeLiteralAt(call, skipBlank(call, at + colon[0].length), ",}");
-}
-
-/** The script functions the guard follows: `agent` launches one agent, `workflow` nests one. */
-type ScriptFunction = "agent" | "workflow";
-
-/** One way a script mentions a function: its name in code, and whether it is called. */
-interface Mention {
-  /** Where the name starts in the script. */
-  at: number;
-  /** True for a direct call (`agent(…)`); false when the function is handed around as a value. */
-  call: boolean;
-  /** The function's name. */
-  name: ScriptFunction;
-}
-
-/** The position of the `(` of a direct call (`mention.call`). */
-function callOpen(mention: Mention, script: string): number {
-  return skipBlank(script, mention.at + mention.name.length);
-}
-
-/**
- * Every mention of `name` (`agent`, `workflow`) in the script's code, and whether it is a
- * direct call. In code only: the word inside a prompt, a string or a comment is not a mention,
- * and neither is a property (`x.agent`) or a longer name (`agentType`, `agents`). A template
- * literal's `${…}` is code again — a launch written there is a launch — and a regular
- * expression is not: the lexer (`lexOf`) says which is which.
- */
-function mentionsOf(script: string, name: ScriptFunction, lex = lexOf(script)): Mention[] {
-  const mentions: Mention[] = [];
-  for (let index = 0; index < script.length; index += 1) {
-    if (lex.code[index] !== 1 || lex.code[index + name.length - 1] !== 1) continue;
-    if (
-      script.startsWith(name, index) &&
-      (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))
-    ) {
-      const after = index + name.length;
-      // `agentType`, `agents`: a longer name, not a mention of `agent`.
-      if (/[\w$]/.test(script[after] ?? "")) continue;
-      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(after)), name });
-    }
-  }
-  return mentions;
-}
-
-/** The line of the script an index sits on, counting from 1: what a message names. */
-function lineOf(script: string, index: number): number {
-  return script.slice(0, index).split("\n").length;
-}
-
-/** What one scan of a call's text finds (`readOptions`). */
-interface CallOptions {
-  /**
-   * True when the call's options are not what they seem: a `...spread` (which can replace any
-   * option), a computed key (`[…]`) where an object's key belongs, or the same key twice at one
-   * level (JavaScript keeps the last, the guard reads the first). Any of them can change `model`
-   * or `effort` after the literal the guard would have read.
-   */
-  hidden: boolean;
-  /**
-   * The keys of the call's own options object — the first object written directly in the call's
-   * parentheses — each with the position just after its name.
-   */
-  keys: Map<string, number>;
-}
-
-/** True when the unit the lexer found at `index` is a comment: it is not a token. */
-function commentAt(text: string, index: number): boolean {
-  return text.startsWith("//", index) || text.startsWith("/*", index);
-}
-
-/**
- * Scans a call's text once, skipping strings, templates, comments and regular expressions the
- * one lexer's way (`lexOf`): the keys of its own options object, and whether any option is
- * hidden from the guard.
- */
-function readOptions(call: string): CallOptions {
-  const lex = lexOf(call);
-  const stack: string[] = [];
-  /** The keys seen so far, one set per open object literal. */
-  const seen: Array<Set<string>> = [];
-  const keys = new Map<string, number>();
-  /** True once the call's own options object has closed: a later object is not it. */
-  let optionsDone = false;
-  let keyExpected = false;
-  const found = (hidden: boolean): CallOptions => ({ hidden, keys });
-  /** Notes a key of the object open now, ending at `end`; true when that object has it twice. */
-  const twice = (key: string, end: number): boolean => {
-    const open = seen.at(-1);
-    if (open !== undefined) {
-      if (open.has(key)) return true;
-      open.add(key);
-    }
-    if (stack.length === 1 && !optionsDone) keys.set(key, end);
-    return false;
-  };
-  for (let index = 1; index < call.length; index += 1) {
-    const char = call[index] ?? "";
-    const end = lex.ends.get(index);
-    if (end !== undefined) {
-      // A comment is not code (the `...` a person writes in one is not a spread), and a key may
-      // still follow it.
-      if (commentAt(call, index)) {
-        index = end - 1;
-        continue;
-      }
-      // A quoted key (`"model": …`) is a key like any other: JavaScript keeps the last of two.
-      const quoted = char === '"' || char === "'" ? stringAt(call, index) : null;
-      if (keyExpected && quoted !== null && twice(quoted.value, end)) return found(true);
-      index = end - 1;
-      keyExpected = false;
-      continue;
-    }
-    if (call.startsWith("...", index)) return found(true);
-    if (/\s/.test(char)) continue;
-    if (char === "{" || char === "(" || char === "[") {
-      if (keyExpected && char === "[") return found(true);
-      stack.push(char);
-      if (char === "{") seen.push(new Set());
-      keyExpected = char === "{";
-      continue;
-    }
-    if (char === "}" || char === ")" || char === "]") {
-      if (char === "}") {
-        seen.pop();
-        if (stack.length === 1) optionsDone = true;
-      }
-      stack.pop();
-      keyExpected = false;
-      continue;
-    }
-    if (char === ",") {
-      keyExpected = stack.at(-1) === "{";
-      continue;
-    }
-    // A key of an object literal, never the same name twice in that object.
-    const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
-    if (key !== undefined) {
-      if (twice(key, index + key.length)) return found(true);
-      index += key.length - 1;
-    }
-    keyExpected = false;
-  }
-  return found(false);
-}
-
-/** True when a call's options are not what they seem (`CallOptions.hidden`). */
-function builtAtRuntime(call: string): boolean {
-  return readOptions(call).hidden;
-}
-
-/**
- * The parts of a bracketed list that starts just after `from`, split at its own commas, up to
- * the bracket that closes it: each part as `[start, end)`, and where that bracket is. Strings,
- * templates, comments and regular expressions are skipped the one lexer's way (`lexOf`). Null
- * when the text ends first.
- */
-function topLevelParts(
-  text: string,
-  lex: ScriptLex,
-  from: number,
-): null | { close: number; parts: Array<[number, number]> } {
-  const parts: Array<[number, number]> = [];
-  let depth = 0;
-  let start = from;
-  for (let index = from; index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    const end = lex.ends.get(index);
-    if (end !== undefined) index = end - 1;
-    else if (char === "(" || char === "[" || char === "{") depth += 1;
-    else if (char === ")" || char === "]" || char === "}") {
-      if (depth === 0) {
-        parts.push([start, index]);
-        // A trailing comma leaves an empty last part: JavaScript has no argument there.
-        const last = parts.at(-1);
-        if (parts.length > 1 && last !== undefined && skipBlank(text, last[0]) >= last[1]) {
-          parts.pop();
-        }
-        return { close: index, parts };
-      }
-      depth -= 1;
-    } else if (char === "," && depth === 0) {
-      parts.push([start, index]);
-      start = index + 1;
-    }
-  }
-  return null;
-}
-
-/** Keys that set an object's prototype: `{ __proto__: { model: "opus" } }` hands down `model`. */
-const PROTOTYPE_KEY = "__proto__";
-
-/**
- * True when a call's options are exactly one plain object literal — its second argument and its
- * last — whose every key is a plain `key: value` pair. Anything else can hand the run a `model`,
- * an `effort` or an `agentType` the guard does not read: a getter (`get model() {…}`), a method,
- * a shorthand key (`{ model }`), `__proto__`, a ternary or any other expression in the options
- * position, or a second object after them. (A spread, a computed key and a key written twice
- * refuse the whole Workflow first: `workflowRefusal`.)
- */
-function plainOptions(call: string): boolean {
-  const lex = lexOf(call);
-  const args = topLevelParts(call, lex, 1);
-  if (args === null || args.parts.length !== 2) return false;
-  const [from, to] = args.parts[1] ?? [0, 0];
-  const open = skipBlank(call, from);
-  if (call[open] !== "{") return false;
-  const object = topLevelParts(call, lex, open + 1);
-  if (object === null || skipBlank(call, object.close + 1) !== to) return false;
-  return object.parts.every(([start, end]) => {
-    const at = skipBlank(call, start);
-    // `{}` has one empty part: an object with no key at all is plain.
-    if (at >= end) return object.parts.length === 1;
-    const key = plainKeyAt(call, at, end);
-    return key !== null && key.value !== PROTOTYPE_KEY && call[skipBlank(call, key.end)] === ":";
-  });
-}
-
-/** An object key at `at`: a name or a quoted string (never a backtick); null for anything else. */
-function plainKeyAt(text: string, at: number, end: number): null | { end: number; value: string } {
-  if (text[at] === '"' || text[at] === "'") {
-    const quoted = stringAt(text, at);
-    return quoted === null ? null : { end: quoted.end, value: quoted.value };
-  }
-  const word = /^[A-Za-z_$][\w$]*/.exec(text.slice(at, end))?.[0];
-  return word === undefined ? null : { end: at + word.length, value: word };
-}
-
-/** Where each direct call's `(` sits, in script order: what `readWorkflowScript` reads. */
-function callsOf(script: string, lex: ScriptLex): number[] {
-  return mentionsOf(script, "agent", lex)
-    .filter((mention) => mention.call)
-    .map((mention) => callOpen(mention, script));
-}
-
-/** Said when the lexer cannot read a script: what it met, and where. */
-function unreadableScript(script: string, at: number, why: string): string {
+/** Said when the parser cannot read a script: its message, and where. */
+function unreadableScript(line: null | number, why: string): string {
+  const where = line === null ? "" : ` at line ${line}`;
   return [
-    `This Workflow's script cannot be read at line ${lineOf(script, at)}: ${why}.`,
-    "The guard reads strings, templates, comments and regular expressions the way JavaScript does, and one it cannot read could hide a launch.",
-    'Write a regular expression where an expression starts (after `=`, `(` or `,`), or build it with `new RegExp("…")`; close every string, template and comment.',
+    `This Workflow's script cannot be read${where}: ${why}.`,
+    "The guard parses the script the way Claude Code runs it (the body of an async function), and a script it cannot parse could hide a launch.",
+    "Fix the script so it runs as JavaScript.",
   ].join("\n");
 }
 
@@ -653,6 +376,10 @@ const HANDED_AROUND: Record<ScriptFunction, string> = {
   ].join("\n"),
 };
 
+/** Said after a route around the names: what a script may not use (`ScriptRoute`). */
+const ROUTES_REFUSED =
+  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.';
+
 /** Said when a call's options are not what they seem: what the guard read can differ. */
 const OPTIONS_BUILT_AT_RUNTIME = [
   "Its options are not what they seem: a `...spread`, a computed `[…]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
@@ -663,36 +390,41 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * The reason this whole Workflow call is refused, or null when every launch in it can be
  * read. Three things hide the rules from the guard, and a hook must refuse what it cannot see
  * rather than let it run unchecked:
- *   - a text the one lexer cannot read (`lexScript`): a regular expression, a string, a
- *     template or a comment that does not close, where a launch could hide;
- *   - `agent` or `workflow` mentioned without being called at once (`const run = agent;
- *     run(…)`, `agent?.(…)`, either passed around as a value);
- *   - an `agent(…)` call whose options are not what they seem (`builtAtRuntime`).
+ *   - a script that does not parse (`parseScript`), where a launch could hide;
+ *   - a route around the names (`ScriptRoute`): `eval`, `Function`, `arguments`,
+ *     `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`,
+ *     `.constructor`;
+ *   - `agent` or `workflow` used without being called at once (`const run = agent; run(…)`,
+ *     `agent?.(…)`, either passed around as a value, or a name of the script's own that takes
+ *     its place);
+ *   - an `agent(…)` call whose options are not what they seem (`AgentCallRead.hidden`).
  * A nested `workflow(…)` call whose workflow is named at run time is refused by
  * `nestedWorkflows`.
  */
 export function workflowRefusal(script: string): null | string {
-  const lexed = lexScript(script);
-  if (!lexed.ok) return unreadableScript(script, lexed.at, lexed.why);
-  const { lex } = lexed;
+  const read = parseScript(script);
+  if (!read.ok) return unreadableScript(read.line, read.why);
+  const [route] = read.routes;
+  if (route !== undefined) {
+    return [
+      `This Workflow uses ${route.what} (line ${route.line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+      ROUTES_REFUSED,
+    ].join("\n");
+  }
   for (const name of ["agent", "workflow"] as const) {
-    const handed = mentionsOf(script, name, lex).find((mention) => !mention.call);
+    const handed = read.handed.find((use) => use.name === name);
     if (handed === undefined) continue;
     return [
-      `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(…)\`), or it is passed as a value.`,
+      `This Workflow uses \`${name}\` without calling it at once (line ${handed.line}): a variable holds it, it is optional-called (\`${name}?.(…)\`), or it is passed as a value.`,
       HANDED_AROUND[name],
     ].join("\n");
   }
-  for (const mention of mentionsOf(script, "agent", lex)) {
-    if (!builtAtRuntime(callText(script, lex, callOpen(mention, script)))) {
-      continue;
-    }
-    return [
-      `This Workflow's \`agent(…)\` call at line ${lineOf(script, mention.at)} cannot be read.`,
-      OPTIONS_BUILT_AT_RUNTIME,
-    ].join("\n");
-  }
-  return null;
+  const hidden = read.agents.find((call) => call.hidden);
+  if (hidden === undefined) return null;
+  return [
+    `This Workflow's \`agent(…)\` call at line ${hidden.line} cannot be read.`,
+    OPTIONS_BUILT_AT_RUNTIME,
+  ].join("\n");
 }
 
 /** A nested `workflow(…)` call of a script: the workflow it names, and its line. */
@@ -705,19 +437,12 @@ type NestedCall = { line: number } & ({ name: string } | { scriptPath: string })
  * (`workflow(name)`, `workflow("a" + b)`) runs a script the guard cannot know.
  */
 export function nestedWorkflows(script: string): { calls: NestedCall[] } | { refusal: string } {
+  const read = parseScript(script);
+  if (!read.ok) return { refusal: unreadableScript(read.line, read.why) };
   const calls: NestedCall[] = [];
-  const lex = lexOf(script);
-  for (const mention of mentionsOf(script, "workflow", lex)) {
-    if (!mention.call) continue;
-    const call = callText(script, lex, callOpen(mention, script));
-    const line = lineOf(script, mention.at);
-    const name = firstArgument(call);
-    const path =
-      call[skipBlank(call, 1)] === "{" && !builtAtRuntime(call)
-        ? stringOption(call, "scriptPath")
-        : null;
+  for (const { line, name, scriptPath } of read.workflows) {
     if (name !== null) calls.push({ line, name });
-    else if (path !== null) calls.push({ line, scriptPath: path });
+    else if (scriptPath !== null) calls.push({ line, scriptPath });
     else {
       return {
         refusal: [
@@ -730,37 +455,37 @@ export function nestedWorkflows(script: string): { calls: NestedCall[] } | { ref
   return { calls };
 }
 
+/** The options a launch's policy reads: a call's `model`, `effort` and `agentType`. */
+const POLICY_KEYS = ["model", "effort", "agentType"] as const;
+
 /**
- * Every `agent(...)` call of a Workflow script, in order. A call is found by its name, in code
- * only (the word inside a prompt, a string or a comment is not a call); its text runs to the
- * matching `)`. Nothing is evaluated: only fixed string literals are read. A script the lexer
- * cannot read throws; `workflowRefusal` refuses it first, in every hook path.
+ * One `agent(…)` call as a launch. Nothing is evaluated: only fixed strings are read. Only a key
+ * of the call's own options object counts — never the same words in the prompt or in a nested
+ * object (`schema: { effort: … }`), which would let them stand in for the real option.
+ */
+function launchOf(call: AgentCallRead): WorkflowLaunch {
+  const { keys, plain, prompt } = call;
+  const unreadable = POLICY_KEYS.find((key) => keys.has(key) && keys.get(key) === null);
+  // Options that are not one plain object can hand the run any policy key: none is read.
+  const policy = (key: (typeof POLICY_KEYS)[number]) => (plain ? (keys.get(key) ?? null) : null);
+  return {
+    ...(unreadable === undefined ? {} : { unreadable }),
+    ...(plain ? {} : { optionsNotPlain: true as const }),
+    agentType: policy("agentType"),
+    effort: policy("effort"),
+    model: policy("model"),
+    prompt,
+    where: keys.get("label") ?? prompt?.split("\n")[0]?.slice(0, 60) ?? "(unreadable)",
+  };
+}
+
+/**
+ * Every `agent(...)` call of a Workflow script, in order (`parseScript`): the word inside a
+ * prompt, a string or a comment is not a call. A script that does not parse throws;
+ * `workflowRefusal` refuses it first, in every hook path.
  */
 export function readWorkflowScript(script: string): WorkflowLaunch[] {
-  const launches: WorkflowLaunch[] = [];
-  const lex = lexOf(script);
-  for (const open of callsOf(script, lex)) {
-    const call = callText(script, lex, open);
-    const prompt = firstArgument(call);
-    const label = stringOption(call, "label");
-    const keys = readOptions(call).keys;
-    const unreadable = ["model", "effort", "agentType"].find(
-      (key) => keys.has(key) && stringOption(call, key) === null,
-    );
-    // Options that are not one plain object can hand the run any policy key: none is read.
-    const plain = plainOptions(call);
-    const policy = (key: string) => (plain ? stringOption(call, key) : null);
-    launches.push({
-      ...(unreadable === undefined ? {} : { unreadable }),
-      ...(plain ? {} : { optionsNotPlain: true as const }),
-      agentType: policy("agentType"),
-      effort: policy("effort"),
-      model: policy("model"),
-      prompt,
-      where: label ?? prompt?.split("\n")[0]?.slice(0, 60) ?? "(unreadable)",
-    });
-  }
-  return launches;
+  return parsedScript(script).agents.map(launchOf);
 }
 
 /** A Workflow script's launch as an Agent call's launch, for the same rules. */
@@ -960,15 +685,15 @@ export function judgeWorkflowCall(
       continue;
     }
     const from = "name" in call ? call.name : found.file;
-    // The refusal first: it is what reads a script the lexer cannot, before any scan of it.
+    // The refusal first: it says why a script does not parse, before anything reads it.
     const childRefusal = workflowRefusal(found.script);
     if (childRefusal !== null) {
       return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
     }
-    const deeper = mentionsOf(found.script, "workflow")[0];
+    const deeper = parsedScript(found.script).workflows[0];
     if (deeper !== undefined) {
       return refused(
-        `The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`,
+        `The workflow \`${from}\` this one runs nests a workflow of its own (line ${deeper.line}): Claude Code runs workflows one level deep, and the guard reads no deeper.`,
       );
     }
     scripts.push({ from, script: found.script });

@@ -12,10 +12,14 @@ import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
 import { REVIEW_MODE_MARKER } from "../hooks/review-record";
+import { loadScriptParser } from "../hooks/script-parser";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
+
+// The guard's bundle loads its script parser in its entry; this file judges a script too.
+loadScriptParser();
 
 const REVIEW_SPLIT = join(import.meta.dir, "..", "..", "plugin", "workflows", "review-split.js");
 const NO_ENV = {} as Record<string, string | undefined>;

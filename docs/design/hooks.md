@@ -467,15 +467,41 @@ cwd that cannot be resolved, the whole definition is unknown: the launch needs i
 own platform: no variable moves it, since a project's settings `env` reaches a hook and must
 not hide the managed definitions. A test names a temp folder there.
 
-**One lexer reads every script** (`src/hooks/script-lexer.ts`). Every scanner of a Workflow
-script reads it through the one lexer: the `agent` and `workflow` mentions, a call's end, its
-options and its arguments. The lexer says which text is code and where each string, template,
-comment and regular expression ends, and a template's `${…}` is code again, to any depth. A
-`/` is a regular expression where an expression starts: after punctuation, a block's `}`, an
-`if (…)` head, or a word like `return`. It is a division after a value. A regular expression
-must close on its line. Without that, a quote inside `s.replace(/"/g, "'")` would open a
-string that swallows the launches after it. A script with a regular expression, string,
-template or comment that does not close is refused whole, saying where.
+**A parser reads every script** (`src/hooks/workflow-script.ts`, with acorn, a JavaScript
+parser; approved by the owner on 2026-11-05). It parses the script the way Claude Code runs it
+(read from the 2.1.318 binary, not proved live; `docs/claude-code-contract.md`): the body of an
+async function under `'use strict'`, in script mode, with top-level `await` and `return`; the
+`export` of a first-statement `export const meta = { … }` is left out, since Claude Code reads
+`meta` on its own (`metaExportAt`). From the syntax tree it finds every direct `agent(…)` and
+`workflow(…)` call, what each call's options show, and every other use of either name: one
+reader, so no two checks can disagree on what is code. A parser leaves nothing to guess: a `/`
+is a division or a regular expression by the grammar, and a line comment ends at `\r`, U+2028
+and U+2029 as well as `\n`. A hand-written lexer got each of these wrong once, and each could
+hide a launch. A name that is not a use of the function is not one: a property (`x.agent`), an
+object key (`{ agent: … }`), a class member, a label. A script that does not parse is refused
+whole, naming the parser's message and line; so is the little a function body allows and a
+script's top level does not (`new.target`). An HTML-like comment (`<!--`, or `-->` at a line's
+start) is refused too: a script reads it as a comment and a module as code
+(`a <!--b, agent(…)`), so the guard judges neither reading. **A route around the names is
+refused too.** `agent`, `workflow`, `parallel` and `pipeline` are globals of the script's `vm`
+context, so another name can reach them (`globalThis.agent`, `this.agent` at the top,
+`const { agent: a } = globalThis`), and code built at run time can reach them with none
+(`eval`, `Function`, a function's `.constructor`, `import()`). So each of `eval`, `Function`,
+`arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
+and a `constructor` member refuses the whole script, naming what and where; `self` and `global`
+are refused even as a name the script declares itself (no scope is tracked). **A limit the
+guard does not close:** a string key, literal or built at run time, still reaches the
+`Function` constructor (`x[k]`, `Reflect.get(() => {}, "constructor")`,
+`Object.getOwnPropertyDescriptor(Object.getPrototypeOf(f), "constructor").value`), and the
+guard does not refuse it, since ordinary code is full of computed keys. What stops that code
+from turning a string into a launch is Claude Code's own `codeGeneration: { strings: false }`
+on the script's `vm` context, not the guard: proved on standalone Bun 1.4.4, read from the
+2.1.318 binary, not proved inside Claude Code, and re-checked on every upgrade
+(`docs/claude-code-contract.md`). The guard does not see every launch: it sees each direct
+`agent(…)` call, and refuses the routes it knows. Every hook bundle carries the guard's code through the hook
+table (`specs.ts`), so acorn is handed in by the agent guard's own entry
+(`src/hooks/script-parser.ts`): it is in `agent-guard.js` alone, and a program that was never
+handed the parser refuses every script.
 
 In a Workflow script, a definition stands in only for options written as one plain object
 literal of `key: value` pairs. Options that are not (a getter, a method, a shorthand key,

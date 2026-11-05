@@ -10,8 +10,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
+import { loadScriptParser } from "../hooks/script-parser";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
+
+// The guard's bundle loads its script parser in its entry; this file judges a script too.
+loadScriptParser();
 
 const AUDIT_RUN = join(import.meta.dir, "..", "..", "plugin", "workflows", "audit-run.js");
 const NO_ENV = {} as Record<string, string | undefined>;
