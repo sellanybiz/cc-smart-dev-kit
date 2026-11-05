@@ -276,6 +276,73 @@ function windowsToastArgv(shell, title, body, critical = false) {
   ];
 }
 
+// src/project/version-range.ts
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
+var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+function satisfiesRange(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  return Bun.semver.satisfies(version, range);
+}
+var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+function lowestAllowed(range) {
+  let lowest = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null)
+      return null;
+    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0)
+      lowest = version;
+  }
+  return lowest;
+}
+var NO_TOP = "999999.0.0";
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync2 } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync2(file, "utf8"));
+}
+
 // src/project/git-env.ts
 var REPO_SELECTING_GIT_VARS = [
   "GIT_DIR",
@@ -327,7 +394,7 @@ function notifyCommand(text, platform, which, title = PLUGIN, critical = false) 
 }
 
 // src/user-away/state.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync2 } from "fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync3 } from "fs";
 import { join as join5 } from "path";
 
 // node_modules/zod/v4/core/util.js
@@ -6221,7 +6288,7 @@ function readAway(stateDir) {
   const file = awayStateFile(stateDir);
   let text;
   try {
-    text = readFileSync2(file, "utf8");
+    text = readFileSync3(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return freshState();
@@ -6273,19 +6340,6 @@ var kindSpecSchema = strictObject({
 });
 var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-
-// src/setup/user-json.ts
-import { readFileSync as readFileSync3 } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync3(file, "utf8"));
-}
 
 // src/workflow/schema.ts
 var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
@@ -6432,60 +6486,6 @@ function workflowValue(workflow, key) {
   if (typeof group !== "object" || group === null)
     return;
   return group[tail];
-}
-
-// src/project/version-range.ts
-var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
-var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
-var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
-var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
-var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
-function isValidRange(range) {
-  const alternatives = range.split("||").map((part) => part.trim());
-  if (alternatives.some((part) => part === ""))
-    return false;
-  return alternatives.every((part) => {
-    if (HYPHEN.test(part))
-      return true;
-    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
-    return comparators.every((comparator) => COMPARATOR.test(comparator));
-  });
-}
-function satisfiesRange(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  return Bun.semver.satisfies(version, range);
-}
-var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-function lowestAllowed(range) {
-  let lowest = null;
-  for (const part of range.split("||")) {
-    const match = RANGE_START.exec(part);
-    if (match === null)
-      return null;
-    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
-    if (lowest === null || Bun.semver.order(version, lowest) < 0)
-      lowest = version;
-  }
-  return lowest;
-}
-var NO_TOP = "999999.0.0";
-var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
-function partNumber(part) {
-  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
-}
-function allowsNewer(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  const candidates = [NO_TOP];
-  for (const match of range.matchAll(WRITTEN_VERSION)) {
-    const major = partNumber(match[1]);
-    const minor = partNumber(match[2]);
-    const patch = partNumber(match[3]);
-    const pre = match[4] === undefined ? "" : `-${match[4]}`;
-    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
-  }
-  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
 }
 
 // src/project/config.ts

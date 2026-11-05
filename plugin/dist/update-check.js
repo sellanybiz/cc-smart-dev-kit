@@ -206,7 +206,7 @@ function startDetached(platform, argv, options) {
 }
 
 // src/portal/session-start.ts
-import { existsSync as existsSync15 } from "fs";
+import { existsSync as existsSync16 } from "fs";
 import { join as join15 } from "path";
 
 // src/hooks/attended.ts
@@ -2318,8 +2318,38 @@ function userNotifyHookState(file) {
 }
 
 // src/update/apply.ts
-import { existsSync as existsSync13, readFileSync as readFileSync15 } from "fs";
+import { existsSync as existsSync14, readFileSync as readFileSync16 } from "fs";
 import { join as join13 } from "path";
+
+// src/build-info/manifest.ts
+import { readFileSync as readFileSync14 } from "fs";
+function readDependencies(manifestFile, raw) {
+  if (raw === undefined)
+    return [];
+  if (!Array.isArray(raw))
+    throw new Error(`${manifestFile}: "dependencies" is not a list`);
+  return raw.map((entry, index) => {
+    const where = `${manifestFile}: dependencies[${index}]`;
+    if (typeof entry !== "object" || entry === null) {
+      throw new Error(`${where}: write it as { "name", "marketplace" }`);
+    }
+    const { name, marketplace, version } = entry;
+    if (typeof name !== "string" || typeof marketplace !== "string") {
+      throw new Error(`${where}: needs a "name" and a "marketplace"`);
+    }
+    if (version !== undefined && typeof version !== "string") {
+      throw new Error(`${where}: "version" is not a string`);
+    }
+    return { name, marketplace, ...version !== undefined && { version } };
+  });
+}
+function readManifestDependencies(manifestFile) {
+  const manifest = JSON.parse(readFileSync14(manifestFile, "utf8"));
+  if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+    throw new Error(`${manifestFile}: not a JSON object`);
+  }
+  return readDependencies(manifestFile, manifest.dependencies);
+}
 
 // src/shell/powershell.ts
 var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
@@ -2385,8 +2415,118 @@ function windowsToastArgv(shell, title, body, critical = false) {
   ];
 }
 
+// src/machine/companions.ts
+import { existsSync as existsSync13 } from "fs";
+
+// src/project/version-range.ts
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
+var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
+var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+
+// src/machine/companions.ts
+var MARKETPLACE_SOURCES = {
+  thedotmack: "thedotmack/claude-mem",
+  "claude-plugins-official": "anthropics/claude-plugins-official",
+  "claude-code-warp": "warpdotdev/claude-code-warp"
+};
+function companions(dependencies = DEPENDENCIES) {
+  return dependencies.map((dependency) => {
+    const source = MARKETPLACE_SOURCES[dependency.marketplace];
+    if (source === undefined) {
+      throw new Error(`plugin.json depends on ${dependency.name}@${dependency.marketplace}, but cc-smart-dev-kit does not know where the ${dependency.marketplace} marketplace comes from (MARKETPLACE_SOURCES)`);
+    }
+    return {
+      id: `${dependency.name}@${dependency.marketplace}`,
+      name: dependency.name,
+      marketplace: dependency.marketplace,
+      range: dependency.version ?? null,
+      source
+    };
+  });
+}
+function comparableVersion(version) {
+  if (version === null)
+    return null;
+  const plain = version.replace(/-[0-9a-f]{12}$/, "");
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(plain) ? plain : null;
+}
+function companionInstall(paths, companion) {
+  const install = findUserInstall(paths.installedPluginsFile, companion.id);
+  return install === null || !existsSync13(install.installPath) ? null : install;
+}
+function versionState(companion, version) {
+  if (companion.range !== null && isValidRange(companion.range)) {
+    const comparable = comparableVersion(version);
+    if (comparable === null)
+      return { kind: "unknown-version", version };
+    if (!Bun.semver.satisfies(comparable, companion.range)) {
+      return { kind: "outside-range", version };
+    }
+  }
+  return { kind: "ok", version };
+}
+function unknownVersionText(companion, version) {
+  return `${companion.id} ${version ?? "(no version)"}: its version is unknown (not a version number), so ${COMMAND} cannot check it against ${companion.range}`;
+}
+function updateCommand(companion) {
+  return `claude plugin update ${companion.id}`;
+}
+function companionCheck(companion, state) {
+  switch (state.kind) {
+    case "no-marketplace":
+      return {
+        ok: false,
+        text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and ${COMMAND} does not load`,
+        fix: `${COMMAND} setup`
+      };
+    case "not-installed":
+      return {
+        ok: false,
+        text: `${companion.id} is not installed, and ${COMMAND} does not load without it`,
+        fix: `${COMMAND} setup`
+      };
+    case "off":
+      return {
+        ok: false,
+        text: `${companion.id} is turned off, and ${COMMAND} does not load without it`,
+        fix: `claude plugin enable ${companion.id}`
+      };
+    case "outside-range":
+      return {
+        ok: false,
+        text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}`,
+        fix: updateCommand(companion)
+      };
+    case "unknown-version":
+      return {
+        ok: false,
+        text: unknownVersionText(companion, state.version),
+        fix: updateCommand(companion)
+      };
+    case "ok":
+      return {
+        ok: true,
+        text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`
+      };
+  }
+}
+
 // src/update/major.ts
-import { readFileSync as readFileSync14 } from "fs";
+import { readFileSync as readFileSync15 } from "fs";
 import { join as join12 } from "path";
 var MAJOR_NOTES_PATH = join12("src", "update", "major-notes.json");
 var NOTE_MAX = 120;
@@ -2428,7 +2568,7 @@ function readMajorNotes(location, from, to) {
   if (location === null)
     return [];
   try {
-    return majorNotesBetween(readFileSync14(join12(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+    return majorNotesBetween(readFileSync15(join12(location, MAJOR_NOTES_PATH), "utf8"), from, to);
   } catch {
     return [];
   }
@@ -2469,8 +2609,9 @@ async function applyUpdate(paths, claude, run, say, onMajor) {
   if (refreshed !== null)
     return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
-  const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
-  if (inCopy !== null && isOlder(before, inCopy)) {
+  const copy = location === null ? null : marketplaceCopyVersion(location, PLUGIN);
+  const inCopy = copy?.version ?? null;
+  if (location !== null && copy !== null && inCopy !== null && isOlder(before, inCopy)) {
     if (isNewMajor(before, inCopy)) {
       const major = {
         from: before,
@@ -2480,6 +2621,9 @@ async function applyUpdate(paths, claude, run, say, onMajor) {
       if (!onMajor(major))
         return { after: before, before, detail: "", held: major, ok: true };
     }
+    const behind = companionsBehind(paths, neededDependencies(copy.manifest));
+    if (behind.length > 0)
+      return fail(companionsBehindDetail(inCopy, behind));
     const updated = await step(PLUGIN_UPDATE);
     if (updated !== null)
       return updated;
@@ -2487,12 +2631,33 @@ async function applyUpdate(paths, claude, run, say, onMajor) {
   const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   return { after, before, detail: "", ok: true };
 }
+function neededDependencies(manifest) {
+  try {
+    return readManifestDependencies(manifest);
+  } catch {
+    return DEPENDENCIES;
+  }
+}
+function companionsBehind(paths, dependencies) {
+  const known = dependencies.filter((dependency) => Object.hasOwn(MARKETPLACE_SOURCES, dependency.marketplace));
+  return companions(known).flatMap((companion) => {
+    const install = companionInstall(paths, companion);
+    if (install === null)
+      return [];
+    const check = companionCheck(companion, versionState(companion, install.version));
+    return check.ok ? [] : [check];
+  });
+}
+function companionsBehindDetail(version, behind) {
+  const fixes = [...new Set(behind.map((check) => check.fix))];
+  return `${PLUGIN} ${shownVersion(version)} was not installed, because of a companion plugin it needs: ${behind.map((check) => check.text).join("; ")}. First run: ${fixes.join(", then ")}`;
+}
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync13(paths.routerCopy))
+  if (install === null || !existsSync14(paths.routerCopy))
     return false;
   const bundle = join13(install.installPath, "dist", "router.js");
-  return existsSync13(bundle) && readFileSync15(bundle, "utf8") !== readFileSync15(paths.routerCopy, "utf8");
+  return existsSync14(bundle) && readFileSync16(bundle, "utf8") !== readFileSync16(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
@@ -2591,10 +2756,10 @@ function blockingVar(env, settingsFile) {
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync14,
+  existsSync as existsSync15,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync5,
-  readFileSync as readFileSync16,
+  readFileSync as readFileSync17,
   rmSync as rmSync3,
   statSync as statSync3,
   writeFileSync as writeFileSync3
@@ -2623,22 +2788,33 @@ var RESULTS = [
 ];
 var UNREACHABLE_FAILS_AFTER_HOURS = 24;
 var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+var UNREACHABLE_WORDS = "cannot read the marketplace";
+function unreachableSince(check) {
+  if (check?.since === undefined)
+    return null;
+  const inStreak = check.result === "unreachable" || check.result === "checking" || check.result === "failed" && check.detail.startsWith(UNREACHABLE_WORDS);
+  return inStreak ? check.since : null;
+}
 function unreachableCheck(previous, at, nowMs, detail) {
-  const since = previous?.since ?? at;
+  const since = unreachableSince(previous) ?? at;
   const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
   return {
     at,
-    detail: `cannot read the marketplace${failed ? ` since ${since}` : ""} (${detail})`,
+    detail: `${UNREACHABLE_WORDS}${failed ? ` since ${since}` : ""} (${detail})`,
     result: failed ? "failed" : "unreachable",
     since
   };
+}
+function failedCheck(previous, at, detail) {
+  const same = previous?.result === "failed" && previous.detail === detail;
+  return { at, detail, result: "failed", since: same ? previous.since ?? previous.at : at };
 }
 function ensureDir(dir) {
   mkdirSync4(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync16(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync17(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -2667,7 +2843,7 @@ function isDue(last, nowMs) {
   return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
 }
 function isHeld(files) {
-  return existsSync14(files.hold);
+  return existsSync15(files.hold);
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
@@ -2676,7 +2852,7 @@ function appendLogLine(logFile, line, nowMs) {
   ensureDir(join14(logFile, ".."));
   try {
     if (statSync3(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync16(logFile, "utf8");
+      const text = readFileSync17(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync3(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -2690,7 +2866,7 @@ function appendLog(files, line, nowMs) {
 }
 function wasReported(files, at) {
   try {
-    return readFileSync16(files.reported, "utf8").trim() === at;
+    return readFileSync17(files.reported, "utf8").trim() === at;
   } catch {
     return false;
   }
@@ -2702,7 +2878,7 @@ function markReported(files, at) {
 }
 function readHeldMajor(files) {
   try {
-    const parsed = JSON.parse(readFileSync16(files.major, "utf8"));
+    const parsed = JSON.parse(readFileSync17(files.major, "utf8"));
     if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
       return null;
     }
@@ -2721,7 +2897,7 @@ function clearHeldMajor(files) {
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync16(file, "utf8"));
+    const parsed = JSON.parse(readFileSync17(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -2854,11 +3030,12 @@ async function backgroundCheck(deps) {
         record("skipped", optOutDetail(blocked));
         return;
       }
+      const streak = unreachableSince(previous);
       writeLastCheck(files, {
         at,
         detail: "",
         result: "checking",
-        ...previous?.since !== undefined && { since: previous.since }
+        ...streak !== null && { since: streak }
       });
       const status = checkForUpdate(deps.paths, deps.env);
       switch (status.kind) {
@@ -2895,7 +3072,7 @@ async function backgroundCheck(deps) {
             return;
           }
           if (!result.ok) {
-            record("failed", result.detail);
+            write(failedCheck(previous, at, result.detail));
             return;
           }
           clearHeldMajor(files);
@@ -9126,7 +9303,7 @@ function startPortalAtSessionStart(deps) {
   if (installed === null)
     return "no-bundle";
   const bundle = join15(installed.folder, "dist", "portal.js");
-  if (!existsSync15(bundle))
+  if (!existsSync16(bundle))
     return "no-bundle";
   deps.spawn(portalStarterArgv(deps.bunPath, bundle, installed.folder), deps.runIn);
   return "started";

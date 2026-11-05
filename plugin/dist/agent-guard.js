@@ -24303,8 +24303,8 @@ function tierView(input, env, paths, nowMs = Date.now(), timeZone) {
   const parts = [];
   if (lastSaid2(mark) !== note && keep(mark, note))
     parts.push(note);
-  const cwd = stringField(input.cwd) ?? process.cwd();
-  const usage = usageNote(paths, env, sessionId, cwd, nowMs, timeZone);
+  const cwd = stringField(input.cwd);
+  const usage = cwd === null ? null : usageNote(paths, env, sessionId, cwd, nowMs, timeZone);
   if (usage !== null)
     parts.push(usage);
   return parts.length === 0 ? SILENT : addContext(event, parts.join(`
