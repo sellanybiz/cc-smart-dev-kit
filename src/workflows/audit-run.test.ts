@@ -19,8 +19,11 @@ loadScriptParser();
 
 const AUDIT_RUN = join(import.meta.dir, "..", "..", "plugin", "workflows", "audit-run.js");
 const NO_ENV = {} as Record<string, string | undefined>;
-/** The tools each auditor and verifier launch takes away: the tracks share one checkout. */
-const NO_EDITS = ["Edit", "Write", "NotebookEdit"];
+/**
+ * The tools each auditor and verifier launch takes away: the tracks share one checkout, and an
+ * agent a track started would escape the run's budget.
+ */
+const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
 
 /** One finding, as an auditor's schema returns it. */
 function finding(title: string) {

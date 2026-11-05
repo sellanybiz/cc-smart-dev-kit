@@ -85,7 +85,8 @@ log(
 // Each track is the caller's: the audit skill takes them from the review skill's edge-case axes,
 // so the list of tracks has one home (`references/axes.md`). The auditor's own file already
 // denies the editing tools; each launch denies them too, so no track edits the checkout the
-// others read even if that file changes.
+// others read even if that file changes. Each launch also denies `Agent`: the budget counts the
+// agents this run starts, and an agent a track started on its own would escape that count.
 const audits = await pipeline(tracks, (track) =>
   agent(
     `Audit ${target} for ${question}.\n\nYour track: ${track}. Other auditors take the other tracks; stay on yours.\n\nThe project's own rules, skills and docs are the spec: read the ones your area touches before you judge the code. Prove every finding in the code: the concrete trigger, the real path as file:line, the real outcome, and the missing guard. Try to refute it first; what you cannot prove goes in \`hunches\`, never in \`findings\`. Say in \`coverage\` what you read and what you did not reach.`,
@@ -94,7 +95,7 @@ const audits = await pipeline(tracks, (track) =>
       model: 'sonnet',
       effort: 'high',
       agentType: 'cc-smart-dev-kit:auditor',
-      disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
       schema: FINDINGS,
     },
   ),
@@ -131,7 +132,7 @@ const verdicts = await pipeline(checked, (finding) =>
       model: 'opus',
       effort: 'xhigh',
       agentType: 'cc-smart-dev-kit:auditor',
-      disallowedTools: ['Edit', 'Write', 'NotebookEdit'],
+      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
       schema: VERDICT,
     },
   ),

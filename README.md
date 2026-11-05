@@ -347,7 +347,7 @@ list.
 | `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--verbose] [--json] [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below), in groups. A group that passed shows one line; a group with a ✗ or a `!` shows every line, and each ✗ has a `Fix:` line under it. `·` is information and `!` a warning (neither is a failure). The last line is the verdict, and the exit code is 1 when a check fails. `--verbose` opens every group; `--json` prints the whole report for a program (the installers read it). `--live` also proves the hooks and Claude Code's own worktrees on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (the subagent cap's key too, while it still holds the kit's value) and keeps everything else, including any value you changed since, `gateway.json`, and the state it still needs. With the gateway on it runs in two stages, so running sessions are not cut off. Full text: [below](#cc-smart-dev-kit-restore). |
-| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
+| `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. When an installed companion plugin is outside the range the new version needs, it installs nothing, names the companion and the command that updates it, and exits 1 (§ The background update). `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
 | `cc-smart-dev-kit migrate [--dry-run] [--yes]` | Moves a machine that still has the plugin's old `anymodel` names ([Moving from anymodel](#moving-from-anymodel)). It reads and checks everything, asks every question, and writes nothing before they are answered: a "no" leaves the machine as it was. Then it prints its steps and walks them; a step that fails keeps what the steps before it did, and the next run goes on from there. `--dry-run` prints that plan and writes, runs and stops nothing. `--yes` answers the router question without asking; the old plugin is uninstalled only after a yes on a terminal, and only when it is still installed. Refuses to run inside a Claude Code session: it replaces the router that session's own model traffic goes through. On a 0.2.x machine the command does not exist yet: run the plugin's `dist/cli.js` with bun (the section above has the line). |
 | `cc-smart-dev-kit version` | Prints the version. |
 
@@ -541,9 +541,23 @@ most once an hour**, in the background, and never makes the session wait or prin
    when agent view's notification hook is missing (a background update never runs setup, so it
    never writes that hook), the notification says `cc-smart-dev-kit setup` writes it.
 
+Before it installs, it checks the companion plugins against what the **new** version asks for
+(the `dependencies` in the refreshed copy's `plugin.json`). Claude Code will not install a
+version while an installed companion is too old for it, so when claude-mem (say) is outside
+the new range, the update installs nothing and says what to run first, in one line:
+"cc-smart-dev-kit 2.3.0 was not installed, because of a companion plugin it needs:
+claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update
+claude-mem@thedotmack". `cc-smart-dev-kit update` prints that line and exits 1; the background
+update records it as a failed update, which the next session start tells you once, however
+many hourly checks find the same thing. Run the
+command it names, then `cc-smart-dev-kit update`. A companion that is not installed does not
+stop the update: when its marketplace is added, Claude Code installs it with the update, and
+`doctor` names it either way.
+
 It never restarts the router, a service or a session. A new router still needs
 `cc-smart-dev-kit gateway setup`, which asks first. When a background update fails, the next
-interactive session start says so once (a `claude -p` run does not count). A marketplace
+interactive session start says so once (a `claude -p` run does not count); the same failure
+at the hourly checks after it is not told again, and a failure in other words is. A marketplace
 that cannot be read counts as a failure only after 24 hours in a row (a laptop offline
 for a day is not a failure); Claude Code refreshing the same marketplace at that moment
 is "skipped", and the next check tries again. The trade-off, accepted on purpose: a bad
@@ -668,9 +682,11 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   by hand or run `cc-smart-dev-kit workflow review-done`, because the merge guard reads the
   base branch's list. A personal `workflow.json` list gets its own ✗ with `workflow set` or
   `unset`, run in your own terminal (inside Claude Code they refuse the gate's keys); those
-  changes count at once. A ! names Markdown files in `.claude/cc-smart-dev-kit/`,
-  `.claude/agents/` and `.claude/skills/` that mention the old id; files and folders it cannot
-  read are skipped;
+  changes count at once. A ! names each instruction file that mentions the old id: the
+  project's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, and the Markdown files, at
+  any depth, in `.claude/cc-smart-dev-kit/`, `.claude/rules/`, `.claude/agents/`,
+  `.claude/skills/`, `.claude/commands/` and `.claude/output-styles/`; files and folders it
+  cannot read are skipped;
 - git can read the marketplace (`git ls-remote`, with no password prompt in a terminal:
   `GIT_TERMINAL_PROMPT=0`; a git credential helper with a window of its own may still
   show one). It adds ssh `BatchMode` only when you have no ssh command of your own

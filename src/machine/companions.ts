@@ -4,7 +4,7 @@ import type { Dependency } from "../build-info/manifest";
 import type { Check } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import { isValidRange } from "../project/version-range";
-import { findUserInstall } from "../setup/installed-plugins";
+import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import { readUserJson } from "../setup/user-json";
 import type { Machine } from "./machine";
 
@@ -102,15 +102,36 @@ export type CompanionState =
   | { kind: "unknown-version"; version: string | null }
   | { kind: "ok"; version: string | null };
 
-export function companionState(paths: CliPaths, companion: Companion): CompanionState {
+/**
+ * The companion's user install, or null when it is not installed: no record, or a record whose
+ * folder is gone (Claude Code cannot load it from there).
+ */
+export function companionInstall(paths: CliPaths, companion: Companion): PluginInstall | null {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  if (install === null || !existsSync(install.installPath)) {
+  return install === null || !existsSync(install.installPath) ? null : install;
+}
+
+export function companionState(paths: CliPaths, companion: Companion): CompanionState {
+  const install = companionInstall(paths, companion);
+  if (install === null) {
     return marketplaceAdded(paths, companion.marketplace)
       ? { kind: "not-installed" }
       : { kind: "no-marketplace" };
   }
   const version = install.version;
   if (!pluginEnabled(paths, companion.id)) return { kind: "off", version };
+  return versionState(companion, version);
+}
+
+/**
+ * An installed companion's version against the range plugin.json asks for: `ok` when there
+ * is no range (or one that cannot be read), else in or outside it, or `unknown-version` when
+ * the recorded version is no version number.
+ */
+export function versionState(
+  companion: Companion,
+  version: string | null,
+): Extract<CompanionState, { kind: "ok" | "outside-range" | "unknown-version" }> {
   if (companion.range !== null && isValidRange(companion.range)) {
     const comparable = comparableVersion(version);
     if (comparable === null) return { kind: "unknown-version", version };
@@ -215,48 +236,46 @@ export function companionChecks(
   paths: CliPaths,
   list: readonly Companion[] = companions(),
 ): Check[] {
-  return list.map((companion) => companionCheck(paths, companion));
+  return list.map((companion) => companionCheck(companion, companionState(paths, companion)));
 }
 
-function companionCheck(paths: CliPaths, companion: Companion): Check {
-  {
-    const state = companionState(paths, companion);
-    switch (state.kind) {
-      case "no-marketplace":
-        return {
-          ok: false,
-          text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and ${COMMAND} does not load`,
-          fix: `${COMMAND} setup`,
-        };
-      case "not-installed":
-        return {
-          ok: false,
-          text: `${companion.id} is not installed, and ${COMMAND} does not load without it`,
-          fix: `${COMMAND} setup`,
-        };
-      case "off":
-        return {
-          ok: false,
-          text: `${companion.id} is turned off, and ${COMMAND} does not load without it`,
-          fix: `claude plugin enable ${companion.id}`,
-        };
-      case "outside-range":
-        return {
-          ok: false,
-          text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}`,
-          fix: updateCommand(companion),
-        };
-      case "unknown-version":
-        return {
-          ok: false,
-          text: unknownVersionText(companion, state.version),
-          fix: updateCommand(companion),
-        };
-      case "ok":
-        return {
-          ok: true,
-          text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`,
-        };
-    }
+/** Doctor's line for a companion in `state`: its words, and the fix when it fails. */
+export function companionCheck(companion: Companion, state: CompanionState): Check {
+  switch (state.kind) {
+    case "no-marketplace":
+      return {
+        ok: false,
+        text: `the ${companion.marketplace} marketplace is not added, so ${companion.id} is missing and ${COMMAND} does not load`,
+        fix: `${COMMAND} setup`,
+      };
+    case "not-installed":
+      return {
+        ok: false,
+        text: `${companion.id} is not installed, and ${COMMAND} does not load without it`,
+        fix: `${COMMAND} setup`,
+      };
+    case "off":
+      return {
+        ok: false,
+        text: `${companion.id} is turned off, and ${COMMAND} does not load without it`,
+        fix: `claude plugin enable ${companion.id}`,
+      };
+    case "outside-range":
+      return {
+        ok: false,
+        text: `${companion.id} ${state.version ?? "(no version)"} is outside ${companion.range}`,
+        fix: updateCommand(companion),
+      };
+    case "unknown-version":
+      return {
+        ok: false,
+        text: unknownVersionText(companion, state.version),
+        fix: updateCommand(companion),
+      };
+    case "ok":
+      return {
+        ok: true,
+        text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`,
+      };
   }
 }

@@ -105,7 +105,7 @@ import {
 import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
-import { projectChecks, retiredReviewAgentCheck } from "./project-checks";
+import { PROJECT_MEMORY_FILES, projectChecks, retiredReviewAgentCheck } from "./project-checks";
 import { type Mark, markText, type Out, plural } from "./ui/out";
 import type { Terminal } from "./ui/terminal";
 
@@ -810,9 +810,6 @@ async function checkLiveRecord(paths: CliPaths, read: CommandRunner): Promise<Ch
     text: `the live check passed on Claude Code ${record.claudeCode} (plugin ${record.plugin})`,
   };
 }
-
-/** The memory files Claude Code loads from a project folder. */
-const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 
 /**
  * The `@~/…` or `@/…` imports of a CLAUDE.md that point into a cc-smart-dev-kit instructions copy

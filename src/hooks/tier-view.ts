@@ -331,8 +331,10 @@ export function tierView(
   const parts: string[] = [];
   // Said only when it can be remembered: else the next prompt would say it again.
   if (lastSaid(mark) !== note && keep(mark, note)) parts.push(note);
-  const cwd = stringField(input.cwd) ?? process.cwd();
-  const usage = usageNote(paths, env, sessionId, cwd, nowMs, timeZone);
+  // The login is read from the session's folder, never the hook's own (`.claude/rules/hooks.md`):
+  // with no folder, the login cannot be known, so no usage line and no mark.
+  const cwd = stringField(input.cwd);
+  const usage = cwd === null ? null : usageNote(paths, env, sessionId, cwd, nowMs, timeZone);
   if (usage !== null) parts.push(usage);
   return parts.length === 0 ? SILENT : addContext(event, parts.join("\n\n"));
 }

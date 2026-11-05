@@ -58,6 +58,30 @@ major version by itself the day it runs.
   that cannot be read is `unreachable` (information) until it has been so for 24 hours in
   a row, and Claude Code's own refresh holding git's `index.lock` at that moment is
   `skipped`.
+- **A companion plugin too old for the new version stops the update first.** Claude Code
+  refuses to install a plugin while an installed dependency is outside the range it asks
+  for (`docs/claude-code-contract.md` § Plugin dependencies), and `cc-smart-dev-kit update`
+  would then fail the same way. So after the refresh, `applyUpdate` reads the new version's
+  `dependencies` from the copy's own `plugin.json` (`readManifestDependencies`; the running
+  version's own list only when that file cannot be read), and checks each **installed**
+  companion's version against it with doctor's range check (`versionState` and
+  `companionCheck` in `src/machine/companions.ts`). One that is outside the range, or has no
+  version number, skips `claude plugin update` and fails with one line that names the
+  companion and its fix, built from its id: "cc-smart-dev-kit 2.3.0 was not installed, because
+  of a companion plugin it needs: claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First
+  run: claude plugin update claude-mem@thedotmack". The command prints it and exits 1; the
+  background check records it as `failed`, so the next attended session start tells it once.
+  The hourly checks after it find the same refusal: `failedCheck` (`src/update/state.ts`)
+  keeps the first one's time as `since` while a failure's words stay the same, and a session
+  start counts a streak as told by `since`, so it is said once. Other words start a new
+  streak; a check that gets past it ends the streak. Only an unreadable marketplace's streak
+  carries on into the next unreadable check (`unreachableSince`), so a refusal never makes the
+  marketplace count as unreadable for longer.
+  A companion that is not installed does not stop the update: Claude Code installs it with the
+  update when its marketplace is added, and doctor names it with its own fix. Neither does a
+  dependency from a marketplace this version does not know: the new version's setup adds it.
+  Not handled: a future dependency from a marketplace the person has not added (no release has
+  one); the update then installs a version that does not load until `setup` adds it.
 - **`cc-smart-dev-kit update`** does the same in the terminal, with each command's output;
   `--check` only reads (the remote's version comes from a shallow fetch into a temp
   folder, never from Claude Code's copy); `--hold` / `--resume` switch the background

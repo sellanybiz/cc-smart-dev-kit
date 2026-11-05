@@ -151,18 +151,38 @@ function readableMatches(pattern: string, folder: string): string[] {
   return found;
 }
 
-/** The project's add-ons, agents and skills that still name the retired review agent: a `!` each. */
+/** The memory files Claude Code loads from a project folder, relative to that folder. */
+export const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+
+/**
+ * The project's instruction files that still name the retired review agent: a `!` each. They
+ * are the memory files at the project's root (`PROJECT_MEMORY_FILES`) and the Markdown, at any
+ * depth, in `.claude/`'s add-ons, rules, agents, skills, commands and output styles, each named
+ * relative to the project.
+ */
 function retiredReviewMentions(projectDir: string): ProjectLine[] {
   const folder = join(projectDir, ".claude");
-  if (!existsSync(folder)) return [];
   // One scan per folder, so a folder that cannot be read never hides the others.
-  const files = [`${PLUGIN}/*.md`, "agents/**/*.md", "skills/**/*.md"]
-    .flatMap((pattern) => readableMatches(pattern, folder))
-    .sort();
+  const inClaude = existsSync(folder)
+    ? [
+        `${PLUGIN}/**/*.md`,
+        "rules/**/*.md",
+        "agents/**/*.md",
+        "skills/**/*.md",
+        "commands/**/*.md",
+        "output-styles/**/*.md",
+      ]
+        .flatMap((pattern) => readableMatches(pattern, folder))
+        .map((file) => join(".claude", file))
+    : [];
+  const files = [
+    ...PROJECT_MEMORY_FILES.filter((name) => existsSync(join(projectDir, name))),
+    ...inClaude,
+  ].sort();
   return files
     .filter((file) => {
       try {
-        return readFileSync(join(folder, file), "utf8").includes(OLD_REVIEW_AGENT);
+        return readFileSync(join(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
       } catch {
         // An optional instruction file can be private or removed during the scan.
         return false;
@@ -171,7 +191,7 @@ function retiredReviewMentions(projectDir: string): ProjectLine[] {
     .map((file) => ({
       ok: true,
       warn: true,
-      text: `project: .claude/${file} mentions the retired ${OLD_REVIEW_AGENT}`,
+      text: `project: ${file} mentions the retired ${OLD_REVIEW_AGENT}`,
       fix: REPLACE_REVIEW_AGENT,
     }));
 }
