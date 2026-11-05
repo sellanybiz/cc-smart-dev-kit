@@ -15,6 +15,7 @@ import type { CliPaths } from "../cli/paths";
 import { TOAST_SHELL, windowsToastArgv } from "../hooks/windows-toast";
 import {
   companionCheck,
+  companionInstall,
   companions,
   MARKETPLACE_SOURCES,
   versionState,
@@ -168,8 +169,8 @@ export function companionsBehind(
     Object.hasOwn(MARKETPLACE_SOURCES, dependency.marketplace),
   );
   return companions(known).flatMap((companion) => {
-    const install = findUserInstall(paths.installedPluginsFile, companion.id);
-    if (install === null || !existsSync(install.installPath)) return [];
+    const install = companionInstall(paths, companion);
+    if (install === null) return [];
     const check = companionCheck(companion, versionState(companion, install.version));
     return check.ok ? [] : [check];
   });

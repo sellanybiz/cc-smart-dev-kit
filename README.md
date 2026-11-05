@@ -548,13 +548,16 @@ the new range, the update installs nothing and says what to run first, in one li
 "cc-smart-dev-kit 2.3.0 was not installed, because of a companion plugin it needs:
 claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update
 claude-mem@thedotmack". `cc-smart-dev-kit update` prints that line and exits 1; the background
-update records it as a failed update, which the next session start tells you once. Run the
+update records it as a failed update, which the next session start tells you once, however
+many hourly checks find the same thing. Run the
 command it names, then `cc-smart-dev-kit update`. A companion that is not installed does not
-stop the update: Claude Code installs it with the update, and `doctor` names it.
+stop the update: when its marketplace is added, Claude Code installs it with the update, and
+`doctor` names it either way.
 
 It never restarts the router, a service or a session. A new router still needs
 `cc-smart-dev-kit gateway setup`, which asks first. When a background update fails, the next
-interactive session start says so once (a `claude -p` run does not count). A marketplace
+interactive session start says so once (a `claude -p` run does not count); the same failure
+at the hourly checks after it is not told again, and a failure in other words is. A marketplace
 that cannot be read counts as a failure only after 24 hours in a row (a laptop offline
 for a day is not a failure); Claude Code refreshing the same marketplace at that moment
 is "skipped", and the next check tries again. The trade-off, accepted on purpose: a bad
@@ -680,9 +683,10 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   base branch's list. A personal `workflow.json` list gets its own ✗ with `workflow set` or
   `unset`, run in your own terminal (inside Claude Code they refuse the gate's keys); those
   changes count at once. A ! names each instruction file that mentions the old id: the
-  project's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, and the Markdown files in
-  `.claude/cc-smart-dev-kit/`, `.claude/rules/`, `.claude/agents/` and `.claude/skills/`; files
-  and folders it cannot read are skipped;
+  project's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, and the Markdown files, at
+  any depth, in `.claude/cc-smart-dev-kit/`, `.claude/rules/`, `.claude/agents/`,
+  `.claude/skills/`, `.claude/commands/` and `.claude/output-styles/`; files and folders it
+  cannot read are skipped;
 - git can read the marketplace (`git ls-remote`, with no password prompt in a terminal:
   `GIT_TERMINAL_PROMPT=0`; a git credential helper with a window of its own may still
   show one). It adds ssh `BatchMode` only when you have no ssh command of your own

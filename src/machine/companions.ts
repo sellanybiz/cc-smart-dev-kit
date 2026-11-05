@@ -4,7 +4,7 @@ import type { Dependency } from "../build-info/manifest";
 import type { Check } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import { isValidRange } from "../project/version-range";
-import { findUserInstall } from "../setup/installed-plugins";
+import { findUserInstall, type PluginInstall } from "../setup/installed-plugins";
 import { readUserJson } from "../setup/user-json";
 import type { Machine } from "./machine";
 
@@ -102,9 +102,18 @@ export type CompanionState =
   | { kind: "unknown-version"; version: string | null }
   | { kind: "ok"; version: string | null };
 
-export function companionState(paths: CliPaths, companion: Companion): CompanionState {
+/**
+ * The companion's user install, or null when it is not installed: no record, or a record whose
+ * folder is gone (Claude Code cannot load it from there).
+ */
+export function companionInstall(paths: CliPaths, companion: Companion): PluginInstall | null {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  if (install === null || !existsSync(install.installPath)) {
+  return install === null || !existsSync(install.installPath) ? null : install;
+}
+
+export function companionState(paths: CliPaths, companion: Companion): CompanionState {
+  const install = companionInstall(paths, companion);
+  if (install === null) {
     return marketplaceAdded(paths, companion.marketplace)
       ? { kind: "not-installed" }
       : { kind: "no-marketplace" };

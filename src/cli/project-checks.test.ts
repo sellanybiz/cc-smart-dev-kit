@@ -165,6 +165,29 @@ describe("the retired review agent", () => {
       "! project: CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
     ]);
   });
+  test("warns for commands, output styles and nested add-ons, at any depth", async () => {
+    const repo = makeRepo();
+    for (const file of [
+      "commands/ship.md",
+      "commands/team/merge.md",
+      "output-styles/terse.md",
+      "output-styles/team/plain.md",
+      "cc-smart-dev-kit/review/extra.md",
+      "commands/notes.txt",
+    ]) {
+      const path = join(repo, ".claude", file);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "Review with cc-smart-dev-kit:reviewer.");
+    }
+    const lines = await check(repo);
+    expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
+      "! project: .claude/cc-smart-dev-kit/review/extra.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/commands/ship.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/commands/team/merge.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/output-styles/team/plain.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/output-styles/terse.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+    ]);
+  });
   test("a root CLAUDE.md is searched in a project with no .claude folder", async () => {
     const repo = makeRepo();
     writeFileSync(join(repo, "CLAUDE.md"), "cc-smart-dev-kit:reviewer");

@@ -156,14 +156,22 @@ export const PROJECT_MEMORY_FILES = ["CLAUDE.md", join(".claude", "CLAUDE.md"), 
 
 /**
  * The project's instruction files that still name the retired review agent: a `!` each. They
- * are the memory files at the project's root (`PROJECT_MEMORY_FILES`) and the Markdown in
- * `.claude/`'s add-ons, rules, agents and skills, each named relative to the project.
+ * are the memory files at the project's root (`PROJECT_MEMORY_FILES`) and the Markdown, at any
+ * depth, in `.claude/`'s add-ons, rules, agents, skills, commands and output styles, each named
+ * relative to the project.
  */
 function retiredReviewMentions(projectDir: string): ProjectLine[] {
   const folder = join(projectDir, ".claude");
   // One scan per folder, so a folder that cannot be read never hides the others.
   const inClaude = existsSync(folder)
-    ? [`${PLUGIN}/*.md`, "rules/**/*.md", "agents/**/*.md", "skills/**/*.md"]
+    ? [
+        `${PLUGIN}/**/*.md`,
+        "rules/**/*.md",
+        "agents/**/*.md",
+        "skills/**/*.md",
+        "commands/**/*.md",
+        "output-styles/**/*.md",
+      ]
         .flatMap((pattern) => readableMatches(pattern, folder))
         .map((file) => join(".claude", file))
     : [];

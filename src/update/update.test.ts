@@ -728,6 +728,101 @@ describe("a failure: when it counts, and who is told", () => {
       "failed at 2026-10-15T11:00:00Z",
     );
   });
+
+  describe("an update a companion plugin stops, check after check", () => {
+    const HOUR = 60 * 60 * 1000;
+    const REFUSED =
+      "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update claude-mem@thedotmack";
+    /** A machine whose claude-mem is too old for the version a refresh brings. */
+    const refusing = () =>
+      machine({
+        claudeMem: "14.2.0",
+        newDependencies: [{ marketplace: "thedotmack", name: "claude-mem", version: ">=15.0.0" }],
+        remoteHead: HEAD_B,
+      });
+    /** One background check at `nowMs` with the fake claude; `claude: null` fails another way. */
+    const refuseAt = (m: ReturnType<typeof machine>, nowMs: number, found = true) =>
+      backgroundCheck({
+        claude: found ? join(m.home, "fake", "bin", "claude") : null,
+        env: m.env,
+        notify: () => {},
+        now: () => nowMs,
+        paths: m.paths,
+        run: capturingRunner(m.env, m.home),
+      });
+
+    test("the same refusal at every hourly check is one streak, told once", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T10:00:00Z",
+        detail: REFUSED,
+        result: "failed",
+        since: "2026-10-15T10:00:00Z",
+      });
+      expect(hookHere(m, NOW).answer).toContain(
+        "the background update failed at 2026-10-15T10:00:00Z (cc-smart-dev-kit 1.1.0 was not installed",
+      );
+      await refuseAt(m, NOW + HOUR);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T11:00:00Z",
+        detail: REFUSED,
+        result: "failed",
+        since: "2026-10-15T10:00:00Z",
+      });
+      expect(hookHere(m, NOW + HOUR).answer).toBe("");
+      await refuseAt(m, NOW + 2 * HOUR);
+      expect(hookHere(m, NOW + 2 * HOUR).answer).toBe("");
+    });
+
+    test("a failure with other words starts a new streak, told again", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(hookHere(m, NOW).answer).toContain("failed at 2026-10-15T10:00:00Z");
+      await refuseAt(m, NOW + HOUR, false);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T11:00:00Z",
+        detail: "the claude command is not on PATH",
+        result: "failed",
+        since: "2026-10-15T11:00:00Z",
+      });
+      expect(hookHere(m, NOW + HOUR).answer).toContain(
+        "failed at 2026-10-15T11:00:00Z (the claude command is not on PATH)",
+      );
+    });
+
+    test("a check that gets past it ends the streak: the same refusal later is told again", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(hookHere(m, NOW).answer).toContain("failed at 2026-10-15T10:00:00Z");
+      // A check in between that went through, as an up-to-date one records it.
+      writeLastCheck(m.files, {
+        at: "2026-10-15T11:00:00Z",
+        detail: "1.0.0",
+        result: "up-to-date",
+      });
+      await refuseAt(m, NOW + 2 * HOUR);
+      expect(readLastCheck(m.files)).toMatchObject({ since: "2026-10-15T12:00:00Z" });
+      expect(hookHere(m, NOW + 2 * HOUR).answer).toContain("failed at 2026-10-15T12:00:00Z");
+    });
+
+    test("a refusal's streak never makes the marketplace count as unreadable for longer", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      await refuseAt(m, NOW + 30 * HOUR);
+      // The marketplace cannot be read now: its own streak starts here, not 31 h ago.
+      writeFileSync(
+        join(m.home, "fake", "bin", "git"),
+        "#!/bin/sh\necho 'fatal: could not read from remote repository' >&2\nexit 128\n",
+      );
+      await refuseAt(m, NOW + 31 * HOUR);
+      expect(readLastCheck(m.files)).toMatchObject({
+        at: "2026-10-16T17:00:00Z",
+        result: "unreachable",
+        since: "2026-10-16T17:00:00Z",
+      });
+    });
+  });
 });
 
 /** The hook's logic in this process, with a spy for the background start. */
