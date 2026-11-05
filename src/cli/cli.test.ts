@@ -150,9 +150,7 @@ function setup(options: SetupOptions = {}) {
     const designPath = join(configDir, "plugins", "cache", "official", "frontend-design", "abc");
     mkdirSync(memPath, { recursive: true });
     mkdirSync(designPath, { recursive: true });
-    plugins["claude-mem@thedotmack"] = [
-      { scope: "user", installPath: memPath, version: "15.5.0" },
-    ];
+    plugins["claude-mem@thedotmack"] = [{ scope: "user", installPath: memPath, version: "15.5.0" }];
     plugins["frontend-design@claude-plugins-official"] = [
       { scope: "user", installPath: designPath, version: "8f814f49002f" },
     ];
@@ -1156,7 +1154,7 @@ describe("cc-smart-dev-kit doctor", () => {
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
         "✓ Companion plugins  3 passed, 2 notes",
         // claude-mem 15.x has My Work: its auto-refresh runs agents outside the kit's route.
-        "  · claude-mem's My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to \"false\" in ~/.claude-mem/settings.json",
+        '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
         // Warp is optional.
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✓ MCP servers        3 passed, 1 note",
@@ -1463,7 +1461,7 @@ describe("cc-smart-dev-kit doctor", () => {
         // No setup ran here: claude-mem's memory-use block is still on (D68).
         "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write. Work state must be off so the kit owns the task list",
         "    Fix: cc-smart-dev-kit setup",
-        "  · claude-mem's My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to \"false\" in ~/.claude-mem/settings.json",
+        '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✗ Alerts and limits  1 to fix, 3 notes",
         "  ✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive",
