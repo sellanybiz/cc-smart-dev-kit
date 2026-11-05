@@ -32,6 +32,7 @@ import {
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";
 import type { HookInput } from "./io";
 import { loadScriptParser } from "./script-parser";
+import { useScriptParser } from "./workflow-script";
 
 // The guard's bundle loads its Workflow script parser in its entry; this file judges scripts too.
 loadScriptParser();
@@ -544,6 +545,65 @@ describe("round 3: shapes a hand-written lexer misread are parsed, and their lau
         "Fix the script so it runs as JavaScript.",
       ].join("\n"),
     );
+  });
+
+  it("a route around the names refuses the whole Workflow, naming what and where", async () => {
+    const opts = '{ model: "fable", effort: "high" }';
+    const routes: Array<[string, string, number]> = [
+      [`await eval('agent("p", ${opts})');`, "`eval`", 1],
+      [`await eval("ag" + "ent")("p", ${opts});`, "`eval`", 1],
+      [
+        `async function f() {\n  return arguments[0]("p", ${opts});\n}\nawait f(agent);`,
+        "`arguments`",
+        2,
+      ],
+      [
+        `async function f() {\n  for (const a of arguments) await a("p", ${opts});\n}`,
+        "`arguments`",
+        2,
+      ],
+      [`await globalThis.agent("p", ${opts});`, "`globalThis`", 1],
+      [`await globalThis["ag" + "ent"]("p", ${opts});`, "`globalThis`", 1],
+      [`await this.agent("p", ${opts});`, "`this` outside a function", 1],
+      [`const { agent: a } = globalThis;\nawait a("p", ${opts});`, "`globalThis`", 1],
+      [`await Function("return agent")()("p", ${opts});`, "`Function`", 1],
+      [
+        `await (async () => {}).constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      [
+        `await ({}).constructor.constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      ['await import("./launch.js");', "`import(…)`", 1],
+      [`await self.agent("p", ${opts});`, "`self`", 1],
+      [`await global.agent("p", ${opts});`, "`global`", 1],
+    ];
+    for (const [script, what, line] of routes) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toBe(
+        [
+          `This Workflow uses ${what} (line ${line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+          'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a function, `import(…)` and `.constructor`.',
+        ].join("\n"),
+      );
+    }
+  });
+
+  it("a hook program that was never handed the parser denies every Workflow", async () => {
+    useScriptParser(null);
+    try {
+      const said = await answer('await agent("p", { model: "haiku", effort: "high" });');
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toStartWith(
+        "This Workflow's script cannot be read: the guard's script parser is not loaded in this program.",
+      );
+    } finally {
+      loadScriptParser();
+    }
   });
 
   it("`export const meta` as the first statement is read; an `export` anywhere else does not parse", () => {

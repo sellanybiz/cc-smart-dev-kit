@@ -468,8 +468,9 @@ own platform: no variable moves it, since a project's settings `env` reaches a h
 not hide the managed definitions. A test names a temp folder there.
 
 **A parser reads every script** (`src/hooks/workflow-script.ts`, with acorn, a JavaScript
-parser; approved by the owner on 2026-11-05). It parses the script the way Claude Code runs it:
-the body of an async function, in script mode, with top-level `await` and `return`; the
+parser; approved by the owner on 2026-11-05). It parses the script the way Claude Code runs it
+(read from the 2.1.318 binary, not proved live; `docs/claude-code-contract.md`): the body of an
+async function under `'use strict'`, in script mode, with top-level `await` and `return`; the
 `export` of a first-statement `export const meta = { … }` is left out, since Claude Code reads
 `meta` on its own (`metaExportAt`). From the syntax tree it finds every direct `agent(…)` and
 `workflow(…)` call, what each call's options show, and every other use of either name: one
@@ -481,8 +482,17 @@ object key (`{ agent: … }`), a class member, a label. A script that does not p
 whole, naming the parser's message and line; so is the little a function body allows and a
 script's top level does not (`new.target`). An HTML-like comment (`<!--`, or `-->` at a line's
 start) is refused too: a script reads it as a comment and a module as code
-(`a <!--b, agent(…)`), and how Claude Code compiles the body is not proved, so the guard judges
-neither reading. Every hook bundle carries the guard's code through the hook
+(`a <!--b, agent(…)`), so the guard judges neither reading. **A route around the names is
+refused too.** `agent`, `workflow`, `parallel` and `pipeline` are globals of the script's `vm`
+context, so another name can reach them (`globalThis.agent`, `this.agent` at the top,
+`const { agent: a } = globalThis`), and code built at run time can reach them with none
+(`eval`, `Function`, a function's `.constructor`, `import()`). So each of `eval`, `Function`,
+`arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
+and a `constructor` member refuses the whole script, naming what and where. What is left: a
+computed member whose key is built at run time (`x[k]`, `Reflect.get(o, k)`) is not refused,
+since ordinary code is full of them; with the global object and `constructor` refused by name,
+no route through one to `agent` is known. The guard does not see every launch: it sees each
+direct `agent(…)` call, and refuses the routes it knows. Every hook bundle carries the guard's code through the hook
 table (`specs.ts`), so acorn is handed in by the agent guard's own entry
 (`src/hooks/script-parser.ts`): it is in `agent-guard.js` alone, and a program that was never
 handed the parser refuses every script.

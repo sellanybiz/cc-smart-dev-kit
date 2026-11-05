@@ -4,21 +4,32 @@
  * call and what each one names. The guard judges what this reader finds, and refuses what it
  * cannot read.
  *
- * **How Claude Code runs a script** (`docs/claude-code-contract.md`): as the body of an async
- * function, in script mode (never a module), with top-level `await` and `return`. So the reader
- * parses it the same way (`PARSE_OPTIONS`): script mode, the latest syntax, `await` and `return`
- * at the top. A parser leaves nothing to guess: a `/` is a division or a regular expression by
- * the grammar, and a line comment ends at every line terminator (`\r`, U+2028, U+2029 too).
- * The one statement a function body cannot hold, `export const meta = { … }` first, is read the
- * way Claude Code finds it (`metaExportAt`): its `export` is left out, the rest is parsed.
+ * **How Claude Code runs a script** (2.1.318, read from its binary; `docs/claude-code-contract.md`):
+ * the body, without its `meta` statement, inside `(async () => {'use strict'; … })()`, parsed by
+ * acorn in script mode and run in a `vm` context whose globals are `agent`, `workflow`,
+ * `parallel`, `pipeline`, `args`, `log`, `phase`, `budget`, `console` and the timers, created
+ * with `codeGeneration: { strings: false }`. So the reader parses it the same way (`PARSE_OPTIONS`):
+ * script mode, strict, the latest syntax, `await` and `return` at the top. A parser leaves
+ * nothing to guess: a `/` is a division or a regular expression by the grammar, and a line
+ * comment ends at every line terminator (`\r`, U+2028, U+2029 too). The `meta` statement is
+ * found the way Claude Code finds it (`metaExportAt`): its `export` is left out, the rest parsed.
  *
  * **What does not parse is refused whole** (`ok: false`), with the parser's message and line:
  * a launch could hide in it. That includes the few things a function body allows and a script's
  * top level does not (`new.target`): a refusal, never a guess. **An HTML-like comment is refused
  * too** (`<!--`, or `-->` at a line's start): a script reads it as a comment, a module as code
- * (`a <!--b, agent(…)` is `a < !--b, agent(…)` there). How Claude Code compiles the body is not
- * proved (`docs/claude-code-contract.md`), so the one text the two readings disagree on is never
- * judged on either.
+ * (`a <!--b, agent(…)` is `a < !--b, agent(…)` there), so the one text two readings disagree on
+ * is never judged on either.
+ *
+ * **A route around the names is refused** (`routes`). `agent` is a global of the script's
+ * context, so `globalThis.agent`, `this.agent` at the top, or `const { agent: a } = globalThis`
+ * reaches it under another name, and code built at run time (`eval`, `Function`, a function's
+ * `.constructor`) or `import()` can reach it with no name at all. Each of `eval`, `Function`,
+ * `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
+ * and a member named `constructor` refuses the whole script. Left: a computed member with a key
+ * built at run time (`x[k]`, `Reflect.get(o, k)`) is not refused, since ordinary code is full of
+ * them; with the global object and `constructor` refused by name, no route through one to
+ * `agent` is known.
  *
  * **Where acorn comes from.** Every hook bundle carries the agent guard's code (the hook table in
  * `specs.ts` holds every hook), and acorn would come with it. So this file imports acorn's types
@@ -52,8 +63,8 @@ export function useScriptParser(parser: null | ScriptParser): void {
 }
 
 /**
- * How Claude Code runs a script: an async function's body, in script mode. A hashbang is a
- * syntax error in a function body, so it is one here too.
+ * How Claude Code runs a script: an async function's body, in script mode, under
+ * `'use strict'`. A hashbang is a syntax error in a function body, so it is one here too.
  */
 const PARSE_OPTIONS: Options = {
   allowAwaitOutsideFunction: true,
@@ -62,7 +73,31 @@ const PARSE_OPTIONS: Options = {
   ecmaVersion: "latest",
   locations: true,
   sourceType: "script",
+  strict: true,
 };
+
+/**
+ * The names that reach `agent` (or any global) without naming it, or build code at run time:
+ * each refuses the whole script wherever it is used.
+ */
+const ROUTE_NAMES: readonly string[] = [
+  "eval",
+  "Function",
+  "arguments",
+  "globalThis",
+  "global",
+  "self",
+];
+
+/** The member that leads from any function to the `Function` constructor. */
+const CONSTRUCTOR = "constructor";
+
+/** A route around the names a script may use (`ROUTE_NAMES`, `this`, `import()`, `.constructor`). */
+export interface ScriptRoute {
+  line: number;
+  /** What it is, as a message names it: `` `eval` ``, `` `this` outside a function ``, … */
+  what: string;
+}
 
 /** The two markers of an HTML-like comment, as the parser reports where a comment starts. */
 const HTML_COMMENT_MARKERS = ["<!--", "-->"];
@@ -122,6 +157,8 @@ export interface ParsedScript {
   /** Every use of `agent` or `workflow` that is not a direct call. */
   handed: HandedAround[];
   ok: true;
+  /** Every route around the names (`ScriptRoute`). */
+  routes: ScriptRoute[];
   workflows: WorkflowCallRead[];
 }
 
@@ -218,11 +255,62 @@ function workflowCall(call: CallExpression): WorkflowCallRead {
 }
 
 /**
- * The children of a node that hold code: every child node, except the names that are not
- * references — a property's or a class member's own name (`{ agent: 1 }`, `x.agent`), a label,
- * and `new.target` / `import.meta`.
+ * True when the code in `field` of `node` runs with a `this` of its own, not the script's: the
+ * body and parameters of a non-arrow function, and a class field's value (the instance) or a
+ * static block (the class). A class member's computed key runs outside, with the script's.
  */
-function codeChildren(node: Node): Node[] {
+function ownThis(node: Node, field: string): boolean {
+  switch (node.type) {
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+      return field === "params" || field === "body";
+    case "PropertyDefinition":
+      return field === "value";
+    case "StaticBlock":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** The route a node is, when it is one (`ScriptRoute.what`); null otherwise. */
+function routeOf(node: Node, parent: Node | null, inFunction: boolean): null | string {
+  switch (node.type) {
+    case "Identifier": {
+      const { name } = node as Identifier;
+      return ROUTE_NAMES.includes(name) ? `\`${name}\`` : null;
+    }
+    case "ThisExpression":
+      return inFunction ? null : "`this` outside a function";
+    case "ImportExpression":
+      return "`import(…)`";
+    case "MemberExpression": {
+      const { computed, property } = node as Node & { computed: boolean; property: Node };
+      const name = computed ? fixedString(property) : (property as Identifier).name;
+      return name === CONSTRUCTOR ? "a `constructor` member" : null;
+    }
+    case "Property":
+      // `const { constructor: make } = f` reads the member as `f.constructor` does.
+      return parent?.type === "ObjectPattern" && keyOrComputedName(node) === CONSTRUCTOR
+        ? "a `constructor` member"
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** A property's name, a computed key's too when it is a fixed string (`["constructor"]`). */
+function keyOrComputedName(property: Node): null | string {
+  const { computed, key } = property as Node & { computed: boolean; key: Node };
+  return computed ? fixedString(key) : keyName(property);
+}
+
+/**
+ * The children of a node that hold code, each with its field: every child node, except the
+ * names that are not references — a property's or a class member's own name (`{ agent: 1 }`,
+ * `x.agent`), a label, and `new.target` / `import.meta`.
+ */
+function codeChildren(node: Node): Array<[string, Node]> {
   const fields = node as unknown as Record<string, unknown>;
   const skip = new Set(["loc", "range"]);
   switch (node.type) {
@@ -242,12 +330,12 @@ function codeChildren(node: Node): Node[] {
     case "MetaProperty":
       return [];
   }
-  const children: Node[] = [];
+  const children: Array<[string, Node]> = [];
   for (const [field, value] of Object.entries(fields)) {
     if (skip.has(field)) continue;
     for (const one of Array.isArray(value) ? value : [value]) {
       if (typeof one === "object" && one !== null && typeof (one as Node).type === "string") {
-        children.push(one as Node);
+        children.push([field, one as Node]);
       }
     }
   }
@@ -318,10 +406,15 @@ function parseFresh(script: string): ReadScript {
   const agents: Array<{ at: number; read: AgentCallRead }> = [];
   const workflows: Array<{ at: number; read: WorkflowCallRead }> = [];
   const handed: Array<{ at: number; read: HandedAround }> = [];
+  const routes: Array<{ at: number; read: ScriptRoute }> = [];
   // An explicit stack, not recursion: a deeply nested script cannot overflow the walk.
-  const stack: Array<{ node: Node; parent: Node | null }> = [{ node: program, parent: null }];
+  const stack: Array<{ inFunction: boolean; node: Node; parent: Node | null }> = [
+    { inFunction: false, node: program, parent: null },
+  ];
   for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
-    const { node, parent } = next;
+    const { inFunction, node, parent } = next;
+    const route = routeOf(node, parent, inFunction);
+    if (route !== null) routes.push({ at: node.start, read: { line: lineOf(node), what: route } });
     if (node.type === "Identifier" && SCRIPT_FUNCTIONS.includes((node as Identifier).name)) {
       const name = (node as Identifier).name as ScriptFunction;
       if (!directCallee(node, parent)) {
@@ -332,7 +425,9 @@ function parseFresh(script: string): ReadScript {
         workflows.push({ at: parent.start, read: workflowCall(parent) });
       }
     }
-    for (const child of codeChildren(node)) stack.push({ node: child, parent: node });
+    for (const [field, child] of codeChildren(node)) {
+      stack.push({ inFunction: inFunction || ownThis(node, field), node: child, parent: node });
+    }
   }
   const inOrder = <T>(found: Array<{ at: number; read: T }>): T[] =>
     found.sort((a, b) => a.at - b.at).map((one) => one.read);
@@ -340,6 +435,7 @@ function parseFresh(script: string): ReadScript {
     agents: inOrder(agents),
     handed: inOrder(handed),
     ok: true,
+    routes: inOrder(routes),
     workflows: inOrder(workflows),
   };
 }

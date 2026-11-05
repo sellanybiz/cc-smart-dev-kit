@@ -48,7 +48,58 @@ describe("the calls and uses it finds", () => {
       'const s = "agent(x)"; const t = `workflow(y)`; const r = /agent\\(/;',
       "const agentType = 1, agents = 2;",
     ].join("\n");
-    expect(parsed(script)).toEqual({ agents: [], handed: [], ok: true, workflows: [] });
+    expect(parsed(script)).toEqual({
+      agents: [],
+      handed: [],
+      ok: true,
+      routes: [],
+      workflows: [],
+    });
+  });
+
+  it("every route around the names, with its line: the names that reach a global or build code, top-level `this`, import(), .constructor", () => {
+    const script = [
+      'eval("x");',
+      'Function("return 1");',
+      "function f() { return arguments; }",
+      "globalThis.x;",
+      "global.x;",
+      "self.x;",
+      "this.x;",
+      'import("./x.js");',
+      "f.constructor;",
+      'f["constructor"];',
+      "const { constructor: make } = f;",
+      "const g = () => this;",
+      "class C { [this.k] = 1; }",
+    ].join("\n");
+    expect(parsed(script).routes).toEqual([
+      { line: 1, what: "`eval`" },
+      { line: 2, what: "`Function`" },
+      { line: 3, what: "`arguments`" },
+      { line: 4, what: "`globalThis`" },
+      { line: 5, what: "`global`" },
+      { line: 6, what: "`self`" },
+      { line: 7, what: "`this` outside a function" },
+      { line: 8, what: "`import(…)`" },
+      { line: 9, what: "a `constructor` member" },
+      { line: 10, what: "a `constructor` member" },
+      { line: 11, what: "a `constructor` member" },
+      { line: 12, what: "`this` outside a function" },
+      { line: 13, what: "`this` outside a function" },
+    ]);
+  });
+
+  it("what is not a route: `this` in a function, a method or a class field, those names as keys or members, a computed key", () => {
+    const script = [
+      "function f() { return this; }",
+      "const o = { m() { return this.v; }, eval: 1, self: 2, constructor: 3 };",
+      "class C { constructor() { this.a = 1; } b = this.a; static { this.c = 2; } }",
+      "o.self; o.global; o.globalThis; o.eval;",
+      "const k = 'v'; o[k];",
+      "here: { break here; }",
+    ].join("\n");
+    expect(parsed(script).routes).toEqual([]);
   });
 
   it("every other use is handed around, each with its line", () => {
@@ -189,6 +240,12 @@ describe("how it parses, and what it refuses", () => {
     });
     // A hashbang starts a script file, never a function body.
     expect(parseScript("#!/usr/bin/env node\nagent('p', {});").ok).toBe(false);
+    // Claude Code runs the body under 'use strict': what strict mode forbids does not parse.
+    expect(parseScript("with (o) { agent('p', {}); }")).toEqual({
+      line: 1,
+      ok: false,
+      why: "'with' in strict mode",
+    });
   });
 
   it("an HTML-like comment is refused, with its line; `//` and `/* */` comments that hold the markers are not", () => {

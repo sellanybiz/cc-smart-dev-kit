@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { DEPENDENCIES, MARKETPLACE_SOURCE, VERSION } from ".";
@@ -59,6 +59,23 @@ describe("the router bundle", () => {
     expect(router).not.toContain("known_marketplaces.json");
     expect(router).not.toContain("installed_plugins.json");
     expect(router).not.toContain(".claude-mem");
+  });
+});
+
+describe("the agent guard's script parser", () => {
+  test("acorn is bundled into agent-guard.js alone: no other bundle carries it", () => {
+    // Every hook bundle and the CLI carry the agent guard's code through the hook table, but
+    // only the guard's entry hands it acorn (`src/hooks/script-parser.ts`), so only its bundle
+    // may hold the parser (`.claude/rules/bundles-and-releases.md` § Dependencies). The marker
+    // is one of acorn's own error messages. It reads the committed bundles, which `bun run
+    // build:check` keeps up to date.
+    const ACORN_ONLY = "Unterminated string constant";
+    const dist = join(import.meta.dir, "..", "..", "plugin", "dist");
+    const holding = readdirSync(dist)
+      .filter((name) => name.endsWith(".js"))
+      .filter((name) => readFileSync(join(dist, name), "utf8").includes(ACORN_ONLY))
+      .sort();
+    expect(holding).toEqual(["agent-guard.js"]);
   });
 });
 

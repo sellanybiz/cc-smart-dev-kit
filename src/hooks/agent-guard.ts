@@ -376,6 +376,10 @@ const HANDED_AROUND: Record<ScriptFunction, string> = {
   ].join("\n"),
 };
 
+/** Said after a route around the names: what a script may not use (`ScriptRoute`). */
+const ROUTES_REFUSED =
+  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a function, `import(…)` and `.constructor`.';
+
 /** Said when a call's options are not what they seem: what the guard read can differ. */
 const OPTIONS_BUILT_AT_RUNTIME = [
   "Its options are not what they seem: a `...spread`, a computed `[…]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
@@ -387,6 +391,8 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * read. Three things hide the rules from the guard, and a hook must refuse what it cannot see
  * rather than let it run unchecked:
  *   - a script that does not parse (`parseScript`), where a launch could hide;
+ *   - a route around the names (`ScriptRoute`): `eval`, `Function`, `arguments`,
+ *     `globalThis`, `global`, `self`, a `this` outside a function, `import(…)`, `.constructor`;
  *   - `agent` or `workflow` used without being called at once (`const run = agent; run(…)`,
  *     `agent?.(…)`, either passed around as a value, or a name of the script's own that takes
  *     its place);
@@ -397,6 +403,13 @@ const OPTIONS_BUILT_AT_RUNTIME = [
 export function workflowRefusal(script: string): null | string {
   const read = parseScript(script);
   if (!read.ok) return unreadableScript(read.line, read.why);
+  const [route] = read.routes;
+  if (route !== undefined) {
+    return [
+      `This Workflow uses ${route.what} (line ${route.line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+      ROUTES_REFUSED,
+    ].join("\n");
+  }
   for (const name of ["agent", "workflow"] as const) {
     const handed = read.handed.find((use) => use.name === name);
     if (handed === undefined) continue;
