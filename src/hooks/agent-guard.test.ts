@@ -6,12 +6,13 @@
  * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
+import { locateCheckout } from "../project/resolve";
 import { makeRepo } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import {
@@ -302,6 +303,10 @@ describe("frontmatter launch fields", () => {
     put(paths.claudeConfigDir, "nested", "opus");
     const link = join(home, "linked-src");
     symlinkSync(join(repo, "src"), link, "dir");
+    // What the lookup stands on: the link resolves to the folder it names, and git finds the
+    // checkout from it. On a platform where either does not hold, these say which, with paths.
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "src")));
+    expect(realpathSync(locateCheckout(link)?.root ?? "")).toBe(realpathSync(repo));
     const ctx = readGuardContext(paths, { cwd: link }, NO_ENV);
     // The root's file beats the user's, and the folder the link really is beats the root's.
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
