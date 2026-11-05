@@ -118,7 +118,9 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   missing bun is one stderr line and the session goes on.
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
-  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
+  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`. One
+  exception: `agent-guard`'s entry also calls `loadScriptParser()` first, so acorn lands in
+  its bundle alone (`bundles-and-releases.md` § Dependencies).
 - The command string is fixed: the quoted shim, the mode, the quoted bundle, nothing else.
   `entries.test.ts` asserts the whole string, so a stray quote or a bare path fails a test
   rather than a person's session.
