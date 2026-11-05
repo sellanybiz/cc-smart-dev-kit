@@ -174,7 +174,7 @@ const GATEWAY_ENV_KEYS_ALL: readonly string[] = [...GATEWAY_ENV_KEYS, ...RETIRED
 const SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 
 /** Settings that would replace the person's own login with a key or a helper. */
-const LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+export const LOGIN_OVERRIDE_ENV: readonly string[] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 const envPath = (key: string): KeyPath => ["env", key];
 

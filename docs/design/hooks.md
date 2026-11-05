@@ -886,7 +886,8 @@ never, the way the review gate does (§ The review record in `workflow.md`).
 
 ### The Fable-session note
 
-`fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`: the
+`fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`. It says
+two lines, each once a session: the Fable line below, and the lead hint (further down). The
 model the main session runs on is the person's choice, and Claude never cares — no
 `additionalContext`, no error, no block. The person may not have meant the `fable` tier, though
 (it spends the plan's limits faster than Opus), so they get one `systemMessage` — a line Claude
@@ -916,15 +917,36 @@ the fable slot's chain while the gateway is on included), so there is no second 
 counts as Fable, and a tier a backend answers warns the same, naming the model (`the
 \`fable\` model, openai:gpt-5.5`).
 
-What it costs: a session that was told stops at the mark; a session on anything else pays one
-`existsSync`, and — at a stop — the transcript's tail; the gateway config and Claude Code's
-settings (is the gateway on?) are read only when the model text could be Fable at all
-(`couldBeFable`). A session nobody
-watches (`claude -p`) is told nothing and keeps no mark. The mark that keeps it to once a session
-is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`, beside the session's own name
-files (`namesDir`, one home), so the OS clears it; it is made with `wx`, so two runs that race
-cannot both speak, and a mark that cannot be made means the line is not said at all — never
-twice.
+**The lead hint** (2.2.0, the owner, 2026-11-05). The kit recommends the lead on Claude Opus at
+`high`; it never switches by itself, and it works fully on a backend lead. So the same hook says
+one more line, once a session, when the session's own model is anything but Claude Opus
+(`leadVerdict`): another Claude family, a backend, the `opus` tier a backend answers (`the
+\`opus\` model, omniroute:glm-x`), or a name no rule reads as a family. "This session runs on
+<model>. The kit works best with the lead on Claude Opus at high effort. Switch with /model.",
+with the switch that turns it off. When the `opus` tier itself is what a backend answers,
+`/model` cannot help (picking Opus picks that backend again), so the fix it names is the
+gateway's: put Claude Opus first in the `opus` slot (`/cc-smart-dev-kit:gateway`), or start the
+session with `launch --no-gateway` (`leadHintMessage`). A Fable session gets the Fable line only. Each line has its
+own mark (`.fable`, `.lead`), so a hint never hides a later Fable line, and the other way round.
+`switches.leadHint` (the person's own `workflow.json`, on by default, `resolveLeadHint`, which
+never throws: a broken file keeps it on) turns the hint off for a person who leads on a backend
+on purpose; the Fable line has no switch. A start that names no `model` (after `/clear`, or a
+recovery) says nothing, and the next stop's transcript model decides. Gateway off and the lead
+on Claude Opus: nothing to say.
+
+What it costs: once both lines are said, the hook stops at the two marks. Otherwise each model
+is judged once a session: the judgment leaves a mark named after the model
+(`<session id>.judged-<hash>`, `judgedMark`), and a later event for that model stops there,
+before the gateway config, Claude Code's settings and the workflow file are read. **The limit:
+Stop's input has no model field** (the Stop row of `docs/claude-code-contract.md`), so every stop still
+reads the transcript's tail to learn the model; the judged mark saves the reads after it, not
+that one. A model already judged is not judged again when a slot or the switch changes
+mid-session: the hint is a once-a-session note, not a watch. A session nobody watches
+(`claude -p`) is told nothing and keeps no mark. The marks are
+`<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.<kind>`, beside the session's own name
+files (`namesDir`, one home), so the OS clears them; a line's mark is made with `wx`, so two runs
+that race cannot both speak, and a mark that cannot be made means the line is not said at all —
+never twice.
 
 ### The tier note
 
@@ -968,6 +990,49 @@ gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and t
   why it should not. It rides the same marks, so it appears when the checks start failing, and
   the tiers' note alone comes back when they recover. It reaches the model at the next prompt,
   never mid-turn.
+- **The plan-usage line, at a prompt** (2.2.0, the owner, 2026-11-05). No hook input carries the
+  plan's usage: only the status line's input has `rate_limits.five_hour` and `seven_day`, and the
+  status line writes them to `<stateDir>/usage-window.json` (`src/cli/usage-window.ts`) when the
+  numbers change. At `UserPromptSubmit`, when a window first reaches 50, 75 or 90 %
+  (`USAGE_THRESHOLDS`), the context gets one line — `Plan usage (as of 13:40): 5-hour window 78%
+  used (resets 14:00). Follow /cc-smart-dev-kit:subagent-decision § Usage left.` — both windows
+  in one line when both cross (`usageLine`). "As of" is the file's `readAt`: when the status line
+  last saw the numbers change, so Claude knows the share may have grown since; a file whose time
+  cannot be read gives the line without it. Each crossing is told once a window: the session's
+  `<session id>.usage` mark keeps the highest share told and the window's reset, and a window
+  whose reset has passed starts from nothing. **Freshness comes from the reset time only**: the
+  file is written only when the numbers change, so its age says nothing; no file, a window past
+  its reset, or one with no reset time gives no line. Never the number at every prompt, and never
+  at a start. The line rides the same `additionalContext` as a changed tiers' note (the tiers
+  first) and keeps its own mark, outside the `.tiers` text, so neither hides the other; a usage
+  mark that cannot be kept drops the line rather than repeat it.
+  - **After a compaction or a clear.** A `SessionStart` whose `source` is `compact` or `clear`
+    removes the `.usage` mark: the context that heard the level is gone, so the next prompt
+    says the current level once again. A `resume` keeps its context, and the mark.
+  - **Only on the plan login** (`otherLogin`). The numbers are the claude.ai login's:
+    `rate_limits` is there only for a Pro, Max or Ultra subscriber
+    (code.claude.com/docs/en/statusline). A session whose own login wins over that one is not
+    spending them, so it gets no line. Claude Code's order
+    (code.claude.com/docs/en/authentication § Authentication precedence): a cloud provider
+    (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, read as on the way Claude Code reads a
+    switch), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`, an Anthropic profile
+    (`ANTHROPIC_PROFILE`, or both `ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID`),
+    then the subscription. The hook reads the variables from its own environment (it carries the
+    settings' `env` values) and the login keys of the folder's settings files
+    (`readGatewaySettings`, the one reader of them; the files `settingsPathsOf` lists, found
+    without git). `CLAUDE_CODE_OAUTH_TOKEN` is the subscription, and the kit's gateway keeps the
+    login (it never writes a key, `FORBIDDEN_ENV_KEYS`), so both get the line. It is read only
+    when a line is due, and a skipped line keeps no mark. **Not seen:** an `ANTHROPIC_API_KEY`
+    the person declined at Claude Code's prompt (it still counts as another login, so that
+    session misses the line), managed settings, and a profile chosen in a file rather than in
+    the environment.
+  - **Two logins on one machine.** The file lives in `<stateDir>`, which is
+    `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`: a second login kept in its own config folder (Claude
+    Code keeps each folder's credentials apart) has its own file and its own numbers. A new
+    `/login` to another account in the same folder reads the old account's file until its own
+    status line writes new numbers.
+  - **In `claude -p` too.** Unlike `fable-session`'s lines (for a person watching), this one is
+    for Claude: an unattended session spends the same plan, so it follows the same usage rule.
 - **Why a hook of its own.** `fable-session` speaks to the person and never to Claude, by its
   contract; `session-name` has another job.
 - **Machine-wide**, like `agent-guard`: no project file, a folder outside git and `claude -p`

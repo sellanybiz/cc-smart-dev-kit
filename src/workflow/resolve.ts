@@ -27,6 +27,10 @@
  * machine-wide default `switches.jobRoute` in the workflow file (`personal`), else off
  * (`default`). The `job-route` hook reads it through `resolveJobRoute`, never its own reader.
  *
+ * **`switches.leadHint` lives in the person's file alone** (`leadHintFrom`): their value
+ * (`personal`), else on (`default`). The `fable-session` hook reads it through
+ * `resolveLeadHint`, which never throws.
+ *
  * A broken personal file throws `WorkflowConfigError` (the message names the file and the
  * field): the person must hear that their file is wrong. A caller that must not fail — a
  * hook — catches it and uses the project's values and the defaults.
@@ -95,6 +99,7 @@ export interface ResolvedWorkflow {
     sessionNames: ResolvedValue<boolean>;
     jobRoute: ResolvedValue<boolean>;
     updateHold: ResolvedValue<boolean>;
+    leadHint: ResolvedValue<boolean>;
   };
 }
 
@@ -265,6 +270,27 @@ export function resolveJobRoute(
   return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
 }
 
+/** Whether the lead-model hint is on when nothing turns it off: on. */
+export const LEAD_HINT_DEFAULT = true;
+
+/**
+ * `switches.leadHint`: the person's own value in their workflow file, else on. A machine-wide
+ * switch — the hint is about the session's model, not the project — so no project file sets it.
+ */
+export function leadHintFrom(personal: PersonalWorkflow): ResolvedValue<boolean> {
+  const own = personal.switches?.leadHint;
+  return own === undefined ? current(LEAD_HINT_DEFAULT, "default") : current(own, "personal");
+}
+
+/**
+ * `switches.leadHint` on its own, for the `fable-session` hook. It never throws: a personal
+ * file that cannot be used is the case the resolver's header names for a hook, and the default
+ * (on) stands.
+ */
+export function resolveLeadHint(paths: CliPaths): ResolvedValue<boolean> {
+  return leadHintFrom(personalWorkflowOrDefault(paths));
+}
+
 /**
  * Where a value came from, as a person reads it: `project, committed on origin/dev` when the
  * project's part was read from a branch's committed file (`resolveGate`), else the bare source.
@@ -381,6 +407,7 @@ const RESOLVED: {
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
   "switches.updateHold": (r) => r.switches.updateHold,
+  "switches.leadHint": (r) => r.switches.leadHint,
 };
 
 /**
@@ -454,6 +481,7 @@ export function resolveWorkflow(
       updateHold: isHeld(updateFiles(paths.stateDir))
         ? current(true, "personal")
         : current(false, "default"),
+      leadHint: leadHintFrom(personal),
     },
   };
 }

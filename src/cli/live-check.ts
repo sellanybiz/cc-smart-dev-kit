@@ -19,6 +19,8 @@
  *
  * When every check passes, the Claude Code version is recorded in the state folder
  * (`live-check.json`); plain `doctor` then shows it. The temp folder is removed at the end.
+ * Last, one line of information: the last prompt-cache miss a status line showed on this
+ * machine, when one was recorded (`cacheMissLine`, `cache-miss.ts`).
  */
 import {
   existsSync,
@@ -32,8 +34,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
+import { formatClock } from "../gateway/limit-state";
 import { HOOK_LOG_ENV } from "../hooks/run";
 import { atomicWrite } from "../setup/write";
+import { cacheMissCause, readCacheMissRecord } from "./cache-miss";
 import type { Check } from "./check";
 import type { CliPaths } from "./paths";
 
@@ -235,8 +239,24 @@ function proveIn(
 }
 
 /**
+ * The last prompt-cache miss a status line showed on this machine (`cache-miss.ts`), as one
+ * line of information; null when none was recorded. A `claude -p` session has no status line,
+ * so the live sessions here never add one: it is what the person's own sessions saw.
+ */
+export function cacheMissLine(stateDir: string, nowMs: number): LiveCheckLine | null {
+  const miss = readCacheMissRecord(stateDir);
+  if (miss === null) return null;
+  return {
+    info: true,
+    ok: true,
+    text: `live: the last prompt-cache miss a status line showed: ${cacheMissCause(miss)}, at ${formatClock(miss.at, nowMs)}`,
+  };
+}
+
+/**
  * Runs the live check. Returns its lines; records the Claude Code version in the state
- * folder when every line passed.
+ * folder when every line passed. The last prompt-cache miss the status line recorded follows,
+ * when there is one (`cacheMissLine`).
  */
 export function runLiveCheck(
   paths: CliPaths,
@@ -290,6 +310,8 @@ export function runLiveCheck(
       atomicWrite(liveRecordFile(paths.stateDir), `${JSON.stringify(record, null, 2)}\n`, 0o600);
       lines.push({ ok: true, text: `live: passed on Claude Code ${version}; recorded` });
     }
+    const miss = cacheMissLine(paths.stateDir, Date.now());
+    if (miss !== null) lines.push(miss);
     return lines;
   } finally {
     rmSync(root, { recursive: true, force: true });

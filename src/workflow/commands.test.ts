@@ -88,6 +88,7 @@ describe("workflow show", () => {
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
       "switches.updateHold = false (default)",
+      "switches.leadHint = true (default)",
       "review-done = no (this folder is not in a git project)",
       "no project settings here: this folder is not in a git project",
     ]);
@@ -429,6 +430,32 @@ describe("workflow set and unset", () => {
     expect(run.errors).toEqual([
       "switches.updateHold is your own setting, not the project's: run it without --project (the update hold is per person, per machine)",
     ]);
+    const lead = context(repo, env);
+    expect(
+      await runWorkflow(["set", "switches.leadHint", "false", "--project"], lead.context),
+    ).toBe(1);
+    expect(lead.errors).toEqual([
+      "switches.leadHint is your own setting, not the project's: run it without --project (the lead-model hint is per person, per machine)",
+    ]);
+  });
+
+  test("the lead hint switch is a field in the person's own file, on until it says false", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "switches.leadHint", "false"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      "+ ~/.config/cc-smart-dev-kit/workflow.json: switches.leadHint = false",
+    ]);
+    expect(JSON.parse(readFileSync(paths.workflowConfigFile, "utf8"))).toEqual({
+      switches: { leadHint: false },
+    });
+    const shown = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["show"], shown.context)).toBe(0);
+    expect(shown.lines).toContain("switches.leadHint = false (personal)");
+    const off = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["unset", "switches.leadHint"], off.context)).toBe(0);
+    expect(JSON.parse(readFileSync(paths.workflowConfigFile, "utf8"))).toEqual({});
   });
 
   test("--project with no .claude/cc-smart-dev-kit.json says to run project init", async () => {
@@ -878,7 +905,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.events, alerts.sound, alerts.usagePercent, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold`,
+          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.events, alerts.sound, alerts.usagePercent, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);

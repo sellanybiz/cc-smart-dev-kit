@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
+import { cacheMissRecordFile } from "./cache-miss";
 import {
+  cacheMissLine,
   LIVE_NAME,
   type LiveDeps,
   type LiveRunner,
@@ -209,5 +211,39 @@ describe("doctor --live", () => {
     const dir = tempDir("state");
     writeFileSync(liveRecordFile(dir), "{ broken");
     expect(readLiveRecord(dir)).toBeNull();
+  });
+
+  test("2.2.0: the last prompt-cache miss a status line recorded, as information, when there is one", () => {
+    const dir = tempDir("state");
+    // 2025-10-15 10:00 UTC: another day than the clock below, so the date shows.
+    const at = Date.UTC(2025, 9, 15, 10, 0, 0) / 1000;
+    const now = Date.UTC(2025, 9, 16, 9, 0, 0);
+    expect(cacheMissLine(dir, now)).toBeNull();
+    writeFileSync(cacheMissRecordFile(dir), JSON.stringify({ at, causes: ["tools_changed"] }));
+    expect(cacheMissLine(dir, now)).toEqual({
+      info: true,
+      ok: true,
+      text: "live: the last prompt-cache miss a status line showed: tools_changed, at Oct 15 10:00",
+    });
+    writeFileSync(cacheMissRecordFile(dir), JSON.stringify({ at, causes: null }));
+    expect(cacheMissLine(dir, now)?.text).toBe(
+      "live: the last prompt-cache miss a status line showed: cause not known, at Oct 15 10:00",
+    );
+  });
+
+  test("2.2.0: the live check ends with that line", () => {
+    const { env, paths, deps } = fakeClaude("nothing");
+    mkdirSync(paths.stateDir, { recursive: true });
+    const at = Date.UTC(2025, 9, 15, 10, 0, 0) / 1000;
+    writeFileSync(
+      cacheMissRecordFile(paths.stateDir),
+      JSON.stringify({ at, causes: ["tools_changed"] }),
+    );
+    const lines = runLiveCheck(paths, env, deps);
+    expect(lines.at(-1)).toEqual({
+      info: true,
+      ok: true,
+      text: "live: the last prompt-cache miss a status line showed: tools_changed, at Oct 15 10:00",
+    });
   });
 });

@@ -60,13 +60,22 @@ switch.
 **`switches.jobRoute` has two homes, and the project's wins.** The project's `jobs.route` is its
 own choice; the person's machine-wide default sits under it as `switches.jobRoute` in their own
 `workflow.json`, and nowhere else: only the person's schema (`personalWorkflowSchema`) has a
-`switches` group, with that one field, and a project's `workflow` object refuses it. They are
+`switches` group, with the fields `PERSONAL_FILE_SWITCH_NAMES` lists, and a project's `workflow`
+object refuses it. They are
 two settings of one switch, not two copies. The resolver (`jobRouteFrom`, `src/workflow/resolve.ts`)
 reads the project's value first (`project`), then the person's (`personal`), then off
 (`default`), and `workflow show` prints which one answered. `workflow set switches.jobRoute`
 writes the person's default; with `--project` it writes the project's `jobs.route`. The
 `job-route` hook reads it through the same function (`resolveJobRoute`), with or without a
 project file, so the hook and `show` can never disagree.
+
+**`switches.leadHint` lives in the person's file alone** (2.2.0). It is the other field of that
+`switches` group: whether the `fable-session` hook tells the person once a session that the lead
+is not Claude Opus (`docs/design/hooks.md` § The Fable-session note). It is about the session's
+model, not a project, so no project file sets it, and `workflow set --project` refuses it like
+the status line and the update hold. The resolver (`leadHintFrom`) reads the person's value
+(`personal`), else on (`default`); the hook reads it through `resolveLeadHint`, which never
+throws, so a broken file keeps the hint on.
 
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
 tests, because it decides whether a command may run without a person:
