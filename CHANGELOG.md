@@ -24,8 +24,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   `research-sweep` workflow now runs on it.
 - **A review is recorded only for a review.** The review record behind the merge guard counts
   a run only when its brief, and every prompt it was given after the brief, hold the line
-  `Mode: review` alone. A consult, a redirected review or one that compacted records nothing,
-  so the merge guard asks.
+  `Mode: review` alone. A consult, a plan's second read (`Mode: plan-review`), a redirected
+  review or one that compacted records nothing, so the merge guard asks. A senior engineer in a
+  review starts no agents of its own: their notices would void the record.
 - **The agent guard reads an agent's own frontmatter.** A launch that names no `model` or
   `effort` takes them from the agent's definition, found in Claude Code's own order. A
   definition the guard cannot see is refused, as before. Workflow scripts are now read by a
@@ -70,7 +71,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
    `cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer` (or
    `workflow unset reviewAgents` for the default).
 5. A project's own add-ons, agents or skills that brief a review agent: use the new id, and put
-   `Mode: review` alone on a line of the brief.
+   `Mode: review` alone on a line of the brief. A second read of a plan uses `Mode: plan-review`
+   instead: a plan is not code, so it records no review.
 
 ## 2.1.1
 
