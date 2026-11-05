@@ -70,6 +70,7 @@ describe("recordUsageWindow", () => {
     });
     expect(readUsageWindows(paths, NOW + 60_000)).toEqual({
       fiveHour: null,
+      readAt: Date.UTC(2026, 9, 15, 10, 1, 0),
       sevenDay: { percent: 41, resetsAt: IN_3_DAYS },
     });
   });
@@ -78,8 +79,10 @@ describe("recordUsageWindow", () => {
     const paths = world();
     recordUsageWindow(paths, input(87, 41), NOW);
     recordUsageWindow(paths, input(null, null), NOW + 60_000);
+    // readAt stays at the last change: 10:00, not the 10:01 that recorded nothing.
     expect(readUsageWindows(paths, NOW + 60_000)).toEqual({
       fiveHour: { percent: 87, resetsAt: AT_13 },
+      readAt: Date.UTC(2026, 9, 15, 10, 0, 0),
       sevenDay: { percent: 41, resetsAt: IN_3_DAYS },
     });
   });
@@ -88,9 +91,9 @@ describe("recordUsageWindow", () => {
 describe("readUsageWindows", () => {
   it("no file, or one that cannot be read: neither window", () => {
     const paths = world();
-    expect(readUsageWindows(paths, NOW)).toEqual({ fiveHour: null, sevenDay: null });
+    expect(readUsageWindows(paths, NOW)).toEqual({ fiveHour: null, readAt: null, sevenDay: null });
     writeFileSync(usageWindowFile(paths), "{not json");
-    expect(readUsageWindows(paths, NOW)).toEqual({ fiveHour: null, sevenDay: null });
+    expect(readUsageWindows(paths, NOW)).toEqual({ fiveHour: null, readAt: null, sevenDay: null });
   });
 
   it("the file a kit before 2.2.0 wrote (fiveHour alone) still reads", () => {
@@ -104,6 +107,7 @@ describe("readUsageWindows", () => {
     );
     expect(readUsageWindows(paths, NOW)).toEqual({
       fiveHour: { percent: 61, resetsAt: AT_13 },
+      readAt: Date.UTC(2026, 9, 15, 9, 50, 0),
       sevenDay: null,
     });
     expect(readUsageWindow(paths, NOW)).toEqual({ percent: 61, resetsAt: AT_13 });
@@ -115,9 +119,14 @@ describe("readUsageWindows", () => {
     // Past the 5-hour reset (13:00), before the 7-day one.
     expect(readUsageWindows(paths, AT_13 * 1000)).toEqual({
       fiveHour: null,
+      readAt: NOW,
       sevenDay: { percent: 41, resetsAt: IN_3_DAYS },
     });
-    expect(readUsageWindows(paths, IN_3_DAYS * 1000)).toEqual({ fiveHour: null, sevenDay: null });
+    expect(readUsageWindows(paths, IN_3_DAYS * 1000)).toEqual({
+      fiveHour: null,
+      readAt: NOW,
+      sevenDay: null,
+    });
   });
 
   it("a window with no reset time ages out after its own span", () => {
@@ -133,10 +142,12 @@ describe("readUsageWindows", () => {
     const sixHours = NOW + 6 * 3_600_000;
     expect(readUsageWindows(paths, sixHours)).toEqual({
       fiveHour: null,
+      readAt: NOW,
       sevenDay: { percent: 30, resetsAt: null },
     });
     expect(readUsageWindows(paths, NOW + 8 * 86_400_000)).toEqual({
       fiveHour: null,
+      readAt: NOW,
       sevenDay: null,
     });
   });

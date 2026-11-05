@@ -1,24 +1,27 @@
 /**
  * The prompt cache's last miss (`cache-miss.ts`): read from the status line input in the shape
- * code.claude.com/docs/en/statusline documents, shown once a miss per session, and recorded for
- * `doctor --live`. Every expected value is written by hand.
+ * code.claude.com/docs/en/statusline documents, shown for a minute after the miss with no state,
+ * and recorded for `doctor --live`. Every expected value is written by hand.
  */
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
-  cacheMissMark,
   cacheMissOf,
   cacheMissRecordFile,
-  newCacheMiss,
+  cacheMissSegment,
   readCacheMissRecord,
 } from "./cache-miss";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
+/** 2026-10-15 10:00 UTC, in Unix seconds and in ms. */
+const AT = Date.UTC(2026, 9, 15, 10, 0, 0) / 1000;
+const AT_MS = AT * 1000;
+
 /** A status line input whose `prompt_cache` holds a miss at `at` with `cause` (as documented). */
-function input(at: null | number, cause: unknown, sessionId = SESSION): Record<string, unknown> {
+function input(at: unknown, cause: unknown): Record<string, unknown> {
   return {
     prompt_cache: {
       hit_ratio: 0.91,
@@ -27,23 +30,19 @@ function input(at: null | number, cause: unknown, sessionId = SESSION): Record<s
       misses: 2,
       warm: true,
     },
-    session_id: sessionId,
+    session_id: SESSION,
   };
 }
 
-function world() {
-  const env = { TMPDIR: tempDir("miss-tmp") };
-  const stateDir = join(tempDir("miss-state"), "state");
-  return { env, stateDir };
+function stateDir(): string {
+  return join(tempDir("miss-state"), "state");
 }
 
 describe("cacheMissOf", () => {
   it("the documented shape: the time and the causes", () => {
     expect(
-      cacheMissOf(
-        input(1_738_425_230, { causes: ["tools_changed"], tools_added: 2, tools_removed: 0 }),
-      ),
-    ).toEqual({ at: 1_738_425_230, causes: ["tools_changed"] });
+      cacheMissOf(input(AT, { causes: ["tools_changed"], tools_added: 2, tools_removed: 0 })),
+    ).toEqual({ at: AT, causes: ["tools_changed"] });
   });
 
   it("no miss yet, no prompt_cache, or not an object: nothing", () => {
@@ -58,50 +57,53 @@ describe("cacheMissOf", () => {
   });
 });
 
-describe("newCacheMiss: once a miss, per session", () => {
-  it("shown once, then not again until a new miss; each one recorded, mode 600", () => {
-    const { env, stateDir } = world();
-    const first = input(100, { causes: ["system_prompt_changed"], system_char_delta: 40 });
-    expect(newCacheMiss(first, env, stateDir)).toBe("cache miss: system_prompt_changed");
-    expect(newCacheMiss(first, env, stateDir)).toBeNull();
-    expect(readCacheMissRecord(stateDir)).toEqual({ at: 100, causes: ["system_prompt_changed"] });
-    expect(statSync(cacheMissRecordFile(stateDir)).mode & 0o777).toBe(0o600);
-    const second = input(200, { causes: ["tools_changed", "ttl_expired_5m"] });
-    expect(newCacheMiss(second, env, stateDir)).toBe("cache miss: tools_changed, ttl_expired_5m");
-    expect(newCacheMiss(second, env, stateDir)).toBeNull();
-    expect(readFileSync(cacheMissRecordFile(stateDir), "utf8")).toBe(
-      '{"at":200,"causes":["tools_changed","ttl_expired_5m"]}\n',
+describe("cacheMissSegment: for a minute after the miss, with no state", () => {
+  it("inside the minute: shown at every refresh, and recorded once, mode 600", () => {
+    const dir = stateDir();
+    const miss = input(AT, { causes: ["system_prompt_changed"], system_char_delta: 40 });
+    expect(cacheMissSegment(miss, dir, AT_MS + 1000)).toBe("cache miss: system_prompt_changed");
+    // A second refresh (or one after a cancelled run) still shows it: nothing was used up.
+    expect(cacheMissSegment(miss, dir, AT_MS + 59_000)).toBe("cache miss: system_prompt_changed");
+    expect(readCacheMissRecord(dir)).toEqual({ at: AT, causes: ["system_prompt_changed"] });
+    expect(statSync(cacheMissRecordFile(dir)).mode & 0o777).toBe(0o600);
+    expect(readFileSync(cacheMissRecordFile(dir), "utf8")).toBe(
+      `{"at":${AT},"causes":["system_prompt_changed"]}\n`,
     );
   });
 
+  it("past the minute: not shown, and not recorded", () => {
+    const dir = stateDir();
+    expect(cacheMissSegment(input(AT, { causes: ["tools_changed"] }), dir, AT_MS + 60_000)).toBe(
+      null,
+    );
+    expect(readCacheMissRecord(dir)).toBeNull();
+  });
+
+  it("a missing or bad last_miss_at: nothing", () => {
+    const dir = stateDir();
+    for (const at of [null, undefined, "1738425230", Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(cacheMissSegment(input(at, { causes: ["tools_changed"] }), dir, AT_MS)).toBeNull();
+    }
+    expect(cacheMissSegment({ session_id: SESSION }, dir, AT_MS)).toBeNull();
+  });
+
   it("a miss with no cause found says so", () => {
-    const { env, stateDir } = world();
-    expect(newCacheMiss(input(100, null), env, stateDir)).toBe("cache miss: cause not known");
+    expect(cacheMissSegment(input(AT, null), stateDir(), AT_MS)).toBe(
+      "cache miss: cause not known",
+    );
   });
 
-  it("another session sees the same miss data as its own", () => {
-    const { env, stateDir } = world();
-    const cause = { causes: ["tools_changed"] };
-    expect(newCacheMiss(input(100, cause), env, stateDir)).toBe("cache miss: tools_changed");
-    const other = input(100, cause, "99999999-2222-3333-4444-555555555555");
-    expect(newCacheMiss(other, env, stateDir)).toBe("cache miss: tools_changed");
-  });
-
-  it("a session id Claude Code would not write, or a mark that cannot be kept: nothing", () => {
-    const { env, stateDir } = world();
-    expect(newCacheMiss(input(100, null, "s-1"), env, stateDir)).toBeNull();
-    // The names folder is a FILE here, so the mark cannot be made.
-    const mark = cacheMissMark(env, SESSION);
-    mkdirSync(dirname(dirname(mark)), { recursive: true });
-    writeFileSync(dirname(mark), "");
-    expect(newCacheMiss(input(100, null), env, stateDir)).toBeNull();
-    expect(existsSync(cacheMissRecordFile(stateDir))).toBe(false);
+  it("a new miss replaces the record", () => {
+    const dir = stateDir();
+    cacheMissSegment(input(AT, { causes: ["tools_changed"] }), dir, AT_MS);
+    cacheMissSegment(input(AT + 300, { causes: ["ttl_expired_5m"] }), dir, AT_MS + 300_000);
+    expect(readCacheMissRecord(dir)).toEqual({ at: AT + 300, causes: ["ttl_expired_5m"] });
   });
 
   it("a broken record reads as none", () => {
-    const { stateDir } = world();
-    mkdirSync(stateDir, { recursive: true });
-    writeFileSync(cacheMissRecordFile(stateDir), "{ broken");
-    expect(readCacheMissRecord(stateDir)).toBeNull();
+    const dir = stateDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(cacheMissRecordFile(dir), "{ broken");
+    expect(readCacheMissRecord(dir)).toBeNull();
   });
 });

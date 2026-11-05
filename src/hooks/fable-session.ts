@@ -62,7 +62,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
 import { type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
@@ -77,9 +77,16 @@ export function fableSessionMessage(named: string): string {
   return `${COMMAND}: this session runs on ${named}, the premium model — it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
 }
 
-/** The lead hint the person sees, once a session: `named` is how it calls the model. */
-export function leadHintMessage(named: string): string {
-  return `${COMMAND}: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. Switch with /model. (To stop this hint: ${COMMAND} workflow set switches.leadHint false.)`;
+/**
+ * The lead hint the person sees, once a session: `named` is how it calls the model. When a
+ * backend answers the `opus` tier itself (`viaGateway`), `/model` cannot fix it — choosing Opus
+ * reaches the same slot — so the hint names the gateway's opus slot and a session on plain Claude.
+ */
+export function leadHintMessage(named: string, viaGateway = false): string {
+  const fix = viaGateway
+    ? `Put Claude Opus first in the gateway's opus slot (/${PLUGIN}:gateway), or start the session with ${COMMAND} launch --no-gateway.`
+    : "Switch with /model.";
+  return `${COMMAND}: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. ${fix} (To stop this hint: ${COMMAND} workflow set switches.leadHint false.)`;
 }
 
 /**
@@ -196,7 +203,8 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   if (verdict === "fable" && firstTime(fableMark)) {
     said = systemMessage(fableSessionMessage(sessionModelName(real)));
   } else if (verdict === "lead" && resolveLeadHint(paths).value && firstTime(leadMark)) {
-    said = systemMessage(leadHintMessage(sessionModelName(real)));
+    const viaGateway = real.tier === "opus" && !real.claude;
+    said = systemMessage(leadHintMessage(sessionModelName(real), viaGateway));
   }
   // Judged: whatever the verdict, this model has nothing more to say in this session. A mark
   // that cannot be made only means the next event judges it again.

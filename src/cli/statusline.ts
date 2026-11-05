@@ -32,9 +32,9 @@
  *     `checks-down.ts`'s, the same in `gateway status`, `doctor` and the session's note; a
  *     profile's record reads `in profile <name>` and names the profile's own command;
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time;
- *   - `cache miss: tools_changed`, once, in the line after a new prompt-cache miss
- *     (`cache-miss.ts`: `prompt_cache.last_miss_at` and `last_miss_cause`, once a miss per
- *     session), before the current task.
+ *   - `cache miss: tools_changed`, for a minute after a prompt-cache miss (`cache-miss.ts`:
+ *     `prompt_cache.last_miss_at` and `last_miss_cause`, `CACHE_MISS_SHOW_MS`, no state), before
+ *     the current task.
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
@@ -107,7 +107,7 @@ function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {
 
 import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
-import { newCacheMiss } from "./cache-miss";
+import { cacheMissSegment } from "./cache-miss";
 import type { CliPaths } from "./paths";
 import { contextSegment, contextUseOf, effortOf, pinnedEffortOf } from "./statusline-context";
 import { FIVE_HOUR_WINDOW, recordUsageWindow, windowOf } from "./usage-window";
@@ -305,7 +305,7 @@ export async function runStatusline(
     state = null;
   }
   const session = isJsonObject(input) ? sessionOf(paths, env) : null;
-  const cacheMiss = newCacheMiss(input, env, paths.stateDir);
+  const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
   const task = currentTask(paths, input, env);
   const text = statuslineText(
     input,

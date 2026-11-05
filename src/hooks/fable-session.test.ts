@@ -340,6 +340,9 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
   /** The hint for a lead on `named`, written out by hand. */
   const hint = (named: string) =>
     `cc-smart-dev-kit: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. Switch with /model. (To stop this hint: cc-smart-dev-kit workflow set switches.leadHint false.)`;
+  /** The hint when a backend answers the `opus` tier itself: /model cannot fix that. */
+  const viaGateway = (named: string) =>
+    `cc-smart-dev-kit: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. Put Claude Opus first in the gateway's opus slot (/cc-smart-dev-kit:gateway), or start the session with cc-smart-dev-kit launch --no-gateway. (To stop this hint: cc-smart-dev-kit workflow set switches.leadHint false.)`;
 
   it("a Claude Opus lead hears nothing, at a start, a switch and a stop, and keeps no line mark", async () => {
     const env = hookEnv();
@@ -377,12 +380,19 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
     expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
   });
 
-  it("the opus tier answered by a backend gets the hint, naming the backend", async () => {
+  it("the opus tier answered by a backend gets the hint, naming the backend and the gateway's way back", async () => {
     const env = machine(ROUTER, ROUTER, {
       slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] },
     });
     expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), env))).toBe(
-      hint("the `opus` model, omniroute:glm-x"),
+      viaGateway("the `opus` model, omniroute:glm-x"),
+    );
+    // A Sonnet lead on the same machine is pointed at /model: another family is one switch away.
+    const sonnet = machine(ROUTER, ROUTER, {
+      slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] },
+    });
+    expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), sonnet))).toBe(
+      hint("Claude Sonnet"),
     );
     // The same machine, a session on Anthropic's own address: Claude Opus answers, nothing said.
     const login = machine(ROUTER, "https://api.anthropic.com", {
@@ -449,7 +459,7 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
           env,
         ),
       ),
-    ).toBe(hint("the `opus` model, omniroute:glm-x"));
+    ).toBe(viaGateway("the `opus` model, omniroute:glm-x"));
   });
 
   it("a hint mark that cannot be made: silence, never a hint said twice", async () => {

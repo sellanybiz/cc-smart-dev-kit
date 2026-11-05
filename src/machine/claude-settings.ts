@@ -111,8 +111,11 @@ function envOf(settings: Record<string, unknown>): Record<string, string> {
   return out;
 }
 
-/** The settings files that apply to a folder, highest first, each read once. */
-function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] {
+/**
+ * The paths of the settings files that apply to a folder, highest first, each once; found
+ * without running git. Managed settings are not among them.
+ */
+export function settingsPathsOf(sources: Omit<CompactEnvSources, "env">): string[] {
   const mainLocal = join(sources.mainCheckout, ".claude", "settings.local.json");
   const projectLocal = join(sources.projectFolder, ".claude", "settings.local.json");
   return [
@@ -121,7 +124,12 @@ function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] 
     projectLocal,
     join(sources.projectFolder, ".claude", "settings.json"),
     join(sources.configDir, "settings.json"),
-  ].map(settingsObject);
+  ];
+}
+
+/** The settings files that apply to a folder, highest first, each read once. */
+function settingsFilesOf(sources: CompactEnvSources): Record<string, unknown>[] {
+  return settingsPathsOf(sources).map(settingsObject);
 }
 
 /**

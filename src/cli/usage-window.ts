@@ -45,11 +45,14 @@ export interface UsageWindow {
   resetsAt: null | number;
 }
 
-/** Both windows the file records; each null when it holds none, or none that is current. */
-export interface UsageWindows {
-  fiveHour: UsageWindow | null;
-  sevenDay: UsageWindow | null;
-}
+/** The two windows the file can hold, by their names in it. */
+export type UsageWindowName = "fiveHour" | "sevenDay";
+
+/**
+ * Both windows the file records, each null when it holds none, or none that is current; and
+ * when the status line last saw them change (`readAt`, ms; null with no file or no readable time).
+ */
+export type UsageWindows = Record<UsageWindowName, UsageWindow | null> & { readAt: null | number };
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -159,9 +162,11 @@ function currentWindow(
 /** Both recorded windows, as of `nowMs` (`currentWindow`'s rule for each). */
 export function readUsageWindows(paths: CliPaths, nowMs: number): UsageWindows {
   const stored = readStored(usageWindowFile(paths));
-  if (stored === null) return { fiveHour: null, sevenDay: null };
+  if (stored === null) return { fiveHour: null, readAt: null, sevenDay: null };
+  const readAt = Date.parse(stored.readAt);
   return {
     fiveHour: currentWindow(stored.fiveHour, stored.readAt, WINDOW_SPAN_MS, nowMs),
+    readAt: Number.isFinite(readAt) ? readAt : null,
     sevenDay: currentWindow(stored.sevenDay, stored.readAt, SEVEN_DAY_SPAN_MS, nowMs),
   };
 }

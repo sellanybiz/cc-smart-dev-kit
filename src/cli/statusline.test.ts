@@ -193,13 +193,13 @@ describe("statusline", () => {
     }
     expect(readUsageWindows(paths, NOW)).toEqual({
       fiveHour: { percent: 87, resetsAt: AT_13 },
+      readAt: NOW,
       sevenDay: { percent: 41, resetsAt: IN_3_DAYS },
     });
   });
 
-  it("2.2.0: a new prompt-cache miss shows once, after the numbers", async () => {
+  it("2.2.0: a prompt-cache miss shows for a minute, after the numbers", async () => {
     const paths = cliPaths({ HOME: tempDir("home") });
-    const env = { TMPDIR: tempDir("statusline-tmp") };
     const withMiss = (at: number, causes: string[]) => ({
       ...input(30, null),
       prompt_cache: { last_miss_at: at, last_miss_cause: { causes }, misses: 1, warm: true },
@@ -211,18 +211,20 @@ describe("statusline", () => {
       printed.push(parts.map(String).join(" "));
     };
     try {
-      const run = (data: unknown) =>
-        runStatusline(paths, async () => JSON.stringify(data), NOW, undefined, env);
-      await run(withMiss(100, ["tools_changed"]));
-      await run(withMiss(100, ["tools_changed"]));
-      await run(withMiss(200, ["ttl_expired_5m"]));
+      const run = (data: unknown, nowMs: number) =>
+        runStatusline(paths, async () => JSON.stringify(data), nowMs, undefined, {});
+      // A miss 10 s ago, refreshed twice: shown both times.
+      await run(withMiss(NOW / 1000 - 10, ["tools_changed"]), NOW);
+      await run(withMiss(NOW / 1000 - 10, ["tools_changed"]), NOW + 5000);
+      // Two minutes later, the same miss: gone.
+      await run(withMiss(NOW / 1000 - 10, ["tools_changed"]), NOW + 120_000);
     } finally {
       console.log = original;
     }
     expect(printed).toEqual([
       "Opus 5.5 · 5h 30% · cache miss: tools_changed",
+      "Opus 5.5 · 5h 30% · cache miss: tools_changed",
       "Opus 5.5 · 5h 30%",
-      "Opus 5.5 · 5h 30% · cache miss: ttl_expired_5m",
     ]);
   });
 });
