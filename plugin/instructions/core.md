@@ -37,8 +37,8 @@ instructions, the project's text wins.**
   in a subagent. **Test with the person** what only they can judge (their login, their device,
   the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
 - **In a subagent, the brief is your task.** Report to your caller. Commit only on your own
-  worktree branch when the brief allows it. Never push, start agents (the senior engineer may
-  start research agents), review yourself, message other sessions or ask the person.
+  worktree branch if the brief allows it. Never push, start agents (a senior engineer's
+  consult may run researchers), review yourself, message other sessions or ask the person.
 - **The workflow:** `cc-smart-dev-kit workflow show` says which steps happen by themselves (commit,
   push, pull request, merge, review). Read it before the first, follow it for your branch, and
   ask the person wherever it is off.

@@ -101,7 +101,8 @@ Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge
 away? For a big or risky plan, start two agents in one message: the
 `cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
 `cc-smart-dev-kit:senior-engineer`'s second read (`opus`, `xhigh`; a read of the plan, not of a
-change set), its brief with the line `Mode: review` alone on its line. Fold what they find into
+change set), its brief with the line `Mode: plan-review` alone on its line — never
+`Mode: review`, which would record the plan read as a code review. Fold what they find into
 the plan's approach and edge cases. When the plan adds UI or a new architecture, show it — a
 diagram or a mockup — rather than only describing it.
 

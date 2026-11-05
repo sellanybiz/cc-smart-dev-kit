@@ -332,6 +332,11 @@ transcript forward, up to 16 MB, so a prompt far from both ends still counts. A 
 review agent resumed for a question, a review a Stop hook sent back to work, a review that
 compacted (the summary counts as a prompt: a known limit, on the safe side), and a missing,
 unreadable or larger transcript record nothing: the safe side, where the merge guard asks.
+A plan's second read records nothing by design: its brief carries `Mode: plan-review`, which the
+whole-line match does not take, because a record of a plan read would name the lead's head
+commit as reviewed code and cover later heads with it. And a review starts no agents: a child's
+completion notice is a `queued_command` attachment, a prompt without the marker, so a review that
+started one would record nothing (`plugin/agents/senior-engineer.md`).
 The same module reads the brief alone, from the file's head, for the builder hand-back hook.
 
 **Who writes it: the review agent's own start and end** (`src/hooks/review-record.ts`,
