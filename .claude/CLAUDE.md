@@ -47,7 +47,7 @@ the first time you use it.
 ## Bun only
 
 - `bun install`, `bun add <pkg>`, `bun run <script>`, `bunx <cmd>`. Never `npm` or `npx`.
-- Runtime dependencies: `zod` and the official MCP SDK; ask before adding another.
+- Runtime dependencies: `zod`, the official MCP SDK and `acorn`; ask before adding another.
   SDK versions, approval and bundle boundary: `.claude/rules/bundles-and-releases.md` § Dependencies.
 
 ## Layout
