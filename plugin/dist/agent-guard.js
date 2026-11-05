@@ -45,6 +45,10 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
+function managedAgentsDir(platform = process.platform) {
+  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
+  return join2(root, ".claude", "agents");
+}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -80,7 +84,8 @@ function cliPaths(env = process.env) {
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
+    managedAgentsDir: managedAgentsDir()
   };
 }
 function claudeMemDataDir(env, home) {
@@ -5987,13 +5992,13 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "2.1.1",
+  version: "2.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.36.0"
+      version: ">=15.0.0"
     },
     {
       name: "frontend-design",
@@ -6222,7 +6227,7 @@ var workflowSchema = strictObject({
   crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
-  switches: strictObject({ jobRoute: boolean2().optional() }).optional()
+  switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
   autoCommit: false,
@@ -6232,7 +6237,7 @@ var workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
   fixesAfterReview: {
     lines: 200,
     files: 10,
@@ -6252,7 +6257,13 @@ var workflowDefaults = {
     usagePercent: 85
   }
 };
-var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var SWITCH_NAMES = [
+  "statusLine",
+  "sessionNames",
+  "jobRoute",
+  "updateHold",
+  "leadHint"
+];
 var POLICY_KEYS = [
   "autoCommit",
   "autoPush",
@@ -9630,6 +9641,136 @@ function lastAssistantText(transcriptPath) {
   }
   return null;
 }
+var BRIEF_HEAD_BYTES = 1024 * 1024;
+function messageText(content) {
+  if (typeof content === "string")
+    return content;
+  if (!Array.isArray(content))
+    return null;
+  return content.filter((block) => isJsonObject(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(`
+`);
+}
+var PROMPT_SCAN_MAX_BYTES = 16 * 1024 * 1024;
+var SYSTEM_REMINDER_OPEN = "<system-reminder>";
+var SYSTEM_REMINDER_CLOSE = "</system-reminder>";
+var HARMLESS_META_PREFIXES = [
+  "<command-message>",
+  "<command-name>",
+  SYSTEM_REMINDER_OPEN,
+  "Base directory for this skill:"
+];
+var STRUCTURED_OUTPUT_NUDGE = "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
+var USER_WORD = '"user"';
+function mayHoldQueuedPrompt(line) {
+  return line.includes('"attachment"') && (line.includes('"queued_command"') || line.includes('"origin"') || line.includes('"prompt"'));
+}
+function attachmentPrompt(entry) {
+  if (entry.type !== "attachment" || !isJsonObject(entry.attachment))
+    return null;
+  const attachment = entry.attachment;
+  const hasOrigin = attachment.origin !== undefined && attachment.origin !== null;
+  if (attachment.type !== "queued_command" && !hasOrigin && typeof attachment.prompt !== "string")
+    return null;
+  return typeof attachment.prompt === "string" ? attachment.prompt : "";
+}
+function harmlessText(text) {
+  if (typeof text !== "string")
+    return false;
+  if (text.trimEnd() === STRUCTURED_OUTPUT_NUDGE)
+    return true;
+  if (text.startsWith(SYSTEM_REMINDER_OPEN)) {
+    const close = text.indexOf(SYSTEM_REMINDER_CLOSE);
+    return close !== -1 && close + SYSTEM_REMINDER_CLOSE.length === text.trimEnd().length;
+  }
+  return HARMLESS_META_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+function harmlessMeta(entry, content) {
+  if (entry.isMeta !== true || entry.origin !== undefined && entry.origin !== null)
+    return false;
+  if (typeof content === "string")
+    return harmlessText(content);
+  return Array.isArray(content) && content.length > 0 && content.every((block) => isJsonObject(block) && block.type === "text" && harmlessText(block.text));
+}
+function onlyToolResults(content) {
+  return Array.isArray(content) && content.length > 0 && content.every((block) => isJsonObject(block) && block.type === "tool_result");
+}
+function scanPrompts(text, briefOnly) {
+  let brief;
+  const later = [];
+  for (const line of text.split(`
+`)) {
+    if (!line.includes(USER_WORD) && (brief === undefined || !mayHoldQueuedPrompt(line)))
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      if (brief !== undefined)
+        later.push("");
+      continue;
+    }
+    if (!isJsonObject(entry))
+      continue;
+    if (brief !== undefined) {
+      const queued = attachmentPrompt(entry);
+      if (queued !== null) {
+        later.push(queued);
+        continue;
+      }
+    }
+    if (entry.type !== "user")
+      continue;
+    const message = isJsonObject(entry.message) ? entry.message : null;
+    if (brief === undefined) {
+      if (message === null)
+        continue;
+      brief = messageText(message.content);
+      if (briefOnly)
+        break;
+      continue;
+    }
+    const content = message?.content;
+    if (onlyToolResults(content) || harmlessMeta(entry, content))
+      continue;
+    later.push(messageText(content) ?? "");
+  }
+  return { brief: brief ?? null, later };
+}
+function firstPromptText(transcriptPath) {
+  let text;
+  try {
+    const fd = openSync3(transcriptPath, "r");
+    try {
+      const buffer = Buffer.alloc(BRIEF_HEAD_BYTES);
+      const read = readSync(fd, buffer, 0, BRIEF_HEAD_BYTES, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync3(fd);
+    }
+  } catch {
+    return null;
+  }
+  return scanPrompts(text, true).brief;
+}
+function runPrompts(transcriptPath, maxBytes = PROMPT_SCAN_MAX_BYTES) {
+  let text;
+  try {
+    const fd = openSync3(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      if (size > maxBytes)
+        return null;
+      const buffer = Buffer.alloc(size);
+      const read = readSync(fd, buffer, 0, size, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync3(fd);
+    }
+  } catch {
+    return null;
+  }
+  return scanPrompts(text, false);
+}
 
 // src/hooks/prompt-source.ts
 var NOT_PERSON_PREFIXES = [
@@ -9998,14 +10139,6021 @@ async function runHookEntry(spec) {
   process.exit(result.exitCode ?? 0);
 }
 
+// node_modules/acorn/dist/acorn.mjs
+var astralIdentifierCodes = [509, 0, 227, 0, 150, 4, 294, 9, 1368, 2, 2, 1, 6, 3, 41, 2, 5, 0, 166, 1, 574, 3, 9, 9, 7, 9, 32, 4, 318, 1, 31, 4, 33, 15, 71, 10, 50, 3, 123, 2, 54, 14, 32, 10, 3, 1, 11, 3, 46, 10, 8, 0, 46, 9, 7, 2, 37, 13, 2, 9, 6, 1, 45, 0, 13, 2, 49, 13, 9, 3, 2, 11, 83, 11, 7, 0, 3, 0, 158, 11, 6, 9, 7, 3, 56, 1, 2, 6, 3, 1, 3, 2, 10, 0, 11, 1, 3, 6, 4, 4, 68, 8, 2, 0, 3, 0, 2, 3, 2, 4, 2, 0, 15, 1, 83, 17, 10, 9, 5, 0, 82, 19, 13, 9, 214, 6, 3, 8, 28, 1, 83, 16, 16, 9, 82, 12, 9, 9, 7, 19, 58, 14, 5, 9, 243, 14, 166, 9, 71, 5, 2, 1, 3, 3, 2, 0, 2, 1, 13, 9, 120, 6, 3, 6, 4, 0, 29, 9, 41, 6, 2, 3, 9, 0, 10, 10, 47, 15, 199, 7, 137, 9, 54, 7, 2, 7, 17, 9, 57, 21, 2, 13, 123, 5, 4, 0, 2, 1, 2, 6, 2, 0, 9, 9, 49, 4, 2, 1, 2, 4, 9, 9, 55, 9, 7, 0, 259, 3, 10, 1, 2, 0, 49, 6, 4, 4, 14, 10, 5350, 0, 7, 14, 11465, 27, 2343, 9, 87, 9, 39, 4, 60, 6, 26, 9, 535, 9, 470, 0, 2, 54, 8, 3, 82, 0, 12, 1, 19628, 1, 4178, 9, 519, 45, 3, 22, 481, 1, 61, 4, 4, 5, 9, 7, 3, 6, 31, 3, 149, 2, 12, 2, 9, 1, 3, 0, 33, 1, 1357, 49, 513, 54, 5, 49, 9, 0, 15, 0, 23, 4, 2, 14, 1361, 6, 2, 16, 3, 6, 2, 1, 2, 4, 101, 0, 161, 6, 10, 9, 357, 0, 62, 13, 499, 13, 245, 1, 2, 9, 233, 0, 3, 0, 8, 1, 6, 0, 475, 6, 110, 6, 6, 9, 4759, 9, 787719, 239];
+var astralIdentifierStartCodes = [0, 11, 2, 25, 2, 18, 2, 1, 2, 14, 3, 13, 35, 122, 70, 52, 268, 28, 4, 48, 48, 31, 14, 29, 6, 37, 11, 29, 3, 35, 5, 7, 2, 4, 43, 157, 19, 35, 5, 35, 5, 39, 9, 51, 13, 10, 2, 14, 2, 6, 2, 1, 2, 10, 2, 14, 2, 6, 2, 1, 4, 51, 13, 310, 10, 21, 11, 7, 25, 5, 2, 41, 2, 13, 65, 5, 3, 0, 2, 43, 2, 1, 4, 0, 3, 22, 11, 22, 10, 30, 66, 18, 2, 1, 11, 21, 11, 25, 7, 25, 39, 55, 7, 1, 65, 0, 16, 3, 2, 2, 2, 28, 43, 28, 4, 28, 36, 7, 2, 27, 28, 53, 11, 21, 11, 18, 14, 17, 111, 72, 56, 50, 14, 50, 14, 35, 39, 27, 10, 22, 251, 41, 7, 1, 17, 5, 18, 21, 18, 28, 11, 0, 9, 21, 43, 17, 47, 20, 28, 22, 13, 52, 58, 1, 3, 0, 14, 44, 33, 24, 27, 35, 30, 0, 3, 0, 9, 34, 4, 0, 13, 47, 15, 3, 22, 0, 2, 0, 36, 17, 2, 24, 20, 1, 64, 6, 2, 0, 2, 3, 2, 14, 2, 9, 8, 46, 39, 7, 3, 1, 3, 21, 2, 6, 2, 1, 2, 4, 4, 0, 19, 0, 13, 4, 31, 9, 2, 0, 3, 0, 2, 37, 2, 0, 26, 0, 2, 0, 45, 52, 19, 3, 21, 2, 31, 47, 21, 1, 2, 0, 185, 46, 42, 3, 37, 47, 21, 0, 60, 42, 14, 0, 72, 26, 38, 6, 186, 43, 117, 63, 32, 7, 3, 0, 3, 7, 2, 1, 2, 23, 16, 0, 2, 0, 95, 7, 3, 38, 17, 0, 2, 0, 29, 0, 11, 39, 8, 0, 22, 0, 12, 45, 20, 0, 19, 72, 18, 0, 182, 32, 32, 8, 2, 36, 18, 0, 50, 29, 113, 6, 2, 1, 2, 37, 22, 0, 26, 5, 2, 1, 2, 31, 15, 0, 24, 43, 22, 0, 239, 18, 16, 0, 2, 12, 2, 33, 125, 0, 80, 921, 103, 111, 6, 206, 13, 310, 2314, 96, 16, 1071, 18, 5, 26, 3994, 6, 582, 6842, 29, 1763, 568, 8, 30, 18, 78, 18, 29, 19, 47, 17, 3, 32, 20, 6, 18, 433, 44, 212, 63, 33, 24, 3, 24, 45, 74, 6, 0, 67, 12, 65, 1, 2, 0, 15, 4, 10, 7386, 37, 33, 96, 114, 14, 913, 15, 50, 7710, 3, 2, 6, 2, 1, 2, 296, 10, 0, 30, 2, 3, 0, 15, 4, 8, 395, 2309, 106, 6, 12, 4, 8, 8, 9, 5991, 84, 2, 70, 2, 1, 3, 0, 3, 1, 3, 3, 2, 11, 2, 0, 2, 6, 2, 64, 2, 3, 3, 7, 2, 6, 2, 27, 2, 3, 2, 4, 2, 0, 4, 6, 2, 340, 2, 24, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 30, 2, 24, 2, 7, 1845, 129, 15, 6, 55, 50, 49, 61, 147, 44, 11, 6, 17, 0, 322, 29, 19, 43, 485, 27, 229, 29, 3, 0, 208, 30, 2, 2, 2, 1, 2, 6, 3, 4, 10, 1, 225, 6, 2, 3, 2, 1, 2, 14, 2, 196, 60, 67, 8, 0, 1205, 3, 2, 26, 2, 1, 2, 0, 3, 0, 2, 9, 2, 3, 2, 0, 2, 0, 7, 0, 5, 0, 2, 0, 2, 0, 2, 2, 2, 1, 2, 0, 3, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 1, 2, 0, 3, 3, 2, 6, 2, 3, 2, 3, 2, 0, 2, 9, 2, 16, 6, 2, 2, 4, 2, 16, 4421, 42719, 33, 4382, 2, 5773, 3, 7472, 16, 621, 2467, 541, 1507, 4938, 6, 8489, 39815, 11327];
+var nonASCIIidentifierChars = "\u200C\u200D\xB7\u0300-\u036F\u0387\u0483-\u0487\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7-\u05C9\u0610-\u061A\u064B-\u0669\u0670\u06D6-\u06DC\u06DF-\u06E4\u06E7\u06E8\u06EA-\u06ED\u06F0-\u06F9\u0711\u0730-\u074A\u07A6-\u07B0\u07C0-\u07C9\u07EB-\u07F3\u07FD\u0816-\u0819\u081B-\u0823\u0825-\u0827\u0829-\u082D\u0859-\u085B\u0897-\u089F\u08CA-\u08E1\u08E3-\u0903\u093A-\u093C\u093E-\u094F\u0951-\u0957\u0962\u0963\u0966-\u096F\u0981-\u0983\u09BC\u09BE-\u09C4\u09C7\u09C8\u09CB-\u09CD\u09D7\u09E2\u09E3\u09E6-\u09EF\u09FE\u0A01-\u0A03\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A66-\u0A71\u0A75\u0A81-\u0A83\u0ABC\u0ABE-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AE2\u0AE3\u0AE6-\u0AEF\u0AFA-\u0AFF\u0B01-\u0B03\u0B3C\u0B3E-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B53-\u0B57\u0B62\u0B63\u0B66-\u0B6F\u0B82\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD7\u0BE6-\u0BEF\u0C00-\u0C04\u0C3C\u0C3E-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C62\u0C63\u0C66-\u0C6F\u0C81-\u0C83\u0CBC\u0CBE-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CE2\u0CE3\u0CE6-\u0CEF\u0CF3\u0D00-\u0D03\u0D3B\u0D3C\u0D3E-\u0D44\u0D46-\u0D48\u0D4A-\u0D4D\u0D57\u0D62\u0D63\u0D66-\u0D6F\u0D81-\u0D83\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E31\u0E34-\u0E3A\u0E47-\u0E4E\u0E50-\u0E59\u0EB1\u0EB4-\u0EBC\u0EC8-\u0ECE\u0ED0-\u0ED9\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E\u0F3F\u0F71-\u0F84\u0F86\u0F87\u0F8D-\u0F97\u0F99-\u0FBC\u0FC6\u102B-\u103E\u1040-\u1049\u1056-\u1059\u105E-\u1060\u1062-\u1064\u1067-\u106D\u1071-\u1074\u1082-\u108D\u108F-\u109D\u135D-\u135F\u1369-\u1371\u1712-\u1715\u1732-\u1734\u1752\u1753\u1772\u1773\u17B4-\u17D3\u17DD\u17E0-\u17E9\u180B-\u180D\u180F-\u1819\u18A9\u1920-\u192B\u1930-\u193B\u1946-\u194F\u19D0-\u19DA\u1A17-\u1A1B\u1A55-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AB0-\u1ABD\u1ABF-\u1AF0\u1B00-\u1B04\u1B34-\u1B44\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1B82\u1BA1-\u1BAD\u1BB0-\u1BB9\u1BE6-\u1BF3\u1C24-\u1C37\u1C40-\u1C49\u1C50-\u1C59\u1CD0-\u1CD2\u1CD4-\u1CE8\u1CED\u1CF4\u1CF7-\u1CF9\u1DC0-\u1DFF\u200C\u200D\u203F\u2040\u2054\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2CEF-\u2CF1\u2D7F\u2DE0-\u2DFF\u302A-\u302F\u3099\u309A\u30FB\uA620-\uA629\uA66F\uA674-\uA67D\uA69E\uA69F\uA6F0\uA6F1\uA802\uA806\uA80B\uA823-\uA827\uA82C\uA880\uA881\uA8B4-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F1\uA8FF-\uA909\uA926-\uA92D\uA947-\uA953\uA980-\uA983\uA9B3-\uA9C0\uA9D0-\uA9D9\uA9E5\uA9F0-\uA9F9\uAA29-\uAA36\uAA43\uAA4C\uAA4D\uAA50-\uAA59\uAA7B-\uAA7D\uAAB0\uAAB2-\uAAB4\uAAB7\uAAB8\uAABE\uAABF\uAAC1\uAAEB-\uAAEF\uAAF5\uAAF6\uABE3-\uABEA\uABEC\uABED\uABF0-\uABF9\uFB1E\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFF10-\uFF19\uFF3F\uFF65";
+var nonASCIIidentifierStartChars = "\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0558\u0559\u0560-\u0588\u058B\u058C\u05D0-\u05EA\u05EF-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u0870-\u0887\u0889-\u088F\u08A0-\u08C9\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C5C\u0C5D\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDC-\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D04-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E86-\u0E8A\u0E8C-\u0EA3\u0EA5\u0EA7-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u1711\u171F-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1878\u1880-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4C\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C8A\u1C90-\u1CBA\u1CBD-\u1CBF\u1CE9-\u1CEC\u1CEE-\u1CF3\u1CF5\u1CF6\u1CFA\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u208F-\u209F\u2102\u2107\u210A-\u2113\u2115\u2118-\u211D\u2124\u2126\u2128\u212A-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309B-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312F\u3131-\u318E\u31A0-\u31BF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7DD\uA7E2\uA7F1-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA8FE\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB69\uAB6C\uAB6D\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC";
+var reservedWords = {
+  3: "abstract boolean byte char class double enum export extends final float goto implements import int interface long native package private protected public short static super synchronized throws transient volatile",
+  5: "class enum extends super const export import",
+  6: "enum",
+  strict: "implements interface let package private protected public static yield",
+  strictBind: "eval arguments"
+};
+var ecma5AndLessKeywords = "break case catch continue debugger default do else finally for function if return switch throw try var while with null true false instanceof typeof void delete new in this";
+var keywords$1 = {
+  5: ecma5AndLessKeywords,
+  "5module": ecma5AndLessKeywords + " export import",
+  6: ecma5AndLessKeywords + " const class extends export import super"
+};
+var keywordRelationalOperator = /^in(stanceof)?$/;
+var nonASCIIidentifierStart = new RegExp("[" + nonASCIIidentifierStartChars + "]");
+var nonASCIIidentifier = new RegExp("[" + nonASCIIidentifierStartChars + nonASCIIidentifierChars + "]");
+function isInAstralSet(code, set) {
+  var pos = 65536;
+  for (var i = 0;i < set.length; i += 2) {
+    pos += set[i];
+    if (pos > code) {
+      return false;
+    }
+    pos += set[i + 1];
+    if (pos >= code) {
+      return true;
+    }
+  }
+  return false;
+}
+function isIdentifierStart(code, astral) {
+  if (code < 65) {
+    return code === 36;
+  }
+  if (code < 91) {
+    return true;
+  }
+  if (code < 97) {
+    return code === 95;
+  }
+  if (code < 123) {
+    return true;
+  }
+  if (code <= 65535) {
+    return code >= 170 && nonASCIIidentifierStart.test(String.fromCharCode(code));
+  }
+  if (astral === false) {
+    return false;
+  }
+  return isInAstralSet(code, astralIdentifierStartCodes);
+}
+function isIdentifierChar(code, astral) {
+  if (code < 48) {
+    return code === 36;
+  }
+  if (code < 58) {
+    return true;
+  }
+  if (code < 65) {
+    return false;
+  }
+  if (code < 91) {
+    return true;
+  }
+  if (code < 97) {
+    return code === 95;
+  }
+  if (code < 123) {
+    return true;
+  }
+  if (code <= 65535) {
+    return code >= 170 && nonASCIIidentifier.test(String.fromCharCode(code));
+  }
+  if (astral === false) {
+    return false;
+  }
+  return isInAstralSet(code, astralIdentifierStartCodes) || isInAstralSet(code, astralIdentifierCodes);
+}
+var TokenType = function TokenType(label, conf) {
+  if (conf === undefined)
+    conf = {};
+  this.label = label;
+  this.keyword = conf.keyword;
+  this.beforeExpr = !!conf.beforeExpr;
+  this.startsExpr = !!conf.startsExpr;
+  this.isLoop = !!conf.isLoop;
+  this.isAssign = !!conf.isAssign;
+  this.prefix = !!conf.prefix;
+  this.postfix = !!conf.postfix;
+  this.binop = conf.binop || null;
+  this.updateContext = null;
+};
+function binop(name, prec) {
+  return new TokenType(name, { beforeExpr: true, binop: prec });
+}
+var beforeExpr = { beforeExpr: true };
+var startsExpr = { startsExpr: true };
+var keywords = {};
+function kw(name, options) {
+  if (options === undefined)
+    options = {};
+  options.keyword = name;
+  return keywords[name] = new TokenType(name, options);
+}
+var types$1 = {
+  num: new TokenType("num", startsExpr),
+  regexp: new TokenType("regexp", startsExpr),
+  string: new TokenType("string", startsExpr),
+  name: new TokenType("name", startsExpr),
+  privateId: new TokenType("privateId", startsExpr),
+  eof: new TokenType("eof"),
+  bracketL: new TokenType("[", { beforeExpr: true, startsExpr: true }),
+  bracketR: new TokenType("]"),
+  braceL: new TokenType("{", { beforeExpr: true, startsExpr: true }),
+  braceR: new TokenType("}"),
+  parenL: new TokenType("(", { beforeExpr: true, startsExpr: true }),
+  parenR: new TokenType(")"),
+  comma: new TokenType(",", beforeExpr),
+  semi: new TokenType(";", beforeExpr),
+  colon: new TokenType(":", beforeExpr),
+  dot: new TokenType("."),
+  question: new TokenType("?", beforeExpr),
+  questionDot: new TokenType("?."),
+  arrow: new TokenType("=>", beforeExpr),
+  template: new TokenType("template"),
+  invalidTemplate: new TokenType("invalidTemplate"),
+  ellipsis: new TokenType("...", beforeExpr),
+  backQuote: new TokenType("`", startsExpr),
+  dollarBraceL: new TokenType("${", { beforeExpr: true, startsExpr: true }),
+  eq: new TokenType("=", { beforeExpr: true, isAssign: true }),
+  assign: new TokenType("_=", { beforeExpr: true, isAssign: true }),
+  incDec: new TokenType("++/--", { prefix: true, postfix: true, startsExpr: true }),
+  prefix: new TokenType("!/~", { beforeExpr: true, prefix: true, startsExpr: true }),
+  logicalOR: binop("||", 1),
+  logicalAND: binop("&&", 2),
+  bitwiseOR: binop("|", 3),
+  bitwiseXOR: binop("^", 4),
+  bitwiseAND: binop("&", 5),
+  equality: binop("==/!=/===/!==", 6),
+  relational: binop("</>/<=/>=", 7),
+  bitShift: binop("<</>>/>>>", 8),
+  plusMin: new TokenType("+/-", { beforeExpr: true, binop: 9, prefix: true, startsExpr: true }),
+  modulo: binop("%", 10),
+  star: binop("*", 10),
+  slash: binop("/", 10),
+  starstar: new TokenType("**", { beforeExpr: true }),
+  coalesce: binop("??", 1),
+  _break: kw("break"),
+  _case: kw("case", beforeExpr),
+  _catch: kw("catch"),
+  _continue: kw("continue"),
+  _debugger: kw("debugger"),
+  _default: kw("default", beforeExpr),
+  _do: kw("do", { isLoop: true, beforeExpr: true }),
+  _else: kw("else", beforeExpr),
+  _finally: kw("finally"),
+  _for: kw("for", { isLoop: true }),
+  _function: kw("function", startsExpr),
+  _if: kw("if"),
+  _return: kw("return", beforeExpr),
+  _switch: kw("switch"),
+  _throw: kw("throw", beforeExpr),
+  _try: kw("try"),
+  _var: kw("var"),
+  _const: kw("const"),
+  _while: kw("while", { isLoop: true }),
+  _with: kw("with"),
+  _new: kw("new", { beforeExpr: true, startsExpr: true }),
+  _this: kw("this", startsExpr),
+  _super: kw("super", startsExpr),
+  _class: kw("class", startsExpr),
+  _extends: kw("extends", beforeExpr),
+  _export: kw("export"),
+  _import: kw("import", startsExpr),
+  _null: kw("null", startsExpr),
+  _true: kw("true", startsExpr),
+  _false: kw("false", startsExpr),
+  _in: kw("in", { beforeExpr: true, binop: 7 }),
+  _instanceof: kw("instanceof", { beforeExpr: true, binop: 7 }),
+  _typeof: kw("typeof", { beforeExpr: true, prefix: true, startsExpr: true }),
+  _void: kw("void", { beforeExpr: true, prefix: true, startsExpr: true }),
+  _delete: kw("delete", { beforeExpr: true, prefix: true, startsExpr: true })
+};
+var lineBreak = /\r\n?|\n|\u2028|\u2029/;
+var lineBreakG = new RegExp(lineBreak.source, "g");
+function isNewLine(code) {
+  return code === 10 || code === 13 || code === 8232 || code === 8233;
+}
+function nextLineBreak(code, from, end) {
+  if (end === undefined)
+    end = code.length;
+  for (var i = from;i < end; i++) {
+    var next = code.charCodeAt(i);
+    if (isNewLine(next)) {
+      return i < end - 1 && next === 13 && code.charCodeAt(i + 1) === 10 ? i + 2 : i + 1;
+    }
+  }
+  return -1;
+}
+var nonASCIIwhitespace = /[\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]/;
+var skipWhiteSpace = /(?:\s|\/\/.*|\/\*[^]*?\*\/)*/g;
+var ref = Object.prototype;
+var hasOwnProperty = ref.hasOwnProperty;
+var toString = ref.toString;
+var hasOwn = Object.hasOwn || function(obj, propName) {
+  return hasOwnProperty.call(obj, propName);
+};
+var isArray = Array.isArray || function(obj) {
+  return toString.call(obj) === "[object Array]";
+};
+var regexpCache = Object.create(null);
+function wordsRegexp(words) {
+  return regexpCache[words] || (regexpCache[words] = new RegExp("^(?:" + words.replace(/ /g, "|") + ")$"));
+}
+function codePointToString(code) {
+  if (code <= 65535) {
+    return String.fromCharCode(code);
+  }
+  code -= 65536;
+  return String.fromCharCode((code >> 10) + 55296, (code & 1023) + 56320);
+}
+var loneSurrogate = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF])/;
+var Position = function Position(line, col) {
+  this.line = line;
+  this.column = col;
+};
+Position.prototype.offset = function offset(n) {
+  return new Position(this.line, this.column + n);
+};
+var SourceLocation = function SourceLocation(p, start, end) {
+  this.start = start;
+  this.end = end;
+  if (p.sourceFile !== null) {
+    this.source = p.sourceFile;
+  }
+};
+function getLineInfo(input, offset) {
+  for (var line = 1, cur = 0;; ) {
+    var nextBreak = nextLineBreak(input, cur, offset);
+    if (nextBreak < 0) {
+      return new Position(line, offset - cur);
+    }
+    ++line;
+    cur = nextBreak;
+  }
+}
+var defaultOptions = {
+  ecmaVersion: null,
+  sourceType: "script",
+  strict: false,
+  onInsertedSemicolon: null,
+  onTrailingComma: null,
+  allowReserved: null,
+  allowReturnOutsideFunction: false,
+  allowImportExportEverywhere: false,
+  allowAwaitOutsideFunction: null,
+  allowSuperOutsideMethod: null,
+  allowHashBang: false,
+  checkPrivateFields: true,
+  locations: false,
+  startLocation: null,
+  onToken: null,
+  onComment: null,
+  ranges: false,
+  program: null,
+  sourceFile: null,
+  directSourceFile: null,
+  preserveParens: false
+};
+var warnedAboutEcmaVersion = false;
+function getOptions(opts) {
+  var options = {};
+  for (var opt in defaultOptions) {
+    options[opt] = opts && hasOwn(opts, opt) ? opts[opt] : defaultOptions[opt];
+  }
+  if (options.ecmaVersion === "latest") {
+    options.ecmaVersion = 1e8;
+  } else if (options.ecmaVersion == null) {
+    if (!warnedAboutEcmaVersion && typeof console === "object" && console.warn) {
+      warnedAboutEcmaVersion = true;
+      console.warn(`Since Acorn 8.0.0, options.ecmaVersion is required.
+Defaulting to 2020, but this will stop working in the future.`);
+    }
+    options.ecmaVersion = 11;
+  } else if (options.ecmaVersion >= 2015) {
+    options.ecmaVersion -= 2009;
+  }
+  if (options.allowReserved == null) {
+    options.allowReserved = options.ecmaVersion < 5;
+  }
+  if (!opts || opts.allowHashBang == null) {
+    options.allowHashBang = options.ecmaVersion >= 14;
+  }
+  if (isArray(options.onToken)) {
+    var tokens = options.onToken;
+    options.onToken = function(token) {
+      return tokens.push(token);
+    };
+  }
+  if (isArray(options.onComment)) {
+    options.onComment = pushComment(options, options.onComment);
+  }
+  if (options.sourceType === "commonjs" && options.allowAwaitOutsideFunction) {
+    throw new Error("Cannot use allowAwaitOutsideFunction with sourceType: commonjs");
+  }
+  return options;
+}
+function pushComment(options, array) {
+  return function(block, text, start, end, startLoc, endLoc) {
+    var comment = {
+      type: block ? "Block" : "Line",
+      value: text,
+      start,
+      end
+    };
+    if (options.locations) {
+      comment.loc = new SourceLocation(this, startLoc, endLoc);
+    }
+    if (options.ranges) {
+      comment.range = [start, end];
+    }
+    array.push(comment);
+  };
+}
+var SCOPE_TOP = 1;
+var SCOPE_FUNCTION = 2;
+var SCOPE_ASYNC = 4;
+var SCOPE_GENERATOR = 8;
+var SCOPE_ARROW = 16;
+var SCOPE_SIMPLE_CATCH = 32;
+var SCOPE_SUPER = 64;
+var SCOPE_DIRECT_SUPER = 128;
+var SCOPE_CLASS_STATIC_BLOCK = 256;
+var SCOPE_CLASS_FIELD_INIT = 512;
+var SCOPE_SWITCH = 1024;
+var SCOPE_VAR = SCOPE_TOP | SCOPE_FUNCTION | SCOPE_CLASS_STATIC_BLOCK;
+function functionFlags(async, generator) {
+  return SCOPE_FUNCTION | (async ? SCOPE_ASYNC : 0) | (generator ? SCOPE_GENERATOR : 0);
+}
+var BIND_NONE = 0;
+var BIND_VAR = 1;
+var BIND_LEXICAL = 2;
+var BIND_FUNCTION = 3;
+var BIND_SIMPLE_CATCH = 4;
+var BIND_OUTSIDE = 5;
+var Parser = function Parser(options, input, startPos) {
+  this.options = options = getOptions(options);
+  this.sourceFile = options.sourceFile;
+  this.keywords = wordsRegexp(keywords$1[options.ecmaVersion >= 6 ? 6 : options.sourceType === "module" ? "5module" : 5]);
+  var reserved = "";
+  if (options.allowReserved !== true) {
+    reserved = reservedWords[options.ecmaVersion >= 6 ? 6 : options.ecmaVersion === 5 ? 5 : 3];
+    if (options.sourceType === "module") {
+      reserved += " await";
+    }
+  }
+  this.reservedWords = wordsRegexp(reserved);
+  var reservedStrict = (reserved ? reserved + " " : "") + reservedWords.strict;
+  this.reservedWordsStrict = wordsRegexp(reservedStrict);
+  this.reservedWordsStrictBind = wordsRegexp(reservedStrict + " " + reservedWords.strictBind);
+  this.input = String(input);
+  this.containsEsc = false;
+  this.pos = startPos || 0;
+  this.curLine = 1;
+  if (options.startLocation) {
+    this.lineStart = this.pos - options.startLocation.column;
+    this.curLine = options.startLocation.line;
+  } else if (startPos) {
+    this.lineStart = this.input.lastIndexOf(`
+`, startPos - 1) + 1;
+    if (this.options.locations) {
+      this.curLine = this.input.slice(0, this.lineStart).split(lineBreak).length;
+    }
+  } else {
+    this.lineStart = 0;
+  }
+  this.type = types$1.eof;
+  this.value = null;
+  this.start = this.end = this.pos;
+  this.startLoc = this.endLoc = this.curPosition();
+  this.lastTokEndLoc = this.lastTokStartLoc = null;
+  this.lastTokStart = this.lastTokEnd = this.pos;
+  this.context = this.initialContext();
+  this.exprAllowed = true;
+  this.inModule = options.sourceType === "module";
+  this.strict = this.inModule || options.strict === true || this.strictDirective(this.pos);
+  this.potentialArrowAt = -1;
+  this.potentialArrowInForAwait = false;
+  this.yieldPos = this.awaitPos = this.awaitIdentPos = 0;
+  this.labels = [];
+  this.undefinedExports = Object.create(null);
+  if (this.pos === 0 && options.allowHashBang && this.input.slice(0, 2) === "#!") {
+    this.skipLineComment(2);
+  }
+  this.scopeStack = [];
+  this.enterScope(this.options.sourceType === "commonjs" ? SCOPE_FUNCTION : SCOPE_TOP);
+  this.regexpState = null;
+  this.privateNameStack = [];
+};
+var prototypeAccessors = { inFunction: { configurable: true }, inGenerator: { configurable: true }, inAsync: { configurable: true }, canAwait: { configurable: true }, allowReturn: { configurable: true }, allowSuper: { configurable: true }, allowDirectSuper: { configurable: true }, treatFunctionsAsVar: { configurable: true }, allowNewDotTarget: { configurable: true }, allowUsing: { configurable: true }, inClassStaticBlock: { configurable: true } };
+Parser.prototype.parse = function parse() {
+  var this$1$1 = this;
+  var node = this.options.program || this.startNode();
+  this.nextToken();
+  return this.catchStackOverflow(function() {
+    return this$1$1.parseTopLevel(node);
+  });
+};
+prototypeAccessors.inFunction.get = function() {
+  return (this.currentVarScope().flags & SCOPE_FUNCTION) > 0;
+};
+prototypeAccessors.inGenerator.get = function() {
+  return (this.currentVarScope().flags & SCOPE_GENERATOR) > 0;
+};
+prototypeAccessors.inAsync.get = function() {
+  return (this.currentVarScope().flags & SCOPE_ASYNC) > 0;
+};
+prototypeAccessors.canAwait.get = function() {
+  for (var i = this.scopeStack.length - 1;i >= 0; i--) {
+    var ref = this.scopeStack[i];
+    var flags = ref.flags;
+    if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT)) {
+      return false;
+    }
+    if (flags & SCOPE_FUNCTION) {
+      return (flags & SCOPE_ASYNC) > 0;
+    }
+  }
+  return this.inModule && this.options.ecmaVersion >= 13 || this.options.allowAwaitOutsideFunction;
+};
+prototypeAccessors.allowReturn.get = function() {
+  if (this.inFunction) {
+    return true;
+  }
+  if (this.options.allowReturnOutsideFunction && this.currentVarScope().flags & SCOPE_TOP) {
+    return true;
+  }
+  return false;
+};
+prototypeAccessors.allowSuper.get = function() {
+  var ref = this.currentThisScope();
+  var flags = ref.flags;
+  return (flags & SCOPE_SUPER) > 0 || this.options.allowSuperOutsideMethod;
+};
+prototypeAccessors.allowDirectSuper.get = function() {
+  return (this.currentThisScope().flags & SCOPE_DIRECT_SUPER) > 0;
+};
+prototypeAccessors.treatFunctionsAsVar.get = function() {
+  return this.treatFunctionsAsVarInScope(this.currentScope());
+};
+prototypeAccessors.allowNewDotTarget.get = function() {
+  for (var i = this.scopeStack.length - 1;i >= 0; i--) {
+    var ref = this.scopeStack[i];
+    var flags = ref.flags;
+    if (flags & (SCOPE_CLASS_STATIC_BLOCK | SCOPE_CLASS_FIELD_INIT) || flags & SCOPE_FUNCTION && !(flags & SCOPE_ARROW)) {
+      return true;
+    }
+  }
+  return false;
+};
+prototypeAccessors.allowUsing.get = function() {
+  var ref = this.currentScope();
+  var flags = ref.flags;
+  if (flags & SCOPE_SWITCH) {
+    return false;
+  }
+  if (!this.inModule && flags & SCOPE_TOP) {
+    return false;
+  }
+  return true;
+};
+prototypeAccessors.inClassStaticBlock.get = function() {
+  return (this.currentVarScope().flags & SCOPE_CLASS_STATIC_BLOCK) > 0;
+};
+Parser.extend = function extend() {
+  var plugins = [], len = arguments.length;
+  while (len--)
+    plugins[len] = arguments[len];
+  var cls = this;
+  for (var i = 0;i < plugins.length; i++) {
+    cls = plugins[i](cls);
+  }
+  return cls;
+};
+Parser.parse = function parse(input, options) {
+  return new this(options, input).parse();
+};
+Parser.parseExpressionAt = function parseExpressionAt(input, pos, options) {
+  var parser = new this(options, input, pos);
+  parser.nextToken();
+  return parser.parseExpression();
+};
+Parser.tokenizer = function tokenizer(input, options) {
+  return new this(options, input);
+};
+Object.defineProperties(Parser.prototype, prototypeAccessors);
+var pp$9 = Parser.prototype;
+var literal2 = /^(?:'((?:\\[^]|[^'\\])*?)'|"((?:\\[^]|[^"\\])*?)")/;
+pp$9.strictDirective = function(start) {
+  if (this.options.ecmaVersion < 5) {
+    return false;
+  }
+  for (;; ) {
+    skipWhiteSpace.lastIndex = start;
+    start += skipWhiteSpace.exec(this.input)[0].length;
+    var match = literal2.exec(this.input.slice(start));
+    if (!match) {
+      return false;
+    }
+    if ((match[1] || match[2]) === "use strict") {
+      skipWhiteSpace.lastIndex = start + match[0].length;
+      var spaceAfter = skipWhiteSpace.exec(this.input), end = spaceAfter.index + spaceAfter[0].length;
+      var next = this.input.charAt(end);
+      return next === ";" || next === "}" || lineBreak.test(spaceAfter[0]) && !(/[(`.[+\-/*%<>=,?^&]/.test(next) || next === "!" && this.input.charAt(end + 1) === "=" || next === "i" && keywordOpAt(this, end));
+    }
+    start += match[0].length;
+    skipWhiteSpace.lastIndex = start;
+    start += skipWhiteSpace.exec(this.input)[0].length;
+    if (this.input[start] === ";") {
+      start++;
+    }
+  }
+};
+function keywordOpAt(parser, pos) {
+  var end = pos + 1, stop = Math.min(parser.input.length, pos + 11);
+  while (end < stop) {
+    var ch = parser.fullCharCodeAt(end);
+    if (!isIdentifierChar(ch, true)) {
+      break;
+    }
+    end += ch <= 65535 ? 1 : 2;
+  }
+  return end === pos + 2 && parser.input.slice(pos, end) === "in" || end === pos + 10 && parser.input.slice(pos, end) === "instanceof";
+}
+pp$9.eat = function(type) {
+  if (this.type === type) {
+    this.next();
+    return true;
+  } else {
+    return false;
+  }
+};
+pp$9.isContextual = function(name) {
+  return this.type === types$1.name && this.value === name && !this.containsEsc;
+};
+pp$9.eatContextual = function(name) {
+  if (!this.isContextual(name)) {
+    return false;
+  }
+  this.next();
+  return true;
+};
+pp$9.catchStackOverflow = function(f) {
+  try {
+    return f();
+  } catch (e) {
+    if (e instanceof Error && (/\bstack\b.*\b(exceeded|overflow)\b/i.test(e.message) || /\btoo much recursion\b/i.test(e.message))) {
+      this.raise(this.start, "Not enough stack space to parse input");
+    } else {
+      throw e;
+    }
+  }
+};
+pp$9.expectContextual = function(name) {
+  if (!this.eatContextual(name)) {
+    this.unexpected();
+  }
+};
+pp$9.canInsertSemicolon = function() {
+  return this.type === types$1.eof || this.type === types$1.braceR || lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+};
+pp$9.insertSemicolon = function() {
+  if (this.canInsertSemicolon()) {
+    if (this.options.onInsertedSemicolon) {
+      this.options.onInsertedSemicolon(this.lastTokEnd, this.lastTokEndLoc);
+    }
+    return true;
+  }
+};
+pp$9.semicolon = function() {
+  if (!this.eat(types$1.semi) && !this.insertSemicolon()) {
+    this.unexpected();
+  }
+};
+pp$9.afterTrailingComma = function(tokType, notNext) {
+  if (this.type === tokType) {
+    if (this.options.onTrailingComma) {
+      this.options.onTrailingComma(this.lastTokStart, this.lastTokStartLoc);
+    }
+    if (!notNext) {
+      this.next();
+    }
+    return true;
+  }
+};
+pp$9.expect = function(type) {
+  this.eat(type) || this.unexpected();
+};
+pp$9.unexpected = function(pos) {
+  this.raise(pos != null ? pos : this.start, "Unexpected token");
+};
+var DestructuringErrors = function DestructuringErrors() {
+  this.shorthandAssign = this.trailingComma = this.parenthesizedAssign = this.parenthesizedBind = this.doubleProto = -1;
+};
+pp$9.checkPatternErrors = function(refDestructuringErrors, isAssign) {
+  if (!refDestructuringErrors) {
+    return;
+  }
+  if (refDestructuringErrors.trailingComma > -1) {
+    this.raiseRecoverable(refDestructuringErrors.trailingComma, "Comma is not permitted after the rest element");
+  }
+  var parens = isAssign ? refDestructuringErrors.parenthesizedAssign : refDestructuringErrors.parenthesizedBind;
+  if (parens > -1) {
+    this.raiseRecoverable(parens, isAssign ? "Assigning to rvalue" : "Parenthesized pattern");
+  }
+};
+pp$9.checkExpressionErrors = function(refDestructuringErrors, andThrow) {
+  if (!refDestructuringErrors) {
+    return false;
+  }
+  var shorthandAssign = refDestructuringErrors.shorthandAssign;
+  var doubleProto = refDestructuringErrors.doubleProto;
+  if (!andThrow) {
+    return shorthandAssign >= 0 || doubleProto >= 0;
+  }
+  if (shorthandAssign >= 0) {
+    this.raise(shorthandAssign, "Shorthand property assignments are valid only in destructuring patterns");
+  }
+  if (doubleProto >= 0) {
+    this.raiseRecoverable(doubleProto, "Redefinition of __proto__ property");
+  }
+};
+pp$9.checkYieldAwaitInDefaultParams = function() {
+  if (this.yieldPos && (!this.awaitPos || this.yieldPos < this.awaitPos)) {
+    this.raise(this.yieldPos, "Yield expression cannot be a default value");
+  }
+  if (this.awaitPos) {
+    this.raise(this.awaitPos, "Await expression cannot be a default value");
+  }
+};
+pp$9.isSimpleAssignTarget = function(expr) {
+  if (expr.type === "ParenthesizedExpression") {
+    return this.isSimpleAssignTarget(expr.expression);
+  }
+  return expr.type === "Identifier" || expr.type === "MemberExpression";
+};
+var pp$8 = Parser.prototype;
+pp$8.parseTopLevel = function(node) {
+  var exports$1 = Object.create(null);
+  if (!node.body) {
+    node.body = [];
+  }
+  while (this.type !== types$1.eof) {
+    var stmt = this.parseStatement(null, true, exports$1);
+    node.body.push(stmt);
+  }
+  if (this.inModule) {
+    for (var i = 0, list = Object.keys(this.undefinedExports);i < list.length; i += 1) {
+      var name = list[i];
+      this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
+    }
+  }
+  this.adaptDirectivePrologue(node.body);
+  this.next();
+  node.sourceType = this.options.sourceType === "commonjs" ? "script" : this.options.sourceType;
+  return this.finishNode(node, "Program");
+};
+var loopLabel = { kind: "loop" };
+var switchLabel = { kind: "switch" };
+pp$8.isLet = function(context) {
+  if (this.options.ecmaVersion < 6 || !this.isContextual("let")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length, nextCh = this.fullCharCodeAt(next);
+  if (nextCh === 91 || nextCh === 92) {
+    return true;
+  }
+  if (context) {
+    return false;
+  }
+  if (nextCh === 123) {
+    return true;
+  }
+  if (isIdentifierStart(nextCh)) {
+    var start = next;
+    do {
+      next += nextCh <= 65535 ? 1 : 2;
+    } while (isIdentifierChar(nextCh = this.fullCharCodeAt(next)));
+    if (nextCh === 92) {
+      return true;
+    }
+    var ident = this.input.slice(start, next);
+    if (!keywordRelationalOperator.test(ident)) {
+      return true;
+    }
+  }
+  return false;
+};
+pp$8.isAsyncFunction = function() {
+  if (this.options.ecmaVersion < 8 || !this.isContextual("async")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length, after;
+  return !lineBreak.test(this.input.slice(this.pos, next)) && this.input.slice(next, next + 8) === "function" && (next + 8 === this.input.length || !(isIdentifierChar(after = this.fullCharCodeAt(next + 8)) || after === 92));
+};
+pp$8.isUsingKeyword = function(isAwaitUsing, isFor) {
+  if (this.options.ecmaVersion < 17 || !this.isContextual(isAwaitUsing ? "await" : "using")) {
+    return false;
+  }
+  skipWhiteSpace.lastIndex = this.pos;
+  var skip = skipWhiteSpace.exec(this.input);
+  var next = this.pos + skip[0].length;
+  if (lineBreak.test(this.input.slice(this.pos, next))) {
+    return false;
+  }
+  if (isAwaitUsing) {
+    var usingEndPos = next + 5, after;
+    if (this.input.slice(next, usingEndPos) !== "using" || usingEndPos === this.input.length || isIdentifierChar(after = this.fullCharCodeAt(usingEndPos)) || after === 92) {
+      return false;
+    }
+    skipWhiteSpace.lastIndex = usingEndPos;
+    var skipAfterUsing = skipWhiteSpace.exec(this.input);
+    next = usingEndPos + skipAfterUsing[0].length;
+    if (skipAfterUsing && lineBreak.test(this.input.slice(usingEndPos, next))) {
+      return false;
+    }
+  }
+  var ch = this.fullCharCodeAt(next);
+  if (!isIdentifierStart(ch) && ch !== 92) {
+    return false;
+  }
+  var idStart = next;
+  do {
+    next += ch <= 65535 ? 1 : 2;
+  } while (isIdentifierChar(ch = this.fullCharCodeAt(next)));
+  if (ch === 92) {
+    return true;
+  }
+  var id = this.input.slice(idStart, next);
+  if (keywordRelationalOperator.test(id)) {
+    return false;
+  }
+  if (isFor && !isAwaitUsing && id === "of") {
+    skipWhiteSpace.lastIndex = next;
+    var skipAfterOf = skipWhiteSpace.exec(this.input);
+    next = next + skipAfterOf[0].length;
+    if (this.input.charCodeAt(next) !== 61 || (ch = this.input.charCodeAt(next + 1)) === 61 || ch === 62) {
+      return false;
+    }
+  }
+  return true;
+};
+pp$8.isAwaitUsing = function(isFor) {
+  return this.isUsingKeyword(true, isFor);
+};
+pp$8.isUsing = function(isFor) {
+  return this.isUsingKeyword(false, isFor);
+};
+pp$8.parseStatement = function(context, topLevel, exports$1) {
+  var starttype = this.type, node = this.startNode(), kind;
+  if (this.isLet(context)) {
+    starttype = types$1._var;
+    kind = "let";
+  }
+  switch (starttype) {
+    case types$1._break:
+    case types$1._continue:
+      return this.parseBreakContinueStatement(node, starttype.keyword);
+    case types$1._debugger:
+      return this.parseDebuggerStatement(node);
+    case types$1._do:
+      return this.parseDoStatement(node);
+    case types$1._for:
+      return this.parseForStatement(node);
+    case types$1._function:
+      if (context && (this.strict || context !== "if" && context !== "label") && this.options.ecmaVersion >= 6) {
+        this.unexpected();
+      }
+      return this.parseFunctionStatement(node, false, !context);
+    case types$1._class:
+      if (context) {
+        this.unexpected();
+      }
+      return this.parseClass(node, true);
+    case types$1._if:
+      return this.parseIfStatement(node);
+    case types$1._return:
+      return this.parseReturnStatement(node);
+    case types$1._switch:
+      return this.parseSwitchStatement(node);
+    case types$1._throw:
+      return this.parseThrowStatement(node);
+    case types$1._try:
+      return this.parseTryStatement(node);
+    case types$1._const:
+    case types$1._var:
+      kind = kind || this.value;
+      if (context && kind !== "var") {
+        this.unexpected();
+      }
+      return this.parseVarStatement(node, kind);
+    case types$1._while:
+      return this.parseWhileStatement(node);
+    case types$1._with:
+      return this.parseWithStatement(node);
+    case types$1.braceL:
+      return this.parseBlock(true, node);
+    case types$1.semi:
+      return this.parseEmptyStatement(node);
+    case types$1._export:
+    case types$1._import:
+      if (this.options.ecmaVersion > 10 && starttype === types$1._import) {
+        skipWhiteSpace.lastIndex = this.pos;
+        var skip = skipWhiteSpace.exec(this.input);
+        var next = this.pos + skip[0].length, nextCh = this.input.charCodeAt(next);
+        if (nextCh === 40 || nextCh === 46) {
+          return this.parseExpressionStatement(node, this.parseExpression());
+        }
+      }
+      if (!this.options.allowImportExportEverywhere) {
+        if (!topLevel) {
+          this.raise(this.start, "'import' and 'export' may only appear at the top level");
+        }
+        if (!this.inModule) {
+          this.raise(this.start, "'import' and 'export' may appear only with 'sourceType: module'");
+        }
+      }
+      return starttype === types$1._import ? this.parseImport(node) : this.parseExport(node, exports$1);
+    default:
+      if (this.isAsyncFunction()) {
+        if (context) {
+          this.unexpected();
+        }
+        this.next();
+        return this.parseFunctionStatement(node, true, !context);
+      }
+      var usingKind = this.isAwaitUsing(false) ? "await using" : this.isUsing(false) ? "using" : null;
+      if (usingKind) {
+        if (!this.allowUsing) {
+          this.raise(this.start, "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement");
+        }
+        if (context) {
+          this.raise(this.start, "Using declaration is not allowed in single-statement positions");
+        }
+        if (usingKind === "await using") {
+          if (!this.canAwait) {
+            this.raise(this.start, "Await using cannot appear outside of async function");
+          }
+          this.next();
+        }
+        this.next();
+        this.parseVar(node, false, usingKind);
+        this.semicolon();
+        return this.finishNode(node, "VariableDeclaration");
+      }
+      var maybeName = this.value, expr = this.parseExpression();
+      if (starttype === types$1.name && expr.type === "Identifier" && this.eat(types$1.colon)) {
+        return this.parseLabeledStatement(node, maybeName, expr, context);
+      } else {
+        return this.parseExpressionStatement(node, expr);
+      }
+  }
+};
+pp$8.parseBreakContinueStatement = function(node, keyword) {
+  var isBreak = keyword === "break";
+  this.next();
+  if (this.eat(types$1.semi) || this.insertSemicolon()) {
+    node.label = null;
+  } else if (this.type !== types$1.name) {
+    this.unexpected();
+  } else {
+    node.label = this.parseIdent();
+    this.semicolon();
+  }
+  var i = 0;
+  for (;i < this.labels.length; ++i) {
+    var lab = this.labels[i];
+    if (node.label == null || lab.name === node.label.name) {
+      if (lab.kind != null && (isBreak || lab.kind === "loop")) {
+        break;
+      }
+      if (node.label && isBreak) {
+        break;
+      }
+    }
+  }
+  if (i === this.labels.length) {
+    this.raise(node.start, "Unsyntactic " + keyword);
+  }
+  return this.finishNode(node, isBreak ? "BreakStatement" : "ContinueStatement");
+};
+pp$8.parseDebuggerStatement = function(node) {
+  this.next();
+  this.semicolon();
+  return this.finishNode(node, "DebuggerStatement");
+};
+pp$8.parseDoStatement = function(node) {
+  this.next();
+  this.labels.push(loopLabel);
+  node.body = this.parseStatement("do");
+  this.labels.pop();
+  this.expect(types$1._while);
+  node.test = this.parseParenExpression();
+  if (this.options.ecmaVersion >= 6) {
+    this.eat(types$1.semi);
+  } else {
+    this.semicolon();
+  }
+  return this.finishNode(node, "DoWhileStatement");
+};
+pp$8.parseForStatement = function(node) {
+  this.next();
+  var awaitAt = this.options.ecmaVersion >= 9 && this.canAwait && this.eatContextual("await") ? this.lastTokStart : -1;
+  this.labels.push(loopLabel);
+  this.enterScope(0);
+  this.expect(types$1.parenL);
+  if (this.type === types$1.semi) {
+    if (awaitAt > -1) {
+      this.unexpected(awaitAt);
+    }
+    return this.parseFor(node, null);
+  }
+  var isLet = this.isLet();
+  if (this.type === types$1._var || this.type === types$1._const || isLet) {
+    var init$1 = this.startNode(), kind = isLet ? "let" : this.value;
+    this.next();
+    this.parseVar(init$1, true, kind);
+    this.finishNode(init$1, "VariableDeclaration");
+    return this.parseForAfterInit(node, init$1, awaitAt);
+  }
+  var startsWithLet = this.isContextual("let"), isForOf = false;
+  var usingKind = this.isUsing(true) ? "using" : this.isAwaitUsing(true) ? "await using" : null;
+  if (usingKind) {
+    var init$2 = this.startNode();
+    this.next();
+    if (usingKind === "await using") {
+      if (!this.canAwait) {
+        this.raise(this.start, "Await using cannot appear outside of async function");
+      }
+      this.next();
+    }
+    this.parseVar(init$2, true, usingKind);
+    this.finishNode(init$2, "VariableDeclaration");
+    return this.parseForAfterInit(node, init$2, awaitAt);
+  }
+  var containsEsc = this.containsEsc;
+  var refDestructuringErrors = new DestructuringErrors;
+  var initPos = this.start;
+  var init = awaitAt > -1 ? this.parseExprSubscripts(refDestructuringErrors, "await") : this.parseExpression(true, refDestructuringErrors);
+  if (this.type === types$1._in || (isForOf = this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+    if (awaitAt > -1) {
+      if (this.type === types$1._in) {
+        this.unexpected(awaitAt);
+      }
+      node.await = true;
+    } else if (isForOf && this.options.ecmaVersion >= 8) {
+      if (init.start === initPos && !containsEsc && init.type === "Identifier" && init.name === "async") {
+        this.unexpected();
+      } else if (this.options.ecmaVersion >= 9) {
+        node.await = false;
+      }
+    }
+    if (startsWithLet && isForOf) {
+      this.raise(init.start, "The left-hand side of a for-of loop may not start with 'let'.");
+    }
+    this.toAssignable(init, false, refDestructuringErrors);
+    this.checkLValPattern(init);
+    return this.parseForIn(node, init);
+  } else {
+    this.checkExpressionErrors(refDestructuringErrors, true);
+  }
+  if (awaitAt > -1) {
+    this.unexpected(awaitAt);
+  }
+  return this.parseFor(node, init);
+};
+pp$8.parseForAfterInit = function(node, init, awaitAt) {
+  if ((this.type === types$1._in || this.options.ecmaVersion >= 6 && this.isContextual("of")) && init.declarations.length === 1) {
+    if (this.type === types$1._in) {
+      if ((init.kind === "using" || init.kind === "await using") && !init.declarations[0].init) {
+        this.raise(this.start, "Using declaration is not allowed in for-in loops");
+      }
+      if (this.options.ecmaVersion >= 9 && awaitAt > -1) {
+        this.unexpected(awaitAt);
+      }
+    } else if (this.options.ecmaVersion >= 9) {
+      node.await = awaitAt > -1;
+    }
+    return this.parseForIn(node, init);
+  }
+  if (awaitAt > -1) {
+    this.unexpected(awaitAt);
+  }
+  return this.parseFor(node, init);
+};
+pp$8.parseFunctionStatement = function(node, isAsync, declarationPosition) {
+  this.next();
+  return this.parseFunction(node, FUNC_STATEMENT | (declarationPosition ? 0 : FUNC_HANGING_STATEMENT), false, isAsync);
+};
+pp$8.parseIfStatement = function(node) {
+  this.next();
+  node.test = this.parseParenExpression();
+  node.consequent = this.parseStatement("if");
+  node.alternate = this.eat(types$1._else) ? this.parseStatement("if") : null;
+  return this.finishNode(node, "IfStatement");
+};
+pp$8.parseReturnStatement = function(node) {
+  if (!this.allowReturn) {
+    this.raise(this.start, "'return' outside of function");
+  }
+  this.next();
+  if (this.eat(types$1.semi) || this.insertSemicolon()) {
+    node.argument = null;
+  } else {
+    node.argument = this.parseExpression();
+    this.semicolon();
+  }
+  return this.finishNode(node, "ReturnStatement");
+};
+pp$8.parseSwitchStatement = function(node) {
+  this.next();
+  node.discriminant = this.parseParenExpression();
+  node.cases = [];
+  this.expect(types$1.braceL);
+  this.labels.push(switchLabel);
+  this.enterScope(SCOPE_SWITCH);
+  var cur;
+  for (var sawDefault = false;this.type !== types$1.braceR; ) {
+    if (this.type === types$1._case || this.type === types$1._default) {
+      var isCase = this.type === types$1._case;
+      if (cur) {
+        this.finishNode(cur, "SwitchCase");
+      }
+      node.cases.push(cur = this.startNode());
+      cur.consequent = [];
+      this.next();
+      if (isCase) {
+        cur.test = this.parseExpression();
+      } else {
+        if (sawDefault) {
+          this.raiseRecoverable(this.lastTokStart, "Multiple default clauses");
+        }
+        sawDefault = true;
+        cur.test = null;
+      }
+      this.expect(types$1.colon);
+    } else {
+      if (!cur) {
+        this.unexpected();
+      }
+      cur.consequent.push(this.parseStatement(null));
+    }
+  }
+  this.exitScope();
+  if (cur) {
+    this.finishNode(cur, "SwitchCase");
+  }
+  this.next();
+  this.labels.pop();
+  return this.finishNode(node, "SwitchStatement");
+};
+pp$8.parseThrowStatement = function(node) {
+  this.next();
+  if (lineBreak.test(this.input.slice(this.lastTokEnd, this.start))) {
+    this.raise(this.lastTokEnd, "Illegal newline after throw");
+  }
+  node.argument = this.parseExpression();
+  this.semicolon();
+  return this.finishNode(node, "ThrowStatement");
+};
+var empty$1 = [];
+pp$8.parseCatchClauseParam = function() {
+  var param = this.parseBindingAtom();
+  var simple = param.type === "Identifier";
+  this.enterScope(simple ? SCOPE_SIMPLE_CATCH : 0);
+  this.checkLValPattern(param, simple ? BIND_SIMPLE_CATCH : BIND_LEXICAL);
+  this.expect(types$1.parenR);
+  return param;
+};
+pp$8.parseTryStatement = function(node) {
+  this.next();
+  node.block = this.parseBlock();
+  node.handler = null;
+  if (this.type === types$1._catch) {
+    var clause = this.startNode();
+    this.next();
+    if (this.eat(types$1.parenL)) {
+      clause.param = this.parseCatchClauseParam();
+    } else {
+      if (this.options.ecmaVersion < 10) {
+        this.unexpected();
+      }
+      clause.param = null;
+      this.enterScope(0);
+    }
+    clause.body = this.parseBlock(false);
+    this.exitScope();
+    node.handler = this.finishNode(clause, "CatchClause");
+  }
+  node.finalizer = this.eat(types$1._finally) ? this.parseBlock() : null;
+  if (!node.handler && !node.finalizer) {
+    this.raise(node.start, "Missing catch or finally clause");
+  }
+  return this.finishNode(node, "TryStatement");
+};
+pp$8.parseVarStatement = function(node, kind, allowMissingInitializer) {
+  this.next();
+  this.parseVar(node, false, kind, allowMissingInitializer);
+  this.semicolon();
+  return this.finishNode(node, "VariableDeclaration");
+};
+pp$8.parseWhileStatement = function(node) {
+  this.next();
+  node.test = this.parseParenExpression();
+  this.labels.push(loopLabel);
+  node.body = this.parseStatement("while");
+  this.labels.pop();
+  return this.finishNode(node, "WhileStatement");
+};
+pp$8.parseWithStatement = function(node) {
+  if (this.strict) {
+    this.raise(this.start, "'with' in strict mode");
+  }
+  this.next();
+  node.object = this.parseParenExpression();
+  node.body = this.parseStatement("with");
+  return this.finishNode(node, "WithStatement");
+};
+pp$8.parseEmptyStatement = function(node) {
+  this.next();
+  return this.finishNode(node, "EmptyStatement");
+};
+pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
+  for (var i$1 = 0, list = this.labels;i$1 < list.length; i$1 += 1) {
+    var label = list[i$1];
+    if (label.name === maybeName) {
+      this.raise(expr.start, "Label '" + maybeName + "' is already declared");
+    }
+  }
+  var kind = this.type.isLoop ? "loop" : this.type === types$1._switch ? "switch" : null;
+  for (var i = this.labels.length - 1;i >= 0; i--) {
+    var label$1 = this.labels[i];
+    if (label$1.statementStart === node.start) {
+      label$1.statementStart = this.start;
+      label$1.kind = kind;
+    } else {
+      break;
+    }
+  }
+  this.labels.push({ name: maybeName, kind, statementStart: this.start });
+  node.body = this.parseStatement(context ? context.indexOf("label") === -1 ? context + "label" : context : "label");
+  this.labels.pop();
+  node.label = expr;
+  return this.finishNode(node, "LabeledStatement");
+};
+pp$8.parseExpressionStatement = function(node, expr) {
+  node.expression = expr;
+  this.semicolon();
+  return this.finishNode(node, "ExpressionStatement");
+};
+pp$8.parseBlock = function(createNewLexicalScope, node, exitStrict) {
+  if (createNewLexicalScope === undefined)
+    createNewLexicalScope = true;
+  if (node === undefined)
+    node = this.startNode();
+  node.body = [];
+  this.expect(types$1.braceL);
+  if (createNewLexicalScope) {
+    this.enterScope(0);
+  }
+  while (this.type !== types$1.braceR) {
+    var stmt = this.parseStatement(null);
+    node.body.push(stmt);
+  }
+  if (exitStrict) {
+    this.strict = false;
+  }
+  this.next();
+  if (createNewLexicalScope) {
+    this.exitScope();
+  }
+  return this.finishNode(node, "BlockStatement");
+};
+pp$8.parseFor = function(node, init) {
+  node.init = init;
+  this.expect(types$1.semi);
+  node.test = this.type === types$1.semi ? null : this.parseExpression();
+  this.expect(types$1.semi);
+  node.update = this.type === types$1.parenR ? null : this.parseExpression();
+  this.expect(types$1.parenR);
+  node.body = this.parseStatement("for");
+  this.exitScope();
+  this.labels.pop();
+  return this.finishNode(node, "ForStatement");
+};
+pp$8.parseForIn = function(node, init) {
+  var isForIn = this.type === types$1._in;
+  this.next();
+  if (init.type === "VariableDeclaration" && init.declarations[0].init != null && (!isForIn || this.options.ecmaVersion < 8 || this.strict || init.kind !== "var" || init.declarations[0].id.type !== "Identifier")) {
+    this.raise(init.start, (isForIn ? "for-in" : "for-of") + " loop variable declaration may not have an initializer");
+  }
+  node.left = init;
+  node.right = isForIn ? this.parseExpression() : this.parseMaybeAssign();
+  this.expect(types$1.parenR);
+  node.body = this.parseStatement("for");
+  this.exitScope();
+  this.labels.pop();
+  return this.finishNode(node, isForIn ? "ForInStatement" : "ForOfStatement");
+};
+pp$8.parseVar = function(node, isFor, kind, allowMissingInitializer) {
+  node.declarations = [];
+  node.kind = kind;
+  for (;; ) {
+    var decl = this.startNode();
+    this.parseVarId(decl, kind);
+    if (this.eat(types$1.eq)) {
+      decl.init = this.parseMaybeAssign(isFor);
+    } else if (!allowMissingInitializer && kind === "const" && !(this.type === types$1._in || this.options.ecmaVersion >= 6 && this.isContextual("of"))) {
+      this.unexpected();
+    } else if (!allowMissingInitializer && (kind === "using" || kind === "await using") && this.options.ecmaVersion >= 17 && this.type !== types$1._in && !this.isContextual("of")) {
+      this.raise(this.lastTokEnd, "Missing initializer in " + kind + " declaration");
+    } else if (!allowMissingInitializer && decl.id.type !== "Identifier" && !(isFor && (this.type === types$1._in || this.isContextual("of")))) {
+      this.raise(this.lastTokEnd, "Complex binding patterns require an initialization value");
+    } else {
+      decl.init = null;
+    }
+    node.declarations.push(this.finishNode(decl, "VariableDeclarator"));
+    if (!this.eat(types$1.comma)) {
+      break;
+    }
+  }
+  return node;
+};
+pp$8.parseVarId = function(decl, kind) {
+  decl.id = kind === "using" || kind === "await using" ? this.parseIdent() : this.parseBindingAtom();
+  this.checkLValPattern(decl.id, kind === "var" ? BIND_VAR : BIND_LEXICAL, false);
+};
+var FUNC_STATEMENT = 1;
+var FUNC_HANGING_STATEMENT = 2;
+var FUNC_NULLABLE_ID = 4;
+pp$8.parseFunction = function(node, statement, allowExpressionBody, isAsync, forInit) {
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 9 || this.options.ecmaVersion >= 6 && !isAsync) {
+    if (this.type === types$1.star && statement & FUNC_HANGING_STATEMENT) {
+      this.unexpected();
+    }
+    node.generator = this.eat(types$1.star);
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  if (statement & FUNC_STATEMENT) {
+    node.id = statement & FUNC_NULLABLE_ID && this.type !== types$1.name ? null : this.parseIdent();
+    if (node.id && !(statement & FUNC_HANGING_STATEMENT)) {
+      this.checkLValSimple(node.id, this.strict || node.generator || node.async ? this.treatFunctionsAsVar ? BIND_VAR : BIND_LEXICAL : BIND_FUNCTION);
+    }
+  }
+  var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  this.enterScope(functionFlags(node.async, node.generator));
+  if (!(statement & FUNC_STATEMENT)) {
+    node.id = this.type === types$1.name ? this.parseIdent() : null;
+  }
+  this.parseFunctionParams(node);
+  this.parseFunctionBody(node, allowExpressionBody, false, forInit);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, statement & FUNC_STATEMENT ? "FunctionDeclaration" : "FunctionExpression");
+};
+pp$8.parseFunctionParams = function(node) {
+  this.expect(types$1.parenL);
+  node.params = this.parseBindingList(types$1.parenR, false, this.options.ecmaVersion >= 8);
+  this.checkYieldAwaitInDefaultParams();
+};
+pp$8.parseClass = function(node, isStatement) {
+  this.next();
+  var oldStrict = this.strict;
+  this.strict = true;
+  this.parseClassId(node, isStatement);
+  this.parseClassSuper(node);
+  var privateNameMap = this.enterClassBody();
+  var classBody = this.startNode();
+  var hadConstructor = false;
+  classBody.body = [];
+  this.expect(types$1.braceL);
+  while (this.type !== types$1.braceR) {
+    var element = this.parseClassElement(node.superClass !== null);
+    if (element) {
+      classBody.body.push(element);
+      if (element.type === "MethodDefinition" && element.kind === "constructor") {
+        if (hadConstructor) {
+          this.raiseRecoverable(element.start, "Duplicate constructor in the same class");
+        }
+        hadConstructor = true;
+      } else if (element.key && element.key.type === "PrivateIdentifier" && isPrivateNameConflicted(privateNameMap, element)) {
+        this.raiseRecoverable(element.key.start, "Identifier '#" + element.key.name + "' has already been declared");
+      }
+    }
+  }
+  this.strict = oldStrict;
+  this.next();
+  node.body = this.finishNode(classBody, "ClassBody");
+  this.exitClassBody();
+  return this.finishNode(node, isStatement ? "ClassDeclaration" : "ClassExpression");
+};
+pp$8.parseClassElement = function(constructorAllowsSuper) {
+  if (this.eat(types$1.semi)) {
+    return null;
+  }
+  var ecmaVersion = this.options.ecmaVersion;
+  var node = this.startNode();
+  var keyName = "";
+  var isGenerator = false;
+  var isAsync = false;
+  var kind = "method";
+  var isStatic = false;
+  if (this.eatContextual("static")) {
+    if (ecmaVersion >= 13 && this.eat(types$1.braceL)) {
+      this.parseClassStaticBlock(node);
+      return node;
+    }
+    if (this.isClassElementNameStart() || this.type === types$1.star) {
+      isStatic = true;
+    } else {
+      keyName = "static";
+    }
+  }
+  node.static = isStatic;
+  if (!keyName && ecmaVersion >= 8 && this.eatContextual("async")) {
+    if ((this.isClassElementNameStart() || this.type === types$1.star) && !this.canInsertSemicolon()) {
+      isAsync = true;
+    } else {
+      keyName = "async";
+    }
+  }
+  if (!keyName && (ecmaVersion >= 9 || !isAsync) && this.eat(types$1.star)) {
+    isGenerator = true;
+  }
+  if (!keyName && !isAsync && !isGenerator) {
+    var lastValue = this.value;
+    if (this.eatContextual("get") || this.eatContextual("set")) {
+      if (this.isClassElementNameStart()) {
+        kind = lastValue;
+      } else {
+        keyName = lastValue;
+      }
+    }
+  }
+  if (keyName) {
+    node.computed = false;
+    node.key = this.startNodeAt(this.lastTokStart, this.lastTokStartLoc);
+    node.key.name = keyName;
+    this.finishNode(node.key, "Identifier");
+  } else {
+    this.parseClassElementName(node);
+  }
+  if (ecmaVersion < 13 || this.type === types$1.parenL || kind !== "method" || isGenerator || isAsync) {
+    var isConstructor = !node.static && checkKeyName(node, "constructor");
+    var allowsDirectSuper = isConstructor && constructorAllowsSuper;
+    if (isConstructor && kind !== "method") {
+      this.raise(node.key.start, "Constructor can't have get/set modifier");
+    }
+    node.kind = isConstructor ? "constructor" : kind;
+    this.parseClassMethod(node, isGenerator, isAsync, allowsDirectSuper);
+  } else {
+    this.parseClassField(node);
+  }
+  return node;
+};
+pp$8.isClassElementNameStart = function() {
+  return this.type === types$1.name || this.type === types$1.privateId || this.type === types$1.num || this.type === types$1.string || this.type === types$1.bracketL || this.type.keyword;
+};
+pp$8.parseClassElementName = function(element) {
+  if (this.type === types$1.privateId) {
+    if (this.value === "constructor") {
+      this.raise(this.start, "Classes can't have an element named '#constructor'");
+    }
+    element.computed = false;
+    element.key = this.parsePrivateIdent();
+  } else {
+    this.parsePropertyName(element);
+  }
+};
+pp$8.parseClassMethod = function(method, isGenerator, isAsync, allowsDirectSuper) {
+  var key = method.key;
+  if (method.kind === "constructor") {
+    if (isGenerator) {
+      this.raise(key.start, "Constructor can't be a generator");
+    }
+    if (isAsync) {
+      this.raise(key.start, "Constructor can't be an async method");
+    }
+  } else if (method.static && checkKeyName(method, "prototype")) {
+    this.raise(key.start, "Classes may not have a static property named prototype");
+  }
+  var value = method.value = this.parseMethod(isGenerator, isAsync, allowsDirectSuper);
+  if (method.kind === "get" && value.params.length !== 0) {
+    this.raiseRecoverable(value.start, "getter should have no params");
+  }
+  if (method.kind === "set" && value.params.length !== 1) {
+    this.raiseRecoverable(value.start, "setter should have exactly one param");
+  }
+  if (method.kind === "set" && value.params[0].type === "RestElement") {
+    this.raiseRecoverable(value.params[0].start, "Setter cannot use rest params");
+  }
+  return this.finishNode(method, "MethodDefinition");
+};
+pp$8.parseClassField = function(field) {
+  if (checkKeyName(field, "constructor")) {
+    this.raise(field.key.start, "Classes can't have a field named 'constructor'");
+  } else if (field.static && checkKeyName(field, "prototype")) {
+    this.raise(field.key.start, "Classes can't have a static field named 'prototype'");
+  }
+  if (this.eat(types$1.eq)) {
+    this.enterScope(SCOPE_CLASS_FIELD_INIT | SCOPE_SUPER);
+    field.value = this.parseMaybeAssign();
+    this.exitScope();
+  } else {
+    field.value = null;
+  }
+  this.semicolon();
+  return this.finishNode(field, "PropertyDefinition");
+};
+pp$8.parseClassStaticBlock = function(node) {
+  node.body = [];
+  var oldLabels = this.labels;
+  this.labels = [];
+  this.enterScope(SCOPE_CLASS_STATIC_BLOCK | SCOPE_SUPER);
+  while (this.type !== types$1.braceR) {
+    var stmt = this.parseStatement(null);
+    node.body.push(stmt);
+  }
+  this.next();
+  this.exitScope();
+  this.labels = oldLabels;
+  return this.finishNode(node, "StaticBlock");
+};
+pp$8.parseClassId = function(node, isStatement) {
+  if (this.type === types$1.name) {
+    node.id = this.parseIdent();
+    if (isStatement) {
+      this.checkLValSimple(node.id, BIND_LEXICAL, false);
+    }
+  } else {
+    if (isStatement === true) {
+      this.unexpected();
+    }
+    node.id = null;
+  }
+};
+pp$8.parseClassSuper = function(node) {
+  node.superClass = this.eat(types$1._extends) ? this.parseExprSubscripts(null, false) : null;
+};
+pp$8.enterClassBody = function() {
+  var element = { declared: Object.create(null), used: [] };
+  this.privateNameStack.push(element);
+  return element.declared;
+};
+pp$8.exitClassBody = function() {
+  var ref = this.privateNameStack.pop();
+  var declared = ref.declared;
+  var used = ref.used;
+  if (!this.options.checkPrivateFields) {
+    return;
+  }
+  var len = this.privateNameStack.length;
+  var parent = len === 0 ? null : this.privateNameStack[len - 1];
+  for (var i = 0;i < used.length; ++i) {
+    var id = used[i];
+    if (!hasOwn(declared, id.name)) {
+      if (parent) {
+        parent.used.push(id);
+      } else {
+        this.raiseRecoverable(id.start, "Private field '#" + id.name + "' must be declared in an enclosing class");
+      }
+    }
+  }
+};
+function isPrivateNameConflicted(privateNameMap, element) {
+  var name = element.key.name;
+  var curr = privateNameMap[name];
+  var next = "true";
+  if (element.type === "MethodDefinition" && (element.kind === "get" || element.kind === "set")) {
+    next = (element.static ? "s" : "i") + element.kind;
+  }
+  if (curr === "iget" && next === "iset" || curr === "iset" && next === "iget" || curr === "sget" && next === "sset" || curr === "sset" && next === "sget") {
+    privateNameMap[name] = "true";
+    return false;
+  } else if (!curr) {
+    privateNameMap[name] = next;
+    return false;
+  } else {
+    return true;
+  }
+}
+function checkKeyName(node, name) {
+  var computed = node.computed;
+  var key = node.key;
+  return !computed && (key.type === "Identifier" && key.name === name || key.type === "Literal" && key.value === name);
+}
+pp$8.parseExportAllDeclaration = function(node, exports$1) {
+  if (this.options.ecmaVersion >= 11) {
+    if (this.eatContextual("as")) {
+      node.exported = this.parseModuleExportName();
+      this.checkExport(exports$1, node.exported, this.lastTokStart);
+    } else {
+      node.exported = null;
+    }
+  }
+  this.expectContextual("from");
+  if (this.type !== types$1.string) {
+    this.unexpected();
+  }
+  node.source = this.parseExprAtom();
+  if (this.options.ecmaVersion >= 16) {
+    node.attributes = this.parseWithClause();
+  }
+  this.semicolon();
+  return this.finishNode(node, "ExportAllDeclaration");
+};
+pp$8.parseExport = function(node, exports$1) {
+  this.next();
+  if (this.eat(types$1.star)) {
+    return this.parseExportAllDeclaration(node, exports$1);
+  }
+  if (this.eat(types$1._default)) {
+    this.checkExport(exports$1, "default", this.lastTokStart);
+    node.declaration = this.parseExportDefaultDeclaration();
+    return this.finishNode(node, "ExportDefaultDeclaration");
+  }
+  if (this.shouldParseExportStatement()) {
+    node.declaration = this.parseExportDeclaration(node);
+    if (node.declaration.type === "VariableDeclaration") {
+      this.checkVariableExport(exports$1, node.declaration.declarations);
+    } else {
+      this.checkExport(exports$1, node.declaration.id, node.declaration.id.start);
+    }
+    node.specifiers = [];
+    node.source = null;
+    if (this.options.ecmaVersion >= 16) {
+      node.attributes = [];
+    }
+  } else {
+    node.declaration = null;
+    node.specifiers = this.parseExportSpecifiers(exports$1);
+    if (this.eatContextual("from")) {
+      if (this.type !== types$1.string) {
+        this.unexpected();
+      }
+      node.source = this.parseExprAtom();
+      if (this.options.ecmaVersion >= 16) {
+        node.attributes = this.parseWithClause();
+      }
+    } else {
+      for (var i = 0, list = node.specifiers;i < list.length; i += 1) {
+        var spec = list[i];
+        this.checkUnreserved(spec.local);
+        this.checkLocalExport(spec.local);
+        if (spec.local.type === "Literal") {
+          this.raise(spec.local.start, "A string literal cannot be used as an exported binding without `from`.");
+        }
+      }
+      node.source = null;
+      if (this.options.ecmaVersion >= 16) {
+        node.attributes = [];
+      }
+    }
+    this.semicolon();
+  }
+  return this.finishNode(node, "ExportNamedDeclaration");
+};
+pp$8.parseExportDeclaration = function(node) {
+  return this.parseStatement(null);
+};
+pp$8.parseExportDefaultDeclaration = function() {
+  var isAsync;
+  if (this.type === types$1._function || (isAsync = this.isAsyncFunction())) {
+    var fNode = this.startNode();
+    this.next();
+    if (isAsync) {
+      this.next();
+    }
+    return this.parseFunction(fNode, FUNC_STATEMENT | FUNC_NULLABLE_ID, false, isAsync);
+  } else if (this.type === types$1._class) {
+    var cNode = this.startNode();
+    return this.parseClass(cNode, "nullableID");
+  } else {
+    var declaration = this.parseMaybeAssign();
+    this.semicolon();
+    return declaration;
+  }
+};
+pp$8.checkExport = function(exports$1, name, pos) {
+  if (!exports$1) {
+    return;
+  }
+  if (typeof name !== "string") {
+    name = name.type === "Identifier" ? name.name : name.value;
+  }
+  if (hasOwn(exports$1, name)) {
+    this.raiseRecoverable(pos, "Duplicate export '" + name + "'");
+  }
+  exports$1[name] = true;
+};
+pp$8.checkPatternExport = function(exports$1, pat) {
+  var type = pat.type;
+  if (type === "Identifier") {
+    this.checkExport(exports$1, pat, pat.start);
+  } else if (type === "ObjectPattern") {
+    for (var i = 0, list = pat.properties;i < list.length; i += 1) {
+      var prop = list[i];
+      this.checkPatternExport(exports$1, prop);
+    }
+  } else if (type === "ArrayPattern") {
+    for (var i$1 = 0, list$1 = pat.elements;i$1 < list$1.length; i$1 += 1) {
+      var elt = list$1[i$1];
+      if (elt) {
+        this.checkPatternExport(exports$1, elt);
+      }
+    }
+  } else if (type === "Property") {
+    this.checkPatternExport(exports$1, pat.value);
+  } else if (type === "AssignmentPattern") {
+    this.checkPatternExport(exports$1, pat.left);
+  } else if (type === "RestElement") {
+    this.checkPatternExport(exports$1, pat.argument);
+  }
+};
+pp$8.checkVariableExport = function(exports$1, decls) {
+  if (!exports$1) {
+    return;
+  }
+  for (var i = 0, list = decls;i < list.length; i += 1) {
+    var decl = list[i];
+    this.checkPatternExport(exports$1, decl.id);
+  }
+};
+pp$8.shouldParseExportStatement = function() {
+  return this.type.keyword === "var" || this.type.keyword === "const" || this.type.keyword === "class" || this.type.keyword === "function" || this.isLet() || this.isAsyncFunction();
+};
+pp$8.parseExportSpecifier = function(exports$1) {
+  var node = this.startNode();
+  node.local = this.parseModuleExportName();
+  node.exported = this.eatContextual("as") ? this.parseModuleExportName() : node.local;
+  this.checkExport(exports$1, node.exported, node.exported.start);
+  return this.finishNode(node, "ExportSpecifier");
+};
+pp$8.parseExportSpecifiers = function(exports$1) {
+  var nodes = [], first = true;
+  this.expect(types$1.braceL);
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    nodes.push(this.parseExportSpecifier(exports$1));
+  }
+  return nodes;
+};
+pp$8.parseImport = function(node) {
+  this.next();
+  if (this.type === types$1.string) {
+    node.specifiers = empty$1;
+    node.source = this.parseExprAtom();
+  } else {
+    node.specifiers = this.parseImportSpecifiers();
+    this.expectContextual("from");
+    node.source = this.type === types$1.string ? this.parseExprAtom() : this.unexpected();
+  }
+  if (this.options.ecmaVersion >= 16) {
+    node.attributes = this.parseWithClause();
+  }
+  this.semicolon();
+  return this.finishNode(node, "ImportDeclaration");
+};
+pp$8.parseImportSpecifier = function() {
+  var node = this.startNode();
+  node.imported = this.parseModuleExportName();
+  if (this.eatContextual("as")) {
+    node.local = this.parseIdent();
+  } else {
+    this.checkUnreserved(node.imported);
+    node.local = node.imported;
+  }
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportSpecifier");
+};
+pp$8.parseImportDefaultSpecifier = function() {
+  var node = this.startNode();
+  node.local = this.parseIdent();
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportDefaultSpecifier");
+};
+pp$8.parseImportNamespaceSpecifier = function() {
+  var node = this.startNode();
+  this.next();
+  this.expectContextual("as");
+  node.local = this.parseIdent();
+  this.checkLValSimple(node.local, BIND_LEXICAL);
+  return this.finishNode(node, "ImportNamespaceSpecifier");
+};
+pp$8.parseImportSpecifiers = function() {
+  var nodes = [], first = true;
+  if (this.type === types$1.name) {
+    nodes.push(this.parseImportDefaultSpecifier());
+    if (!this.eat(types$1.comma)) {
+      return nodes;
+    }
+  }
+  if (this.type === types$1.star) {
+    nodes.push(this.parseImportNamespaceSpecifier());
+    return nodes;
+  }
+  this.expect(types$1.braceL);
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    nodes.push(this.parseImportSpecifier());
+  }
+  return nodes;
+};
+pp$8.parseWithClause = function() {
+  var nodes = [];
+  if (!this.eat(types$1._with)) {
+    return nodes;
+  }
+  this.expect(types$1.braceL);
+  var attributeKeys = {};
+  var first = true;
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var attr = this.parseImportAttribute();
+    var keyName = attr.key.type === "Identifier" ? attr.key.name : attr.key.value;
+    if (hasOwn(attributeKeys, keyName)) {
+      this.raiseRecoverable(attr.key.start, "Duplicate attribute key '" + keyName + "'");
+    }
+    attributeKeys[keyName] = true;
+    nodes.push(attr);
+  }
+  return nodes;
+};
+pp$8.parseImportAttribute = function() {
+  var node = this.startNode();
+  node.key = this.type === types$1.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+  this.expect(types$1.colon);
+  if (this.type !== types$1.string) {
+    this.unexpected();
+  }
+  node.value = this.parseExprAtom();
+  return this.finishNode(node, "ImportAttribute");
+};
+pp$8.parseModuleExportName = function() {
+  if (this.options.ecmaVersion >= 13 && this.type === types$1.string) {
+    var stringLiteral = this.parseLiteral(this.value);
+    if (loneSurrogate.test(stringLiteral.value)) {
+      this.raise(stringLiteral.start, "An export name cannot include a lone surrogate.");
+    }
+    return stringLiteral;
+  }
+  return this.parseIdent(true);
+};
+pp$8.adaptDirectivePrologue = function(statements) {
+  for (var i = 0;i < statements.length && this.isDirectiveCandidate(statements[i]); ++i) {
+    statements[i].directive = statements[i].expression.raw.slice(1, -1);
+  }
+};
+pp$8.isDirectiveCandidate = function(statement) {
+  return this.options.ecmaVersion >= 5 && statement.type === "ExpressionStatement" && statement.expression.type === "Literal" && typeof statement.expression.value === "string" && (this.input[statement.start] === '"' || this.input[statement.start] === "'");
+};
+var pp$7 = Parser.prototype;
+pp$7.toAssignable = function(node, isBinding, refDestructuringErrors) {
+  if (this.options.ecmaVersion >= 6 && node) {
+    switch (node.type) {
+      case "Identifier":
+        if (this.inAsync && node.name === "await") {
+          this.raise(node.start, "Cannot use 'await' as identifier inside an async function");
+        }
+        break;
+      case "ObjectPattern":
+      case "ArrayPattern":
+      case "AssignmentPattern":
+      case "RestElement":
+        break;
+      case "ObjectExpression":
+        node.type = "ObjectPattern";
+        if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        for (var i = 0, list = node.properties;i < list.length; i += 1) {
+          var prop = list[i];
+          this.toAssignable(prop, isBinding);
+          if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
+            this.raise(prop.argument.start, "Unexpected token");
+          }
+        }
+        break;
+      case "Property":
+        if (node.kind !== "init") {
+          this.raise(node.key.start, "Object pattern can't contain getter or setter");
+        }
+        this.toAssignable(node.value, isBinding);
+        break;
+      case "ArrayExpression":
+        node.type = "ArrayPattern";
+        if (refDestructuringErrors) {
+          this.checkPatternErrors(refDestructuringErrors, true);
+        }
+        this.toAssignableList(node.elements, isBinding);
+        break;
+      case "SpreadElement":
+        node.type = "RestElement";
+        this.toAssignable(node.argument, isBinding);
+        if (node.argument.type === "AssignmentPattern") {
+          this.raise(node.argument.start, "Rest elements cannot have a default value");
+        }
+        break;
+      case "AssignmentExpression":
+        if (node.operator !== "=") {
+          this.raise(node.left.end, "Only '=' operator can be used for specifying default value.");
+        }
+        node.type = "AssignmentPattern";
+        delete node.operator;
+        this.toAssignable(node.left, isBinding);
+        break;
+      case "ParenthesizedExpression":
+        this.toAssignable(node.expression, isBinding, refDestructuringErrors);
+        break;
+      case "ChainExpression":
+        this.raiseRecoverable(node.start, "Optional chaining cannot appear in left-hand side");
+        break;
+      case "MemberExpression":
+        if (!isBinding) {
+          break;
+        }
+      default:
+        this.raise(node.start, "Assigning to rvalue");
+    }
+  } else if (refDestructuringErrors) {
+    this.checkPatternErrors(refDestructuringErrors, true);
+  }
+  return node;
+};
+pp$7.toAssignableList = function(exprList, isBinding) {
+  var end = exprList.length;
+  for (var i = 0;i < end; i++) {
+    var elt = exprList[i];
+    if (elt) {
+      this.toAssignable(elt, isBinding);
+    }
+  }
+  if (end) {
+    var last = exprList[end - 1];
+    if (this.options.ecmaVersion === 6 && isBinding && last && last.type === "RestElement" && last.argument.type !== "Identifier") {
+      this.unexpected(last.argument.start);
+    }
+  }
+  return exprList;
+};
+pp$7.parseSpread = function(refDestructuringErrors) {
+  var node = this.startNode();
+  this.next();
+  node.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+  return this.finishNode(node, "SpreadElement");
+};
+pp$7.parseRestBinding = function() {
+  var node = this.startNode();
+  this.next();
+  if (this.options.ecmaVersion === 6 && this.type !== types$1.name) {
+    this.unexpected();
+  }
+  node.argument = this.parseBindingAtom();
+  return this.finishNode(node, "RestElement");
+};
+pp$7.parseBindingAtom = function() {
+  if (this.options.ecmaVersion >= 6) {
+    switch (this.type) {
+      case types$1.bracketL:
+        var node = this.startNode();
+        this.next();
+        node.elements = this.parseBindingList(types$1.bracketR, true, true);
+        return this.finishNode(node, "ArrayPattern");
+      case types$1.braceL:
+        return this.parseObj(true);
+    }
+  }
+  return this.parseIdent();
+};
+pp$7.parseBindingList = function(close, allowEmpty, allowTrailingComma, allowModifiers) {
+  var elts = [], first = true;
+  while (!this.eat(close)) {
+    if (first) {
+      first = false;
+    } else {
+      this.expect(types$1.comma);
+    }
+    if (allowEmpty && this.type === types$1.comma) {
+      elts.push(null);
+    } else if (allowTrailingComma && this.afterTrailingComma(close)) {
+      break;
+    } else if (this.type === types$1.ellipsis) {
+      var rest = this.parseRestBinding();
+      this.parseBindingListItem(rest);
+      elts.push(rest);
+      if (this.type === types$1.comma) {
+        this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+      }
+      this.expect(close);
+      break;
+    } else {
+      elts.push(this.parseAssignableListItem(allowModifiers));
+    }
+  }
+  return elts;
+};
+pp$7.parseAssignableListItem = function(allowModifiers) {
+  var elem = this.parseMaybeDefault(this.start, this.startLoc);
+  this.parseBindingListItem(elem);
+  return elem;
+};
+pp$7.parseBindingListItem = function(param) {
+  return param;
+};
+pp$7.parseMaybeDefault = function(startPos, startLoc, left) {
+  left = left || this.parseBindingAtom();
+  if (this.options.ecmaVersion < 6 || !this.eat(types$1.eq)) {
+    return left;
+  }
+  var node = this.startNodeAt(startPos, startLoc);
+  node.left = left;
+  node.right = this.parseMaybeAssign();
+  return this.finishNode(node, "AssignmentPattern");
+};
+pp$7.checkLValSimple = function(expr, bindingType, checkClashes) {
+  if (bindingType === undefined)
+    bindingType = BIND_NONE;
+  var isBind = bindingType !== BIND_NONE;
+  switch (expr.type) {
+    case "Identifier":
+      if (this.strict && this.reservedWordsStrictBind.test(expr.name)) {
+        this.raiseRecoverable(expr.start, (isBind ? "Binding " : "Assigning to ") + expr.name + " in strict mode");
+      }
+      if (isBind) {
+        if (bindingType === BIND_LEXICAL && expr.name === "let") {
+          this.raiseRecoverable(expr.start, "let is disallowed as a lexically bound name");
+        }
+        if (checkClashes) {
+          if (hasOwn(checkClashes, expr.name)) {
+            this.raiseRecoverable(expr.start, "Argument name clash");
+          }
+          checkClashes[expr.name] = true;
+        }
+        if (bindingType !== BIND_OUTSIDE) {
+          this.declareName(expr.name, bindingType, expr.start);
+        }
+      }
+      break;
+    case "ChainExpression":
+      this.raiseRecoverable(expr.start, "Optional chaining cannot appear in left-hand side");
+      break;
+    case "MemberExpression":
+      if (isBind) {
+        this.raiseRecoverable(expr.start, "Binding member expression");
+      }
+      break;
+    case "ParenthesizedExpression":
+      if (isBind) {
+        this.raiseRecoverable(expr.start, "Binding parenthesized expression");
+      }
+      return this.checkLValSimple(expr.expression, bindingType, checkClashes);
+    default:
+      this.raise(expr.start, (isBind ? "Binding" : "Assigning to") + " rvalue");
+  }
+};
+pp$7.checkLValPattern = function(expr, bindingType, checkClashes) {
+  if (bindingType === undefined)
+    bindingType = BIND_NONE;
+  switch (expr.type) {
+    case "ObjectPattern":
+      for (var i = 0, list = expr.properties;i < list.length; i += 1) {
+        var prop = list[i];
+        this.checkLValInnerPattern(prop, bindingType, checkClashes);
+      }
+      break;
+    case "ArrayPattern":
+      for (var i$1 = 0, list$1 = expr.elements;i$1 < list$1.length; i$1 += 1) {
+        var elem = list$1[i$1];
+        if (elem) {
+          this.checkLValInnerPattern(elem, bindingType, checkClashes);
+        }
+      }
+      break;
+    default:
+      this.checkLValSimple(expr, bindingType, checkClashes);
+  }
+};
+pp$7.checkLValInnerPattern = function(expr, bindingType, checkClashes) {
+  if (bindingType === undefined)
+    bindingType = BIND_NONE;
+  switch (expr.type) {
+    case "Property":
+      this.checkLValInnerPattern(expr.value, bindingType, checkClashes);
+      break;
+    case "AssignmentPattern":
+      this.checkLValPattern(expr.left, bindingType, checkClashes);
+      break;
+    case "RestElement":
+      this.checkLValPattern(expr.argument, bindingType, checkClashes);
+      break;
+    default:
+      this.checkLValPattern(expr, bindingType, checkClashes);
+  }
+};
+var TokContext = function TokContext(token, isExpr, preserveSpace, override, generator) {
+  this.token = token;
+  this.isExpr = !!isExpr;
+  this.preserveSpace = !!preserveSpace;
+  this.override = override;
+  this.generator = !!generator;
+};
+var types = {
+  b_stat: new TokContext("{", false),
+  b_expr: new TokContext("{", true),
+  b_tmpl: new TokContext("${", false),
+  p_stat: new TokContext("(", false),
+  p_expr: new TokContext("(", true),
+  q_tmpl: new TokContext("`", true, true, function(p) {
+    return p.tryReadTemplateToken();
+  }),
+  f_stat: new TokContext("function", false),
+  f_expr: new TokContext("function", true),
+  f_expr_gen: new TokContext("function", true, false, null, true),
+  f_gen: new TokContext("function", false, false, null, true)
+};
+var pp$6 = Parser.prototype;
+pp$6.initialContext = function() {
+  return [types.b_stat];
+};
+pp$6.curContext = function() {
+  return this.context[this.context.length - 1];
+};
+pp$6.braceIsBlock = function(prevType) {
+  var parent = this.curContext();
+  if (parent === types.f_expr || parent === types.f_stat) {
+    return true;
+  }
+  if (prevType === types$1.colon && (parent === types.b_stat || parent === types.b_expr)) {
+    return !parent.isExpr;
+  }
+  if (prevType === types$1._return || prevType === types$1.name && this.exprAllowed) {
+    return lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+  }
+  if (prevType === types$1._else || prevType === types$1.semi || prevType === types$1.eof || prevType === types$1.parenR || prevType === types$1.arrow) {
+    return true;
+  }
+  if (prevType === types$1.braceL) {
+    return parent === types.b_stat;
+  }
+  if (prevType === types$1._var || prevType === types$1._const || prevType === types$1.name) {
+    return false;
+  }
+  return !this.exprAllowed;
+};
+pp$6.inGeneratorContext = function() {
+  for (var i = this.context.length - 1;i >= 1; i--) {
+    var context = this.context[i];
+    if (context.token === "function") {
+      return context.generator;
+    }
+  }
+  return false;
+};
+pp$6.updateContext = function(prevType) {
+  var update, type = this.type;
+  if (type.keyword && prevType === types$1.dot) {
+    this.exprAllowed = false;
+  } else if (update = type.updateContext) {
+    update.call(this, prevType);
+  } else {
+    this.exprAllowed = type.beforeExpr;
+  }
+};
+pp$6.overrideContext = function(tokenCtx) {
+  if (this.curContext() !== tokenCtx) {
+    this.context[this.context.length - 1] = tokenCtx;
+  }
+};
+types$1.parenR.updateContext = types$1.braceR.updateContext = function() {
+  if (this.context.length === 1) {
+    this.exprAllowed = true;
+    return;
+  }
+  var out = this.context.pop();
+  if (out === types.b_stat && this.curContext().token === "function") {
+    out = this.context.pop();
+  }
+  this.exprAllowed = !out.isExpr;
+};
+types$1.braceL.updateContext = function(prevType) {
+  this.context.push(this.braceIsBlock(prevType) ? types.b_stat : types.b_expr);
+  this.exprAllowed = true;
+};
+types$1.dollarBraceL.updateContext = function() {
+  this.context.push(types.b_tmpl);
+  this.exprAllowed = true;
+};
+types$1.parenL.updateContext = function(prevType) {
+  var statementParens = prevType === types$1._if || prevType === types$1._for || prevType === types$1._with || prevType === types$1._while;
+  this.context.push(statementParens ? types.p_stat : types.p_expr);
+  this.exprAllowed = true;
+};
+types$1.incDec.updateContext = function() {};
+types$1._function.updateContext = types$1._class.updateContext = function(prevType) {
+  if (prevType.beforeExpr && prevType !== types$1._else && !(prevType === types$1.semi && this.curContext() !== types.p_stat) && !(prevType === types$1._return && lineBreak.test(this.input.slice(this.lastTokEnd, this.start))) && !((prevType === types$1.colon || prevType === types$1.braceL) && this.curContext() === types.b_stat)) {
+    this.context.push(types.f_expr);
+  } else {
+    this.context.push(types.f_stat);
+  }
+  this.exprAllowed = false;
+};
+types$1.colon.updateContext = function() {
+  if (this.curContext().token === "function") {
+    this.context.pop();
+  }
+  this.exprAllowed = true;
+};
+types$1.backQuote.updateContext = function() {
+  if (this.curContext() === types.q_tmpl) {
+    this.context.pop();
+  } else {
+    this.context.push(types.q_tmpl);
+  }
+  this.exprAllowed = false;
+};
+types$1.star.updateContext = function(prevType) {
+  if (prevType === types$1._function) {
+    var index = this.context.length - 1;
+    if (this.context[index] === types.f_expr) {
+      this.context[index] = types.f_expr_gen;
+    } else {
+      this.context[index] = types.f_gen;
+    }
+  }
+  this.exprAllowed = true;
+};
+types$1.name.updateContext = function(prevType) {
+  var allowed = false;
+  if (this.options.ecmaVersion >= 6 && prevType !== types$1.dot) {
+    if (this.value === "of" && !this.exprAllowed || this.value === "yield" && this.inGeneratorContext()) {
+      allowed = true;
+    }
+  }
+  this.exprAllowed = allowed;
+};
+var pp$5 = Parser.prototype;
+pp$5.checkPropClash = function(prop, propHash, refDestructuringErrors) {
+  if (this.options.ecmaVersion >= 9 && prop.type === "SpreadElement") {
+    return;
+  }
+  if (this.options.ecmaVersion >= 6 && (prop.computed || prop.method || prop.shorthand)) {
+    return;
+  }
+  var key = prop.key;
+  var name;
+  switch (key.type) {
+    case "Identifier":
+      name = key.name;
+      break;
+    case "Literal":
+      name = String(key.value);
+      break;
+    default:
+      return;
+  }
+  var kind = prop.kind;
+  if (this.options.ecmaVersion >= 6) {
+    if (name === "__proto__" && kind === "init") {
+      if (propHash.proto) {
+        if (refDestructuringErrors) {
+          if (refDestructuringErrors.doubleProto < 0) {
+            refDestructuringErrors.doubleProto = key.start;
+          }
+        } else {
+          this.raiseRecoverable(key.start, "Redefinition of __proto__ property");
+        }
+      }
+      propHash.proto = true;
+    }
+    return;
+  }
+  name = "$" + name;
+  var other = propHash[name];
+  if (other) {
+    var redefinition;
+    if (kind === "init") {
+      redefinition = this.strict && other.init || other.get || other.set;
+    } else {
+      redefinition = other.init || other[kind];
+    }
+    if (redefinition) {
+      this.raiseRecoverable(key.start, "Redefinition of property");
+    }
+  } else {
+    other = propHash[name] = {
+      init: false,
+      get: false,
+      set: false
+    };
+  }
+  other[kind] = true;
+};
+pp$5.parseExpression = function(forInit, refDestructuringErrors) {
+  var this$1$1 = this;
+  return this.catchStackOverflow(function() {
+    var { start: startPos, startLoc } = this$1$1;
+    var expr = this$1$1.parseMaybeAssign(forInit, refDestructuringErrors);
+    if (this$1$1.type === types$1.comma) {
+      var node = this$1$1.startNodeAt(startPos, startLoc);
+      node.expressions = [expr];
+      while (this$1$1.eat(types$1.comma)) {
+        node.expressions.push(this$1$1.parseMaybeAssign(forInit, refDestructuringErrors));
+      }
+      return this$1$1.finishNode(node, "SequenceExpression");
+    }
+    return expr;
+  });
+};
+pp$5.parseMaybeAssign = function(forInit, refDestructuringErrors, afterLeftParse) {
+  if (this.isContextual("yield")) {
+    if (this.inGenerator) {
+      return this.parseYield(forInit);
+    } else {
+      this.exprAllowed = false;
+    }
+  }
+  var ownDestructuringErrors = false, oldParenAssign = -1, oldTrailingComma = -1, oldDoubleProto = -1;
+  if (refDestructuringErrors) {
+    oldParenAssign = refDestructuringErrors.parenthesizedAssign;
+    oldTrailingComma = refDestructuringErrors.trailingComma;
+    oldDoubleProto = refDestructuringErrors.doubleProto;
+    refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+  } else {
+    refDestructuringErrors = new DestructuringErrors;
+    ownDestructuringErrors = true;
+  }
+  var startPos = this.start, startLoc = this.startLoc;
+  if (this.type === types$1.parenL || this.type === types$1.name) {
+    this.potentialArrowAt = this.start;
+    this.potentialArrowInForAwait = forInit === "await";
+  }
+  var left = this.parseMaybeConditional(forInit, refDestructuringErrors);
+  if (afterLeftParse) {
+    left = afterLeftParse.call(this, left, startPos, startLoc);
+  }
+  if (this.type.isAssign) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.operator = this.value;
+    if (this.type === types$1.eq) {
+      left = this.toAssignable(left, false, refDestructuringErrors);
+    }
+    if (!ownDestructuringErrors) {
+      refDestructuringErrors.parenthesizedAssign = refDestructuringErrors.trailingComma = -1;
+      if (refDestructuringErrors.shorthandAssign >= left.start) {
+        refDestructuringErrors.shorthandAssign = -1;
+      }
+      if (refDestructuringErrors.doubleProto >= left.start) {
+        refDestructuringErrors.doubleProto = -1;
+      }
+    }
+    if (this.type === types$1.eq) {
+      this.checkLValPattern(left);
+    } else {
+      this.checkLValSimple(left);
+    }
+    node.left = left;
+    this.next();
+    node.right = this.parseMaybeAssign(forInit);
+    if (oldDoubleProto > -1) {
+      refDestructuringErrors.doubleProto = oldDoubleProto;
+    }
+    return this.finishNode(node, "AssignmentExpression");
+  } else {
+    if (ownDestructuringErrors) {
+      this.checkExpressionErrors(refDestructuringErrors, true);
+    }
+  }
+  if (oldParenAssign > -1) {
+    refDestructuringErrors.parenthesizedAssign = oldParenAssign;
+  }
+  if (oldTrailingComma > -1) {
+    refDestructuringErrors.trailingComma = oldTrailingComma;
+  }
+  return left;
+};
+pp$5.parseMaybeConditional = function(forInit, refDestructuringErrors) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var expr = this.parseExprOps(forInit, refDestructuringErrors);
+  if (this.checkExpressionErrors(refDestructuringErrors)) {
+    return expr;
+  }
+  if (!(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$1.question)) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.test = expr;
+    node.consequent = this.parseMaybeAssign();
+    this.expect(types$1.colon);
+    node.alternate = this.parseMaybeAssign(forInit);
+    return this.finishNode(node, "ConditionalExpression");
+  }
+  return expr;
+};
+pp$5.parseExprOps = function(forInit, refDestructuringErrors) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var expr = this.parseMaybeUnary(refDestructuringErrors, false, false, forInit);
+  if (this.checkExpressionErrors(refDestructuringErrors)) {
+    return expr;
+  }
+  return expr.start === startPos && expr.type === "ArrowFunctionExpression" ? expr : this.parseExprOp(expr, startPos, startLoc, -1, forInit);
+};
+pp$5.parseExprOp = function(left, leftStartPos, leftStartLoc, minPrec, forInit) {
+  var prec = this.type.binop;
+  if (prec != null && (!forInit || this.type !== types$1._in)) {
+    if (prec > minPrec) {
+      var logical = this.type === types$1.logicalOR || this.type === types$1.logicalAND;
+      var coalesce = this.type === types$1.coalesce;
+      if (coalesce) {
+        prec = types$1.logicalAND.binop;
+      }
+      var op = this.value;
+      this.next();
+      var startPos = this.start, startLoc = this.startLoc;
+      var right = this.parseExprOp(this.parseMaybeUnary(null, false, false, forInit), startPos, startLoc, prec, forInit);
+      var node = this.buildBinary(leftStartPos, leftStartLoc, left, right, op, logical || coalesce);
+      if (logical && this.type === types$1.coalesce || coalesce && (this.type === types$1.logicalOR || this.type === types$1.logicalAND)) {
+        this.raiseRecoverable(this.start, "Logical expressions and coalesce expressions cannot be mixed. Wrap either by parentheses");
+      }
+      return this.parseExprOp(node, leftStartPos, leftStartLoc, minPrec, forInit);
+    }
+  }
+  return left;
+};
+pp$5.buildBinary = function(startPos, startLoc, left, right, op, logical) {
+  if (right.type === "PrivateIdentifier") {
+    this.raise(right.start, "Private identifier can only be left side of binary expression");
+  }
+  var node = this.startNodeAt(startPos, startLoc);
+  node.left = left;
+  node.operator = op;
+  node.right = right;
+  return this.finishNode(node, logical ? "LogicalExpression" : "BinaryExpression");
+};
+pp$5.parseMaybeUnary = function(refDestructuringErrors, sawUnary, incDec, forInit) {
+  var startPos = this.start, startLoc = this.startLoc, expr;
+  if (this.isContextual("await") && this.canAwait) {
+    expr = this.parseAwait(forInit);
+    sawUnary = true;
+  } else if (this.type.prefix) {
+    var node = this.startNode(), update = this.type === types$1.incDec;
+    node.operator = this.value;
+    node.prefix = true;
+    this.next();
+    node.argument = this.parseMaybeUnary(null, true, update, forInit);
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    if (update) {
+      this.checkLValSimple(node.argument);
+    } else if (this.strict && node.operator === "delete" && isLocalVariableAccess(node.argument)) {
+      this.raiseRecoverable(node.start, "Deleting local variable in strict mode");
+    } else if (node.operator === "delete" && isPrivateFieldAccess(node.argument)) {
+      this.raiseRecoverable(node.start, "Private fields can not be deleted");
+    } else {
+      sawUnary = true;
+    }
+    expr = this.finishNode(node, update ? "UpdateExpression" : "UnaryExpression");
+  } else if (!sawUnary && this.type === types$1.privateId) {
+    if ((forInit || this.privateNameStack.length === 0) && this.options.checkPrivateFields) {
+      this.unexpected();
+    }
+    expr = this.parsePrivateIdent();
+    if (this.type !== types$1._in) {
+      this.unexpected();
+    }
+  } else {
+    expr = this.parseExprSubscripts(refDestructuringErrors, forInit);
+    if (this.checkExpressionErrors(refDestructuringErrors)) {
+      return expr;
+    }
+    while (this.type.postfix && !this.canInsertSemicolon()) {
+      var node$1 = this.startNodeAt(startPos, startLoc);
+      node$1.operator = this.value;
+      node$1.prefix = false;
+      node$1.argument = expr;
+      this.checkLValSimple(expr);
+      this.next();
+      expr = this.finishNode(node$1, "UpdateExpression");
+    }
+  }
+  if (!incDec && !(expr.type === "ArrowFunctionExpression" && expr.start === startPos) && this.eat(types$1.starstar)) {
+    if (sawUnary) {
+      this.unexpected(this.lastTokStart);
+    } else {
+      return this.buildBinary(startPos, startLoc, expr, this.parseMaybeUnary(null, false, false, forInit), "**", false);
+    }
+  } else {
+    return expr;
+  }
+};
+function isLocalVariableAccess(node) {
+  return node.type === "Identifier" || node.type === "ParenthesizedExpression" && isLocalVariableAccess(node.expression);
+}
+function isPrivateFieldAccess(node) {
+  return node.type === "MemberExpression" && node.property.type === "PrivateIdentifier" || node.type === "ChainExpression" && isPrivateFieldAccess(node.expression) || node.type === "ParenthesizedExpression" && isPrivateFieldAccess(node.expression);
+}
+pp$5.parseExprSubscripts = function(refDestructuringErrors, forInit) {
+  var startPos = this.start, startLoc = this.startLoc;
+  var oldDoubleProto = -1, oldShorthandAssign = -1;
+  if (refDestructuringErrors) {
+    oldDoubleProto = refDestructuringErrors.doubleProto;
+    oldShorthandAssign = refDestructuringErrors.shorthandAssign;
+    refDestructuringErrors.doubleProto = refDestructuringErrors.shorthandAssign = -1;
+  }
+  var expr = this.parseExprAtom(refDestructuringErrors, forInit);
+  if (expr.type === "ArrowFunctionExpression" && this.input.slice(this.lastTokStart, this.lastTokEnd) !== ")") {
+    return expr;
+  }
+  var result = this.parseSubscripts(expr, startPos, startLoc, false, forInit);
+  if (refDestructuringErrors) {
+    if (result.end > expr.end) {
+      this.checkExpressionErrors(refDestructuringErrors, true);
+      if (refDestructuringErrors.parenthesizedAssign >= result.start) {
+        refDestructuringErrors.parenthesizedAssign = -1;
+      }
+      if (refDestructuringErrors.parenthesizedBind >= result.start) {
+        refDestructuringErrors.parenthesizedBind = -1;
+      }
+      if (refDestructuringErrors.trailingComma >= result.start) {
+        refDestructuringErrors.trailingComma = -1;
+      }
+    }
+    if (oldDoubleProto > -1) {
+      refDestructuringErrors.doubleProto = oldDoubleProto;
+    }
+    if (oldShorthandAssign > -1) {
+      refDestructuringErrors.shorthandAssign = oldShorthandAssign;
+    }
+  }
+  return result;
+};
+pp$5.parseSubscripts = function(base, startPos, startLoc, noCalls, forInit) {
+  var maybeAsyncArrow = this.options.ecmaVersion >= 8 && base.type === "Identifier" && base.name === "async" && this.lastTokEnd === base.end && !this.canInsertSemicolon() && base.end - base.start === 5 && this.potentialArrowAt === base.start;
+  var optionalChained = false;
+  while (true) {
+    var element = this.parseSubscript(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit);
+    if (element.optional) {
+      optionalChained = true;
+    }
+    if (element.end === base.end || element.type === "ArrowFunctionExpression") {
+      if (optionalChained) {
+        var chainNode = this.startNodeAt(startPos, startLoc);
+        chainNode.expression = element;
+        element = this.finishNode(chainNode, "ChainExpression");
+      }
+      return element;
+    }
+    base = element;
+    maybeAsyncArrow = false;
+  }
+};
+pp$5.shouldParseAsyncArrow = function() {
+  return !this.canInsertSemicolon() && this.eat(types$1.arrow);
+};
+pp$5.parseSubscriptAsyncArrow = function(startPos, startLoc, exprList, forInit) {
+  return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, true, forInit);
+};
+pp$5.parseSubscript = function(base, startPos, startLoc, noCalls, maybeAsyncArrow, optionalChained, forInit) {
+  var optionalSupported = this.options.ecmaVersion >= 11;
+  var optional = optionalSupported && this.eat(types$1.questionDot);
+  if (noCalls && optional) {
+    this.raise(this.lastTokStart, "Optional chaining cannot appear in the callee of new expressions");
+  }
+  var computed = this.eat(types$1.bracketL);
+  if (computed || optional && this.type !== types$1.parenL && this.type !== types$1.backQuote || this.eat(types$1.dot)) {
+    var node = this.startNodeAt(startPos, startLoc);
+    node.object = base;
+    if (computed) {
+      node.property = this.parseExpression();
+      this.expect(types$1.bracketR);
+    } else if (this.type === types$1.privateId && base.type !== "Super") {
+      node.property = this.parsePrivateIdent();
+    } else {
+      node.property = this.parseIdent(this.options.allowReserved !== "never");
+    }
+    node.computed = !!computed;
+    if (optionalSupported) {
+      node.optional = optional;
+    }
+    base = this.finishNode(node, "MemberExpression");
+  } else if (!noCalls && this.eat(types$1.parenL)) {
+    var refDestructuringErrors = new DestructuringErrors, oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+    this.yieldPos = 0;
+    this.awaitPos = 0;
+    this.awaitIdentPos = 0;
+    var exprList = this.parseExprList(types$1.parenR, this.options.ecmaVersion >= 8, false, refDestructuringErrors);
+    if (maybeAsyncArrow && !optional && this.shouldParseAsyncArrow()) {
+      this.checkPatternErrors(refDestructuringErrors, false);
+      this.checkYieldAwaitInDefaultParams();
+      if (this.awaitIdentPos > 0) {
+        this.raise(this.awaitIdentPos, "Cannot use 'await' as identifier inside an async function");
+      }
+      this.yieldPos = oldYieldPos;
+      this.awaitPos = oldAwaitPos;
+      this.awaitIdentPos = oldAwaitIdentPos;
+      return this.parseSubscriptAsyncArrow(startPos, startLoc, exprList, forInit);
+    }
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    this.yieldPos = oldYieldPos || this.yieldPos;
+    this.awaitPos = oldAwaitPos || this.awaitPos;
+    this.awaitIdentPos = oldAwaitIdentPos || this.awaitIdentPos;
+    var node$1 = this.startNodeAt(startPos, startLoc);
+    node$1.callee = base;
+    node$1.arguments = exprList;
+    if (optionalSupported) {
+      node$1.optional = optional;
+    }
+    base = this.finishNode(node$1, "CallExpression");
+  } else if (this.type === types$1.backQuote) {
+    if (optional || optionalChained) {
+      this.raise(this.start, "Optional chaining cannot appear in the tag of tagged template expressions");
+    }
+    var node$2 = this.startNodeAt(startPos, startLoc);
+    node$2.tag = base;
+    node$2.quasi = this.parseTemplate({ isTagged: true });
+    base = this.finishNode(node$2, "TaggedTemplateExpression");
+  }
+  return base;
+};
+pp$5.parseExprAtom = function(refDestructuringErrors, forInit, forNew) {
+  if (this.type === types$1.slash) {
+    this.readRegexp();
+  }
+  var node, canBeArrow = this.potentialArrowAt === this.start;
+  switch (this.type) {
+    case types$1._super:
+      if (!this.allowSuper) {
+        this.raise(this.start, "'super' keyword outside a method");
+      }
+      node = this.startNode();
+      this.next();
+      if (this.type === types$1.parenL && !this.allowDirectSuper) {
+        this.raise(node.start, "super() call outside constructor of a subclass");
+      }
+      if (this.type !== types$1.dot && this.type !== types$1.bracketL && this.type !== types$1.parenL) {
+        this.unexpected();
+      }
+      return this.finishNode(node, "Super");
+    case types$1._this:
+      node = this.startNode();
+      this.next();
+      return this.finishNode(node, "ThisExpression");
+    case types$1.name:
+      var startPos = this.start, startLoc = this.startLoc, containsEsc = this.containsEsc;
+      var id = this.parseIdent(false);
+      if (this.options.ecmaVersion >= 8 && !containsEsc && id.name === "async" && !this.canInsertSemicolon() && this.eat(types$1._function)) {
+        this.overrideContext(types.f_expr);
+        return this.parseFunction(this.startNodeAt(startPos, startLoc), 0, false, true, forInit);
+      }
+      if (canBeArrow && !this.canInsertSemicolon()) {
+        if (this.eat(types$1.arrow)) {
+          return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], false, forInit);
+        }
+        if (this.options.ecmaVersion >= 8 && id.name === "async" && this.type === types$1.name && !containsEsc && (!this.potentialArrowInForAwait || this.value !== "of" || this.containsEsc)) {
+          id = this.parseIdent(false);
+          if (this.canInsertSemicolon() || !this.eat(types$1.arrow)) {
+            this.unexpected();
+          }
+          return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), [id], true, forInit);
+        }
+      }
+      return id;
+    case types$1.regexp:
+      var value = this.value;
+      node = this.parseLiteral(value.value);
+      node.regex = { pattern: value.pattern, flags: value.flags };
+      return node;
+    case types$1.num:
+    case types$1.string:
+      return this.parseLiteral(this.value);
+    case types$1._null:
+    case types$1._true:
+    case types$1._false:
+      node = this.startNode();
+      node.value = this.type === types$1._null ? null : this.type === types$1._true;
+      node.raw = this.type.keyword;
+      this.next();
+      return this.finishNode(node, "Literal");
+    case types$1.parenL:
+      var start = this.start, expr = this.parseParenAndDistinguishExpression(canBeArrow, forInit);
+      if (refDestructuringErrors) {
+        if (refDestructuringErrors.parenthesizedAssign < 0 && !this.isSimpleAssignTarget(expr)) {
+          refDestructuringErrors.parenthesizedAssign = start;
+        }
+        if (refDestructuringErrors.parenthesizedBind < 0) {
+          refDestructuringErrors.parenthesizedBind = start;
+        }
+      }
+      return expr;
+    case types$1.bracketL:
+      node = this.startNode();
+      this.next();
+      node.elements = this.parseExprList(types$1.bracketR, true, true, refDestructuringErrors);
+      return this.finishNode(node, "ArrayExpression");
+    case types$1.braceL:
+      this.overrideContext(types.b_expr);
+      return this.parseObj(false, refDestructuringErrors);
+    case types$1._function:
+      node = this.startNode();
+      this.next();
+      return this.parseFunction(node, 0);
+    case types$1._class:
+      return this.parseClass(this.startNode(), false);
+    case types$1._new:
+      return this.parseNew();
+    case types$1.backQuote:
+      return this.parseTemplate();
+    case types$1._import:
+      if (this.options.ecmaVersion >= 11) {
+        return this.parseExprImport(forNew);
+      } else {
+        return this.unexpected();
+      }
+    default:
+      return this.parseExprAtomDefault();
+  }
+};
+pp$5.parseExprAtomDefault = function() {
+  this.unexpected();
+};
+pp$5.parseExprImport = function(forNew) {
+  var node = this.startNode();
+  if (this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword import");
+  }
+  this.next();
+  if (this.type === types$1.parenL && !forNew) {
+    return this.parseDynamicImport(node);
+  } else if (this.type === types$1.dot) {
+    var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+    meta.name = "import";
+    node.meta = this.finishNode(meta, "Identifier");
+    return this.parseImportMeta(node);
+  } else {
+    this.unexpected();
+  }
+};
+pp$5.parseDynamicImport = function(node) {
+  this.next();
+  node.source = this.parseMaybeAssign();
+  if (this.options.ecmaVersion >= 16) {
+    if (!this.eat(types$1.parenR)) {
+      this.expect(types$1.comma);
+      if (!this.afterTrailingComma(types$1.parenR)) {
+        node.options = this.parseMaybeAssign();
+        if (!this.eat(types$1.parenR)) {
+          this.expect(types$1.comma);
+          if (!this.afterTrailingComma(types$1.parenR)) {
+            this.unexpected();
+          }
+        }
+      } else {
+        node.options = null;
+      }
+    } else {
+      node.options = null;
+    }
+  } else {
+    if (!this.eat(types$1.parenR)) {
+      var errorPos = this.start;
+      if (this.eat(types$1.comma) && this.eat(types$1.parenR)) {
+        this.raiseRecoverable(errorPos, "Trailing comma is not allowed in import()");
+      } else {
+        this.unexpected(errorPos);
+      }
+    }
+  }
+  return this.finishNode(node, "ImportExpression");
+};
+pp$5.parseImportMeta = function(node) {
+  this.next();
+  var containsEsc = this.containsEsc;
+  node.property = this.parseIdent(true);
+  if (node.property.name !== "meta") {
+    this.raiseRecoverable(node.property.start, "The only valid meta property for import is 'import.meta'");
+  }
+  if (containsEsc) {
+    this.raiseRecoverable(node.start, "'import.meta' must not contain escaped characters");
+  }
+  if (this.options.sourceType !== "module" && !this.options.allowImportExportEverywhere) {
+    this.raiseRecoverable(node.start, "Cannot use 'import.meta' outside a module");
+  }
+  return this.finishNode(node, "MetaProperty");
+};
+pp$5.parseLiteral = function(value) {
+  var node = this.startNode();
+  node.value = value;
+  node.raw = this.input.slice(this.start, this.end);
+  if (node.raw.charCodeAt(node.raw.length - 1) === 110) {
+    node.bigint = node.value != null ? node.value.toString() : node.raw.slice(0, -1).replace(/_/g, "");
+  }
+  this.next();
+  return this.finishNode(node, "Literal");
+};
+pp$5.parseParenExpression = function() {
+  this.expect(types$1.parenL);
+  var val = this.parseExpression();
+  this.expect(types$1.parenR);
+  return val;
+};
+pp$5.shouldParseArrow = function(exprList) {
+  return !this.canInsertSemicolon();
+};
+pp$5.parseParenAndDistinguishExpression = function(canBeArrow, forInit) {
+  var startPos = this.start, startLoc = this.startLoc, val, allowTrailingComma = this.options.ecmaVersion >= 8;
+  if (this.options.ecmaVersion >= 6) {
+    this.next();
+    var innerStartPos = this.start, innerStartLoc = this.startLoc;
+    var exprList = [], first = true, lastIsComma = false;
+    var refDestructuringErrors = new DestructuringErrors, oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, spreadStart;
+    this.yieldPos = 0;
+    this.awaitPos = 0;
+    while (this.type !== types$1.parenR) {
+      first ? first = false : this.expect(types$1.comma);
+      if (allowTrailingComma && this.afterTrailingComma(types$1.parenR, true)) {
+        lastIsComma = true;
+        break;
+      } else if (this.type === types$1.ellipsis) {
+        spreadStart = this.start;
+        exprList.push(this.parseParenItem(this.parseRestBinding()));
+        if (this.type === types$1.comma) {
+          this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+        }
+        break;
+      } else {
+        exprList.push(this.parseMaybeAssign(false, refDestructuringErrors, this.parseParenItem));
+      }
+    }
+    var innerEndPos = this.lastTokEnd, innerEndLoc = this.lastTokEndLoc;
+    this.expect(types$1.parenR);
+    if (canBeArrow && this.shouldParseArrow(exprList) && this.eat(types$1.arrow)) {
+      this.checkPatternErrors(refDestructuringErrors, false);
+      this.checkYieldAwaitInDefaultParams();
+      this.yieldPos = oldYieldPos;
+      this.awaitPos = oldAwaitPos;
+      return this.parseParenArrowList(startPos, startLoc, exprList, forInit);
+    }
+    if (!exprList.length || lastIsComma) {
+      this.unexpected(this.lastTokStart);
+    }
+    if (spreadStart) {
+      this.unexpected(spreadStart);
+    }
+    this.checkExpressionErrors(refDestructuringErrors, true);
+    this.yieldPos = oldYieldPos || this.yieldPos;
+    this.awaitPos = oldAwaitPos || this.awaitPos;
+    if (exprList.length > 1) {
+      val = this.startNodeAt(innerStartPos, innerStartLoc);
+      val.expressions = exprList;
+      this.finishNodeAt(val, "SequenceExpression", innerEndPos, innerEndLoc);
+    } else {
+      val = exprList[0];
+    }
+  } else {
+    val = this.parseParenExpression();
+  }
+  if (this.options.preserveParens) {
+    var par = this.startNodeAt(startPos, startLoc);
+    par.expression = val;
+    return this.finishNode(par, "ParenthesizedExpression");
+  } else {
+    return val;
+  }
+};
+pp$5.parseParenItem = function(item) {
+  return item;
+};
+pp$5.parseParenArrowList = function(startPos, startLoc, exprList, forInit) {
+  return this.parseArrowExpression(this.startNodeAt(startPos, startLoc), exprList, false, forInit);
+};
+var empty = [];
+pp$5.parseNew = function() {
+  if (this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword new");
+  }
+  var node = this.startNode();
+  this.next();
+  if (this.options.ecmaVersion >= 6 && this.type === types$1.dot) {
+    var meta = this.startNodeAt(node.start, node.loc && node.loc.start);
+    meta.name = "new";
+    node.meta = this.finishNode(meta, "Identifier");
+    this.next();
+    var containsEsc = this.containsEsc;
+    node.property = this.parseIdent(true);
+    if (node.property.name !== "target") {
+      this.raiseRecoverable(node.property.start, "The only valid meta property for new is 'new.target'");
+    }
+    if (containsEsc) {
+      this.raiseRecoverable(node.start, "'new.target' must not contain escaped characters");
+    }
+    if (!this.allowNewDotTarget) {
+      this.raiseRecoverable(node.start, "'new.target' can only be used in functions and class static block");
+    }
+    return this.finishNode(node, "MetaProperty");
+  }
+  var startPos = this.start, startLoc = this.startLoc;
+  node.callee = this.parseSubscripts(this.parseExprAtom(null, false, true), startPos, startLoc, true, false);
+  if (node.callee.type === "Super") {
+    this.raiseRecoverable(startPos, "Invalid use of 'super'");
+  }
+  if (this.eat(types$1.parenL)) {
+    node.arguments = this.parseExprList(types$1.parenR, this.options.ecmaVersion >= 8, false);
+  } else {
+    node.arguments = empty;
+  }
+  return this.finishNode(node, "NewExpression");
+};
+pp$5.parseTemplateElement = function(ref) {
+  var isTagged = ref.isTagged;
+  var elem = this.startNode();
+  if (this.type === types$1.invalidTemplate) {
+    if (!isTagged) {
+      this.raiseRecoverable(this.start, "Bad escape sequence in untagged template literal");
+    }
+    elem.value = {
+      raw: this.value.replace(/\r\n?/g, `
+`),
+      cooked: null
+    };
+  } else {
+    elem.value = {
+      raw: this.input.slice(this.start, this.end).replace(/\r\n?/g, `
+`),
+      cooked: this.value
+    };
+  }
+  this.next();
+  elem.tail = this.type === types$1.backQuote;
+  return this.finishNode(elem, "TemplateElement");
+};
+pp$5.parseTemplate = function(ref) {
+  if (ref === undefined)
+    ref = {};
+  var isTagged = ref.isTagged;
+  if (isTagged === undefined)
+    isTagged = false;
+  var node = this.startNode();
+  this.next();
+  node.expressions = [];
+  var curElt = this.parseTemplateElement({ isTagged });
+  node.quasis = [curElt];
+  while (!curElt.tail) {
+    if (this.type === types$1.eof) {
+      this.raise(this.pos, "Unterminated template literal");
+    }
+    this.expect(types$1.dollarBraceL);
+    node.expressions.push(this.parseExpression());
+    this.expect(types$1.braceR);
+    node.quasis.push(curElt = this.parseTemplateElement({ isTagged }));
+  }
+  this.next();
+  return this.finishNode(node, "TemplateLiteral");
+};
+pp$5.isAsyncProp = function(prop) {
+  return !prop.computed && prop.key.type === "Identifier" && prop.key.name === "async" && (this.type === types$1.name || this.type === types$1.num || this.type === types$1.string || this.type === types$1.bracketL || this.type.keyword || this.options.ecmaVersion >= 9 && this.type === types$1.star) && !lineBreak.test(this.input.slice(this.lastTokEnd, this.start));
+};
+pp$5.parseObj = function(isPattern, refDestructuringErrors) {
+  var node = this.startNode(), first = true, propHash = {};
+  node.properties = [];
+  this.next();
+  while (!this.eat(types$1.braceR)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (this.options.ecmaVersion >= 5 && this.afterTrailingComma(types$1.braceR)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var prop = this.parseProperty(isPattern, refDestructuringErrors);
+    if (!isPattern) {
+      this.checkPropClash(prop, propHash, refDestructuringErrors);
+    }
+    node.properties.push(prop);
+  }
+  return this.finishNode(node, isPattern ? "ObjectPattern" : "ObjectExpression");
+};
+pp$5.parseProperty = function(isPattern, refDestructuringErrors) {
+  var prop = this.startNode(), isGenerator, isAsync, startPos, startLoc;
+  if (this.options.ecmaVersion >= 9 && this.eat(types$1.ellipsis)) {
+    if (isPattern) {
+      prop.argument = this.parseIdent(false);
+      if (this.type === types$1.comma) {
+        this.raiseRecoverable(this.start, "Comma is not permitted after the rest element");
+      }
+      return this.finishNode(prop, "RestElement");
+    }
+    prop.argument = this.parseMaybeAssign(false, refDestructuringErrors);
+    if (this.type === types$1.comma && refDestructuringErrors && refDestructuringErrors.trailingComma < 0) {
+      refDestructuringErrors.trailingComma = this.start;
+    }
+    return this.finishNode(prop, "SpreadElement");
+  }
+  if (this.options.ecmaVersion >= 6) {
+    prop.method = false;
+    prop.shorthand = false;
+    if (isPattern || refDestructuringErrors) {
+      startPos = this.start;
+      startLoc = this.startLoc;
+    }
+    if (!isPattern) {
+      isGenerator = this.eat(types$1.star);
+    }
+  }
+  var containsEsc = this.containsEsc;
+  this.parsePropertyName(prop);
+  if (!isPattern && !containsEsc && this.options.ecmaVersion >= 8 && !isGenerator && this.isAsyncProp(prop)) {
+    isAsync = true;
+    isGenerator = this.options.ecmaVersion >= 9 && this.eat(types$1.star);
+    this.parsePropertyName(prop);
+  } else {
+    isAsync = false;
+  }
+  this.parsePropertyValue(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc);
+  return this.finishNode(prop, "Property");
+};
+pp$5.parseGetterSetter = function(prop) {
+  var kind = prop.key.name;
+  this.parsePropertyName(prop);
+  prop.value = this.parseMethod(false);
+  prop.kind = kind;
+  var paramCount = prop.kind === "get" ? 0 : 1;
+  if (prop.value.params.length !== paramCount) {
+    var start = prop.value.start;
+    if (prop.kind === "get") {
+      this.raiseRecoverable(start, "getter should have no params");
+    } else {
+      this.raiseRecoverable(start, "setter should have exactly one param");
+    }
+  } else {
+    if (prop.kind === "set" && prop.value.params[0].type === "RestElement") {
+      this.raiseRecoverable(prop.value.params[0].start, "Setter cannot use rest params");
+    }
+  }
+};
+pp$5.parsePropertyValue = function(prop, isPattern, isGenerator, isAsync, startPos, startLoc, refDestructuringErrors, containsEsc) {
+  if ((isGenerator || isAsync) && this.type === types$1.colon) {
+    this.unexpected();
+  }
+  if (this.eat(types$1.colon)) {
+    prop.value = isPattern ? this.parseMaybeDefault(this.start, this.startLoc) : this.parseMaybeAssign(false, refDestructuringErrors);
+    prop.kind = "init";
+  } else if (this.options.ecmaVersion >= 6 && this.type === types$1.parenL) {
+    if (isPattern) {
+      this.unexpected();
+    }
+    prop.method = true;
+    prop.value = this.parseMethod(isGenerator, isAsync);
+    prop.kind = "init";
+  } else if (!isPattern && !containsEsc && this.options.ecmaVersion >= 5 && !prop.computed && prop.key.type === "Identifier" && (prop.key.name === "get" || prop.key.name === "set") && (this.type !== types$1.comma && this.type !== types$1.braceR && this.type !== types$1.eq)) {
+    if (isGenerator || isAsync) {
+      this.unexpected();
+    }
+    this.parseGetterSetter(prop);
+  } else if (this.options.ecmaVersion >= 6 && !prop.computed && prop.key.type === "Identifier") {
+    if (isGenerator || isAsync) {
+      this.unexpected();
+    }
+    this.checkUnreserved(prop.key);
+    if (prop.key.name === "await" && !this.awaitIdentPos) {
+      this.awaitIdentPos = startPos;
+    }
+    if (isPattern) {
+      prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+    } else if (this.type === types$1.eq && refDestructuringErrors) {
+      if (refDestructuringErrors.shorthandAssign < 0) {
+        refDestructuringErrors.shorthandAssign = this.start;
+      }
+      prop.value = this.parseMaybeDefault(startPos, startLoc, this.copyNode(prop.key));
+    } else {
+      prop.value = this.copyNode(prop.key);
+    }
+    prop.kind = "init";
+    prop.shorthand = true;
+  } else {
+    this.unexpected();
+  }
+};
+pp$5.parsePropertyName = function(prop) {
+  if (this.options.ecmaVersion >= 6) {
+    if (this.eat(types$1.bracketL)) {
+      prop.computed = true;
+      prop.key = this.parseMaybeAssign();
+      this.expect(types$1.bracketR);
+      return prop.key;
+    } else {
+      prop.computed = false;
+    }
+  }
+  return prop.key = this.type === types$1.num || this.type === types$1.string ? this.parseExprAtom() : this.parseIdent(this.options.allowReserved !== "never");
+};
+pp$5.initFunction = function(node) {
+  node.id = null;
+  if (this.options.ecmaVersion >= 6) {
+    node.generator = node.expression = false;
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = false;
+  }
+};
+pp$5.parseMethod = function(isGenerator, isAsync, allowDirectSuper) {
+  var node = this.startNode(), oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 6) {
+    node.generator = isGenerator;
+  }
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  this.enterScope(functionFlags(isAsync, node.generator) | SCOPE_SUPER | (allowDirectSuper ? SCOPE_DIRECT_SUPER : 0));
+  this.expect(types$1.parenL);
+  node.params = this.parseBindingList(types$1.parenR, false, this.options.ecmaVersion >= 8);
+  this.checkYieldAwaitInDefaultParams();
+  this.parseFunctionBody(node, false, true, false);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, "FunctionExpression");
+};
+pp$5.parseArrowExpression = function(node, params, isAsync, forInit) {
+  var oldYieldPos = this.yieldPos, oldAwaitPos = this.awaitPos, oldAwaitIdentPos = this.awaitIdentPos;
+  this.enterScope(functionFlags(isAsync, false) | SCOPE_ARROW);
+  this.initFunction(node);
+  if (this.options.ecmaVersion >= 8) {
+    node.async = !!isAsync;
+  }
+  this.yieldPos = 0;
+  this.awaitPos = 0;
+  this.awaitIdentPos = 0;
+  node.params = this.toAssignableList(params, true);
+  this.parseFunctionBody(node, true, false, forInit);
+  this.yieldPos = oldYieldPos;
+  this.awaitPos = oldAwaitPos;
+  this.awaitIdentPos = oldAwaitIdentPos;
+  return this.finishNode(node, "ArrowFunctionExpression");
+};
+pp$5.parseFunctionBody = function(node, isArrowFunction, isMethod, forInit) {
+  var isExpression = isArrowFunction && this.type !== types$1.braceL;
+  var oldStrict = this.strict, useStrict = false;
+  if (isExpression) {
+    node.body = this.parseMaybeAssign(forInit);
+    node.expression = true;
+    this.checkParams(node, false);
+  } else {
+    var nonSimple = this.options.ecmaVersion >= 7 && !this.isSimpleParamList(node.params);
+    if (!oldStrict || nonSimple) {
+      useStrict = this.strictDirective(this.end);
+      if (useStrict && nonSimple) {
+        this.raiseRecoverable(node.start, "Illegal 'use strict' directive in function with non-simple parameter list");
+      }
+    }
+    var oldLabels = this.labels;
+    this.labels = [];
+    if (useStrict) {
+      this.strict = true;
+    }
+    this.checkParams(node, !oldStrict && !useStrict && !isArrowFunction && !isMethod && this.isSimpleParamList(node.params));
+    if (this.strict && node.id) {
+      this.checkLValSimple(node.id, BIND_OUTSIDE);
+    }
+    node.body = this.parseBlock(false, undefined, useStrict && !oldStrict);
+    node.expression = false;
+    this.adaptDirectivePrologue(node.body.body);
+    this.labels = oldLabels;
+  }
+  this.exitScope();
+};
+pp$5.isSimpleParamList = function(params) {
+  for (var i = 0, list = params;i < list.length; i += 1) {
+    var param = list[i];
+    if (param.type !== "Identifier") {
+      return false;
+    }
+  }
+  return true;
+};
+pp$5.checkParams = function(node, allowDuplicates) {
+  var nameHash = Object.create(null);
+  for (var i = 0, list = node.params;i < list.length; i += 1) {
+    var param = list[i];
+    this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
+  }
+};
+pp$5.parseExprList = function(close, allowTrailingComma, allowEmpty, refDestructuringErrors) {
+  var elts = [], first = true;
+  while (!this.eat(close)) {
+    if (!first) {
+      this.expect(types$1.comma);
+      if (allowTrailingComma && this.afterTrailingComma(close)) {
+        break;
+      }
+    } else {
+      first = false;
+    }
+    var elt = undefined;
+    if (allowEmpty && this.type === types$1.comma) {
+      elt = null;
+    } else if (this.type === types$1.ellipsis) {
+      elt = this.parseSpread(refDestructuringErrors);
+      if (refDestructuringErrors && this.type === types$1.comma && refDestructuringErrors.trailingComma < 0) {
+        refDestructuringErrors.trailingComma = this.start;
+      }
+    } else {
+      elt = this.parseMaybeAssign(false, refDestructuringErrors);
+    }
+    elts.push(elt);
+  }
+  return elts;
+};
+pp$5.checkUnreserved = function(ref) {
+  var start = ref.start;
+  var end = ref.end;
+  var name = ref.name;
+  if (this.inGenerator && name === "yield") {
+    this.raiseRecoverable(start, "Cannot use 'yield' as identifier inside a generator");
+  }
+  if (this.inAsync && name === "await") {
+    this.raiseRecoverable(start, "Cannot use 'await' as identifier inside an async function");
+  }
+  if (!(this.currentThisScope().flags & SCOPE_VAR) && name === "arguments") {
+    this.raiseRecoverable(start, "Cannot use 'arguments' in class field initializer");
+  }
+  if (this.inClassStaticBlock && (name === "arguments" || name === "await")) {
+    this.raise(start, "Cannot use " + name + " in class static initialization block");
+  }
+  if (this.keywords.test(name)) {
+    this.raise(start, "Unexpected keyword '" + name + "'");
+  }
+  if (this.options.ecmaVersion < 6 && this.input.slice(start, end).indexOf("\\") !== -1) {
+    return;
+  }
+  var re = this.strict ? this.reservedWordsStrict : this.reservedWords;
+  if (re.test(name)) {
+    if (!this.inAsync && name === "await") {
+      this.raiseRecoverable(start, "Cannot use keyword 'await' outside an async function");
+    }
+    this.raiseRecoverable(start, "The keyword '" + name + "' is reserved");
+  }
+};
+pp$5.parseIdent = function(liberal) {
+  var node = this.parseIdentNode();
+  this.next(!!liberal);
+  this.finishNode(node, "Identifier");
+  if (!liberal) {
+    this.checkUnreserved(node);
+    if (node.name === "await" && !this.awaitIdentPos) {
+      this.awaitIdentPos = node.start;
+    }
+  }
+  return node;
+};
+pp$5.parseIdentNode = function() {
+  var node = this.startNode();
+  if (this.type === types$1.name) {
+    node.name = this.value;
+  } else if (this.type.keyword) {
+    node.name = this.type.keyword;
+    if ((node.name === "class" || node.name === "function") && (this.lastTokEnd !== this.lastTokStart + 1 || this.input.charCodeAt(this.lastTokStart) !== 46)) {
+      this.context.pop();
+    }
+    this.type = types$1.name;
+  } else {
+    this.unexpected();
+  }
+  return node;
+};
+pp$5.parsePrivateIdent = function() {
+  var node = this.startNode();
+  if (this.type === types$1.privateId) {
+    node.name = this.value;
+  } else {
+    this.unexpected();
+  }
+  this.next();
+  this.finishNode(node, "PrivateIdentifier");
+  if (this.options.checkPrivateFields) {
+    if (this.privateNameStack.length === 0) {
+      this.raise(node.start, "Private field '#" + node.name + "' must be declared in an enclosing class");
+    } else {
+      this.privateNameStack[this.privateNameStack.length - 1].used.push(node);
+    }
+  }
+  return node;
+};
+pp$5.parseYield = function(forInit) {
+  if (!this.yieldPos) {
+    this.yieldPos = this.start;
+  }
+  var node = this.startNode();
+  this.next();
+  if (this.type === types$1.semi || this.canInsertSemicolon() || this.type !== types$1.star && !this.type.startsExpr) {
+    node.delegate = false;
+    node.argument = null;
+  } else {
+    node.delegate = this.eat(types$1.star);
+    node.argument = this.parseMaybeAssign(forInit);
+  }
+  return this.finishNode(node, "YieldExpression");
+};
+pp$5.parseAwait = function(forInit) {
+  if (!this.awaitPos) {
+    this.awaitPos = this.start;
+  }
+  var node = this.startNode();
+  this.next();
+  node.argument = this.parseMaybeUnary(null, true, false, forInit);
+  return this.finishNode(node, "AwaitExpression");
+};
+var pp$4 = Parser.prototype;
+pp$4.raise = function(pos, message) {
+  var loc = getLineInfo(this.input, pos);
+  message += " (" + loc.line + ":" + loc.column + ")";
+  if (this.sourceFile) {
+    message += " in " + this.sourceFile;
+  }
+  var err = new SyntaxError(message);
+  err.pos = pos;
+  err.loc = loc;
+  err.raisedAt = this.pos;
+  throw err;
+};
+pp$4.raiseRecoverable = pp$4.raise;
+pp$4.curPosition = function() {
+  if (this.options.locations) {
+    return new Position(this.curLine, this.pos - this.lineStart);
+  }
+};
+var pp$3 = Parser.prototype;
+var Scope = function Scope(flags) {
+  this.flags = flags;
+  this.var = [];
+  this.lexical = [];
+  this.functions = [];
+};
+pp$3.enterScope = function(flags) {
+  this.scopeStack.push(new Scope(flags));
+};
+pp$3.exitScope = function() {
+  this.scopeStack.pop();
+};
+pp$3.treatFunctionsAsVarInScope = function(scope) {
+  return scope.flags & SCOPE_FUNCTION || !this.inModule && scope.flags & SCOPE_TOP;
+};
+pp$3.declareName = function(name, bindingType, pos) {
+  var redeclared = false;
+  if (bindingType === BIND_LEXICAL) {
+    var scope = this.currentScope();
+    redeclared = scope.lexical.indexOf(name) > -1 || scope.functions.indexOf(name) > -1 || scope.var.indexOf(name) > -1;
+    scope.lexical.push(name);
+    if (this.inModule && scope.flags & SCOPE_TOP) {
+      delete this.undefinedExports[name];
+    }
+  } else if (bindingType === BIND_SIMPLE_CATCH) {
+    var scope$1 = this.currentScope();
+    scope$1.lexical.push(name);
+  } else if (bindingType === BIND_FUNCTION) {
+    var scope$2 = this.currentScope();
+    if (this.treatFunctionsAsVar) {
+      redeclared = scope$2.lexical.indexOf(name) > -1;
+    } else {
+      redeclared = scope$2.lexical.indexOf(name) > -1 || scope$2.var.indexOf(name) > -1;
+    }
+    scope$2.functions.push(name);
+  } else {
+    for (var i = this.scopeStack.length - 1;i >= 0; --i) {
+      var scope$3 = this.scopeStack[i];
+      if (scope$3.lexical.indexOf(name) > -1 && !(scope$3.flags & SCOPE_SIMPLE_CATCH && scope$3.lexical[0] === name) || !this.treatFunctionsAsVarInScope(scope$3) && scope$3.functions.indexOf(name) > -1) {
+        redeclared = true;
+        break;
+      }
+      scope$3.var.push(name);
+      if (this.inModule && scope$3.flags & SCOPE_TOP) {
+        delete this.undefinedExports[name];
+      }
+      if (scope$3.flags & SCOPE_VAR) {
+        break;
+      }
+    }
+  }
+  if (redeclared) {
+    this.raiseRecoverable(pos, "Identifier '" + name + "' has already been declared");
+  }
+};
+pp$3.checkLocalExport = function(id) {
+  if (this.scopeStack[0].lexical.indexOf(id.name) === -1 && this.scopeStack[0].var.indexOf(id.name) === -1) {
+    this.undefinedExports[id.name] = id;
+  }
+};
+pp$3.currentScope = function() {
+  return this.scopeStack[this.scopeStack.length - 1];
+};
+pp$3.currentVarScope = function() {
+  for (var i = this.scopeStack.length - 1;; i--) {
+    var scope = this.scopeStack[i];
+    if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK)) {
+      return scope;
+    }
+  }
+};
+pp$3.currentThisScope = function() {
+  for (var i = this.scopeStack.length - 1;; i--) {
+    var scope = this.scopeStack[i];
+    if (scope.flags & (SCOPE_VAR | SCOPE_CLASS_FIELD_INIT | SCOPE_CLASS_STATIC_BLOCK) && !(scope.flags & SCOPE_ARROW)) {
+      return scope;
+    }
+  }
+};
+var Node = function Node(parser, pos, loc) {
+  this.type = "";
+  this.start = pos;
+  this.end = 0;
+  if (parser.options.locations) {
+    this.loc = new SourceLocation(parser, loc);
+  }
+  if (parser.options.directSourceFile) {
+    this.sourceFile = parser.options.directSourceFile;
+  }
+  if (parser.options.ranges) {
+    this.range = [pos, 0];
+  }
+};
+var pp$2 = Parser.prototype;
+pp$2.startNode = function() {
+  return new Node(this, this.start, this.startLoc);
+};
+pp$2.startNodeAt = function(pos, loc) {
+  return new Node(this, pos, loc);
+};
+function finishNodeAt(node, type, pos, loc) {
+  node.type = type;
+  node.end = pos;
+  if (this.options.locations) {
+    node.loc.end = loc;
+  }
+  if (this.options.ranges) {
+    node.range[1] = pos;
+  }
+  return node;
+}
+pp$2.finishNode = function(node, type) {
+  return finishNodeAt.call(this, node, type, this.lastTokEnd, this.lastTokEndLoc);
+};
+pp$2.finishNodeAt = function(node, type, pos, loc) {
+  return finishNodeAt.call(this, node, type, pos, loc);
+};
+pp$2.copyNode = function(node) {
+  var newNode = new Node(this, node.start, this.startLoc);
+  for (var prop in node) {
+    newNode[prop] = node[prop];
+  }
+  return newNode;
+};
+var scriptValuesAddedInUnicode = "Berf Beria_Erfe Gara Garay Gukh Gurung_Khema Hrkt Katakana_Or_Hiragana Kawi Kirat_Rai Krai Nag_Mundari Nagm Ol_Onal Onao Sidetic Sidt Sunu Sunuwar Tai_Yo Tayo Todhri Todr Tolong_Siki Tols Tulu_Tigalari Tutg Unknown Zzzz";
+var ecma9BinaryProperties = "ASCII ASCII_Hex_Digit AHex Alphabetic Alpha Any Assigned Bidi_Control Bidi_C Bidi_Mirrored Bidi_M Case_Ignorable CI Cased Changes_When_Casefolded CWCF Changes_When_Casemapped CWCM Changes_When_Lowercased CWL Changes_When_NFKC_Casefolded CWKCF Changes_When_Titlecased CWT Changes_When_Uppercased CWU Dash Default_Ignorable_Code_Point DI Deprecated Dep Diacritic Dia Emoji Emoji_Component Emoji_Modifier Emoji_Modifier_Base Emoji_Presentation Extender Ext Grapheme_Base Gr_Base Grapheme_Extend Gr_Ext Hex_Digit Hex IDS_Binary_Operator IDSB IDS_Trinary_Operator IDST ID_Continue IDC ID_Start IDS Ideographic Ideo Join_Control Join_C Logical_Order_Exception LOE Lowercase Lower Math Noncharacter_Code_Point NChar Pattern_Syntax Pat_Syn Pattern_White_Space Pat_WS Quotation_Mark QMark Radical Regional_Indicator RI Sentence_Terminal STerm Soft_Dotted SD Terminal_Punctuation Term Unified_Ideograph UIdeo Uppercase Upper Variation_Selector VS White_Space space XID_Continue XIDC XID_Start XIDS";
+var ecma10BinaryProperties = ecma9BinaryProperties + " Extended_Pictographic";
+var ecma11BinaryProperties = ecma10BinaryProperties;
+var ecma12BinaryProperties = ecma11BinaryProperties + " EBase EComp EMod EPres ExtPict";
+var ecma13BinaryProperties = ecma12BinaryProperties;
+var ecma14BinaryProperties = ecma13BinaryProperties;
+var unicodeBinaryProperties = {
+  9: ecma9BinaryProperties,
+  10: ecma10BinaryProperties,
+  11: ecma11BinaryProperties,
+  12: ecma12BinaryProperties,
+  13: ecma13BinaryProperties,
+  14: ecma14BinaryProperties
+};
+var ecma14BinaryPropertiesOfStrings = "Basic_Emoji Emoji_Keycap_Sequence RGI_Emoji_Modifier_Sequence RGI_Emoji_Flag_Sequence RGI_Emoji_Tag_Sequence RGI_Emoji_ZWJ_Sequence RGI_Emoji";
+var unicodeBinaryPropertiesOfStrings = {
+  9: "",
+  10: "",
+  11: "",
+  12: "",
+  13: "",
+  14: ecma14BinaryPropertiesOfStrings
+};
+var unicodeGeneralCategoryValues = "Cased_Letter LC Close_Punctuation Pe Connector_Punctuation Pc Control Cc cntrl Currency_Symbol Sc Dash_Punctuation Pd Decimal_Number Nd digit Enclosing_Mark Me Final_Punctuation Pf Format Cf Initial_Punctuation Pi Letter L Letter_Number Nl Line_Separator Zl Lowercase_Letter Ll Mark M Combining_Mark Math_Symbol Sm Modifier_Letter Lm Modifier_Symbol Sk Nonspacing_Mark Mn Number N Open_Punctuation Ps Other C Other_Letter Lo Other_Number No Other_Punctuation Po Other_Symbol So Paragraph_Separator Zp Private_Use Co Punctuation P punct Separator Z Space_Separator Zs Spacing_Mark Mc Surrogate Cs Symbol S Titlecase_Letter Lt Unassigned Cn Uppercase_Letter Lu";
+var ecma9ScriptValues = "Adlam Adlm Ahom Anatolian_Hieroglyphs Hluw Arabic Arab Armenian Armn Avestan Avst Balinese Bali Bamum Bamu Bassa_Vah Bass Batak Batk Bengali Beng Bhaiksuki Bhks Bopomofo Bopo Brahmi Brah Braille Brai Buginese Bugi Buhid Buhd Canadian_Aboriginal Cans Carian Cari Caucasian_Albanian Aghb Chakma Cakm Cham Cham Cherokee Cher Common Zyyy Coptic Copt Qaac Cuneiform Xsux Cypriot Cprt Cyrillic Cyrl Deseret Dsrt Devanagari Deva Duployan Dupl Egyptian_Hieroglyphs Egyp Elbasan Elba Ethiopic Ethi Georgian Geor Glagolitic Glag Gothic Goth Grantha Gran Greek Grek Gujarati Gujr Gurmukhi Guru Han Hani Hangul Hang Hanunoo Hano Hatran Hatr Hebrew Hebr Hiragana Hira Imperial_Aramaic Armi Inherited Zinh Qaai Inscriptional_Pahlavi Phli Inscriptional_Parthian Prti Javanese Java Kaithi Kthi Kannada Knda Katakana Kana Kayah_Li Kali Kharoshthi Khar Khmer Khmr Khojki Khoj Khudawadi Sind Lao Laoo Latin Latn Lepcha Lepc Limbu Limb Linear_A Lina Linear_B Linb Lisu Lisu Lycian Lyci Lydian Lydi Mahajani Mahj Malayalam Mlym Mandaic Mand Manichaean Mani Marchen Marc Masaram_Gondi Gonm Meetei_Mayek Mtei Mende_Kikakui Mend Meroitic_Cursive Merc Meroitic_Hieroglyphs Mero Miao Plrd Modi Mongolian Mong Mro Mroo Multani Mult Myanmar Mymr Nabataean Nbat New_Tai_Lue Talu Newa Newa Nko Nkoo Nushu Nshu Ogham Ogam Ol_Chiki Olck Old_Hungarian Hung Old_Italic Ital Old_North_Arabian Narb Old_Permic Perm Old_Persian Xpeo Old_South_Arabian Sarb Old_Turkic Orkh Oriya Orya Osage Osge Osmanya Osma Pahawh_Hmong Hmng Palmyrene Palm Pau_Cin_Hau Pauc Phags_Pa Phag Phoenician Phnx Psalter_Pahlavi Phlp Rejang Rjng Runic Runr Samaritan Samr Saurashtra Saur Sharada Shrd Shavian Shaw Siddham Sidd SignWriting Sgnw Sinhala Sinh Sora_Sompeng Sora Soyombo Soyo Sundanese Sund Syloti_Nagri Sylo Syriac Syrc Tagalog Tglg Tagbanwa Tagb Tai_Le Tale Tai_Tham Lana Tai_Viet Tavt Takri Takr Tamil Taml Tangut Tang Telugu Telu Thaana Thaa Thai Thai Tibetan Tibt Tifinagh Tfng Tirhuta Tirh Ugaritic Ugar Vai Vaii Warang_Citi Wara Yi Yiii Zanabazar_Square Zanb";
+var ecma10ScriptValues = ecma9ScriptValues + " Dogra Dogr Gunjala_Gondi Gong Hanifi_Rohingya Rohg Makasar Maka Medefaidrin Medf Old_Sogdian Sogo Sogdian Sogd";
+var ecma11ScriptValues = ecma10ScriptValues + " Elymaic Elym Nandinagari Nand Nyiakeng_Puachue_Hmong Hmnp Wancho Wcho";
+var ecma12ScriptValues = ecma11ScriptValues + " Chorasmian Chrs Diak Dives_Akuru Khitan_Small_Script Kits Yezi Yezidi";
+var ecma13ScriptValues = ecma12ScriptValues + " Cypro_Minoan Cpmn Old_Uyghur Ougr Tangsa Tnsa Toto Vithkuqi Vith";
+var ecma14ScriptValues = ecma13ScriptValues + " " + scriptValuesAddedInUnicode;
+var unicodeScriptValues = {
+  9: ecma9ScriptValues,
+  10: ecma10ScriptValues,
+  11: ecma11ScriptValues,
+  12: ecma12ScriptValues,
+  13: ecma13ScriptValues,
+  14: ecma14ScriptValues
+};
+var data = {};
+function buildUnicodeData(ecmaVersion) {
+  var d = data[ecmaVersion] = {
+    binary: wordsRegexp(unicodeBinaryProperties[ecmaVersion] + " " + unicodeGeneralCategoryValues),
+    binaryOfStrings: wordsRegexp(unicodeBinaryPropertiesOfStrings[ecmaVersion]),
+    nonBinary: {
+      General_Category: wordsRegexp(unicodeGeneralCategoryValues),
+      Script: wordsRegexp(unicodeScriptValues[ecmaVersion])
+    }
+  };
+  d.nonBinary.Script_Extensions = d.nonBinary.Script;
+  d.nonBinary.gc = d.nonBinary.General_Category;
+  d.nonBinary.sc = d.nonBinary.Script;
+  d.nonBinary.scx = d.nonBinary.Script_Extensions;
+}
+for (i = 0, list = [9, 10, 11, 12, 13, 14];i < list.length; i += 1) {
+  ecmaVersion = list[i];
+  buildUnicodeData(ecmaVersion);
+}
+var ecmaVersion;
+var i;
+var list;
+var pp$1 = Parser.prototype;
+var BranchID = function BranchID(parent, base) {
+  this.parent = parent;
+  this.base = base || this;
+};
+BranchID.prototype.separatedFrom = function separatedFrom(alt) {
+  for (var self = this;self; self = self.parent) {
+    for (var other = alt;other; other = other.parent) {
+      if (self.base === other.base && self !== other) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+BranchID.prototype.sibling = function sibling() {
+  return new BranchID(this.parent, this.base);
+};
+var RegExpValidationState = function RegExpValidationState(parser) {
+  this.parser = parser;
+  this.validFlags = "gim" + (parser.options.ecmaVersion >= 6 ? "uy" : "") + (parser.options.ecmaVersion >= 9 ? "s" : "") + (parser.options.ecmaVersion >= 13 ? "d" : "") + (parser.options.ecmaVersion >= 15 ? "v" : "");
+  this.unicodeProperties = data[parser.options.ecmaVersion >= 14 ? 14 : parser.options.ecmaVersion];
+  this.source = "";
+  this.flags = "";
+  this.start = 0;
+  this.switchU = false;
+  this.switchV = false;
+  this.switchN = false;
+  this.pos = 0;
+  this.lastIntValue = 0;
+  this.lastStringValue = "";
+  this.lastAssertionIsQuantifiable = false;
+  this.numCapturingParens = 0;
+  this.maxBackReference = 0;
+  this.groupNames = Object.create(null);
+  this.backReferenceNames = [];
+  this.branchID = null;
+};
+RegExpValidationState.prototype.reset = function reset(start, pattern, flags) {
+  var unicodeSets = flags.indexOf("v") !== -1;
+  var unicode = flags.indexOf("u") !== -1;
+  this.start = start | 0;
+  this.source = pattern + "";
+  this.flags = flags;
+  if (unicodeSets && this.parser.options.ecmaVersion >= 15) {
+    this.switchU = true;
+    this.switchV = true;
+    this.switchN = true;
+  } else {
+    this.switchU = unicode && this.parser.options.ecmaVersion >= 6;
+    this.switchV = false;
+    this.switchN = unicode && this.parser.options.ecmaVersion >= 9;
+  }
+};
+RegExpValidationState.prototype.raise = function raise(message) {
+  this.parser.raiseRecoverable(this.start, "Invalid regular expression: /" + this.source + "/: " + message);
+};
+RegExpValidationState.prototype.at = function at(i, forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  var s = this.source;
+  var l = s.length;
+  if (i >= l) {
+    return -1;
+  }
+  var c = s.charCodeAt(i);
+  if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l) {
+    return c;
+  }
+  var next = s.charCodeAt(i + 1);
+  return next >= 56320 && next <= 57343 ? (c << 10) + next - 56613888 : c;
+};
+RegExpValidationState.prototype.nextIndex = function nextIndex(i, forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  var s = this.source;
+  var l = s.length;
+  if (i >= l) {
+    return l;
+  }
+  var c = s.charCodeAt(i), next;
+  if (!(forceU || this.switchU) || c <= 55295 || c >= 57344 || i + 1 >= l || (next = s.charCodeAt(i + 1)) < 56320 || next > 57343) {
+    return i + 1;
+  }
+  return i + 2;
+};
+RegExpValidationState.prototype.current = function current(forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  return this.at(this.pos, forceU);
+};
+RegExpValidationState.prototype.lookahead = function lookahead(forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  return this.at(this.nextIndex(this.pos, forceU), forceU);
+};
+RegExpValidationState.prototype.advance = function advance(forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  this.pos = this.nextIndex(this.pos, forceU);
+};
+RegExpValidationState.prototype.eat = function eat(ch, forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  if (this.current(forceU) === ch) {
+    this.advance(forceU);
+    return true;
+  }
+  return false;
+};
+RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  var pos = this.pos;
+  for (var i = 0, list = chs;i < list.length; i += 1) {
+    var ch = list[i];
+    var current = this.at(pos, forceU);
+    if (current === -1 || current !== ch) {
+      return false;
+    }
+    pos = this.nextIndex(pos, forceU);
+  }
+  this.pos = pos;
+  return true;
+};
+pp$1.validateRegExpFlags = function(state) {
+  var validFlags = state.validFlags;
+  var flags = state.flags;
+  var u = false;
+  var v = false;
+  for (var i = 0;i < flags.length; i++) {
+    var flag = flags.charAt(i);
+    if (validFlags.indexOf(flag) === -1) {
+      this.raise(state.start, "Invalid regular expression flag");
+    }
+    if (flags.indexOf(flag, i + 1) > -1) {
+      this.raise(state.start, "Duplicate regular expression flag");
+    }
+    if (flag === "u") {
+      u = true;
+    }
+    if (flag === "v") {
+      v = true;
+    }
+  }
+  if (this.options.ecmaVersion >= 15 && u && v) {
+    this.raise(state.start, "Invalid regular expression flag");
+  }
+};
+function hasProp(obj) {
+  for (var _ in obj) {
+    return true;
+  }
+  return false;
+}
+pp$1.validateRegExpPattern = function(state) {
+  this.regexp_pattern(state);
+  if (!state.switchN && this.options.ecmaVersion >= 9 && hasProp(state.groupNames)) {
+    state.switchN = true;
+    this.regexp_pattern(state);
+  }
+};
+pp$1.regexp_pattern = function(state) {
+  state.pos = 0;
+  state.lastIntValue = 0;
+  state.lastStringValue = "";
+  state.lastAssertionIsQuantifiable = false;
+  state.numCapturingParens = 0;
+  state.maxBackReference = 0;
+  state.groupNames = Object.create(null);
+  state.backReferenceNames.length = 0;
+  state.branchID = null;
+  this.regexp_disjunction(state);
+  if (state.pos !== state.source.length) {
+    if (state.eat(41)) {
+      state.raise("Unmatched ')'");
+    }
+    if (state.eat(93) || state.eat(125)) {
+      state.raise("Lone quantifier brackets");
+    }
+  }
+  if (state.maxBackReference > state.numCapturingParens) {
+    state.raise("Invalid escape");
+  }
+  for (var i = 0, list = state.backReferenceNames;i < list.length; i += 1) {
+    var name = list[i];
+    if (!state.groupNames[name]) {
+      state.raise("Invalid named capture referenced");
+    }
+  }
+};
+pp$1.regexp_disjunction = function(state) {
+  var trackDisjunction = this.options.ecmaVersion >= 16;
+  if (trackDisjunction) {
+    state.branchID = new BranchID(state.branchID, null);
+  }
+  this.regexp_alternative(state);
+  while (state.eat(124)) {
+    if (trackDisjunction) {
+      state.branchID = state.branchID.sibling();
+    }
+    this.regexp_alternative(state);
+  }
+  if (trackDisjunction) {
+    state.branchID = state.branchID.parent;
+  }
+  if (this.regexp_eatQuantifier(state, true)) {
+    state.raise("Nothing to repeat");
+  }
+  if (state.eat(123)) {
+    state.raise("Lone quantifier brackets");
+  }
+};
+pp$1.regexp_alternative = function(state) {
+  while (state.pos < state.source.length && this.regexp_eatTerm(state)) {}
+};
+pp$1.regexp_eatTerm = function(state) {
+  if (this.regexp_eatAssertion(state)) {
+    if (state.lastAssertionIsQuantifiable && this.regexp_eatQuantifier(state)) {
+      if (state.switchU) {
+        state.raise("Invalid quantifier");
+      }
+    }
+    return true;
+  }
+  if (state.switchU ? this.regexp_eatAtom(state) : this.regexp_eatExtendedAtom(state)) {
+    this.regexp_eatQuantifier(state);
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatAssertion = function(state) {
+  var start = state.pos;
+  state.lastAssertionIsQuantifiable = false;
+  if (state.eat(94) || state.eat(36)) {
+    return true;
+  }
+  if (state.eat(92)) {
+    if (state.eat(66) || state.eat(98)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  if (state.eat(40) && state.eat(63)) {
+    var lookbehind = false;
+    if (this.options.ecmaVersion >= 9) {
+      lookbehind = state.eat(60);
+    }
+    if (state.eat(61) || state.eat(33)) {
+      this.regexp_disjunction(state);
+      if (!state.eat(41)) {
+        state.raise("Unterminated group");
+      }
+      state.lastAssertionIsQuantifiable = !lookbehind;
+      return true;
+    }
+  }
+  state.pos = start;
+  return false;
+};
+pp$1.regexp_eatQuantifier = function(state, noError) {
+  if (noError === undefined)
+    noError = false;
+  if (this.regexp_eatQuantifierPrefix(state, noError)) {
+    state.eat(63);
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatQuantifierPrefix = function(state, noError) {
+  return state.eat(42) || state.eat(43) || state.eat(63) || this.regexp_eatBracedQuantifier(state, noError);
+};
+pp$1.regexp_eatBracedQuantifier = function(state, noError) {
+  var start = state.pos;
+  if (state.eat(123)) {
+    var min = 0, max = -1;
+    if (this.regexp_eatDecimalDigits(state)) {
+      min = state.lastIntValue;
+      if (state.eat(44) && this.regexp_eatDecimalDigits(state)) {
+        max = state.lastIntValue;
+      }
+      if (state.eat(125)) {
+        if (max !== -1 && max < min && !noError) {
+          state.raise("numbers out of order in {} quantifier");
+        }
+        return true;
+      }
+    }
+    if (state.switchU && !noError) {
+      state.raise("Incomplete quantifier");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatAtom = function(state) {
+  return this.regexp_eatPatternCharacters(state) || state.eat(46) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state);
+};
+pp$1.regexp_eatReverseSolidusAtomEscape = function(state) {
+  var start = state.pos;
+  if (state.eat(92)) {
+    if (this.regexp_eatAtomEscape(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatUncapturingGroup = function(state) {
+  var start = state.pos;
+  if (state.eat(40)) {
+    if (state.eat(63)) {
+      if (this.options.ecmaVersion >= 16) {
+        var addModifiers = this.regexp_eatModifiers(state);
+        var hasHyphen = state.eat(45);
+        if (addModifiers || hasHyphen) {
+          for (var i = 0;i < addModifiers.length; i++) {
+            var modifier = addModifiers.charAt(i);
+            if (addModifiers.indexOf(modifier, i + 1) > -1) {
+              state.raise("Duplicate regular expression modifiers");
+            }
+          }
+          if (hasHyphen) {
+            var removeModifiers = this.regexp_eatModifiers(state);
+            if (!addModifiers && !removeModifiers && state.current() === 58) {
+              state.raise("Invalid regular expression modifiers");
+            }
+            for (var i$1 = 0;i$1 < removeModifiers.length; i$1++) {
+              var modifier$1 = removeModifiers.charAt(i$1);
+              if (removeModifiers.indexOf(modifier$1, i$1 + 1) > -1 || addModifiers.indexOf(modifier$1) > -1) {
+                state.raise("Duplicate regular expression modifiers");
+              }
+            }
+          }
+        }
+      }
+      if (state.eat(58)) {
+        this.regexp_disjunction(state);
+        if (state.eat(41)) {
+          return true;
+        }
+        state.raise("Unterminated group");
+      }
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatCapturingGroup = function(state) {
+  if (state.eat(40)) {
+    if (this.options.ecmaVersion >= 9) {
+      this.regexp_groupSpecifier(state);
+    } else if (state.current() === 63) {
+      state.raise("Invalid group");
+    }
+    this.regexp_disjunction(state);
+    if (state.eat(41)) {
+      state.numCapturingParens += 1;
+      return true;
+    }
+    state.raise("Unterminated group");
+  }
+  return false;
+};
+pp$1.regexp_eatModifiers = function(state) {
+  var modifiers = "";
+  var ch = 0;
+  while ((ch = state.current()) !== -1 && isRegularExpressionModifier(ch)) {
+    modifiers += codePointToString(ch);
+    state.advance();
+  }
+  return modifiers;
+};
+function isRegularExpressionModifier(ch) {
+  return ch === 105 || ch === 109 || ch === 115;
+}
+pp$1.regexp_eatExtendedAtom = function(state) {
+  return state.eat(46) || this.regexp_eatReverseSolidusAtomEscape(state) || this.regexp_eatCharacterClass(state) || this.regexp_eatUncapturingGroup(state) || this.regexp_eatCapturingGroup(state) || this.regexp_eatInvalidBracedQuantifier(state) || this.regexp_eatExtendedPatternCharacter(state);
+};
+pp$1.regexp_eatInvalidBracedQuantifier = function(state) {
+  if (this.regexp_eatBracedQuantifier(state, true)) {
+    state.raise("Nothing to repeat");
+  }
+  return false;
+};
+pp$1.regexp_eatSyntaxCharacter = function(state) {
+  var ch = state.current();
+  if (isSyntaxCharacter(ch)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isSyntaxCharacter(ch) {
+  return ch === 36 || ch >= 40 && ch <= 43 || ch === 46 || ch === 63 || ch >= 91 && ch <= 94 || ch >= 123 && ch <= 125;
+}
+pp$1.regexp_eatPatternCharacters = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  while ((ch = state.current()) !== -1 && !isSyntaxCharacter(ch)) {
+    state.advance();
+  }
+  return state.pos !== start;
+};
+pp$1.regexp_eatExtendedPatternCharacter = function(state) {
+  var ch = state.current();
+  if (ch !== -1 && ch !== 36 && !(ch >= 40 && ch <= 43) && ch !== 46 && ch !== 63 && ch !== 91 && ch !== 94 && ch !== 124) {
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_groupSpecifier = function(state) {
+  if (state.eat(63)) {
+    if (!this.regexp_eatGroupName(state)) {
+      state.raise("Invalid group");
+    }
+    var trackDisjunction = this.options.ecmaVersion >= 16;
+    var known = state.groupNames[state.lastStringValue];
+    if (known) {
+      if (trackDisjunction) {
+        for (var i = 0, list = known;i < list.length; i += 1) {
+          var altID = list[i];
+          if (!altID.separatedFrom(state.branchID)) {
+            state.raise("Duplicate capture group name");
+          }
+        }
+      } else {
+        state.raise("Duplicate capture group name");
+      }
+    }
+    if (trackDisjunction) {
+      (known || (state.groupNames[state.lastStringValue] = [])).push(state.branchID);
+    } else {
+      state.groupNames[state.lastStringValue] = true;
+    }
+  }
+};
+pp$1.regexp_eatGroupName = function(state) {
+  state.lastStringValue = "";
+  if (state.eat(60)) {
+    if (this.regexp_eatRegExpIdentifierName(state) && state.eat(62)) {
+      return true;
+    }
+    state.raise("Invalid capture group name");
+  }
+  return false;
+};
+pp$1.regexp_eatRegExpIdentifierName = function(state) {
+  state.lastStringValue = "";
+  if (this.regexp_eatRegExpIdentifierStart(state)) {
+    state.lastStringValue += codePointToString(state.lastIntValue);
+    while (this.regexp_eatRegExpIdentifierPart(state)) {
+      state.lastStringValue += codePointToString(state.lastIntValue);
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatRegExpIdentifierStart = function(state) {
+  var start = state.pos;
+  var forceU = this.options.ecmaVersion >= 11;
+  var ch = state.current(forceU);
+  state.advance(forceU);
+  if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+    ch = state.lastIntValue;
+  }
+  if (isRegExpIdentifierStart(ch)) {
+    state.lastIntValue = ch;
+    return true;
+  }
+  state.pos = start;
+  return false;
+};
+function isRegExpIdentifierStart(ch) {
+  return isIdentifierStart(ch, true) || ch === 36 || ch === 95;
+}
+pp$1.regexp_eatRegExpIdentifierPart = function(state) {
+  var start = state.pos;
+  var forceU = this.options.ecmaVersion >= 11;
+  var ch = state.current(forceU);
+  state.advance(forceU);
+  if (ch === 92 && this.regexp_eatRegExpUnicodeEscapeSequence(state, forceU)) {
+    ch = state.lastIntValue;
+  }
+  if (isRegExpIdentifierPart(ch)) {
+    state.lastIntValue = ch;
+    return true;
+  }
+  state.pos = start;
+  return false;
+};
+function isRegExpIdentifierPart(ch) {
+  return isIdentifierChar(ch, true) || ch === 36 || ch === 95 || ch === 8204 || ch === 8205;
+}
+pp$1.regexp_eatAtomEscape = function(state) {
+  if (this.regexp_eatBackReference(state) || this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state) || state.switchN && this.regexp_eatKGroupName(state)) {
+    return true;
+  }
+  if (state.switchU) {
+    if (state.current() === 99) {
+      state.raise("Invalid unicode escape");
+    }
+    state.raise("Invalid escape");
+  }
+  return false;
+};
+pp$1.regexp_eatBackReference = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatDecimalEscape(state)) {
+    var n = state.lastIntValue;
+    if (state.switchU) {
+      if (n > state.maxBackReference) {
+        state.maxBackReference = n;
+      }
+      return true;
+    }
+    if (n <= state.numCapturingParens) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatKGroupName = function(state) {
+  if (state.eat(107)) {
+    if (this.regexp_eatGroupName(state)) {
+      state.backReferenceNames.push(state.lastStringValue);
+      return true;
+    }
+    state.raise("Invalid named reference");
+  }
+  return false;
+};
+pp$1.regexp_eatCharacterEscape = function(state) {
+  return this.regexp_eatControlEscape(state) || this.regexp_eatCControlLetter(state) || this.regexp_eatZero(state) || this.regexp_eatHexEscapeSequence(state) || this.regexp_eatRegExpUnicodeEscapeSequence(state, false) || !state.switchU && this.regexp_eatLegacyOctalEscapeSequence(state) || this.regexp_eatIdentityEscape(state);
+};
+pp$1.regexp_eatCControlLetter = function(state) {
+  var start = state.pos;
+  if (state.eat(99)) {
+    if (this.regexp_eatControlLetter(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatZero = function(state) {
+  if (state.current() === 48 && !isDecimalDigit(state.lookahead())) {
+    state.lastIntValue = 0;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatControlEscape = function(state) {
+  var ch = state.current();
+  if (ch === 116) {
+    state.lastIntValue = 9;
+    state.advance();
+    return true;
+  }
+  if (ch === 110) {
+    state.lastIntValue = 10;
+    state.advance();
+    return true;
+  }
+  if (ch === 118) {
+    state.lastIntValue = 11;
+    state.advance();
+    return true;
+  }
+  if (ch === 102) {
+    state.lastIntValue = 12;
+    state.advance();
+    return true;
+  }
+  if (ch === 114) {
+    state.lastIntValue = 13;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatControlLetter = function(state) {
+  var ch = state.current();
+  if (isControlLetter(ch)) {
+    state.lastIntValue = ch % 32;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isControlLetter(ch) {
+  return ch >= 65 && ch <= 90 || ch >= 97 && ch <= 122;
+}
+pp$1.regexp_eatRegExpUnicodeEscapeSequence = function(state, forceU) {
+  if (forceU === undefined)
+    forceU = false;
+  var start = state.pos;
+  var switchU = forceU || state.switchU;
+  if (state.eat(117)) {
+    if (this.regexp_eatFixedHexDigits(state, 4)) {
+      var lead = state.lastIntValue;
+      if (switchU && lead >= 55296 && lead <= 56319) {
+        var leadSurrogateEnd = state.pos;
+        if (state.eat(92) && state.eat(117) && this.regexp_eatFixedHexDigits(state, 4)) {
+          var trail = state.lastIntValue;
+          if (trail >= 56320 && trail <= 57343) {
+            state.lastIntValue = (lead - 55296) * 1024 + (trail - 56320) + 65536;
+            return true;
+          }
+        }
+        state.pos = leadSurrogateEnd;
+        state.lastIntValue = lead;
+      }
+      return true;
+    }
+    if (switchU && state.eat(123) && this.regexp_eatHexDigits(state) && state.eat(125) && isValidUnicode(state.lastIntValue)) {
+      return true;
+    }
+    if (switchU) {
+      state.raise("Invalid unicode escape");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+function isValidUnicode(ch) {
+  return ch >= 0 && ch <= 1114111;
+}
+pp$1.regexp_eatIdentityEscape = function(state) {
+  if (state.switchU) {
+    if (this.regexp_eatSyntaxCharacter(state)) {
+      return true;
+    }
+    if (state.eat(47)) {
+      state.lastIntValue = 47;
+      return true;
+    }
+    return false;
+  }
+  var ch = state.current();
+  if (ch !== 99 && (!state.switchN || ch !== 107)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatDecimalEscape = function(state) {
+  state.lastIntValue = 0;
+  var ch = state.current();
+  if (ch >= 49 && ch <= 57) {
+    do {
+      state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+      state.advance();
+    } while ((ch = state.current()) >= 48 && ch <= 57);
+    return true;
+  }
+  return false;
+};
+var CharSetNone = 0;
+var CharSetOk = 1;
+var CharSetString = 2;
+pp$1.regexp_eatCharacterClassEscape = function(state) {
+  var ch = state.current();
+  if (isCharacterClassEscape(ch)) {
+    state.lastIntValue = -1;
+    state.advance();
+    return CharSetOk;
+  }
+  var negate = false;
+  if (state.switchU && this.options.ecmaVersion >= 9 && ((negate = ch === 80) || ch === 112)) {
+    state.lastIntValue = -1;
+    state.advance();
+    var result;
+    if (state.eat(123) && (result = this.regexp_eatUnicodePropertyValueExpression(state)) && state.eat(125)) {
+      if (negate && result === CharSetString) {
+        state.raise("Invalid property name");
+      }
+      return result;
+    }
+    state.raise("Invalid property name");
+  }
+  return CharSetNone;
+};
+function isCharacterClassEscape(ch) {
+  return ch === 100 || ch === 68 || ch === 115 || ch === 83 || ch === 119 || ch === 87;
+}
+pp$1.regexp_eatUnicodePropertyValueExpression = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatUnicodePropertyName(state) && state.eat(61)) {
+    var name = state.lastStringValue;
+    if (this.regexp_eatUnicodePropertyValue(state)) {
+      var value = state.lastStringValue;
+      this.regexp_validateUnicodePropertyNameAndValue(state, name, value);
+      return CharSetOk;
+    }
+  }
+  state.pos = start;
+  if (this.regexp_eatLoneUnicodePropertyNameOrValue(state)) {
+    var nameOrValue = state.lastStringValue;
+    return this.regexp_validateUnicodePropertyNameOrValue(state, nameOrValue);
+  }
+  return CharSetNone;
+};
+pp$1.regexp_validateUnicodePropertyNameAndValue = function(state, name, value) {
+  if (!hasOwn(state.unicodeProperties.nonBinary, name)) {
+    state.raise("Invalid property name");
+  }
+  if (!state.unicodeProperties.nonBinary[name].test(value)) {
+    state.raise("Invalid property value");
+  }
+};
+pp$1.regexp_validateUnicodePropertyNameOrValue = function(state, nameOrValue) {
+  if (state.unicodeProperties.binary.test(nameOrValue)) {
+    return CharSetOk;
+  }
+  if (state.switchV && state.unicodeProperties.binaryOfStrings.test(nameOrValue)) {
+    return CharSetString;
+  }
+  state.raise("Invalid property name");
+};
+pp$1.regexp_eatUnicodePropertyName = function(state) {
+  var ch = 0;
+  state.lastStringValue = "";
+  while (isUnicodePropertyNameCharacter(ch = state.current())) {
+    state.lastStringValue += codePointToString(ch);
+    state.advance();
+  }
+  return state.lastStringValue !== "";
+};
+function isUnicodePropertyNameCharacter(ch) {
+  return isControlLetter(ch) || ch === 95;
+}
+pp$1.regexp_eatUnicodePropertyValue = function(state) {
+  var ch = 0;
+  state.lastStringValue = "";
+  while (isUnicodePropertyValueCharacter(ch = state.current())) {
+    state.lastStringValue += codePointToString(ch);
+    state.advance();
+  }
+  return state.lastStringValue !== "";
+};
+function isUnicodePropertyValueCharacter(ch) {
+  return isUnicodePropertyNameCharacter(ch) || isDecimalDigit(ch);
+}
+pp$1.regexp_eatLoneUnicodePropertyNameOrValue = function(state) {
+  return this.regexp_eatUnicodePropertyValue(state);
+};
+pp$1.regexp_eatCharacterClass = function(state) {
+  if (state.eat(91)) {
+    var negate = state.eat(94);
+    var result = this.regexp_classContents(state);
+    if (!state.eat(93)) {
+      state.raise("Unterminated character class");
+    }
+    if (negate && result === CharSetString) {
+      state.raise("Negated character class may contain strings");
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_classContents = function(state) {
+  if (state.current() === 93) {
+    return CharSetOk;
+  }
+  if (state.switchV) {
+    return this.regexp_classSetExpression(state);
+  }
+  this.regexp_nonEmptyClassRanges(state);
+  return CharSetOk;
+};
+pp$1.regexp_nonEmptyClassRanges = function(state) {
+  while (this.regexp_eatClassAtom(state)) {
+    var left = state.lastIntValue;
+    if (state.eat(45) && this.regexp_eatClassAtom(state)) {
+      var right = state.lastIntValue;
+      if (state.switchU && (left === -1 || right === -1)) {
+        state.raise("Invalid character class");
+      }
+      if (left !== -1 && right !== -1 && left > right) {
+        state.raise("Range out of order in character class");
+      }
+    }
+  }
+};
+pp$1.regexp_eatClassAtom = function(state) {
+  var start = state.pos;
+  if (state.eat(92)) {
+    if (this.regexp_eatClassEscape(state)) {
+      return true;
+    }
+    if (state.switchU) {
+      var ch$1 = state.current();
+      if (ch$1 === 99 || isOctalDigit(ch$1)) {
+        state.raise("Invalid class escape");
+      }
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  var ch = state.current();
+  if (ch !== 93) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatClassEscape = function(state) {
+  var start = state.pos;
+  if (state.eat(98)) {
+    state.lastIntValue = 8;
+    return true;
+  }
+  if (state.switchU && state.eat(45)) {
+    state.lastIntValue = 45;
+    return true;
+  }
+  if (!state.switchU && state.eat(99)) {
+    if (this.regexp_eatClassControlLetter(state)) {
+      return true;
+    }
+    state.pos = start;
+  }
+  return this.regexp_eatCharacterClassEscape(state) || this.regexp_eatCharacterEscape(state);
+};
+pp$1.regexp_classSetExpression = function(state) {
+  var result = CharSetOk, subResult;
+  if (this.regexp_eatClassSetRange(state))
+    ;
+  else if (subResult = this.regexp_eatClassSetOperand(state)) {
+    if (subResult === CharSetString) {
+      result = CharSetString;
+    }
+    var start = state.pos;
+    while (state.eatChars([38, 38])) {
+      if (state.current() !== 38 && (subResult = this.regexp_eatClassSetOperand(state))) {
+        if (subResult !== CharSetString) {
+          result = CharSetOk;
+        }
+        continue;
+      }
+      state.raise("Invalid character in character class");
+    }
+    if (start !== state.pos) {
+      return result;
+    }
+    while (state.eatChars([45, 45])) {
+      if (this.regexp_eatClassSetOperand(state)) {
+        continue;
+      }
+      state.raise("Invalid character in character class");
+    }
+    if (start !== state.pos) {
+      return result;
+    }
+  } else {
+    state.raise("Invalid character in character class");
+  }
+  for (;; ) {
+    if (this.regexp_eatClassSetRange(state)) {
+      continue;
+    }
+    subResult = this.regexp_eatClassSetOperand(state);
+    if (!subResult) {
+      return result;
+    }
+    if (subResult === CharSetString) {
+      result = CharSetString;
+    }
+  }
+};
+pp$1.regexp_eatClassSetRange = function(state) {
+  var start = state.pos;
+  if (this.regexp_eatClassSetCharacter(state)) {
+    var left = state.lastIntValue;
+    if (state.eat(45) && this.regexp_eatClassSetCharacter(state)) {
+      var right = state.lastIntValue;
+      if (left !== -1 && right !== -1 && left > right) {
+        state.raise("Range out of order in character class");
+      }
+      return true;
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatClassSetOperand = function(state) {
+  if (this.regexp_eatClassSetCharacter(state)) {
+    return CharSetOk;
+  }
+  return this.regexp_eatClassStringDisjunction(state) || this.regexp_eatNestedClass(state);
+};
+pp$1.regexp_eatNestedClass = function(state) {
+  var start = state.pos;
+  if (state.eat(91)) {
+    var negate = state.eat(94);
+    var result = this.regexp_classContents(state);
+    if (state.eat(93)) {
+      if (negate && result === CharSetString) {
+        state.raise("Negated character class may contain strings");
+      }
+      return result;
+    }
+    state.pos = start;
+  }
+  if (state.eat(92)) {
+    var result$1 = this.regexp_eatCharacterClassEscape(state);
+    if (result$1) {
+      return result$1;
+    }
+    state.pos = start;
+  }
+  return null;
+};
+pp$1.regexp_eatClassStringDisjunction = function(state) {
+  var start = state.pos;
+  if (state.eatChars([92, 113])) {
+    if (state.eat(123)) {
+      var result = this.regexp_classStringDisjunctionContents(state);
+      if (state.eat(125)) {
+        return result;
+      }
+    } else {
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  return null;
+};
+pp$1.regexp_classStringDisjunctionContents = function(state) {
+  var result = this.regexp_classString(state);
+  while (state.eat(124)) {
+    if (this.regexp_classString(state) === CharSetString) {
+      result = CharSetString;
+    }
+  }
+  return result;
+};
+pp$1.regexp_classString = function(state) {
+  var count = 0;
+  while (this.regexp_eatClassSetCharacter(state)) {
+    count++;
+  }
+  return count === 1 ? CharSetOk : CharSetString;
+};
+pp$1.regexp_eatClassSetCharacter = function(state) {
+  var start = state.pos;
+  if (state.eat(92)) {
+    if (this.regexp_eatCharacterEscape(state) || this.regexp_eatClassSetReservedPunctuator(state)) {
+      return true;
+    }
+    if (state.eat(98)) {
+      state.lastIntValue = 8;
+      return true;
+    }
+    state.pos = start;
+    return false;
+  }
+  var ch = state.current();
+  if (ch < 0 || ch === state.lookahead() && isClassSetReservedDoublePunctuatorCharacter(ch)) {
+    return false;
+  }
+  if (isClassSetSyntaxCharacter(ch)) {
+    return false;
+  }
+  state.advance();
+  state.lastIntValue = ch;
+  return true;
+};
+function isClassSetReservedDoublePunctuatorCharacter(ch) {
+  return ch === 33 || ch >= 35 && ch <= 38 || ch >= 42 && ch <= 44 || ch === 46 || ch >= 58 && ch <= 64 || ch === 94 || ch === 96 || ch === 126;
+}
+function isClassSetSyntaxCharacter(ch) {
+  return ch === 40 || ch === 41 || ch === 45 || ch === 47 || ch >= 91 && ch <= 93 || ch >= 123 && ch <= 125;
+}
+pp$1.regexp_eatClassSetReservedPunctuator = function(state) {
+  var ch = state.current();
+  if (isClassSetReservedPunctuator(ch)) {
+    state.lastIntValue = ch;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+function isClassSetReservedPunctuator(ch) {
+  return ch === 33 || ch === 35 || ch === 37 || ch === 38 || ch === 44 || ch === 45 || ch >= 58 && ch <= 62 || ch === 64 || ch === 96 || ch === 126;
+}
+pp$1.regexp_eatClassControlLetter = function(state) {
+  var ch = state.current();
+  if (isDecimalDigit(ch) || ch === 95) {
+    state.lastIntValue = ch % 32;
+    state.advance();
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatHexEscapeSequence = function(state) {
+  var start = state.pos;
+  if (state.eat(120)) {
+    if (this.regexp_eatFixedHexDigits(state, 2)) {
+      return true;
+    }
+    if (state.switchU) {
+      state.raise("Invalid escape");
+    }
+    state.pos = start;
+  }
+  return false;
+};
+pp$1.regexp_eatDecimalDigits = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  state.lastIntValue = 0;
+  while (isDecimalDigit(ch = state.current())) {
+    state.lastIntValue = 10 * state.lastIntValue + (ch - 48);
+    state.advance();
+  }
+  return state.pos !== start;
+};
+function isDecimalDigit(ch) {
+  return ch >= 48 && ch <= 57;
+}
+pp$1.regexp_eatHexDigits = function(state) {
+  var start = state.pos;
+  var ch = 0;
+  state.lastIntValue = 0;
+  while (isHexDigit(ch = state.current())) {
+    state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+    state.advance();
+  }
+  return state.pos !== start;
+};
+function isHexDigit(ch) {
+  return ch >= 48 && ch <= 57 || ch >= 65 && ch <= 70 || ch >= 97 && ch <= 102;
+}
+function hexToInt(ch) {
+  if (ch >= 65 && ch <= 70) {
+    return 10 + (ch - 65);
+  }
+  if (ch >= 97 && ch <= 102) {
+    return 10 + (ch - 97);
+  }
+  return ch - 48;
+}
+pp$1.regexp_eatLegacyOctalEscapeSequence = function(state) {
+  if (this.regexp_eatOctalDigit(state)) {
+    var n1 = state.lastIntValue;
+    if (this.regexp_eatOctalDigit(state)) {
+      var n2 = state.lastIntValue;
+      if (n1 <= 3 && this.regexp_eatOctalDigit(state)) {
+        state.lastIntValue = n1 * 64 + n2 * 8 + state.lastIntValue;
+      } else {
+        state.lastIntValue = n1 * 8 + n2;
+      }
+    } else {
+      state.lastIntValue = n1;
+    }
+    return true;
+  }
+  return false;
+};
+pp$1.regexp_eatOctalDigit = function(state) {
+  var ch = state.current();
+  if (isOctalDigit(ch)) {
+    state.lastIntValue = ch - 48;
+    state.advance();
+    return true;
+  }
+  state.lastIntValue = 0;
+  return false;
+};
+function isOctalDigit(ch) {
+  return ch >= 48 && ch <= 55;
+}
+pp$1.regexp_eatFixedHexDigits = function(state, length) {
+  var start = state.pos;
+  state.lastIntValue = 0;
+  for (var i = 0;i < length; ++i) {
+    var ch = state.current();
+    if (!isHexDigit(ch)) {
+      state.pos = start;
+      return false;
+    }
+    state.lastIntValue = 16 * state.lastIntValue + hexToInt(ch);
+    state.advance();
+  }
+  return true;
+};
+var Token = function Token(p) {
+  this.type = p.type;
+  this.value = p.value;
+  this.start = p.start;
+  this.end = p.end;
+  if (p.options.locations) {
+    this.loc = new SourceLocation(p, p.startLoc, p.endLoc);
+  }
+  if (p.options.ranges) {
+    this.range = [p.start, p.end];
+  }
+};
+var pp = Parser.prototype;
+pp.next = function(ignoreEscapeSequenceInKeyword) {
+  if (!ignoreEscapeSequenceInKeyword && this.type.keyword && this.containsEsc) {
+    this.raiseRecoverable(this.start, "Escape sequence in keyword " + this.type.keyword);
+  }
+  if (this.options.onToken) {
+    this.options.onToken(new Token(this));
+  }
+  this.lastTokEnd = this.end;
+  this.lastTokStart = this.start;
+  this.lastTokEndLoc = this.endLoc;
+  this.lastTokStartLoc = this.startLoc;
+  this.nextToken();
+};
+pp.getToken = function() {
+  this.next();
+  return new Token(this);
+};
+if (typeof Symbol !== "undefined") {
+  pp[Symbol.iterator] = function() {
+    var this$1$1 = this;
+    return {
+      next: function() {
+        var token = this$1$1.getToken();
+        return {
+          done: token.type === types$1.eof,
+          value: token
+        };
+      }
+    };
+  };
+}
+pp.nextToken = function() {
+  var curContext = this.curContext();
+  if (!curContext || !curContext.preserveSpace) {
+    this.skipSpace();
+  }
+  this.start = this.pos;
+  if (this.options.locations) {
+    this.startLoc = this.curPosition();
+  }
+  if (this.pos >= this.input.length) {
+    return this.finishToken(types$1.eof);
+  }
+  if (curContext.override) {
+    return curContext.override(this);
+  } else {
+    this.readToken(this.fullCharCodeAtPos());
+  }
+};
+pp.readToken = function(code) {
+  if (isIdentifierStart(code, this.options.ecmaVersion >= 6) || code === 92) {
+    return this.readWord();
+  }
+  return this.getTokenFromCode(code);
+};
+pp.fullCharCodeAt = function(pos) {
+  var code = this.input.charCodeAt(pos);
+  if (code <= 55295 || code >= 56320) {
+    return code;
+  }
+  var next = this.input.charCodeAt(pos + 1);
+  return next <= 56319 || next >= 57344 ? code : (code << 10) + next - 56613888;
+};
+pp.fullCharCodeAtPos = function() {
+  return this.fullCharCodeAt(this.pos);
+};
+pp.skipBlockComment = function() {
+  var startLoc = this.options.onComment && this.curPosition();
+  var start = this.pos, end = this.input.indexOf("*/", this.pos += 2);
+  if (end === -1) {
+    this.raise(this.pos - 2, "Unterminated comment");
+  }
+  this.pos = end + 2;
+  if (this.options.locations) {
+    for (var nextBreak = undefined, pos = start;(nextBreak = nextLineBreak(this.input, pos, this.pos)) > -1; ) {
+      ++this.curLine;
+      pos = this.lineStart = nextBreak;
+    }
+  }
+  if (this.options.onComment) {
+    this.options.onComment(true, this.input.slice(start + 2, end), start, this.pos, startLoc, this.curPosition());
+  }
+};
+pp.skipLineComment = function(startSkip) {
+  var start = this.pos;
+  var startLoc = this.options.onComment && this.curPosition();
+  var ch = this.input.charCodeAt(this.pos += startSkip);
+  while (this.pos < this.input.length && !isNewLine(ch)) {
+    ch = this.input.charCodeAt(++this.pos);
+  }
+  if (this.options.onComment) {
+    this.options.onComment(false, this.input.slice(start + startSkip, this.pos), start, this.pos, startLoc, this.curPosition());
+  }
+};
+pp.skipSpace = function() {
+  loop:
+    while (this.pos < this.input.length) {
+      var ch = this.input.charCodeAt(this.pos);
+      switch (ch) {
+        case 32:
+        case 160:
+          ++this.pos;
+          break;
+        case 13:
+          if (this.input.charCodeAt(this.pos + 1) === 10) {
+            ++this.pos;
+          }
+        case 10:
+        case 8232:
+        case 8233:
+          ++this.pos;
+          if (this.options.locations) {
+            ++this.curLine;
+            this.lineStart = this.pos;
+          }
+          break;
+        case 47:
+          switch (this.input.charCodeAt(this.pos + 1)) {
+            case 42:
+              this.skipBlockComment();
+              break;
+            case 47:
+              this.skipLineComment(2);
+              break;
+            default:
+              break loop;
+          }
+          break;
+        default:
+          if (ch > 8 && ch < 14 || ch >= 5760 && nonASCIIwhitespace.test(String.fromCharCode(ch))) {
+            ++this.pos;
+          } else {
+            break loop;
+          }
+      }
+    }
+};
+pp.finishToken = function(type, val) {
+  this.end = this.pos;
+  if (this.options.locations) {
+    this.endLoc = this.curPosition();
+  }
+  var prevType = this.type;
+  this.type = type;
+  this.value = val;
+  this.updateContext(prevType);
+};
+pp.readToken_dot = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next >= 48 && next <= 57) {
+    return this.readNumber(true);
+  }
+  var next2 = this.input.charCodeAt(this.pos + 2);
+  if (this.options.ecmaVersion >= 6 && next === 46 && next2 === 46) {
+    this.pos += 3;
+    return this.finishToken(types$1.ellipsis);
+  } else {
+    ++this.pos;
+    return this.finishToken(types$1.dot);
+  }
+};
+pp.readToken_slash = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (this.exprAllowed) {
+    ++this.pos;
+    return this.readRegexp();
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.slash, 1);
+};
+pp.readToken_mult_modulo_exp = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  var size = 1;
+  var tokentype = code === 42 ? types$1.star : types$1.modulo;
+  if (this.options.ecmaVersion >= 7 && code === 42 && next === 42) {
+    ++size;
+    tokentype = types$1.starstar;
+    next = this.input.charCodeAt(this.pos + 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, size + 1);
+  }
+  return this.finishOp(tokentype, size);
+};
+pp.readToken_pipe_amp = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === code) {
+    if (this.options.ecmaVersion >= 12) {
+      var next2 = this.input.charCodeAt(this.pos + 2);
+      if (next2 === 61) {
+        return this.finishOp(types$1.assign, 3);
+      }
+    }
+    return this.finishOp(code === 124 ? types$1.logicalOR : types$1.logicalAND, 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(code === 124 ? types$1.bitwiseOR : types$1.bitwiseAND, 1);
+};
+pp.readToken_caret = function() {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.bitwiseXOR, 1);
+};
+pp.readToken_plus_min = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === code) {
+    if (next === 45 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 62 && (this.lastTokEnd === 0 || lineBreak.test(this.input.slice(this.lastTokEnd, this.pos)))) {
+      this.skipLineComment(3);
+      this.skipSpace();
+      return this.nextToken();
+    }
+    return this.finishOp(types$1.incDec, 2);
+  }
+  if (next === 61) {
+    return this.finishOp(types$1.assign, 2);
+  }
+  return this.finishOp(types$1.plusMin, 1);
+};
+pp.readToken_lt_gt = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  var size = 1;
+  if (next === code) {
+    size = code === 62 && this.input.charCodeAt(this.pos + 2) === 62 ? 3 : 2;
+    if (this.input.charCodeAt(this.pos + size) === 61) {
+      return this.finishOp(types$1.assign, size + 1);
+    }
+    return this.finishOp(types$1.bitShift, size);
+  }
+  if (next === 33 && code === 60 && !this.inModule && this.input.charCodeAt(this.pos + 2) === 45 && this.input.charCodeAt(this.pos + 3) === 45) {
+    this.skipLineComment(4);
+    this.skipSpace();
+    return this.nextToken();
+  }
+  if (next === 61) {
+    size = 2;
+  }
+  return this.finishOp(types$1.relational, size);
+};
+pp.readToken_eq_excl = function(code) {
+  var next = this.input.charCodeAt(this.pos + 1);
+  if (next === 61) {
+    return this.finishOp(types$1.equality, this.input.charCodeAt(this.pos + 2) === 61 ? 3 : 2);
+  }
+  if (code === 61 && next === 62 && this.options.ecmaVersion >= 6) {
+    this.pos += 2;
+    return this.finishToken(types$1.arrow);
+  }
+  return this.finishOp(code === 61 ? types$1.eq : types$1.prefix, 1);
+};
+pp.readToken_question = function() {
+  var ecmaVersion = this.options.ecmaVersion;
+  if (ecmaVersion >= 11) {
+    var next = this.input.charCodeAt(this.pos + 1);
+    if (next === 46) {
+      var next2 = this.input.charCodeAt(this.pos + 2);
+      if (next2 < 48 || next2 > 57) {
+        return this.finishOp(types$1.questionDot, 2);
+      }
+    }
+    if (next === 63) {
+      if (ecmaVersion >= 12) {
+        var next2$1 = this.input.charCodeAt(this.pos + 2);
+        if (next2$1 === 61) {
+          return this.finishOp(types$1.assign, 3);
+        }
+      }
+      return this.finishOp(types$1.coalesce, 2);
+    }
+  }
+  return this.finishOp(types$1.question, 1);
+};
+pp.readToken_numberSign = function() {
+  var ecmaVersion = this.options.ecmaVersion;
+  var code = 35;
+  if (ecmaVersion >= 13) {
+    ++this.pos;
+    code = this.fullCharCodeAtPos();
+    if (isIdentifierStart(code, true) || code === 92) {
+      return this.finishToken(types$1.privateId, this.readWord1());
+    }
+  }
+  this.raise(this.pos, "Unexpected character '" + codePointToString(code) + "'");
+};
+pp.getTokenFromCode = function(code) {
+  switch (code) {
+    case 46:
+      return this.readToken_dot();
+    case 40:
+      ++this.pos;
+      return this.finishToken(types$1.parenL);
+    case 41:
+      ++this.pos;
+      return this.finishToken(types$1.parenR);
+    case 59:
+      ++this.pos;
+      return this.finishToken(types$1.semi);
+    case 44:
+      ++this.pos;
+      return this.finishToken(types$1.comma);
+    case 91:
+      ++this.pos;
+      return this.finishToken(types$1.bracketL);
+    case 93:
+      ++this.pos;
+      return this.finishToken(types$1.bracketR);
+    case 123:
+      ++this.pos;
+      return this.finishToken(types$1.braceL);
+    case 125:
+      ++this.pos;
+      return this.finishToken(types$1.braceR);
+    case 58:
+      ++this.pos;
+      return this.finishToken(types$1.colon);
+    case 96:
+      if (this.options.ecmaVersion < 6) {
+        break;
+      }
+      ++this.pos;
+      return this.finishToken(types$1.backQuote);
+    case 48:
+      var next = this.input.charCodeAt(this.pos + 1);
+      if (next === 120 || next === 88) {
+        return this.readRadixNumber(16);
+      }
+      if (this.options.ecmaVersion >= 6) {
+        if (next === 111 || next === 79) {
+          return this.readRadixNumber(8);
+        }
+        if (next === 98 || next === 66) {
+          return this.readRadixNumber(2);
+        }
+      }
+    case 49:
+    case 50:
+    case 51:
+    case 52:
+    case 53:
+    case 54:
+    case 55:
+    case 56:
+    case 57:
+      return this.readNumber(false);
+    case 34:
+    case 39:
+      return this.readString(code);
+    case 47:
+      return this.readToken_slash();
+    case 37:
+    case 42:
+      return this.readToken_mult_modulo_exp(code);
+    case 124:
+    case 38:
+      return this.readToken_pipe_amp(code);
+    case 94:
+      return this.readToken_caret();
+    case 43:
+    case 45:
+      return this.readToken_plus_min(code);
+    case 60:
+    case 62:
+      return this.readToken_lt_gt(code);
+    case 61:
+    case 33:
+      return this.readToken_eq_excl(code);
+    case 63:
+      return this.readToken_question();
+    case 126:
+      return this.finishOp(types$1.prefix, 1);
+    case 35:
+      return this.readToken_numberSign();
+  }
+  this.raise(this.pos, "Unexpected character '" + codePointToString(code) + "'");
+};
+pp.finishOp = function(type, size) {
+  var str = this.input.slice(this.pos, this.pos + size);
+  this.pos += size;
+  return this.finishToken(type, str);
+};
+pp.readRegexp = function() {
+  var escaped, inClass, start = this.pos;
+  for (;; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(start, "Unterminated regular expression");
+    }
+    var ch = this.input.charAt(this.pos);
+    if (lineBreak.test(ch)) {
+      this.raise(start, "Unterminated regular expression");
+    }
+    if (!escaped) {
+      if (ch === "[") {
+        inClass = true;
+      } else if (ch === "]" && inClass) {
+        inClass = false;
+      } else if (ch === "/" && !inClass) {
+        break;
+      }
+      escaped = ch === "\\";
+    } else {
+      escaped = false;
+    }
+    ++this.pos;
+  }
+  var pattern = this.input.slice(start, this.pos);
+  ++this.pos;
+  var flagsStart = this.pos;
+  var flags = this.readWord1();
+  if (this.containsEsc) {
+    this.unexpected(flagsStart);
+  }
+  var state = this.regexpState || (this.regexpState = new RegExpValidationState(this));
+  state.reset(start, pattern, flags);
+  this.validateRegExpFlags(state);
+  this.validateRegExpPattern(state);
+  var value = null;
+  try {
+    value = new RegExp(pattern, flags);
+  } catch (e) {}
+  return this.finishToken(types$1.regexp, { pattern, flags, value });
+};
+pp.readInt = function(radix, len, maybeLegacyOctalNumericLiteral) {
+  var allowSeparators = this.options.ecmaVersion >= 12 && len === undefined;
+  var isLegacyOctalNumericLiteral = maybeLegacyOctalNumericLiteral && this.input.charCodeAt(this.pos) === 48;
+  var start = this.pos, total = 0, lastCode = 0;
+  for (var i = 0, e = len == null ? Infinity : len;i < e; ++i, ++this.pos) {
+    var code = this.input.charCodeAt(this.pos), val = undefined;
+    if (allowSeparators && code === 95) {
+      if (isLegacyOctalNumericLiteral) {
+        this.raiseRecoverable(this.pos, "Numeric separator is not allowed in legacy octal numeric literals");
+      }
+      if (lastCode === 95) {
+        this.raiseRecoverable(this.pos, "Numeric separator must be exactly one underscore");
+      }
+      if (i === 0) {
+        this.raiseRecoverable(this.pos, "Numeric separator is not allowed at the first of digits");
+      }
+      lastCode = code;
+      continue;
+    }
+    if (code >= 97) {
+      val = code - 97 + 10;
+    } else if (code >= 65) {
+      val = code - 65 + 10;
+    } else if (code >= 48 && code <= 57) {
+      val = code - 48;
+    } else {
+      val = Infinity;
+    }
+    if (val >= radix) {
+      break;
+    }
+    lastCode = code;
+    total = total * radix + val;
+  }
+  if (allowSeparators && lastCode === 95) {
+    this.raiseRecoverable(this.pos - 1, "Numeric separator is not allowed at the last of digits");
+  }
+  if (this.pos === start || len != null && this.pos - start !== len) {
+    return null;
+  }
+  return total;
+};
+function stringToNumber(str, isLegacyOctalNumericLiteral) {
+  if (isLegacyOctalNumericLiteral) {
+    return parseInt(str, 8);
+  }
+  return parseFloat(str.replace(/_/g, ""));
+}
+function stringToBigInt(str) {
+  if (typeof BigInt !== "function") {
+    return null;
+  }
+  return BigInt(str.replace(/_/g, ""));
+}
+pp.readRadixNumber = function(radix) {
+  var start = this.pos;
+  this.pos += 2;
+  var val = this.readInt(radix);
+  if (val == null) {
+    this.raise(this.start + 2, "Expected number in radix " + radix);
+  }
+  if (this.options.ecmaVersion >= 11 && this.input.charCodeAt(this.pos) === 110) {
+    val = stringToBigInt(this.input.slice(start, this.pos));
+    ++this.pos;
+  } else if (isIdentifierStart(this.fullCharCodeAtPos())) {
+    this.raise(this.pos, "Identifier directly after number");
+  }
+  return this.finishToken(types$1.num, val);
+};
+pp.readNumber = function(startsWithDot) {
+  var start = this.pos;
+  if (!startsWithDot && this.readInt(10, undefined, true) === null) {
+    this.raise(start, "Invalid number");
+  }
+  var octal = this.pos - start >= 2 && this.input.charCodeAt(start) === 48;
+  if (octal && this.strict) {
+    this.raise(start, "Invalid number");
+  }
+  var next = this.input.charCodeAt(this.pos);
+  if (!octal && !startsWithDot && this.options.ecmaVersion >= 11 && next === 110) {
+    var val$1 = stringToBigInt(this.input.slice(start, this.pos));
+    ++this.pos;
+    if (isIdentifierStart(this.fullCharCodeAtPos())) {
+      this.raise(this.pos, "Identifier directly after number");
+    }
+    return this.finishToken(types$1.num, val$1);
+  }
+  if (octal && /[89]/.test(this.input.slice(start, this.pos))) {
+    octal = false;
+  }
+  if (next === 46 && !octal) {
+    ++this.pos;
+    this.readInt(10);
+    next = this.input.charCodeAt(this.pos);
+  }
+  if ((next === 69 || next === 101) && !octal) {
+    next = this.input.charCodeAt(++this.pos);
+    if (next === 43 || next === 45) {
+      ++this.pos;
+    }
+    if (this.readInt(10) === null) {
+      this.raise(start, "Invalid number");
+    }
+  }
+  if (isIdentifierStart(this.fullCharCodeAtPos())) {
+    this.raise(this.pos, "Identifier directly after number");
+  }
+  var val = stringToNumber(this.input.slice(start, this.pos), octal);
+  return this.finishToken(types$1.num, val);
+};
+pp.readCodePoint = function() {
+  var ch = this.input.charCodeAt(this.pos), code;
+  if (ch === 123) {
+    if (this.options.ecmaVersion < 6) {
+      this.unexpected();
+    }
+    var codePos = ++this.pos;
+    code = this.readHexChar(this.input.indexOf("}", this.pos) - this.pos);
+    ++this.pos;
+    if (code > 1114111) {
+      this.invalidStringToken(codePos, "Code point out of bounds");
+    }
+  } else {
+    code = this.readHexChar(4);
+  }
+  return code;
+};
+pp.readString = function(quote) {
+  var out = "", chunkStart = ++this.pos;
+  for (;; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(this.start, "Unterminated string constant");
+    }
+    var ch = this.input.charCodeAt(this.pos);
+    if (ch === quote) {
+      break;
+    }
+    if (ch === 92) {
+      out += this.input.slice(chunkStart, this.pos);
+      out += this.readEscapedChar(false);
+      chunkStart = this.pos;
+    } else if (ch === 8232 || ch === 8233) {
+      if (this.options.ecmaVersion < 10) {
+        this.raise(this.start, "Unterminated string constant");
+      }
+      ++this.pos;
+      if (this.options.locations) {
+        this.curLine++;
+        this.lineStart = this.pos;
+      }
+    } else {
+      if (isNewLine(ch)) {
+        this.raise(this.start, "Unterminated string constant");
+      }
+      ++this.pos;
+    }
+  }
+  out += this.input.slice(chunkStart, this.pos++);
+  return this.finishToken(types$1.string, out);
+};
+var INVALID_TEMPLATE_ESCAPE_ERROR = {};
+pp.tryReadTemplateToken = function() {
+  this.inTemplateElement = true;
+  try {
+    this.readTmplToken();
+  } catch (err) {
+    if (err === INVALID_TEMPLATE_ESCAPE_ERROR) {
+      this.readInvalidTemplateToken();
+    } else {
+      throw err;
+    }
+  }
+  this.inTemplateElement = false;
+};
+pp.invalidStringToken = function(position, message) {
+  if (this.inTemplateElement && this.options.ecmaVersion >= 9) {
+    throw INVALID_TEMPLATE_ESCAPE_ERROR;
+  } else {
+    this.raise(position, message);
+  }
+};
+pp.readTmplToken = function() {
+  var out = "", chunkStart = this.pos;
+  for (;; ) {
+    if (this.pos >= this.input.length) {
+      this.raise(this.start, "Unterminated template");
+    }
+    var ch = this.input.charCodeAt(this.pos);
+    if (ch === 96 || ch === 36 && this.input.charCodeAt(this.pos + 1) === 123) {
+      if (this.pos === this.start && (this.type === types$1.template || this.type === types$1.invalidTemplate)) {
+        if (ch === 36) {
+          this.pos += 2;
+          return this.finishToken(types$1.dollarBraceL);
+        } else {
+          ++this.pos;
+          return this.finishToken(types$1.backQuote);
+        }
+      }
+      out += this.input.slice(chunkStart, this.pos);
+      return this.finishToken(types$1.template, out);
+    }
+    if (ch === 92) {
+      out += this.input.slice(chunkStart, this.pos);
+      out += this.readEscapedChar(true);
+      chunkStart = this.pos;
+    } else if (isNewLine(ch)) {
+      out += this.input.slice(chunkStart, this.pos);
+      ++this.pos;
+      switch (ch) {
+        case 13:
+          if (this.input.charCodeAt(this.pos) === 10) {
+            ++this.pos;
+          }
+        case 10:
+          out += `
+`;
+          break;
+        default:
+          out += String.fromCharCode(ch);
+          break;
+      }
+      if (this.options.locations) {
+        ++this.curLine;
+        this.lineStart = this.pos;
+      }
+      chunkStart = this.pos;
+    } else {
+      ++this.pos;
+    }
+  }
+};
+pp.readInvalidTemplateToken = function() {
+  for (;this.pos < this.input.length; this.pos++) {
+    switch (this.input[this.pos]) {
+      case "\\":
+        ++this.pos;
+        break;
+      case "$":
+        if (this.input[this.pos + 1] !== "{") {
+          break;
+        }
+      case "`":
+        return this.finishToken(types$1.invalidTemplate, this.input.slice(this.start, this.pos));
+      case "\r":
+        if (this.input[this.pos + 1] === `
+`) {
+          ++this.pos;
+        }
+      case `
+`:
+      case "\u2028":
+      case "\u2029":
+        ++this.curLine;
+        this.lineStart = this.pos + 1;
+        break;
+    }
+  }
+  this.raise(this.start, "Unterminated template");
+};
+pp.readEscapedChar = function(inTemplate) {
+  var ch = this.input.charCodeAt(++this.pos);
+  ++this.pos;
+  switch (ch) {
+    case 110:
+      return `
+`;
+    case 114:
+      return "\r";
+    case 120:
+      return String.fromCharCode(this.readHexChar(2));
+    case 117:
+      return codePointToString(this.readCodePoint());
+    case 116:
+      return "\t";
+    case 98:
+      return "\b";
+    case 118:
+      return "\v";
+    case 102:
+      return "\f";
+    case 13:
+      if (this.input.charCodeAt(this.pos) === 10) {
+        ++this.pos;
+      }
+    case 10:
+      if (this.options.locations) {
+        this.lineStart = this.pos;
+        ++this.curLine;
+      }
+      return "";
+    case 56:
+    case 57:
+      if (this.strict) {
+        this.invalidStringToken(this.pos - 1, "Invalid escape sequence");
+      }
+      if (inTemplate) {
+        var codePos = this.pos - 1;
+        this.invalidStringToken(codePos, "Invalid escape sequence in template string");
+      }
+    default:
+      if (ch >= 48 && ch <= 55) {
+        var octalStr = this.input.substr(this.pos - 1, 3).match(/^[0-7]+/)[0];
+        var octal = parseInt(octalStr, 8);
+        if (octal > 255) {
+          octalStr = octalStr.slice(0, -1);
+          octal = parseInt(octalStr, 8);
+        }
+        this.pos += octalStr.length - 1;
+        ch = this.input.charCodeAt(this.pos);
+        if ((octalStr !== "0" || ch === 56 || ch === 57) && (this.strict || inTemplate)) {
+          this.invalidStringToken(this.pos - 1 - octalStr.length, inTemplate ? "Octal literal in template string" : "Octal literal in strict mode");
+        }
+        return String.fromCharCode(octal);
+      }
+      if (isNewLine(ch)) {
+        if (this.options.locations) {
+          this.lineStart = this.pos;
+          ++this.curLine;
+        }
+        return "";
+      }
+      return String.fromCharCode(ch);
+  }
+};
+pp.readHexChar = function(len) {
+  var codePos = this.pos;
+  var n = this.readInt(16, len);
+  if (n === null) {
+    this.invalidStringToken(codePos, "Bad character escape sequence");
+  }
+  return n;
+};
+pp.readWord1 = function() {
+  this.containsEsc = false;
+  var word = "", first = true, chunkStart = this.pos;
+  var astral = this.options.ecmaVersion >= 6;
+  while (this.pos < this.input.length) {
+    var ch = this.fullCharCodeAtPos();
+    if (isIdentifierChar(ch, astral)) {
+      this.pos += ch <= 65535 ? 1 : 2;
+    } else if (ch === 92) {
+      this.containsEsc = true;
+      word += this.input.slice(chunkStart, this.pos);
+      var escStart = this.pos;
+      if (this.input.charCodeAt(++this.pos) !== 117) {
+        this.invalidStringToken(this.pos, "Expecting Unicode escape sequence \\uXXXX");
+      }
+      ++this.pos;
+      var esc = this.readCodePoint();
+      if (!(first ? isIdentifierStart : isIdentifierChar)(esc, astral)) {
+        this.invalidStringToken(escStart, "Invalid Unicode escape");
+      }
+      word += codePointToString(esc);
+      chunkStart = this.pos;
+    } else {
+      break;
+    }
+    first = false;
+  }
+  return word + this.input.slice(chunkStart, this.pos);
+};
+pp.readWord = function() {
+  var word = this.readWord1();
+  var type = types$1.name;
+  if (this.keywords.test(word)) {
+    type = keywords[word];
+  }
+  return this.finishToken(type, word);
+};
+var version2 = "8.19.0";
+Parser.acorn = {
+  Parser,
+  version: version2,
+  defaultOptions,
+  Position,
+  SourceLocation,
+  getLineInfo,
+  Node,
+  TokenType,
+  tokTypes: types$1,
+  keywordTypes: keywords,
+  TokContext,
+  tokContexts: types,
+  isIdentifierChar,
+  isIdentifierStart,
+  Token,
+  isNewLine,
+  lineBreak,
+  lineBreakG,
+  nonASCIIwhitespace
+};
+function parse4(input, options) {
+  return Parser.parse(input, options);
+}
+
+// src/hooks/agent-guard-workflows.ts
+import { existsSync as existsSync8, readdirSync as readdirSync4, readFileSync as readFileSync12, statSync as statSync7 } from "fs";
+import { dirname as dirname7, isAbsolute as isAbsolute2, join as join13, resolve as resolve5, sep as sep3 } from "path";
+
+// src/setup/installed-plugins.ts
+import { existsSync as existsSync7, readFileSync as readFileSync11 } from "fs";
+function pluginsRecord(installedPluginsFile) {
+  if (!existsSync7(installedPluginsFile))
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync11(installedPluginsFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const plugins = parsed?.plugins;
+  return typeof plugins === "object" && plugins !== null && !Array.isArray(plugins) ? plugins : null;
+}
+function installsOfPlugin(installedPluginsFile, pluginName) {
+  const plugins = pluginsRecord(installedPluginsFile);
+  if (plugins === null)
+    return [];
+  const out = [];
+  for (const [id, entries] of Object.entries(plugins)) {
+    const at = id.lastIndexOf("@");
+    if ((at === -1 ? id : id.slice(0, at)) !== pluginName || !Array.isArray(entries))
+      continue;
+    for (const entry of entries) {
+      if (typeof entry !== "object" || entry === null)
+        continue;
+      const { installPath, projectPath, scope } = entry;
+      if (typeof installPath !== "string" || typeof scope !== "string")
+        continue;
+      out.push({
+        installPath,
+        projectPath: typeof projectPath === "string" ? projectPath : null,
+        scope
+      });
+    }
+  }
+  return out;
+}
+
+// src/hooks/agent-guard-workflows.ts
+var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
+function stringAt(text, from) {
+  const quote = text[from];
+  if (quote !== '"' && quote !== "'" && quote !== "`")
+    return null;
+  let value = "";
+  for (let index = from + 1;index < text.length; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      const next = text[index + 1] ?? "";
+      value += next === "n" ? `
+` : next;
+      index += 1;
+      continue;
+    }
+    if (char === quote)
+      return { end: index + 1, value };
+    value += char;
+  }
+  return null;
+}
+function interpolated(text, from, end) {
+  for (let index = from + 1;index < end - 1; index += 1) {
+    const char = text[index] ?? "";
+    if (char === "\\") {
+      index += 1;
+      continue;
+    }
+    if (char === "$" && text[index + 1] === "{")
+      return true;
+  }
+  return false;
+}
+function literalAt(text, from) {
+  const literal = stringAt(text, from);
+  if (literal === null)
+    return null;
+  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
+}
+function skipBlank(text, from) {
+  let index = from;
+  while (index < text.length) {
+    if (/\s/.test(text[index] ?? "")) {
+      index += 1;
+    } else if (text.startsWith("//", index)) {
+      const end = text.indexOf(`
+`, index);
+      index = end === -1 ? text.length : end + 1;
+    } else if (text.startsWith("/*", index)) {
+      const end = text.indexOf("*/", index + 2);
+      index = end === -1 ? text.length : end + 2;
+    } else {
+      break;
+    }
+  }
+  return index;
+}
+var FAIL = Symbol("not a pure literal");
+var RESERVED_KEYS = ["__proto__", "constructor", "prototype"];
+var NUMBER2 = /^-?(?:(?:0|[1-9][0-9]*)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
+function literalValue(text, from) {
+  const at = skipBlank(text, from);
+  const char = text[at] ?? "";
+  if (char === '"' || char === "'" || char === "`") {
+    const literal = literalAt(text, at);
+    return literal === null ? FAIL : { end: literal.end, value: literal.value };
+  }
+  if (char === "{")
+    return objectValue(text, at);
+  if (char === "[")
+    return arrayValue(text, at);
+  const number = NUMBER2.exec(text.slice(at));
+  if (number !== null)
+    return { end: at + number[0].length, value: Number(number[0]) };
+  const word = /^(true|false|null)(?![\w$])/.exec(text.slice(at));
+  if (word !== null) {
+    const values = { false: false, null: null, true: true };
+    return { end: at + word[0].length, value: values[word[1]] };
+  }
+  return FAIL;
+}
+function objectValue(text, from) {
+  const value = {};
+  let at = skipBlank(text, from + 1);
+  while (text[at] !== "}") {
+    let key;
+    const quoted = literalAt(text, at);
+    const name = /^[A-Za-z_$][\w$]*/.exec(text.slice(at))?.[0];
+    if (quoted !== null) {
+      key = quoted.value;
+      at = quoted.end;
+    } else if (name !== undefined) {
+      key = name;
+      at += name.length;
+    } else {
+      return FAIL;
+    }
+    if (RESERVED_KEYS.includes(key) || key in value)
+      return FAIL;
+    at = skipBlank(text, at);
+    if (text[at] !== ":")
+      return FAIL;
+    const inner = literalValue(text, at + 1);
+    if (inner === FAIL)
+      return FAIL;
+    value[key] = inner.value;
+    at = skipBlank(text, inner.end);
+    if (text[at] === ",")
+      at = skipBlank(text, at + 1);
+    else if (text[at] !== "}")
+      return FAIL;
+  }
+  return { end: at + 1, value };
+}
+function arrayValue(text, from) {
+  const value = [];
+  let at = skipBlank(text, from + 1);
+  while (text[at] !== "]") {
+    const inner = literalValue(text, at);
+    if (inner === FAIL)
+      return FAIL;
+    value.push(inner.value);
+    at = skipBlank(text, inner.end);
+    if (text[at] === ",")
+      at = skipBlank(text, at + 1);
+    else if (text[at] !== "]")
+      return FAIL;
+  }
+  return { end: at + 1, value };
+}
+var META_HEAD = /^export\s+const\s+meta\s*=\s*(?=\{)/;
+function metaExportAt(script) {
+  const start = skipBlank(script, 0);
+  return META_HEAD.test(script.slice(start)) ? start : null;
+}
+function workflowMetaName(script) {
+  const start = metaExportAt(script);
+  if (start === null)
+    return null;
+  const head = META_HEAD.exec(script.slice(start));
+  if (head === null)
+    return null;
+  const meta = objectValue(script, start + head[0].length);
+  if (meta === FAIL)
+    return null;
+  const after = script[skipBlank(script, meta.end)];
+  if (after !== undefined && after !== ";" && !/\n/.test(script.slice(meta.end, skipBlank(script, meta.end)))) {
+    return null;
+  }
+  const { description, name } = meta.value;
+  if (typeof name !== "string" || name === "")
+    return null;
+  if (typeof description !== "string" || description === "")
+    return null;
+  return name;
+}
+function normalized(text) {
+  return text.replaceAll(`\r
+`, `
+`);
+}
+function scriptAtPath(path, cwd) {
+  if (cwd === "" && !isAbsolute2(path)) {
+    return {
+      unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
+    };
+  }
+  const file = resolve5(cwd, path);
+  let size;
+  try {
+    const stat = statSync7(file);
+    if (!stat.isFile())
+      return { unreadable: `The workflow script \`${file}\` is not a file.` };
+    size = stat.size;
+  } catch {
+    return { unreadable: `The workflow script \`${file}\` does not exist.` };
+  }
+  if (size > WORKFLOW_SCRIPT_MAX_BYTES) {
+    return {
+      unreadable: `The workflow script \`${file}\` is larger than the ${WORKFLOW_SCRIPT_MAX_BYTES} bytes Claude Code runs.`
+    };
+  }
+  try {
+    return { file, script: normalized(readFileSync12(file, "utf8")) };
+  } catch {
+    return { unreadable: `The workflow script \`${file}\` cannot be read.` };
+  }
+}
+function workflowFiles(folder) {
+  let names;
+  try {
+    names = readdirSync4(folder).filter((name) => name.endsWith(".js"));
+  } catch {
+    return [];
+  }
+  return names.sort().map((name) => join13(folder, name));
+}
+function claiming(files, name) {
+  const found = [];
+  for (const file of files) {
+    try {
+      const stat = statSync7(file);
+      if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
+        continue;
+      const script = normalized(readFileSync12(file, "utf8"));
+      if (workflowMetaName(script) === name)
+        found.push({ file, script });
+    } catch {}
+  }
+  return found;
+}
+function oneOf2(found, name) {
+  const [first] = found;
+  if (first === undefined)
+    return null;
+  const other = found.find((one) => one.script !== first.script);
+  if (other === undefined)
+    return first;
+  return {
+    unreadable: `Two files claim the workflow name \`${name}\`: \`${first.file}\` and \`${other.file}\`. Claude Code runs one of them, and which one depends on the order the folder lists them, so the guard cannot tell. Give each workflow its own \`meta.name\`.`
+  };
+}
+function savedFolders(place) {
+  const folders = [];
+  let at = resolve5(place.cwd);
+  const home = resolve5(place.home);
+  while (place.cwd !== "" && at !== home) {
+    folders.push(join13(at, ".claude", "workflows"));
+    if (existsSync8(join13(at, ".git")))
+      break;
+    const up = dirname7(at);
+    if (up === at)
+      break;
+    at = up;
+  }
+  folders.push(join13(place.claudeConfigDir, "workflows"));
+  return folders;
+}
+function noFile(name) {
+  return {
+    unreadable: `The workflow \`${name}\` has no file the guard can find: a built-in workflow (its script is inside Claude Code), or a saved one the guard cannot read.`
+  };
+}
+function within(folder, inside) {
+  const root = resolve5(inside);
+  const path = resolve5(folder);
+  return path === root || path.startsWith(root.endsWith(sep3) ? root : `${root}${sep3}`);
+}
+function pluginFolder(plugin, place) {
+  if (plugin === PLUGIN && place.pluginRoot !== null)
+    return place.pluginRoot;
+  const installs = installsOfPlugin(place.installedPluginsFile, plugin);
+  const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && place.cwd !== "" && within(place.cwd, one.projectPath)).sort((a, b) => b.projectPath.length - a.projectPath.length);
+  const user = installs.filter((one) => one.scope === "user");
+  return [...project, ...user].find((one) => existsSync8(one.installPath))?.installPath ?? null;
+}
+function pluginWorkflowFiles(root) {
+  let listed;
+  try {
+    const manifest = JSON.parse(readFileSync12(join13(root, ".claude-plugin", "plugin.json"), "utf8"));
+    listed = manifest?.workflows ?? manifest?.experimental?.workflows;
+  } catch {
+    listed = undefined;
+  }
+  const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : null;
+  if (paths === null)
+    return workflowFiles(join13(root, "workflows"));
+  return paths.filter((one) => typeof one === "string").flatMap((one) => {
+    const path = resolve5(root, one);
+    try {
+      if (statSync7(path).isDirectory())
+        return workflowFiles(path);
+    } catch {
+      return [];
+    }
+    return path.endsWith(".js") ? [path] : [];
+  });
+}
+function scriptByName(name, place) {
+  const colon = name.indexOf(":");
+  if (colon !== -1) {
+    const plugin = name.slice(0, colon);
+    const own = name.slice(colon + 1);
+    const root = pluginFolder(plugin, place);
+    if (root === null) {
+      return {
+        unreadable: `The workflow \`${name}\` belongs to the plugin \`${plugin}\`, and Claude Code's installed_plugins.json names no installed folder for it.`
+      };
+    }
+    return oneOf2(claiming(pluginWorkflowFiles(root), own), name) ?? {
+      unreadable: `The workflow \`${name}\`: the plugin's folder \`${root}\` holds no workflow named \`${own}\`.`
+    };
+  }
+  for (const folder of savedFolders(place)) {
+    const found = oneOf2(claiming(workflowFiles(folder), name), name);
+    if (found !== null)
+      return found;
+  }
+  return noFile(name);
+}
+
+// src/hooks/workflow-script.ts
+var SCRIPT_FUNCTIONS = ["agent", "workflow"];
+var scriptParser = null;
+var lastRead = null;
+function useScriptParser(parser) {
+  scriptParser = parser;
+  lastRead = null;
+}
+var PARSE_OPTIONS = {
+  allowAwaitOutsideFunction: true,
+  allowHashBang: false,
+  allowReturnOutsideFunction: true,
+  ecmaVersion: "latest",
+  locations: true,
+  sourceType: "script",
+  strict: true
+};
+var ROUTE_NAMES = [
+  "eval",
+  "Function",
+  "arguments",
+  "globalThis",
+  "global",
+  "self"
+];
+var COMMON_ROUTE_NAMES = ["global", "self"];
+var SCRIPT_THIS = "`this` outside a non-arrow function (an arrow uses the script's own `this`)";
+var CONSTRUCTOR = "constructor";
+var HTML_COMMENT_MARKERS = ["<!--", "-->"];
+var HTML_COMMENT = "an HTML-like comment (`<!--`, or `-->` at a line's start), which a script reads as a comment and a module as code, so a launch could hide in it";
+var PROTOTYPE_KEY = "__proto__";
+function lineOf(node) {
+  return node.loc?.start.line ?? 1;
+}
+function fixedString(node) {
+  if (node === undefined)
+    return null;
+  if (node.type === "Literal") {
+    const value = node.value;
+    return typeof value === "string" ? value : null;
+  }
+  if (node.type === "TemplateLiteral") {
+    const template = node;
+    if (template.expressions.length > 0)
+      return null;
+    return template.quasis[0]?.value.cooked ?? null;
+  }
+  return null;
+}
+function keyName(property) {
+  const { computed, key } = property;
+  if (computed)
+    return null;
+  if (key.type === "Identifier")
+    return key.name;
+  const value = key.value;
+  return key.type === "Literal" && typeof value === "string" ? value : null;
+}
+function readObject2(node) {
+  const keys = new Map;
+  if (node?.type !== "ObjectExpression")
+    return { hidden: false, keys, plain: false };
+  const seen = new Set;
+  let hidden = false;
+  let plain = true;
+  for (const one of node.properties) {
+    if (one.type !== "Property") {
+      hidden = true;
+      plain = false;
+      continue;
+    }
+    const name = keyName(one);
+    if (name === null) {
+      if (one.computed)
+        hidden = true;
+      plain = false;
+      continue;
+    }
+    if (seen.has(name))
+      hidden = true;
+    seen.add(name);
+    if (one.kind !== "init" || one.method || one.shorthand || name === PROTOTYPE_KEY)
+      plain = false;
+    if (one.kind === "init" && !keys.has(name))
+      keys.set(name, fixedString(one.value));
+  }
+  return { hidden, keys, plain: plain && !hidden };
+}
+function agentCall(call) {
+  const args = call.arguments;
+  const spread = args.some((one) => one.type === "SpreadElement");
+  const options = readObject2(args[1]);
+  return {
+    hidden: spread || options.hidden,
+    keys: options.keys,
+    line: lineOf(call),
+    plain: !spread && args.length === 2 && options.plain,
+    prompt: fixedString(args[0])
+  };
+}
+function workflowCall(call) {
+  const [first] = call.arguments;
+  const object = readObject2(first);
+  return {
+    line: lineOf(call),
+    name: fixedString(first),
+    scriptPath: object.plain ? object.keys.get("scriptPath") ?? null : null
+  };
+}
+function ownThis(node, field) {
+  switch (node.type) {
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+      return field === "params" || field === "body";
+    case "PropertyDefinition":
+      return field === "value";
+    case "StaticBlock":
+      return true;
+    default:
+      return false;
+  }
+}
+function routeOf(node, parent, inFunction) {
+  switch (node.type) {
+    case "Identifier": {
+      const { name } = node;
+      if (!ROUTE_NAMES.includes(name))
+        return null;
+      return COMMON_ROUTE_NAMES.includes(name) ? `\`${name}\` (even as a name of your own: rename it)` : `\`${name}\``;
+    }
+    case "ThisExpression":
+      return inFunction ? null : SCRIPT_THIS;
+    case "ImportExpression":
+      return "`import(\u2026)`";
+    case "MemberExpression": {
+      const { computed, property } = node;
+      const name = computed ? fixedString(property) : property.name;
+      return name === CONSTRUCTOR ? "a `constructor` member" : null;
+    }
+    case "Property":
+      return parent?.type === "ObjectPattern" && keyOrComputedName(node) === CONSTRUCTOR ? "a `constructor` member" : null;
+    default:
+      return null;
+  }
+}
+function keyOrComputedName(property) {
+  const { computed, key } = property;
+  return computed ? fixedString(key) : keyName(property);
+}
+function codeChildren(node) {
+  const fields = node;
+  const skip = new Set(["loc", "range"]);
+  switch (node.type) {
+    case "Property":
+    case "MethodDefinition":
+    case "PropertyDefinition":
+      if (fields.computed !== true)
+        skip.add("key");
+      break;
+    case "MemberExpression":
+      if (fields.computed !== true)
+        skip.add("property");
+      break;
+    case "LabeledStatement":
+    case "BreakStatement":
+    case "ContinueStatement":
+      skip.add("label");
+      break;
+    case "MetaProperty":
+      return [];
+  }
+  const children = [];
+  for (const [field, value] of Object.entries(fields)) {
+    if (skip.has(field))
+      continue;
+    for (const one of Array.isArray(value) ? value : [value]) {
+      if (typeof one === "object" && one !== null && typeof one.type === "string") {
+        children.push([field, one]);
+      }
+    }
+  }
+  return children;
+}
+function directCallee(node, parent) {
+  return parent?.type === "CallExpression" && parent.callee === node && !parent.optional;
+}
+function parseFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const loc = error?.loc;
+  return {
+    line: typeof loc?.line === "number" ? loc.line : null,
+    ok: false,
+    why: message.replace(/\s*\(\d+:\d+\)$/, "")
+  };
+}
+function bodyText(script) {
+  const at = metaExportAt(script);
+  if (at === null)
+    return script;
+  return `${script.slice(0, at)}${" ".repeat("export".length)}${script.slice(at + "export".length)}`;
+}
+function parseScript(script) {
+  if (lastRead?.script === script)
+    return lastRead.read;
+  const read = parseFresh(script);
+  lastRead = { read, script };
+  return read;
+}
+function parseFresh(script) {
+  if (scriptParser === null) {
+    return {
+      line: null,
+      ok: false,
+      why: "the guard's script parser is not loaded in this program"
+    };
+  }
+  const text = bodyText(script);
+  const htmlComments = [];
+  let program;
+  try {
+    program = scriptParser(text, {
+      ...PARSE_OPTIONS,
+      onComment: (_block, _text, start, _end, startLoc) => {
+        if (HTML_COMMENT_MARKERS.some((marker) => text.startsWith(marker, start))) {
+          htmlComments.push(startLoc?.line ?? 1);
+        }
+      }
+    });
+  } catch (error) {
+    return parseFailure(error);
+  }
+  const [htmlLine] = htmlComments;
+  if (htmlLine !== undefined)
+    return { line: htmlLine, ok: false, why: HTML_COMMENT };
+  const agents = [];
+  const workflows = [];
+  const handed = [];
+  const routes = [];
+  const stack = [
+    { inFunction: false, node: program, parent: null }
+  ];
+  for (let next = stack.pop();next !== undefined; next = stack.pop()) {
+    const { inFunction, node, parent } = next;
+    const route = routeOf(node, parent, inFunction);
+    if (route !== null)
+      routes.push({ at: node.start, read: { line: lineOf(node), what: route } });
+    if (node.type === "Identifier" && SCRIPT_FUNCTIONS.includes(node.name)) {
+      const name = node.name;
+      if (!directCallee(node, parent)) {
+        handed.push({ at: node.start, read: { line: lineOf(node), name } });
+      } else if (name === "agent") {
+        agents.push({ at: parent.start, read: agentCall(parent) });
+      } else {
+        workflows.push({ at: parent.start, read: workflowCall(parent) });
+      }
+    }
+    for (const [field, child] of codeChildren(node)) {
+      stack.push({ inFunction: inFunction || ownThis(node, field), node: child, parent: node });
+    }
+  }
+  const inOrder = (found) => found.sort((a, b) => a.at - b.at).map((one) => one.read);
+  return {
+    agents: inOrder(agents),
+    handed: inOrder(handed),
+    ok: true,
+    routes: inOrder(routes),
+    workflows: inOrder(workflows)
+  };
+}
+
+// src/hooks/script-parser.ts
+function loadScriptParser() {
+  useScriptParser(parse4);
+}
+
 // src/hooks/after-merge.ts
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync8, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync8, writeFileSync as writeFileSync3 } from "fs";
 import { tmpdir } from "os";
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 
 // src/worktrees/auto-start.ts
-import { basename as basename5, join as join15 } from "path";
+import { basename as basename5, join as join16 } from "path";
 
 // src/hooks/attended.ts
 function isAttended(env) {
@@ -10091,22 +16239,22 @@ function startDetached(platform, argv, options) {
 }
 
 // src/setup/bun-config.ts
-import { basename as basename4, join as join13 } from "path";
+import { basename as basename4, join as join14 } from "path";
 var BUN_CONFIG_NAME = "bunfig.toml";
 function bunConfigPath(pluginDir) {
-  return join13(pluginDir, BUN_CONFIG_NAME);
+  return join14(pluginDir, BUN_CONFIG_NAME);
 }
 function bunConfigArg(pluginDir) {
   return `--config=${bunConfigPath(pluginDir)}`;
 }
 function pluginFolderBeside(importDir) {
-  return basename4(importDir) === "dist" ? join13(importDir, "..") : join13(importDir, "..", "..", "plugin");
+  return basename4(importDir) === "dist" ? join14(importDir, "..") : join14(importDir, "..", "..", "plugin");
 }
 
 // src/worktrees/auto-state.ts
 import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync11 } from "fs";
-import { dirname as dirname7, join as join14 } from "path";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync13 } from "fs";
+import { dirname as dirname8, join as join15 } from "path";
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var TOLD_NAMES_MAX = 8;
 var removedSchema = object({
@@ -10126,27 +16274,27 @@ var recordSchema = object({
 });
 var toldSchema = object({ seq: number2() });
 function autoCleanLog(stateDir) {
-  return join14(stateDir, "worktrees-auto-clean.log");
+  return join15(stateDir, "worktrees-auto-clean.log");
 }
 function autoCleanFiles(stateDir, repo) {
   const key = createHash2("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join14(stateDir, "worktrees-auto-clean");
+  const dir = join15(stateDir, "worktrees-auto-clean");
   return {
     log: autoCleanLog(stateDir),
-    result: join14(dir, `${key}.json`),
-    told: join14(dir, `${key}.told.json`)
+    result: join15(dir, `${key}.json`),
+    told: join15(dir, `${key}.told.json`)
   };
 }
 function readJson(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync11(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync13(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
 }
 function writeJson(file, value) {
-  mkdirSync7(dirname7(file), { recursive: true, mode: 448 });
+  mkdirSync7(dirname8(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -10183,7 +16331,7 @@ function autoCleanOn(context) {
   return context.project.config?.worktrees?.autoClean !== false;
 }
 function autoCleanEntry(importDir) {
-  return basename5(importDir) === "dist" ? join15(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join15(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+  return basename5(importDir) === "dist" ? join16(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join16(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
 }
 function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
   return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
@@ -10224,7 +16372,7 @@ function takeToldLine(context, repo) {
 }
 
 // src/hooks/git-guard.ts
-import { isAbsolute as isAbsolute2, resolve as resolve5 } from "path";
+import { isAbsolute as isAbsolute3, resolve as resolve6 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
@@ -10243,9 +16391,9 @@ function movedTo(program, folder, args) {
   if (target === undefined || /^[~%]|[$`]/.test(target))
     return null;
   const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
-  if (isAbsolute2(path))
-    return resolve5(path);
-  return folder === null ? null : resolve5(folder, path);
+  if (isAbsolute3(path))
+    return resolve6(path);
+  return folder === null ? null : resolve6(folder, path);
 }
 function currentBranch(where, run) {
   if (!run.branches.has(where)) {
@@ -10543,7 +16691,7 @@ function callQuestions(call, folder, run) {
   const { rest, sub } = call;
   const alias = pushAlias(call);
   if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve5(folder, ...call.dirs);
+    const where = folder === null ? null : resolve6(folder, ...call.dirs);
     const place = {
       branch: () => where === null ? undefined : currentBranch(where, run),
       bare: (remote) => {
@@ -11574,7 +17722,7 @@ function viewPullRequest(ref, repo, folder, env, timeoutMs) {
 }
 function announcedFile(repo, number, env) {
   const key = createHash3("sha256").update(repo).digest("hex").slice(0, 16);
-  return join16(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  return join17(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 async function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -11613,7 +17761,7 @@ async function afterMerge(context) {
   const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
   const record = pr === null ? null : announcedFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync7(record),
+    announced: record !== null && existsSync9(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
@@ -11628,7 +17776,7 @@ async function afterMerge(context) {
   }
   if (outcome.announce !== null && record !== null) {
     notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    mkdirSync8(join16(record, ".."), { recursive: true });
+    mkdirSync8(join17(record, ".."), { recursive: true });
     writeFileSync3(record, "");
   }
   if (outcome.announce !== null)
@@ -11639,7 +17787,7 @@ async function afterMerge(context) {
 }
 
 // src/gateway/config.ts
-import { mkdirSync as mkdirSync9, readFileSync as readFileSync12, statSync as statSync7 } from "fs";
+import { mkdirSync as mkdirSync9, readFileSync as readFileSync14, statSync as statSync8 } from "fs";
 
 // src/gateway/history.ts
 var HISTORY_MAX_RETENTION_DAYS = 3650;
@@ -12027,7 +18175,7 @@ function parseConfig(raw) {
 function loadConfigFile(path, platform = hostPlatform()) {
   let mode;
   try {
-    mode = statSync7(path).mode;
+    mode = statSync8(path).mode;
   } catch (error) {
     throw new ConfigError(`cannot read ${path}: ${messageOf(error)}`, { cause: error });
   }
@@ -12036,7 +18184,7 @@ function loadConfigFile(path, platform = hostPlatform()) {
   }
   let raw;
   try {
-    raw = JSON.parse(readFileSync12(path, "utf8"));
+    raw = JSON.parse(readFileSync14(path, "utf8"));
   } catch (error) {
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
   }
@@ -12045,6 +18193,35 @@ function loadConfigFile(path, platform = hostPlatform()) {
     throw new ConfigError(`${path} is not a valid gateway config:
 ${parsed.error}`);
   return parsed.config;
+}
+
+// src/gateway/settings.ts
+import { existsSync as existsSync11, readFileSync as readFileSync16 } from "fs";
+
+// src/setup/managed-json.ts
+import { existsSync as existsSync10, readFileSync as readFileSync15 } from "fs";
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+function readJsonObject(file) {
+  if (!existsSync10(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync15(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  return { data: parsed, indent: detectIndent(text), text };
 }
 
 // src/gateway/settings.ts
@@ -12074,6 +18251,58 @@ var RETIRED_GATEWAY_ENV_KEYS = [
 ];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
 var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
+var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+function isJsonObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readSettings(path) {
+  if (!existsSync11(path))
+    return {};
+  const text = readFileSync16(path, "utf8");
+  if (text.trim() === "")
+    return {};
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch {
+    throw new Error(`${path} is not valid JSON. Fix it by hand, then run again.`);
+  }
+  if (!isJsonObject2(parsed))
+    throw new Error(`${path} is not a JSON object; not touching it`);
+  const env = parsed.env;
+  if (env !== undefined && !isJsonObject2(env))
+    throw new Error(`${path} has an "env" that is not an object`);
+  return parsed;
+}
+function readGatewaySettings(settingsPath) {
+  const settings = readSettings(settingsPath);
+  const env = isJsonObject2(settings.env) ? settings.env : {};
+  const held = env.ANTHROPIC_BASE_URL;
+  const usable = typeof held === "string" && held.trim() !== "";
+  const baseUrlProblem = Object.hasOwn(env, "ANTHROPIC_BASE_URL") && !usable ? `${settingsPath}: env.ANTHROPIC_BASE_URL is not a text with an address in it` : null;
+  const loginOverrides = LOGIN_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  if (Object.hasOwn(settings, "apiKeyHelper"))
+    loginOverrides.push("apiKeyHelper");
+  const subagentOverrides = SUBAGENT_OVERRIDE_ENV.filter((key) => Object.hasOwn(env, key));
+  const modelKeys = [];
+  if (typeof settings.model === "string") {
+    modelKeys.push({ key: "model", value: settings.model });
+  }
+  for (const family of CLAUDE_FAMILIES) {
+    const key = familyEnv(family);
+    const value = env[key];
+    if (typeof value === "string")
+      modelKeys.push({ key: `env.${key}`, value });
+  }
+  return {
+    baseUrl: usable ? held : null,
+    baseUrlProblem,
+    loginOverrides,
+    modelKeys,
+    subagentOverrides
+  };
+}
 
 // src/gateway/project-state.ts
 var PERSONAL_FILE = "settings.local.json";
@@ -12096,6 +18325,197 @@ function urlMeaning(url, routerUrl) {
       return { profile: name, state: "on" };
   }
   return { profile: null, state: "other" };
+}
+
+// src/models/agent-definition.ts
+import {
+  closeSync as closeSync4,
+  existsSync as existsSync12,
+  openSync as openSync4,
+  readdirSync as readdirSync5,
+  readFileSync as readFileSync17,
+  readSync as readSync2,
+  realpathSync as realpathSync5,
+  statSync as statSync9
+} from "fs";
+import { dirname as dirname9, isAbsolute as isAbsolute4, join as join18, relative as relative2, resolve as resolve7, sep as sep4 } from "path";
+var AGENT_SCAN_MAX_DEPTH = 8;
+var AGENT_SCAN_MAX_ENTRIES = 2000;
+
+class ScanTooLarge extends Error {
+}
+var BUILT_INS = {
+  "claude-code-guide": "haiku",
+  "statusline-setup": "sonnet",
+  "web-fetch": null,
+  Explore: null,
+  Plan: null,
+  "general-purpose": null
+};
+function files(path, budget, depth = 0, visited = new Set) {
+  const found = readable(() => ({ real: realpathSync5(path), stat: statSync9(path) }));
+  if (found === null || visited.has(found.real))
+    return [];
+  visited.add(found.real);
+  budget.entries += 1;
+  if (budget.entries > AGENT_SCAN_MAX_ENTRIES)
+    throw new ScanTooLarge;
+  if (found.stat.isFile())
+    return path.endsWith(".md") ? [path] : [];
+  if (!found.stat.isDirectory())
+    return [];
+  if (depth > AGENT_SCAN_MAX_DEPTH)
+    throw new ScanTooLarge;
+  const entries = readable(() => readdirSync5(path).sort()) ?? [];
+  return entries.flatMap((entry) => files(join18(path, entry), budget, depth + 1, visited));
+}
+function readable(read) {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+}
+function frontmatter(file) {
+  const fd = openSync4(file, "r");
+  try {
+    const byte = Buffer.alloc(1);
+    const lines = [];
+    let line = "";
+    let opened = false;
+    while (readSync2(fd, byte, 0, 1, null) !== 0) {
+      if (byte[0] !== 10) {
+        line += byte.toString("latin1");
+        continue;
+      }
+      const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (!opened) {
+        if (normalized !== "---")
+          return null;
+        opened = true;
+      } else if (normalized === "---") {
+        return Buffer.from(lines.join(`
+`), "latin1").toString("utf8");
+      } else {
+        lines.push(normalized);
+      }
+      line = "";
+    }
+    return opened && line === "---" ? Buffer.from(lines.join(`
+`), "latin1").toString("utf8") : null;
+  } finally {
+    closeSync4(fd);
+  }
+}
+function claiming2(paths, name, local = true) {
+  for (const file of paths) {
+    try {
+      const header = frontmatter(file);
+      if (header === null)
+        continue;
+      const raw = Bun.YAML.parse(header);
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+        continue;
+      const fields = raw;
+      if (fields.name !== name)
+        continue;
+      if (local && (typeof fields.description !== "string" || name.startsWith("-") || name.includes(":") || name.length > 256))
+        continue;
+      const model = stringField(fields.model)?.trim() || null;
+      return {
+        model: model?.toLowerCase() === "inherit" ? null : model,
+        effort: stringField(fields.effort)?.trim().toLowerCase() || null
+      };
+    } catch {}
+  }
+  return null;
+}
+function inside(checkout, project) {
+  const path = relative2(resolve7(project), resolve7(checkout));
+  return path === "" || path !== ".." && !path.startsWith(`..${sep4}`) && !isAbsolute4(path);
+}
+function topFiles(folder, budget) {
+  const entries = readable(() => readdirSync5(folder).sort()) ?? [];
+  return entries.flatMap((entry) => {
+    budget.entries += 1;
+    if (budget.entries > AGENT_SCAN_MAX_ENTRIES)
+      throw new ScanTooLarge;
+    const file = join18(folder, entry);
+    return file.endsWith(".md") && readable(() => statSync9(file).isFile()) === true ? [file] : [];
+  });
+}
+function pluginFiles(root, budget) {
+  const defaults = topFiles(join18(root, "agents"), budget);
+  let listed;
+  try {
+    listed = JSON.parse(readFileSync17(join18(root, ".claude-plugin", "plugin.json"), "utf8"))?.agents;
+  } catch {
+    return defaults;
+  }
+  const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : [];
+  if (listed === undefined)
+    return defaults;
+  return paths.flatMap((path) => {
+    if (typeof path !== "string" || !path.startsWith("./"))
+      return [];
+    const file = resolve7(root, path);
+    if (!inside(file, root))
+      return [];
+    try {
+      return statSync9(file).isFile() && file.endsWith(".md") ? [file] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+function projectFolders(checkout, cwd) {
+  const root = realpathSync5(checkout);
+  const start = realpathSync5(cwd ?? checkout);
+  const folders = [];
+  let at = inside(start, root) ? start : root;
+  for (;; ) {
+    folders.push(join18(at, ".claude", "agents"));
+    const up = dirname9(at);
+    if (at === root || up === at)
+      return folders;
+    at = up;
+  }
+}
+function agentDefinition(name, place) {
+  try {
+    return lookup(name, place, { entries: 0 });
+  } catch (error) {
+    if (error instanceof ScanTooLarge)
+      return null;
+    throw error;
+  }
+}
+function lookup(name, place, budget) {
+  if (name === null)
+    return null;
+  const colon = name.indexOf(":");
+  if (colon === -1) {
+    const folders = [
+      place.paths.managedAgentsDir,
+      ...place.checkout === null ? [] : projectFolders(place.checkout, place.cwd),
+      join18(place.paths.claudeConfigDir, "agents")
+    ];
+    for (const folder of folders) {
+      const found = claiming2(files(folder, budget), name);
+      if (found !== null)
+        return found;
+    }
+  }
+  if (colon !== -1) {
+    const installs = installsOfPlugin(place.paths.installedPluginsFile, name.slice(0, colon));
+    const given = place.cwd ?? place.checkout;
+    const real = given == null ? null : readable(() => realpathSync5(given));
+    const cwds = [given, real].filter((one) => one != null);
+    const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && cwds.some((cwd) => inside(cwd, one.projectPath ?? ""))).sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
+    const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) => existsSync12(one.installPath))?.installPath;
+    return root === undefined ? null : claiming2(pluginFiles(root, budget), name.slice(colon + 1), false);
+  }
+  return Object.hasOwn(BUILT_INS, name) ? { model: BUILT_INS[name] ?? null, effort: null, builtIn: true } : null;
 }
 
 // src/models/launch-policy.ts
@@ -12226,12 +18646,15 @@ function modelVariable(env, name) {
   const value = stringField(env[name])?.trim() ?? "";
   return value === "" || value.toLowerCase() === "inherit" ? null : value;
 }
-function effectiveLaunch(launch, env, sessionModel) {
+function effectiveLaunch(launch, env, sessionModel, definition = null) {
   if (launch.fork) {
     return { effort: launch.effort, effortFrom: null, model: sessionModel, modelFrom: "fork" };
   }
   const level = stringField(env[EFFORT_LEVEL_ENV])?.trim().toLowerCase() ?? "";
-  const effort = level === "" ? { effort: launch.effort, effortFrom: null } : { effort: level, effortFrom: EFFORT_LEVEL_ENV };
+  const effort = level === "" ? launch.effort !== null ? { effort: launch.effort, effortFrom: null } : {
+    effort: definition?.effort ?? null,
+    effortFrom: definition?.effort ? "frontmatter" : null
+  } : { effort: level, effortFrom: EFFORT_LEVEL_ENV };
   if (switchOn(env[SUBAGENT_MODEL_FORCE_ENV])) {
     const forced = modelVariable(env, SUBAGENT_MODEL_ENV);
     return forced === null ? { ...effort, model: sessionModel, modelFrom: "force-session" } : { ...effort, model: forced, modelFrom: "force" };
@@ -12239,365 +18662,26 @@ function effectiveLaunch(launch, env, sessionModel) {
   const workflowModel = launch.workflow ? modelVariable(env, WORKFLOW_SUBAGENT_MODEL_ENV) : null;
   if (workflowModel !== null)
     return { ...effort, model: workflowModel, modelFrom: "workflow" };
-  return { ...effort, model: launch.model, modelFrom: "call" };
-}
-
-// src/hooks/agent-guard-workflows.ts
-import { existsSync as existsSync9, readdirSync as readdirSync4, readFileSync as readFileSync14, statSync as statSync8 } from "fs";
-import { dirname as dirname8, isAbsolute as isAbsolute3, join as join17, resolve as resolve6, sep as sep3 } from "path";
-
-// src/setup/installed-plugins.ts
-import { existsSync as existsSync8, readFileSync as readFileSync13 } from "fs";
-function pluginsRecord(installedPluginsFile) {
-  if (!existsSync8(installedPluginsFile))
-    return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync13(installedPluginsFile, "utf8"));
-  } catch {
-    return null;
+  if (launch.model !== null)
+    return { ...effort, model: launch.model, modelFrom: "call" };
+  const model = definition?.model?.trim() ?? "";
+  if (model !== "" && model.toLowerCase() !== "inherit") {
+    return { ...effort, model, modelFrom: "frontmatter" };
   }
-  const plugins = parsed?.plugins;
-  return typeof plugins === "object" && plugins !== null && !Array.isArray(plugins) ? plugins : null;
-}
-function installsOfPlugin(installedPluginsFile, pluginName) {
-  const plugins = pluginsRecord(installedPluginsFile);
-  if (plugins === null)
-    return [];
-  const out = [];
-  for (const [id, entries] of Object.entries(plugins)) {
-    const at = id.lastIndexOf("@");
-    if ((at === -1 ? id : id.slice(0, at)) !== pluginName || !Array.isArray(entries))
-      continue;
-    for (const entry of entries) {
-      if (typeof entry !== "object" || entry === null)
-        continue;
-      const { installPath, projectPath, scope } = entry;
-      if (typeof installPath !== "string" || typeof scope !== "string")
-        continue;
-      out.push({
-        installPath,
-        projectPath: typeof projectPath === "string" ? projectPath : null,
-        scope
-      });
-    }
-  }
-  return out;
-}
-
-// src/hooks/agent-guard-workflows.ts
-var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
-function stringAt(text, from) {
-  const quote = text[from];
-  if (quote !== '"' && quote !== "'" && quote !== "`")
-    return null;
-  let value = "";
-  for (let index = from + 1;index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      const next = text[index + 1] ?? "";
-      value += next === "n" ? `
-` : next;
-      index += 1;
-      continue;
-    }
-    if (char === quote)
-      return { end: index + 1, value };
-    value += char;
-  }
-  return null;
-}
-function interpolated(text, from, end) {
-  for (let index = from + 1;index < end - 1; index += 1) {
-    const char = text[index] ?? "";
-    if (char === "\\") {
-      index += 1;
-      continue;
-    }
-    if (char === "$" && text[index + 1] === "{")
-      return true;
-  }
-  return false;
-}
-function literalAt(text, from) {
-  const literal = stringAt(text, from);
-  if (literal === null)
-    return null;
-  return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
-}
-function skipBlank(text, from) {
-  let index = from;
-  while (index < text.length) {
-    if (/\s/.test(text[index] ?? "")) {
-      index += 1;
-    } else if (text.startsWith("//", index)) {
-      const end = text.indexOf(`
-`, index);
-      index = end === -1 ? text.length : end + 1;
-    } else if (text.startsWith("/*", index)) {
-      const end = text.indexOf("*/", index + 2);
-      index = end === -1 ? text.length : end + 2;
-    } else {
-      break;
-    }
-  }
-  return index;
-}
-function wholeLiteralAt(text, from, ends) {
-  const literal = literalAt(text, from);
-  if (literal === null)
-    return null;
-  const next = text[skipBlank(text, literal.end)] ?? "";
-  return ends.includes(next) ? literal.value : null;
-}
-var FAIL = Symbol("not a pure literal");
-var RESERVED_KEYS = ["__proto__", "constructor", "prototype"];
-var NUMBER2 = /^-?(?:(?:0|[1-9][0-9]*)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/;
-function literalValue(text, from) {
-  const at = skipBlank(text, from);
-  const char = text[at] ?? "";
-  if (char === '"' || char === "'" || char === "`") {
-    const literal = literalAt(text, at);
-    return literal === null ? FAIL : { end: literal.end, value: literal.value };
-  }
-  if (char === "{")
-    return objectValue(text, at);
-  if (char === "[")
-    return arrayValue(text, at);
-  const number = NUMBER2.exec(text.slice(at));
-  if (number !== null)
-    return { end: at + number[0].length, value: Number(number[0]) };
-  const word = /^(true|false|null)(?![\w$])/.exec(text.slice(at));
-  if (word !== null) {
-    const values = { false: false, null: null, true: true };
-    return { end: at + word[0].length, value: values[word[1]] };
-  }
-  return FAIL;
-}
-function objectValue(text, from) {
-  const value = {};
-  let at = skipBlank(text, from + 1);
-  while (text[at] !== "}") {
-    let key;
-    const quoted = literalAt(text, at);
-    const name = /^[A-Za-z_$][\w$]*/.exec(text.slice(at))?.[0];
-    if (quoted !== null) {
-      key = quoted.value;
-      at = quoted.end;
-    } else if (name !== undefined) {
-      key = name;
-      at += name.length;
-    } else {
-      return FAIL;
-    }
-    if (RESERVED_KEYS.includes(key) || key in value)
-      return FAIL;
-    at = skipBlank(text, at);
-    if (text[at] !== ":")
-      return FAIL;
-    const inner = literalValue(text, at + 1);
-    if (inner === FAIL)
-      return FAIL;
-    value[key] = inner.value;
-    at = skipBlank(text, inner.end);
-    if (text[at] === ",")
-      at = skipBlank(text, at + 1);
-    else if (text[at] !== "}")
-      return FAIL;
-  }
-  return { end: at + 1, value };
-}
-function arrayValue(text, from) {
-  const value = [];
-  let at = skipBlank(text, from + 1);
-  while (text[at] !== "]") {
-    const inner = literalValue(text, at);
-    if (inner === FAIL)
-      return FAIL;
-    value.push(inner.value);
-    at = skipBlank(text, inner.end);
-    if (text[at] === ",")
-      at = skipBlank(text, at + 1);
-    else if (text[at] !== "]")
-      return FAIL;
-  }
-  return { end: at + 1, value };
-}
-function workflowMetaName(script) {
-  const start = skipBlank(script, 0);
-  const head = /^export\s+const\s+meta\s*=\s*(?=\{)/.exec(script.slice(start));
-  if (head === null)
-    return null;
-  const meta = objectValue(script, start + head[0].length);
-  if (meta === FAIL)
-    return null;
-  const after = script[skipBlank(script, meta.end)];
-  if (after !== undefined && after !== ";" && !/\n/.test(script.slice(meta.end, skipBlank(script, meta.end)))) {
-    return null;
-  }
-  const { description, name } = meta.value;
-  if (typeof name !== "string" || name === "")
-    return null;
-  if (typeof description !== "string" || description === "")
-    return null;
-  return name;
-}
-function normalized(text) {
-  return text.replaceAll(`\r
-`, `
-`);
-}
-function scriptAtPath(path, cwd) {
-  if (cwd === "" && !isAbsolute3(path)) {
-    return {
-      unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
-    };
-  }
-  const file = resolve6(cwd, path);
-  let size;
-  try {
-    const stat = statSync8(file);
-    if (!stat.isFile())
-      return { unreadable: `The workflow script \`${file}\` is not a file.` };
-    size = stat.size;
-  } catch {
-    return { unreadable: `The workflow script \`${file}\` does not exist.` };
-  }
-  if (size > WORKFLOW_SCRIPT_MAX_BYTES) {
-    return {
-      unreadable: `The workflow script \`${file}\` is larger than the ${WORKFLOW_SCRIPT_MAX_BYTES} bytes Claude Code runs.`
-    };
-  }
-  try {
-    return { file, script: normalized(readFileSync14(file, "utf8")) };
-  } catch {
-    return { unreadable: `The workflow script \`${file}\` cannot be read.` };
-  }
-}
-function workflowFiles(folder) {
-  let names;
-  try {
-    names = readdirSync4(folder).filter((name) => name.endsWith(".js"));
-  } catch {
-    return [];
-  }
-  return names.sort().map((name) => join17(folder, name));
-}
-function claiming(files, name) {
-  const found = [];
-  for (const file of files) {
-    try {
-      const stat = statSync8(file);
-      if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
-        continue;
-      const script = normalized(readFileSync14(file, "utf8"));
-      if (workflowMetaName(script) === name)
-        found.push({ file, script });
-    } catch {}
-  }
-  return found;
-}
-function oneOf2(found, name) {
-  const [first] = found;
-  if (first === undefined)
-    return null;
-  const other = found.find((one) => one.script !== first.script);
-  if (other === undefined)
-    return first;
-  return {
-    unreadable: `Two files claim the workflow name \`${name}\`: \`${first.file}\` and \`${other.file}\`. Claude Code runs one of them, and which one depends on the order the folder lists them, so the guard cannot tell. Give each workflow its own \`meta.name\`.`
-  };
-}
-function savedFolders(place) {
-  const folders = [];
-  let at = resolve6(place.cwd);
-  const home = resolve6(place.home);
-  while (place.cwd !== "" && at !== home) {
-    folders.push(join17(at, ".claude", "workflows"));
-    if (existsSync9(join17(at, ".git")))
-      break;
-    const up = dirname8(at);
-    if (up === at)
-      break;
-    at = up;
-  }
-  folders.push(join17(place.claudeConfigDir, "workflows"));
-  return folders;
-}
-function noFile(name) {
-  return {
-    unreadable: `The workflow \`${name}\` has no file the guard can find: a built-in workflow (its script is inside Claude Code), or a saved one the guard cannot read.`
-  };
-}
-function within(folder, inside) {
-  const root = resolve6(inside);
-  const path = resolve6(folder);
-  return path === root || path.startsWith(root.endsWith(sep3) ? root : `${root}${sep3}`);
-}
-function pluginFolder(plugin, place) {
-  if (plugin === PLUGIN && place.pluginRoot !== null)
-    return place.pluginRoot;
-  const installs = installsOfPlugin(place.installedPluginsFile, plugin);
-  const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && place.cwd !== "" && within(place.cwd, one.projectPath)).sort((a, b) => b.projectPath.length - a.projectPath.length);
-  const user = installs.filter((one) => one.scope === "user");
-  return [...project, ...user].find((one) => existsSync9(one.installPath))?.installPath ?? null;
-}
-function pluginWorkflowFiles(root) {
-  let listed;
-  try {
-    const manifest = JSON.parse(readFileSync14(join17(root, ".claude-plugin", "plugin.json"), "utf8"));
-    listed = manifest?.workflows ?? manifest?.experimental?.workflows;
-  } catch {
-    listed = undefined;
-  }
-  const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : null;
-  if (paths === null)
-    return workflowFiles(join17(root, "workflows"));
-  return paths.filter((one) => typeof one === "string").flatMap((one) => {
-    const path = resolve6(root, one);
-    try {
-      if (statSync8(path).isDirectory())
-        return workflowFiles(path);
-    } catch {
-      return [];
-    }
-    return path.endsWith(".js") ? [path] : [];
-  });
-}
-function scriptByName(name, place) {
-  const colon = name.indexOf(":");
-  if (colon !== -1) {
-    const plugin = name.slice(0, colon);
-    const own = name.slice(colon + 1);
-    const root = pluginFolder(plugin, place);
-    if (root === null) {
-      return {
-        unreadable: `The workflow \`${name}\` belongs to the plugin \`${plugin}\`, and Claude Code's installed_plugins.json names no installed folder for it.`
-      };
-    }
-    return oneOf2(claiming(pluginWorkflowFiles(root), own), name) ?? {
-      unreadable: `The workflow \`${name}\`: the plugin's folder \`${root}\` holds no workflow named \`${own}\`.`
-    };
-  }
-  for (const folder of savedFolders(place)) {
-    const found = oneOf2(claiming(workflowFiles(folder), name), name);
-    if (found !== null)
-      return found;
-  }
-  return noFile(name);
+  return { ...effort, model: null, modelFrom: "call" };
 }
 
 // src/hooks/agent-launches.ts
 import {
   appendFileSync as appendFileSync4,
-  closeSync as closeSync4,
+  closeSync as closeSync5,
   fstatSync as fstatSync2,
   mkdirSync as mkdirSync10,
-  openSync as openSync4,
-  readFileSync as readFileSync15,
-  readSync as readSync2
+  openSync as openSync5,
+  readFileSync as readFileSync18,
+  readSync as readSync3
 } from "fs";
-import { dirname as dirname9, join as join18 } from "path";
+import { dirname as dirname10, join as join19 } from "path";
 var SESSION_EFFORT = "session-effort";
 var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 function reasonParts(reason) {
@@ -12611,13 +18695,13 @@ function reasonParts(reason) {
   return { effort: null, word: word === "" ? null : word };
 }
 function agentLaunchesFile(stateDir) {
-  return join18(stateDir, "agent-launches.jsonl");
+  return join19(stateDir, "agent-launches.jsonl");
 }
 var RECORD_TAIL_BYTES = 64 * 1024;
 function tailLines2(file) {
   let fd;
   try {
-    fd = openSync4(file, "r");
+    fd = openSync5(file, "r");
   } catch {
     return [];
   }
@@ -12625,14 +18709,14 @@ function tailLines2(file) {
     const size = fstatSync2(fd).size;
     const from = Math.max(0, size - RECORD_TAIL_BYTES);
     const buffer = Buffer.alloc(size - from);
-    const read = readSync2(fd, buffer, 0, buffer.length, from);
+    const read = readSync3(fd, buffer, 0, buffer.length, from);
     const lines = buffer.subarray(0, read).toString("utf8").split(`
 `);
     return (from > 0 ? lines.slice(1) : lines).filter((line) => line.trim() !== "");
   } catch {
     return [];
   } finally {
-    closeSync4(fd);
+    closeSync5(fd);
   }
 }
 function launchKey(launch) {
@@ -12652,12 +18736,12 @@ function appendAgentLaunches(file, launches) {
   if (fresh.length === 0)
     return;
   try {
-    mkdirSync10(dirname9(file), { recursive: true, mode: 448 });
+    mkdirSync10(dirname10(file), { recursive: true, mode: 448 });
     appendFileSync4(file, fresh.map((one) => `${JSON.stringify(one)}
 `).join(""));
   } catch {}
 }
-function isJsonObject2(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function textOrNull(value) {
@@ -12670,7 +18754,7 @@ function parseAgentLaunch(line) {
   } catch {
     return null;
   }
-  if (!isJsonObject2(value))
+  if (!isJsonObject3(value))
     return null;
   const { at, family, model, project, reason, subagentType } = value;
   if (typeof at !== "number" || family !== "opus" && family !== "fable" || typeof model !== "string" || typeof reason !== "string") {
@@ -12696,17 +18780,33 @@ function parseAgentLaunch(line) {
 // src/hooks/agent-guard.ts
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
+var PRINT_RUN = "claude -p";
 var FORK = "fork";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
-var READ_ONLY_AGENTS = ["Plan", "Reviewer", "Explore", "auditor"];
+var READ_ONLY_AGENTS = [
+  "Plan",
+  "Explore",
+  `${PLUGIN}:auditor`,
+  `${PLUGIN}:edge-case-hunter`,
+  `${PLUGIN}:researcher`
+];
 var READ_ONLY_AGENTS_ENV = "CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS";
-function agentKey(type) {
-  const base = type.includes(":") ? type.split(":").pop() ?? type : type;
-  return base.trim().toLowerCase().replace(/[\s_-]+/g, "-");
+function keyPart(part) {
+  return part.trim().toLowerCase().replace(/[\s_-]+/g, "-");
 }
-function agentList(from, env, name) {
-  const listed = (env[name] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
-  return new Set([...from, ...listed].map(agentKey));
+function agentKey(type) {
+  return keyPart(type.includes(":") ? type.split(":").pop() ?? type : type);
+}
+function readOnlyType(type, ctx, env) {
+  if ((ctx.readOnlyAgents ?? READ_ONLY_AGENTS).includes(type)) {
+    if (type.includes(":") || ctx.definition === undefined)
+      return true;
+    return ctx.definition(type)?.builtIn === true;
+  }
+  if (ctx.readOnlyAgents !== undefined)
+    return false;
+  const listed = (env[READ_ONLY_AGENTS_ENV] ?? "").split(",").map((one) => one.trim()).filter((one) => one !== "");
+  return new Set(listed.map(agentKey)).has(agentKey(type));
 }
 function readLaunch(input) {
   const tool = stringField(input.tool_name);
@@ -12723,215 +18823,23 @@ function readLaunch(input) {
     tool
   };
 }
-function endOf(text, from, open, close) {
-  let depth = 0;
-  for (let index = from;index < text.length; index += 1) {
-    const char = text[index] ?? "";
-    if (char === '"' || char === "'" || char === "`") {
-      const literal = stringAt(text, index);
-      if (literal === null)
-        return text.length;
-      index = literal.end - 1;
-      continue;
-    }
-    if (char === open)
-      depth += 1;
-    else if (char === close) {
-      depth -= 1;
-      if (depth === 0)
-        return index;
-    }
-  }
-  return text.length;
+
+class UnreadableScript extends Error {
 }
-function callText(script, open) {
-  return script.slice(open, endOf(script, open, "(", ")") + 1);
+function parsedScript(script) {
+  const read = parseScript(script);
+  if (!read.ok)
+    throw new UnreadableScript(read.why);
+  return read;
 }
-function firstArgument(call) {
-  return wholeLiteralAt(call, skipBlank(call, 1), ",)");
-}
-function stringOption(call, name) {
-  const at = readOptions(call).keys.get(name);
-  if (at === undefined)
-    return null;
-  const colon = /^\s*:/.exec(call.slice(at));
-  if (colon === null)
-    return null;
-  return wholeLiteralAt(call, skipBlank(call, at + colon[0].length), ",}");
-}
-function callOpen(mention, script) {
-  return skipBlank(script, mention.at + mention.name.length);
-}
-function mentionsOf(script, name) {
-  const mentions = [];
-  const stack = [{ braces: 0, kind: "code" }];
-  for (let index = 0;index < script.length; index += 1) {
-    const frame = stack.at(-1);
-    if (frame === undefined)
-      break;
-    const char = script[index] ?? "";
-    const next = script[index + 1] ?? "";
-    if (frame.kind === "line") {
-      if (char === `
-`)
-        stack.pop();
-      continue;
-    }
-    if (frame.kind === "block") {
-      if (char === "*" && next === "/") {
-        stack.pop();
-        index += 1;
-      }
-      continue;
-    }
-    if (frame.kind === "single" || frame.kind === "double") {
-      if (char === "\\")
-        index += 1;
-      else if (char === (frame.kind === "single" ? "'" : '"'))
-        stack.pop();
-      continue;
-    }
-    if (frame.kind === "template") {
-      if (char === "\\")
-        index += 1;
-      else if (char === "`")
-        stack.pop();
-      else if (char === "$" && next === "{") {
-        stack.push({ braces: 0, kind: "code" });
-        index += 1;
-      }
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      stack.push({ braces: 0, kind: "line" });
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      stack.push({ braces: 0, kind: "block" });
-      index += 1;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      stack.push({ braces: 0, kind: char === "'" ? "single" : "double" });
-      continue;
-    }
-    if (char === "`") {
-      stack.push({ braces: 0, kind: "template" });
-      continue;
-    }
-    if (char === "{") {
-      frame.braces += 1;
-      continue;
-    }
-    if (char === "}") {
-      if (frame.braces > 0)
-        frame.braces -= 1;
-      else if (stack.length > 1)
-        stack.pop();
-      continue;
-    }
-    if (script.startsWith(name, index) && (index === 0 || /[^\w.$]/.test(script[index - 1] ?? ""))) {
-      const after = index + name.length;
-      if (/[\w$]/.test(script[after] ?? ""))
-        continue;
-      mentions.push({ at: index, call: /^\s*\(/.test(script.slice(after)), name });
-    }
-  }
-  return mentions;
-}
-function lineOf(script, index) {
-  return script.slice(0, index).split(`
-`).length;
-}
-function readOptions(call) {
-  const stack = [];
-  const seen = [];
-  const keys = new Map;
-  let optionsDone = false;
-  let keyExpected = false;
-  const found = (hidden) => ({ hidden, keys });
-  const twice = (key, end) => {
-    const open = seen.at(-1);
-    if (open !== undefined) {
-      if (open.has(key))
-        return true;
-      open.add(key);
-    }
-    if (stack.length === 1 && !optionsDone)
-      keys.set(key, end);
-    return false;
-  };
-  for (let index = 1;index < call.length; index += 1) {
-    const char = call[index] ?? "";
-    const next = call[index + 1] ?? "";
-    if (char === '"' || char === "'" || char === "`") {
-      const literal = stringAt(call, index);
-      if (literal === null)
-        return found(false);
-      if (keyExpected && char !== "`" && twice(literal.value, literal.end))
-        return found(true);
-      index = literal.end - 1;
-      keyExpected = false;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      const end = call.indexOf(`
-`, index);
-      if (end === -1)
-        return found(false);
-      index = end;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      const end = call.indexOf("*/", index + 2);
-      if (end === -1)
-        return found(false);
-      index = end + 1;
-      continue;
-    }
-    if (call.startsWith("...", index))
-      return found(true);
-    if (/\s/.test(char))
-      continue;
-    if (char === "{" || char === "(" || char === "[") {
-      if (keyExpected && char === "[")
-        return found(true);
-      stack.push(char);
-      if (char === "{")
-        seen.push(new Set);
-      keyExpected = char === "{";
-      continue;
-    }
-    if (char === "}" || char === ")" || char === "]") {
-      if (char === "}") {
-        seen.pop();
-        if (stack.length === 1)
-          optionsDone = true;
-      }
-      stack.pop();
-      keyExpected = false;
-      continue;
-    }
-    if (char === ",") {
-      keyExpected = stack.at(-1) === "{";
-      continue;
-    }
-    const key = keyExpected ? /^[A-Za-z_$][\w$]*/.exec(call.slice(index))?.[0] : undefined;
-    if (key !== undefined) {
-      if (twice(key, index + key.length))
-        return found(true);
-      index += key.length - 1;
-    }
-    keyExpected = false;
-  }
-  return found(false);
-}
-function builtAtRuntime(call) {
-  return readOptions(call).hidden;
-}
-function callsOf(script) {
-  return mentionsOf(script, "agent").filter((mention) => mention.call).map((mention) => callOpen(mention, script));
+function unreadableScript(line, why) {
+  const where = line === null ? "" : ` at line ${line}`;
+  return [
+    `This Workflow's script cannot be read${where}: ${why}.`,
+    "The guard parses the script the way Claude Code runs it (the body of an async function), and a script it cannot parse could hide a launch.",
+    "Fix the script so it runs as JavaScript."
+  ].join(`
+`);
 }
 var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
 var HANDED_AROUND = {
@@ -12946,47 +18854,53 @@ var HANDED_AROUND = {
   ].join(`
 `)
 };
+var ROUTES_REFUSED = 'Write every launch as a direct `agent("<prompt>", { model: "\u2026", effort: "\u2026" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(\u2026)` and `.constructor`.';
 var OPTIONS_BUILT_AT_RUNTIME = [
   "Its options are not what they seem: a `...spread`, a computed `[\u2026]` key, or the same option written twice (the last one wins at run time, while the guard reads the first). The model and effort it will really run on cannot be read.",
   "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
 ].join(`
 `);
 function workflowRefusal(script) {
+  const read = parseScript(script);
+  if (!read.ok)
+    return unreadableScript(read.line, read.why);
+  const [route] = read.routes;
+  if (route !== undefined) {
+    return [
+      `This Workflow uses ${route.what} (line ${route.line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+      ROUTES_REFUSED
+    ].join(`
+`);
+  }
   for (const name of ["agent", "workflow"]) {
-    const handed = mentionsOf(script, name).find((mention) => !mention.call);
+    const handed = read.handed.find((use) => use.name === name);
     if (handed === undefined)
       continue;
     return [
-      `This Workflow uses \`${name}\` without calling it at once (line ${lineOf(script, handed.at)}): a variable holds it, it is optional-called (\`${name}?.(\u2026)\`), or it is passed as a value.`,
+      `This Workflow uses \`${name}\` without calling it at once (line ${handed.line}): a variable holds it, it is optional-called (\`${name}?.(\u2026)\`), or it is passed as a value.`,
       HANDED_AROUND[name]
     ].join(`
 `);
   }
-  for (const mention of mentionsOf(script, "agent")) {
-    if (!builtAtRuntime(callText(script, callOpen(mention, script)))) {
-      continue;
-    }
-    return [
-      `This Workflow's \`agent(\u2026)\` call at line ${lineOf(script, mention.at)} cannot be read.`,
-      OPTIONS_BUILT_AT_RUNTIME
-    ].join(`
+  const hidden = read.agents.find((call) => call.hidden);
+  if (hidden === undefined)
+    return null;
+  return [
+    `This Workflow's \`agent(\u2026)\` call at line ${hidden.line} cannot be read.`,
+    OPTIONS_BUILT_AT_RUNTIME
+  ].join(`
 `);
-  }
-  return null;
 }
 function nestedWorkflows(script) {
+  const read = parseScript(script);
+  if (!read.ok)
+    return { refusal: unreadableScript(read.line, read.why) };
   const calls = [];
-  for (const mention of mentionsOf(script, "workflow")) {
-    if (!mention.call)
-      continue;
-    const call = callText(script, callOpen(mention, script));
-    const line = lineOf(script, mention.at);
-    const name = firstArgument(call);
-    const path = call[skipBlank(call, 1)] === "{" && !builtAtRuntime(call) ? stringOption(call, "scriptPath") : null;
+  for (const { line, name, scriptPath } of read.workflows) {
     if (name !== null)
       calls.push({ line, name });
-    else if (path !== null)
-      calls.push({ line, scriptPath: path });
+    else if (scriptPath !== null)
+      calls.push({ line, scriptPath });
     else {
       return {
         refusal: [
@@ -12999,22 +18913,24 @@ function nestedWorkflows(script) {
   }
   return { calls };
 }
-function readWorkflowScript(script) {
-  const launches = [];
-  for (const open of callsOf(script)) {
-    const call = callText(script, open);
-    const prompt = firstArgument(call);
-    const label = stringOption(call, "label");
-    launches.push({
-      agentType: stringOption(call, "agentType"),
-      effort: stringOption(call, "effort"),
-      model: stringOption(call, "model"),
-      prompt,
-      where: label ?? prompt?.split(`
+var POLICY_KEYS2 = ["model", "effort", "agentType"];
+function launchOf(call) {
+  const { keys, plain, prompt } = call;
+  const unreadable = POLICY_KEYS2.find((key) => keys.has(key) && keys.get(key) === null);
+  const policy = (key) => plain ? keys.get(key) ?? null : null;
+  return {
+    ...unreadable === undefined ? {} : { unreadable },
+    ...plain ? {} : { optionsNotPlain: true },
+    agentType: policy("agentType"),
+    effort: policy("effort"),
+    model: policy("model"),
+    prompt,
+    where: keys.get("label") ?? prompt?.split(`
 `)[0]?.slice(0, 60) ?? "(unreadable)"
-    });
-  }
-  return launches;
+  };
+}
+function readWorkflowScript(script) {
+  return parsedScript(script).agents.map(launchOf);
 }
 function asLaunch(one) {
   return {
@@ -13026,15 +18942,36 @@ function asLaunch(one) {
     tool: "Workflow"
   };
 }
-var NO_WORKFLOW_MODEL = [
-  "This Workflow launch names no `model` the guard can read.",
-  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
-  "Write `model` and `effort` as string literals in the `agent(...)` options."
-].join(`
+function noWorkflowField(field) {
+  return [
+    `This Workflow launch names no \`${field}\` the guard can read, in its options or its agent definition.`,
+    `A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, \`__proto__\`, a ternary, a second object), can set the run's \`${field}\` where a hook never sees it, so no agent definition stands in for it then.`,
+    'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "\u2026", effort: "\u2026" })`.'
+  ].join(`
 `);
+}
+var NO_WORKFLOW_MODEL = noWorkflowField("model");
+var NO_WORKFLOW_EFFORT = noWorkflowField("effort");
 var PROMPT_UNREADABLE = "The launch's prompt is built at run time, so the guard cannot read a `Fable reason:` line in it.";
 function judgeWorkflow(script, ctx, env, from = null) {
   return readWorkflowScript(script).map((launch) => {
+    const bare = () => effectiveLaunch({ model: null, effort: null, fork: false, workflow: true }, env, ctx.sessionModel);
+    if (launch.optionsNotPlain === true) {
+      const ran = bare();
+      const missing = ran.modelFrom === "call" ? NO_WORKFLOW_MODEL : ran.effort === null ? NO_WORKFLOW_EFFORT : null;
+      if (missing !== null)
+        return { from, launch, verdict: { ...deny(null, missing), ran } };
+    }
+    if (launch.unreadable !== undefined) {
+      return {
+        from,
+        launch,
+        verdict: {
+          ...deny(null, `This Workflow launch's \`${launch.unreadable}\` is not a string literal the guard can read. Write policy options as string literals.`),
+          ran: bare()
+        }
+      };
+    }
     const verdict = judgeLaunch(asLaunch(launch), ctx, env);
     if (launch.model === null && verdict.ran.modelFrom === "call") {
       return {
@@ -13104,13 +19041,13 @@ function judgeWorkflowCall(fields, ctx, env, place) {
       continue;
     }
     const from = "name" in call ? call.name : found.file;
-    const deeper = mentionsOf(found.script, "workflow")[0];
-    if (deeper !== undefined) {
-      return refused(`The workflow \`${from}\` this one runs nests a workflow of its own (line ${lineOf(found.script, deeper.at)}): Claude Code runs workflows one level deep, and the guard reads no deeper.`);
-    }
     const childRefusal = workflowRefusal(found.script);
     if (childRefusal !== null) {
       return refused(`In the workflow \`${from}\` this one runs: ${childRefusal}`);
+    }
+    const deeper = parsedScript(found.script).workflows[0];
+    if (deeper !== undefined) {
+      return refused(`The workflow \`${from}\` this one runs nests a workflow of its own (line ${deeper.line}): Claude Code runs workflows one level deep, and the guard reads no deeper.`);
     }
     scripts.push({ from, script: found.script });
   }
@@ -13179,8 +19116,8 @@ function uiDeclaration(prompt) {
   return null;
 }
 var NO_MODEL = [
-  "This Agent launch names no `model`.",
-  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
+  "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
+  "Pass `model` on the launch or set it in the agent's frontmatter; `inherit` does not choose a model."
 ].join(`
 `);
 function levelsText(levels) {
@@ -13190,14 +19127,28 @@ function levelsText(levels) {
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
 var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 var NO_EFFORT = [
-  "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  "Neither this Agent launch nor its agent definition names an `effort` the guard can read.",
+  `Pass \`effort\` on the launch or set it in the agent's frontmatter: ${EFFORTS}.`,
   EFFORT_USE
 ].join(`
 `);
-function effortDenial(effort) {
+var PRINT_NO_MODEL = [
+  "This `claude -p` run names no `model` the guard can read.",
+  "A run given none starts on the default model, which nobody chose, and no agent definition stands behind a print run."
+].join(`
+`);
+var PRINT_NO_EFFORT = [
+  "This `claude -p` run names no `effort` the guard can read.",
+  `Name one of ${EFFORTS}.`,
+  EFFORT_USE
+].join(`
+`);
+function effortDenial(effort, fromFrontmatter) {
   return [
     `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+    ...fromFrontmatter ? [
+      `Effort \`${effort}\` comes from the agent's frontmatter; pass \`effort\` on the call to override it.`
+    ] : [],
     `A subagent runs at ${EFFORTS} \u2014 never \`low\`, on any model.`,
     EFFORT_USE
   ].join(`
@@ -13265,17 +19216,18 @@ function modelNote(ran) {
   return null;
 }
 function effortNote(ran) {
-  if (ran.effortFrom === null)
+  if (ran.effortFrom !== EFFORT_LEVEL_ENV)
     return null;
   return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
 }
 function judgeLaunch(launch, ctx, env) {
+  const needsDefinition = !launch.fork && launch.tool !== PRINT_RUN && launch.subagentType !== null && (launch.model === null || launch.effort === null);
   const ran = effectiveLaunch({
     effort: launch.effort,
     fork: launch.fork,
     model: launch.model,
     workflow: launch.tool === "Workflow"
-  }, env, ctx.sessionModel);
+  }, env, ctx.sessionModel, needsDefinition ? ctx.definition?.(launch.subagentType) ?? null : null);
   const { verdict, namesEffortLevel } = judgeRan(launch, ran, ctx, env);
   if (verdict.decision === "allow")
     return { ...verdict, ran };
@@ -13286,22 +19238,23 @@ function judgeLaunch(launch, ctx, env) {
 function judgeRan(launch, ran, ctx, env) {
   const judged = (verdict) => ({ namesEffortLevel: false, verdict });
   if (!launch.fork) {
-    if (ran.modelFrom === "call" && ran.model === null)
-      return judged(deny(null, NO_MODEL));
+    const print = launch.tool === PRINT_RUN;
+    if (ran.modelFrom === "call" && ran.model === null) {
+      return judged(deny(null, print ? PRINT_NO_MODEL : NO_MODEL));
+    }
     if (ran.effort === null)
-      return judged(deny(null, NO_EFFORT));
+      return judged(deny(null, print ? PRINT_NO_EFFORT : NO_EFFORT));
   }
   const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
-  const auto = ran.effortFrom !== null && ran.effort === EFFORT_AUTO;
+  const auto = ran.effortFrom === EFFORT_LEVEL_ENV && ran.effort === EFFORT_AUTO;
   if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
-    return ran.effortFrom === null ? judged(deny(real, effortDenial(ran.effort))) : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
+    return ran.effortFrom !== EFFORT_LEVEL_ENV ? judged(deny(real, effortDenial(ran.effort, ran.effortFrom === "frontmatter"))) : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
   }
   return judged(judgeModel({ ...launch, effort: ran.effort }, real, ctx, env));
 }
 function judgeModel(launch, real, ctx, env) {
   const type = launch.subagentType ?? "";
-  const readOnly = ctx.readOnlyAgents === undefined ? agentList(READ_ONLY_AGENTS, env, READ_ONLY_AGENTS_ENV) : new Set(ctx.readOnlyAgents.map(agentKey));
-  const builder = !readOnly.has(agentKey(type));
+  const builder = !readOnlyType(type, ctx, env);
   const declared = uiDeclaration(launch.prompt);
   if (declared !== null) {
     const effort = launch.effort?.toLowerCase() ?? null;
@@ -13416,9 +19369,25 @@ function sessionGatewayOf(paths, env) {
 }
 function readGuardContext(paths, input, env) {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  const cwd = stringField(input.cwd);
+  const definitions = new Map;
+  const definition = (name) => {
+    if (name === null)
+      return null;
+    if (definitions.has(name))
+      return definitions.get(name) ?? null;
+    let found = null;
+    try {
+      const checkout = !name.includes(":") && cwd !== null ? locateCheckout(cwd)?.root ?? cwd : null;
+      found = agentDefinition(name, { paths, checkout, cwd });
+    } catch {}
+    definitions.set(name, found);
+    return found;
+  };
   return {
     config,
     gatewayOn,
+    definition,
     sessionModel: sessionModelOf(input, env)
   };
 }
@@ -13550,8 +19519,8 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync16 } from "fs";
-import { join as join19 } from "path";
+import { readFileSync as readFileSync19 } from "fs";
+import { join as join20 } from "path";
 
 // src/gateway/prices.ts
 var CLAUDE_PRICES = [
@@ -13695,16 +19664,16 @@ function claudeCost(model, tokens) {
 // src/hooks/agent-usage.ts
 var AGENT_USAGE_FILE = "agent-usage.jsonl";
 function agentUsageFile(stateDir) {
-  return join19(stateDir, AGENT_USAGE_FILE);
+  return join20(stateDir, AGENT_USAGE_FILE);
 }
-function isJsonObject3(value) {
+function isJsonObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function count(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 function tokensOf(usage) {
-  if (!isJsonObject3(usage))
+  if (!isJsonObject4(usage))
     return { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 };
   return {
     cacheRead: count(usage.cache_read_input_tokens),
@@ -13727,13 +19696,13 @@ function repliesOfTranscript(text, agentId = "") {
     } catch {
       continue;
     }
-    if (!isJsonObject3(line) || line.type !== "assistant")
+    if (!isJsonObject4(line) || line.type !== "assistant")
       continue;
     const lineAgent = stringField(line.agentId);
     if (agentId !== "" && lineAgent !== null && lineAgent !== agentId)
       continue;
     const message = line.message;
-    if (!isJsonObject3(message))
+    if (!isJsonObject4(message))
       continue;
     const model = stringField(message.model) ?? UNKNOWN_MODEL;
     const id = stringField(message.id);
@@ -13806,7 +19775,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync16(transcript, "utf8");
+    text = readFileSync19(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -13820,9 +19789,6 @@ function recordAgentUsage(input, event, paths, nowMs) {
   }
   return SILENT;
 }
-
-// src/hooks/builder-finish.ts
-import { closeSync as closeSync5, openSync as openSync5, readSync as readSync3 } from "fs";
 
 // src/mcp/task-server-name.ts
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
@@ -13842,18 +19808,18 @@ var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
 
 // src/tasks/work/read.ts
-import { existsSync as existsSync11 } from "fs";
+import { existsSync as existsSync14 } from "fs";
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync10, mkdirSync as mkdirSync11 } from "fs";
-import { dirname as dirname10, join as join20 } from "path";
+import { chmodSync as chmodSync2, existsSync as existsSync13, mkdirSync as mkdirSync11 } from "fs";
+import { dirname as dirname11, join as join21 } from "path";
 var WORK_SCHEMA_VERSION = 3;
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
 function workDbFile(paths) {
-  return join20(paths.stateDir, "tasks", "work.db");
+  return join21(paths.stateDir, "tasks", "work.db");
 }
 var SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -13886,17 +19852,17 @@ var MIGRATIONS = [
 ];
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync10(file);
+  const fresh = !existsSync13(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync11(dirname10(file), { recursive: true, mode: 448 });
+    mkdirSync11(dirname11(file), { recursive: true, mode: 448 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync2(dirname10(file), 448);
+      chmodSync2(dirname11(file), 448);
       chmodSync2(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");
@@ -13935,7 +19901,7 @@ function openWorkDb(file, options) {
 }
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync5, readFileSync as readFileSync17, readlinkSync as readlinkSync3 } from "fs";
+import { readdirSync as readdirSync6, readFileSync as readFileSync20, readlinkSync as readlinkSync3 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
 function parsePrograms(lines) {
@@ -13992,7 +19958,7 @@ function cwdOf(pid) {
 }
 function procPids() {
   try {
-    return readdirSync5("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+    return readdirSync6("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
   } catch {
     return [];
   }
@@ -14194,7 +20160,7 @@ function readWorkStore(paths, body) {
   let db;
   try {
     const file = workDbFile(paths);
-    if (!existsSync11(file))
+    if (!existsSync14(file))
       return { state: "none" };
     db = openWorkDb(file, { mode: "hook" });
     return { state: "ready", value: body(db) };
@@ -14240,13 +20206,22 @@ function holdingSteps(paths, project, number) {
   });
 }
 
+// src/hooks/capped-list.ts
+var HOOK_LIST_LIMIT = 8;
+function cappedHookList(items, render, command, separator = ", ") {
+  const shown = items.slice(0, HOOK_LIST_LIMIT).map(render);
+  if (items.length > HOOK_LIST_LIMIT)
+    shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
+  return shown.join(separator);
+}
+
 // src/workflow/resolve.ts
-import { existsSync as existsSync12, readFileSync as readFileSync18 } from "fs";
+import { existsSync as existsSync15, readFileSync as readFileSync21 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join21 } from "path";
+import { join as join22 } from "path";
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join21(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join22(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/zod-issues.ts
@@ -14265,11 +20240,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync12(file))
+  if (!existsSync15(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync18(file, "utf8"));
+    raw = JSON.parse(readFileSync21(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -14327,7 +20302,7 @@ function alertsFrom(personal, project) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync18(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync21(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -14351,6 +20326,14 @@ function jobRouteFrom(personal, projectConfig) {
 }
 function resolveJobRoute(paths, projectConfig) {
   return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
+}
+var LEAD_HINT_DEFAULT = true;
+function leadHintFrom(personal) {
+  const own = personal.switches?.leadHint;
+  return own === undefined ? current2(LEAD_HINT_DEFAULT, "default") : current2(own, "personal");
+}
+function resolveLeadHint(paths) {
+  return leadHintFrom(personalWorkflowOrDefault(paths));
 }
 function sourceLabel(value, branch) {
   return value.source === "project" && branch !== null ? `project, committed on origin/${branch}` : value.source;
@@ -14422,7 +20405,8 @@ function resolveWorkflow(paths, projectConfig) {
       statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
       jobRoute: jobRouteFrom(personal, projectConfig),
-      updateHold: isHeld(updateFiles(paths.stateDir)) ? current2(true, "personal") : current2(false, "default")
+      updateHold: isHeld(updateFiles(paths.stateDir)) ? current2(true, "personal") : current2(false, "default"),
+      leadHint: leadHintFrom(personal)
     }
   };
 }
@@ -14436,6 +20420,14 @@ function subagentWorktreeOf(cwd, agentId) {
 }
 
 // src/hooks/review-record.ts
+var REVIEW_MODE_MARKER = "Mode: review";
+var MARKER_LINE = new RegExp(`^${REVIEW_MODE_MARKER}[ \\t\\r]*$`, "m");
+function isReviewRun(transcriptPath) {
+  const prompts = runPrompts(transcriptPath);
+  if (prompts === null || prompts.brief === null)
+    return false;
+  return [prompts.brief, ...prompts.later].every((text) => MARKER_LINE.test(text));
+}
 function agentTypeOf(input) {
   return stringField(input.agent_type);
 }
@@ -14487,6 +20479,9 @@ async function reviewRecord(context) {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
+    const transcript = stringField(input.agent_transcript_path);
+    if (transcript === null || !isReviewRun(transcript))
+      return SILENT;
     if (commit === null)
       return SILENT;
     if (start === null) {
@@ -14503,7 +20498,6 @@ async function reviewRecord(context) {
 
 // src/hooks/builder-finish.ts
 var BUILDER_TYPE_ENDS = ["builder", "rules-maintainer"];
-var BRIEF_HEAD_BYTES = 1024 * 1024;
 var TASK_LINE = /^Your task: #(\d+)[ \t\r]*$/m;
 function isBuilder(agentType) {
   return agentType !== null && BUILDER_TYPE_ENDS.some((end) => agentType.endsWith(end));
@@ -14512,54 +20506,14 @@ function briefTaskNumber(brief) {
   const found = TASK_LINE.exec(brief)?.[1];
   return found === undefined ? null : Number(found);
 }
-function isJsonObject4(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function messageText(content) {
-  if (typeof content === "string")
-    return content;
-  if (!Array.isArray(content))
-    return null;
-  return content.filter((block) => isJsonObject4(block) && block.type === "text" && typeof block.text === "string").map((block) => block.text).join(`
-`);
-}
-function firstPromptText(transcriptPath) {
-  let text;
-  try {
-    const fd = openSync5(transcriptPath, "r");
-    try {
-      const buffer = Buffer.alloc(BRIEF_HEAD_BYTES);
-      const read = readSync3(fd, buffer, 0, BRIEF_HEAD_BYTES, 0);
-      text = buffer.subarray(0, read).toString("utf8");
-    } finally {
-      closeSync5(fd);
-    }
-  } catch {
-    return null;
-  }
-  for (const line of text.split(`
-`)) {
-    if (line.trim() === "")
-      continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!isJsonObject4(entry) || entry.type !== "user" || !isJsonObject4(entry.message))
-      continue;
-    return messageText(entry.message.content);
-  }
-  return null;
-}
 function handBackReason(task, open) {
   return [
-    `Task #${task} still has open blocking steps. Close each one, then hand back:`,
-    ...open.map((step) => {
+    `Task #${task} still has ${open.length} open blocking ${open.length === 1 ? "step" : "steps"}. Close each one, then hand back:`,
+    cappedHookList(open, (step) => {
       const ref = `"#${step.number}"`;
       return `- #${step.number} ${step.subject.replace(/\s+/g, " ")}: finish it and close it with \`${TASK_TOOL.done}\` (task ${ref}, with evidence), or drop it with \`${TASK_TOOL.done}\` (task ${ref}, outcome "dropped") and a note saying why.`;
-    })
+    }, TASK_TOOL.list, `
+`)
   ].join(`
 `);
 }
@@ -14594,13 +20548,14 @@ function builderFinishAnswer(input, event, project, paths) {
 }
 
 // src/hooks/fable-session.ts
-import { existsSync as existsSync14, mkdirSync as mkdirSync13, writeFileSync as writeFileSync5 } from "fs";
-import { dirname as dirname11, join as join23 } from "path";
+import { createHash as createHash4 } from "crypto";
+import { existsSync as existsSync17, mkdirSync as mkdirSync13, writeFileSync as writeFileSync5 } from "fs";
+import { dirname as dirname12, join as join24 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync13, mkdirSync as mkdirSync12, readFileSync as readFileSync19, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync12, readFileSync as readFileSync22, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 var MAX_SESSION_NAME = 60;
 function cleanSessionName(raw) {
   const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
@@ -14613,11 +20568,11 @@ function isSessionId(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join22(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
+  return join23(env.TMPDIR || tmpdir2(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync13(file) ? cleanSessionName(readFileSync19(file, "utf8")) : null;
+    return existsSync16(file) ? cleanSessionName(readFileSync22(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -14628,7 +20583,7 @@ function writeAtomic(file, text) {
   renameSync2(partial, file);
 }
 function appliedFile(env, sessionId) {
-  return join22(namesDir(env), sessionId);
+  return join23(namesDir(env), sessionId);
 }
 function readAppliedName(env, sessionId) {
   return readName(appliedFile(env, sessionId));
@@ -14654,43 +20609,74 @@ function sessionName(context) {
   const sessionId = input.session_id;
   if (!isSessionId(sessionId))
     return SILENT;
-  const wanted = readName(join22(namesDir(env), `${sessionId}.name`));
+  const wanted = readName(join23(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart")
+  const reminded = join23(namesDir(env), `${sessionId}.reminded`);
+  if (event === "SessionStart") {
+    rmSync2(reminded, { force: true });
     return addContext(event, note);
-  const title = wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
-  if (title !== null)
-    return addContextAndTitle(event, null, title);
-  return wanted === null ? addContext(event, note) : SILENT;
+  }
+  if (wanted === null) {
+    if (existsSync16(reminded))
+      return SILENT;
+    mkdirSync12(namesDir(env), { recursive: true });
+    writeAtomic(reminded, "reminded");
+    return addContext(event, note);
+  }
+  const title = titleToSet(env, sessionId, wanted, stringField(input.session_title));
+  return title !== null ? addContextAndTitle(event, null, title) : SILENT;
 }
 
 // src/hooks/fable-session.ts
 function fableSessionMessage(named) {
   return `${COMMAND}: this session runs on ${named}, the premium model \u2014 it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.`;
 }
-function fableSessionModelName(real) {
-  return real.claude ? "Claude Fable" : `the \`fable\` model, ${real.model}`;
+function leadHintMessage(named, viaGateway = false) {
+  const fix = viaGateway ? `Put Claude Opus first in the gateway's opus slot (/${PLUGIN}:gateway), or start the session with ${COMMAND} launch --no-gateway.` : "Switch with /model.";
+  return `${COMMAND}: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. ${fix} (To stop this hint: ${COMMAND} workflow set switches.leadHint false.)`;
 }
-function fableSessionMark(env, sessionId) {
-  return join23(namesDir(env), `${sessionId}.fable`);
+function sessionModelName(real) {
+  if (real.claude) {
+    const family = answeringFamily(real);
+    return family === null ? real.model : `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+  }
+  const tier = real.tier ?? real.family;
+  return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
+}
+function answeringFamily(real) {
+  if (!real.claude)
+    return null;
+  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+}
+function sessionMark(env, sessionId, kind) {
+  return join24(namesDir(env), `${sessionId}.${kind}`);
+}
+function judgedMark(env, sessionId, model) {
+  const hash = createHash4("sha256").update(model).digest("hex").slice(0, 16);
+  return join24(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync13(dirname11(mark), { recursive: true });
+    mkdirSync13(dirname12(mark), { recursive: true });
     writeFileSync5(mark, "", { flag: "wx" });
     return true;
   } catch {
     return false;
   }
 }
-function couldBeFable(model, env) {
-  if (claudeFamily(model) === "fable")
-    return true;
-  const override = stringField(env[familyEnv("fable")]);
-  if (override !== null && withoutContextSuffix(override.trim()) === model)
-    return true;
-  const text = withoutContextSuffix(model.trim());
-  return text === "fable" || MODEL_SLOTS[text] === "fable";
+function leadVerdict(real) {
+  if (real.tier === "fable")
+    return "fable";
+  if (real.tier === "opus" && answeringFamily(real) === "opus")
+    return "none";
+  return "lead";
+}
+function currentModel(event, input, env) {
+  if (event === "SessionStart")
+    return stringField(input.model);
+  if (event === "PostModelSwitch")
+    return stringField(input.to_model);
+  return sessionModelOf(input, env);
 }
 function fableSession(input, env, paths) {
   const event = stringField(input.hook_event_name);
@@ -14699,24 +20685,27 @@ function fableSession(input, env, paths) {
     return SILENT;
   if ((env.CLAUDE_CODE_SESSION_ATTENDED ?? "1") === "0")
     return SILENT;
-  const mark = fableSessionMark(env, sessionId);
-  if (existsSync14(mark))
+  const fableMark = sessionMark(env, sessionId, "fable");
+  const leadMark = sessionMark(env, sessionId, "lead");
+  if (existsSync17(fableMark) && existsSync17(leadMark))
     return SILENT;
-  let model;
-  if (event === "SessionStart")
-    model = stringField(input.model);
-  else if (event === "PostModelSwitch")
-    model = stringField(input.to_model);
-  else
-    model = sessionModelOf(input, env);
-  if (model === null || !couldBeFable(model, env))
+  const model = currentModel(event, input, env);
+  if (model === null)
+    return SILENT;
+  const judged = judgedMark(env, sessionId, model);
+  if (existsSync17(judged))
     return SILENT;
   const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
-  if (real.tier !== "fable")
-    return SILENT;
-  if (!firstTime(mark))
-    return SILENT;
-  return systemMessage(fableSessionMessage(fableSessionModelName(real)));
+  const verdict = leadVerdict(real);
+  let said = SILENT;
+  if (verdict === "fable" && firstTime(fableMark)) {
+    said = systemMessage(fableSessionMessage(sessionModelName(real)));
+  } else if (verdict === "lead" && resolveLeadHint(paths).value && firstTime(leadMark)) {
+    const viaGateway = real.tier === "opus" && !real.claude;
+    said = systemMessage(leadHintMessage(sessionModelName(real), viaGateway));
+  }
+  firstTime(judged);
+  return said;
 }
 
 // src/hooks/issue-writes.ts
@@ -14926,7 +20915,7 @@ function requestsIssueWrite(command, dialect) {
 }
 
 // src/hooks/job-route.ts
-import { existsSync as existsSync15 } from "fs";
+import { existsSync as existsSync18 } from "fs";
 
 // src/cli/git-bash.ts
 import { win32 as win322 } from "path";
@@ -14962,7 +20951,7 @@ function findGitBash(env, facts) {
 }
 
 // src/jobs/classify.ts
-import { isAbsolute as isAbsolute4, join as join24, normalize } from "path";
+import { isAbsolute as isAbsolute5, join as join25, normalize } from "path";
 function runOf(source) {
   return { source, folder: source?.folder ?? null, cache: new Map };
 }
@@ -15003,7 +20992,7 @@ function folderAfter(program, args, folder) {
   const target = folderWord(args);
   if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
     return null;
-  return isAbsolute4(target) ? normalize(target) : normalize(join24(folder, target));
+  return isAbsolute5(target) ? normalize(target) : normalize(join25(folder, target));
 }
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
@@ -15570,12 +21559,12 @@ function routableLine(bashCommand, kinds, source) {
 }
 
 // src/jobs/package-scripts.ts
-import { readFileSync as readFileSync20 } from "fs";
-import { join as join25 } from "path";
+import { readFileSync as readFileSync23 } from "fs";
+import { join as join26 } from "path";
 function packageScripts(folder) {
   let text;
   try {
-    text = readFileSync20(join25(folder, "package.json"), "utf8");
+    text = readFileSync23(join26(folder, "package.json"), "utf8");
   } catch {
     return null;
   }
@@ -15596,7 +21585,7 @@ function packageScripts(folder) {
 }
 
 // src/hooks/bash-judge.ts
-import { isAbsolute as isAbsolute5, resolve as resolve7 } from "path";
+import { isAbsolute as isAbsolute6, resolve as resolve8 } from "path";
 
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
@@ -15783,7 +21772,7 @@ function proposalOf(step, moved) {
   if (folder !== null && (folder === "" || isComputedWord(folder))) {
     return { unread: "its --folder is worked out when the line runs" };
   }
-  if (moved && (folder === null || !isAbsolute5(folder))) {
+  if (moved && (folder === null || !isAbsolute6(folder))) {
     return { unread: "the line changes its folder before it" };
   }
   return { folder };
@@ -15908,7 +21897,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve7(cwd, proposal.folder), context, timeFor);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve8(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -15945,7 +21934,7 @@ Nobody answers a question in \`claude -p\`, so the raw launch is refused.`,
     model: launch.model,
     prompt: launch.prompt,
     subagentType: "general-purpose",
-    tool: "Agent"
+    tool: PRINT_RUN
   }, guard, context.env);
   if (verdict.decision === "allow")
     return null;
@@ -16047,7 +22036,7 @@ function rewriteAnswer(fields, command) {
   };
 }
 function bashToolExists(env, platform = process.platform, facts = {
-  exists: existsSync15,
+  exists: existsSync18,
   which: (command) => Bun.which(command, { PATH: env.PATH ?? env.Path ?? "" })
 }) {
   return platform !== "win32" || findGitBash(env, facts).path !== null;
@@ -16285,23 +22274,25 @@ function named(phase) {
 }
 function keepGoingReason(inProgress, ready) {
   const one = inProgress.length === 1;
-  const refs = inProgress.map((phase) => `#${phase.number}`).join(", ");
-  const head = `${one ? "Phase" : "Phases"} ${inProgress.map(named).join(", ")} ${one ? "is" : "are"} still in progress, and no subagent runs.`;
+  const shown = inProgress.slice(0, HOOK_LIST_LIMIT);
+  const refs = shown.map((phase) => `#${phase.number}`).join(", ");
+  const names = cappedHookList(inProgress, named, TASK_TOOL.list);
+  const head = one ? `Phase ${names} is still in progress, and no subagent runs.` : `${inProgress.length} phases are still in progress, and no subagent runs: ${names}.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
   const next = ready[0];
   const options = [];
-  for (const phase of inProgress) {
+  for (const phase of shown) {
     if (phase.agent !== null) {
       options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`);
     }
   }
-  const fresh = inProgress.filter((phase) => phase.agent === null);
+  const fresh = shown.filter((phase) => phase.agent === null);
   if (fresh.length > 0) {
     options.push(`start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`);
   }
   if (next !== undefined)
     options.push(`start ${named(next)} now (dispatch its builder)`);
-  options.push(`close ${refs} with \`${TASK_TOOL.done}\``);
+  options.push(`close ${inProgress.length > shown.length ? "every phase (including those not shown)" : refs} with \`${TASK_TOOL.done}\``);
   options.push(`or record ${one ? "the" : "each"} blocker with \`${TASK_TOOL.note}\` and ${wait}`);
   const recovery = options.join(", ");
   return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
@@ -16335,13 +22326,13 @@ function keepGoing(context) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute6, resolve as resolve8 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve9 } from "path";
 function editedFile(input, cwd) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute6(path) ? resolve8(path) : resolve8(cwd, path));
+  return realPath(isAbsolute7(path) ? resolve9(path) : resolve9(cwd, path));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
@@ -16401,9 +22392,9 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 }
 
 // src/workflow/review-cover.ts
-import { mkdtempSync, rmSync as rmSync2 } from "fs";
+import { mkdtempSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -16504,7 +22495,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join26(tmpdir3(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join27(tmpdir3(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -16517,14 +22508,14 @@ async function readCover(checkout, target, records, limits, git) {
     };
   } finally {
     if (objects !== null)
-      rmSync2(objects, { recursive: true, force: true });
+      rmSync3(objects, { recursive: true, force: true });
   }
 }
 async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join26(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join27(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -17318,7 +23309,7 @@ function autoPushQuestion(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname12, isAbsolute as isAbsolute7, posix as posix2, relative as relative2, resolve as resolve9, win32 as win323 } from "path";
+import { dirname as dirname13, isAbsolute as isAbsolute8, posix as posix2, relative as relative3, resolve as resolve10, win32 as win323 } from "path";
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -17535,11 +23526,11 @@ function movedTo2(invocation, folder, ctx, dialect) {
   return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
 }
 function protectedNeedles(paths) {
-  const settings = dirname12(paths.workflowConfigFile);
+  const settings = dirname13(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
-    const underHome = relative2(paths.home, folder);
-    if (!underHome.startsWith("..") && !isAbsolute7(underHome))
+    const underHome = relative3(paths.home, folder);
+    if (!underHome.startsWith("..") && !isAbsolute8(underHome))
       needles.push(underHome);
     needles.push(realPath(folder));
   }
@@ -17687,7 +23678,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname12);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname13);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
@@ -17701,7 +23692,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute7(path) ? resolve9(path) : resolve9(cwd ?? "/", path);
+  const written = isAbsolute8(path) ? resolve10(path) : resolve10(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths) {
@@ -17729,7 +23720,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync21 } from "fs";
+import { readFileSync as readFileSync24 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -17827,7 +23818,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync21(transcript, "utf8");
+    text = readFileSync24(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -17835,11 +23826,11 @@ function subagentBackground(context) {
 }
 
 // src/mcp/records.ts
-import { existsSync as existsSync16, readFileSync as readFileSync22 } from "fs";
-import { join as join27 } from "path";
+import { existsSync as existsSync19, readFileSync as readFileSync25 } from "fs";
+import { join as join28 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
-  return join27(stateDir, RECORD_FILE);
+  return join28(stateDir, RECORD_FILE);
 }
 function isRecord(value) {
   if (typeof value !== "object" || value === null)
@@ -17848,9 +23839,9 @@ function isRecord(value) {
   return typeof json === "string" && typeof at === "string" && (pending === undefined || typeof pending === "boolean");
 }
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
-  if (!existsSync16(file))
+  if (!existsSync19(file))
     return {};
-  const parsed = JSON.parse(readFileSync22(file, "utf8"));
+  const parsed = JSON.parse(readFileSync25(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -17906,14 +23897,58 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync17, mkdirSync as mkdirSync14, readFileSync as readFileSync24, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname13, join as join28 } from "path";
+import { existsSync as existsSync21, mkdirSync as mkdirSync14, readFileSync as readFileSync29, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
+import { dirname as dirname15, join as join31 } from "path";
+
+// src/cli/usage-window.ts
+import { existsSync as existsSync20, readFileSync as readFileSync26 } from "fs";
+import { join as join29 } from "path";
+var WINDOW_SPAN_MS = 5 * 60 * 60000;
+var SEVEN_DAY_SPAN_MS = 7 * 24 * 60 * 60000;
+function usageWindowFile(paths) {
+  return join29(paths.stateDir, "usage-window.json");
+}
+var windowSchema = object({ percent: number2(), resetsAt: number2().nullable() });
+var storedSchema = looseObject({
+  fiveHour: windowSchema.optional(),
+  readAt: string2(),
+  sevenDay: windowSchema.optional()
+});
+function readStored(file) {
+  if (!existsSync20(file))
+    return null;
+  try {
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync26(file, "utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+function currentWindow(window, readAt, spanMs, nowMs) {
+  if (window === undefined)
+    return null;
+  if (window.resetsAt !== null)
+    return window.resetsAt * 1000 <= nowMs ? null : window;
+  const read = Date.parse(readAt);
+  return Number.isFinite(read) && nowMs - read > spanMs ? null : window;
+}
+function readUsageWindows(paths, nowMs) {
+  const stored = readStored(usageWindowFile(paths));
+  if (stored === null)
+    return { fiveHour: null, readAt: null, sevenDay: null };
+  const readAt = Date.parse(stored.readAt);
+  return {
+    fiveHour: currentWindow(stored.fiveHour, stored.readAt, WINDOW_SPAN_MS, nowMs),
+    readAt: Number.isFinite(readAt) ? readAt : null,
+    sevenDay: currentWindow(stored.sevenDay, stored.readAt, SEVEN_DAY_SPAN_MS, nowMs)
+  };
+}
 
 // src/gateway/checks-down.ts
-import { readFileSync as readFileSync23 } from "fs";
+import { readFileSync as readFileSync27 } from "fs";
 function checksDownNow(statePath, nowMs) {
   try {
-    const state = parseLimitState(readFileSync23(statePath, "utf8"));
+    const state = parseLimitState(readFileSync27(statePath, "utf8"));
     return state === null ? [] : currentChecksDown(state, nowMs);
   } catch {
     return [];
@@ -17967,6 +24002,46 @@ function checksDownNote(record, profile, nowMs, timeZone) {
   return `Auto mode's safety checks are failing: ${checksDownReason(record, nowMs, timeZone)}. You cannot fix this; say it to the person once (what they can do: ${checksDownFix(record, profile, nowMs, timeZone)}), then stop and wait \u2014 do not retry or argue.`;
 }
 
+// src/machine/claude-settings.ts
+import { readFileSync as readFileSync28, statSync as statSync10 } from "fs";
+import { basename as basename6, dirname as dirname14, join as join30, resolve as resolve11 } from "path";
+function settingsPathsOf(sources) {
+  const mainLocal = join30(sources.mainCheckout, ".claude", "settings.local.json");
+  const projectLocal = join30(sources.projectFolder, ".claude", "settings.local.json");
+  return [
+    ...mainLocal === projectLocal ? [] : [mainLocal],
+    projectLocal,
+    join30(sources.projectFolder, ".claude", "settings.json"),
+    join30(sources.configDir, "settings.json")
+  ];
+}
+function mainCheckoutOfFolder(folder) {
+  for (let dir = resolve11(folder);; dir = dirname14(dir)) {
+    const root = checkoutRootAt(dir);
+    if (root !== null)
+      return root;
+    if (dirname14(dir) === dir)
+      return resolve11(folder);
+  }
+}
+function checkoutRootAt(dir) {
+  const entry = join30(dir, ".git");
+  try {
+    if (statSync10(entry).isDirectory())
+      return dir;
+    const line = readFileSync28(entry, "utf8").split(`
+`, 1)[0] ?? "";
+    if (!line.startsWith("gitdir:"))
+      return dir;
+    const gitdir = resolve11(dir, line.slice("gitdir:".length).trim());
+    const worktrees = dirname14(gitdir);
+    const common = dirname14(worktrees);
+    return basename6(worktrees) === "worktrees" && basename6(common) === ".git" ? dirname14(common) : dir;
+  } catch {
+    return null;
+  }
+}
+
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
 var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
@@ -17979,21 +24054,17 @@ function modelName(real) {
   const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
   return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
-function effortRule(real) {
-  if (real.tier === "fable")
-    return "asks the person, with a `Fable reason:` line";
-  if (real.tier === "opus") {
-    const free = OPUS_FREE_EFFORTS;
-    return `${free[0]} to ${free[free.length - 1]}; ${OPUS_ASK_EFFORT} asks the person`;
-  }
-  return `the effort the task needs, ${ALLOWED_EFFORTS[0]} to ${ALLOWED_EFFORTS[ALLOWED_EFFORTS.length - 1]}`;
-}
+var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
 function tierLine(tier, gateway, env) {
   const real = resolveLaunchModel(tier, gateway, env);
-  return `- ${tier} \u2192 ${modelName(real)}: ${effortRule(real)}.`;
+  return `- ${tier} \u2192 ${modelName(real)}.`;
 }
 function tierNote(gateway, env) {
-  return [TIER_NOTE_HEADER, ...TIERS.map((tier) => tierLine(tier, gateway, env))].join(`
+  return [
+    TIER_NOTE_HEADER,
+    ...TIERS.map((tier) => tierLine(tier, gateway, env)),
+    TIER_NOTE_FOOTER
+  ].join(`
 `);
 }
 
@@ -18002,11 +24073,11 @@ function tierNoteUnknown() {
   return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
 }
 function tierViewMark(env, sessionId) {
-  return join28(namesDir(env), `${sessionId}.tiers`);
+  return join31(namesDir(env), `${sessionId}.tiers`);
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);
-  if (gateway.gatewayOn && gateway.config === null && existsSync17(paths.gatewayConfigFile)) {
+  if (gateway.gatewayOn && gateway.config === null && existsSync21(paths.gatewayConfigFile)) {
     return tierNoteUnknown();
   }
   return tierNote(gateway, env);
@@ -18020,21 +24091,118 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync24(mark, "utf8");
+    return readFileSync29(mark, "utf8");
   } catch {
     return null;
   }
 }
 function keep(mark, note) {
   try {
-    mkdirSync14(dirname13(mark), { recursive: true });
+    mkdirSync14(dirname15(mark), { recursive: true });
     writeFileSync6(mark, note);
     return true;
   } catch {
     return false;
   }
 }
-function tierView(input, env, paths, nowMs = Date.now()) {
+var USAGE_THRESHOLDS = [50, 75, 90];
+var USAGE_WINDOWS = [
+  ["fiveHour", "5-hour"],
+  ["sevenDay", "7-day"]
+];
+function usageMark(env, sessionId) {
+  return join31(namesDir(env), `${sessionId}.usage`);
+}
+function usageLevel(percent) {
+  let level = 0;
+  for (const threshold of USAGE_THRESHOLDS)
+    if (percent >= threshold)
+      level = threshold;
+  return level;
+}
+function toldUsage(mark) {
+  const text = lastSaid2(mark);
+  if (text === null)
+    return {};
+  try {
+    const parsed = JSON.parse(text);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function usageLine(windows, told, nowMs, timeZone) {
+  const next = {};
+  const parts = [];
+  for (const [key, name] of USAGE_WINDOWS) {
+    const window = windows[key];
+    const before = told[key];
+    const same = before !== undefined && typeof before.resetsAt === "number" && typeof before.level === "number" && before.resetsAt * 1000 > nowMs;
+    if (same)
+      next[key] = before;
+    if (window === null || window.resetsAt === null || window.resetsAt * 1000 <= nowMs)
+      continue;
+    const level = usageLevel(window.percent);
+    if (level <= (same ? before.level : 0))
+      continue;
+    next[key] = { level, resetsAt: window.resetsAt };
+    parts.push(`${name} window ${Math.floor(window.percent)}% used (resets ${formatClock(window.resetsAt, nowMs, timeZone)})`);
+  }
+  if (parts.length === 0)
+    return { line: null, next };
+  const asOf = windows.readAt === null ? "" : ` (as of ${formatClock(Math.floor(windows.readAt / 1000), nowMs, timeZone)})`;
+  return {
+    line: `Plan usage${asOf}: ${parts.join("; ")}. Follow /cc-smart-dev-kit:subagent-decision \xA7 Usage left.`,
+    next
+  };
+}
+var PROVIDER_ENV = [
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY"
+];
+function setText(value) {
+  return (value ?? "").trim() !== "";
+}
+function otherLogin(env, paths, cwd) {
+  if (PROVIDER_ENV.some((key) => switchOn(env[key])))
+    return true;
+  if (LOGIN_OVERRIDE_ENV.some((key) => setText(env[key])))
+    return true;
+  if (setText(env.ANTHROPIC_PROFILE))
+    return true;
+  if (setText(env.ANTHROPIC_FEDERATION_RULE_ID) && setText(env.ANTHROPIC_ORGANIZATION_ID)) {
+    return true;
+  }
+  const files = settingsPathsOf({
+    configDir: paths.claudeConfigDir,
+    mainCheckout: mainCheckoutOfFolder(cwd),
+    projectFolder: cwd
+  });
+  return files.some((file) => {
+    try {
+      return readGatewaySettings(file).loginOverrides.includes("apiKeyHelper");
+    } catch {
+      return false;
+    }
+  });
+}
+function usageNote(paths, env, sessionId, cwd, nowMs, timeZone) {
+  const windows = readUsageWindows(paths, nowMs);
+  if (windows.fiveHour === null && windows.sevenDay === null)
+    return null;
+  const mark = usageMark(env, sessionId);
+  const { line, next } = usageLine(windows, toldUsage(mark), nowMs, timeZone);
+  if (line === null || otherLogin(env, paths, cwd))
+    return null;
+  return keep(mark, JSON.stringify(next)) ? line : null;
+}
+function forgetUsage(env, sessionId) {
+  try {
+    rmSync4(usageMark(env, sessionId), { force: true });
+  } catch {}
+}
+function tierView(input, env, paths, nowMs = Date.now(), timeZone) {
   const event = stringField(input.hook_event_name);
   if (event !== "SessionStart" && event !== "UserPromptSubmit")
     return SILENT;
@@ -18047,14 +24215,28 @@ function tierView(input, env, paths, nowMs = Date.now()) {
   if (event === "SessionStart") {
     if (mark !== null)
       keep(mark, note);
+    const source = stringField(input.source);
+    if (isSessionId(sessionId) && (source === "compact" || source === "clear")) {
+      forgetUsage(env, sessionId);
+    }
     return addContext(event, note);
   }
-  if (mark === null || lastSaid2(mark) === note)
+  if (mark === null || !isSessionId(sessionId))
     return SILENT;
-  return keep(mark, note) ? addContext(event, note) : SILENT;
+  const parts = [];
+  if (lastSaid2(mark) !== note && keep(mark, note))
+    parts.push(note);
+  const cwd = stringField(input.cwd) ?? process.cwd();
+  const usage = usageNote(paths, env, sessionId, cwd, nowMs, timeZone);
+  if (usage !== null)
+    parts.push(usage);
+  return parts.length === 0 ? SILENT : addContext(event, parts.join(`
+
+`));
 }
 
 // src/hooks/verify-gate.ts
+import { extname, isAbsolute as isAbsolute9, join as join32, resolve as resolve12 } from "path";
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var REMINDER_MARK = "has not run the project's fast check since";
@@ -18146,7 +24328,7 @@ function ranCheck(command, check, dialect) {
 function isOwnReminder(line) {
   return stopFeedbackTexts(line).some((text) => text.includes(REMINDER_MARK));
 }
-function seenIn(lines, check) {
+function seenIn(lines, check, countsEdit) {
   const seen = { lastEdit: -1, lastCheck: -1, lastReminder: -1 };
   const failed = failedCalls(lines);
   for (let index = 0;index < lines.length; index += 1) {
@@ -18167,7 +24349,7 @@ function seenIn(lines, check) {
     for (const block of toolUses(record)) {
       const name = stringField(block.name);
       if (name !== null && CHANGE_TOOLS.includes(name)) {
-        if (!failed.has(stringField(block.id) ?? ""))
+        if (!failed.has(stringField(block.id) ?? "") && countsEdit(block, stringField(record.cwd)))
           seen.lastEdit = index;
         continue;
       }
@@ -18181,7 +24363,7 @@ function seenIn(lines, check) {
   }
   return seen;
 }
-function verifyGateWouldBlock(input, config) {
+function verifyGateWouldBlock(input, config, env) {
   if (config === null)
     return false;
   if (input.stop_hook_active === true)
@@ -18197,25 +24379,53 @@ function verifyGateWouldBlock(input, config) {
   const lines = tailLines(transcript, VERIFY_GATE_TAIL_BYTES);
   if (lines === null)
     return false;
-  const seen = seenIn(lines, check);
+  const cwd = stringField(input.cwd);
+  if (cwd === null)
+    return false;
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null)
+    return false;
+  const root = realPath(checkout.root);
+  const paths = cliPaths(env);
+  let plans = join32(paths.claudeConfigDir, "plans");
+  for (const settings of [
+    paths.settingsFile,
+    join32(root, ".claude/settings.json"),
+    join32(root, ".claude/settings.local.json")
+  ]) {
+    const configured = stringField(readJsonObject(settings).data.plansDirectory);
+    if (configured !== null)
+      plans = configured.startsWith("~/") ? join32(paths.home, configured.slice(2)) : resolve12(root, configured);
+  }
+  const excluded = [realPath(plans), realPath(join32(root, ".claude/plans"))];
+  const seen = seenIn(lines, check, (block, editCwd) => {
+    const fields = objectOf(block.input);
+    const path = stringField(block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path);
+    if (path === null || path.trim() === "" || path.includes("\x00") || !isAbsolute9(path) && (editCwd === null || !isAbsolute9(editCwd)))
+      return true;
+    const file = editedFile({ tool_input: { file_path: path } }, editCwd ?? cwd);
+    if (file === null)
+      return true;
+    return isInside(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInside(file, folder));
+  });
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
 }
 function verifyGate(context) {
   if (context.event !== "Stop")
     return SILENT;
-  if (!verifyGateWouldBlock(context.input, context.project.config))
+  if (!verifyGateWouldBlock(context.input, context.project.config, context.env))
     return SILENT;
   const check = context.project.config?.checks?.fast ?? "";
   return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync18, readFileSync as readFileSync26, statSync as statSync9 } from "fs";
-import { basename as basename6, isAbsolute as isAbsolute8, join as join30, resolve as resolve10 } from "path";
+import { existsSync as existsSync22, readFileSync as readFileSync31, statSync as statSync11 } from "fs";
+import { basename as basename7, isAbsolute as isAbsolute10, join as join34, resolve as resolve13 } from "path";
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync6, readFileSync as readFileSync25, readlinkSync as readlinkSync4 } from "fs";
-import { join as join29 } from "path";
+import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync30, readlinkSync as readlinkSync4 } from "fs";
+import { join as join33 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -18237,8 +24447,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join29(worktree, relative);
-    const there = join29(mainCheckout, relative);
+    const here = join33(worktree, relative);
+    const there = join33(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -18246,9 +24456,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync4(here) === readlinkSync4(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync6(here).every((entry) => same(join29(relative, entry)));
+        return b.isDirectory() && readdirSync7(here).every((entry) => same(join33(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync25(here).equals(readFileSync25(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync30(here).equals(readFileSync30(there));
     } catch {
       return false;
     }
@@ -18259,7 +24469,7 @@ function projectRebuildable(mainCheckout) {
   if (mainCheckout === null)
     return [];
   try {
-    const patterns = loadCcSmartDevKitConfig(join29(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
+    const patterns = loadCcSmartDevKitConfig(join33(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
     return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
   } catch {
     return [];
@@ -18272,7 +24482,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync2(join29(worktree, entry)).isFile())
+      if (lstatSync2(join33(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -18300,10 +24510,10 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync2(join29(worktree, path)).isDirectory())
+        if (!lstatSync2(join33(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync6(join29(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync7(join33(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -18318,16 +24528,16 @@ var IDLE_MINUTES = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync26(join30(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync31(join34(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
-  if (!isAbsolute8(admin))
-    admin = resolve10(worktree, admin);
+  if (!isAbsolute10(admin))
+    admin = resolve13(worktree, admin);
   let last = 0;
-  for (const file of ["index", "HEAD", join30("logs", "HEAD")]) {
+  for (const file of ["index", "HEAD", join34("logs", "HEAD")]) {
     try {
-      last = Math.max(last, statSync9(join30(admin, file)).mtimeMs);
+      last = Math.max(last, statSync11(join34(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -18341,7 +24551,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync9(listed.path);
+    statSync11(listed.path);
   } catch {
     return "gone";
   }
@@ -18359,15 +24569,15 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
 function leftoversNote(base, finished, gone, keptBy = new Map) {
   const parts = [];
   if (finished.length > 0) {
-    const names = finished.map((worktree) => {
+    const names = cappedHookList(finished, (worktree) => {
       const why = keptBy.get(worktree.path);
-      return why === undefined ? basename6(worktree.path) : `${basename6(worktree.path)} (kept by the last clean: ${why})`;
-    }).join(", ");
+      return why === undefined ? basename7(worktree.path) : `${basename7(worktree.path)} (kept by the last clean: ${why})`;
+    }, "git worktree list --porcelain");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
     parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
   }
   if (gone.length > 0) {
-    parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${gone.map((worktree) => worktree.path).join(", ")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
+    parts.push(`${gone.length === 1 ? "1 worktree is still listed, but its folder is gone" : `${gone.length} worktrees are still listed, but their folders are gone`}: ${cappedHookList(gone, (worktree) => worktree.path, "git worktree list --porcelain")}. \`git worktree prune\` in the main checkout forgets ${gone.length === 1 ? "it" : "them"}.`);
   }
   return parts.length === 0 ? null : parts.join(`
 `);
@@ -18387,7 +24597,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync18(resolve10(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync22(resolve13(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -18730,4 +24940,5 @@ var MACHINE_WIDE_HOOKS = [
 ];
 
 // src/entries/agent-guard.ts
+loadScriptParser();
 await runHookEntry(agentGuardHook);
