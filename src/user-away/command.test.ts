@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { createOut, textSink } from "../cli/ui/out";
 import { detectTerminal } from "../cli/ui/terminal";
+import { userAwayAnswer } from "../hooks/user-away";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { runUser, type UserContext } from "./command";
@@ -112,6 +114,42 @@ describe("user unavailable, status, available", () => {
       ].join("\n"),
     );
     expect(stateOf(run).unavailable).toBe(true);
+  });
+
+  test("the session that switches it is marked as told, so its own turn end is not blocked", async () => {
+    const home = tempDir("user-cmd");
+    const run = await user(["unavailable"], { home, env: ME });
+    expect(stateOf(run).said).toEqual({ "sess-me": "2026-10-25T01:00:00.000Z|null|0" });
+    // A transcript with no Stop feedback in it: the decision reads it, and finds no earlier block.
+    const transcript = join(tempDir("user-cmd-transcript"), "session.jsonl");
+    writeFileSync(transcript, "");
+    const stop = (session: string) =>
+      userAwayAnswer(
+        {
+          hook_event_name: "Stop",
+          session_id: session,
+          cwd: "/work/app",
+          transcript_path: transcript,
+        },
+        "Stop",
+        run.ctx.env,
+        run.ctx.paths,
+        NOW,
+        { timeZone: "UTC" },
+      );
+    expect(await stop("sess-me")).toEqual({});
+    // Every other session still hears it once at its own turn end.
+    expect(JSON.parse((await stop("sess-peer")).stdout ?? "{}").decision).toBe("block");
+    // A new expected return is a new away period: the switching session is marked for it too.
+    const again = await user(["unavailable", "--until", "8h"], { home, env: ME });
+    expect(stateOf(again).said["sess-me"]).toBe(
+      "2026-10-25T01:00:00.000Z|2026-10-25T09:00:00.000Z|0",
+    );
+  });
+
+  test("the person's own terminal has no session: nothing is marked", async () => {
+    const run = await user(["unavailable"]);
+    expect(stateOf(run).said).toEqual({});
   });
 
   test("--until 8h records the expected return, and status shows it", async () => {

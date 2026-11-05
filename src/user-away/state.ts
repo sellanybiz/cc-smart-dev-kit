@@ -15,7 +15,8 @@
  *   `unavailable`/`since`/`until` (the expected return, for the note only: it never switches the
  *   state back, because the person may be late or not gone at all), the parked `items`, the next
  *   item id (it never goes back, so a cleared id is never reused), and `said`: the note each
- *   session heard last, so the note is said once per change (`src/hooks/user-away.ts`).
+ *   session heard last, so the note is said once per change (`src/hooks/user-away.ts`), and
+ *   `stopSaid`: the note a session heard by the Stop block (`src/hooks/user-away-stop.ts`).
  *
  * HOW IT IS WRITTEN
  *   Every change reads, changes and writes whole under the folder's own lock (`withLock`, so two
@@ -75,6 +76,12 @@ const stateSchema = z.object({
   items: z.array(itemSchema),
   nextId: z.number().int().positive(),
   said: z.record(z.string(), z.string()),
+  /**
+   * The note each session heard last at its turn end (the `user-away` Stop block, 2.2.0): kept
+   * apart from `said`, which the Stop decision reads, because this one is written during a Stop.
+   * Only the prompt note reads it. A file written before 2.2.0 has none.
+   */
+  stopSaid: z.record(z.string(), z.string()).default({}),
 });
 
 export type ParkedItem = z.infer<typeof itemSchema>;
@@ -89,7 +96,15 @@ export class AwayStateError extends Error {
 }
 
 function freshState(): AwayState {
-  return { unavailable: false, since: null, until: null, items: [], nextId: 1, said: {} };
+  return {
+    unavailable: false,
+    since: null,
+    until: null,
+    items: [],
+    nextId: 1,
+    said: {},
+    stopSaid: {},
+  };
 }
 
 /** The folder of the state and its lock. */
@@ -235,32 +250,78 @@ export async function clearItems(
   return result;
 }
 
+/** The away period a note names: a new `user unavailable` (or a new `--until`) is a new one. */
+export function periodKey(state: AwayState): string {
+  return `${state.since}|${state.until}`;
+}
+
+/**
+ * What a session heard last (`said`, `stopSaid`): the period and the count, so a change is said
+ * again at the prompt. The hook's notes and `user unavailable` (for the session that switches the
+ * state) write it.
+ */
+export function saidKey(state: AwayState): string {
+  return `${periodKey(state)}|${String(state.items.length)}`;
+}
+
+/** True when `session`'s `said` mark names this away period, at any count. */
+export function saidCovers(state: AwayState, session: string): boolean {
+  return state.said[session]?.startsWith(`${periodKey(state)}|`) === true;
+}
+
 /**
  * True when `session` has not heard `key` as its last note, and records it; false when it has.
  * The cheap path takes no lock: a session that heard it already costs one read.
  */
 export async function sayOnce(stateDir: string, session: string, key: string): Promise<boolean> {
-  if (readAway(stateDir).said[session] === key) return false;
+  return await recordOnce(stateDir, "said", session, key);
+}
+
+/**
+ * Records that `session` heard `key` at its turn end (`stopSaid`); true when it was not recorded
+ * yet. The same rules as `sayOnce`, in the mark the Stop decision never reads.
+ */
+export async function stopSayOnce(
+  stateDir: string,
+  session: string,
+  key: string,
+): Promise<boolean> {
+  return await recordOnce(stateDir, "stopSaid", session, key);
+}
+
+/** `sayOnce` and `stopSayOnce`: one mark, each holding at most `MAX_SAID` sessions. */
+async function recordOnce(
+  stateDir: string,
+  mark: "said" | "stopSaid",
+  session: string,
+  key: string,
+): Promise<boolean> {
+  if (readAway(stateDir)[mark][session] === key) return false;
   const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === key) return false;
+    const heard = state[mark];
+    if (heard[session] === key) return false;
     // Delete first, so the session moves to the end: the oldest ones are the ones that go.
-    delete state.said[session];
-    state.said[session] = key;
-    for (const old of Object.keys(state.said).slice(0, -MAX_SAID)) delete state.said[old];
+    delete heard[session];
+    heard[session] = key;
+    for (const old of Object.keys(heard).slice(0, -MAX_SAID)) delete heard[old];
     return true;
   });
   return result;
 }
 
 /**
- * True when `session` had a recorded note, and forgets it: the session is told once that the
- * person is available again, and never again until the next time. The cheap path takes no lock.
+ * True when `session` had a recorded note, at a prompt or at its turn end, and forgets both: the
+ * session is told once that the person is available again, and never again until the next time.
+ * The cheap path takes no lock.
  */
 export async function forgetSaid(stateDir: string, session: string): Promise<boolean> {
-  if (readAway(stateDir).said[session] === undefined) return false;
+  const heard = (state: AwayState) =>
+    state.said[session] !== undefined || state.stopSaid[session] !== undefined;
+  if (!heard(readAway(stateDir))) return false;
   const { result } = await change(stateDir, (state) => {
-    if (state.said[session] === undefined) return false;
+    if (!heard(state)) return false;
     delete state.said[session];
+    delete state.stopSaid[session];
     return true;
   });
   return result;

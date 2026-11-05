@@ -23,6 +23,7 @@ import { formatClock } from "../gateway/limit-state";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";
 import {
+  type AwayState,
   AwayStateError,
   clearItems,
   PARK_KINDS,
@@ -31,6 +32,8 @@ import {
   type ParkKind,
   parkItem,
   readAway,
+  saidKey,
+  sayOnce,
   setAvailable,
   setUnavailable,
 } from "./state";
@@ -139,6 +142,29 @@ function strayWord(
     : usageProblem(ctx, `${command} takes no text: ${positionals.join(" ")}`);
 }
 
+/**
+ * The session that runs `user unavailable` (through the skill) knows the state it just switched,
+ * so it is marked as told for this away period, in the hook's own `said` store and key (`saidKey`): its own
+ * turn end is not blocked to tell it again (`stopAnswer` in `src/hooks/user-away.ts`). The
+ * session is `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a Bash call's environment
+ * (`docs/claude-code-contract.md`); the person's own terminal has none, and nothing is marked.
+ * A mark that cannot be written changes nothing but that one block, so it is a warning line,
+ * never a failed command: the state is already switched.
+ */
+async function markSwitchingSession(ctx: UserContext, state: AwayState): Promise<void> {
+  const { session } = askerOf(ctx);
+  if (session === null) return;
+  try {
+    await sayOnce(ctx.paths.stateDir, session, saidKey(state));
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    ctx.out.line(
+      "warn",
+      `This session could not be marked as told (${why}): its turn end is blocked once, with the note.`,
+    );
+  }
+}
+
 async function runUnavailable(args: string[], ctx: UserContext): Promise<number> {
   const parsed = parseOptions(args, ["--until"]);
   if ("error" in parsed) return usageProblem(ctx, parsed.error);
@@ -159,6 +185,7 @@ async function runUnavailable(args: string[], ctx: UserContext): Promise<number>
   }
   const state = await setUnavailable(ctx.paths.stateDir, ctx.nowMs, until);
   ctx.out.line("ok", `The person is unavailable${sinceText(ctx, state.since, state.until)}.`);
+  await markSwitchingSession(ctx, state);
   const waiting =
     state.items.length === 0
       ? "Nothing is parked yet."

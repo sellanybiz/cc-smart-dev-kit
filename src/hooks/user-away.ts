@@ -5,8 +5,8 @@
  * to do instead — park it for the person and go on (`cc-smart-dev-kit user park`) — and keeps the
  * list the person goes through when they are back.
  *
- * Four answers, one state file, **never looser than before**: each is a deny where there was a
- * question, never an allow.
+ * Five answers, one state file, **never looser than before**: each is a deny where there was a
+ * question, or a note, never an allow.
  *
  * - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`**: denied, with the step that parks the
  *   question (or the plan awaiting approval). Nothing is parked here: the session parks the
@@ -23,6 +23,10 @@
  *   expected return or the number of parked items — and again, in its own words, at the person's
  *   own prompt, which never switches the state back by itself (it may be one line from a phone).
  *   A session that heard "unavailable" is told once that the person is available again.
+ * - **Stop**: a session that works on its own gets no prompt, so it would never hear the switch.
+ *   Its stop is blocked once per away period, with the same note: heard at a prompt, the stop is
+ *   silent; heard at the stop, the next prompt does not say it again. Available, a stop is never
+ *   blocked (`stopAnswer`; the decision, which `notify` asks too, in `user-away-stop.ts`).
  *
  * **A state it cannot read changes nothing.** A broken state file is one line on stderr and the
  * answer the hook would have given without this feature: the question or the ask goes to the
@@ -52,7 +56,10 @@ import {
   type ParkedItem,
   parkItem,
   readAway,
+  saidCovers,
+  saidKey,
   sayOnce,
+  stopSayOnce,
 } from "../user-away/state";
 import { type OwnerSources, ownedItems, waitingLines } from "../user-away/whose";
 import {
@@ -75,6 +82,7 @@ import {
 } from "./io";
 import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
+import { awayStopBlock, periodTag } from "./user-away-stop";
 
 /**
  * How long a park waits for the state's lock: half of what a guard keeps back for its answer
@@ -323,6 +331,48 @@ function parkedText(count: number): string {
   return `${plural(count, "item is", "items are")} parked.`;
 }
 
+/** The standing note, at a prompt and at a stop: one home for its words. */
+function unavailableNote(when: string, count: number): string {
+  return `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`;
+}
+
+/**
+ * Stop: a session that works on its own gets no prompt from the person, so it would never hear
+ * the switch and could end its turn on a question in prose that nobody reads. So its stop is
+ * blocked once per away period, with the note — decided by `awayStopBlock`
+ * (`user-away-stop.ts`), which reads nothing written during a Stop, so `notify` can ask the same
+ * question in either order. The reason ends with the period's tag: Claude Code writes it to the
+ * transcript as the block's feedback, and that is what keeps the later stops silent; the stop the
+ * block caused (`stop_hook_active`) is silent anyway, a belt against a loop. A count change alone is not
+ * a block — a session's own park (the skill's `Summary:`) changes it, and that turn must be able
+ * to end; the next prompt says it. The block is recorded in `stopSaid`, which the decision never
+ * reads, so the next prompt does not say the note again, and "available again" still reaches the
+ * session. A mark that cannot be written keeps the block, with one line why: the next prompt then
+ * says the note once more.
+ */
+async function stopAnswer(
+  input: HookInput,
+  paths: CliPaths,
+  nowMs: number,
+  options: AwayOptions,
+): Promise<HookResult> {
+  const block = awayStopBlock(input, paths.stateDir);
+  if (block === null) return SILENT;
+  const { session, state } = block;
+  const reason = `${unavailableNote(whenText(state, nowMs, options), state.items.length)} Do not end the turn on a question for them: park it with \`${COMMAND} user park\` and go on with the work it does not block. If nothing is left to do, end the turn. ${periodTag(state)}`;
+  const answer = { stdout: JSON.stringify({ decision: "block", reason }) };
+  try {
+    await stopSayOnce(paths.stateDir, session, saidKey(state));
+    return answer;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ...answer,
+      stderr: `cc-smart-dev-kit user-away: could not record the stop note: ${why}`,
+    };
+  }
+}
+
 async function noteAnswer(
   input: HookInput,
   env: Env,
@@ -353,7 +403,13 @@ async function noteAnswer(
     );
   }
   const when = whenText(state, nowMs, options);
-  const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
+  const key = saidKey(state);
+  // Heard at its turn end (the Stop block) and not at a prompt since: the note is not said again,
+  // and `said` now covers the period, so the stops after it are decided without reading the
+  // transcript. Once `said` covers the period, `stopSaid` is stale: a count that comes back to the
+  // block's count is a change the prompt says.
+  const heardAtStop = state.stopSaid[session] === key && !saidCovers(state, session);
+  const first = (await sayOnce(paths.stateDir, session, key)) && !heardAtStop;
   if (isPersonsPrompt(input)) {
     const waiting =
       count === 0
@@ -365,10 +421,7 @@ async function noteAnswer(
     );
   }
   if (!first) return SILENT;
-  return addContext(
-    "UserPromptSubmit",
-    `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`,
-  );
+  return addContext("UserPromptSubmit", unavailableNote(when, count));
 }
 
 /**
@@ -393,6 +446,7 @@ export async function userAwayAnswer(
     }
     if (event === "PermissionRequest") return await permissionAnswer(input, paths, nowMs, options);
     if (event === "UserPromptSubmit") return await noteAnswer(input, env, paths, nowMs, options);
+    if (event === "Stop") return await stopAnswer(input, paths, nowMs, options);
     return SILENT;
   } catch (error) {
     if (error instanceof AwayStateError) return { stderr: stateLine(error) };

@@ -219,7 +219,7 @@ that, so the plugin ships no worktree hook at all.
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names at most eight finished worktrees and eight missing folders, keeping each total; `+N more: git worktree list --porcelain` lists the rest. Finished worktrees have every commit on `origin/<base>`, nothing uncommitted, no session in them, an idle hour, and no ignored file that cannot come back; locked ones are kept by `worktrees --clean`. The hook says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart (startup, resume, compact, clear), UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`) at start and once per context at an unnamed prompt. A `.reminded` mark beside the temp name files suppresses repeat prompts; every SessionStart resets it, including compact and clear. Then sets that as its title at the next prompt (`sessionTitle`); a name the person gives with `/rename` stays until the session names itself again. |
-| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt. The frame's step 5 turns every other hook's ask into a deny the same way (§ While the person is away). |
+| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt, and one **block** at the stop of a session that has not heard this away period. The frame's step 5 turns every other hook's ask into a deny the same way (§ While the person is away). |
 | `task-start` | SessionStart (every source) | **machine-wide** | One block of the project's open work tasks at a start, a resume, a clear and a compaction: at most eight lines, then `+n more`, with no descriptions; a task untouched for `tasks.staleDays` (default 30) is counted in one line instead; and one line to run setup while the task server is not registered. `tasks.md` § The hooks and pages that read it. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the machine-wide
@@ -780,7 +780,8 @@ another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailabl
 written whole through the kit's atomic write, under the folder's **own** lock (not setup's: a
 hook that parks must never wait for a setup run) so two sessions that park at once both keep
 their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the `items`,
-`nextId` (an id is never reused) and `said` (the note each session heard). `until` is a note
+`nextId` (an id is never reused), `said` (the note each session heard at a prompt, or by
+`user unavailable` itself) and `stopSaid` (the note it heard by the Stop block). `until` is a note
 only: it shows in the notes and never switches back. An item has a kind — `question` (with its
 options and the recommended one), `action` (with its exact command) or `decision` (what was
 chosen, why, how to undo it) — the session that parked it, its folder and the time. The same
@@ -817,8 +818,8 @@ way: how many items are this session's, and how many wait in which other session
 calls share the hook's budget (`SHORT_GUARD_BUDGET_MS`). The person's own terminal has no
 session, so only the running owners and its folder's project decide there.
 
-**Four answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
-where there was a question, never an allow.
+**Five answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
+where there was a question, or a note, never an allow.
 
 - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`:** denied, with the step that parks the
   question. Nothing is parked by the hook: the session parks it in its own words, or takes the
@@ -870,13 +871,66 @@ where there was a question, never an allow.
   wait, and `/cc-smart-dev-kit:user-available` goes through them. An automated turn
   (`prompt-source.ts`: a monitor's line, another session's message) is never the person's. A
   session that heard "unavailable" is told once when the person is available again.
+- **`Stop`, the note at turn end** (2.2.0): a session that works on its own gets no prompt from
+  the person, so it never heard the switch and could end its turn on a question in prose that
+  nobody reads. Its stop is **blocked once** (`decision: "block"`), with the same note and a
+  line to park what needs the person (`user park`) and go on, or end the turn if nothing is
+  left. **The decision reads nothing written during a Stop** (`awayStopBlock`,
+  `src/hooks/user-away-stop.ts`, one home), because Claude Code runs an event's hooks in
+  parallel and `notify` asks the same decision. **Never on a stop a Stop hook continued**
+  (`stop_hook_active`, an input field both read the same way): a belt against a loop, so even if
+  Claude Code stored the feedback in another shape, a session is blocked at most once per chain
+  of continued stops, never up to Claude Code's cap of 9; the cost is that a stop another hook
+  continued does not carry the note, and the next stop no hook continued does. Otherwise it
+  blocks when all three hold: the state is unavailable; the session's `said` mark does not cover
+  **this away period** (`since|until`; only the prompt note and `user unavailable` write `said`);
+  and the transcript's tail holds no `user-away` Stop feedback for this period. The block's
+  reason ends with the period's tag (`[away period <since>|<until>]`), Claude Code writes the
+  reason as `Stop hook feedback:` after every Stop hook has answered, and `stopFeedbackIn`
+  (`src/hooks/transcript.ts`, the reader `keep-going` uses, on one read of the tail) finds it at
+  the later stops (`docs/claude-code-contract.md` § Hooks: both claims are owed a live proof). A
+  count change alone is no block: a session's own park (the skill's `Summary:` at the end of a
+  stretch) changes the count, and that turn must be able to end; the next prompt says it. **The
+  Stop answer's own mark is `stopSaid`**, written during the Stop and never read by the
+  decision: only the prompt note reads it, and only until `said` covers the period, so a prompt
+  after the block does not say the first note again (and writes `said`, so later stops need no
+  transcript read), while a count that changes and comes back later is said as any change. A
+  `stopSaid` that cannot be written (rare: a lock wait past its limit) keeps the block, with one
+  stderr line; the next prompt then says the note once more, and if the person is back before
+  any prompt, "available again" is not said at it. `forgetSaid` covers both marks, so a session
+  told only at its stop still hears "available again" at its next prompt. **Available: never a
+  block.** No `session_id`, no transcript or one it cannot read: no block — it could not see its
+  own earlier block, and a block it cannot see would come back at every stop. Costs: while the
+  person is away and `said` does not cover the period, each stop reads the transcript's last
+  512 KB; a session that no prompt reaches for longer than that tail after its block is blocked
+  once more, as `keep-going` would be. `claude -p` is treated like any session, as `keep-going`
+  and `verify-gate` are; it hears the note at its first prompt anyway. A subagent never hears it
+  here (`SubagentStop` is not wired): it never asks the person.
+
+  **The session that switches the state is told already.** `user unavailable` marks the session
+  that runs it (`CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a Bash call's environment,
+  `docs/claude-code-contract.md` § Hooks) as told for the new period, through the same
+  `sayOnce` and key (`saidKey`), so the session that followed the skill is not blocked at its
+  own turn end. The person's own terminal has no session id and marks nothing. A mark that
+  cannot be written is one warning line; that session is then blocked once, as any other. **A
+  subagent's Bash call carries its lead session's id** (seen on 2.1.318), so a subagent that ran
+  `user unavailable` would mark its lead as told; the skill is the lead's, and no brief asks a
+  subagent to run it.
+
+  **The notifier's "finished" alert asks the same decision** (`awayStopWouldBlock`, read only),
+  beside `verify-gate`'s and `keep-going`'s, so it waits for the stop that really ends the turn,
+  whichever hook runs first. **The accepted trade:** when `user-away` fails to block a stop the
+  decision says it blocks (it crashes, runs past its timeout, or no bun runs it), the turn
+  ends there and the notifier skips that one "finished" alert. A state file the notifier cannot
+  read is no block, and the alert goes out.
 
 **Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
 state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
 outside git, are judged the same way. `ownHooks` cannot switch it off — the switch is the
 person's, and a project must not turn it off for a session — so it is not in `PLUGIN_HOOK_NAMES`
 and `.claude/cc-smart-dev-kit.json` needs no new field. A crash asks about the two question
-tools like any guard; on the other events it says one line on stderr and the session goes on.
+tools like any guard; on the other events (a prompt, a permission prompt, a stop) it says one
+line on stderr and the session goes on.
 
 **A state it cannot read changes nothing.** The hook says one line on stderr and the answer is
 what it would have been without this feature: the question or the ask goes to the person as it
@@ -1131,7 +1185,7 @@ ends it, and only for ten minutes so a wait that ended unrecorded never hides a 
 a turn another session started (`startedByPeer`: `turnOrigin: "peer"` without a
 `senderTaskId`, a human prompt into the turn or a helper agent's launch alerting as before);
 the same error twice in a row (a per-session file remembers the last error, cleared by a turn
-that ends well); a stop `verify-gate` or `keep-going` will block (the turn goes on, so the
+that ends well); a stop `verify-gate`, `keep-going` or `user-away` will block (the turn goes on, so the
 finished alert waits for the stop that ends it — a per-session file remembers the alert already
 shown for the turn, cleared at the next prompt). One alert per
 session per event, never two.
