@@ -1024,8 +1024,8 @@ gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and t
     login (it never writes a key, `FORBIDDEN_ENV_KEYS`), so both get the line. It is read only
     when a line is due, and a skipped line keeps no mark. **Not seen:** an `ANTHROPIC_API_KEY`
     the person declined at Claude Code's prompt (it still counts as another login, so that
-    session misses the line), managed settings, and a profile chosen in a file rather than in
-    the environment.
+    session misses the line), managed settings, a profile chosen in a file rather than in
+    the environment, and a signed-in Claude apps gateway, which outranks every login.
   - **Two logins on one machine.** The file lives in `<stateDir>`, which is
     `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`: a second login kept in its own config folder (Claude
     Code keeps each folder's credentials apart) has its own file and its own numbers. A new

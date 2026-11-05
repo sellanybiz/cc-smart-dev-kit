@@ -672,6 +672,12 @@ describe("the plan-usage line only for a session on the plan login (2.2.0)", () 
     expect(prompt(project, repo)).toBeNull();
   });
 
+  it("a settings file's env is not read: an empty login key there still gets the line", () => {
+    const user = session({});
+    writeFileSync(cliPaths(user).settingsFile, JSON.stringify({ env: { ANTHROPIC_API_KEY: "" } }));
+    expect(prompt(user)).toBe(LINE);
+  });
+
   it("the plan login: the line; on the kit's gateway too, which keeps the login", () => {
     expect(prompt(session({}))).toBe(LINE);
     expect(prompt(session({ ANTHROPIC_BASE_URL: ROUTER }))).toBe(LINE);

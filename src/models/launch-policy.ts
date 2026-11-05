@@ -402,7 +402,7 @@ export interface EffectiveLaunch {
 }
 
 /** True where Claude Code reads a switch as on: `1`, `true`, `yes` or `on`, any case. */
-function switchOn(value: string | undefined): boolean {
+export function switchOn(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 

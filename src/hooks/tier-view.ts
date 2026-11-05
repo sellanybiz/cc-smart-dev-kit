@@ -70,6 +70,7 @@ import { checksDownNote, checksDownNow } from "../gateway/checks-down";
 import { formatClock, scopeOfStateKey } from "../gateway/limit-state";
 import { LOGIN_OVERRIDE_ENV, readGatewaySettings } from "../gateway/settings";
 import { mainCheckoutOfFolder, settingsPathsOf } from "../machine/claude-settings";
+import { switchOn } from "../models/launch-policy";
 import { tierNote } from "../models/tier-view";
 import { sessionGatewayOf } from "./agent-guard";
 import { addContext, type HookInput, type HookResult, SILENT, stringField } from "./io";
@@ -225,11 +226,6 @@ const PROVIDER_ENV = [
   "CLAUDE_CODE_USE_FOUNDRY",
 ];
 
-/** True where Claude Code reads a switch as on: `1`, `true`, `yes` or `on`, any case. */
-function switchOn(value: string | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
-}
-
 /** A variable with something in it. */
 function setText(value: string | undefined): boolean {
   return (value ?? "").trim() !== "";
@@ -260,7 +256,9 @@ export function otherLogin(env: Env, paths: CliPaths, cwd: string): boolean {
   });
   return files.some((file) => {
     try {
-      return readGatewaySettings(file).loginOverrides.length > 0;
+      // Only `apiKeyHelper` is read from the file: its `env` keys already reach this hook's
+      // environment (checked above, where an empty value counts as unset, as Claude Code reads it).
+      return readGatewaySettings(file).loginOverrides.includes("apiKeyHelper");
     } catch {
       // A file that cannot be read shows no other login: Claude Code's own answer is not known.
       return false;
