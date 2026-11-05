@@ -11,6 +11,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { stringField } from "../hooks/io";
+import { isInsideOnDisk, sameFolderOnDisk } from "../path-compare";
 import { installsOfPlugin } from "../setup/installed-plugins";
 
 /** The fields a definition supplies to the launch policy. `inherit` supplies no model. */
@@ -186,18 +187,20 @@ function pluginFiles(root: string, budget: Budget): string[] {
 
 /**
  * The project agents folders, closest first: from the real cwd up to the checkout root. Both
- * are resolved through symlinks, as git names the root. A cwd whose real folder is outside the
- * checkout scans the checkout root alone. Throws when either folder cannot be resolved.
+ * are resolved through symlinks, as git names the root, and compared on disk: on Windows the
+ * cwd may be spelled with an 8.3 short name where git gives the long one (`isInsideOnDisk`).
+ * A cwd whose real folder is outside the checkout scans the checkout root alone. Throws when
+ * either folder cannot be resolved.
  */
 function projectFolders(checkout: string, cwd: null | string | undefined): string[] {
   const root = realpathSync(checkout);
   const start = realpathSync(cwd ?? checkout);
   const folders: string[] = [];
-  let at = inside(start, root) ? start : root;
+  let at = isInsideOnDisk(start, root) ? start : root;
   for (;;) {
     folders.push(join(at, ".claude", "agents"));
     const up = dirname(at);
-    if (at === root || up === at) return folders;
+    if (sameFolderOnDisk(at, root) || up === at) return folders;
     at = up;
   }
 }
@@ -242,7 +245,7 @@ function lookup(name: null | string, place: AgentPlace, budget: Budget): AgentDe
         (one) =>
           one.scope !== "user" &&
           one.projectPath !== null &&
-          cwds.some((cwd) => inside(cwd, one.projectPath ?? "")),
+          cwds.some((cwd) => isInsideOnDisk(cwd, one.projectPath ?? "")),
       )
       .sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
     const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) =>

@@ -7080,10 +7080,10 @@ function toolInput(input) {
 
 // src/hooks/git.ts
 import { realpathSync as realpathSync3 } from "fs";
-import { basename as basename2, dirname as dirname2, join as join8, resolve as resolve3 } from "path";
+import { basename as basename2, dirname as dirname3, join as join8, resolve as resolve3 } from "path";
 
 // src/path-compare.ts
-import { resolve as resolve2 } from "path";
+import { dirname as dirname2, resolve as resolve2 } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -7102,7 +7102,7 @@ function realPath(path) {
     try {
       return join8(realpathSync3(at), ...rest);
     } catch {
-      const parent = dirname2(at);
+      const parent = dirname3(at);
       if (parent === at)
         return resolve3(path);
       rest.unshift(basename2(at));
@@ -7488,7 +7488,7 @@ import { existsSync as existsSync7 } from "fs";
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync as existsSync6, mkdirSync as mkdirSync3 } from "fs";
-import { dirname as dirname3, join as join10 } from "path";
+import { dirname as dirname4, join as join10 } from "path";
 var WORK_SCHEMA_VERSION = 3;
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
@@ -7531,13 +7531,13 @@ function openWorkDb(file, options) {
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
+    mkdirSync3(dirname4(file), { recursive: true, mode: 448 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync(dirname3(file), 448);
+      chmodSync(dirname4(file), 448);
       chmodSync(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");

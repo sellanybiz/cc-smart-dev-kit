@@ -1378,7 +1378,7 @@ import { existsSync as existsSync11, readdirSync as readdirSync4, readFileSync a
 import { join as join11, relative as relative2, sep as sep3 } from "path";
 
 // src/path-compare.ts
-import { resolve as resolve2 } from "path";
+import { dirname as dirname2, resolve as resolve2 } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -1549,7 +1549,7 @@ function removeManagedMarkdown(options) {
 
 // src/setup/restore.ts
 import { existsSync as existsSync10, readdirSync as readdirSync3, readFileSync as readFileSync12, rmdirSync } from "fs";
-import { dirname as dirname3 } from "path";
+import { dirname as dirname4 } from "path";
 
 // src/setup/managed-entries.ts
 import { existsSync as existsSync6, readFileSync as readFileSync8 } from "fs";
@@ -1735,7 +1735,7 @@ import {
   rmSync,
   writeFileSync as writeFileSync2
 } from "fs";
-import { basename as basename3, dirname as dirname2, join as join9, relative, sep as sep2 } from "path";
+import { basename as basename3, dirname as dirname3, join as join9, relative, sep as sep2 } from "path";
 var OWNED_FOLDERS_FILE = "owned-folders.json";
 var OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
 function markedOwned(folder) {
@@ -2084,10 +2084,10 @@ function restore(stateDir, options = {}) {
 }
 function removeEmptyFolders(file, stateDir) {
   const root = realTarget(stateDir);
-  let dir = dirname3(file);
+  let dir = dirname4(file);
   while (isStrictlyInside(dir, root) && existsSync10(dir) && readdirSync3(dir).length === 0) {
     rmdirSync(dir);
-    dir = dirname3(dir);
+    dir = dirname4(dir);
   }
 }
 

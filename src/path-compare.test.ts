@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { win32 } from "node:path";
-import { isInside, isStrictlyInside, samePath } from "./path-compare";
+import { mkdirSync, symlinkSync } from "node:fs";
+import { join, win32 } from "node:path";
+import {
+  isInside,
+  isInsideOnDisk,
+  isStrictlyInside,
+  sameFolderOnDisk,
+  samePath,
+} from "./path-compare";
+import { tempDir } from "./testing/temp";
 
 describe("isInside: the one path test", () => {
   test("a folder, a file in it, a sibling with the same start, and `..`", () => {
@@ -37,5 +45,43 @@ describe("isInside: the one path test", () => {
     expect(isStrictlyInside("/state", "/state", false)).toBe(false);
     expect(isStrictlyInside("C:\\state\\a", "C:\\state", true)).toBe(true);
     expect(isStrictlyInside("/elsewhere/a", "/state", false)).toBe(false);
+  });
+});
+
+describe("isInsideOnDisk and sameFolderOnDisk: one folder, two spellings", () => {
+  // On Windows a folder can be spelled with an 8.3 short name and with its long one; here a link
+  // gives the same folder a second spelling the text test cannot see through.
+  function world() {
+    const base = tempDir("path-on-disk");
+    const real = join(base, "real");
+    mkdirSync(join(real, "src", "deep"), { recursive: true });
+    const alias = join(base, "alias");
+    symlinkSync(real, alias, "dir");
+    const other = join(base, "other");
+    mkdirSync(other);
+    return { alias, other, real };
+  }
+
+  test("a folder under the other spelling is inside; the text test alone says no", () => {
+    const { alias, real } = world();
+    expect(isInside(join(alias, "src", "deep"), real)).toBe(false);
+    expect(isInsideOnDisk(join(alias, "src", "deep"), real)).toBe(true);
+    expect(isInsideOnDisk(alias, real)).toBe(true);
+  });
+
+  test("a folder elsewhere is not inside; a folder that does not exist compares by text", () => {
+    const { other, real } = world();
+    expect(isInsideOnDisk(other, real)).toBe(false);
+    expect(isInsideOnDisk(join(real, "src"), join(other, "missing"))).toBe(false);
+    expect(isInsideOnDisk(join(real, "missing", "x"), real)).toBe(true);
+  });
+
+  test("the same folder under two spellings is the same; a folder and its child are not", () => {
+    const { alias, other, real } = world();
+    expect(sameFolderOnDisk(alias, real)).toBe(true);
+    expect(sameFolderOnDisk(join(alias, "src"), join(real, "src"))).toBe(true);
+    expect(sameFolderOnDisk(join(alias, "src"), real)).toBe(false);
+    expect(sameFolderOnDisk(other, real)).toBe(false);
+    expect(sameFolderOnDisk(join(real, "missing"), join(other, "missing"))).toBe(false);
   });
 });

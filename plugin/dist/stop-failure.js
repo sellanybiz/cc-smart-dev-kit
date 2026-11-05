@@ -7507,6 +7507,9 @@ function urlMeaning(url, routerUrl) {
   return { profile: null, state: "other" };
 }
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/models/launch-policy.ts
 var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
 var OPUS_ASK_EFFORT = "max";

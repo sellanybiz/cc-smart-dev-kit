@@ -6,7 +6,14 @@
  * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
@@ -304,9 +311,14 @@ describe("frontmatter launch fields", () => {
     const link = join(home, "linked-src");
     symlinkSync(join(repo, "src"), link, "dir");
     // What the lookup stands on: the link resolves to the folder it names, and git finds the
-    // checkout from it. On a platform where either does not hold, these say which, with paths.
+    // checkout from it — the same folder on disk, though on Windows git spells it with the long
+    // name where the temp folder has an 8.3 short one (`RUNNER~1`), and `realpathSync` keeps that.
     expect(realpathSync(link)).toBe(realpathSync(join(repo, "src")));
-    expect(realpathSync(locateCheckout(link)?.root ?? "")).toBe(realpathSync(repo));
+    const onDisk = (path: string) => {
+      const stat = statSync(path, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    };
+    expect(onDisk(locateCheckout(link)?.root ?? "")).toBe(onDisk(repo));
     const ctx = readGuardContext(paths, { cwd: link }, NO_ENV);
     // The root's file beats the user's, and the folder the link really is beats the root's.
     expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });

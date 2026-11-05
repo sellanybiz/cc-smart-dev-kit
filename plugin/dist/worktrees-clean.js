@@ -100,10 +100,10 @@ import { join as join13 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync } from "fs";
-import { basename, dirname, join as join3, resolve as resolve2 } from "path";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
 
 // src/path-compare.ts
-import { resolve } from "path";
+import { dirname, resolve } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -166,7 +166,7 @@ function realPath(path) {
     try {
       return join3(realpathSync(at), ...rest);
     } catch {
-      const parent = dirname(at);
+      const parent = dirname2(at);
       if (parent === at)
         return resolve2(path);
       rest.unshift(basename(at));
@@ -6659,9 +6659,9 @@ import {
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
-import { basename as basename2, dirname as dirname2, join as join6, resolve as resolve3 } from "path";
+import { basename as basename2, dirname as dirname3, join as join6, resolve as resolve3 } from "path";
 function writeTemp(file, content, mode) {
-  const dir = dirname2(file);
+  const dir = dirname3(file);
   mkdirSync2(dir, { recursive: true });
   const temp = join6(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
@@ -6720,7 +6720,7 @@ function appendLogLine(logFile, line, nowMs) {
 // src/worktrees/auto-state.ts
 import { createHash } from "crypto";
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname3, join as join8 } from "path";
+import { dirname as dirname4, join as join8 } from "path";
 var AUTO_CLEAN_TRIGGERS = ["merge", "session"];
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var removedSchema = object({
@@ -6760,7 +6760,7 @@ function readJson(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync4(dirname3(file), { recursive: true, mode: 448 });
+  mkdirSync4(dirname4(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -7795,7 +7795,7 @@ function cleanFinished(repo, scanned, judged, say) {
 
 // src/worktrees/scan-parked.ts
 import { existsSync as existsSync8, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync11, rmSync as rmSync3 } from "fs";
-import { dirname as dirname4, join as join12, relative } from "path";
+import { dirname as dirname5, join as join12, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
     return null;
@@ -7811,7 +7811,7 @@ function strayParkedFolders(repo, env) {
   }
   const folders = new Set([join12(repo, ".claude", "worktrees")]);
   for (const listed of all.slice(1))
-    folders.add(dirname4(listed.path));
+    folders.add(dirname5(listed.path));
   const found = [];
   for (const folder of folders) {
     let names;
