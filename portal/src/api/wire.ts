@@ -462,7 +462,8 @@ export type WorkflowKey =
   | "switches.statusLine"
   | "switches.sessionNames"
   | "switches.jobRoute"
-  | "switches.updateHold";
+  | "switches.updateHold"
+  | "switches.leadHint";
 
 /** `src/portal/settings.ts` › `SettingsRow`. */
 export interface SettingsRow {

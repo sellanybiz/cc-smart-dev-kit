@@ -44,6 +44,10 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
+function managedAgentsDir(platform = process.platform) {
+  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
+  return join2(root, ".claude", "agents");
+}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -79,7 +83,8 @@ function cliPaths(env = process.env) {
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
+    managedAgentsDir: managedAgentsDir()
   };
 }
 function claudeMemDataDir(env, home) {
@@ -120,13 +125,13 @@ import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.1.1",
+  version: "2.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.36.0"
+      version: ">=15.0.0"
     },
     {
       name: "frontend-design",

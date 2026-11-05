@@ -1,7 +1,7 @@
 /**
  * `plugin/workflows/research-sweep.js`: the run the `research-first` skill starts for a question
- * with several sources. One read-only researcher per angle on `sonnet` at `max` (the guard allows
- * it on any tier), one refuter per claim on `opus` at `high` to open the cited source, all
+ * with several sources. One `researcher` per angle on `sonnet` at `high` (the guard allows it on
+ * any tier), one `researcher` per claim on `opus` at `high` to refute it at the cited source, all
  * allowed by the agent guard. The script returns the verified claims, the
  * refuted ones, the unproven ones and the ones past the budget; it never drops a claim.
  */
@@ -10,8 +10,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
+import { loadScriptParser } from "../hooks/script-parser";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
+
+// The guard's bundle loads its script parser in its entry; this file judges a script too.
+loadScriptParser();
 
 const SWEEP = join(import.meta.dir, "..", "..", "plugin", "workflows", "research-sweep.js");
 const NO_ENV = {} as Record<string, string | undefined>;
@@ -34,7 +38,7 @@ const isRefute = (call: AgentCall): boolean => labelOf(call).startsWith("refute:
 const CONFIRMED = { quote: "found it", reason: "the page says so", verdict: "confirmed" };
 
 describe("the research-sweep workflow", () => {
-  test("one researcher per angle on sonnet at max, read-only, with the question in the brief", async () => {
+  test("one researcher per angle on sonnet at high, with the question and the schema's shape in the brief", async () => {
     const run = await runScript(SWEEP, {
       answer: (call) =>
         isResearch(call) ? { claims: [], coverage: "read", openQuestions: [] } : null,
@@ -51,12 +55,15 @@ describe("the research-sweep workflow", () => {
     ]);
     for (const call of research) {
       expect(call.options).toMatchObject({
-        agentType: "cc-smart-dev-kit:auditor",
-        effort: "max",
+        agentType: "cc-smart-dev-kit:researcher",
+        effort: "high",
         model: "sonnet",
       });
       expect(typeof call.options.schema).toBe("object");
       expect(call.prompt).toContain("how does X cut a stream");
+      // The researcher's own report shape gives way to the brief's: the brief must say so.
+      expect(call.prompt).toContain("Answer in this run's schema, not in your usual report.");
+      expect(call.prompt).toContain("sources that disagree, go in `openQuestions`");
     }
     expect(research[0]?.prompt).toContain("Your angle: the current docs");
     expect(run.calls.filter(isRefute).length).toBe(0);
@@ -76,7 +83,7 @@ describe("the research-sweep workflow", () => {
     expect(refuters.length).toBe(2);
     for (const call of refuters) {
       expect(call.options).toMatchObject({
-        agentType: "cc-smart-dev-kit:auditor",
+        agentType: "cc-smart-dev-kit:researcher",
         effort: "high",
         model: "opus",
       });

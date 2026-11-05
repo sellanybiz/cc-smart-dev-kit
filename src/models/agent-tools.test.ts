@@ -11,13 +11,19 @@ const AGENTS = join(import.meta.dir, "..", "..", "plugin", "agents");
 
 const READ_ONLY = ["Edit", "Write", "NotebookEdit", "AskUserQuestion"];
 
-/** Each agent's deny list, written by hand. */
-const DENIED: Record<string, string[]> = {
+/** Each agent's deny list, written by hand; null when the agent denies nothing. */
+const DENIED: Record<string, null | string[]> = {
   auditor: READ_ONLY,
   // A builder builds its one phase: it never asks the person and never starts agents (2.0).
   builder: ["AskUserQuestion", "Agent"],
-  reviewer: READ_ONLY,
+  // Generates the scenarios that can break a plan or a change; it never fixes one.
+  "edge-case-hunter": READ_ONLY,
+  // Answers one research question from current sources; it reports and changes nothing (2.2.0).
+  researcher: READ_ONLY,
   "rules-maintainer": ["AskUserQuestion"],
+  // Every tool, always (the owner, 2.2.0): it reviews, and a consult may fix or build. Its text
+  // keeps a review's findings ahead of any fix.
+  "senior-engineer": null,
   "ui-verifier": READ_ONLY,
 };
 

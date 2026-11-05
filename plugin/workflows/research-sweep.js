@@ -93,15 +93,17 @@ log(
   `Researching "${question}" from ${angles.length} angle(s); at most ${maxClaims} claim(s) are checked against their sources.`,
 )
 
-// One researcher per angle, in parallel. Each angle is the caller's; the researchers read only.
+// One researcher per angle, in parallel, on `sonnet` at `high`. Each angle is the caller's; the
+// researchers read only. The researcher's own report shape gives way to a schema, so the brief
+// says which of its parts go where.
 const reports = await pipeline(angles, (angle) =>
   agent(
-    `Research this question: ${question}${background}\n\nYour angle: ${angle}. Other researchers take the other angles; stay on yours.\n\nUse the current sources, not memory: read the date first, then fetch the page, the changelog, the issue or the file itself. Report each claim the answer would rest on as one entry: the claim in one sentence, the exact source (a URL, or \`file:line\`), a short verbatim quote from that source, the version or date the source speaks for in \`asOf\`, and its weight (\`decisive\` when the answer changes without it, else \`supporting\`). Never report a claim you did not read in a source. What you looked for and could not find goes in \`openQuestions\`, never in \`claims\`. End with \`coverage\`: the pages and files you read, and the ones you never opened.`,
+    `Research this question: ${question}${background}\n\nYour angle: ${angle}. Other researchers take the other angles; stay on yours.\n\nUse the current sources, not memory: read the date first, then fetch the page, the changelog, the issue or the file itself. Answer in this run's schema, not in your usual report. Report each claim the answer would rest on as one entry: the claim in one sentence, the exact source (a URL, or \`file:line\`), a short verbatim quote from that source, the version or date the source speaks for in \`asOf\`, and its weight (\`decisive\` when the answer changes without it, else \`supporting\`). Never report a claim you did not read in a source. What you looked for and could not find or confirm, and sources that disagree, go in \`openQuestions\`, never in \`claims\`. End with \`coverage\`: the pages and files you read, and the ones you never opened.`,
     {
       label: `research: ${angle}`,
       model: 'sonnet',
-      effort: 'max',
-      agentType: 'cc-smart-dev-kit:auditor',
+      effort: 'high',
+      agentType: 'cc-smart-dev-kit:researcher',
       schema: CLAIMS,
     },
   ),
@@ -138,7 +140,7 @@ const verdicts = await pipeline(checked, (one) =>
       label: `refute: ${String(one.claim).slice(0, 60)}`,
       model: 'opus',
       effort: 'high',
-      agentType: 'cc-smart-dev-kit:auditor',
+      agentType: 'cc-smart-dev-kit:researcher',
       schema: VERDICT,
     },
   ),

@@ -12,6 +12,7 @@ import {
   checkLine,
   checkPlugin,
   checkPortal,
+  checkReviewAgent,
   checkUserNotifyHook,
   claudeMemChecks,
   countChecks,
@@ -35,6 +36,33 @@ function line(hooks: unknown): string {
   }
   return checkLine(checkUserNotifyHook(paths));
 }
+
+describe("doctor: personal review agent migration", () => {
+  test("missing and current lists need no migration", () => {
+    const paths = cliPaths(hookEnv());
+    expect(checkReviewAgent(paths)).toBeNull();
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      JSON.stringify({ reviewAgents: ["cc-smart-dev-kit:senior-engineer"] }),
+    );
+    expect(checkReviewAgent(paths)).toBeNull();
+  });
+  test("the retired id fails with the base-list fix", () => {
+    const paths = cliPaths(hookEnv());
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(
+      paths.workflowConfigFile,
+      JSON.stringify({ reviewAgents: ["cc-smart-dev-kit:reviewer"] }),
+    );
+    const result = checkReviewAgent(paths);
+    expect(result).not.toBeNull();
+    if (result === null) throw new Error("missing migration check");
+    expect(checkLine(result)).toBe(
+      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
+    );
+  });
+});
 
 describe("doctor: agent view's notification hook", () => {
   test("missing: ✗, and the command to run", () => {
@@ -164,7 +192,10 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     });
   }
 
-  const lines = (paths: ReturnType<typeof world>["paths"]) => claudeMemChecks(paths).map(checkLine);
+  const lines = (paths: ReturnType<typeof world>["paths"]) =>
+    claudeMemChecks(paths)
+      .filter((check) => !check.text.startsWith("claude-mem's My Work auto-refresh"))
+      .map(checkLine);
 
   test("D68: task tools are checked without claude-mem", () => {
     const w = world(undefined, false);
@@ -182,7 +213,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
       unchosen: () => true,
     });
     expect(lines(w.paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit Fix: cc-smart-dev-kit setup`,
+      `✗ claude-mem's start blocks in ${SHORT}: work state is off (set by cc-smart-dev-kit setup), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -192,7 +223,7 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
 
   test("D68: claude-mem's defaults: ✗ with setup as the command to run", () => {
     expect(lines(world(SEEDED).paths)).toEqual([
-      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit. Work state must be off so the kit owns the task list Fix: cc-smart-dev-kit setup`,
+      `✗ claude-mem's start blocks in ${SHORT}: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write. Work state must be off so the kit owns the task list Fix: cc-smart-dev-kit setup`,
     ]);
   });
 
@@ -304,6 +335,31 @@ describe("doctor: claude-mem's start blocks (D68)", () => {
     expect(lines(w.paths)).toEqual([
       `· claude-mem's start blocks in ${SHORT}: work state is on (your choice), memory-use block is on (your choice)`,
     ]);
+  });
+
+  test("My Work auto-refresh reports its default, explicit off, and nested settings", () => {
+    const enabled =
+      '· claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json';
+    const disabled =
+      "· claude-mem's My Work auto-refresh is off in ~/.claude-mem/settings.json; it will not launch logged-in agents outside the note-taker route";
+    expect(claudeMemChecks(world(SEEDED).paths).map(checkLine)).toContain(enabled);
+    for (const value of ["false", false]) {
+      expect(
+        claudeMemChecks(world({ ...SEEDED, CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: value }).paths).map(
+          checkLine,
+        ),
+      ).toContain(disabled);
+      expect(
+        claudeMemChecks(
+          world({ env: { ...SEEDED, CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: value } }).paths,
+        ).map(checkLine),
+      ).toContain(disabled);
+    }
+    expect(
+      claudeMemChecks(world({ ...SEEDED, CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH: "true" }).paths).map(
+        checkLine,
+      ),
+    ).toContain(enabled.replace("on (default)", "on"));
   });
 
   test("D68: an unreadable settings file is a warning, never a failure", () => {

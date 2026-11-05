@@ -97,3 +97,7 @@ jobs:
 
       - name: Validate the marketplace
         run: claude plugin validate . --strict
+
+      - name: Context budget
+        # Needs Claude Code: it reads `claude plugin details` for the copy in plugin/.
+        run: bun run check:context-budget

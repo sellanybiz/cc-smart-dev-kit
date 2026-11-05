@@ -123,14 +123,14 @@ export const OPENROUTER_KEYS = [OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTE
 
 /**
  * claude-mem's two start blocks, both planned off by D75 and read by doctor.
- * Work state belongs to the kit; the memory-use block can overflow the context budget.
+ * The kit owns task lists and instruction routing; claude-mem keeps memory only.
  */
 export const START_BLOCK_KEYS = [
   "CLAUDE_MEM_WORK_STATE_ENABLED",
   "CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED",
 ] as const;
 
-/** The work-state key whose old setup claim is withdrawn. */
+/** The work-state key setup plans off so the kit owns task lists. */
 export const WORK_STATE_KEY = START_BLOCK_KEYS[0];
 export const MEMORY_USE_KEY = START_BLOCK_KEYS[1];
 
@@ -237,7 +237,7 @@ export function gatewayAffordableTarget(
 export interface ClaudeMemPlan {
   /** The keys to take out while they hold cc-smart-dev-kit's value (`RETIRED_KEYS`). */
   remove: KeyPath[];
-  /** The memory-use block, off (D68). Planned whenever claude-mem is installed. */
+  /** Both start blocks, off (D75). Planned whenever claude-mem is installed. */
   startBlocks: Array<readonly [KeyPath, string]>;
   /**
    * The keys that point claude-mem at the gateway's affordable model, or null when they are
@@ -253,8 +253,8 @@ export interface ClaudeMemPlan {
    */
   notes: string[];
   /**
-   * The old work-state claim, only where setup holds a record. Withdraw removes setup's
-   * value, keeps the person's, and drops the claim either way.
+   * Claims to withdraw through the managed writer. Empty since D75: setup now owns
+   * both start-block keys instead of withdrawing its work-state claim.
    */
   withdraw: KeyPath[];
 }
@@ -604,7 +604,7 @@ export function isOldNestedForm(data: JsonObject): boolean {
 
 /**
  * What setup does for claude-mem:
- * - `plan`: memory-use off, the old work-state claim withdrawn, and any provider keys;
+ * - `plan`: both start blocks off, no claims withdrawn, and any provider keys;
  * - `note`: a line that says why it leaves the whole file alone (it cannot be read, or it is
  *   in claude-mem's old nested form);
  * - `notInstalled`: claude-mem is not installed yet. Setup may install it (a companion

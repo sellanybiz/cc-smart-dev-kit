@@ -53,6 +53,7 @@ import {
   appendLog,
   type CheckResult,
   clearHeldMajor,
+  failedCheck,
   isDue,
   isHeld,
   isoSeconds,
@@ -62,6 +63,7 @@ import {
   readLastCheck,
   registerSession,
   unreachableCheck,
+  unreachableSince,
   updateFiles,
   wasReported,
   writeHeldMajor,
@@ -311,12 +313,14 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
           record("skipped", optOutDetail(blocked));
           return;
         }
-        // A check that crashes stays `checking`; it keeps an unreachable streak's start.
+        // A check that crashes stays `checking`; it keeps an unreachable streak's start, and
+        // only that one (`unreachableSince`): a failed update's streak goes on from `previous`.
+        const streak = unreachableSince(previous);
         writeLastCheck(files, {
           at,
           detail: "",
           result: "checking",
-          ...(previous?.since !== undefined && { since: previous.since }),
+          ...(streak !== null && { since: streak }),
         });
         const status = checkForUpdate(deps.paths, deps.env);
         switch (status.kind) {
@@ -362,7 +366,9 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
               return;
             }
             if (!result.ok) {
-              record("failed", result.detail);
+              // The same failure as the last check (a companion still too old) is one streak,
+              // told once at a session start.
+              write(failedCheck(previous, at, result.detail));
               return;
             }
             clearHeldMajor(files);

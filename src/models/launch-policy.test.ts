@@ -194,10 +194,27 @@ describe("G1: what a launch really runs on (`effectiveLaunch`, proved live on 2.
     }
   });
 
+  test("frontmatter supplies both fields, below call and environment effort", () => {
+    const definition = { model: "sonnet", effort: "high" };
+    const bare = { ...CALL, model: null, effort: null };
+    expect(
+      effectiveLaunch(bare, { CLAUDE_CODE_SUBAGENT_MODEL: "haiku" }, null, definition),
+    ).toEqual({
+      model: "sonnet",
+      modelFrom: "frontmatter",
+      effort: "high",
+      effortFrom: "frontmatter",
+    });
+    expect(effectiveLaunch(CALL, NO_ENV, null, definition).model).toBe("opus");
+    expect(
+      effectiveLaunch(bare, { CLAUDE_CODE_EFFORT_LEVEL: "max" }, null, definition).effort,
+    ).toBe("max");
+  });
+
   test("G1: plain CLAUDE_CODE_SUBAGENT_MODEL never beats the call's model", () => {
     const env = { CLAUDE_CODE_SUBAGENT_MODEL: "haiku" };
     expect(effectiveLaunch(CALL, env, null).model).toBe("opus");
-    // A call that names none may still run on its agent's own definition, which no hook sees.
+    // With no supplied definition, the guard still cannot prove an unseen SDK agent's model.
     expect(effectiveLaunch({ ...CALL, model: null }, env, null)).toEqual({
       effort: "high",
       effortFrom: null,

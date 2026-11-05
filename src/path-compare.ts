@@ -11,7 +11,8 @@
  * It lives at the top of `src/`, beside `ports.ts`, because no one folder owns it: the hooks
  * import from `src/setup/`, and `src/setup/` must not import from `src/hooks/`.
  */
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 /** Folders compare without case on Windows only. */
 export const IGNORE_CASE = process.platform === "win32";
@@ -42,6 +43,46 @@ export function pathForm(path: string, ignoreCase = IGNORE_CASE): string {
 /** Are `a` and `b` the same place (as `isInside` reads them)? */
 export function samePath(a: string, b: string, ignoreCase = IGNORE_CASE): boolean {
   return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
+
+/**
+ * A folder's identity on disk, its device and file id; null when it cannot be read, or when
+ * the file system gives no id (a 0), so two folders never look the same by accident.
+ */
+function folderId(path: string): null | string {
+  try {
+    const stat = statSync(path, { bigint: true });
+    return stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `isInside`, also across two spellings of one folder. On Windows a folder may be named with
+ * an 8.3 short name (`C:\Users\RUNNER~1\…`) while git and Claude Code report the long one, and
+ * `realpathSync` keeps the spelling it was given, so the text alone says "not inside". When
+ * the text says no, `folder` is compared on disk with `path` and each folder above it. A
+ * folder that cannot be read compares by its text alone.
+ */
+export function isInsideOnDisk(path: string, folder: string, ignoreCase = IGNORE_CASE): boolean {
+  if (isInside(path, folder, ignoreCase)) return true;
+  const target = folderId(folder);
+  if (target === null) return false;
+  let at = resolve(path);
+  for (;;) {
+    if (folderId(at) === target) return true;
+    const up = dirname(at);
+    if (up === at) return false;
+    at = up;
+  }
+}
+
+/** Are `a` and `b` the same folder, by text or on disk (`isInsideOnDisk`)? */
+export function sameFolderOnDisk(a: string, b: string, ignoreCase = IGNORE_CASE): boolean {
+  if (samePath(a, b, ignoreCase)) return true;
+  const id = folderId(a);
+  return id !== null && id === folderId(b);
 }
 
 /** Is `path` inside `folder`, and not the folder itself? */

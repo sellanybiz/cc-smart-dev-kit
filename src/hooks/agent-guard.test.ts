@@ -6,12 +6,21 @@
  * the record `cc-smart-dev-kit usage` reads.
  */
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { cliPaths } from "../cli/paths";
 import type { GatewayConfig } from "../gateway/config";
 import { ALLOWED_EFFORTS, resolveLaunchModel } from "../models/launch-policy";
+import { locateCheckout } from "../project/resolve";
+import { makeRepo } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import {
   agentGuard,
@@ -19,6 +28,8 @@ import {
   guardFacts,
   judgeLaunch,
   judgeWorkflow,
+  type Launch,
+  PRINT_RUN,
   readGuardContext,
   readLaunch,
   readWorkflowScript,
@@ -28,6 +39,11 @@ import {
 } from "./agent-guard";
 import { agentLaunchesFile, parseAgentLaunch, readAgentLaunches } from "./agent-launches";
 import type { HookInput } from "./io";
+import { loadScriptParser } from "./script-parser";
+import { useScriptParser } from "./workflow-script";
+
+// The guard's bundle loads its Workflow script parser in its entry; this file judges scripts too.
+loadScriptParser();
 
 const NO_ENV = {} as Record<string, string | undefined>;
 const OPUS_ID = "claude-opus-5-5";
@@ -75,16 +91,648 @@ function workflowCall(script: string): HookInput {
 }
 
 /** The paths a Workflow judgement uses (no gateway config, nothing on disk). */
-const WORKFLOW_PATHS = cliPaths({
+const WORKFLOW_PATHS = testPaths({
   CLAUDE_CONFIG_DIR: join(tempDir("workflow-home"), ".claude"),
   HOME: tempDir("workflow-home"),
 });
+
+/** A managed agents folder in a temp folder: no test reads the machine's own. */
+function managedFolder(): string {
+  return join(tempDir("managed-agents"), ".claude", "agents");
+}
+
+/** Every path a test here uses: the CLI's, with a temp managed agents folder. */
+function testPaths(env: Record<string, string | undefined>): CliPaths {
+  return { ...cliPaths(env), managedAgentsDir: managedFolder() };
+}
 
 function verdict(fields: Record<string, unknown>, ctx: GuardContext = CTX, env = NO_ENV) {
   const launch = readLaunch(agentCall(fields));
   if (launch === null) throw new Error("not an Agent call");
   return judgeLaunch(launch, ctx, env);
 }
+
+describe("frontmatter launch fields", () => {
+  it("uses one definition for Agent and Workflow launches, with call and env overrides", () => {
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: (name) => (name === "checker" ? { model: "sonnet", effort: "high" } : null),
+    };
+    const agent = verdict({ subagent_type: "checker" }, ctx);
+    expect(agent.decision).toBe("allow");
+    expect(agent.ran).toEqual({
+      model: "sonnet",
+      modelFrom: "frontmatter",
+      effort: "high",
+      effortFrom: "frontmatter",
+    });
+    expect(verdict({ subagent_type: "checker", model: "opus", effort: "max" }, ctx).decision).toBe(
+      "ask",
+    );
+    expect(
+      verdict({ subagent_type: "checker" }, ctx, { CLAUDE_CODE_EFFORT_LEVEL: "max" }).ran.effort,
+    ).toBe("max");
+    const workflow = judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV);
+    expect(workflow[0]?.verdict.decision).toBe("allow");
+  });
+
+  it("denies nonliteral Workflow fields before reading a definition", () => {
+    for (const field of ["model: chosen", "effort: chosen", "agentType: chosen"]) {
+      let reads = 0;
+      const ctx: GuardContext = {
+        ...CTX,
+        definition: () => {
+          reads += 1;
+          return { model: "sonnet", effort: "high" };
+        },
+      };
+      const result = judgeWorkflow(`await agent("check", { ${field} });`, ctx, NO_ENV)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(reads).toBe(0);
+    }
+  });
+
+  it("read-only specialist agents can advise on Fable with review", () => {
+    for (const name of [
+      "cc-smart-dev-kit:auditor",
+      "cc-smart-dev-kit:edge-case-hunter",
+      "cc-smart-dev-kit:researcher",
+      "Plan",
+      "Explore",
+    ]) {
+      const result = verdict({
+        subagent_type: name,
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - check it",
+      });
+      expect(result.decision).toBe("ask");
+    }
+  });
+
+  it("a bare `Plan` or `Explore` is read-only only while the built-in answers that name", () => {
+    const fable = (subagent_type: string, ctx: GuardContext) =>
+      verdict(
+        { subagent_type, model: "fable", effort: "high", prompt: "Fable reason: review - x" },
+        ctx,
+      ).decision;
+    const builtIn: GuardContext = {
+      ...CTX,
+      definition: () => ({ model: null, effort: null, builtIn: true }),
+    };
+    expect(fable("Explore", builtIn)).toBe("ask");
+    // A project's, a user's or a managed `Explore` overrides the built-in (the sub-agents docs).
+    const local: GuardContext = { ...CTX, definition: () => ({ model: null, effort: null }) };
+    expect(fable("Explore", local)).toBe("deny");
+    expect(fable("Plan", local)).toBe("deny");
+    // A lookup that failed proves nothing: not read-only.
+    expect(fable("Plan", { ...CTX, definition: () => null })).toBe("deny");
+    // Names match as written.
+    expect(fable("explore", builtIn)).toBe("deny");
+    expect(fable("Cc-Smart-Dev-Kit:researcher", builtIn)).toBe("deny");
+  });
+
+  it("the hook sees a project's own `Explore` file: that Explore is not read-only", () => {
+    const home = tempDir("explore-home");
+    const cwd = join(home, "repo");
+    mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude", "agents", "explore.md"),
+      "---\nname: Explore\ndescription: Mine.\n---\nWrite files too.\n",
+    );
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const ctx = readGuardContext(paths, { cwd }, NO_ENV);
+    const result = verdict(
+      {
+        subagent_type: "Explore",
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - x",
+      },
+      ctx,
+    );
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("`Explore`, which can change files");
+  });
+
+  it("another plugin's or a project's agent of the same short name is not read-only", () => {
+    for (const name of [
+      "researcher",
+      "auditor",
+      "other-kit:researcher",
+      "other-kit:edge-case-hunter",
+      "other-kit:Plan",
+    ]) {
+      const result = verdict({
+        subagent_type: name,
+        model: "fable",
+        effort: "high",
+        prompt: "Fable reason: review - check it",
+      });
+      expect(result.decision).toBe("deny");
+      expect(result.reason).toContain(`\`${name}\`, which can change files`);
+    }
+  });
+
+  it("a senior engineer on Fable needs build, not review", () => {
+    const result = verdict({
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
+      model: "fable",
+      effort: "high",
+      prompt: "Fable reason: review - check it",
+    });
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toContain("build");
+  });
+
+  it("refuses unseen SDK agents, inherit, and missing effort with accurate text", () => {
+    expect(verdict({ subagent_type: "sdk-only" }).reason).toStartWith(
+      "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
+    );
+    const ctx: GuardContext = { ...CTX, definition: () => ({ model: "inherit", effort: "high" }) };
+    expect(verdict({ subagent_type: "inherited" }, ctx).decision).toBe("deny");
+    expect(verdict({ model: "sonnet" }).reason).toStartWith(
+      "Neither this Agent launch nor its agent definition names an `effort` the guard can read.",
+    );
+  });
+
+  it("the hook reads project frontmatter through its input cwd and injected user paths", () => {
+    const home = tempDir("frontmatter-hook");
+    const cwd = join(home, "repo");
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    mkdirSync(join(cwd, ".claude", "agents"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claude", "agents", "checker.md"),
+      "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\nCheck it.\n",
+    );
+    const input = { ...agentCall({ subagent_type: "checker" }), cwd };
+    const ctx = readGuardContext(paths, input, NO_ENV);
+    expect(verdict({ subagent_type: "checker" }, ctx).decision).toBe("allow");
+    expect(
+      judgeWorkflow('await agent("check", { agentType: "checker" });', ctx, NO_ENV)[0]?.verdict
+        .decision,
+    ).toBe("allow");
+  });
+
+  it("caches definitions once per hook run and fails the whole lookup on a bad cwd", () => {
+    const home = tempDir("definition-cache");
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const folder = join(paths.claudeConfigDir, "agents");
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "checker.md");
+    writeFileSync(
+      file,
+      "---\nname: checker\ndescription: Check.\nmodel: sonnet\neffort: high\n---\n",
+    );
+    const ctx = readGuardContext(paths, { cwd: home }, NO_ENV);
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    writeFileSync(file, "---\nname: checker\ndescription: Check.\nmodel: opus\n---\n");
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    const bad = readGuardContext(paths, { cwd: join(home, "missing") }, NO_ENV);
+    expect(bad.definition?.("checker")).toBeNull();
+    expect(bad.definition?.("claude-code-guide")).toBeNull();
+  });
+
+  it("a symlinked cwd inside a real git checkout: the project files beat the user's", () => {
+    const repo = makeRepo("linked-app");
+    const home = tempDir("linked-home");
+    const paths = testPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const pinned = (name: string, model: string) =>
+      `---\nname: ${name}\ndescription: Check.\nmodel: ${model}\neffort: high\n---\n`;
+    const put = (folder: string, name: string, model: string) => {
+      mkdirSync(join(folder, "agents"), { recursive: true });
+      writeFileSync(join(folder, "agents", `${name}.md`), pinned(name, model));
+    };
+    put(join(repo, ".claude"), "checker", "sonnet");
+    put(join(repo, "src", ".claude"), "nested", "haiku");
+    put(join(repo, ".claude"), "nested", "sonnet");
+    put(paths.claudeConfigDir, "checker", "opus");
+    put(paths.claudeConfigDir, "nested", "opus");
+    const link = join(home, "linked-src");
+    symlinkSync(join(repo, "src"), link, "dir");
+    // What the lookup stands on: the link resolves to the folder it names, and git finds the
+    // checkout from it — the same folder on disk, though on Windows git spells it with the long
+    // name where the temp folder has an 8.3 short one (`RUNNER~1`), and `realpathSync` keeps that.
+    expect(realpathSync(link)).toBe(realpathSync(join(repo, "src")));
+    const onDisk = (path: string) => {
+      const stat = statSync(path, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    };
+    expect(onDisk(locateCheckout(link)?.root ?? "")).toBe(onDisk(repo));
+    const ctx = readGuardContext(paths, { cwd: link }, NO_ENV);
+    // The root's file beats the user's, and the folder the link really is beats the root's.
+    expect(ctx.definition?.("checker")).toEqual({ model: "sonnet", effort: "high" });
+    expect(ctx.definition?.("nested")).toEqual({ model: "haiku", effort: "high" });
+  });
+
+  it("a call that names both fields reads no definition; a fork never reads one", () => {
+    let reads = 0;
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    verdict({ subagent_type: "checker", model: "haiku", effort: "high" }, ctx);
+    verdict({ subagent_type: "fork" }, ctx);
+    expect(reads).toBe(0);
+    verdict({ subagent_type: "checker", model: "haiku" }, ctx);
+    expect(reads).toBe(1);
+  });
+
+  it("a `claude -p` run has no agent definition: none is read, and its reasons say so", () => {
+    let reads = 0;
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    const run = (fields: Partial<Launch>) =>
+      judgeLaunch(
+        {
+          effort: null,
+          fork: false,
+          model: null,
+          prompt: "do it",
+          subagentType: "general-purpose",
+          tool: PRINT_RUN,
+          ...fields,
+        },
+        ctx,
+        NO_ENV,
+      );
+    const noModel = run({});
+    expect(noModel.decision).toBe("deny");
+    expect(noModel.reason).toBe(
+      [
+        "This `claude -p` run names no `model` the guard can read.",
+        "A run given none starts on the default model, which nobody chose, and no agent definition stands behind a print run.",
+      ].join("\n"),
+    );
+    const noEffort = run({ model: "sonnet" });
+    expect(noEffort.decision).toBe("deny");
+    expect(noEffort.reason).toBe(
+      [
+        "This `claude -p` run names no `effort` the guard can read.",
+        "Name one of `medium`, `high`, `xhigh` or `max`.",
+        "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).",
+      ].join("\n"),
+    );
+    expect(reads).toBe(0);
+  });
+
+  it("frontmatter auto or low is not an environment override", () => {
+    for (const effort of ["auto", "low"]) {
+      const ctx: GuardContext = { ...CTX, definition: () => ({ model: "sonnet", effort }) };
+      const result = verdict({ subagent_type: "checker" }, ctx);
+      expect(result.decision).toBe("deny");
+      expect(result.reason).not.toContain("CLAUDE_CODE_EFFORT_LEVEL");
+      expect(result.reason).toBe(
+        [
+          `This launch asks for effort \`${effort}\`, which no subagent may run at (the plugin's rule).`,
+          `Effort \`${effort}\` comes from the agent's frontmatter; pass \`effort\` on the call to override it.`,
+          "A subagent runs at `medium`, `high`, `xhigh` or `max` — never `low`, on any model.",
+          "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).",
+        ].join("\n"),
+      );
+    }
+  });
+
+  it("a frontmatter effort is named only on the effort rule's own reason", () => {
+    const ctx: GuardContext = { ...CTX, definition: () => ({ model: "fable", effort: "high" }) };
+    const result = verdict({ subagent_type: "checker", prompt: "Fable reason: review - x" }, ctx);
+    expect(result.decision).toBe("deny");
+    expect(result.reason).toStartWith("This launch would run on Claude Fable");
+    expect(result.reason).not.toContain("frontmatter");
+  });
+});
+
+describe("a Workflow script is parsed: a regular expression hides nothing", () => {
+  /** The hook's answer for a Workflow call with this inline script. */
+  async function answer(script: string) {
+    const result = await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app");
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput ?? {};
+  }
+
+  const FABLE = 'await agent("p", { model: "fable", effort: "high" });';
+
+  it("a quote inside a regular expression opens no string: the launch after it is judged", async () => {
+    for (const before of [
+      `s.replace(/"/g, "'");`,
+      `const r = /["']/;`,
+      `if (ok) /"/.test(s);`,
+      `if (ok) { go(); } /"/.test(s);`,
+      `function f(s) { return /'/.test(s); }`,
+      `const t = x ? /"/ : /'/;`,
+      `const u = typeof /"/;`,
+    ]) {
+      const said = await answer(`${before}\n${FABLE}`);
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a getter between two regular expressions that hold a quote: denied", () => {
+    const script = [
+      'const a = /"/;',
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      'const b = /"/;',
+    ].join("\n");
+    const results = judgeWorkflow(script, CTX, NO_ENV);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.verdict.decision).toBe("deny");
+  });
+
+  it("a backtick nested inside a template's placeholder starts a new template", async () => {
+    const said = await answer(`const t = \`a \${\`"\`} b\`;\n${FABLE}`);
+    expect(said.permissionDecision).toBe("deny");
+    expect(said.permissionDecisionReason).toContain('the launch "p"');
+  });
+
+  it("a division stays a division: `a / b`, `f(x) / 2`, `a[i] / 2`, `({}) / 2` and `/=`", async () => {
+    const script = [
+      "const n = a / b / 2;",
+      "const m = f(x) / 2 + a[i] / 3;",
+      "let k = ({}).size / 2; k /= 2;",
+      'await agent("p", { model: "haiku", effort: "high" });',
+    ].join("\n");
+    expect(workflowRefusal(script)).toBeNull();
+    expect((await answer(script)).permissionDecision).toBeUndefined();
+  });
+
+  it("a regular expression, string or comment that never closes refuses the whole Workflow", async () => {
+    for (const script of [
+      `const r = (/"\n);\n${FABLE.replace("fable", "haiku")}`,
+      `const s = "open\n${FABLE.replace("fable", "haiku")}`,
+      `/* never closed\n${FABLE.replace("fable", "haiku")}`,
+    ]) {
+      expect(workflowRefusal(script)).toContain("cannot be read");
+      const said = await answer(script);
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toContain("cannot be read at line");
+    }
+  });
+});
+
+describe("round 3: shapes a hand-written lexer misread are parsed, and their launch is judged", () => {
+  /** The hook's answer for a Workflow call with this inline script. */
+  async function answer(script: string) {
+    const result = await agentGuard(workflowCall(script), NO_ENV, WORKFLOW_PATHS, "/tmp/app");
+    return JSON.parse(result.stdout ?? "{}").hookSpecificOutput ?? {};
+  }
+
+  /** A Fable launch with no reason line: the guard denies it once it sees it. */
+  const LAUNCH = 'agent("p", { model: "fable", effort: "high" })';
+
+  it("a division a lexer reads as a regular expression hides no launch", async () => {
+    for (const script of [
+      `const n = i++ / ${LAUNCH} / 1;`,
+      `const n = i-- / ${LAUNCH} / 1;`,
+      `const n = o.return / ${LAUNCH} / 1;`,
+      `const n = function () {} / ${LAUNCH} / 1;`,
+      `const n = class {} / ${LAUNCH} / 1;`,
+      `const t = \`\${{} / ${LAUNCH} / 1}\`;`,
+    ]) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a regular expression a lexer reads as a division hides no launch", async () => {
+    for (const before of [
+      "if (a) {} else {} /[/*]/.test(s);",
+      "switch (k) { case 1: {} /[/*]/.test(s); }",
+      "here: {} /[/*]/.test(s);",
+    ]) {
+      const script = `${before}\nawait ${LAUNCH};\n// */`;
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("a line comment ends at every line terminator JavaScript knows", async () => {
+    for (const end of ["\r", " ", " "]) {
+      const script = `// a note${end}await ${LAUNCH};`;
+      const said = await answer(script);
+      expect({ end, decision: said.permissionDecision }).toEqual({ end, decision: "deny" });
+      expect(said.permissionDecisionReason).toContain('the launch "p"');
+    }
+  });
+
+  it("an HTML-like comment (`<!--`, `-->` at a line's start) refuses the whole Workflow", async () => {
+    // A script reads it as a comment, a module as code: the guard judges neither reading.
+    for (const [script, line] of [
+      [`x = 1;\n--> /*\nawait ${LAUNCH};\n// */`, 2],
+      [`x = 1; <!-- /*\nawait ${LAUNCH};\n// */`, 1],
+      [`a <!--b, ${LAUNCH};`, 1],
+    ] as const) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toStartWith(
+        `This Workflow's script cannot be read at line ${line}: an HTML-like comment (\`<!--\`, or \`-->\` at a line's start), which a script reads as a comment and a module as code, so a launch could hide in it.`,
+      );
+    }
+  });
+
+  it("valid JavaScript a lexer refused is read: a postfix division, a function's division, a CRLF continuation", async () => {
+    const haiku = 'await agent("p", { model: "haiku", effort: "high" });';
+    for (const before of [
+      "const r = count++ / total;",
+      "const f = function () {} / 2;",
+      'const s = "a\\\r\nb";',
+    ]) {
+      const script = `${before}\n${haiku}`;
+      expect(workflowRefusal(script)).toBeNull();
+      expect(await answer(script)).toEqual({});
+    }
+  });
+
+  it("a script that does not parse is refused whole, with the parser's message and line", () => {
+    expect(
+      workflowRefusal('await agent("p", { model: "haiku", effort: "high" });\nconst s = "open\n;'),
+    ).toBe(
+      [
+        "This Workflow's script cannot be read at line 2: Unterminated string constant.",
+        "The guard parses the script the way Claude Code runs it (the body of an async function), and a script it cannot parse could hide a launch.",
+        "Fix the script so it runs as JavaScript.",
+      ].join("\n"),
+    );
+  });
+
+  it("a route around the names refuses the whole Workflow, naming what and where", async () => {
+    const opts = '{ model: "fable", effort: "high" }';
+    const routes: Array<[string, string, number]> = [
+      [`await eval('agent("p", ${opts})');`, "`eval`", 1],
+      [`await eval("ag" + "ent")("p", ${opts});`, "`eval`", 1],
+      [
+        `async function f() {\n  return arguments[0]("p", ${opts});\n}\nawait f(agent);`,
+        "`arguments`",
+        2,
+      ],
+      [
+        `async function f() {\n  for (const a of arguments) await a("p", ${opts});\n}`,
+        "`arguments`",
+        2,
+      ],
+      [`await globalThis.agent("p", ${opts});`, "`globalThis`", 1],
+      [`await globalThis["ag" + "ent"]("p", ${opts});`, "`globalThis`", 1],
+      [
+        `await this.agent("p", ${opts});`,
+        "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+        1,
+      ],
+      [`const { agent: a } = globalThis;\nawait a("p", ${opts});`, "`globalThis`", 1],
+      [`await Function("return agent")()("p", ${opts});`, "`Function`", 1],
+      [
+        `await (async () => {}).constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      [
+        `await ({}).constructor.constructor("return agent")()("p", ${opts});`,
+        "a `constructor` member",
+        1,
+      ],
+      ['await import("./launch.js");', "`import(…)`", 1],
+      [`await self.agent("p", ${opts});`, "`self` (even as a name of your own: rename it)", 1],
+      [`await global.agent("p", ${opts});`, "`global` (even as a name of your own: rename it)", 1],
+    ];
+    for (const [script, what, line] of routes) {
+      const said = await answer(script);
+      expect({ script, decision: said.permissionDecision }).toEqual({ script, decision: "deny" });
+      expect(said.permissionDecisionReason).toBe(
+        [
+          `This Workflow uses ${what} (line ${line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
+          'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
+        ].join("\n"),
+      );
+    }
+  });
+
+  it("`self` is refused even when the script declares it itself, and the message says to rename it", async () => {
+    const said = await answer("const o = { m() { const self = this; return self.x } }");
+    expect(said.permissionDecision).toBe("deny");
+    expect(said.permissionDecisionReason).toBe(
+      [
+        "This Workflow uses `self` (even as a name of your own: rename it) (line 1): that can reach `agent` under another name, or build code at run time, so it could launch an agent the guard never sees.",
+        'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
+      ].join("\n"),
+    );
+  });
+
+  it("a hook program that was never handed the parser denies every Workflow", async () => {
+    useScriptParser(null);
+    try {
+      const said = await answer('await agent("p", { model: "haiku", effort: "high" });');
+      expect(said.permissionDecision).toBe("deny");
+      expect(said.permissionDecisionReason).toStartWith(
+        "This Workflow's script cannot be read: the guard's script parser is not loaded in this program.",
+      );
+    } finally {
+      loadScriptParser();
+    }
+  });
+
+  it("`export const meta` as the first statement is read; an `export` anywhere else does not parse", () => {
+    const meta = "// the meta\nexport const meta = { name: 'probe', description: 'x' };";
+    const launch = 'await agent("p", { model: "haiku", effort: "high" });';
+    expect(workflowRefusal(`${meta}\n${launch}`)).toBeNull();
+    expect(readWorkflowScript(`${meta}\n${launch}`).map((one) => one.model)).toEqual(["haiku"]);
+    expect(workflowRefusal(`${launch}\n${meta}`)).toContain(
+      "This Workflow's script cannot be read at line 3:",
+    );
+  });
+});
+
+describe("a Workflow agent() whose options are not one plain object reads no definition", () => {
+  /** A context whose definition lookup counts its reads, and would allow anything. */
+  function counting() {
+    const seen = { reads: 0 };
+    const ctx: GuardContext = {
+      ...CTX,
+      definition: () => {
+        seen.reads += 1;
+        return { model: "sonnet", effort: "high" };
+      },
+    };
+    return { ctx, seen };
+  }
+
+  const NO_MODEL_TEXT = [
+    "This Workflow launch names no `model` the guard can read, in its options or its agent definition.",
+    "A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, `__proto__`, a ternary, a second object), can set the run's `model` where a hook never sees it, so no agent definition stands in for it then.",
+    'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "…", effort: "…" })`.',
+  ].join("\n");
+
+  it("a getter, a ternary, a method, a shorthand, `__proto__` or a second object: denied", () => {
+    const forms = [
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      'await agent("x", pick ? { agentType: "checker" } : { agentType: "checker", model: "fable" });',
+      'await agent("x", { agentType: "checker", model() { return "opus"; } });',
+      'await agent("x", { agentType: "checker", model });',
+      'await agent("x", { agentType: "checker", __proto__: { model: "fable" } });',
+      'await agent("x", { agentType: "checker" }, { model: "fable" });',
+      // A literal the guard could read is no proof either: a getter can still replace it.
+      'await agent("x", { model: "haiku", effort: "high", get agentType() { return "checker"; } });',
+    ];
+    for (const script of forms) {
+      const { ctx, seen } = counting();
+      const result = judgeWorkflow(script, ctx, NO_ENV)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(result?.verdict.reason).toBe(NO_MODEL_TEXT);
+      expect(seen.reads).toBe(0);
+    }
+  });
+
+  it("the same for effort: a getter or a ternary, with the model set by Claude Code's override", () => {
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "sonnet" };
+    for (const script of [
+      'await agent("x", { agentType: "checker", get effort() { return "low"; } });',
+      'await agent("x", fast ? { agentType: "checker" } : { agentType: "checker", effort: "low" });',
+    ]) {
+      const { ctx, seen } = counting();
+      const result = judgeWorkflow(script, ctx, env)[0];
+      expect(result?.verdict.decision).toBe("deny");
+      expect(result?.verdict.reason).toBe(
+        [
+          "This Workflow launch names no `effort` the guard can read, in its options or its agent definition.",
+          "A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, `__proto__`, a ternary, a second object), can set the run's `effort` where a hook never sees it, so no agent definition stands in for it then.",
+          'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "…", effort: "…" })`.',
+        ].join("\n"),
+      );
+      expect(seen.reads).toBe(0);
+    }
+  });
+
+  it("Claude Code's overrides for both fields still judge such a launch", () => {
+    const { ctx, seen } = counting();
+    const env = { CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "sonnet", CLAUDE_CODE_EFFORT_LEVEL: "high" };
+    const result = judgeWorkflow(
+      'await agent("x", { agentType: "checker", get model() { return "opus"; } });',
+      ctx,
+      env,
+    )[0];
+    expect(result?.verdict.decision).toBe("allow");
+    expect(seen.reads).toBe(0);
+  });
+
+  it("one plain object, with comments, quoted keys and a trailing comma, still reads its definition", () => {
+    const { ctx, seen } = counting();
+    const result = judgeWorkflow(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
+      'await agent(`look at ${x}`, {\n  "agentType": "checker", // who\n  label: cond ? "a" : "b",\n  schema: { type: "object" },\n},);',
+      ctx,
+      NO_ENV,
+    )[0];
+    expect(result?.verdict.decision).toBe("allow");
+    expect(seen.reads).toBe(1);
+  });
+});
 
 describe("which model a launch runs on", () => {
   it("a family name with no override and no gateway: the family itself, and its tier", () => {
@@ -217,7 +865,7 @@ describe("which model a launch runs on", () => {
 
 describe("the session's own model, for a fork", () => {
   const paths = () =>
-    cliPaths({
+    testPaths({
       CLAUDE_CONFIG_DIR: join(tempDir("guard-session"), ".claude"),
       HOME: tempDir("guard-session"),
     });
@@ -335,7 +983,12 @@ describe("the verdict", () => {
     expect(max.reason).toContain("Run it at `medium`, `high` or `xhigh`");
     expect(
       verdict(
-        { effort: "high", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        {
+          effort: "high",
+          model: "opus",
+          prompt: "review",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         CTX,
         unattended,
       ).decision,
@@ -371,15 +1024,19 @@ describe("the verdict", () => {
 
   it("a review agent on Opus is allowed below max; at effort max it asks the person", () => {
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" })
-        .decision,
+      verdict({
+        effort: "xhigh",
+        model: "opus",
+        prompt: "review",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }).decision,
     ).toBe("allow");
     expect(
       verdict({
         effort: "xhigh",
         model: "opus",
         prompt: "review",
-        subagent_type: "cc-smart-dev-kit:reviewer",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
       }).decision,
     ).toBe("allow");
     // `max` asks like any opus-tier launch, review or not, and the person's yes is the answer.
@@ -387,18 +1044,23 @@ describe("the verdict", () => {
       effort: "max",
       model: "opus",
       prompt: "review",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(max.decision).toBe("ask");
     expect(max.reason).toContain("Claude Opus launch at effort `max`");
-    expect(max.reason).toContain("`Reviewer`");
+    expect(max.reason).toContain("`cc-smart-dev-kit:senior-engineer`");
     expect(max.why).toBe("opus:max");
   });
 
   it("a review at effort max under `claude -p` is denied: nobody is there to approve it", () => {
     const where = { CLAUDE_CODE_SESSION_ATTENDED: "0" };
     const max = verdict(
-      { effort: "max", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+      {
+        effort: "max",
+        model: "opus",
+        prompt: "review",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      },
       CTX,
       where,
     );
@@ -407,7 +1069,12 @@ describe("the verdict", () => {
     // The usual effort stays allowed there.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "review", subagent_type: "Reviewer" },
+        {
+          effort: "xhigh",
+          model: "opus",
+          prompt: "review",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         CTX,
         where,
       ).decision,
@@ -634,16 +1301,26 @@ describe("the verdict", () => {
       effort: "xhigh",
       model: "best",
       prompt: "r",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(unread.decision).toBe("ask");
     expect(unread.why).toBe("opus:unreadable");
-    const max = verdict({ effort: "max", model: "best", prompt: "r", subagent_type: "Reviewer" });
+    const max = verdict({
+      effort: "max",
+      model: "best",
+      prompt: "r",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
+    });
     expect(max.decision).toBe("ask");
     expect(max.why).toBe("opus:unreadable");
     // A review on a readable Opus is allowed with no question the same way.
     expect(
-      verdict({ effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" }).decision,
+      verdict({
+        effort: "xhigh",
+        model: "opus",
+        prompt: "r",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }).decision,
     ).toBe("allow");
   });
 
@@ -652,7 +1329,7 @@ describe("the verdict", () => {
       effort: "max",
       model: "opus",
       prompt: "r",
-      subagent_type: "Reviewer",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
     });
     expect(review.reason).toContain("at effort `max`");
     const opus = verdict({
@@ -833,13 +1510,23 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     // A review on the tier: allowed at high, an ask at max, naming the model behind it.
     expect(
       verdict(
-        { effort: "xhigh", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+        {
+          effort: "xhigh",
+          model: "opus",
+          prompt: "r",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
+        },
         ON,
         OPENAI_OPUS,
       ).decision,
     ).toBe("allow");
     const deep = verdict(
-      { effort: "max", model: "opus", prompt: "r", subagent_type: "Reviewer" },
+      {
+        effort: "max",
+        model: "opus",
+        prompt: "r",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      },
       ON,
       OPENAI_OPUS,
     );
@@ -992,7 +1679,7 @@ describe("a Workflow script", () => {
     // The opus tier at `max` asks for the effort: a prompt the guard cannot read does not matter.
     const review =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture is a template that builds its prompt.
-      'await agent(`review ${x}`, { agentType: "Reviewer", model: "opus", effort: "max", label: "deep" });';
+      'await agent(`review ${x}`, { agentType: "cc-smart-dev-kit:senior-engineer", model: "opus", effort: "max", label: "deep" });';
     const deep = judgeWorkflow(review, CTX, NO_ENV);
     expect(deep[0]?.verdict.decision).toBe("ask");
     expect(deep[0]?.verdict.why).toBe("opus:max");
@@ -1012,7 +1699,9 @@ describe("a Workflow script", () => {
       NO_ENV,
     );
     expect(model[0]?.verdict.decision).toBe("deny");
-    expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
+    expect(model[0]?.verdict.reason).toBe(
+      "This Workflow launch's `model` is not a string literal the guard can read. Write policy options as string literals.",
+    );
     const prompt = judgeWorkflow(
       'await agent(thePrompt, { model: "fable", effort: "high", agentType: "Plan" });',
       CTX,
@@ -1035,7 +1724,9 @@ describe("a Workflow script", () => {
       NO_ENV,
     );
     expect(model[0]?.verdict.decision).toBe("deny");
-    expect(model[0]?.verdict.reason).toContain("names no `model` the guard can read");
+    expect(model[0]?.verdict.reason).toBe(
+      "This Workflow launch's `model` is not a string literal the guard can read. Write policy options as string literals.",
+    );
     // A backtick literal with no placeholder is a fixed string, and read like any other.
     expect(
       judgeWorkflow('await agent("x", { model: `haiku`, effort: "high" });', CTX, NO_ENV)[0]
@@ -1058,7 +1749,7 @@ describe("a Workflow script", () => {
       'const helpers = [agent];\nawait helpers[0]("x", { model: "haiku", effort: "low" });',
       // A use inside a template literal's placeholder is code too: the scan reads it.
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the fixture hands `agent` around inside a template.
-      "const label = `run: ${agent}`;\nexport const meta = { label };",
+      "const label = `run: ${agent}`;\nconst meta = { label };",
     ].join("\n");
     const refusal = workflowRefusal(script);
     expect(refusal).toContain("without calling it at once");
@@ -1160,7 +1851,7 @@ describe("a Workflow script", () => {
 describe("the hook's answer, and the record", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-home");
-    return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    return testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   }
 
   it("denied: a PreToolUse deny on stdout, and nothing recorded", async () => {
@@ -1184,7 +1875,7 @@ describe("the hook's answer, and the record", () => {
         effort: "xhigh",
         model: "opus",
         prompt: "review it",
-        subagent_type: "Reviewer",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
       }),
       NO_ENV,
       where,
@@ -1195,7 +1886,7 @@ describe("the hook's answer, and the record", () => {
     expect(launch?.family).toBe("opus");
     expect(launch?.reason).toBe("opus:xhigh");
     expect(launch?.project).toBe("/tmp/app");
-    expect(launch?.subagentType).toBe("Reviewer");
+    expect(launch?.subagentType).toBe("cc-smart-dev-kit:senior-engineer");
   });
 
   it("an asked Opus launch is recorded once it ran, and once only for one call", async () => {
@@ -1291,7 +1982,12 @@ describe("the hook's answer, and the record", () => {
     const where = paths();
     mkdirSync(where.stateDir, { recursive: true });
     const result = await agentGuard(
-      agentCall({ effort: "max", model: "opus", prompt: "review it", subagent_type: "Reviewer" }),
+      agentCall({
+        effort: "max",
+        model: "opus",
+        prompt: "review it",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
+      }),
       NO_ENV,
       where,
       "/tmp/app",
@@ -1304,7 +2000,7 @@ describe("the hook's answer, and the record", () => {
           effort: "max",
           model: "opus",
           prompt: "review it",
-          subagent_type: "Reviewer",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
         }),
         hook_event_name: "PostToolUse",
       },
@@ -1315,7 +2011,7 @@ describe("the hook's answer, and the record", () => {
     const [launch] = readAgentLaunches(agentLaunchesFile(where.stateDir), 0);
     expect(launch?.family).toBe("opus");
     expect(launch?.reason).toBe("opus:max");
-    expect(launch?.subagentType).toBe("Reviewer");
+    expect(launch?.subagentType).toBe("cc-smart-dev-kit:senior-engineer");
   });
 
   it("a Sonnet launch is not recorded, and a record of another shape is skipped", async () => {
@@ -1418,7 +2114,7 @@ function guardMachine(
   options: { profiles?: Record<string, unknown>; userFileUrl?: string } = {},
 ): GuardMachine {
   const home = tempDir("guard-family");
-  const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+  const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   mkdirSync(join(where.gatewayConfigFile, ".."), { recursive: true });
   writeFileSync(
     where.gatewayConfigFile,
@@ -1519,7 +2215,7 @@ describe("the family's slot decides (0.5.0: no model is pinned in Claude Code's 
         effort: "xhigh",
         model: "opus",
         prompt: "r",
-        subagent_type: "Reviewer",
+        subagent_type: "cc-smart-dev-kit:senior-engineer",
       }),
     ).toBeNull();
     // Fable: a read-only agent with its reason asks, naming what answers it; a builder without
@@ -1752,7 +2448,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
       subagent_type: "Explore",
     });
     expect(unsaid.reason).toContain(
-      "Use a read-only agent type (Plan, Reviewer, Explore, auditor) and put a line in the prompt saying why:",
+      "Use a read-only agent type (Plan, Explore, cc-smart-dev-kit:auditor, cc-smart-dev-kit:edge-case-hunter, cc-smart-dev-kit:researcher) and put a line in the prompt saying why:",
     );
     // The same line on a read-only type still asks the person.
     expect(verdict({ ...launch, subagent_type: "Explore" }).decision).toBe("ask");
@@ -1762,7 +2458,7 @@ describe("the read-only agent types (0.6.0: the code-explorer agent is gone)", (
 describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-c3");
-    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
     mkdirSync(where.stateDir, { recursive: true });
     return where;
   }
@@ -1894,7 +2590,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     const where = paths();
     const script = [
       'await agent("Fable reason: plan - look", { label: "advice", model: "fable", effort: "max", agentType: "Plan" });',
-      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });',
+      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "cc-smart-dev-kit:senior-engineer" });',
     ].join("\n");
     const asked = await agentGuard(
       at("PreToolUse", workflowCall(script)),
@@ -1913,7 +2609,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
     // A Workflow the guard allows outright is recorded on PreToolUse, and not again after it.
     const quiet = paths();
     const opusOnly =
-      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "Reviewer" });';
+      'await agent("check it", { label: "check", model: "opus", effort: "high", agentType: "cc-smart-dev-kit:senior-engineer" });';
     expect(
       await agentGuard(at("PreToolUse", workflowCall(opusOnly)), NO_ENV, quiet, "/tmp/app"),
     ).toEqual({});
@@ -1982,7 +2678,7 @@ describe("the audit fixes carried onto D11 (C3, merged with 0.5.5)", () => {
 describe("G1: the guard judges what really runs (Claude Code's overrides, 2.1.306)", () => {
   function paths(): CliPaths {
     const home = tempDir("guard-g1");
-    return cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    return testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
   }
   const FORCE = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: "1" };
   const WHERE =
@@ -2293,7 +2989,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
     const home = tempDir("g2-home");
     const repo = join(home, "code", "my-app");
     mkdirSync(join(repo, ".git"), { recursive: true });
-    const where = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    const where = testPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
     mkdirSync(where.stateDir, { recursive: true });
     return { home, repo, where };
   }
@@ -2552,7 +3248,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
       join(repo, ".claude", "workflows", "probe.js"),
       script(
         "probe",
-        'await agent("Opus reason: security - a", { label: "a", model: "opus", effort: "xhigh", agentType: "Reviewer" });',
+        'await agent("Opus reason: security - a", { label: "a", model: "opus", effort: "xhigh", agentType: "cc-smart-dev-kit:senior-engineer" });',
         'await agent("b", { label: "b", model: "opus", effort: "high" });',
         'await agent("c", { label: "cheap", model: "haiku", effort: "medium" });',
         // The nested workflow's launch is the third premium one.
@@ -2602,7 +3298,7 @@ describe("G2: every Workflow run is judged, however it names its script", () => 
           effort: "xhigh",
           model: "opus",
           prompt: "Opus reason: security - check it",
-          subagent_type: "Reviewer",
+          subagent_type: "cc-smart-dev-kit:senior-engineer",
         }),
         session_id: "s",
         tool_use_id: "toolu_a",

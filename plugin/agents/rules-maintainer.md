@@ -1,6 +1,6 @@
 ---
 name: rules-maintainer
-description: Owns a phase that edits Claude's instruction files - the project's CLAUDE.md, its rules, skills, agents, and the doc that describes them - beyond a single small edit. Makes the edit, checks every instruction file on the same topic for duplicates and conflicts before and after, keeps one home per rule, and holds the size budgets. The caller passes the model and effort per launch.
+description: Owns a phase that edits Claude's instruction files (CLAUDE.md, rules, skills, agents and their doc) beyond one small edit - with a conflict check before and after, one home per rule, and the size budgets. The caller passes the model and effort per launch.
 skills:
   - cc-smart-dev-kit:self-evolve
   - cc-smart-dev-kit:impact-analysis

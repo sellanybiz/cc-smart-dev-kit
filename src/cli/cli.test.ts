@@ -146,13 +146,11 @@ function setup(options: SetupOptions = {}) {
     "cc-smart-dev-kit@cc-smart-dev-kit": [{ scope: "user", installPath, version: VERSION }],
   };
   if (companions) {
-    const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "13.39.0");
+    const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "15.5.0");
     const designPath = join(configDir, "plugins", "cache", "official", "frontend-design", "abc");
     mkdirSync(memPath, { recursive: true });
     mkdirSync(designPath, { recursive: true });
-    plugins["claude-mem@thedotmack"] = [
-      { scope: "user", installPath: memPath, version: "13.39.0" },
-    ];
+    plugins["claude-mem@thedotmack"] = [{ scope: "user", installPath: memPath, version: "15.5.0" }];
     plugins["frontend-design@claude-plugins-official"] = [
       { scope: "user", installPath: designPath, version: "8f814f49002f" },
     ];
@@ -1154,7 +1152,9 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Updates            3 passed, 1 note",
         // The self-update has not checked yet: information, not a failure.
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✓ Companion plugins  3 passed, 1 note",
+        "✓ Companion plugins  3 passed, 2 notes",
+        // claude-mem 15.x has My Work: its auto-refresh runs agents outside the kit's route.
+        '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
         // Warp is optional.
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✓ MCP servers        3 passed, 1 note",
@@ -1191,7 +1191,7 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
       "✓ plugin updates are on",
       "✓ no other enabled plugin is named cc-smart-dev-kit",
-      "✓ claude-mem@thedotmack 13.39.0 is installed and on",
+      "✓ claude-mem@thedotmack 15.5.0 is installed and on",
       "✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
       // D68: claude-mem's memory-use block off, and Claude Code's own task tools on.
       "✓ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is off (set by cc-smart-dev-kit setup), memory-use block is off (set by cc-smart-dev-kit setup)",
@@ -1455,12 +1455,13 @@ describe("cc-smart-dev-kit doctor", () => {
         "  ✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ Updates            3 passed, 1 note",
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✗ Companion plugins  1 to fix, 2 passed, 1 note",
-        "  ✓ claude-mem@thedotmack 13.39.0 is installed and on",
+        "✗ Companion plugins  1 to fix, 2 passed, 2 notes",
+        "  ✓ claude-mem@thedotmack 15.5.0 is installed and on",
         "  ✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
         // No setup ran here: claude-mem's memory-use block is still on (D68).
-        "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block can push claude-mem's start context past Claude Code's 10,000-character limit. Work state must be off so the kit owns the task list",
+        "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write. Work state must be off so the kit owns the task list",
         "    Fix: cc-smart-dev-kit setup",
+        '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
         "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✗ Alerts and limits  1 to fix, 3 notes",
         "  ✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive",
@@ -2207,10 +2208,10 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
     const { home, configDir, fakeBin, runAsync } = setup({ companions: false });
     // Claude Code installs claude-mem when its marketplace is added: the fake does the same.
     const installed = join(configDir, "plugins", "installed_plugins.json");
-    const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "13.39.0");
+    const memPath = join(configDir, "plugins", "cache", "thedotmack", "claude-mem", "15.5.0");
     const after = readJson(installed);
     after.plugins["claude-mem@thedotmack"] = [
-      { scope: "user", installPath: memPath, version: "13.39.0" },
+      { scope: "user", installPath: memPath, version: "15.5.0" },
     ];
     const afterFile = join(home, "installed-after.json");
     writeFileSync(afterFile, JSON.stringify(after));
@@ -2262,7 +2263,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     const result = run(["doctor", "--verbose"]);
     expect(result.exitCode).toBe(1);
     expect(result.stdout).toContain(
-      "✗ claude-mem@thedotmack 13.28.0 is outside >=13.36.0\n    Fix: claude plugin update claude-mem@thedotmack\n" +
+      "✗ claude-mem@thedotmack 13.28.0 is outside >=15.0.0\n    Fix: claude plugin update claude-mem@thedotmack\n" +
         "  ✗ frontend-design@claude-plugins-official is turned off, and cc-smart-dev-kit does not load without it\n    Fix: claude plugin enable frontend-design@claude-plugins-official\n",
     );
   });
@@ -2272,10 +2273,10 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     run(["setup"]);
     const installed = join(configDir, "plugins", "installed_plugins.json");
     const plugins = readJson(installed);
-    plugins.plugins["claude-mem@thedotmack"][0].version = "13.36.0-8713c5b11005";
+    plugins.plugins["claude-mem@thedotmack"][0].version = "15.0.0-8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     expect(run(["doctor", "--verbose"]).stdout).toContain(
-      "✓ claude-mem@thedotmack 13.36.0-8713c5b11005 is installed and on\n",
+      "✓ claude-mem@thedotmack 15.0.0-8713c5b11005 is installed and on\n",
     );
   });
 
@@ -2286,7 +2287,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     plugins.plugins["claude-mem@thedotmack"][0].version = "8713c5b11005";
     writeFileSync(installed, JSON.stringify(plugins));
     const unknown =
-      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=13.36.0";
+      "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0";
     const update = "claude plugin update claude-mem@thedotmack";
     expect(run(["doctor", "--verbose"]).stdout).toContain(`✗ ${unknown}\n    Fix: ${update}\n`);
     // With the gateway there, claude-mem's own check would say it again: it does not.
@@ -2717,7 +2718,7 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
     writeFileSync(installed, JSON.stringify(plugins));
     const result = run(["setup"]);
     expect(result.stdout).toContain(
-      "  ! claude-mem@thedotmack 13.28.0 is outside >=13.36.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
+      "  ! claude-mem@thedotmack 13.28.0 is outside >=15.0.0, and cc-smart-dev-kit does not load with it. Run: claude plugin update claude-mem@thedotmack\n",
     );
     expect(result.stdout.match(/13\.28\.0/g)).toHaveLength(1);
     const written = readJson(file);

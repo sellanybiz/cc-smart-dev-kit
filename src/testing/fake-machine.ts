@@ -118,7 +118,7 @@ export function world(options: WorldOptions = {}) {
     const installPath = join(configDir, "plugins", "cache", id.replace("@", "/"), "1.0.0");
     mkdirSync(installPath, { recursive: true });
     installed[id] = [
-      { scope: "user", installPath, version: id.startsWith("claude-mem") ? "13.39.0" : "1.0.0" },
+      { scope: "user", installPath, version: id.startsWith("claude-mem") ? "15.5.0" : "1.0.0" },
     ];
   }
   writeFileSync(paths.installedPluginsFile, JSON.stringify({ version: 2, plugins: installed }));

@@ -10,6 +10,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -23,7 +24,7 @@ import { cliPaths } from "../cli/paths";
 import { makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
-import { awayStateFile, setAvailable, setUnavailable } from "../user-away/state";
+import { awayStateFile, sayOnce, setAvailable, setUnavailable } from "../user-away/state";
 import type { AlertEvent } from "../workflow/schema";
 import { inBackgroundSession } from "./background-session";
 import {
@@ -53,6 +54,7 @@ import {
   warpShowsIt,
 } from "./notify";
 import { stopFailureWillAlert } from "./stop-failure";
+import { userAwayAnswer } from "./user-away";
 import { decodedToastText } from "./windows-toast";
 
 const ENTRY = join(import.meta.dir, "..", "entries", "notify.ts");
@@ -366,6 +368,65 @@ describe("what is notified, and with which words", () => {
     notifyHook({ ...first, stop_hook_active: true }, "Stop", deps);
     // The check ran (or the reminder was already given): this is the real end.
     expect(runs.length).toBeGreaterThan(0);
+  });
+
+  test("the stop user-away will block: no finished alert there, whichever hook runs first; the alert comes at the stop that ends the turn", async () => {
+    const { env, home } = machine();
+    const stateDir = cliPaths(env).stateDir;
+    await setUnavailable(stateDir, Date.parse("2026-10-25T01:00:00.000Z"), null);
+    const answer = { message: { content: [{ text: "done", type: "text" }] }, type: "assistant" };
+    const transcriptOf = (name: string) => {
+      const file = join(home, `${name}.jsonl`);
+      writeFileSync(file, `${JSON.stringify(answer)}\n`);
+      return file;
+    };
+    const stopOf = (session: string, file: string, extra: Record<string, unknown> = {}) =>
+      stopInput(home, { session_id: session, transcript_path: file, ...extra });
+    const userAway = (input: Record<string, unknown>) =>
+      userAwayAnswer(input, "Stop", env, cliPaths(env), Date.now(), { timeZone: "UTC" });
+
+    // The notifier reads first, then user-away answers and writes its own mark.
+    const first = transcriptOf("first");
+    const before = setup(env);
+    notifyHook(stopOf("s-first", first), "Stop", before.deps);
+    expect(before.runs).toEqual([]);
+    const blocked = JSON.parse((await userAway(stopOf("s-first", first))).stdout ?? "{}");
+    expect(blocked.decision).toBe("block");
+
+    // user-away answers first: the notifier still sees the same stop.
+    const second = transcriptOf("second");
+    expect(JSON.parse((await userAway(stopOf("s-second", second))).stdout ?? "{}").decision).toBe(
+      "block",
+    );
+    const after = setup(env);
+    notifyHook(stopOf("s-second", second), "Stop", after.deps);
+    expect(after.runs).toEqual([]);
+
+    // Claude Code writes the block's feedback; the continued turn's stop is the real end.
+    const feedback = {
+      isMeta: true,
+      isSidechain: false,
+      message: { content: `Stop hook feedback:\n${blocked.reason}`, role: "user" },
+      type: "user",
+    };
+    appendFileSync(first, `${JSON.stringify(feedback)}\n`);
+    const end = setup(env);
+    notifyHook(stopOf("s-first", first, { stop_hook_active: true }), "Stop", end.deps);
+    expect(end.runs.length).toBe(2);
+  });
+
+  test("a session that already heard the away note: the finished alert as before", async () => {
+    const { env, home } = machine();
+    const stateDir = cliPaths(env).stateDir;
+    await setUnavailable(stateDir, Date.parse("2026-10-25T01:00:00.000Z"), null);
+    await sayOnce(stateDir, "s-told", "2026-10-25T01:00:00.000Z|null|0");
+    const file = transcript(
+      [{ message: { content: [{ text: "done", type: "text" }] }, type: "assistant" }],
+      home,
+    );
+    const { deps, runs } = setup(env);
+    notifyHook(stopInput(home, { session_id: "s-told", transcript_path: file }), "Stop", deps);
+    expect(runs.length).toBe(2);
   });
 
   test("a turn another session started: nothing; a human prompt into it, or a helper agent: the alert", () => {

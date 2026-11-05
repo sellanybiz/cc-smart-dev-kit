@@ -106,6 +106,7 @@ import type { Env } from "./run";
 import { cleanSessionName } from "./session-name";
 import { ALERT_WORKER_COMMAND, type Runner, stopFailureWillAlert } from "./stop-failure";
 import { lastAssistantText, lastCustomTitle, startedByPeer } from "./transcript";
+import { awayStopWouldBlock } from "./user-away-stop";
 import { verifyGateWouldBlockAt } from "./verify-gate";
 
 /**
@@ -398,7 +399,10 @@ export interface AlertContext {
   /** The session's name for the title. */
   label: null | string;
   nowMs: number;
-  /** True when `verify-gate` will block this stop: the turn goes on, so this is no end. */
+  /**
+   * True when `verify-gate`, `keep-going` or `user-away` will block this stop: the turn goes on,
+   * so this is no end.
+   */
   stopWouldBlock: boolean;
   /**
    * True when the person has said they cannot answer (`cc-smart-dev-kit user unavailable`): the
@@ -883,11 +887,15 @@ export function notifyHook(input: unknown, event: string, deps: NotifyDeps): Hoo
           which: deps.which,
         })
       : false;
-  // Asked only when this stop could be the one `verify-gate` blocks: the finished alert must
-  // land at the real end of the turn, not where a sibling hook continues it.
+  // Asked only when this stop could be the one a sibling Stop hook blocks (`verify-gate`,
+  // `keep-going`, `user-away`): the finished alert must land at the real end of the turn, not
+  // where a sibling hook continues it. `user-away`'s decision reads nothing it writes during the
+  // Stop, so the answer is the same whichever hook runs first (`user-away-stop.ts`).
   const stopWouldBlock =
     event === "Stop"
-      ? verifyGateWouldBlockAt(input, deps.env) || keepGoingWouldBlockAt(input, deps.env)
+      ? verifyGateWouldBlockAt(input, deps.env) ||
+        keepGoingWouldBlockAt(input, deps.env) ||
+        awayStopWouldBlock(input, deps.paths)
       : false;
   const alert = alertFor(input, event, {
     failed,

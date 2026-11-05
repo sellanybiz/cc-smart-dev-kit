@@ -85,8 +85,10 @@ export interface LastCheck {
   /** In words: the version found, or why it failed. Never a URL with credentials. */
   detail: string;
   /**
-   * While the marketplace cannot be read, check after check: when that began (the first
-   * such check's `at`). Absent once a check reads it again.
+   * When a streak of the same trouble began (the first such check's `at`): while the
+   * marketplace cannot be read, check after check (`unreachableCheck`), or while an update
+   * fails with the same words (`failedCheck`). A session start tells a streak once. Absent
+   * once a check gets past it.
    */
   since?: string;
 }
@@ -104,6 +106,23 @@ const RESULTS: readonly CheckResult[] = [
 export const UNREACHABLE_FAILS_AFTER_HOURS = 24;
 const UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 
+/** The words every record of an unreadable marketplace starts with. */
+const UNREACHABLE_WORDS = "cannot read the marketplace";
+
+/**
+ * When the unreadable-marketplace streak that `check` belongs to began; null when it belongs
+ * to none. Only such a streak carries on into the next unreadable check: a failed update's own
+ * streak (`failedCheck`) must never make a marketplace count as unreadable for longer.
+ */
+export function unreachableSince(check: LastCheck | null): null | string {
+  if (check?.since === undefined) return null;
+  const inStreak =
+    check.result === "unreachable" ||
+    check.result === "checking" ||
+    (check.result === "failed" && check.detail.startsWith(UNREACHABLE_WORDS));
+  return inStreak ? check.since : null;
+}
+
 /**
  * The record of a check that could not read the marketplace. `previous` is the record
  * before it (a `checking` one carries the streak on). It stays `unreachable` (information)
@@ -115,14 +134,25 @@ export function unreachableCheck(
   nowMs: number,
   detail: string,
 ): LastCheck {
-  const since = previous?.since ?? at;
+  const since = unreachableSince(previous) ?? at;
   const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
   return {
     at,
-    detail: `cannot read the marketplace${failed ? ` since ${since}` : ""} (${detail})`,
+    detail: `${UNREACHABLE_WORDS}${failed ? ` since ${since}` : ""} (${detail})`,
     result: failed ? "failed" : "unreachable",
     since,
   };
+}
+
+/**
+ * The record of an update that failed (`claude plugin update` failed, or a companion plugin
+ * stopped it). The same words as the record before it keep that failure's first time
+ * (`since`), so a session start tells it once, not after every hourly check; other words
+ * start a new streak, which is told again.
+ */
+export function failedCheck(previous: LastCheck | null, at: string, detail: string): LastCheck {
+  const same = previous?.result === "failed" && previous.detail === detail;
+  return { at, detail, result: "failed", since: same ? (previous.since ?? previous.at) : at };
 }
 
 function ensureDir(dir: string): void {

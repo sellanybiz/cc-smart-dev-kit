@@ -60,13 +60,22 @@ switch.
 **`switches.jobRoute` has two homes, and the project's wins.** The project's `jobs.route` is its
 own choice; the person's machine-wide default sits under it as `switches.jobRoute` in their own
 `workflow.json`, and nowhere else: only the person's schema (`personalWorkflowSchema`) has a
-`switches` group, with that one field, and a project's `workflow` object refuses it. They are
+`switches` group, with the fields `PERSONAL_FILE_SWITCH_NAMES` lists, and a project's `workflow`
+object refuses it. They are
 two settings of one switch, not two copies. The resolver (`jobRouteFrom`, `src/workflow/resolve.ts`)
 reads the project's value first (`project`), then the person's (`personal`), then off
 (`default`), and `workflow show` prints which one answered. `workflow set switches.jobRoute`
 writes the person's default; with `--project` it writes the project's `jobs.route`. The
 `job-route` hook reads it through the same function (`resolveJobRoute`), with or without a
 project file, so the hook and `show` can never disagree.
+
+**`switches.leadHint` lives in the person's file alone** (2.2.0). It is the other field of that
+`switches` group: whether the `fable-session` hook tells the person once a session that the lead
+is not Claude Opus (`docs/design/hooks.md` § The Fable-session note). It is about the session's
+model, not a project, so no project file sets it, and `workflow set --project` refuses it like
+the status line and the update hold. The resolver (`leadHintFrom`) reads the person's value
+(`personal`), else on (`default`); the hook reads it through `resolveLeadHint`, which never
+throws, so a broken file keeps the hint on.
 
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
 tests, because it decides whether a command may run without a person:
@@ -98,7 +107,7 @@ place (`auto-merge.ts`).
 | `openPr` | the **merge guard hook** (`src/hooks/merge-guard.ts`): `off` asks before `gh pr create` and `gh pr ready`, `draft` asks for a pull request that does not open as a draft and for every `gh pr ready`, `ready` asks for neither (D16); read as committed on the base. |
 | `autoMerge` | the **merge guard hook** (`src/hooks/merge-guard.ts`), PreToolUse on Bash and PowerShell — the one step a hook can stand in front of. `mergeMethod` and `deleteBranch` stay instructions: they say how a merge the guard allowed is made. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the merge guard reads it. |
-| `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:reviewer` by default). |
+| `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
 | `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
@@ -307,6 +316,29 @@ for a local merge, and `workflow show` prints the limits in force on one `gate f
 `reviews/` folder, a 3 s wait): two reviewers that finish at once both land. It is not the
 state folder's shared lock, whose 10 s wait is as long as the hook may run.
 
+A stop records a review only for a run that was a review from start to end (`isReviewRun`).
+The agent's brief — the first user entry of its transcript — holds the line `Mode: review`
+(trailing spaces and tabs allowed), and so does every prompt it was given after the brief: a
+resume, a message from the session that started it, a task notification, Stop hook feedback,
+anything typed. Claude Code most often writes a message from the session that started the
+agent, and a task notification, as an attachment alone (`type: "attachment"`,
+`attachment.type: "queued_command"`, with a `prompt` and an `origin`), not as a user entry: an
+attachment of that type, or any attachment with an `origin` or a string `prompt`, is a prompt
+too. Tool results are no prompt, nor are the meta entries Claude Code writes itself for a skill
+it loads or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
+`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Any other entry,
+an unknown meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
+transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a
+review agent resumed for a question, a review a Stop hook sent back to work, a review that
+compacted (the summary counts as a prompt: a known limit, on the safe side), and a missing,
+unreadable or larger transcript record nothing: the safe side, where the merge guard asks.
+A plan's second read records nothing by design: its brief carries `Mode: plan-review`, which the
+whole-line match does not take, because a record of a plan read would name the lead's head
+commit as reviewed code and cover later heads with it. And a review starts no agents: a child's
+completion notice is a `queued_command` attachment, a prompt without the marker, so a review that
+started one would record nothing (`plugin/agents/senior-engineer.md`).
+The same module reads the brief alone, from the file's head, for the builder hand-back hook.
+
 **Who writes it: the review agent's own start and end** (`src/hooks/review-record.ts`,
 `SubagentStart` and `SubagentStop`). A record a session writes for itself is only the
 session's word — any caller could name a commit nobody read — so the one writer is the hook
@@ -322,7 +354,7 @@ records nothing (one stderr line says to run the review again). The names are co
 `recordsReview` in `reviews.ts`, the one home of that question: a `plugin:name` exactly, a bare
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's
-`reviewer`, or a project agent of that name, never counts for `cc-smart-dev-kit:reviewer`. The
+`reviewer`, or a project agent of that name, never counts for `cc-smart-dev-kit:senior-engineer`. The
 Agent guard keeps no review list since D11: every `opus`-tier launch below `max` runs with no
 question, a review or not.
 The list the hook reads is the checkout's own, but the record keeps the agent that wrote it,

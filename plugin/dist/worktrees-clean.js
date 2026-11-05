@@ -42,6 +42,10 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
+function managedAgentsDir(platform = process.platform) {
+  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
+  return join2(root, ".claude", "agents");
+}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -77,7 +81,8 @@ function cliPaths(env = process.env) {
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
+    managedAgentsDir: managedAgentsDir()
   };
 }
 function claudeMemDataDir(env, home) {
@@ -95,10 +100,10 @@ import { join as join13 } from "path";
 
 // src/hooks/git.ts
 import { realpathSync } from "fs";
-import { basename, dirname, join as join3, resolve as resolve2 } from "path";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
 
 // src/path-compare.ts
-import { resolve } from "path";
+import { dirname, resolve } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -161,7 +166,7 @@ function realPath(path) {
     try {
       return join3(realpathSync(at), ...rest);
     } catch {
-      const parent = dirname(at);
+      const parent = dirname2(at);
       if (parent === at)
         return resolve2(path);
       rest.unshift(basename(at));
@@ -6016,13 +6021,13 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "2.1.1",
+  version: "2.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.36.0"
+      version: ">=15.0.0"
     },
     {
       name: "frontend-design",
@@ -6151,7 +6156,7 @@ var workflowSchema = strictObject({
   crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
-  switches: strictObject({ jobRoute: boolean2().optional() }).optional()
+  switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
   autoCommit: false,
@@ -6161,7 +6166,7 @@ var workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
   fixesAfterReview: {
     lines: 200,
     files: 10,
@@ -6181,7 +6186,13 @@ var workflowDefaults = {
     usagePercent: 85
   }
 };
-var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var SWITCH_NAMES = [
+  "statusLine",
+  "sessionNames",
+  "jobRoute",
+  "updateHold",
+  "leadHint"
+];
 var POLICY_KEYS = [
   "autoCommit",
   "autoPush",
@@ -6648,9 +6659,9 @@ import {
   unlinkSync as unlinkSync2,
   writeFileSync
 } from "fs";
-import { basename as basename2, dirname as dirname2, join as join6, resolve as resolve3 } from "path";
+import { basename as basename2, dirname as dirname3, join as join6, resolve as resolve3 } from "path";
 function writeTemp(file, content, mode) {
-  const dir = dirname2(file);
+  const dir = dirname3(file);
   mkdirSync2(dir, { recursive: true });
   const temp = join6(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
   try {
@@ -6709,7 +6720,7 @@ function appendLogLine(logFile, line, nowMs) {
 // src/worktrees/auto-state.ts
 import { createHash } from "crypto";
 import { mkdirSync as mkdirSync4, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname3, join as join8 } from "path";
+import { dirname as dirname4, join as join8 } from "path";
 var AUTO_CLEAN_TRIGGERS = ["merge", "session"];
 var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
 var removedSchema = object({
@@ -6749,7 +6760,7 @@ function readJson(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync4(dirname3(file), { recursive: true, mode: 448 });
+  mkdirSync4(dirname4(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -7784,7 +7795,7 @@ function cleanFinished(repo, scanned, judged, say) {
 
 // src/worktrees/scan-parked.ts
 import { existsSync as existsSync8, lstatSync as lstatSync3, readdirSync as readdirSync7, readFileSync as readFileSync11, rmSync as rmSync3 } from "fs";
-import { dirname as dirname4, join as join12, relative } from "path";
+import { dirname as dirname5, join as join12, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
     return null;
@@ -7800,7 +7811,7 @@ function strayParkedFolders(repo, env) {
   }
   const folders = new Set([join12(repo, ".claude", "worktrees")]);
   for (const listed of all.slice(1))
-    folders.add(dirname4(listed.path));
+    folders.add(dirname5(listed.path));
   const found = [];
   for (const folder of folders) {
     let names;

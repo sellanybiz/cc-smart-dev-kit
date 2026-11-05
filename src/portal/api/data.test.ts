@@ -235,6 +235,29 @@ describe("the plan's 5-hour window", () => {
     expect(planWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
   });
 
+  test("a file that also records the 7-day window (2.2.0) gives the same 5-hour number", () => {
+    const { ctx, paths } = world();
+    const resets = Date.UTC(2026, 9, 23, 14, 0, 0) / 1000;
+    writeAt(
+      file(paths),
+      JSON.stringify({
+        fiveHour: { percent: 61, resetsAt: resets },
+        readAt: "2026-10-23T11:50:00.000Z",
+        sevenDay: { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) / 1000 },
+      }),
+    );
+    expect(planWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    // A file with the 7-day window alone has no 5-hour number.
+    writeAt(
+      file(paths),
+      JSON.stringify({
+        readAt: "2026-10-23T11:50:00.000Z",
+        sevenDay: { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) / 1000 },
+      }),
+    );
+    expect(planWindow(ctx)).toBe(null);
+  });
+
   test("a window that is over, or no reading at all: no number", () => {
     const { ctx, paths } = world();
     expect(planWindow(ctx)).toBe(null);

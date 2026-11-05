@@ -1,24 +1,34 @@
 /**
  * `plugin/workflows/review-split.js`: the second opinion on a big change set, split across
- * review tracks. One read-only reviewer per track on the tier D46 gives the change set
- * (`sonnet` at `max`, or `opus` at `xhigh` for a risky one), a second reviewer to refute every
- * finding on the same tier, and the verified findings merged and ranked. Every launch is a
- * literal the agent guard allows (`scripts.test.ts` proves it for each shipped script and the
- * guard the plugin ships).
+ * review tracks. One senior engineer per track on the tier D46 gives the change set (`sonnet`
+ * at `high`, or `opus` at `xhigh` for a risky one), a second one to refute every finding on the
+ * same tier, and the verified findings merged and ranked. Every launch takes the editing tools
+ * away, and every launch is a literal the agent guard allows (`scripts.test.ts` proves it for
+ * each shipped script and the guard the plugin ships).
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
+import { REVIEW_MODE_MARKER } from "../hooks/review-record";
+import { loadScriptParser } from "../hooks/script-parser";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
+// The guard's bundle loads its script parser in its entry; this file judges a script too.
+loadScriptParser();
+
 const REVIEW_SPLIT = join(import.meta.dir, "..", "..", "plugin", "workflows", "review-split.js");
 const NO_ENV = {} as Record<string, string | undefined>;
-const REVIEWER = "cc-smart-dev-kit:reviewer";
+const REVIEWER = "cc-smart-dev-kit:senior-engineer";
+/**
+ * The tools each launch takes away: the tracks share one checkout, and an agent a track started
+ * would send it a notice the review record counts as a later prompt.
+ */
+const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
 
 /** A finding, as a reviewer's schema returns it. */
 function finding(title: string, severity = "warning", file = "src/a.ts", line = 1) {
@@ -52,7 +62,7 @@ const answers =
       : { evidence: "src/a.ts:1", reason: "checked", verdict };
 
 describe("the review-split workflow", () => {
-  test("one read-only reviewer per track, on sonnet at max for an ordinary change set", async () => {
+  test("one reviewer per track with no editing tools, on sonnet at high for an ordinary change set", async () => {
     const run = await runScript(REVIEW_SPLIT, {
       answer: answers([]),
       args: {
@@ -67,12 +77,17 @@ describe("the review-split workflow", () => {
     for (const call of reviews) {
       expect(call.options).toMatchObject({
         agentType: REVIEWER,
-        effort: "max",
+        disallowedTools: NO_EDITS,
+        effort: "high",
         model: "sonnet",
       });
       expect(typeof call.options.schema).toBe("object");
     }
     const prompt = reviews[0]?.prompt ?? "";
+    expect(prompt).toContain("Change no file");
+    expect(prompt).toContain(
+      "\n\nEnd by calling the StructuredOutput tool; never end with plain text.",
+    );
     expect(prompt).toContain("`git diff main...HEAD`");
     expect(prompt).toContain("adds the response cache");
     expect(prompt).toContain("Your track: state and timing");
@@ -86,7 +101,12 @@ describe("the review-split workflow", () => {
     });
     expect(run.calls.length).toBe(2);
     for (const call of run.calls) {
-      expect(call.options).toMatchObject({ agentType: REVIEWER, effort: "xhigh", model: "opus" });
+      expect(call.options).toMatchObject({
+        agentType: REVIEWER,
+        disallowedTools: NO_EDITS,
+        effort: "xhigh",
+        model: "opus",
+      });
     }
   });
 
@@ -98,7 +118,8 @@ describe("the review-split workflow", () => {
     const refute = run.calls.find(isRefute);
     expect(refute?.options).toMatchObject({
       agentType: REVIEWER,
-      effort: "max",
+      disallowedTools: NO_EDITS,
+      effort: "high",
       label: "refute: src/a.ts",
       model: "sonnet",
     });
@@ -143,27 +164,77 @@ describe("the review-split workflow", () => {
     expect(report.indexOf("A missing tenant id")).toBeLessThan(report.indexOf("Stale cache key"));
   });
 
-  test("a refuted or unproven finding is dropped, and the report says how many", async () => {
-    let index = 0;
+  test("a refuted finding is dropped and counted; an unproven one is listed under Hunches with why", async () => {
     const run = await runScript(REVIEW_SPLIT, {
       answer: (call) => {
         if (isReview(call)) {
           return {
-            findings: [finding("kept"), finding("dropped refuted"), finding("dropped unproven")],
-            hunches: [],
+            findings: [
+              finding("kept"),
+              finding("dropped refuted"),
+              finding("not settled", "critical", "src/c.ts", 4),
+            ],
+            hunches: ["maybe B"],
           };
         }
-        index += 1;
-        const verdict = index === 1 ? "confirmed" : index === 2 ? "refuted" : "unproven";
-        return { reason: "checked", verdict };
+        if (call.prompt.includes('"title": "kept"')) {
+          return { reason: "checked", verdict: "confirmed" };
+        }
+        if (call.prompt.includes('"title": "dropped refuted"')) {
+          return { reason: "a validator stops it", verdict: "refuted" };
+        }
+        return { reason: "the caller is in another repo", verdict: "unproven" };
       },
       args: { base: "main", tracks: ["craft"] },
     });
     const report = String(run.result);
-    expect(report).toContain("[WARNING] kept");
+    expect(report).toContain(
+      "## Findings (1, most severe first)\n\n1. [WARNING] kept — src/a.ts:1",
+    );
     expect(report).not.toContain("dropped refuted");
-    expect(report).not.toContain("dropped unproven");
-    expect(report).toContain("2 of 3 checked finding(s) were refuted or left unproven");
+    expect(report).toContain("1 of 3 checked finding(s) were refuted, and are not listed.");
+    expect(report).toContain(
+      "1 of 3 checked finding(s) were left unproven: they are listed under Hunches.",
+    );
+    expect(report).toContain(
+      "## Hunches (unproven, never findings)\n\n- [CRITICAL] not settled — src/c.ts:4 (unproven: the caller is in another repo)\n  trigger: a call with an empty value\n  fix: check the value before the call\n- maybe B",
+    );
+  });
+
+  test("a refuter that returns nothing leaves its finding unproven under Hunches, not dropped", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) =>
+        isReview(call) ? { findings: [finding("no answer", "warning", "src/q.ts", 2)] } : null,
+      args: { base: "main", tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain(
+      "- [WARNING] no answer — src/q.ts:2 (unproven: the refuter returned no answer)\n  trigger:",
+    );
+    expect(report).not.toContain("were refuted");
+  });
+
+  test("no checked finding confirmed, some unproven: the headline sends the reader to Hunches", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A"), finding("B", "critical", "src/b.ts", 2)], "unproven"),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain(
+      "Tier: ordinary (`sonnet` at `high`) · tracks: 1 · written for: what its commits and the diff say it does\nNo checked finding was confirmed; 2 are listed under Hunches.\n## Hunches",
+    );
+    expect(report).not.toContain("survived refutation");
+    expect(report).not.toContain("were left unproven");
+  });
+
+  test("none confirmed, some unproven and some past the budget: the headline names both", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([finding("A"), finding("B", "suggestion", "src/b.ts", 2)], "unproven"),
+      args: { base: "main", budget: 1, tracks: ["craft"] },
+    });
+    expect(String(run.result)).toContain(
+      "No checked finding was confirmed; 1 is listed under Hunches. The unchecked ones are listed below.",
+    );
   });
 
   test("the caller's budget caps the findings refuted", async () => {
@@ -308,15 +379,37 @@ describe("the review-split workflow", () => {
     expect(run.calls[0]?.options).toMatchObject({ effort: "xhigh", model: "opus" });
   });
 
-  test("its reviewers are the ones whose return records the review for the merge guard", () => {
+  test("its literal agentType matches the schema default for the merge guard", () => {
     const script = readFileSync(REVIEW_SPLIT, "utf8");
-    for (const launch of judgeWorkflow(
+    const launches = judgeWorkflow(
       script,
       { config: null, gatewayOn: false, sessionModel: null },
       NO_ENV,
-    )) {
+    );
+    expect(launches.length).toBe(4);
+    expect(workflowDefaults.reviewAgents[0]).toBe(REVIEWER);
+    for (const launch of launches) {
       expect(launch.launch.agentType).toBe(REVIEWER);
-      expect(recordsReview(REVIEWER, workflowDefaults.reviewAgents)).toBe(true);
+      expect(recordsReview(launch.launch.agentType ?? "", workflowDefaults.reviewAgents)).toBe(
+        true,
+      );
+    }
+  });
+
+  test("every track brief carries the review marker alone on a line; no refuter brief does", async () => {
+    const hasMarker = (call: AgentCall): boolean =>
+      call.prompt.split(/\r?\n/).some((line) => line === REVIEW_MODE_MARKER);
+    for (const risky of [false, true]) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([finding("A"), finding("B", "critical", "src/b.ts", 2)]),
+        args: { base: "main", risky, tracks: ["state and timing", "access and money"] },
+      });
+      const reviews = run.calls.filter(isReview);
+      const refuters = run.calls.filter(isRefute);
+      expect(reviews.length).toBe(2);
+      expect(refuters.length).toBe(2);
+      expect(reviews.map(hasMarker)).toEqual([true, true]);
+      expect(refuters.map(hasMarker)).toEqual([false, false]);
     }
   });
 

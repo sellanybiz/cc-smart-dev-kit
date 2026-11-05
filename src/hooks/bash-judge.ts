@@ -64,7 +64,7 @@ import {
   wordsOf,
 } from "../shell/command";
 import { resolveGate, sourceLabel } from "../workflow/resolve";
-import { judgeLaunch, readGuardContext } from "./agent-guard";
+import { judgeLaunch, PRINT_RUN, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
@@ -533,7 +533,8 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
       model: launch.model,
       prompt: launch.prompt,
       subagentType: "general-purpose",
-      tool: "Agent",
+      // A print run has no agent definition: the policy reads none, and says so (`PRINT_RUN`).
+      tool: PRINT_RUN,
     },
     guard,
     context.env,

@@ -1,19 +1,29 @@
 /**
  * `plugin/workflows/audit-run.js`: the run the `audit` skill starts. One read-only auditor per
- * track on `sonnet` at `max` (breadth: D46 keeps `opus` at `xhigh` for the judgment), a second
- * auditor on `opus` at `xhigh` to refute every finding, and one writer on `sonnet` at `max`, all
- * allowed by the agent guard (`scripts.test.ts` proves the guard reads and allows every launch).
+ * track on `sonnet` at `high` (breadth: D46 keeps `opus` at `xhigh` for the judgment), a second
+ * auditor on `opus` at `xhigh` to refute every finding, and one writer on `sonnet` at `medium`,
+ * all allowed by the agent guard (`scripts.test.ts` proves the guard reads and allows every
+ * launch). The auditors and the verifiers take the editing tools away on each launch.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
+import { loadScriptParser } from "../hooks/script-parser";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
+// The guard's bundle loads its script parser in its entry; this file judges a script too.
+loadScriptParser();
+
 const AUDIT_RUN = join(import.meta.dir, "..", "..", "plugin", "workflows", "audit-run.js");
 const NO_ENV = {} as Record<string, string | undefined>;
+/**
+ * The tools each auditor and verifier launch takes away: the tracks share one checkout, and an
+ * agent a track started would escape the run's budget.
+ */
+const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
 
 /** One finding, as an auditor's schema returns it. */
 function finding(title: string) {
@@ -38,7 +48,7 @@ const isVerify = (call: AgentCall): boolean => labelOf(call) === "verify";
 const isReport = (call: AgentCall): boolean => labelOf(call) === "report";
 
 describe("the audit-run workflow", () => {
-  test("one auditor per track, on sonnet at max, read-only: then verify, then report", async () => {
+  test("one auditor per track, on sonnet at high, with no editing tools: then verify, then report", async () => {
     const run = await runScript(AUDIT_RUN, {
       answer: (call) => (isAudit(call) ? { findings: [], hunches: [], coverage: "read" } : null),
       args: { question: "missing auth checks", target: "src/hooks", tracks: ["access", "state"] },
@@ -49,7 +59,8 @@ describe("the audit-run workflow", () => {
     for (const call of audits) {
       expect(call.options).toMatchObject({
         agentType: "cc-smart-dev-kit:auditor",
-        effort: "max",
+        disallowedTools: NO_EDITS,
+        effort: "high",
         model: "sonnet",
       });
       expect(typeof call.options.schema).toBe("object");
@@ -72,6 +83,7 @@ describe("the audit-run workflow", () => {
     const verify = run.calls.find(isVerify);
     expect(verify?.options).toMatchObject({
       agentType: "cc-smart-dev-kit:auditor",
+      disallowedTools: NO_EDITS,
       effort: "xhigh",
       label: "verify",
       model: "opus",
@@ -98,7 +110,7 @@ describe("the audit-run workflow", () => {
     );
   });
 
-  test("only a confirmed finding reaches the writer; refuted and unproven do not", async () => {
+  test("only a confirmed finding reaches the writer as a finding; a refuted one does not reach it", async () => {
     let verified = 0;
     const run = await runScript(AUDIT_RUN, {
       answer: (call) => {
@@ -113,10 +125,38 @@ describe("the audit-run workflow", () => {
     });
     const report = run.calls.find(isReport);
     expect(report?.prompt).toContain('"title": "kept"');
-    expect(report?.prompt).not.toContain('"title": "dropped"');
+    expect(report?.prompt).not.toContain("dropped");
   });
 
-  test("one writer on the cheap tier, writing the findings file when the caller names it", async () => {
+  test("an unproven finding, or one the verifier did not answer, goes to the writer as a hunch with why", async () => {
+    const run = await runScript(AUDIT_RUN, {
+      answer: (call) => {
+        if (isAudit(call)) {
+          return {
+            findings: [
+              { ...finding("not settled"), severity: "critical" },
+              { ...finding("no answer"), file: "src/b.ts", line: 7 },
+            ],
+            hunches: ["maybe B"],
+          };
+        }
+        if (isVerify(call)) {
+          return call.prompt.includes('"title": "not settled"')
+            ? { reason: "the caller is in another repo", verdict: "unproven" }
+            : null;
+        }
+        return "the report";
+      },
+      args: { question: "q", target: "src", tracks: ["one"] },
+    });
+    const prompt = run.calls.find(isReport)?.prompt ?? "";
+    expect(prompt).toContain(
+      'Hunches:\n[\n  "[CRITICAL] not settled — src/a.ts:1 (unproven: the caller is in another repo); trigger: a call with an empty value; missing guard: nothing checks the value",\n  "[WARNING] no answer — src/b.ts:7 (unproven: the verifier returned no answer); trigger: a call with an empty value; missing guard: nothing checks the value",\n  "maybe B"\n]',
+    );
+    expect(prompt).toContain("Confirmed findings:\n[]");
+  });
+
+  test("one writer on sonnet at medium, writing the findings file when the caller names it", async () => {
     const run = await runScript(AUDIT_RUN, {
       answer: (call) => {
         if (isAudit(call)) {
@@ -135,7 +175,7 @@ describe("the audit-run workflow", () => {
     const report = run.calls.find(isReport);
     expect(report?.options).toEqual({
       agentType: "cc-smart-dev-kit:builder",
-      effort: "max",
+      effort: "medium",
       label: "report",
       model: "sonnet",
     });

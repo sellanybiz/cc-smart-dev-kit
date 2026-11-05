@@ -1,6 +1,6 @@
 ---
 name: impact-analysis
-description: Use when changing anything used in two or more places - shared types, functions, hooks, services, API routes, database schema, cache or query keys, event names, stores, permission keys, component props. Trace every consumer before the change, update every reference, and check them again after. Trigger phrases - "rename", "remove", "change the signature", "update shared", "modify type", "drop column".
+description: Use when changing shared types, functions, hooks, routes, schemas, keys, events, stores, permissions or props. Trace every consumer before and after. Triggers include "rename", "remove", "change the signature", "update shared", "modify type", "drop column".
 ---
 
 # Impact Analysis — The Blast Radius

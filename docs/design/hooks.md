@@ -205,21 +205,21 @@ that, so the plugin ships no worktree hook at all.
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. `--admin` always asks. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. A `gh pr create` outside the base its head branch belongs to (`worktrees.base`, or `worktrees.bases` for that branch; with no `--base`, the repository's default branch) asks, naming both branches, and never denies (WA1). **A raw write to GitHub's issues is the person's yes too** (D67, `issue-writes.ts`): `gh issue create`, `edit`, `comment`, `close`, `reopen`, `delete` and every other `gh issue` subcommand that is not a read, `gh label create`, `edit`, `delete` and `clone`, a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues` or `labels` endpoints, and any GraphQL mutation that is not a pull request one this guard judges, ask (the project's file must exist, like every project part); text the reader cannot read whole (an endpoint or query the shell fills in — a `$` expansion or a backtick outside single quotes; `--input`, `query=@file`) counts as a write, and `gh -X=POST` is `POST`; `gh issue list`/`view`/`status`, a GET and `--help` pass, and so does the kit's own `cc-smart-dev-kit issue file`, which is no `gh` command. The question names the kit's way. A pull request answer on the same line wins. A `gh` alias is read for what it expands to (a shell alias, or a list that cannot be read, counts as a write); a program worked out when the line runs whose words name an issue or a label is asked about. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
 | `message-guard` | PreToolUse (SendMessage) | `cc-smart-dev-kit.json` exists | Asks the person before a message to a session that works outside this repo (from Claude Code's session records): the question names the session and its folder, and the person decides each time. A name with no record, or one of several sessions of that name inside this repo, goes through. That rule reads nothing from the project's file (only git's worktree list and the session records), so a broken or too new file gets the same judgement, and the question also names the file's problem. |
-| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no `model`/no `effort` → deny; `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on `haiku` or `sonnet` when the task wants it, with no restriction, whatever model answers them (the owner, 2026-10-25 and 2026-10-26: no level is forced on an affordable backend; a person who wants a backend at one level pins it in the router, D64) — D13); the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
+| `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no readable `model`/`effort` in the call or agent definition → deny (the call's, else the agent definition's choice); `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on `haiku` or `sonnet` when the task wants it, with no restriction, whatever model answers them (the owner, 2026-10-25 and 2026-10-26: no level is forced on an affordable backend; a person who wants a backend at one level pins it in the router, D64) — D13); the **`opus` tier** — whatever answers behind the name, and a name whose override or slot answers with a stricter tier counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read the Agent guard's way through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
 | `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`), because such a session runs beside this one and reports to nobody; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); `workflow propose` **asks** while the gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`), under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`), `env -u`, and with redirections dropped. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd` or an assignment, or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send **the person's other sessions in this repo** when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). The message says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched. A form that names no pull request gets no note. |
-| `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. Nothing for an agent that stopped inside its own worktree. § The review record. |
+| `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. A stop records only for a run that was a review from start to end: the brief (the transcript's first user entry) and every prompt given after it each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). Tool results and Claude Code's own skill-load and system-reminder entries (a reminder must end at its closing tag) are no prompt; any other later entry is — a resume, a message from the session that started the agent (a `user` entry, or a `queued_command` attachment with a `prompt` and an `origin`), a task notification, Stop hook feedback. The whole transcript is read, up to 16 MB. A consult, a resumed consult, a review a Stop hook sent back, a review that compacted (the summary is a prompt), and a missing, unreadable or larger transcript record nothing. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
-| `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit is a change (an edit whose result was an error or a refusal changed nothing), a shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlockAt`), and `keep-going`'s (`keepGoingWouldBlockAt`), so the "finished" alert waits for the stop that really ends the turn. |
+| `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit counts only for a file inside the session's current checkout, after resolving symlinks (new code files count too). Relative paths use the edit record's own `cwd`, not the Stop folder. Missing or unusable paths, and relative paths without a known edit folder, count as changes: only a known path can prove an exclusion. Markdown (`.md`, `.mdx`), the repo's `.claude/plans/`, and Claude Code's `plansDirectory` (default `<Claude config>/plans`, with user, project and project-local settings read in that order) do not count. An edit whose result was an error or a refusal changed nothing. A shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlockAt`), and `keep-going`'s (`keepGoingWouldBlockAt`), so the "finished" alert waits for the stop that really ends the turn. |
 | `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder` or `rules-maintainer`, the two agents the build skill gives a phase) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
 | `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once per stalled state** when a phase of a plan this Claude process works on is `in_progress`, no background work runs and the last answer has no `Waiting for:` line. The same reason already given, with no subagent started or resumed since, keeps it silent. The reason names the builder to resume with `SendMessage` (or the phase needing a fresh builder), the next ready phase, and how to close or record a blocker, and warns against moving a phase back to pending to end the turn. An unreadable transcript keeps the decision; an unreadable task store blocks nothing. § The keep-going guard. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
-| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names the finished worktrees (every commit on `origin/<base>`, nothing uncommitted, no session in it, idle an hour, no ignored file that cannot come back) and the ones whose folder is gone — never a locked one, which `worktrees --clean` keeps — says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
-| `session-name` | SessionStart (startup, resume, compact), UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`), then sets that as its title at the next prompt (`sessionTitle`); a name the person gives with `/rename` stays until the session names itself again. |
-| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt. The frame's step 5 turns every other hook's ask into a deny the same way (§ While the person is away). |
+| `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names at most eight finished worktrees and eight missing folders, keeping each total; `+N more: git worktree list --porcelain` lists the rest. Finished worktrees have every commit on `origin/<base>`, nothing uncommitted, no session in them, an idle hour, and no ignored file that cannot come back; locked ones are kept by `worktrees --clean`. The hook says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
+| `session-name` | SessionStart (startup, resume, compact, clear), UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`) at start and once per context at an unnamed prompt. A `.reminded` mark beside the temp name files suppresses repeat prompts; every SessionStart resets it, including compact and clear. Then sets that as its title at the next prompt (`sessionTitle`); a name the person gives with `/rename` stays until the session names itself again. |
+| `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt, and one **block** at the stop of a session that has not heard this away period. The frame's step 5 turns every other hook's ask into a deny the same way (§ While the person is away). |
 | `task-start` | SessionStart (every source) | **machine-wide** | One block of the project's open work tasks at a start, a resume, a clear and a compaction: at most eight lines, then `+n more`, with no descriptions; a task untouched for `tasks.staleDays` (default 30) is counted in one line instead; and one line to run setup while the task server is not registered. `tasks.md` § The hooks and pages that read it. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the machine-wide
@@ -299,8 +299,18 @@ Claude Code's own docs and code):
 |---|---|
 | `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` on (`1`, `true`, `yes` or `on`, the values Claude Code reads as on) | `CLAUDE_CODE_SUBAGENT_MODEL`; unset or `inherit`: the session's own model (step 3's reading; unknown → the `opus` tier). The call's `model` does not count. |
 | `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` (not empty, not `inherit`) | its model, for a Workflow `agent()` only; FORCE comes first; an Agent call is not touched |
-| neither | the call's own `model`. A plain `CLAUDE_CODE_SUBAGENT_MODEL` is only a default for a call that names none, after the agent's own definition, which no hook can read — so such a call is still refused for naming no model |
+| neither | the call's own `model`, else its agent definition's frontmatter model. A plain `CLAUDE_CODE_SUBAGENT_MODEL` is only a default after the definition; the guard still refuses an unseen definition or `inherit` without an explicit choice |
 | `CLAUDE_CODE_EFFORT_LEVEL` (not empty) | that effort for every launch, whatever the call names |
+
+The definition lookup (`src/models/agent-definition.ts`) matches frontmatter `name`, first in
+this checkout's `.claude/agents`, then the user's agents, then a qualified plugin agent from
+`installed_plugins.json`. A plugin manifest's `agents` paths replace its default scan. The
+higher-priority definition wins as a whole: missing fields never come from a lower one. The
+same lookup serves Agent and Workflow `agent()` calls. Effort comes from the call, else that
+definition, with `CLAUDE_CODE_EFFORT_LEVEL` above both. Unknown SDK/`--agents` definitions
+remain refused. Only fixed built-in model choices are supplied; inherited or conditional
+built-ins still need a call choice. The senior engineer can change files, so its Fable launch
+needs the `build` reason, not a read-only review reason.
 
 The guard reads them from its own environment. **A settings file's `env` reaches a hook's
 environment** (proved live on 2.1.306, for `--settings` and for a project's
@@ -379,7 +389,8 @@ which model a launch really runs on (`resolveLaunchModel`), the effort levels
 judge asks the guard's own `judgeLaunch`. The guard keeps the hook's own parts (reading a
 Workflow script, the agent types, the record, the messages). The one list a person
 may extend is an environment variable (`CC_SMART_DEV_KIT_AGENT_GUARD_READ_ONLY_AGENTS`, the
-read-only agent types the Fable rule reads), and the answer is a PreToolUse `deny` (the rule, in
+read-only agent types the Fable rule reads; a name there matches by the part after any
+`plugin:`), and the answer is a PreToolUse `deny` (the rule, in
 words, to Claude) or an `ask` (a Fable launch, and an `opus`-tier launch at effort `max`; the
 person approves each one, and the opus-tier ask rests on the effort, not on a prompt).
 
@@ -436,9 +447,76 @@ override that points `opus` at a backend never becomes an affordable slot, and s
 `max`; the messages name both, `` `opus` (answered by
 openai:gpt-5.5) ``.
 
+**The agent definition.** The guard judges the call's model and effort, else the ones the
+agent's definition names (`src/models/agent-definition.ts`). It reads a definition only when
+the call names an agent and leaves `model` or `effort` to it; a fork, and a `claude -p` run
+the Bash judge reads (`PRINT_RUN`), never read one, and a print run's denial says it has none.
+The lookup reads the managed
+agents folder first, then the project's folders from the input's real cwd (symlinks
+resolved) up to the checkout root, closest first, then the user's agents. A cwd whose real
+folder is outside the checkout scans the checkout root alone. A qualified plugin name skips
+those scans. A plugin's `plugin:x` is the file `agents/x.md` at the top of that folder, or a
+file the plugin's manifest lists; a file in a subfolder registers under another name. A
+project-scope install of the plugin matches when the cwd as given, or its real folder, is
+inside the install's project. A local definition needs a valid name and a string description. Each name is
+read once per hook run, and only its frontmatter is read. Symlinked files and folders are
+followed without loops, at most 8 folders deep and 2000 files and folders per lookup
+(`AGENT_SCAN_MAX_DEPTH`, `AGENT_SCAN_MAX_ENTRIES`). Past a cap, a failed checkout lookup, or a
+cwd that cannot be resolved, the whole definition is unknown: the launch needs its own
+`model` and `effort`. The managed folder is `CliPaths.managedAgentsDir`, from the machine's
+own platform: no variable moves it, since a project's settings `env` reaches a hook and must
+not hide the managed definitions. A test names a temp folder there.
+
+**A parser reads every script** (`src/hooks/workflow-script.ts`, with acorn, a JavaScript
+parser; approved by the owner on 2026-11-05). It parses the script the way Claude Code runs it
+(read from the 2.1.318 binary, not proved live; `docs/claude-code-contract.md`): the body of an
+async function under `'use strict'`, in script mode, with top-level `await` and `return`; the
+`export` of a first-statement `export const meta = { … }` is left out, since Claude Code reads
+`meta` on its own (`metaExportAt`). From the syntax tree it finds every direct `agent(…)` and
+`workflow(…)` call, what each call's options show, and every other use of either name: one
+reader, so no two checks can disagree on what is code. A parser leaves nothing to guess: a `/`
+is a division or a regular expression by the grammar, and a line comment ends at `\r`, U+2028
+and U+2029 as well as `\n`. A hand-written lexer got each of these wrong once, and each could
+hide a launch. A name that is not a use of the function is not one: a property (`x.agent`), an
+object key (`{ agent: … }`), a class member, a label. A script that does not parse is refused
+whole, naming the parser's message and line; so is the little a function body allows and a
+script's top level does not (`new.target`). An HTML-like comment (`<!--`, or `-->` at a line's
+start) is refused too: a script reads it as a comment and a module as code
+(`a <!--b, agent(…)`), so the guard judges neither reading. **A route around the names is
+refused too.** `agent`, `workflow`, `parallel` and `pipeline` are globals of the script's `vm`
+context, so another name can reach them (`globalThis.agent`, `this.agent` at the top,
+`const { agent: a } = globalThis`), and code built at run time can reach them with none
+(`eval`, `Function`, a function's `.constructor`, `import()`). So each of `eval`, `Function`,
+`arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
+and a `constructor` member refuses the whole script, naming what and where; `self` and `global`
+are refused even as a name the script declares itself (no scope is tracked). **A limit the
+guard does not close:** a string key, literal or built at run time, still reaches the
+`Function` constructor (`x[k]`, `Reflect.get(() => {}, "constructor")`,
+`Object.getOwnPropertyDescriptor(Object.getPrototypeOf(f), "constructor").value`), and the
+guard does not refuse it, since ordinary code is full of computed keys. What stops that code
+from turning a string into a launch is Claude Code's own `codeGeneration: { strings: false }`
+on the script's `vm` context, not the guard: proved on standalone Bun 1.4.4, read from the
+2.1.318 binary, not proved inside Claude Code, and re-checked on every upgrade
+(`docs/claude-code-contract.md`). The guard does not see every launch: it sees each direct
+`agent(…)` call, and refuses the routes it knows. Every hook bundle carries the guard's code through the hook
+table (`specs.ts`), so acorn is handed in by the agent guard's own entry
+(`src/hooks/script-parser.ts`): it is in `agent-guard.js` alone, and a program that was never
+handed the parser refuses every script.
+
+In a Workflow script, a definition stands in only for options written as one plain object
+literal of `key: value` pairs. Options that are not (a getter, a method, a shorthand key,
+`__proto__`, a ternary, a second object) can set the model or the effort where the guard never
+sees them. Such a launch is denied before any definition is read, unless Claude Code's own
+overrides name both its model and its effort. A policy option that is present but not a string
+literal is denied before the lookup too.
+
 The Fable rules are the owner's of 2026-10-16, and each is the person's call:
 
-- **A read-only agent** (Plan, Reviewer, Explore, auditor) takes any word of
+- **A read-only agent** (`Plan`, `Explore`, `cc-smart-dev-kit:auditor`,
+  `cc-smart-dev-kit:edge-case-hunter`, `cc-smart-dev-kit:researcher`; `READ_ONLY_AGENTS`,
+  matched by the whole name as written, so another plugin's or a project's `researcher` is
+  not one; a bare `Plan` or `Explore` counts only while Claude Code's built-in answers that
+  name, since a managed, project or user file of that name overrides it) takes any word of
   `FABLE_REASONS` — `hard`, `rewrite`, `ui-design`, `architecture`, `review`, `plan`,
   `unsatisfied` — where `unsatisfied` is a fresh attempt after the person did not like the main
   session's answer (`subagent-decision` § Choosing Fable has the brief it gets) and `review` is
@@ -532,7 +610,9 @@ shell (a dev server, a watch) too: which entry is an agent is not proved yet. An
 Stop hook's block (`verify-gate`), the turn's next stop has `stop_hook_active` set, so this
 hook does not judge that stop.
 
-The reason is one short paragraph. It names each phase in progress as `#n subject`, then
+The reason keeps the total and names at most eight phases in progress as `#n subject`,
+with `+N more: task_list` for the rest. Recovery actions name only those eight; closing or
+recording blockers still applies to every phase, including those not shown. It then
 says to resume its recorded builder with `SendMessage`, naming the agent (or start a fresh
 one), or to start a fresh builder when none is recorded; a blank agent counts as none. For several phases it pairs each agent with its phase and
 names the phases that need fresh builders. Next comes the next ready phase of the same plan —
@@ -572,7 +652,8 @@ stop the hook:
    refuses on): open blocking tasks at any depth under it, reached through blocking tasks
    only. A non-blocking step holds nothing.
 
-With any step open it answers `decision: "block"` once. The reason names each step as
+With any step open it answers `decision: "block"` once. The reason keeps the total, names
+at most eight steps, and adds `+N more: task_list` for the rest. Each shown step is
 `#id subject` and says how to close it: finish it and close it with `task_done` (with
 evidence), or drop it with `task_done` outcome `"dropped"` and a note saying why, then hand
 back. There is no `additionalContext`. The stop that block caused carries
@@ -699,7 +780,8 @@ another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailabl
 written whole through the kit's atomic write, under the folder's **own** lock (not setup's: a
 hook that parks must never wait for a setup run) so two sessions that park at once both keep
 their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the `items`,
-`nextId` (an id is never reused) and `said` (the note each session heard). `until` is a note
+`nextId` (an id is never reused), `said` (the note each session heard at a prompt, or by
+`user unavailable` itself) and `stopSaid` (the note it heard by the Stop block). `until` is a note
 only: it shows in the notes and never switches back. An item has a kind — `question` (with its
 options and the recommended one), `action` (with its exact command) or `decision` (what was
 chosen, why, how to undo it) — the session that parked it, its folder and the time. The same
@@ -736,8 +818,8 @@ way: how many items are this session's, and how many wait in which other session
 calls share the hook's budget (`SHORT_GUARD_BUDGET_MS`). The person's own terminal has no
 session, so only the running owners and its folder's project decide there.
 
-**Four answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
-where there was a question, never an allow.
+**Five answers, one hook (`src/hooks/user-away.ts`), never looser than before.** Each is a deny
+where there was a question, or a note, never an allow.
 
 - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`:** denied, with the step that parks the
   question. Nothing is parked by the hook: the session parks it in its own words, or takes the
@@ -789,13 +871,66 @@ where there was a question, never an allow.
   wait, and `/cc-smart-dev-kit:user-available` goes through them. An automated turn
   (`prompt-source.ts`: a monitor's line, another session's message) is never the person's. A
   session that heard "unavailable" is told once when the person is available again.
+- **`Stop`, the note at turn end** (2.2.0): a session that works on its own gets no prompt from
+  the person, so it never heard the switch and could end its turn on a question in prose that
+  nobody reads. Its stop is **blocked once** (`decision: "block"`), with the same note and a
+  line to park what needs the person (`user park`) and go on, or end the turn if nothing is
+  left. **The decision reads nothing written during a Stop** (`awayStopBlock`,
+  `src/hooks/user-away-stop.ts`, one home), because Claude Code runs an event's hooks in
+  parallel and `notify` asks the same decision. **Never on a stop a Stop hook continued**
+  (`stop_hook_active`, an input field both read the same way): a belt against a loop, so even if
+  Claude Code stored the feedback in another shape, a session is blocked at most once per chain
+  of continued stops, never up to Claude Code's cap of 9; the cost is that a stop another hook
+  continued does not carry the note, and the next stop no hook continued does. Otherwise it
+  blocks when all three hold: the state is unavailable; the session's `said` mark does not cover
+  **this away period** (`since|until`; only the prompt note and `user unavailable` write `said`);
+  and the transcript's tail holds no `user-away` Stop feedback for this period. The block's
+  reason ends with the period's tag (`[away period <since>|<until>]`), Claude Code writes the
+  reason as `Stop hook feedback:` after every Stop hook has answered, and `stopFeedbackIn`
+  (`src/hooks/transcript.ts`, the reader `keep-going` uses, on one read of the tail) finds it at
+  the later stops (`docs/claude-code-contract.md` § Hooks: both claims are owed a live proof). A
+  count change alone is no block: a session's own park (the skill's `Summary:` at the end of a
+  stretch) changes the count, and that turn must be able to end; the next prompt says it. **The
+  Stop answer's own mark is `stopSaid`**, written during the Stop and never read by the
+  decision: only the prompt note reads it, and only until `said` covers the period, so a prompt
+  after the block does not say the first note again (and writes `said`, so later stops need no
+  transcript read), while a count that changes and comes back later is said as any change. A
+  `stopSaid` that cannot be written (rare: a lock wait past its limit) keeps the block, with one
+  stderr line; the next prompt then says the note once more, and if the person is back before
+  any prompt, "available again" is not said at it. `forgetSaid` covers both marks, so a session
+  told only at its stop still hears "available again" at its next prompt. **Available: never a
+  block.** No `session_id`, no transcript or one it cannot read: no block — it could not see its
+  own earlier block, and a block it cannot see would come back at every stop. Costs: while the
+  person is away and `said` does not cover the period, each stop reads the transcript's last
+  512 KB; a session that no prompt reaches for longer than that tail after its block is blocked
+  once more, as `keep-going` would be. `claude -p` is treated like any session, as `keep-going`
+  and `verify-gate` are; it hears the note at its first prompt anyway. A subagent never hears it
+  here (`SubagentStop` is not wired): it never asks the person.
+
+  **The session that switches the state is told already.** `user unavailable` marks the session
+  that runs it (`CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a Bash call's environment,
+  `docs/claude-code-contract.md` § Hooks) as told for the new period, through the same
+  `sayOnce` and key (`saidKey`), so the session that followed the skill is not blocked at its
+  own turn end. The person's own terminal has no session id and marks nothing. A mark that
+  cannot be written is one warning line; that session is then blocked once, as any other. **A
+  subagent's Bash call carries its lead session's id** (seen on 2.1.318), so a subagent that ran
+  `user unavailable` would mark its lead as told; the skill is the lead's, and no brief asks a
+  subagent to run it.
+
+  **The notifier's "finished" alert asks the same decision** (`awayStopWouldBlock`, read only),
+  beside `verify-gate`'s and `keep-going`'s, so it waits for the stop that really ends the turn,
+  whichever hook runs first. **The accepted trade:** when `user-away` fails to block a stop the
+  decision says it blocks (it crashes, runs past its timeout, or no bun runs it), the turn
+  ends there and the notifier skips that one "finished" alert. A state file the notifier cannot
+  read is no block, and the alert goes out.
 
 **Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
 state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
 outside git, are judged the same way. `ownHooks` cannot switch it off — the switch is the
 person's, and a project must not turn it off for a session — so it is not in `PLUGIN_HOOK_NAMES`
 and `.claude/cc-smart-dev-kit.json` needs no new field. A crash asks about the two question
-tools like any guard; on the other events it says one line on stderr and the session goes on.
+tools like any guard; on the other events (a prompt, a permission prompt, a stop) it says one
+line on stderr and the session goes on.
 
 **A state it cannot read changes nothing.** The hook says one line on stderr and the answer is
 what it would have been without this feature: the question or the ask goes to the person as it
@@ -831,7 +966,8 @@ never, the way the review gate does (§ The review record in `workflow.md`).
 
 ### The Fable-session note
 
-`fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`: the
+`fable-session` (SessionStart, PostModelSwitch, Stop) is machine-wide like `agent-guard`. It says
+two lines, each once a session: the Fable line below, and the lead hint (further down). The
 model the main session runs on is the person's choice, and Claude never cares — no
 `additionalContext`, no error, no block. The person may not have meant the `fable` tier, though
 (it spends the plan's limits faster than Opus), so they get one `systemMessage` — a line Claude
@@ -861,39 +997,59 @@ the fable slot's chain while the gateway is on included), so there is no second 
 counts as Fable, and a tier a backend answers warns the same, naming the model (`the
 \`fable\` model, openai:gpt-5.5`).
 
-What it costs: a session that was told stops at the mark; a session on anything else pays one
-`existsSync`, and — at a stop — the transcript's tail; the gateway config and Claude Code's
-settings (is the gateway on?) are read only when the model text could be Fable at all
-(`couldBeFable`). A session nobody
-watches (`claude -p`) is told nothing and keeps no mark. The mark that keeps it to once a session
-is `<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.fable`, beside the session's own name
-files (`namesDir`, one home), so the OS clears it; it is made with `wx`, so two runs that race
-cannot both speak, and a mark that cannot be made means the line is not said at all — never
-twice.
+**The lead hint** (2.2.0, the owner, 2026-11-05). The kit recommends the lead on Claude Opus at
+`high`; it never switches by itself, and it works fully on a backend lead. So the same hook says
+one more line, once a session, when the session's own model is anything but Claude Opus
+(`leadVerdict`): another Claude family, a backend, the `opus` tier a backend answers (`the
+\`opus\` model, omniroute:glm-x`), or a name no rule reads as a family. "This session runs on
+<model>. The kit works best with the lead on Claude Opus at high effort. Switch with /model.",
+with the switch that turns it off. When the `opus` tier itself is what a backend answers,
+`/model` cannot help (picking Opus picks that backend again), so the fix it names is the
+gateway's: put Claude Opus first in the `opus` slot (`/cc-smart-dev-kit:gateway`), or start the
+session with `launch --no-gateway` (`leadHintMessage`). A Fable session gets the Fable line only. Each line has its
+own mark (`.fable`, `.lead`), so a hint never hides a later Fable line, and the other way round.
+`switches.leadHint` (the person's own `workflow.json`, on by default, `resolveLeadHint`, which
+never throws: a broken file keeps it on) turns the hint off for a person who leads on a backend
+on purpose; the Fable line has no switch. A start that names no `model` (after `/clear`, or a
+recovery) says nothing, and the next stop's transcript model decides. Gateway off and the lead
+on Claude Opus: nothing to say.
+
+What it costs: once both lines are said, the hook stops at the two marks. Otherwise each model
+is judged once a session: the judgment leaves a mark named after the model
+(`<session id>.judged-<hash>`, `judgedMark`), and a later event for that model stops there,
+before the gateway config, Claude Code's settings and the workflow file are read. **The limit:
+Stop's input has no model field** (the Stop row of `docs/claude-code-contract.md`), so every stop still
+reads the transcript's tail to learn the model; the judged mark saves the reads after it, not
+that one. A model already judged is not judged again when a slot or the switch changes
+mid-session: the hint is a once-a-session note, not a watch. A session nobody watches
+(`claude -p`) is told nothing and keeps no mark. The marks are
+`<TMPDIR>/cc-smart-dev-kit-session-names/<session id>.<kind>`, beside the session's own name
+files (`namesDir`, one home), so the OS clears them; a line's mark is made with `wx`, so two runs
+that race cannot both speak, and a mark that cannot be made means the line is not said at all —
+never twice.
 
 ### The tier note
 
 `tier-view` (SessionStart, UserPromptSubmit) tells **Claude** what each subagent tier runs now,
-so it picks the effort the task needs (the owner, 2026-10-25). Claude models are not cheap
-models: a Claude `haiku` or `sonnet` does well at `high` and `xhigh` by the task and may take
-`max` when the task wants it, with no restriction; so does a backend that answers the tier (the
-owner, 2026-10-26: no level is forced on a backend; a person who wants one pins it in the router,
-D64); the `opus` tier keeps the guard's rule (`max` asks the person). Before the note, a session
-read "the gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and the plan
-paid for.
+so it can name the model when it launches. Claude picks the tier and the effort by the job — how
+hard it is, what a miss costs — never by the model behind a tier (2.2.0, the owner, 2026-11-05;
+`/cc-smart-dev-kit:subagent-decision`). The guard still allows any level from `ALLOWED_EFFORTS`
+on `haiku` and `sonnet` (no level is forced on a backend; a person who wants one pins it in the
+router, D64); the instructions teach that `max` rarely pays. Before the note, a session read "the
+gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and the plan paid for.
 
-- **What it says** (`tierNote`, `src/models/tier-view.ts`): a header and one line per tier the
-  Agent tool's `model` names — `- sonnet → Claude Sonnet: the effort the task needs, medium to
-  max.`, or `- sonnet → omniroute:glm-x (a backend): the effort the task needs, medium to max.` The model is the guard's own
+- **What it says** (`tierNote`, `src/models/tier-view.ts`): a header, one line per tier the
+  Agent tool's `model` names — `- sonnet → Claude Sonnet.`, or
+  `- sonnet → omniroute:glm-x (a backend).` — and one closing line: choose the tier and effort by
+  the job, and `opus` at `max` and any `fable` launch ask the person. The model is the guard's own
   reading (`resolveLaunchModel`: the person's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`, then the
   family's slot while it has a chain, its **first** target answering) through the session's own
   gateway view (`sessionGatewayOf`: the effective `ANTHROPIC_BASE_URL`, a profile's chains). The
-  levels come from the guard's constants (`ALLOWED_EFFORTS`, `OPUS_FREE_EFFORTS`,
-  `OPUS_ASK_EFFORT`), never a second list. A Claude-first chain with a
+  level that asks comes from the guard's constant (`OPUS_ASK_EFFORT`), never a second list. A Claude-first chain with a
   backend fallback is Claude, as the guard reads it. A name a slot answers with a stricter
   premium Claude model reads as that tier (`sonnet` → Claude Opus).
-- **The gateway off** says the same four lines, all Claude: the instructions' effort rule reads
-  the note, and a session without a gateway needs it as much as one with.
+- **The gateway off** says the same lines, all Claude: a session without a gateway needs the
+  note as much as one with.
 - **A config that cannot be read** (`gateway.json` is there and unusable, while the session's
   address is a gateway's) is one plain line that the view is not known. An address with no
   `gateway.json` is another program's proxy, and reads as Claude, the guard's way.
@@ -914,6 +1070,49 @@ paid for.
   why it should not. It rides the same marks, so it appears when the checks start failing, and
   the tiers' note alone comes back when they recover. It reaches the model at the next prompt,
   never mid-turn.
+- **The plan-usage line, at a prompt** (2.2.0, the owner, 2026-11-05). No hook input carries the
+  plan's usage: only the status line's input has `rate_limits.five_hour` and `seven_day`, and the
+  status line writes them to `<stateDir>/usage-window.json` (`src/cli/usage-window.ts`) when the
+  numbers change. At `UserPromptSubmit`, when a window first reaches 50, 75 or 90 %
+  (`USAGE_THRESHOLDS`), the context gets one line — `Plan usage (as of 13:40): 5-hour window 78%
+  used (resets 14:00). Follow /cc-smart-dev-kit:subagent-decision § Usage left.` — both windows
+  in one line when both cross (`usageLine`). "As of" is the file's `readAt`: when the status line
+  last saw the numbers change, so Claude knows the share may have grown since; a file whose time
+  cannot be read gives the line without it. Each crossing is told once a window: the session's
+  `<session id>.usage` mark keeps the highest share told and the window's reset, and a window
+  whose reset has passed starts from nothing. **Freshness comes from the reset time only**: the
+  file is written only when the numbers change, so its age says nothing; no file, a window past
+  its reset, or one with no reset time gives no line. Never the number at every prompt, and never
+  at a start. The line rides the same `additionalContext` as a changed tiers' note (the tiers
+  first) and keeps its own mark, outside the `.tiers` text, so neither hides the other; a usage
+  mark that cannot be kept drops the line rather than repeat it.
+  - **After a compaction or a clear.** A `SessionStart` whose `source` is `compact` or `clear`
+    removes the `.usage` mark: the context that heard the level is gone, so the next prompt
+    says the current level once again. A `resume` keeps its context, and the mark.
+  - **Only on the plan login** (`otherLogin`). The numbers are the claude.ai login's:
+    `rate_limits` is there only for a Pro, Max or Ultra subscriber
+    (code.claude.com/docs/en/statusline). A session whose own login wins over that one is not
+    spending them, so it gets no line. Claude Code's order
+    (code.claude.com/docs/en/authentication § Authentication precedence): a cloud provider
+    (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, read as on the way Claude Code reads a
+    switch), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`, an Anthropic profile
+    (`ANTHROPIC_PROFILE`, or both `ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID`),
+    then the subscription. The hook reads the variables from its own environment (it carries the
+    settings' `env` values) and the login keys of the folder's settings files
+    (`readGatewaySettings`, the one reader of them; the files `settingsPathsOf` lists, found
+    without git). `CLAUDE_CODE_OAUTH_TOKEN` is the subscription, and the kit's gateway keeps the
+    login (it never writes a key, `FORBIDDEN_ENV_KEYS`), so both get the line. It is read only
+    when a line is due, and a skipped line keeps no mark. **Not seen:** an `ANTHROPIC_API_KEY`
+    the person declined at Claude Code's prompt (it still counts as another login, so that
+    session misses the line), managed settings, a profile chosen in a file rather than in
+    the environment, and a signed-in Claude apps gateway, which outranks every login.
+  - **Two logins on one machine.** The file lives in `<stateDir>`, which is
+    `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`: a second login kept in its own config folder (Claude
+    Code keeps each folder's credentials apart) has its own file and its own numbers. A new
+    `/login` to another account in the same folder reads the old account's file until its own
+    status line writes new numbers.
+  - **In `claude -p` too.** Unlike `fable-session`'s lines (for a person watching), this one is
+    for Claude: an unattended session spends the same plan, so it follows the same usage rule.
 - **Why a hook of its own.** `fable-session` speaks to the person and never to Claude, by its
   contract; `session-name` has another job.
 - **Machine-wide**, like `agent-guard`: no project file, a folder outside git and `claude -p`
@@ -986,7 +1185,7 @@ ends it, and only for ten minutes so a wait that ended unrecorded never hides a 
 a turn another session started (`startedByPeer`: `turnOrigin: "peer"` without a
 `senderTaskId`, a human prompt into the turn or a helper agent's launch alerting as before);
 the same error twice in a row (a per-session file remembers the last error, cleared by a turn
-that ends well); a stop `verify-gate` or `keep-going` will block (the turn goes on, so the
+that ends well); a stop `verify-gate`, `keep-going` or `user-away` will block (the turn goes on, so the
 finished alert waits for the stop that ends it — a per-session file remembers the alert already
 shown for the turn, cleared at the next prompt). One alert per
 session per event, never two.

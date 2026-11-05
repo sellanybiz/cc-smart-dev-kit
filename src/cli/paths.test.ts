@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { routerPaths } from "../gateway/paths";
 import { TEST_HOST_VAR } from "../machine/host";
-import { cliPaths } from "./paths";
+import { cliPaths, managedAgentsDir } from "./paths";
 
 /** A Windows run, as `Machine` sees it: the platform comes from the same variable. */
 const WINDOWS = { [TEST_HOST_VAR]: JSON.stringify({ platform: "win32" }) };
@@ -23,6 +23,25 @@ describe("the home folder", () => {
     // No platform given: this machine's own, which is what a Linux or macOS run has.
     expect(cliPaths({ USERPROFILE }).home).toBe(homedir());
     expect(cliPaths({ HOME: "/home/me", USERPROFILE }).home).toBe("/home/me");
+  });
+});
+
+describe("Claude Code's managed agents folder", () => {
+  test("one system folder per platform (the managed-settings docs)", () => {
+    expect(managedAgentsDir("linux")).toBe(join("/etc/claude-code", ".claude", "agents"));
+    expect(managedAgentsDir("darwin")).toBe(
+      join("/Library/Application Support/ClaudeCode", ".claude", "agents"),
+    );
+    expect(managedAgentsDir("win32")).toBe(
+      join("C:\\Program Files\\ClaudeCode", ".claude", "agents"),
+    );
+  });
+
+  test("the machine's own platform: no variable moves it, not even the test host's", () => {
+    const own = managedAgentsDir(process.platform);
+    expect(cliPaths({ HOME: "/home/me" }).managedAgentsDir).toBe(own);
+    expect(cliPaths({ ...WINDOWS, USERPROFILE }).managedAgentsDir).toBe(own);
+    expect(cliPaths({ HOME: "/home/me", CLAUDE_CONFIG_DIR: "/tmp/x" }).managedAgentsDir).toBe(own);
   });
 });
 

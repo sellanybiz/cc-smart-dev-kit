@@ -12,13 +12,13 @@
  * - UserPromptSubmit: when that name differs from the one this hook last set, the answer
  *   carries `sessionTitle` (the same rename as /rename). So a name the person gives with
  *   /rename stays until the session names itself again. While the session has no name,
- *   each prompt carries the note again.
+ *   one prompt per context carries the note again; SessionStart clears that prompt mark.
  *
  * Why the title is set at a prompt: a title set at SessionStart reached the transcript and
  * /resume, but not the name ListAgents shows (seen on an older Claude Code; the contract
  * keeps the prompt route). Any failure ends quietly: a name is never worth a prompt.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
@@ -116,7 +116,7 @@ export function recordSessionName(sessionId: string, raw: string, env: Env): str
   return name;
 }
 
-/** How a session names itself: told at its start, and with each prompt until it has. */
+/** How a session names itself: at its start and once per context at an unnamed prompt. */
 export function namingNote(sessionId: string, current: string | null): string {
   const command = `${COMMAND} session-name ${sessionId} "<the task, in a few words>"`;
   return current === null
@@ -131,9 +131,17 @@ export function sessionName(context: HookContext): HookResult {
   if (!isSessionId(sessionId)) return SILENT;
   const wanted = readName(join(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  if (event === "SessionStart") return addContext(event, note);
-  const title =
-    wanted === null ? null : titleToSet(env, sessionId, wanted, stringField(input.session_title));
-  if (title !== null) return addContextAndTitle(event, null, title);
-  return wanted === null ? addContext(event, note) : SILENT;
+  const reminded = join(namesDir(env), `${sessionId}.reminded`);
+  if (event === "SessionStart") {
+    rmSync(reminded, { force: true });
+    return addContext(event, note);
+  }
+  if (wanted === null) {
+    if (existsSync(reminded)) return SILENT;
+    mkdirSync(namesDir(env), { recursive: true });
+    writeAtomic(reminded, "reminded");
+    return addContext(event, note);
+  }
+  const title = titleToSet(env, sessionId, wanted, stringField(input.session_title));
+  return title !== null ? addContextAndTitle(event, null, title) : SILENT;
 }

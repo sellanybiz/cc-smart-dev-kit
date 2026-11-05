@@ -15,8 +15,9 @@ import { createTask, updateTask } from "../tasks/work/store";
 import type { Result, WorkTask, WorkType } from "../tasks/work/types";
 import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { briefTaskNumber, firstPromptText } from "./builder-finish";
+import { briefTaskNumber, handBackReason } from "./builder-finish";
 import { builderFinishHook } from "./specs";
+import { firstPromptText } from "./transcript";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const AGENT = "0a1b2c3d4e5f60718";
@@ -128,7 +129,7 @@ function seed(env: Record<string, string>, folder: string, steps: Step[]): void 
 const BLOCK_TWO = JSON.stringify({
   decision: "block",
   reason: [
-    "Task #1 still has open blocking steps. Close each one, then hand back:",
+    "Task #1 still has 2 open blocking steps. Close each one, then hand back:",
     '- #2 Write the test: finish it and close it with `task_done` (task "#2", with evidence), or drop it with `task_done` (task "#2", outcome "dropped") and a note saying why.',
     '- #3 Wire the entry: finish it and close it with `task_done` (task "#3", with evidence), or drop it with `task_done` (task "#3", outcome "dropped") and a note saying why.',
   ].join("\n"),
@@ -231,7 +232,7 @@ describe("the hook", () => {
     const env = hookEnv();
     seed(env, repo, [{ subject: "Write the test" }]);
     for (const agent of [
-      "cc-smart-dev-kit:reviewer",
+      "cc-smart-dev-kit:senior-engineer",
       "general-purpose",
       "builder-helper",
       "rules-maintainer-helper",
@@ -419,6 +420,22 @@ describe("the hook", () => {
 });
 
 describe("its readers", () => {
+  test.each([8, 10])("caps %i blocking steps", (count) => {
+    const steps = Array.from({ length: count }, (_, index) => ({
+      number: index + 1,
+      subject: "Step",
+    }));
+    const text = handBackReason(20, steps);
+    expect(text.split("\n")[0]).toBe(
+      `Task #20 still has ${count} open blocking steps. Close each one, then hand back:`,
+    );
+    expect(text.split("\n").filter((line) => line.startsWith("- #"))).toHaveLength(8);
+    expect(text).toContain(
+      '- #8 Step: finish it and close it with `task_done` (task "#8", with evidence), or drop it with `task_done` (task "#8", outcome "dropped") and a note saying why.',
+    );
+    expect(text.includes("+2 more: task_list")).toBe(count === 10);
+    expect(text).not.toContain("- #9");
+  });
   test("briefTaskNumber: the exact line, the first one", () => {
     expect(briefTaskNumber("Your task: #85\n\nCaller's rulings")).toBe(85);
     expect(briefTaskNumber("Intro\nYour task: #7  \r\nYour task: #8")).toBe(7);

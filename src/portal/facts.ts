@@ -10,8 +10,9 @@
  *
  *   - **Plan usage percentages, but the 5-hour window's.** Claude Code computes them from the
  *     headers of its own answers and hands them to the status line on stdin
- *     (`src/cli/statusline.ts`). The status line writes down the 5-hour window alone
- *     (`src/cli/usage-window.ts`, `planWindow` here); the 7-day ones are written nowhere.
+ *     (`src/cli/statusline.ts`). The status line writes down the 5-hour and 7-day windows
+ *     (`src/cli/usage-window.ts`); the pages show the 5-hour one (`planWindow` here), and the
+ *     7-day one is not on a page yet.
  *     The router records the limits it saw (which model, which window, when it resets).
  *   - **Prices and image support.** They are in OmniRoute's own catalog, which the gateway
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
@@ -1416,7 +1417,7 @@ export interface PlanWindow {
 /**
  * The plan's 5-hour window, from the one file the status line records it in
  * (`src/cli/usage-window.ts`); null with no reading, or one from a window that is over. The
- * 7-day window is recorded nowhere, so no page has a number for it.
+ * file records the 7-day window too (since 2.2.0), but no page shows it yet.
  */
 export function planWindow(ctx: PortalContext): null | PlanWindow {
   const window = readUsageWindow(ctx.paths, ctx.now());

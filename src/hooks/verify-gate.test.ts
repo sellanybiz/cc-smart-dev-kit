@@ -1,9 +1,10 @@
 /** The verification gate: one Stop block when files changed and the fast check did not run. */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { verifyGateHook } from "./specs";
 import { ranCheck } from "./verify-gate";
 
@@ -94,6 +95,174 @@ function stop(repo: string, path: string): Record<string, unknown> {
 const BLOCK = JSON.stringify({ decision: "block", reason: REASON });
 
 describe("verify-gate", () => {
+  test.each(["README.md", "guide.MDX", ".claude/plans/script.ts"])("skips %s", async (file) => {
+    const repo = project();
+    expect(
+      await runHook(
+        verifyGateHook,
+        stop(repo, transcript([toolUse("Write", { file_path: join(repo, file) })])),
+        hookEnv(),
+      ),
+    ).toEqual({});
+  });
+
+  test("skips outside paths and configured and default plan directories", async () => {
+    const repo = project();
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const custom = join(repo, "custom-plans");
+    mkdirSync(paths.claudeConfigDir, { recursive: true });
+    for (const file of [
+      join(tempDir("outside"), "a.ts"),
+      join(paths.claudeConfigDir, "plans", "a.ts"),
+    ]) {
+      expect(
+        await runHook(
+          verifyGateHook,
+          stop(repo, transcript([toolUse("Edit", { file_path: file })])),
+          env,
+        ),
+      ).toEqual({});
+    }
+    writeFileSync(paths.settingsFile, JSON.stringify({ plansDirectory: custom }));
+    expect(
+      await runHook(
+        verifyGateHook,
+        stop(repo, transcript([toolUse("Write", { file_path: join(custom, "a.ts") })])),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("unknown edit paths count for every change tool and malformed input", async () => {
+    const repo = project();
+    for (const name of ["Edit", "Write", "NotebookEdit"]) {
+      for (const input of [
+        {},
+        { file_path: "", notebook_path: "" },
+        { file_path: 42, notebook_path: [] },
+        { file_path: "  ", notebook_path: "  " },
+        { file_path: "bad\0path", notebook_path: "bad\0path" },
+        name === "NotebookEdit"
+          ? { file_path: join(repo, "README.md") }
+          : { notebook_path: join(repo, "README.md") },
+        null,
+        "bad",
+        [],
+      ]) {
+        const edit = toolUse(name, {});
+        const block = edit.message.content[0];
+        if (block === undefined) throw new Error("missing tool block");
+        Object.assign(block, { input });
+        expect(await runHook(verifyGateHook, stop(repo, transcript([edit])), hookEnv())).toEqual({
+          stdout: BLOCK,
+        });
+      }
+    }
+  });
+
+  test("relative edits use the transcript record cwd, not the Stop cwd", async () => {
+    const repo = project();
+    mkdirSync(join(repo, "pkg"));
+    const edit = toolUse("Edit", { file_path: "../src/a.ts" }, { cwd: join(repo, "pkg") });
+    expect(await runHook(verifyGateHook, stop(repo, transcript([edit])), hookEnv())).toEqual({
+      stdout: BLOCK,
+    });
+    const uncertain = toolUse("Edit", { file_path: "../src/a.ts" });
+    expect(await runHook(verifyGateHook, stop(repo, transcript([uncertain])), hookEnv())).toEqual({
+      stdout: BLOCK,
+    });
+  });
+
+  test("relative edits retain their checkout across a worktree switch", async () => {
+    const repo = project();
+    const worktree = join(repo, ".claude/worktrees/relative-topic");
+    git(repo, "worktree", "add", "-q", "-b", "relative-topic", worktree);
+    writeClaudeFile(worktree, "cc-smart-dev-kit.json", { checks: { fast: CHECK } });
+    const oldEdit = toolUse("Edit", { file_path: "src/a.ts" }, { cwd: repo });
+    expect(await runHook(verifyGateHook, stop(worktree, transcript([oldEdit])), hookEnv())).toEqual(
+      {},
+    );
+    const newEdit = toolUse("Write", { file_path: "src/new.ts" }, { cwd: worktree });
+    expect(
+      await runHook(verifyGateHook, stop(worktree, transcript([oldEdit, newEdit])), hookEnv()),
+    ).toEqual({ stdout: BLOCK });
+  });
+
+  test("entering a worktree judges old and new edits against that checkout", async () => {
+    const repo = project();
+    const worktree = join(repo, ".claude/worktrees/topic");
+    git(repo, "worktree", "add", "-q", "-b", "topic", worktree);
+    writeClaudeFile(worktree, "cc-smart-dev-kit.json", { checks: { fast: CHECK } });
+    const oldEdit = toolUse("Write", { file_path: join(repo, "new.ts") });
+    expect(await runHook(verifyGateHook, stop(worktree, transcript([oldEdit])), hookEnv())).toEqual(
+      {},
+    );
+    expect(
+      await runHook(
+        verifyGateHook,
+        stop(
+          worktree,
+          transcript([oldEdit, toolUse("Write", { file_path: join(worktree, "new.ts") })]),
+        ),
+        hookEnv(),
+      ),
+    ).toEqual({ stdout: BLOCK });
+  });
+
+  test("project-local plans setting wins, and links into plans are excluded", async () => {
+    const repo = project();
+    const env = hookEnv();
+    writeClaudeFile(repo, "settings.json", { plansDirectory: "project-plans" });
+    writeClaudeFile(repo, "settings.local.json", { plansDirectory: "local-plans" });
+    mkdirSync(join(repo, "local-plans"));
+    symlinkSync(join(repo, "local-plans"), join(repo, "linked-plans"), "dir");
+    for (const file of ["local-plans/new.ts", "linked-plans/new.ts"]) {
+      expect(
+        await runHook(
+          verifyGateHook,
+          stop(repo, transcript([toolUse("Write", { file_path: join(repo, file) })])),
+          env,
+        ),
+      ).toEqual({});
+    }
+    expect(
+      await runHook(
+        verifyGateHook,
+        stop(
+          repo,
+          transcript([toolUse("Write", { file_path: join(repo, "project-plans/new.ts") })]),
+        ),
+        env,
+      ),
+    ).toEqual({ stdout: BLOCK });
+  });
+
+  test("resolves symlinks, counts new code and notebooks, and follows the current checkout", async () => {
+    const repo = project();
+    const other = project();
+    const link = join(repo, "outside-link");
+    symlinkSync(other, link, "dir");
+    const alias = join(tempDir("alias"), "repo");
+    symlinkSync(repo, alias, "dir");
+    for (const file of [join(link, "new.ts"), join(other, "new.ts")]) {
+      expect(
+        await runHook(
+          verifyGateHook,
+          stop(repo, transcript([toolUse("Write", { file_path: file })])),
+          hookEnv(),
+        ),
+      ).toEqual({});
+    }
+    for (const edit of [
+      toolUse("Write", { file_path: join(alias, "new.ts") }),
+      toolUse("NotebookEdit", { notebook_path: join(repo, "new.ipynb") }),
+    ]) {
+      expect(await runHook(verifyGateHook, stop(repo, transcript([edit])), hookEnv())).toEqual({
+        stdout: BLOCK,
+      });
+    }
+  });
   test("files changed and the check did not run: one block, naming the command", async () => {
     const repo = project();
     const path = transcript([EDIT]);

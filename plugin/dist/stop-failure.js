@@ -42,6 +42,10 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
+function managedAgentsDir(platform = process.platform) {
+  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
+  return join2(root, ".claude", "agents");
+}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -77,7 +81,8 @@ function cliPaths(env = process.env) {
     notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
+    managedAgentsDir: managedAgentsDir()
   };
 }
 function claudeMemDataDir(env, home) {
@@ -6621,13 +6626,13 @@ function claudeLimitHolds(key, model, inUse) {
 
 // src/build-info/index.ts
 var info = {
-  version: "2.1.1",
+  version: "2.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
       name: "claude-mem",
       marketplace: "thedotmack",
-      version: ">=13.36.0"
+      version: ">=15.0.0"
     },
     {
       name: "frontend-design",
@@ -6895,7 +6900,7 @@ var workflowSchema = strictObject({
   crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
-  switches: strictObject({ jobRoute: boolean2().optional() }).optional()
+  switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
   autoCommit: false,
@@ -6905,7 +6910,7 @@ var workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
   fixesAfterReview: {
     lines: 200,
     files: 10,
@@ -6925,7 +6930,13 @@ var workflowDefaults = {
     usagePercent: 85
   }
 };
-var SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"];
+var SWITCH_NAMES = [
+  "statusLine",
+  "sessionNames",
+  "jobRoute",
+  "updateHold",
+  "leadHint"
+];
 var POLICY_KEYS = [
   "autoCommit",
   "autoPush",
@@ -7496,6 +7507,9 @@ function urlMeaning(url, routerUrl) {
   return { profile: null, state: "other" };
 }
 
+// src/path-compare.ts
+var IGNORE_CASE = process.platform === "win32";
+
 // src/models/launch-policy.ts
 var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
 var OPUS_ASK_EFFORT = "max";
@@ -7576,8 +7590,17 @@ function lastClaudeModel(transcriptPath) {
   }
   return null;
 }
+var BRIEF_HEAD_BYTES = 1024 * 1024;
+var PROMPT_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 
 // src/hooks/agent-guard.ts
+var READ_ONLY_AGENTS = [
+  "Plan",
+  "Explore",
+  `${PLUGIN}:auditor`,
+  `${PLUGIN}:edge-case-hunter`,
+  `${PLUGIN}:researcher`
+];
 var THROUGH_A_VARIABLE = "A launch made through a variable runs inside the tool and never reaches a hook, so the guard cannot read the model and effort it will run on.";
 var HANDED_AROUND = {
   agent: [
@@ -7596,15 +7619,19 @@ var OPTIONS_BUILT_AT_RUNTIME = [
   "Write `model`, `effort` and `agentType` once each, as string literals in the call's own options object."
 ].join(`
 `);
-var NO_WORKFLOW_MODEL = [
-  "This Workflow launch names no `model` the guard can read.",
-  "An agent given none runs on the session's model and effort, which nobody chose \u2014 and a `model` held in a variable is not visible to a hook.",
-  "Write `model` and `effort` as string literals in the `agent(...)` options."
-].join(`
+function noWorkflowField(field) {
+  return [
+    `This Workflow launch names no \`${field}\` the guard can read, in its options or its agent definition.`,
+    `A value held in a variable, or options that are not one plain object literal (a getter, a method, a shorthand key, \`__proto__\`, a ternary, a second object), can set the run's \`${field}\` where a hook never sees it, so no agent definition stands in for it then.`,
+    'Write `model` and `effort` as string literals in one plain options object: `agent("<prompt>", { model: "\u2026", effort: "\u2026" })`.'
+  ].join(`
 `);
+}
+var NO_WORKFLOW_MODEL = noWorkflowField("model");
+var NO_WORKFLOW_EFFORT = noWorkflowField("effort");
 var NO_MODEL = [
-  "This Agent launch names no `model`.",
-  "An agent given none runs on the session's model and effort, which nobody chose: pass `model` and `effort` on every launch."
+  "Neither this Agent launch nor its agent definition names a `model` the guard can read.",
+  "Pass `model` on the launch or set it in the agent's frontmatter; `inherit` does not choose a model."
 ].join(`
 `);
 function levelsText(levels) {
@@ -7614,8 +7641,19 @@ function levelsText(levels) {
 var EFFORTS = levelsText(ALLOWED_EFFORTS);
 var EFFORT_USE = "`medium` is for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, and `max` when the task wants it on `haiku` or `sonnet`, whatever model answers them (the `opus` tier asks the person at `max`).";
 var NO_EFFORT = [
-  "This Agent launch names no `effort`.",
-  `An agent given none runs at the session's effort: pass \`effort\` on every launch, ${EFFORTS}.`,
+  "Neither this Agent launch nor its agent definition names an `effort` the guard can read.",
+  `Pass \`effort\` on the launch or set it in the agent's frontmatter: ${EFFORTS}.`,
+  EFFORT_USE
+].join(`
+`);
+var PRINT_NO_MODEL = [
+  "This `claude -p` run names no `model` the guard can read.",
+  "A run given none starts on the default model, which nobody chose, and no agent definition stands behind a print run."
+].join(`
+`);
+var PRINT_NO_EFFORT = [
+  "This `claude -p` run names no `effort` the guard can read.",
+  `Name one of ${EFFORTS}.`,
   EFFORT_USE
 ].join(`
 `);

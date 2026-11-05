@@ -14,9 +14,9 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { hookEnv, makeRepo, runHook } from "../testing/hooks";
+import { hookEnv, makeRepo, runHook, writePersonalWorkflow } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { fableSessionMark } from "./fable-session";
+import { fableSessionMark, judgedMark, sessionMark } from "./fable-session";
 import { fableSessionHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -107,10 +107,10 @@ describe("a session on the fable tier", () => {
     expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBeNull();
   });
 
-  it("an Opus or Sonnet session says nothing, and keeps no mark", async () => {
+  it("an Opus or Sonnet session gets no Fable line, and keeps no Fable mark", async () => {
     for (const model of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]) {
       const env = hookEnv();
-      expect(await runHook(fableSessionHook, start(model), env)).toEqual({});
+      expect(told(await runHook(fableSessionHook, start(model), env))).not.toBe(THE_LINE);
       expect(existsSync(fableSessionMark(env, SESSION))).toBe(false);
     }
   });
@@ -152,7 +152,7 @@ describe("a session on the fable tier", () => {
     // A Claude Code that fires no PostModelSwitch (or a switch the person made before this
     // version): the stop judge still catches it, and only once.
     const env = hookEnv();
-    expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env))).toBeNull();
+    expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), env))).toBeNull();
     expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBe(THE_LINE);
     expect(told(await runHook(fableSessionHook, stop("claude-fable-5-1"), env))).toBeNull();
   });
@@ -254,42 +254,58 @@ describe("a session on the fable tier", () => {
   });
 });
 
+/** The router's address in these tests: a port no real router holds. */
+const ROUTER = "http://127.0.0.1:39999";
+
+/** Writes this machine's `gateway.json`: the omniroute backend, and `slots`/`profiles`. */
+function writeGateway(
+  env: Record<string, string>,
+  slots: Record<string, string[]>,
+  profiles?: Record<string, unknown>,
+): void {
+  const where = cliPaths(env);
+  mkdirSync(dirname(where.gatewayConfigFile), { recursive: true });
+  writeFileSync(
+    where.gatewayConfigFile,
+    JSON.stringify({
+      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
+      port: 39_999,
+      ...(profiles === undefined ? {} : { profiles }),
+      slots,
+      version: 1,
+    }),
+    { mode: 0o600 },
+  );
+}
+
+/**
+ * The hook's environment on a machine whose `gateway.json` puts a backend first in the fable
+ * slot (and, as `profiles`, the profile `cheap`), whose user settings file holds `userUrl`
+ * (null: no address), for a session whose effective URL is `sessionUrl` (null: none).
+ */
+function machine(
+  userUrl: null | string,
+  sessionUrl: null | string,
+  options: { profiles?: Record<string, unknown>; slots?: Record<string, string[]> } = {},
+): Record<string, string> {
+  const env = hookEnv();
+  const where = cliPaths(env);
+  writeGateway(
+    env,
+    options.slots ?? { "cc-smart-dev-kit-fable": ["omniroute:glm-x"] },
+    options.profiles,
+  );
+  writeFileSync(
+    where.settingsFile,
+    JSON.stringify(userUrl === null ? {} : { env: { ANTHROPIC_BASE_URL: userUrl } }),
+  );
+  return sessionUrl === null ? env : { ...env, ANTHROPIC_BASE_URL: sessionUrl };
+}
+
 describe("RV4: the line names what answers THIS session, read from its own ANTHROPIC_BASE_URL", () => {
   // Claude Code gives a hook the session's effective URL in its environment: the project's file,
   // a `--settings` launch and a profile each change it, and the machine's user file does not
   // speak for them (`sessionGatewayOf`, proved live on 2.1.310).
-  const ROUTER = "http://127.0.0.1:39999";
-
-  /**
-   * The hook's environment on a machine whose `gateway.json` puts a backend first in the fable
-   * slot (and, as `profiles`, the profile `cheap`), whose user settings file holds `userUrl`
-   * (null: no address), for a session whose effective URL is `sessionUrl` (null: none).
-   */
-  function machine(
-    userUrl: null | string,
-    sessionUrl: null | string,
-    options: { profiles?: Record<string, unknown>; slots?: Record<string, string[]> } = {},
-  ): Record<string, string> {
-    const env = hookEnv();
-    const where = cliPaths(env);
-    mkdirSync(dirname(where.gatewayConfigFile), { recursive: true });
-    writeFileSync(
-      where.gatewayConfigFile,
-      JSON.stringify({
-        backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-        port: 39_999,
-        ...(options.profiles === undefined ? {} : { profiles: options.profiles }),
-        slots: options.slots ?? { "cc-smart-dev-kit-fable": ["omniroute:glm-x"] },
-        version: 1,
-      }),
-      { mode: 0o600 },
-    );
-    writeFileSync(
-      where.settingsFile,
-      JSON.stringify(userUrl === null ? {} : { env: { ANTHROPIC_BASE_URL: userUrl } }),
-    );
-    return sessionUrl === null ? env : { ...env, ANTHROPIC_BASE_URL: sessionUrl };
-  }
 
   /** The line a backend at the head of the fable slot gets, written out by hand. */
   const BY_SLOT =
@@ -317,5 +333,140 @@ describe("RV4: the line names what answers THIS session, read from its own ANTHR
       slots: { "cc-smart-dev-kit-fable": ["claude-fable-5-1", "omniroute:glm-x"] },
     });
     expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), plain))).toBe(THE_LINE);
+  });
+});
+
+describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0)", () => {
+  /** The hint for a lead on `named`, written out by hand. */
+  const hint = (named: string) =>
+    `cc-smart-dev-kit: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. Switch with /model. (To stop this hint: cc-smart-dev-kit workflow set switches.leadHint false.)`;
+  /** The hint when a backend answers the `opus` tier itself: /model cannot fix that. */
+  const viaGateway = (named: string) =>
+    `cc-smart-dev-kit: this session runs on ${named}. The kit works best with the lead on Claude Opus at high effort. Put Claude Opus first in the gateway's opus slot (/cc-smart-dev-kit:gateway), or start the session with cc-smart-dev-kit launch --no-gateway. (To stop this hint: cc-smart-dev-kit workflow set switches.leadHint false.)`;
+
+  it("a Claude Opus lead hears nothing, at a start, a switch and a stop, and keeps no line mark", async () => {
+    const env = hookEnv();
+    expect(await runHook(fableSessionHook, start("claude-opus-5-5"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, switchTo("claude-opus-5-5[1m]"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, stop("claude-opus-5-5"), env)).toEqual({});
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+    expect(existsSync(sessionMark(env, SESSION, "fable"))).toBe(false);
+    // The family name alone, as `ANTHROPIC_MODEL` may give it, is Claude Opus too.
+    const named = { ...hookEnv(), ANTHROPIC_MODEL: "opus" };
+    expect(await runHook(fableSessionHook, stop(null), named)).toEqual({});
+  });
+
+  it("a Sonnet lead is told once, as a line for the person alone", async () => {
+    const env = hookEnv();
+    expect(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env)).toEqual({
+      stdout: JSON.stringify({ systemMessage: hint("Claude Sonnet") }),
+    });
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(true);
+    // Said once: the next stop on Sonnet, and a switch to Haiku, say nothing more.
+    expect(await runHook(fableSessionHook, stop("claude-sonnet-5-5"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, switchTo("claude-haiku-4-5"), env)).toEqual({});
+  });
+
+  it("a Haiku lead is named by its family", async () => {
+    expect(told(await runHook(fableSessionHook, start("claude-haiku-4-5"), hookEnv()))).toBe(
+      hint("Claude Haiku"),
+    );
+  });
+
+  it("a Fable lead gets the Fable line only, never the hint", async () => {
+    const env = hookEnv();
+    expect(told(await runHook(fableSessionHook, start("claude-fable-5-1"), env))).toBe(THE_LINE);
+    expect(await runHook(fableSessionHook, stop("claude-fable-5-1"), env)).toEqual({});
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+  });
+
+  it("the opus tier answered by a backend gets the hint, naming the backend and the gateway's way back", async () => {
+    const env = machine(ROUTER, ROUTER, {
+      slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] },
+    });
+    expect(told(await runHook(fableSessionHook, start("claude-opus-5-5"), env))).toBe(
+      viaGateway("the `opus` model, omniroute:glm-x"),
+    );
+    // A Sonnet lead on the same machine is pointed at /model: another family is one switch away.
+    const sonnet = machine(ROUTER, ROUTER, {
+      slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] },
+    });
+    expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), sonnet))).toBe(
+      hint("Claude Sonnet"),
+    );
+    // The same machine, a session on Anthropic's own address: Claude Opus answers, nothing said.
+    const login = machine(ROUTER, "https://api.anthropic.com", {
+      slots: { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] },
+    });
+    expect(await runHook(fableSessionHook, start("claude-opus-5-5"), login)).toEqual({});
+  });
+
+  it("the hint, then a switch to Fable: both lines, each once", async () => {
+    const env = hookEnv();
+    expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env))).toBe(
+      hint("Claude Sonnet"),
+    );
+    expect(told(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), env))).toBe(THE_LINE);
+    expect(await runHook(fableSessionHook, stop("claude-fable-5-1"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, switchTo("claude-sonnet-5-5"), env)).toEqual({});
+  });
+
+  it("a start that names no model (after /clear): the stop's transcript model decides", async () => {
+    const env = hookEnv();
+    expect(await runHook(fableSessionHook, start(null), env)).toEqual({});
+    expect(told(await runHook(fableSessionHook, stop("claude-sonnet-5-5"), env))).toBe(
+      hint("Claude Sonnet"),
+    );
+  });
+
+  it("switches.leadHint false: no hint, and the Fable line still speaks", async () => {
+    const env = hookEnv();
+    writePersonalWorkflow(env, { switches: { leadHint: false } });
+    expect(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env)).toEqual({});
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+    expect(told(await runHook(fableSessionHook, switchTo("claude-fable-5-1"), env))).toBe(THE_LINE);
+    // A personal file that cannot be read keeps the default: on.
+    const broken = hookEnv();
+    mkdirSync(dirname(cliPaths(broken).workflowConfigFile), { recursive: true });
+    writeFileSync(cliPaths(broken).workflowConfigFile, "{not json");
+    expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), broken))).toBe(
+      hint("Claude Sonnet"),
+    );
+  });
+
+  it("a session nobody watches (`claude -p`) is told nothing, and keeps no mark", async () => {
+    const env = { ...hookEnv(), CLAUDE_CODE_SESSION_ATTENDED: "0" };
+    expect(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, stop("claude-sonnet-5-5"), env)).toEqual({});
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+    expect(existsSync(judgedMark(env, SESSION, "claude-sonnet-5-5"))).toBe(false);
+  });
+
+  it("a model judged once is not judged again in the session: an Opus stop stops at its mark", async () => {
+    const env = machine(ROUTER, ROUTER, { slots: {} });
+    expect(await runHook(fableSessionHook, start("claude-opus-5-5"), env)).toEqual({});
+    expect(existsSync(judgedMark(env, SESSION, "claude-opus-5-5"))).toBe(true);
+    // The opus slot moves to a backend mid-session: the model was judged, so no gateway read and
+    // no new line — the hint is a once-a-session note, not a watch.
+    writeGateway(env, { "cc-smart-dev-kit-opus": ["omniroute:glm-x"] });
+    expect(await runHook(fableSessionHook, stop("claude-opus-5-5"), env)).toEqual({});
+    // Another session on the same machine judges it fresh, and hears the hint.
+    expect(
+      told(
+        await runHook(
+          fableSessionHook,
+          start("claude-opus-5-5", "22222222-2222-3333-4444-555555555555"),
+          env,
+        ),
+      ),
+    ).toBe(viaGateway("the `opus` model, omniroute:glm-x"));
+  });
+
+  it("a hint mark that cannot be made: silence, never a hint said twice", async () => {
+    const env = hookEnv();
+    writeFileSync(dirname(sessionMark(env, SESSION, "lead")), "");
+    const result = await runHook(fableSessionHook, start("claude-sonnet-5-5"), env);
+    expect(result).toEqual({});
+    expect(result.exitCode ?? 0).toBe(0);
   });
 });

@@ -79,6 +79,29 @@ export interface CliPaths extends RouterPaths {
   tmuxConfFile: string;
   /** The Tavily key file an owner may write: `<config dir>/cc-smart-dev-kit/tavily.key` (0600). */
   tavilyKeyFile: string;
+  /**
+   * Claude Code's managed agents folder (`managedAgentsDir`), which the Agent guard reads first.
+   * A test that judges a launch passes its own temp folder here.
+   */
+  managedAgentsDir: string;
+}
+
+/**
+ * Claude Code's managed agents folder: `.claude/agents` in the managed settings' system folder
+ * of the machine's own platform (https://code.claude.com/docs/en/managed-settings and
+ * https://code.claude.com/docs/en/sub-agents, read 2026-11-05). Claude Code names no variable
+ * that moves it, and neither does this: a project's settings `env` reaches a hook, and must not
+ * hide the managed definitions from the Agent guard. So the default is `process.platform`, not
+ * the test host's (`hostPlatform`).
+ */
+export function managedAgentsDir(platform: NodeJS.Platform = process.platform): string {
+  const root =
+    platform === "darwin"
+      ? "/Library/Application Support/ClaudeCode"
+      : platform === "win32"
+        ? "C:\\Program Files\\ClaudeCode"
+        : "/etc/claude-code";
+  return join(root, ".claude", "agents");
 }
 
 /**
@@ -157,6 +180,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     workflowConfigFile: join(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
     tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
+    managedAgentsDir: managedAgentsDir(),
   };
 }
 

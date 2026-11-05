@@ -3,6 +3,82 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 2.2.0
+
+- **Model and effort by judgment of the job.** For each agent it starts, the lead weighs three
+  things: how hard the job is, what a miss costs, and whether this is the last check before it
+  is too late. `/cc-smart-dev-kit:subagent-decision` holds the worked examples: a plan's second
+  opinion or a risky change set gets the senior engineer on `opus` at `xhigh`, and `high` gives
+  most of the gain elsewhere. The backend behind a slot never changes the choice. The tier note
+  now names the model behind each tier, with no effort range per tier. The kit recommends the
+  lead session on Claude Opus at `high`.
+- **Fewer agents for small work.** A handful of tool calls stays with the lead; an agent is
+  for work big enough to pay for its own context. Independent agents still start together.
+- **`reviewer` is now `senior-engineer`** (a clean break: the old id no longer counts). It has
+  every tool, gives the second opinion on a change set or a plan, and is the consult when a
+  session is stuck. It researches outside the repo with sources, and reports its findings
+  before any fix.
+- **Two new agents.** `edge-case-hunter` lists every scenario that can break a plan or a
+  change, with the test that catches it. `researcher`, the R&D expert, answers one research
+  question from current primary sources, each claim cited and marked confirmed or not. The
+  `research-sweep` workflow now runs on it.
+- **A review is recorded only for a review.** The review record behind the merge guard counts
+  a run only when its brief, and every prompt it was given after the brief, hold the line
+  `Mode: review` alone. A consult, a plan's second read (`Mode: plan-review`), a redirected
+  review or one that compacted records nothing, so the merge guard asks. A senior engineer in a
+  review starts no agents of its own: their notices would void the record.
+- **The agent guard reads an agent's own frontmatter.** A launch that names no `model` or
+  `effort` takes them from the agent's definition, found in Claude Code's own order. A
+  definition the guard cannot see is refused, as before. Workflow scripts are now read by a
+  real JavaScript parser (`acorn`, the one new dependency, in the agent guard's bundle only),
+  and a script whose agent launches it cannot judge is refused.
+- **The kit tells you when the lead is not Claude Opus.** Once per model, a line to you (it
+  costs Claude no tokens) says the kit works best with the lead on Claude Opus at `high`, and
+  how to switch. A person who leads on another model on purpose turns it off with
+  `cc-smart-dev-kit workflow set switches.leadHint false`.
+- **Claude sees the plan usage left.** When the status line's 5-hour or 7-day window first
+  passes 50, 75 or 90 %, Claude gets one line, and picks cheaper agents as usage runs low. It
+  never skips a test or a review for it. Only on your plan's login.
+- **Every running session hears when you go away.** `/cc-smart-dev-kit:user-unavailable` used
+  to reach other sessions only when you next typed in them, so a session working on its own
+  could stop with a question for you. Now each session is told once, at the end of its turn,
+  and parks what needs you instead. The session you switched in is not told twice, and no
+  "finished" alert fires for the turn end that the note holds back. "Available again" still
+  reaches a session at your next message there.
+- **Prompt-cache misses show.** The status line names the cause of a new prompt-cache miss
+  for a minute, and `doctor --live` reports it.
+- **The shipped workflows cost less and lose less.** Their `sonnet` agents run at `high`, not
+  `max`. A finding nobody could prove or refute is listed under Hunches, never dropped. Review
+  and audit tracks cannot edit files or start agents.
+- **Less context and fewer extra turns.** Skill descriptions are shorter (the always-on text
+  fell from about 3,515 to about 2,626 tokens), and `bun run check` and CI now hold that budget.
+  The verify gate counts only code edits in the session's own checkout, the session-name
+  reminder comes once per context, and long stop-hook lists stop at 8 items.
+- **claude-mem 15.** Memory recall uses `search`, then `timeline`, then `get_observations`
+  (`mem_search` was removed in 15.0.0). The kit now needs claude-mem 15.0.0 or newer, and
+  `doctor` notes that claude-mem's My Work auto-refresh runs agents outside the kit's route.
+
+**What to run:**
+
+1. **Before the update** (or now, if it failed), if claude-mem is older than 15.0.0, update it:
+   `claude plugin update claude-mem@thedotmack`. Claude Code will not install 2.2.0 beside an
+   older claude-mem, and the 2.1 update does not name the fix. From 2.2.0 on, the update checks
+   this first and names the command.
+2. Run `cc-smart-dev-kit doctor` in each project you use. It names the project's instruction
+   files (its `CLAUDE.md` files and `.claude/` Markdown) that still use the old
+   `cc-smart-dev-kit:reviewer` id. Check your own Workflow scripts in `.claude/workflows/` by
+   hand.
+3. A project's `.claude/cc-smart-dev-kit.json` that lists `cc-smart-dev-kit:reviewer` in
+   `workflow.reviewAgents`: replace it with `cc-smart-dev-kit:senior-engineer`. The merge guard
+   judges a merge by the base branch's list, so merge that one change by hand, or run
+   `cc-smart-dev-kit workflow review-done`.
+4. Your own `workflow.json` that names the old id: run, in your own terminal,
+   `cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer` (or
+   `workflow unset reviewAgents` for the default).
+5. A project's own add-ons, agents or skills that brief a review agent: use the new id, and put
+   `Mode: review` alone on a line of the brief. A second read of a plan uses `Mode: plan-review`
+   instead: a plan is not code, so it records no review.
+
 ## 2.1.1
 
 - **A builder no longer stalls on Claude Code's worktree check.** A subagent isolated in a

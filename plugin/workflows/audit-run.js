@@ -81,12 +81,23 @@ log(
   `Auditing ${target} for ${question} on ${tracks.length} track(s); at most ${maxFindings} finding(s) are verified.`,
 )
 
-// One auditor per track, in parallel. Each track is the caller's: the audit skill takes them
-// from the review skill's edge-case axes, so the list of tracks has one home (`references/axes.md`).
+// One auditor per track, in parallel, on `sonnet` at `high`: the breadth, which `high` covers.
+// Each track is the caller's: the audit skill takes them from the review skill's edge-case axes,
+// so the list of tracks has one home (`references/axes.md`). The auditor's own file already
+// denies the editing tools; each launch denies them too, so no track edits the checkout the
+// others read even if that file changes. Each launch also denies `Agent`: the budget counts the
+// agents this run starts, and an agent a track started on its own would escape that count.
 const audits = await pipeline(tracks, (track) =>
   agent(
     `Audit ${target} for ${question}.\n\nYour track: ${track}. Other auditors take the other tracks; stay on yours.\n\nThe project's own rules, skills and docs are the spec: read the ones your area touches before you judge the code. Prove every finding in the code: the concrete trigger, the real path as file:line, the real outcome, and the missing guard. Try to refute it first; what you cannot prove goes in \`hunches\`, never in \`findings\`. Say in \`coverage\` what you read and what you did not reach.`,
-    { label: `audit: ${track}`, model: 'sonnet', effort: 'max', agentType: 'cc-smart-dev-kit:auditor', schema: FINDINGS },
+    {
+      label: `audit: ${track}`,
+      model: 'sonnet',
+      effort: 'high',
+      agentType: 'cc-smart-dev-kit:auditor',
+      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+      schema: FINDINGS,
+    },
   ),
 )
 
@@ -116,17 +127,39 @@ log(
 const verdicts = await pipeline(checked, (finding) =>
   agent(
     `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
-    { label: 'verify', model: 'opus', effort: 'xhigh', agentType: 'cc-smart-dev-kit:auditor', schema: VERDICT },
+    {
+      label: 'verify',
+      model: 'opus',
+      effort: 'xhigh',
+      agentType: 'cc-smart-dev-kit:auditor',
+      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+      schema: VERDICT,
+    },
   ),
 )
 
-const confirmed = checked
-  .map((finding, index) => ({ finding, verdict: verdicts[index] }))
-  .filter((one) => one.verdict && one.verdict.verdict === 'confirmed')
+const judged = checked.map((finding, index) => ({ finding, verdict: verdicts[index] }))
+const verdictOf = (one) => (one.verdict ? one.verdict.verdict : undefined)
+const confirmed = judged.filter((one) => verdictOf(one) === 'confirmed')
+const placeOf = (finding) =>
+  finding.line === undefined ? finding.file : finding.file + ':' + finding.line
+
+// A finding the verifier could not settle, or that got no answer, is not proved and not refuted:
+// it goes to the writer with the hunches, with the verifier's reason, its trigger and its
+// missing guard (an audit finding names no fix), never counted away.
+const unprovenHunches = judged
+  .filter((one) => verdictOf(one) !== 'confirmed' && verdictOf(one) !== 'refuted')
+  .map((one) => {
+    const why =
+      one.verdict && typeof one.verdict.reason === 'string' && one.verdict.reason !== ''
+        ? one.verdict.reason
+        : 'the verifier returned no answer'
+    return `[${String(one.finding.severity).toUpperCase()}] ${one.finding.title} — ${placeOf(one.finding)} (unproven: ${why}); trigger: ${one.finding.trigger}; missing guard: ${one.finding.missingGuard}`
+  })
 
 // What the auditors could not prove, and how far each got: reported apart, never as findings.
-const hunches = audits.flatMap((report) =>
-  report && Array.isArray(report.hunches) ? report.hunches : [],
+const hunches = unprovenHunches.concat(
+  audits.flatMap((report) => (report && Array.isArray(report.hunches) ? report.hunches : [])),
 )
 const coverage = audits
   .map((report, index) =>
@@ -137,8 +170,8 @@ const coverage = audits
   .filter((one) => one !== null)
 
 phase('Report')
-// One writer, on the cheap tier: the judgment is already made, and writing it down is not a
-// design decision. The path is a plain string: a template inside a template hides the options
+// One writer, on `sonnet` at `medium`: the judgment is already made, and writing it down is not
+// a design decision. The path is a plain string: a template inside a template hides the options
 // from the guard, which reads the call's own literals.
 const where =
   findingsPath === ''
@@ -146,8 +179,6 @@ const where =
     : 'Write the report to `' +
       findingsPath +
       '` (create the folder, change no other file), then return the same text as your answer.'
-const placeOf = (finding) =>
-  finding.line === undefined ? finding.file : finding.file + ':' + finding.line
 const uncheckedLines = unchecked.map(
   (finding) => `- [${String(finding.severity).toUpperCase()}] ${finding.title} — ${placeOf(finding)}`,
 )
@@ -157,7 +188,7 @@ const uncheckedText =
     : `Unchecked findings (${unchecked.length}, not verified: the budget did not reach them), to copy as they are:\n${uncheckedLines.join('\n')}`
 const report = await agent(
   `Write the audit report for ${target}, audited for: ${question}.\n\nOne section per confirmed finding, most severe first: the title, \`file:line\`, the trigger, the outcome, the missing guard, and the fix. Then one coverage line per track: what was audited and what was not reached. Then the unchecked findings, under their own heading, listed as given and marked as not verified: say that the caller can check them or run again. Then the hunches, under their own heading, marked as unproven. Report nothing that the code does not support.\n\n${where}\n\n${uncheckedText}\n\nConfirmed findings:\n${JSON.stringify(confirmed, null, 2)}\n\nHunches:\n${JSON.stringify(hunches, null, 2)}\n\nCoverage:\n${coverage.join('\n')}`,
-  { label: 'report', model: 'sonnet', effort: 'max', agentType: 'cc-smart-dev-kit:builder' },
+  { label: 'report', model: 'sonnet', effort: 'medium', agentType: 'cc-smart-dev-kit:builder' },
 )
 
 return report

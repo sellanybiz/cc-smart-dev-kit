@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review a finished change in the main session; approved plans use build for task reviews and the final whole-branch review. Walks the review dimensions and the edge-case axes that apply to this diff, proves each finding, and fixes it. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
+description: Review a finished change in the main session - the axes this diff touches, each finding proved and fixed, then the senior engineer's second opinion. Approved plans use build. Trigger phrases - "ready to commit", "review this", "I'm done", "does this look right".
 ---
 
 # Review — You Are The Reviewer
@@ -64,48 +64,63 @@ constraint, a type that makes it impossible). Never invent a line number.
 ## Second opinion
 
 You cannot see your own blind spots. So after your own pass, for every change beyond a small
-fix, start **one** `cc-smart-dev-kit:reviewer` agent (model and effort: the core instructions).
-For a hard or high-stakes change — security, money, permissions, a big architecture change —
-you may run the reviewer on `fable` instead of its usual model, on your own judgment or when the
-person asks, with the line `Fable reason: review - <why>`; `agent-guard` then asks the person.
+fix, start **one** `cc-smart-dev-kit:senior-engineer` agent. Its model and effort follow the
+change set's risk — what a missed bug would cost:
+
+| The change set | Model, effort |
+|---|---|
+| Small and low-risk: one layer, a pattern already in use, nothing risky at stake | `sonnet`, `medium` |
+| Normal | `sonnet`, `high` |
+| Risky: security, money, permissions, a schema, deploy plumbing, the router, a release | `opus`, `xhigh` |
+
+Unsure between two rows, take the higher one. `fable` only when the person asks for it: the
+senior engineer can change files, so the launch carries `Fable reason: build - <what the person
+asked>`, and `agent-guard` asks the person.
 
 - **When:** once the non-plan change is complete, before its first push. Task-scoped reviews
   and the final branch read for a plan follow the build skill instead.
 - **One change set, one read:** phases built in parallel that ship together get one read,
   not one each. A phase stacked on another open pull request is its own change set: its own
-  branch, its own read. Fixes to code the reviewer already read are a re-push, not a new
-  change set.
-- **The brief:** the diff (or how to get it: base and branch), what the change is meant to
-  do, your own edge-case list, and the checkout's absolute path (in a worktree, the
-  worktree's).
+  branch, its own read. Fixes to code the senior engineer already read are a re-push, not a
+  new change set.
+- **The brief:** the line `Mode: review` alone on its own line, then the diff (or how to get
+  it: base and branch), what the change is meant to do, your own edge-case list, and the
+  checkout's absolute path (in a worktree, the worktree's). Ask for no fixes: the findings come
+  back to you. Without that line the agent treats the brief as a consult, and nothing records
+  the review.
+- **A risky change set also gets the edge-case hunter.** In the same message as the senior
+  engineer, start one `cc-smart-dev-kit:edge-case-hunter` on the same change (`opus` at `xhigh`
+  where security, money, data or concurrency are at stake, else `sonnet` at `high`). Its
+  scenarios are not findings: once both agents are back, check each in the code, and for each
+  real gap add a test and fix it inside the change set. It records no review.
 - **Commit before you start it, and do not commit while it runs.** With `reviewBeforePush`
   on, the record of the review is written by the plugin's `review-record` hook: Claude Code
   tells it when a subagent finishes, and when that agent is one the workflow's `reviewAgents`
-  lists (the plugin's own reviewer by default) it records the commit the working folder is on
-  at that moment. The merge guard reads that record — for the pull request's head commit —
-  before a merge it would make with no person watching. So the reviewer must read the commit
-  the record will name: commit your own fixes first, and commit nothing until it has
-  finished.
+  lists (the plugin's `senior-engineer` by default) and its brief carried the `Mode: review`
+  line, it records the commit the working folder is on at that moment. The merge guard reads
+  that record — for the pull request's head commit — before a merge it would make with no
+  person watching. So the senior engineer must read the commit the record will name: commit
+  your own fixes first, and commit nothing until it has finished.
 - **Not in your agent list** (the plugin is off, or the session started before it
-  existed)? Use `general-purpose`, paste the reviewer agent's instructions (the cc-smart-dev-kit
-  plugin's `agents/reviewer.md`) into the brief, and say so.
+  existed)? Use `general-purpose`, paste the senior engineer's instructions (the cc-smart-dev-kit
+  plugin's `agents/senior-engineer.md`) into the brief, and say so.
 - **Its findings:** apply the evidence bar to each in the code. Fix only the confirmed ones
   inside the change set; your own pass then checks the fixes. What it lists under "Not
   reached", read yourself, or write it down as not verified in the pull request.
-- When it returns, run `git status --short` and revert anything it changed (a stand-in can
-  edit), and say so.
+- When it returns, run `git status --short` and revert anything it changed (it has edit tools,
+  and so does a stand-in), and say so.
 - **Never record it yourself.** `cc-smart-dev-kit workflow review-done` refuses inside Claude Code:
   a record a session writes is the session's own word, which is what the hook above exists to
   replace. The command is for the person's own terminal, to record one by hand.
 
 ### A big change set: split it instead
 
-One reviewer's focused pass cannot cover a diff that spans many layers — a whole release's
-integration, a change across most of the tree. There the second opinion may be the `review-split`
-Workflow: one read-only reviewer per track you name, a second reviewer to refute every finding,
-and one ranked report back. It is the same second opinion, so never run it beside the single
-reviewer, and a small fix or an ordinary change set stays with the single reviewer, whose read
-is cheaper.
+One senior engineer's focused pass cannot cover a diff that spans many layers — a whole
+release's integration, a change across most of the tree. There the second opinion may be the
+`review-split` Workflow: one read-only reviewer per track you name, a second reviewer to refute
+every finding, and one ranked report back. It is the same second opinion, so never run it beside
+the single senior engineer, and a small fix or an ordinary change set stays with the single
+senior engineer, whose read is cheaper.
 
 ```
 Workflow({ name: "cc-smart-dev-kit:review-split",
@@ -128,8 +143,8 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   this diff touches.
 - `risky: true` only for a change set the core instructions' Review calls risky; the run holds
   their model rule for it, on every launch. The reviewers are the type the review-record hook
-  knows, so the run records the review as the single reviewer does: commit first, and commit
-  nothing while it runs.
+  knows, so the run records the review as the single senior engineer does: commit first, and
+  commit nothing while it runs.
 - Claude Code starts a Workflow only on the person's request, or from a skill that says to call
   one. A split you decided on yourself asks once first, naming the tracks and what the run
   spends — as the audit skill does for a sweep it starts.

@@ -21,8 +21,9 @@
  * Claude Code), a missing file, or two files that claim one name in one folder — Claude Code then
  * runs whichever the folder lists last, and the guard cannot know which.
  *
- * The plain-JavaScript readers here (a string literal, a comment) are the guard's own: one home,
- * for the script reader in `agent-guard.ts` and for `meta`.
+ * The small readers here (a string literal, a comment, a pure literal) read `meta` alone, the way
+ * Claude Code's own `meta` reader does. The launches of a script are read by a parser
+ * (`workflow-script.ts`), which leaves out the `export` of the `meta` statement this file finds.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -37,7 +38,7 @@ import { installsOfPlugin, type PluginInstallRecord } from "../setup/installed-p
 export const WORKFLOW_SCRIPT_MAX_BYTES = 524_288;
 
 /** A string literal's value at `from`, and the index after it; null when it is not one. */
-export function stringAt(text: string, from: number): null | { end: number; value: string } {
+function stringAt(text: string, from: number): null | { end: number; value: string } {
   const quote = text[from];
   if (quote !== '"' && quote !== "'" && quote !== "`") return null;
   let value = "";
@@ -74,14 +75,14 @@ function interpolated(text: string, from: number, end: number): boolean {
 }
 
 /** A **fixed** string literal's value at `from`; null when it is not one, or is built at run time. */
-export function literalAt(text: string, from: number): null | { end: number; value: string } {
+function literalAt(text: string, from: number): null | { end: number; value: string } {
   const literal = stringAt(text, from);
   if (literal === null) return null;
   return text[from] === "`" && interpolated(text, from, literal.end) ? null : literal;
 }
 
 /** The index of the first character at or after `from` that is neither blank nor a comment. */
-export function skipBlank(text: string, from: number): number {
+function skipBlank(text: string, from: number): number {
   let index = from;
   while (index < text.length) {
     if (/\s/.test(text[index] ?? "")) {
@@ -97,18 +98,6 @@ export function skipBlank(text: string, from: number): number {
     }
   }
   return index;
-}
-
-/**
- * A fixed string literal at `from` that is the WHOLE value there: the next thing after it is
- * one of `ends` (`,` `)` `}`), not an operator that would change it (`"high" && "max"`,
- * `"a" + b`). Null otherwise.
- */
-export function wholeLiteralAt(text: string, from: number, ends: string): null | string {
-  const literal = literalAt(text, from);
-  if (literal === null) return null;
-  const next = text[skipBlank(text, literal.end)] ?? "";
-  return ends.includes(next) ? literal.value : null;
 }
 
 /** A pure literal in `meta`; `FAIL` when the text there is anything else. */
@@ -187,15 +176,30 @@ function arrayValue(text: string, from: number): typeof FAIL | { end: number; va
   return { end: at + 1, value };
 }
 
+/** The head of a script's `meta` statement, as Claude Code finds it (2.1.318, read from its binary). */
+const META_HEAD = /^export\s+const\s+meta\s*=\s*(?=\{)/;
+
+/**
+ * Where the `export` of a script's `export const meta = { … }` statement is, when that statement
+ * comes first (blanks and comments may come before it); null otherwise. Claude Code reads `meta`
+ * from there, and runs the rest of the script as a function body: the script reader parses it
+ * without that `export` (`workflow-script.ts`).
+ */
+export function metaExportAt(script: string): null | number {
+  const start = skipBlank(script, 0);
+  return META_HEAD.test(script.slice(start)) ? start : null;
+}
+
 /**
  * The `meta.name` of a workflow script, read the way Claude Code reads it: `export const meta =
- * { … }` as the first statement (blanks and comments may come before it), a pure literal, with a
- * non-empty `name` and `description`. Null when the script has no such `meta`: Claude Code then
- * loads no workflow from that file.
+ * { … }` as the first statement (`metaExportAt`), a pure literal, with a non-empty `name` and
+ * `description`. Null when the script has no such `meta`: Claude Code then loads no workflow from
+ * that file.
  */
 export function workflowMetaName(script: string): null | string {
-  const start = skipBlank(script, 0);
-  const head = /^export\s+const\s+meta\s*=\s*(?=\{)/.exec(script.slice(start));
+  const start = metaExportAt(script);
+  if (start === null) return null;
+  const head = META_HEAD.exec(script.slice(start));
   if (head === null) return null;
   const meta = objectValue(script, start + head[0].length);
   if (meta === FAIL) return null;

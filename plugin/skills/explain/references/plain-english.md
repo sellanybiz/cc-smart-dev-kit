@@ -1,7 +1,8 @@
 # Plain English — The Detail
 
 Read on demand, from the `explain` skill. Many readers are new to code, and many read English
-as a second language. Every sentence should be easy to read the first time.
+as a second language. Every sentence should be easy to read the first time. The core
+instructions' § Ending a turn holds the short rule; this file holds the detail and the examples.
 
 ## Where it applies
 
@@ -51,6 +52,76 @@ system terms.
 Words worth translating in a question, because a reader new to code will stop at them:
 `slug`, `UUID`, `endpoint`, `payload`, `schema`, `migration`, `queue`, `worker`, `cron`,
 `cache`, `hydrate`, `SSR`, `bundle`, `auth`, `mutation`, `enum`, `foreign key`.
+
+## Questions and options that stand alone
+
+The person often sees only the question box: not your reasoning, not the files, not the last
+twenty messages. So a question and each of its options must carry enough to choose with no
+scrolling back.
+
+- **The question** says what is being decided and why it matters now, in one or two short
+  sentences.
+- **The label** is short (one to five words) and names the choice, not a code term.
+- **Each option's description** says what happens if it is picked, the main benefit, the
+  downside or cost (time, money, risk, what the person must do), and for the recommended one,
+  why it fits this case.
+- **Short sentences, full meaning.** Cut words, never the facts the choice turns on. A short
+  option that leaves out its cost is worse than a longer one that says it.
+- **The same goes for a summary.** What changed, what was checked, what was not, and what the
+  person must do next, each in its own line.
+
+## Before and after
+
+**A decision question with options.**
+
+Before:
+
+> **Cache strategy?**
+> - SWR (Recommended) — stale-while-revalidate
+> - TTL — fixed expiry
+> - None
+
+After:
+
+> **The product list takes about 3 seconds to load, because it asks the database on every
+> visit. How should it keep a copy so it loads faster?**
+> - **Show the copy, refresh behind it (Recommended)** — The page shows the last saved list
+>   at once and fetches a fresh one in the background. Fastest for visitors. Downside: a price
+>   change can take up to a minute to appear. It fits here because prices change only a few
+>   times a day.
+> - **Keep each copy 10 minutes** — The list is saved for 10 minutes, then fetched again.
+>   Simple. Downside: a change can take 10 minutes to show, and the first visitor after each
+>   refresh still waits 3 seconds.
+> - **No copy** — Every visit asks the database. Always current. Downside: it stays at 3
+>   seconds.
+
+**A status summary.**
+
+Before:
+
+> Done. Refactored the hydration path, fixed the race in the SSR boundary, bumped deps, CI
+> should be green. Let me know.
+
+After:
+
+> **Done:** the sign-in page no longer shows the wrong name for a moment. The cause: the page
+> was drawn before the saved login was read (`src/auth/session.ts:42`); it now waits for it.
+> **Checked:** the sign-in tests and the type check pass.
+> **Not checked:** a phone browser. Please open the sign-in page on your phone and check that
+> the right name shows on the first load.
+> **Left out:** the library upgrade I mentioned. It is a separate change.
+
+**A plain question with no real options.**
+
+Before:
+
+> Need the env var — what's the value?
+
+After:
+
+> The payment test needs a test key to run. Where do you keep the payment service's test key —
+> in a `.env` file, or in a secret store? I only need to know where to read it from, not the
+> key itself.
 
 ## Two things this does not mean
 

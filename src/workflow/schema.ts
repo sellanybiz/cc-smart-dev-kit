@@ -14,11 +14,12 @@
  * `switches.updateHold` are the person's own settings, and `switches.sessionNames` is the
  * project's `sessionNames`: the resolver reads the real setting, and a `workflow set` writes it
  * there. A second copy in this file would be a second truth, so `workflowSchema` (also the
- * project's `workflow` object) has no `switches` field. The exception is `switches.jobRoute`:
- * the project's `jobs.route` is its own choice, and the person's file holds the machine-wide
- * default under it (`personalWorkflowSchema`, the only schema with a `switches` field). They are
- * two settings of one switch, not two copies: the project's wins field by field, as every other
- * workflow setting does (`resolve.ts`).
+ * project's `workflow` object) has no `switches` field. The exceptions are the switches that
+ * have no other home (`PERSONAL_FILE_SWITCH_NAMES`). `switches.jobRoute`: the project's
+ * `jobs.route` is its own choice, and the person's file holds the machine-wide default under it
+ * (`personalWorkflowSchema`, the only schema with a `switches` field). They are two settings of
+ * one switch, not two copies: the project's wins field by field, as every other workflow setting
+ * does (`resolve.ts`). `switches.leadHint` lives in the person's file alone.
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
  * without the person, every alert is on.
@@ -220,19 +221,26 @@ export const workflowSchema = z.strictObject({
 export type Workflow = z.infer<typeof workflowSchema>;
 
 /**
- * The switches the person's own file holds a default for: the project's file may set the same
- * switch in its own place and then wins (`jobs.route`). One home for the names, so the writer
- * and the schema below read the same list.
+ * The switches the person's own file holds: `jobRoute`, a default the project's file may set in
+ * its own place and then win (`jobs.route`), and `leadHint`, the person's alone. One home for
+ * the names, so the writer and the schema below read the same list.
  */
-export const PERSONAL_FILE_SWITCH_NAMES = ["jobRoute"] as const satisfies readonly SwitchName[];
+export const PERSONAL_FILE_SWITCH_NAMES = [
+  "jobRoute",
+  "leadHint",
+] as const satisfies readonly SwitchName[];
 
 /**
  * The person's own file: the workflow fields of a project's `workflow` object, and the
  * `switches` group a project's object does not have. `jobRoute`: heavy commands go through the
  * job queue in every project that does not say otherwise in its `jobs.route` (default: off).
+ * `leadHint`: the `fable-session` hook tells the person once a session when the lead is not
+ * Claude Opus (default: on); a person who leads on a backend on purpose turns it off.
  */
 export const personalWorkflowSchema = workflowSchema.extend({
-  switches: z.strictObject({ jobRoute: z.boolean().optional() }).optional(),
+  switches: z
+    .strictObject({ jobRoute: z.boolean().optional(), leadHint: z.boolean().optional() })
+    .optional(),
 });
 
 /** The person's own workflow file, read: a `Workflow` and the `switches` group. */
@@ -247,7 +255,7 @@ export const workflowDefaults = {
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:reviewer"],
+  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
   // The limits from the measured fix rounds (R5): 10% is covered, 105% and 160% ask.
   fixesAfterReview: {
     lines: 200,
@@ -274,7 +282,13 @@ export const workflowDefaults = {
  * The switches, and where each one really lives: read and written through the setting that
  * already exists, never stored in the workflow file.
  */
-export const SWITCH_NAMES = ["statusLine", "sessionNames", "jobRoute", "updateHold"] as const;
+export const SWITCH_NAMES = [
+  "statusLine",
+  "sessionNames",
+  "jobRoute",
+  "updateHold",
+  "leadHint",
+] as const;
 export type SwitchName = (typeof SWITCH_NAMES)[number];
 
 /** One setting a person may name on the command line. */
@@ -371,8 +385,8 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
 }
 
 /**
- * The switches the project's own file holds (`sessionNames`, `jobs.route`). The other two — the
- * status line and the update hold — are the person's, per machine: `workflow set --project`
+ * The switches the project's own file holds (`sessionNames`, `jobs.route`). The others — the
+ * status line, the update hold, the lead hint — are the person's, per machine: `workflow set --project`
  * refuses them (`write.ts`), and so has nothing for a pull request to change. `jobRoute` is both:
  * the person's file holds its machine-wide default too (`PERSONAL_FILE_SWITCH_NAMES`).
  */
@@ -488,7 +502,7 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
     if (named.length === 0) {
       return {
         ok: false,
-        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:reviewer",
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer",
       };
     }
     return { ok: true, value: [...new Set(named)] };

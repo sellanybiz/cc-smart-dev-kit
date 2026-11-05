@@ -75,6 +75,12 @@ piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
   a person), never a restart of the router or a session. They and the detached process
   run in the home folder with `gitEnv` (`commandContext`), and their output reaches a
   record only through `redactUrlsIn`.
+- **A companion too old for the new version stops the update** (2.2.0, `applyUpdate`):
+  after the marketplace refresh, each installed companion is checked against the
+  `dependencies` of the refreshed copy's `plugin.json` (the running version's own list
+  when that cannot be read), with doctor's range check (`src/machine/companions.ts`). A
+  miss is a failed update with one line and its command (`claude plugin update <id>`),
+  never a `plugin update` that Claude Code would refuse.
 - **The same entry starts the portal (D10).** `startPortalAtSessionStart` resolves the
   *installed* version's `dist/portal.js` (never this hook's own folder: an old session's hook
   after an update must not start an older portal), starts it detached with `--ensure`, and

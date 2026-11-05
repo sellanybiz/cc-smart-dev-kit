@@ -1,5 +1,5 @@
 /**
- * What the plugin reads from the tail of Claude Code's transcript — one home, for the hooks
+ * What the plugin reads from Claude Code's transcript — one home, for the hooks
  * that need it:
  *   - the session's own model (the StopFailure usage-limit alert, the Agent guard);
  *   - the session's name (the notifier names the session in its alert);
@@ -7,11 +7,15 @@
  *   - who started the turn (the notifier stays quiet for a turn another session started);
  *   - the session's own file changes and its runs of the project's fast check (the
  *     verification gate, `verify-gate.ts`);
- *   - Stop feedback already given (the verification gate and keep-going guard).
+ *   - Stop feedback already given (the verification gate and keep-going guard);
+ *   - a subagent's brief (the builder hand-back reads it from the head), and its brief with
+ *     every prompt it was given after it (the review record reads the whole file).
  *
  * Claude Code writes a session's conversation to
- * `<config>/projects/<project folder>/<session id>.jsonl`. Only the file's tail is read: a
- * session's transcript grows to megabytes, and a hook has a 10 s timeout.
+ * `<config>/projects/<project folder>/<session id>.jsonl`, and a subagent's to
+ * `<session id>/subagents/agent-<id>.jsonl` beside it. Reads are bounded: the brief reads the
+ * head, the prompts of a run read the whole file up to a size cap, the other readers read the
+ * tail. A transcript grows to megabytes, and a hook has a 10 s timeout.
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
@@ -67,7 +71,18 @@ export function stopFeedbackGiven(
   resetBy: readonly string[],
 ): boolean {
   const lines = tailLines(transcriptPath);
-  if (lines === null) return false;
+  return lines !== null && stopFeedbackIn(lines, text, resetBy);
+}
+
+/**
+ * `stopFeedbackGiven` on lines already read (`tailLines`): for a reader that must tell a
+ * transcript it cannot read from one without the feedback (`user-away-stop.ts`), with one read.
+ */
+export function stopFeedbackIn(
+  lines: readonly string[],
+  text: string,
+  resetBy: readonly string[],
+): boolean {
   let given = false;
   for (const line of lines) {
     if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"')) continue;
@@ -224,4 +239,242 @@ export function startedByPeer(transcriptPath: string): boolean {
     return entry.turnOrigin === "peer";
   }
   return false;
+}
+
+/**
+ * How much of a transcript's start is read for the brief. The brief is the first line; a
+ * brief longer than this is not one a person wrote, and the hook stays silent.
+ */
+export const BRIEF_HEAD_BYTES = 1024 * 1024;
+
+/** A message's text: its `content` as a string, or its text blocks joined by a newline. */
+function messageText(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  return content
+    .filter(
+      (block): block is { text: string } =>
+        isJsonObject(block) && block.type === "text" && typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * The most of a transcript `runPrompts` reads. A subagent's own transcript stays far below it;
+ * a bigger file reads as null, and the caller stays on its safe side.
+ */
+export const PROMPT_SCAN_MAX_BYTES = 16 * 1024 * 1024;
+
+/** The tags a system reminder from Claude Code opens and closes with. */
+const SYSTEM_REMINDER_OPEN = "<system-reminder>";
+const SYSTEM_REMINDER_CLOSE = "</system-reminder>";
+
+/**
+ * How the text of a meta entry starts when Claude Code wrote it itself and it gives the agent
+ * no new task: a skill it loaded (`<command-message>`, `<command-name>`, and the skill's body,
+ * `Base directory for this skill:`) and a system reminder. A system reminder must also end at
+ * its first closing tag, with no text after it (`harmlessText`). It is an allowlist: any other
+ * meta entry — a message from the session that started the agent ("… sent a message while you
+ * were working"), a notification, Stop hook feedback, Claude Code's other nudges such as
+ * `[handback-send-enforce]` — is a new prompt.
+ */
+export const HARMLESS_META_PREFIXES: readonly string[] = [
+  "<command-message>",
+  "<command-name>",
+  SYSTEM_REMINDER_OPEN,
+  "Base directory for this skill:",
+];
+
+/**
+ * The nudge a Workflow `agent()` with a schema gets when it ends without calling the
+ * StructuredOutput tool. It restates the same task, so it is no new prompt. Matched whole, never
+ * by its prefix, so no text can ride along after it: this is the one string Claude Code 2.1.318
+ * writes (read in its binary). If a later version rewords it, the match fails and the nudge
+ * counts as a prompt: a review run then records nothing, the safe side.
+ */
+const STRUCTURED_OUTPUT_NUDGE =
+  "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
+
+/**
+ * A line that may hold a `user` entry: `"user"` is its `type` and its message's `role`, so this
+ * cheap test passes every one of them, whatever the spacing, before the line is parsed. The
+ * same word inside a string is written `\"user\"` and does not pass.
+ */
+const USER_WORD = '"user"';
+
+/**
+ * True when a line may hold an attachment that carries a prompt (`attachmentPrompt`): it names
+ * `"attachment"` and one of the keys or the type such an attachment has. Most attachments (hook
+ * output, tool lists, the prompt snapshot) have none of them and are not parsed.
+ */
+function mayHoldQueuedPrompt(line: string): boolean {
+  return (
+    line.includes('"attachment"') &&
+    (line.includes('"queued_command"') || line.includes('"origin"') || line.includes('"prompt"'))
+  );
+}
+
+/**
+ * The prompt an `attachment` entry hands the agent, or null when it hands none. Claude Code
+ * writes a message from the session that started the agent, and a task notification, as an
+ * attachment of type `queued_command` with a `prompt` and an `origin` — most often with no
+ * `user` entry beside it. An attachment of that type, or any attachment with an `origin` or a
+ * string `prompt`, is a prompt: its text is `prompt`, or "" when that is not a string.
+ */
+function attachmentPrompt(entry: Record<string, unknown>): string | null {
+  if (entry.type !== "attachment" || !isJsonObject(entry.attachment)) return null;
+  const attachment = entry.attachment;
+  const hasOrigin = attachment.origin !== undefined && attachment.origin !== null;
+  if (attachment.type !== "queued_command" && !hasOrigin && typeof attachment.prompt !== "string")
+    return null;
+  return typeof attachment.prompt === "string" ? attachment.prompt : "";
+}
+
+/** A subagent's brief and the prompts it was given after it (`runPrompts`). */
+export interface RunPrompts {
+  /** The first `user` entry's text: the brief the agent started with. Null when it has none. */
+  brief: string | null;
+  /** The text of every later prompt, in order; "" for one with no text, or that cannot be read. */
+  later: string[];
+}
+
+/**
+ * True when `text` is one Claude Code writes itself: it is `STRUCTURED_OUTPUT_NUDGE` exactly, or
+ * it starts with one of `HARMLESS_META_PREFIXES`, and a system reminder ends at its first
+ * closing tag. Trailing whitespace is allowed after both, so no text can ride along after them.
+ */
+function harmlessText(text: unknown): boolean {
+  if (typeof text !== "string") return false;
+  if (text.trimEnd() === STRUCTURED_OUTPUT_NUDGE) return true;
+  if (text.startsWith(SYSTEM_REMINDER_OPEN)) {
+    const close = text.indexOf(SYSTEM_REMINDER_CLOSE);
+    return close !== -1 && close + SYSTEM_REMINDER_CLOSE.length === text.trimEnd().length;
+  }
+  return HARMLESS_META_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
+/**
+ * True when `entry` is a meta entry Claude Code wrote itself that gives no new task: it is
+ * marked `isMeta`, names no `origin` (a message another agent sent names one), and its text is
+ * one string or text blocks only, each one `harmlessText`.
+ */
+function harmlessMeta(entry: Record<string, unknown>, content: unknown): boolean {
+  if (entry.isMeta !== true || (entry.origin !== undefined && entry.origin !== null)) return false;
+  if (typeof content === "string") return harmlessText(content);
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every(
+      (block) => isJsonObject(block) && block.type === "text" && harmlessText(block.text),
+    )
+  );
+}
+
+/** True when `content` is one or more tool results and nothing else: an answer, not a prompt. */
+function onlyToolResults(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.length > 0 &&
+    content.every((block) => isJsonObject(block) && block.type === "tool_result")
+  );
+}
+
+/**
+ * The prompts in a transcript's text, read forward. The brief is the first line that parses as
+ * a `user` entry with a message; a line that is not JSON before it is skipped. After it, every
+ * `user` entry is a prompt except tool results and `harmlessMeta`, and so is every attachment
+ * that carries one (`attachmentPrompt`); a line that may be either (`USER_WORD`,
+ * `mayHoldQueuedPrompt`) but does not parse counts as a prompt with no text: the safe side.
+ * `briefOnly` stops at the brief.
+ */
+function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
+  let brief: string | null | undefined; // undefined: not seen yet
+  const later: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.includes(USER_WORD) && (brief === undefined || !mayHoldQueuedPrompt(line))) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // Before the brief: skipped, as the brief reader always has (the head read may cut the
+      // brief's own line). After it: an entry nobody can judge, so a prompt with no text.
+      if (brief !== undefined) later.push("");
+      continue;
+    }
+    if (!isJsonObject(entry)) continue;
+    if (brief !== undefined) {
+      const queued = attachmentPrompt(entry);
+      if (queued !== null) {
+        later.push(queued);
+        continue;
+      }
+    }
+    if (entry.type !== "user") continue;
+    const message = isJsonObject(entry.message) ? entry.message : null;
+    if (brief === undefined) {
+      if (message === null) continue;
+      brief = messageText(message.content);
+      if (briefOnly) break;
+      continue;
+    }
+    const content = message?.content;
+    if (onlyToolResults(content) || harmlessMeta(entry, content)) continue;
+    later.push(messageText(content) ?? "");
+  }
+  return { brief: brief ?? null, later };
+}
+
+/**
+ * The text of a transcript's first `user` entry: a subagent's brief. Only the file's first
+ * `BRIEF_HEAD_BYTES` are read; a line that is not JSON is skipped. Null when the file cannot be
+ * read or holds no such entry there.
+ */
+export function firstPromptText(transcriptPath: string): string | null {
+  let text: string;
+  try {
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const buffer = Buffer.alloc(BRIEF_HEAD_BYTES);
+      const read = readSync(fd, buffer, 0, BRIEF_HEAD_BYTES, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  return scanPrompts(text, true).brief;
+}
+
+/**
+ * A subagent run's prompts: its brief (the first `user` entry, as `firstPromptText` finds it)
+ * and every prompt it was given after it — a resume, a message from the session that started
+ * it (a `user` entry or a `queued_command` attachment), a task notification, Stop hook
+ * feedback, a compaction summary, anything a person typed. Tool results and the meta entries Claude
+ * Code writes itself for a skill or a reminder (`HARMLESS_META_PREFIXES`) are no prompt. The
+ * whole file is read, forward, so a prompt far from both ends still counts. Null when the file
+ * cannot be read or is larger than `maxBytes` (default `PROMPT_SCAN_MAX_BYTES`).
+ */
+export function runPrompts(
+  transcriptPath: string,
+  maxBytes: number = PROMPT_SCAN_MAX_BYTES,
+): RunPrompts | null {
+  let text: string;
+  try {
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      if (size > maxBytes) return null;
+      const buffer = Buffer.alloc(size);
+      const read = readSync(fd, buffer, 0, size, 0);
+      text = buffer.subarray(0, read).toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // No transcript, or not readable: nothing is known about the run.
+    return null;
+  }
+  return scanPrompts(text, false);
 }

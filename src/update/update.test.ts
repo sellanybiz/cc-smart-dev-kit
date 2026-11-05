@@ -22,7 +22,13 @@ import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import { capturingRunner, installedText, notifyCommand } from "./apply";
+import {
+  capturingRunner,
+  companionsBehind,
+  companionsBehindDetail,
+  installedText,
+  notifyCommand,
+} from "./apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
@@ -79,6 +85,10 @@ interface MachineOptions {
   env?: Record<string, string>;
   /** The text of the copy's major-notes file (`MAJOR_NOTES_PATH`); absent: no such file. */
   majorNotes?: string;
+  /** The `dependencies` of the plugin.json a refresh brings; absent: the copy has none. */
+  newDependencies?: unknown;
+  /** The claude-mem version installed beside the plugin; absent: not installed. */
+  claudeMem?: string;
 }
 
 /** A temp machine as `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` leaves it, with fakes on PATH. */
@@ -98,12 +108,26 @@ function machine(options: MachineOptions = {}) {
   mkdirSync(join(copy, ".claude-plugin"), { recursive: true });
   mkdirSync(join(copy, "plugin", ".claude-plugin"), { recursive: true });
   mkdirSync(installPath, { recursive: true });
+  const claudeMemPath = join(plugins, "cache", "thedotmack", "claude-mem", "installed");
+  mkdirSync(claudeMemPath, { recursive: true });
   const installed = (version: string) =>
     JSON.stringify({
-      plugins: { "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath, scope: "user", version }] },
+      plugins: {
+        "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath, scope: "user", version }],
+        ...(options.claudeMem !== undefined && {
+          "claude-mem@thedotmack": [
+            { installPath: claudeMemPath, scope: "user", version: options.claudeMem },
+          ],
+        }),
+      },
       version: 2,
     });
-  const copyManifest = (version: string) => JSON.stringify({ name: "cc-smart-dev-kit", version });
+  const copyManifest = (version: string, dependencies?: unknown) =>
+    JSON.stringify({
+      name: "cc-smart-dev-kit",
+      version,
+      ...(dependencies !== undefined && { dependencies }),
+    });
   const marketplaceJson = JSON.stringify({
     name: "cc-smart-dev-kit",
     plugins: [{ name: "cc-smart-dev-kit", source: "./plugin" }],
@@ -138,7 +162,7 @@ function machine(options: MachineOptions = {}) {
   if (realGit === null) throw new Error("this test needs git");
   writeFileSync(join(fake, "local-head"), `${options.localHead ?? HEAD_A}\n`);
   writeFileSync(join(fake, "installed-after"), installed(newVersion));
-  writeFileSync(join(fake, "copy-after"), copyManifest(newVersion));
+  writeFileSync(join(fake, "copy-after"), copyManifest(newVersion, options.newDependencies));
   writeFileSync(join(fake, "remote-marketplace"), marketplaceJson);
   writeFileSync(join(fake, "remote-plugin"), copyManifest(options.remoteVersion ?? newVersion));
   const q = (path: string) => `'${path}'`;
@@ -704,6 +728,101 @@ describe("a failure: when it counts, and who is told", () => {
       "failed at 2026-10-15T11:00:00Z",
     );
   });
+
+  describe("an update a companion plugin stops, check after check", () => {
+    const HOUR = 60 * 60 * 1000;
+    const REFUSED =
+      "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update claude-mem@thedotmack";
+    /** A machine whose claude-mem is too old for the version a refresh brings. */
+    const refusing = () =>
+      machine({
+        claudeMem: "14.2.0",
+        newDependencies: [{ marketplace: "thedotmack", name: "claude-mem", version: ">=15.0.0" }],
+        remoteHead: HEAD_B,
+      });
+    /** One background check at `nowMs` with the fake claude; `claude: null` fails another way. */
+    const refuseAt = (m: ReturnType<typeof machine>, nowMs: number, found = true) =>
+      backgroundCheck({
+        claude: found ? join(m.home, "fake", "bin", "claude") : null,
+        env: m.env,
+        notify: () => {},
+        now: () => nowMs,
+        paths: m.paths,
+        run: capturingRunner(m.env, m.home),
+      });
+
+    test("the same refusal at every hourly check is one streak, told once", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T10:00:00Z",
+        detail: REFUSED,
+        result: "failed",
+        since: "2026-10-15T10:00:00Z",
+      });
+      expect(hookHere(m, NOW).answer).toContain(
+        "the background update failed at 2026-10-15T10:00:00Z (cc-smart-dev-kit 1.1.0 was not installed",
+      );
+      await refuseAt(m, NOW + HOUR);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T11:00:00Z",
+        detail: REFUSED,
+        result: "failed",
+        since: "2026-10-15T10:00:00Z",
+      });
+      expect(hookHere(m, NOW + HOUR).answer).toBe("");
+      await refuseAt(m, NOW + 2 * HOUR);
+      expect(hookHere(m, NOW + 2 * HOUR).answer).toBe("");
+    });
+
+    test("a failure with other words starts a new streak, told again", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(hookHere(m, NOW).answer).toContain("failed at 2026-10-15T10:00:00Z");
+      await refuseAt(m, NOW + HOUR, false);
+      expect(readLastCheck(m.files)).toEqual({
+        at: "2026-10-15T11:00:00Z",
+        detail: "the claude command is not on PATH",
+        result: "failed",
+        since: "2026-10-15T11:00:00Z",
+      });
+      expect(hookHere(m, NOW + HOUR).answer).toContain(
+        "failed at 2026-10-15T11:00:00Z (the claude command is not on PATH)",
+      );
+    });
+
+    test("a check that gets past it ends the streak: the same refusal later is told again", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      expect(hookHere(m, NOW).answer).toContain("failed at 2026-10-15T10:00:00Z");
+      // A check in between that went through, as an up-to-date one records it.
+      writeLastCheck(m.files, {
+        at: "2026-10-15T11:00:00Z",
+        detail: "1.0.0",
+        result: "up-to-date",
+      });
+      await refuseAt(m, NOW + 2 * HOUR);
+      expect(readLastCheck(m.files)).toMatchObject({ since: "2026-10-15T12:00:00Z" });
+      expect(hookHere(m, NOW + 2 * HOUR).answer).toContain("failed at 2026-10-15T12:00:00Z");
+    });
+
+    test("a refusal's streak never makes the marketplace count as unreadable for longer", async () => {
+      const m = refusing();
+      await refuseAt(m, NOW);
+      await refuseAt(m, NOW + 30 * HOUR);
+      // The marketplace cannot be read now: its own streak starts here, not 31 h ago.
+      writeFileSync(
+        join(m.home, "fake", "bin", "git"),
+        "#!/bin/sh\necho 'fatal: could not read from remote repository' >&2\nexit 128\n",
+      );
+      await refuseAt(m, NOW + 31 * HOUR);
+      expect(readLastCheck(m.files)).toMatchObject({
+        at: "2026-10-16T17:00:00Z",
+        result: "unreachable",
+        since: "2026-10-16T17:00:00Z",
+      });
+    });
+  });
 });
 
 /** The hook's logic in this process, with a spy for the background start. */
@@ -938,6 +1057,80 @@ describe("cc-smart-dev-kit update", () => {
       "Unknown option: --now\n\nUsage: cc-smart-dev-kit update [--check | --hold | --resume]\n",
     );
   }, 30_000);
+});
+
+describe("a companion plugin the new version needs", () => {
+  const NEEDS_15 = [{ marketplace: "thedotmack", name: "claude-mem", version: ">=15.0.0" }];
+  const TOO_OLD =
+    "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update claude-mem@thedotmack";
+
+  test("in the new version's range: `update` installs it", async () => {
+    const m = machine({ claudeMem: "15.1.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(m.installedVersion()).toBe("1.1.0");
+  }, 30_000);
+
+  test("outside it: `update` refreshes, installs nothing, and says which companion and the command", async () => {
+    const m = machine({ claudeMem: "14.2.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe(`${TOO_OLD}\n`);
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
+    expect(m.installedVersion()).toBe("1.0.0");
+    expect(readLastCheck(m.files)).toMatchObject({ detail: TOO_OLD, result: "failed" });
+  }, 30_000);
+
+  test("outside it, in the background: recorded as failed, and the next session start says it once", async () => {
+    const m = machine({ claudeMem: "14.2.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    await m.hook();
+    const last = await m.settled();
+    expect(last).toMatchObject({ detail: TOO_OLD, result: "failed" });
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
+    expect(m.read("notify.log")).toBe("");
+    const told = await m.hook();
+    expect(JSON.parse(told.stdout)).toEqual({
+      systemMessage: `cc-smart-dev-kit: the background update failed at ${last.at} (${TOO_OLD}). The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update`,
+    });
+  }, 30_000);
+
+  test("not installed: the update runs (Claude Code installs it; doctor names it with its own fix)", async () => {
+    const m = machine({ newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(0);
+    expect(m.installedVersion()).toBe("1.1.0");
+  }, 30_000);
+
+  test("the new version's dependencies cannot be read: this version's own list decides", async () => {
+    const m = machine({ claudeMem: "1.0.0", newDependencies: "memory", remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toStartWith(
+      "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 1.0.0 is outside >=",
+    );
+    expect(run.stderr).toEndWith(". First run: claude plugin update claude-mem@thedotmack\n");
+    expect(m.installedVersion()).toBe("1.0.0");
+  }, 30_000);
+
+  test("companionsBehind: each companion outside its range or with no version number, never an unknown marketplace", () => {
+    const m = machine({ claudeMem: "8713c5b11005" });
+    const behind = companionsBehind(m.paths, [
+      ...NEEDS_15,
+      { marketplace: "elsewhere", name: "other", version: ">=1.0.0" },
+      { marketplace: "claude-plugins-official", name: "frontend-design" },
+    ]);
+    expect(behind).toEqual([
+      {
+        fix: "claude plugin update claude-mem@thedotmack",
+        ok: false,
+        text: "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0",
+      },
+    ]);
+    expect(companionsBehindDetail("2.0.0", [...behind, ...behind])).toBe(
+      "cc-smart-dev-kit 2.0.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0; claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0. First run: claude plugin update claude-mem@thedotmack",
+    );
+  });
 });
 
 describe("running sessions and the version they loaded", () => {

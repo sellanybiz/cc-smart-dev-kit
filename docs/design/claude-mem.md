@@ -8,6 +8,18 @@ seeds `"true"` itself, so a `"true"` setup never wrote over is no choice). It wi
 to move open lists. Restore undoes only managed changes. Memory still uses `save_memory`;
 work notes and to-dos use the kit's task tools. Doctor checks that split.
 
+Setup also keeps `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: "false"`. The kit owns instruction
+routing, and the memory-use block still points at the retired `work_state_write` tools.
+The overflow in [#5180](https://github.com/thedotmack/claude-mem/issues/5180) was fixed in
+claude-mem 15.7.0 (PR #5181); it is no longer the reason to disable the block.
+Recall uses `/claude-mem:mem-search` (`search` → `timeline` → `get_observations`), then
+`save_memory` for a new lasting fact. `mem_search` was removed in 15.0.0.
+
+Doctor reads `CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH` from claude-mem's settings, including the
+configured data directory and old nested form. My Work auto-refresh defaults on and can
+run logged-in agents outside the note-taker route shown by the kit. Doctor reports this as
+information, not a failure. Set the key to `"false"` to turn it off; setup leaves it alone.
+
 ## D68's earlier split
 
 The rest of this section records D68, not the current setup contract. D68 (2026-10-29)
@@ -17,7 +29,7 @@ both blocks off; its overflow came from the memory-use block, not work state.
 The [research](../../.claude/research/archive/2026-10-29-claude-mem-work-state.md) reads
 claude-mem 15.4.0's worker and CHANGELOG. Work state is capped at 3,000 characters, with
 its room reserved inside the 10,000-character context budget since 13.29.0; the kit requires
-`>=13.36.0`. The 2,466-character memory-use block has no room reserved unless TeamBrain is
+`>=15.0.0`. The 2,466-character memory-use block has no room reserved unless TeamBrain is
 set up. Measured on one machine with memory-use off, context grew from 4,824 to 7,053
 characters when work state was enabled. The worker code was checked in 15.4.0; the earlier
 budget guarantee comes from its CHANGELOG.
@@ -39,9 +51,9 @@ budget guarantee comes from its CHANGELOG.
     before a save, and where an instruction for next time goes instead.
   - It writes a to-do with `work_state_write`; a lead writes its own with `TaskCreate`.
 
-  claude-mem has been asked to count the block in its budget without TeamBrain too
-  ([thedotmack/claude-mem#5180](https://github.com/thedotmack/claude-mem/issues/5180)). Once a
-  release does, the block can come back on.
+  At the time, #5180 asked claude-mem to budget the block without TeamBrain too. Version
+  15.7.0 fixed that overflow. D75 still keeps the block off for instruction ownership,
+  rather than restoring it as D68 had proposed.
 - **Doctor explains the source.** The start-blocks line fails when the unchosen memory-use
   block is on or work state is still off from an older setup, with `cc-smart-dev-kit setup`
   as the fix. A person's value is information, not a failure. The task-tools line belongs to
@@ -98,7 +110,7 @@ set or changed stays. A removal alone sends no check to the backend.
   this case: the keys are taken out (above).
 - **No chroma workaround.** An older pin of claude-mem's vector search (`pydantic<2.12`
   through a wrapped `uvx`) is not needed: claude-mem 13.35.0 ships its own pin
-  (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 13.36.0 or newer, so no
+  (`pydantic<2.14`, its CHANGELOG, #4595), and the kit needs 15.0.0 or newer, so no
   warning is needed below it.
 
 ## claude-mem from the portal (PM1)

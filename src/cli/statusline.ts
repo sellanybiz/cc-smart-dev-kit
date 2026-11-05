@@ -31,7 +31,10 @@
  *     stood in, so auto mode approves nothing. The words and the exact fix are
  *     `checks-down.ts`'s, the same in `gateway status`, `doctor` and the session's note; a
  *     profile's record reads `in profile <name>` and names the profile's own command;
- *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time.
+ *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time;
+ *   - `cache miss: tools_changed`, for a minute after a prompt-cache miss (`cache-miss.ts`:
+ *     `prompt_cache.last_miss_at` and `last_miss_cause`, `CACHE_MISS_SHOW_MS`, no state), before
+ *     the current task.
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
@@ -47,8 +50,9 @@
  * once, at the folder the session is in, with the same reader the alert hooks use (`alertsAt`),
  * so the number lives in one place (`src/workflow/schema.ts`).
  *
- * It also records the 5-hour usage window for other readers. A recording failure prints
- * one stderr line without failing the status line.
+ * It also records the 5-hour and 7-day usage windows (`usage-window.ts`) and the last cache miss
+ * shown (`cache-miss.ts`) for other readers. A recording failure prints one stderr line without
+ * failing the status line.
  */
 
 import { readFileSync } from "node:fs";
@@ -103,6 +107,7 @@ function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {
 
 import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
+import { cacheMissSegment } from "./cache-miss";
 import type { CliPaths } from "./paths";
 import { contextSegment, contextUseOf, effortOf, pinnedEffortOf } from "./statusline-context";
 import { FIVE_HOUR_WINDOW, recordUsageWindow, windowOf } from "./usage-window";
@@ -289,7 +294,7 @@ export async function runStatusline(
   } catch (error) {
     // The line still prints even when the reading cannot be saved.
     console.error(
-      `${COMMAND}: the 5-hour usage window was not recorded (${error instanceof Error ? error.message : String(error)})`,
+      `${COMMAND}: the usage windows were not recorded (${error instanceof Error ? error.message : String(error)})`,
     );
   }
   let state: LimitState | null = null;
@@ -300,6 +305,7 @@ export async function runStatusline(
     state = null;
   }
   const session = isJsonObject(input) ? sessionOf(paths, env) : null;
+  const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
   const task = currentTask(paths, input, env);
   const text = statuslineText(
     input,
@@ -310,6 +316,6 @@ export async function runStatusline(
     session,
     contextFactsOf(paths, input, env, state, session, nowMs),
   );
-  console.log([text, task].filter((part) => part !== null && part !== "").join(" · "));
+  console.log([text, cacheMiss, task].filter((part) => part !== null && part !== "").join(" · "));
   return 0;
 }
