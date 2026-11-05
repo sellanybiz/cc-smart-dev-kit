@@ -668,9 +668,10 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   by hand or run `cc-smart-dev-kit workflow review-done`, because the merge guard reads the
   base branch's list. A personal `workflow.json` list gets its own ✗ with `workflow set` or
   `unset`, run in your own terminal (inside Claude Code they refuse the gate's keys); those
-  changes count at once. A ! names Markdown files in `.claude/cc-smart-dev-kit/`,
-  `.claude/agents/` and `.claude/skills/` that mention the old id; files and folders it cannot
-  read are skipped;
+  changes count at once. A ! names each instruction file that mentions the old id: the
+  project's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, and the Markdown files in
+  `.claude/cc-smart-dev-kit/`, `.claude/rules/`, `.claude/agents/` and `.claude/skills/`; files
+  and folders it cannot read are skipped;
 - git can read the marketplace (`git ls-remote`, with no password prompt in a terminal:
   `GIT_TERMINAL_PROMPT=0`; a git credential helper with a window of its own may still
   show one). It adds ssh `BatchMode` only when you have no ssh command of your own

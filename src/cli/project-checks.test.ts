@@ -142,6 +142,36 @@ describe("the retired review agent", () => {
       "! project: .claude/skills/local/SKILL.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
     ]);
   });
+  test("warns for the project's memory files and nested rules, not files that do not mention it", async () => {
+    const repo = makeRepo();
+    for (const file of [
+      "CLAUDE.md",
+      "CLAUDE.local.md",
+      ".claude/CLAUDE.md",
+      ".claude/rules/review.md",
+      ".claude/rules/deep/more.md",
+    ]) {
+      const path = join(repo, file);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, "Review with cc-smart-dev-kit:reviewer.");
+    }
+    writeFileSync(join(repo, ".claude", "rules", "clean.md"), "cc-smart-dev-kit:senior-engineer");
+    const lines = await check(repo);
+    expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
+      "! project: .claude/CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/rules/deep/more.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/rules/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: CLAUDE.local.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+    ]);
+  });
+  test("a root CLAUDE.md is searched in a project with no .claude folder", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "CLAUDE.md"), "cc-smart-dev-kit:reviewer");
+    expect(await check(repo)).toEqual([
+      "! project: CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+    ]);
+  });
 });
 
 describe("Claude Code's own worktrees, and the retired engine", () => {

@@ -526,6 +526,16 @@ describe("the plan-usage line at a prompt (2.2.0)", () => {
     expect(existsSync(usageMark(env, SESSION))).toBe(false);
   });
 
+  it("no session folder in the input: no line and no mark, the login cannot be read", () => {
+    const env = started();
+    writeUsage(env, { fiveHour: { percent: 60, resetsAt: AT_13 } });
+    const { cwd: _dropped, ...noFolder } = event("UserPromptSubmit", "/nowhere");
+    expect(said(tierView(noFolder, env, cliPaths(env), NOW, "UTC"))).toBeNull();
+    expect(existsSync(usageMark(env, SESSION))).toBe(false);
+    // The next prompt that names its folder is told, once.
+    expect(prompt(env)).toBe(line("5-hour window 60% used (resets 13:00)"));
+  });
+
   it("a window past its reset, or with no reset time: no line", () => {
     const env = started();
     writeUsage(env, { fiveHour: { percent: 95, resetsAt: AT_13 } });
