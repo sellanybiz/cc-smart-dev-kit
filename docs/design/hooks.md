@@ -857,8 +857,26 @@ where there was a question, or a note, never an allow.
   the note. **Available: never a block**, and the "available again" note stays for the next
   prompt. No `session_id`: silent. `claude -p` is treated like any session, as `keep-going` and
   `verify-gate` are; it hears the note at its first prompt anyway. A subagent never hears it
-  here (`SubagentStop` is not wired): it never asks the person. The notifier's "finished" alert
-  does not ask this decision, so the stop this hook blocks may raise it once per away period.
+  here (`SubagentStop` is not wired): it never asks the person.
+
+  **The session that switches the state is told already.** `user unavailable` marks the session
+  that runs it (`CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a Bash call's environment,
+  `docs/claude-code-contract.md` § Hooks) as told for the new period, through the same
+  `sayOnce` and key (`saidKey`), so the session that followed the skill is not blocked at its
+  own turn end. The person's own terminal has no session id and marks nothing. A mark that
+  cannot be written is one warning line; that session is then blocked once, as any other. **A
+  subagent's Bash call carries its lead session's id** (seen on 2.1.318), so a subagent that ran
+  `user unavailable` would mark its lead as told; the skill is the lead's, and no brief asks a
+  subagent to run it.
+
+  **The notifier's "finished" alert does not ask this decision**, so the stop this hook blocks
+  may raise it once per session and away period, before the turn really ends. `verify-gate`'s
+  and `keep-going`'s predictions are safe because their mark is their own block's feedback line
+  in the transcript, which Claude Code writes after every Stop hook has answered. This hook's
+  mark is `said`, which `stopAnswer` writes **during** the Stop, and Claude Code runs an event's
+  hooks in parallel: a notifier that reads `said` after this hook wrote it sees "heard" and alerts
+  as before; one that reads it first predicts the block. No state the notifier can read stays the
+  same across that write, so a prediction from `said` would be right in one order only.
 
 **Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
 state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder

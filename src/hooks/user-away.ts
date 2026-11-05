@@ -332,8 +332,11 @@ function periodKey(state: AwayState): string {
   return `${state.since}|${state.until}`;
 }
 
-/** What a session heard last (`said`): the period and the count, so a change is said again. */
-function saidKey(state: AwayState): string {
+/**
+ * What a session heard last (`said`): the period and the count, so a change is said again. The
+ * `user unavailable` command writes it too, for the session that switches the state.
+ */
+export function saidKey(state: AwayState): string {
   return `${periodKey(state)}|${String(state.items.length)}`;
 }
 
