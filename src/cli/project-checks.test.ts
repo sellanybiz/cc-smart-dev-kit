@@ -148,7 +148,7 @@ describe("the retired review agent", () => {
       "CLAUDE.md",
       "CLAUDE.local.md",
       ".claude/CLAUDE.md",
-      ".claude/rules/review.md",
+      ".claude/rules/review.local.md",
       ".claude/rules/deep/more.md",
     ]) {
       const path = join(repo, file);
@@ -160,7 +160,7 @@ describe("the retired review agent", () => {
     expect(lines.filter((line) => line.includes("mentions the retired"))).toEqual([
       "! project: .claude/CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
       "! project: .claude/rules/deep/more.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
-      "! project: .claude/rules/review.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
+      "! project: .claude/rules/review.local.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
       "! project: CLAUDE.local.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
       "! project: CLAUDE.md mentions the retired cc-smart-dev-kit:reviewer Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer",
     ]);

@@ -22,7 +22,13 @@ import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import { capturingRunner, installedText, notifyCommand } from "./apply";
+import {
+  capturingRunner,
+  companionsBehind,
+  companionsBehindDetail,
+  installedText,
+  notifyCommand,
+} from "./apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
@@ -79,6 +85,10 @@ interface MachineOptions {
   env?: Record<string, string>;
   /** The text of the copy's major-notes file (`MAJOR_NOTES_PATH`); absent: no such file. */
   majorNotes?: string;
+  /** The `dependencies` of the plugin.json a refresh brings; absent: the copy has none. */
+  newDependencies?: unknown;
+  /** The claude-mem version installed beside the plugin; absent: not installed. */
+  claudeMem?: string;
 }
 
 /** A temp machine as `claude plugin install cc-smart-dev-kit@cc-smart-dev-kit` leaves it, with fakes on PATH. */
@@ -98,12 +108,26 @@ function machine(options: MachineOptions = {}) {
   mkdirSync(join(copy, ".claude-plugin"), { recursive: true });
   mkdirSync(join(copy, "plugin", ".claude-plugin"), { recursive: true });
   mkdirSync(installPath, { recursive: true });
+  const claudeMemPath = join(plugins, "cache", "thedotmack", "claude-mem", "installed");
+  mkdirSync(claudeMemPath, { recursive: true });
   const installed = (version: string) =>
     JSON.stringify({
-      plugins: { "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath, scope: "user", version }] },
+      plugins: {
+        "cc-smart-dev-kit@cc-smart-dev-kit": [{ installPath, scope: "user", version }],
+        ...(options.claudeMem !== undefined && {
+          "claude-mem@thedotmack": [
+            { installPath: claudeMemPath, scope: "user", version: options.claudeMem },
+          ],
+        }),
+      },
       version: 2,
     });
-  const copyManifest = (version: string) => JSON.stringify({ name: "cc-smart-dev-kit", version });
+  const copyManifest = (version: string, dependencies?: unknown) =>
+    JSON.stringify({
+      name: "cc-smart-dev-kit",
+      version,
+      ...(dependencies !== undefined && { dependencies }),
+    });
   const marketplaceJson = JSON.stringify({
     name: "cc-smart-dev-kit",
     plugins: [{ name: "cc-smart-dev-kit", source: "./plugin" }],
@@ -138,7 +162,7 @@ function machine(options: MachineOptions = {}) {
   if (realGit === null) throw new Error("this test needs git");
   writeFileSync(join(fake, "local-head"), `${options.localHead ?? HEAD_A}\n`);
   writeFileSync(join(fake, "installed-after"), installed(newVersion));
-  writeFileSync(join(fake, "copy-after"), copyManifest(newVersion));
+  writeFileSync(join(fake, "copy-after"), copyManifest(newVersion, options.newDependencies));
   writeFileSync(join(fake, "remote-marketplace"), marketplaceJson);
   writeFileSync(join(fake, "remote-plugin"), copyManifest(options.remoteVersion ?? newVersion));
   const q = (path: string) => `'${path}'`;
@@ -938,6 +962,80 @@ describe("cc-smart-dev-kit update", () => {
       "Unknown option: --now\n\nUsage: cc-smart-dev-kit update [--check | --hold | --resume]\n",
     );
   }, 30_000);
+});
+
+describe("a companion plugin the new version needs", () => {
+  const NEEDS_15 = [{ marketplace: "thedotmack", name: "claude-mem", version: ">=15.0.0" }];
+  const TOO_OLD =
+    "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 14.2.0 is outside >=15.0.0. First run: claude plugin update claude-mem@thedotmack";
+
+  test("in the new version's range: `update` installs it", async () => {
+    const m = machine({ claudeMem: "15.1.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.stderr).toBe("");
+    expect(run.exitCode).toBe(0);
+    expect(m.installedVersion()).toBe("1.1.0");
+  }, 30_000);
+
+  test("outside it: `update` refreshes, installs nothing, and says which companion and the command", async () => {
+    const m = machine({ claudeMem: "14.2.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe(`${TOO_OLD}\n`);
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
+    expect(m.installedVersion()).toBe("1.0.0");
+    expect(readLastCheck(m.files)).toMatchObject({ detail: TOO_OLD, result: "failed" });
+  }, 30_000);
+
+  test("outside it, in the background: recorded as failed, and the next session start says it once", async () => {
+    const m = machine({ claudeMem: "14.2.0", newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    await m.hook();
+    const last = await m.settled();
+    expect(last).toMatchObject({ detail: TOO_OLD, result: "failed" });
+    expect(m.read("claude.log")).toBe("plugin marketplace update cc-smart-dev-kit\n");
+    expect(m.read("notify.log")).toBe("");
+    const told = await m.hook();
+    expect(JSON.parse(told.stdout)).toEqual({
+      systemMessage: `cc-smart-dev-kit: the background update failed at ${last.at} (${TOO_OLD}). The log: ~/.claude/cc-smart-dev-kit/update.log. To try now: cc-smart-dev-kit update`,
+    });
+  }, 30_000);
+
+  test("not installed: the update runs (Claude Code installs it; doctor names it with its own fix)", async () => {
+    const m = machine({ newDependencies: NEEDS_15, remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(0);
+    expect(m.installedVersion()).toBe("1.1.0");
+  }, 30_000);
+
+  test("the new version's dependencies cannot be read: this version's own list decides", async () => {
+    const m = machine({ claudeMem: "1.0.0", newDependencies: "memory", remoteHead: HEAD_B });
+    const run = await m.cli(["update"]);
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toStartWith(
+      "cc-smart-dev-kit 1.1.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 1.0.0 is outside >=",
+    );
+    expect(run.stderr).toEndWith(". First run: claude plugin update claude-mem@thedotmack\n");
+    expect(m.installedVersion()).toBe("1.0.0");
+  }, 30_000);
+
+  test("companionsBehind: each companion outside its range or with no version number, never an unknown marketplace", () => {
+    const m = machine({ claudeMem: "8713c5b11005" });
+    const behind = companionsBehind(m.paths, [
+      ...NEEDS_15,
+      { marketplace: "elsewhere", name: "other", version: ">=1.0.0" },
+      { marketplace: "claude-plugins-official", name: "frontend-design" },
+    ]);
+    expect(behind).toEqual([
+      {
+        fix: "claude plugin update claude-mem@thedotmack",
+        ok: false,
+        text: "claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0",
+      },
+    ]);
+    expect(companionsBehindDetail("2.0.0", [...behind, ...behind])).toBe(
+      "cc-smart-dev-kit 2.0.0 was not installed, because of a companion plugin it needs: claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0; claude-mem@thedotmack 8713c5b11005: its version is unknown (not a version number), so cc-smart-dev-kit cannot check it against >=15.0.0. First run: claude plugin update claude-mem@thedotmack",
+    );
+  });
 });
 
 describe("running sessions and the version they loaded", () => {

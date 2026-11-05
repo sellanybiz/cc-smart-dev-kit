@@ -8,9 +8,17 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { COMMAND, MARKETPLACE, PLUGIN, PLUGIN_ID } from "../build-info";
+import { COMMAND, DEPENDENCIES, MARKETPLACE, PLUGIN, PLUGIN_ID } from "../build-info";
+import { type Dependency, readManifestDependencies } from "../build-info/manifest";
+import type { CheckFailed } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import { TOAST_SHELL, windowsToastArgv } from "../hooks/windows-toast";
+import {
+  companionCheck,
+  companions,
+  MARKETPLACE_SOURCES,
+  versionState,
+} from "../machine/companions";
 import { gitEnv } from "../project/git-env";
 import { findUserInstall } from "../setup/installed-plugins";
 import {
@@ -110,8 +118,9 @@ export async function applyUpdate(
   const refreshed = await step(MARKETPLACE_REFRESH);
   if (refreshed !== null) return refreshed;
   const location = marketplaceInstallLocation(paths.knownMarketplacesFile, MARKETPLACE);
-  const inCopy = location === null ? null : marketplaceCopyVersion(location, PLUGIN).version;
-  if (inCopy !== null && isOlder(before, inCopy)) {
+  const copy = location === null ? null : marketplaceCopyVersion(location, PLUGIN);
+  const inCopy = copy?.version ?? null;
+  if (location !== null && copy !== null && inCopy !== null && isOlder(before, inCopy)) {
     if (isNewMajor(before, inCopy)) {
       const major: MajorStep = {
         from: before,
@@ -120,11 +129,56 @@ export async function applyUpdate(
       };
       if (!onMajor(major)) return { after: before, before, detail: "", held: major, ok: true };
     }
+    const behind = companionsBehind(paths, neededDependencies(copy.manifest));
+    if (behind.length > 0) return fail(companionsBehindDetail(inCopy, behind));
     const updated = await step(PLUGIN_UPDATE);
     if (updated !== null) return updated;
   }
   const after = findUserInstall(paths.installedPluginsFile)?.version ?? null;
   return { after, before, detail: "", ok: true };
+}
+
+/**
+ * The companion plugins the version in the marketplace copy needs: its own plugin.json's
+ * `dependencies`, read after the refresh, because a new version may raise a range this one
+ * does not know. This version's own list when that file cannot be read.
+ */
+function neededDependencies(manifest: string): readonly Dependency[] {
+  try {
+    return readManifestDependencies(manifest);
+  } catch {
+    return DEPENDENCIES;
+  }
+}
+
+/**
+ * Each installed companion whose version the new version's range does not take: Claude Code
+ * then refuses the update (`Dependency … does not satisfy`), and `update` would only fail again
+ * the same way. Doctor's line for each (`companionCheck`), with the fix it names.
+ *
+ * A companion that is not installed is left out: when its marketplace is added, Claude Code
+ * installs it with the update, and doctor names it with its own fix either way. So is a
+ * dependency from a marketplace this version does not know: the new version's setup adds it.
+ */
+export function companionsBehind(
+  paths: CliPaths,
+  dependencies: readonly Dependency[],
+): CheckFailed[] {
+  const known = dependencies.filter((dependency) =>
+    Object.hasOwn(MARKETPLACE_SOURCES, dependency.marketplace),
+  );
+  return companions(known).flatMap((companion) => {
+    const install = findUserInstall(paths.installedPluginsFile, companion.id);
+    if (install === null || !existsSync(install.installPath)) return [];
+    const check = companionCheck(companion, versionState(companion, install.version));
+    return check.ok ? [] : [check];
+  });
+}
+
+/** Why the update stopped before `claude plugin update`, in one line with its fix. */
+export function companionsBehindDetail(version: string, behind: readonly CheckFailed[]): string {
+  const fixes = [...new Set(behind.map((check) => check.fix))];
+  return `${PLUGIN} ${shownVersion(version)} was not installed, because of a companion plugin it needs: ${behind.map((check) => check.text).join("; ")}. First run: ${fixes.join(", then ")}`;
 }
 
 /**

@@ -76,6 +76,19 @@ export function readBuildInfo(manifestFile: string): BuildInfo {
 }
 
 /**
+ * Only the `dependencies` of a plugin.json: what another copy of the plugin (the version in
+ * the marketplace copy, before it is installed) needs. Throws when the file cannot be read or
+ * its `dependencies` are not in the object form.
+ */
+export function readManifestDependencies(manifestFile: string): Dependency[] {
+  const manifest: unknown = JSON.parse(readFileSync(manifestFile, "utf8"));
+  if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+    throw new Error(`${manifestFile}: not a JSON object`);
+  }
+  return readDependencies(manifestFile, (manifest as { dependencies?: unknown }).dependencies);
+}
+
+/**
  * A Bun macro (imported `with { type: "macro" }`): it runs when the code is transpiled,
  * so the bundle holds only these values, never the rest of plugin.json.
  */
