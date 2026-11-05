@@ -60,12 +60,14 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 **What to run:**
 
-1. **Before anything else**, if claude-mem is older than 15.0.0, update it:
+1. **Before the update** (or now, if it failed), if claude-mem is older than 15.0.0, update it:
    `claude plugin update claude-mem@thedotmack`. Claude Code will not install 2.2.0 beside an
-   older claude-mem, and the 2.1 background update cannot say why. From 2.2.0 on, the update
-   checks this first and names the command.
-2. Run `cc-smart-dev-kit doctor` in each project you use. It names every place the old
-   `cc-smart-dev-kit:reviewer` id is still used.
+   older claude-mem, and the 2.1 update does not name the fix. From 2.2.0 on, the update checks
+   this first and names the command.
+2. Run `cc-smart-dev-kit doctor` in each project you use. It names the project's instruction
+   files (its `CLAUDE.md` files and `.claude/` Markdown) that still use the old
+   `cc-smart-dev-kit:reviewer` id. Check your own Workflow scripts in `.claude/workflows/` by
+   hand.
 3. A project's `.claude/cc-smart-dev-kit.json` that lists `cc-smart-dev-kit:reviewer` in
    `workflow.reviewAgents`: replace it with `cc-smart-dev-kit:senior-engineer`. The merge guard
    judges a merge by the base branch's list, so merge that one change by hand, or run

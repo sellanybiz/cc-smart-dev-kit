@@ -350,7 +350,14 @@ describe("the review brief marker", () => {
     expect(recorded(env, repo)).toEqual({});
     expect(JSON.parse(readFileSync(recordFile(env, repo, ".starts.json"), "utf8"))).toEqual({});
   });
-  for (const brief of ["Consult", "prefix Mode: review", "Mode: review suffix", " Mode: review"]) {
+  for (const brief of [
+    "Consult",
+    "prefix Mode: review",
+    "Mode: review suffix",
+    " Mode: review",
+    // A plan's second read: a plan is not code, so it must never stand for a code review.
+    "Mode: plan-review",
+  ]) {
     test(`does not record an inexact marker: ${brief}`, async () => {
       const env = hookEnv();
       const repo = makeRepo();
