@@ -488,11 +488,17 @@ context, so another name can reach them (`globalThis.agent`, `this.agent` at the
 `const { agent: a } = globalThis`), and code built at run time can reach them with none
 (`eval`, `Function`, a function's `.constructor`, `import()`). So each of `eval`, `Function`,
 `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
-and a `constructor` member refuses the whole script, naming what and where. What is left: a
-computed member whose key is built at run time (`x[k]`, `Reflect.get(o, k)`) is not refused,
-since ordinary code is full of them; with the global object and `constructor` refused by name,
-no route through one to `agent` is known. The guard does not see every launch: it sees each
-direct `agent(…)` call, and refuses the routes it knows. Every hook bundle carries the guard's code through the hook
+and a `constructor` member refuses the whole script, naming what and where; `self` and `global`
+are refused even as a name the script declares itself (no scope is tracked). **A limit the
+guard does not close:** a string key, literal or built at run time, still reaches the
+`Function` constructor (`x[k]`, `Reflect.get(() => {}, "constructor")`,
+`Object.getOwnPropertyDescriptor(Object.getPrototypeOf(f), "constructor").value`), and the
+guard does not refuse it, since ordinary code is full of computed keys. What stops that code
+from turning a string into a launch is Claude Code's own `codeGeneration: { strings: false }`
+on the script's `vm` context, not the guard: proved on standalone Bun 1.4.4, read from the
+2.1.318 binary, not proved inside Claude Code, and re-checked on every upgrade
+(`docs/claude-code-contract.md`). The guard does not see every launch: it sees each direct
+`agent(…)` call, and refuses the routes it knows. Every hook bundle carries the guard's code through the hook
 table (`specs.ts`), so acorn is handed in by the agent guard's own entry
 (`src/hooks/script-parser.ts`): it is in `agent-guard.js` alone, and a program that was never
 handed the parser refuses every script.

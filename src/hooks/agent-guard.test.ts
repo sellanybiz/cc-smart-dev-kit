@@ -564,7 +564,11 @@ describe("round 3: shapes a hand-written lexer misread are parsed, and their lau
       ],
       [`await globalThis.agent("p", ${opts});`, "`globalThis`", 1],
       [`await globalThis["ag" + "ent"]("p", ${opts});`, "`globalThis`", 1],
-      [`await this.agent("p", ${opts});`, "`this` outside a function", 1],
+      [
+        `await this.agent("p", ${opts});`,
+        "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+        1,
+      ],
       [`const { agent: a } = globalThis;\nawait a("p", ${opts});`, "`globalThis`", 1],
       [`await Function("return agent")()("p", ${opts});`, "`Function`", 1],
       [
@@ -578,8 +582,8 @@ describe("round 3: shapes a hand-written lexer misread are parsed, and their lau
         1,
       ],
       ['await import("./launch.js");', "`import(…)`", 1],
-      [`await self.agent("p", ${opts});`, "`self`", 1],
-      [`await global.agent("p", ${opts});`, "`global`", 1],
+      [`await self.agent("p", ${opts});`, "`self` (even as a name of your own: rename it)", 1],
+      [`await global.agent("p", ${opts});`, "`global` (even as a name of your own: rename it)", 1],
     ];
     for (const [script, what, line] of routes) {
       const said = await answer(script);
@@ -587,10 +591,21 @@ describe("round 3: shapes a hand-written lexer misread are parsed, and their lau
       expect(said.permissionDecisionReason).toBe(
         [
           `This Workflow uses ${what} (line ${line}): that can reach \`agent\` under another name, or build code at run time, so it could launch an agent the guard never sees.`,
-          'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a function, `import(…)` and `.constructor`.',
+          'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
         ].join("\n"),
       );
     }
+  });
+
+  it("`self` is refused even when the script declares it itself, and the message says to rename it", async () => {
+    const said = await answer("const o = { m() { const self = this; return self.x } }");
+    expect(said.permissionDecision).toBe("deny");
+    expect(said.permissionDecisionReason).toBe(
+      [
+        "This Workflow uses `self` (even as a name of your own: rename it) (line 1): that can reach `agent` under another name, or build code at run time, so it could launch an agent the guard never sees.",
+        'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.',
+      ].join("\n"),
+    );
   });
 
   it("a hook program that was never handed the parser denies every Workflow", async () => {

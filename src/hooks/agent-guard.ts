@@ -378,7 +378,7 @@ const HANDED_AROUND: Record<ScriptFunction, string> = {
 
 /** Said after a route around the names: what a script may not use (`ScriptRoute`). */
 const ROUTES_REFUSED =
-  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a function, `import(…)` and `.constructor`.';
+  'Write every launch as a direct `agent("<prompt>", { model: "…", effort: "…" })` call, and leave out `eval`, `Function`, `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function (an arrow uses the script\'s own `this`), `import(…)` and `.constructor`.';
 
 /** Said when a call's options are not what they seem: what the guard read can differ. */
 const OPTIONS_BUILT_AT_RUNTIME = [
@@ -392,7 +392,8 @@ const OPTIONS_BUILT_AT_RUNTIME = [
  * rather than let it run unchecked:
  *   - a script that does not parse (`parseScript`), where a launch could hide;
  *   - a route around the names (`ScriptRoute`): `eval`, `Function`, `arguments`,
- *     `globalThis`, `global`, `self`, a `this` outside a function, `import(…)`, `.constructor`;
+ *     `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`,
+ *     `.constructor`;
  *   - `agent` or `workflow` used without being called at once (`const run = agent; run(…)`,
  *     `agent?.(…)`, either passed around as a value, or a name of the script's own that takes
  *     its place);

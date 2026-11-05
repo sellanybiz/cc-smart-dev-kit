@@ -78,15 +78,24 @@ describe("the calls and uses it finds", () => {
       { line: 2, what: "`Function`" },
       { line: 3, what: "`arguments`" },
       { line: 4, what: "`globalThis`" },
-      { line: 5, what: "`global`" },
-      { line: 6, what: "`self`" },
-      { line: 7, what: "`this` outside a function" },
+      { line: 5, what: "`global` (even as a name of your own: rename it)" },
+      { line: 6, what: "`self` (even as a name of your own: rename it)" },
+      {
+        line: 7,
+        what: "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+      },
       { line: 8, what: "`import(…)`" },
       { line: 9, what: "a `constructor` member" },
       { line: 10, what: "a `constructor` member" },
       { line: 11, what: "a `constructor` member" },
-      { line: 12, what: "`this` outside a function" },
-      { line: 13, what: "`this` outside a function" },
+      {
+        line: 12,
+        what: "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+      },
+      {
+        line: 13,
+        what: "`this` outside a non-arrow function (an arrow uses the script's own `this`)",
+      },
     ]);
   });
 

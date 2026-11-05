@@ -26,10 +26,12 @@
  * reaches it under another name, and code built at run time (`eval`, `Function`, a function's
  * `.constructor`) or `import()` can reach it with no name at all. Each of `eval`, `Function`,
  * `arguments`, `globalThis`, `global`, `self`, a `this` outside a non-arrow function, `import(…)`
- * and a member named `constructor` refuses the whole script. Left: a computed member with a key
- * built at run time (`x[k]`, `Reflect.get(o, k)`) is not refused, since ordinary code is full of
- * them; with the global object and `constructor` refused by name, no route through one to
- * `agent` is known.
+ * and a member named `constructor` refuses the whole script; `self` and `global` even as a name
+ * the script declares itself (no scope is tracked: fail closed). Not closed here: a string key,
+ * literal or built at run time (`x[k]`, `Reflect.get(() => {}, "constructor")`), still reaches
+ * the `Function` constructor; ordinary code is full of computed keys, so they are not refused.
+ * What stops that code from running a string as code is Claude Code's `codeGeneration:
+ * { strings: false }` on the context, not this reader.
  *
  * **Where acorn comes from.** Every hook bundle carries the agent guard's code (the hook table in
  * `specs.ts` holds every hook), and acorn would come with it. So this file imports acorn's types
@@ -89,13 +91,22 @@ const ROUTE_NAMES: readonly string[] = [
   "self",
 ];
 
+/**
+ * The route names a script may well declare for itself (`const self = this`). With no scope
+ * tracked they are refused all the same (fail closed), and the message says to rename them.
+ */
+const COMMON_ROUTE_NAMES: readonly string[] = ["global", "self"];
+
+/** What a message calls a `this` that is the script's own, not a function's. */
+const SCRIPT_THIS = "`this` outside a non-arrow function (an arrow uses the script's own `this`)";
+
 /** The member that leads from any function to the `Function` constructor. */
 const CONSTRUCTOR = "constructor";
 
 /** A route around the names a script may use (`ROUTE_NAMES`, `this`, `import()`, `.constructor`). */
 export interface ScriptRoute {
   line: number;
-  /** What it is, as a message names it: `` `eval` ``, `` `this` outside a function ``, … */
+  /** What it is, as a message names it: `` `eval` ``, `SCRIPT_THIS`, … */
   what: string;
 }
 
@@ -278,10 +289,13 @@ function routeOf(node: Node, parent: Node | null, inFunction: boolean): null | s
   switch (node.type) {
     case "Identifier": {
       const { name } = node as Identifier;
-      return ROUTE_NAMES.includes(name) ? `\`${name}\`` : null;
+      if (!ROUTE_NAMES.includes(name)) return null;
+      return COMMON_ROUTE_NAMES.includes(name)
+        ? `\`${name}\` (even as a name of your own: rename it)`
+        : `\`${name}\``;
     }
     case "ThisExpression":
-      return inFunction ? null : "`this` outside a function";
+      return inFunction ? null : SCRIPT_THIS;
     case "ImportExpression":
       return "`import(…)`";
     case "MemberExpression": {
