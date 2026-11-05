@@ -60,7 +60,10 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 **What to run:**
 
-1. If claude-mem is older than 15.0.0, update it first: `claude plugin update claude-mem@thedotmack`.
+1. **Before anything else**, if claude-mem is older than 15.0.0, update it:
+   `claude plugin update claude-mem@thedotmack`. Claude Code will not install 2.2.0 beside an
+   older claude-mem, and the 2.1 background update cannot say why. From 2.2.0 on, the update
+   checks this first and names the command.
 2. Run `cc-smart-dev-kit doctor` in each project you use. It names every place the old
    `cc-smart-dev-kit:reviewer` id is still used.
 3. A project's `.claude/cc-smart-dev-kit.json` that lists `cc-smart-dev-kit:reviewer` in
