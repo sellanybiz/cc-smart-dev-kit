@@ -250,6 +250,25 @@ export async function clearItems(
   return result;
 }
 
+/** The away period a note names: a new `user unavailable` (or a new `--until`) is a new one. */
+export function periodKey(state: AwayState): string {
+  return `${state.since}|${state.until}`;
+}
+
+/**
+ * What a session heard last (`said`, `stopSaid`): the period and the count, so a change is said
+ * again at the prompt. The hook's notes and `user unavailable` (for the session that switches the
+ * state) write it.
+ */
+export function saidKey(state: AwayState): string {
+  return `${periodKey(state)}|${String(state.items.length)}`;
+}
+
+/** True when `session`'s `said` mark names this away period, at any count. */
+export function saidCovers(state: AwayState, session: string): boolean {
+  return state.said[session]?.startsWith(`${periodKey(state)}|`) === true;
+}
+
 /**
  * True when `session` has not heard `key` as its last note, and records it; false when it has.
  * The cheap path takes no lock: a session that heard it already costs one read.

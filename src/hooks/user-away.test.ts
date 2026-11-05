@@ -825,10 +825,9 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     expect(reasonOf(await atStop(state, transcript))).toBe(BLOCK_REASON);
     // ... or after: the same stop, the same answer.
     expect(awayStopWouldBlock(input, state.paths)).toBe(true);
-    // Claude Code writes the feedback after every Stop hook answered: the next stop ends the turn.
+    // Claude Code writes the feedback after every Stop hook answered: a later stop ends the turn.
     feedback(transcript, BLOCK_REASON);
-    const next = stop(transcript, { stop_hook_active: true });
-    expect(awayStopWouldBlock(next, state.paths)).toBe(false);
+    expect(awayStopWouldBlock(input, state.paths)).toBe(false);
   });
 
   test("a state file the prediction cannot read is no block", async () => {
@@ -853,12 +852,32 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     });
   });
 
-  test("another hook's block does not hide it: `stop_hook_active` alone decides nothing", async () => {
+  test("a stop a Stop hook continued is never blocked, and the prediction agrees: at most one block per chain", async () => {
     const state = await away();
+    // Not heard, and no feedback of this hook's in the transcript: only the input field decides.
     const transcript = transcriptFile();
     feedback(transcript, "Run `bun run check` before you stop.");
-    const result = await atStop(state, transcript, { stop_hook_active: true });
-    expect(reasonOf(result)).toBe(BLOCK_REASON);
+    const continued = { stop_hook_active: true };
+    expect(await atStop(state, transcript, continued)).toEqual({});
+    expect(awayStopWouldBlock(stop(transcript, continued), state.paths)).toBe(false);
+    expect(readAway(state.paths.stateDir).stopSaid).toEqual({});
+    // The next stop no hook continued carries the note.
+    expect(reasonOf(await atStop(state, transcript))).toBe(BLOCK_REASON);
+  });
+
+  test("a count that comes back to the block's count after a prompt is said: the stop mark is stale once `said` covers the period", async () => {
+    const state = await away();
+    await atStop(state, transcriptFile());
+    // An automated turn after the block: silent, and `said` now covers the period.
+    expect(await atPrompt(turn, state)).toBeNull();
+    await parkItem(state.paths.stateDir, draft(), T0);
+    expect(await atPrompt(turn, state)).toBe(
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
+    );
+    await clearItems(state.paths.stateDir, "all");
+    expect(await atPrompt(turn, state)).toBe(
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet.`,
+    );
   });
 
   test("heard at the stop: the next prompt does not say it again, and `said` then covers the period", async () => {
@@ -936,7 +955,7 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     const reason = reasonOf(await runHook(userAwayHook, input, env));
     expect(reason).toStartWith("The person is unavailable since");
     feedback(transcript, reason ?? "");
-    expect(await runHook(userAwayHook, { ...input, stop_hook_active: true }, env)).toEqual({});
+    expect(await runHook(userAwayHook, input, env)).toEqual({});
   });
 });
 

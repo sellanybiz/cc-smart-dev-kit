@@ -56,6 +56,8 @@ import {
   type ParkedItem,
   parkItem,
   readAway,
+  saidCovers,
+  saidKey,
   sayOnce,
   stopSayOnce,
 } from "../user-away/state";
@@ -80,7 +82,7 @@ import {
 } from "./io";
 import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
-import { awayStopBlock, periodTag, saidKey } from "./user-away-stop";
+import { awayStopBlock, periodTag } from "./user-away-stop";
 
 /**
  * How long a park waits for the state's lock: half of what a guard keeps back for its answer
@@ -340,8 +342,8 @@ function unavailableNote(when: string, count: number): string {
  * blocked once per away period, with the note — decided by `awayStopBlock`
  * (`user-away-stop.ts`), which reads nothing written during a Stop, so `notify` can ask the same
  * question in either order. The reason ends with the period's tag: Claude Code writes it to the
- * transcript as the block's feedback, and that is what keeps the next stop silent, not
- * `stop_hook_active` (another hook's block does not hide the note). A count change alone is not
+ * transcript as the block's feedback, and that is what keeps the later stops silent; the stop the
+ * block caused (`stop_hook_active`) is silent anyway, a belt against a loop. A count change alone is not
  * a block — a session's own park (the skill's `Summary:`) changes it, and that turn must be able
  * to end; the next prompt says it. The block is recorded in `stopSaid`, which the decision never
  * reads, so the next prompt does not say the note again, and "available again" still reaches the
@@ -402,9 +404,11 @@ async function noteAnswer(
   }
   const when = whenText(state, nowMs, options);
   const key = saidKey(state);
-  // Heard at its turn end (the Stop block): the note is not said again, and `said` now covers the
-  // period, so the stops after it are decided without reading the transcript.
-  const heardAtStop = state.stopSaid[session] === key;
+  // Heard at its turn end (the Stop block) and not at a prompt since: the note is not said again,
+  // and `said` now covers the period, so the stops after it are decided without reading the
+  // transcript. Once `said` covers the period, `stopSaid` is stale: a count that comes back to the
+  // block's count is a change the prompt says.
+  const heardAtStop = state.stopSaid[session] === key && !saidCovers(state, session);
   const first = (await sayOnce(paths.stateDir, session, key)) && !heardAtStop;
   if (isPersonsPrompt(input)) {
     const waiting =

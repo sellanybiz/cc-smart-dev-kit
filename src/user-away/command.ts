@@ -22,7 +22,6 @@ import type { Out } from "../cli/ui/out";
 import { formatClock } from "../gateway/limit-state";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";
-import { saidKey } from "../hooks/user-away-stop";
 import {
   type AwayState,
   AwayStateError,
@@ -33,6 +32,7 @@ import {
   type ParkKind,
   parkItem,
   readAway,
+  saidKey,
   sayOnce,
   setAvailable,
   setUnavailable,
@@ -144,7 +144,7 @@ function strayWord(
 
 /**
  * The session that runs `user unavailable` (through the skill) knows the state it just switched,
- * so it is marked as told for this away period, in the hook's own `said` store and key: its own
+ * so it is marked as told for this away period, in the hook's own `said` store and key (`saidKey`): its own
  * turn end is not blocked to tell it again (`stopAnswer` in `src/hooks/user-away.ts`). The
  * session is `CLAUDE_CODE_SESSION_ID`, which Claude Code sets in a Bash call's environment
  * (`docs/claude-code-contract.md`); the person's own terminal has none, and nothing is marked.

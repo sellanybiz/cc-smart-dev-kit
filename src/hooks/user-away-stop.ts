@@ -5,7 +5,8 @@
  *
  * **It reads nothing that is written during a Stop.** Claude Code runs an event's hooks in
  * parallel, so `notify` may read before or after `user-away` answers; both must see the same
- * inputs. The decision reads three things, and none of them changes while the Stop hooks run:
+ * inputs. The decision reads the stop's own input (no block when `stop_hook_active`: a Stop hook
+ * continued this turn) and three things more, none of which changes while the Stop hooks run:
  *
  * 1. the state is unavailable (`state.json`, switched only by the `user` command);
  * 2. this session's `said` mark does not cover this away period (`since|until`): only the prompt
@@ -13,7 +14,7 @@
  * 3. the session's transcript holds no `user-away` Stop feedback for this period: Claude Code
  *    writes a block's feedback only after every Stop hook has answered. The block's reason
  *    carries the period's tag (`periodTag`), and the feedback is found the way `keep-going` finds
- *    its own (`stopFeedbackGiven`), in the transcript's tail.
+ *    its own (`stopFeedbackIn`, on one read of the transcript's tail).
  *
  * The Stop answer's own mark (`stopSaid`) is written during the Stop, so the decision never reads
  * it: only the prompt note does, so a prompt after the block does not say the note again.
@@ -22,57 +23,46 @@
  * block, and a block that cannot be seen would come back at every stop: a note never traps a turn.
  */
 
-import { accessSync, constants } from "node:fs";
 import type { CliPaths } from "../cli/paths";
-import { type AwayState, AwayStateError, readAway } from "../user-away/state";
+import {
+  type AwayState,
+  AwayStateError,
+  periodKey,
+  readAway,
+  saidCovers,
+} from "../user-away/state";
 import { type HookInput, stringField } from "./io";
-import { stopFeedbackGiven } from "./transcript";
-
-/** The away period a note names: a new `user unavailable` (or a new `--until`) is a new one. */
-export function periodKey(state: AwayState): string {
-  return `${state.since}|${state.until}`;
-}
-
-/**
- * What a session heard last (`said`, `stopSaid`): the period and the count, so a change is said
- * again at the prompt. The `user unavailable` command writes it too, for the session that switches
- * the state.
- */
-export function saidKey(state: AwayState): string {
-  return `${periodKey(state)}|${String(state.items.length)}`;
-}
+import { stopFeedbackIn, tailLines } from "./transcript";
 
 /** The tag a Stop block's reason ends with, so its feedback in the transcript names its period. */
 export function periodTag(state: AwayState): string {
   return `[away period ${periodKey(state)}]`;
 }
 
-/** True when the file can be opened for reading. */
-function readable(path: string): boolean {
-  try {
-    accessSync(path, constants.R_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * The session and the state when this stop gets the block; null when it does not. Reads, never
  * writes. Throws `AwayStateError` when the state file cannot be read.
+ *
+ * **Never on a stop a Stop hook continued** (`stop_hook_active`, an input field, the same for
+ * every hook of the event): a belt against a loop. If Claude Code ever stored the feedback in a
+ * shape `stopFeedbackIn` does not find, the session is still blocked at most once per chain of
+ * continued stops, never up to Claude Code's cap. The cost: a stop another hook continued does
+ * not carry the note; the next stop that no hook continued does.
  */
 export function awayStopBlock(
   input: HookInput,
   stateDir: string,
 ): { session: string; state: AwayState } | null {
+  if (input.stop_hook_active === true) return null;
   const session = stringField(input.session_id);
   if (session === null) return null;
   const state = readAway(stateDir);
   if (!state.unavailable) return null;
-  if (state.said[session]?.startsWith(`${periodKey(state)}|`) === true) return null;
+  if (saidCovers(state, session)) return null;
   const transcript = stringField(input.transcript_path);
-  if (transcript === null || !readable(transcript)) return null;
-  if (stopFeedbackGiven(transcript, periodTag(state), [])) return null;
+  const lines = transcript === null ? null : tailLines(transcript);
+  if (lines === null) return null;
+  if (stopFeedbackIn(lines, periodTag(state), [])) return null;
   return { session, state };
 }
 

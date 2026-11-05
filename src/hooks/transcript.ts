@@ -71,7 +71,18 @@ export function stopFeedbackGiven(
   resetBy: readonly string[],
 ): boolean {
   const lines = tailLines(transcriptPath);
-  if (lines === null) return false;
+  return lines !== null && stopFeedbackIn(lines, text, resetBy);
+}
+
+/**
+ * `stopFeedbackGiven` on lines already read (`tailLines`): for a reader that must tell a
+ * transcript it cannot read from one without the feedback (`user-away-stop.ts`), with one read.
+ */
+export function stopFeedbackIn(
+  lines: readonly string[],
+  text: string,
+  resetBy: readonly string[],
+): boolean {
   let given = false;
   for (const line of lines) {
     if (!line.includes(STOP_FEEDBACK) && !line.includes('"tool_use"')) continue;

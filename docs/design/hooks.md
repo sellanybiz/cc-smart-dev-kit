@@ -851,19 +851,27 @@ where there was a question, or a note, never an allow.
   line to park what needs the person (`user park`) and go on, or end the turn if nothing is
   left. **The decision reads nothing written during a Stop** (`awayStopBlock`,
   `src/hooks/user-away-stop.ts`, one home), because Claude Code runs an event's hooks in
-  parallel and `notify` asks the same decision. It blocks when all three hold: the state is
-  unavailable; the session's `said` mark does not cover **this away period** (`since|until`;
-  only the prompt note and `user unavailable` write `said`); and the transcript's tail holds no
-  `user-away` Stop feedback for this period. The block's reason ends with the period's tag
-  (`[away period <since>|<until>]`), Claude Code writes the reason as `Stop hook feedback:` after
-  every Stop hook has answered, and `stopFeedbackGiven` (`src/hooks/transcript.ts`, the reader
-  `keep-going` uses) finds it at the next stop. So the stop the block caused is silent, and
-  another Stop hook's block (`stop_hook_active`) does not hide the note. A count change alone is
-  no block: a session's own park (the skill's `Summary:` at the end of a stretch) changes the
-  count, and that turn must be able to end; the next prompt says it. **The Stop answer's own
-  mark is `stopSaid`**, written during the Stop and never read by the decision: only the prompt
-  note reads it, so a prompt after the block does not say the first note again (and writes
-  `said`, so later stops need no transcript read). `forgetSaid` covers both marks, so a session
+  parallel and `notify` asks the same decision. **Never on a stop a Stop hook continued**
+  (`stop_hook_active`, an input field both read the same way): a belt against a loop, so even if
+  Claude Code stored the feedback in another shape, a session is blocked at most once per chain
+  of continued stops, never up to Claude Code's cap of 9; the cost is that a stop another hook
+  continued does not carry the note, and the next stop no hook continued does. Otherwise it
+  blocks when all three hold: the state is unavailable; the session's `said` mark does not cover
+  **this away period** (`since|until`; only the prompt note and `user unavailable` write `said`);
+  and the transcript's tail holds no `user-away` Stop feedback for this period. The block's
+  reason ends with the period's tag (`[away period <since>|<until>]`), Claude Code writes the
+  reason as `Stop hook feedback:` after every Stop hook has answered, and `stopFeedbackIn`
+  (`src/hooks/transcript.ts`, the reader `keep-going` uses, on one read of the tail) finds it at
+  the later stops (`docs/claude-code-contract.md` § Hooks: both claims are owed a live proof). A
+  count change alone is no block: a session's own park (the skill's `Summary:` at the end of a
+  stretch) changes the count, and that turn must be able to end; the next prompt says it. **The
+  Stop answer's own mark is `stopSaid`**, written during the Stop and never read by the
+  decision: only the prompt note reads it, and only until `said` covers the period, so a prompt
+  after the block does not say the first note again (and writes `said`, so later stops need no
+  transcript read), while a count that changes and comes back later is said as any change. A
+  `stopSaid` that cannot be written (rare: a lock wait past its limit) keeps the block, with one
+  stderr line; the next prompt then says the note once more, and if the person is back before
+  any prompt, "available again" is not said at it. `forgetSaid` covers both marks, so a session
   told only at its stop still hears "available again" at its next prompt. **Available: never a
   block.** No `session_id`, no transcript or one it cannot read: no block — it could not see its
   own earlier block, and a block it cannot see would come back at every stop. Costs: while the
