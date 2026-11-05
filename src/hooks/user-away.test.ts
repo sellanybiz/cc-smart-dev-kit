@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { withLock } from "../setup/lock";
@@ -12,8 +12,10 @@ import {
   type ParkDraft,
   parkItem,
   readAway,
+  sayOnce,
   setAvailable,
   setUnavailable,
+  stopSayOnce,
 } from "../user-away/state";
 import type { OwnerSources } from "../user-away/whose";
 import { askLogFile } from "./ask-log";
@@ -21,6 +23,7 @@ import { BUDGET_MARGIN_MS } from "./budget";
 import { toolDecision } from "./io";
 import { gitGuardHook, userAwayHook } from "./specs";
 import { askedWhileAway, userAwayAnswer } from "./user-away";
+import { awayStopBlock, awayStopWouldBlock } from "./user-away-stop";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const T0 = Date.parse("2026-10-25T01:00:00.000Z");
@@ -691,27 +694,55 @@ describe("the note at each prompt", () => {
 });
 
 describe("the note at turn end (Stop): a session the person never prompts hears the switch", () => {
-  const stop = (over: Record<string, unknown> = {}) => ({
+  const PERIOD = "[away period 2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z]";
+  const BLOCK_REASON = `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn. ${PERIOD}`;
+  const turn = "<task-notification><task-id>x</task-id></task-notification>";
+  type State = { env: Record<string, string>; paths: ReturnType<typeof cliPaths> };
+
+  /** A session transcript with one answer in it, as Claude Code writes one. */
+  function transcriptFile(): string {
+    const file = join(tempDir("away-transcript"), "session.jsonl");
+    const answer = {
+      type: "assistant",
+      isSidechain: false,
+      message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+    };
+    writeFileSync(file, `${JSON.stringify(answer)}\n`);
+    return file;
+  }
+
+  /** What Claude Code writes after a Stop hook blocked: the reason as the block's feedback. */
+  function feedback(file: string, reason: string): void {
+    const entry = {
+      type: "user",
+      isMeta: true,
+      isSidechain: false,
+      message: { role: "user", content: `Stop hook feedback:\n${reason}` },
+    };
+    appendFileSync(file, `${JSON.stringify(entry)}\n`);
+  }
+
+  const stop = (transcript: null | string, over: Record<string, unknown> = {}) => ({
     hook_event_name: "Stop",
     session_id: SESSION,
     cwd: "/work/app",
     stop_hook_active: false,
+    ...(transcript === null ? {} : { transcript_path: transcript }),
     ...over,
   });
-  const turn = "<task-notification><task-id>x</task-id></task-notification>";
-  const BLOCK_REASON = `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`;
 
-  async function atStop(
-    state: { env: Record<string, string>; paths: ReturnType<typeof cliPaths> },
-    over: Record<string, unknown> = {},
-  ) {
-    return userAwayAnswer(stop(over), "Stop", state.env, state.paths, T0, OPTIONS);
+  function atStop(state: State, transcript: null | string, over: Record<string, unknown> = {}) {
+    return userAwayAnswer(stop(transcript, over), "Stop", state.env, state.paths, T0, OPTIONS);
   }
 
-  async function atPrompt(
-    text: string,
-    state: { env: Record<string, string>; paths: ReturnType<typeof cliPaths> },
-  ): Promise<string | null> {
+  /** The reason of a block, or null for any other answer. */
+  function reasonOf(result: { stdout?: string }): null | string {
+    if (result.stdout === undefined) return null;
+    const output = JSON.parse(result.stdout);
+    return output.decision === "block" ? output.reason : null;
+  }
+
+  async function atPrompt(text: string, state: State): Promise<string | null> {
     const result = await userAwayAnswer(
       { hook_event_name: "UserPromptSubmit", session_id: SESSION, cwd: "/work/app", prompt: text },
       "UserPromptSubmit",
@@ -724,42 +755,134 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     return JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
   }
 
-  test("unavailable and not heard yet: one block with the note, then silence", async () => {
-    const state = await away();
-    expect(await atStop(state)).toEqual({
-      stdout: JSON.stringify({ decision: "block", reason: BLOCK_REASON }),
+  describe("the decision, one input at a time", () => {
+    test("all three hold: the state is away, `said` does not cover the period, no feedback for it", async () => {
+      const state = await away();
+      const block = awayStopBlock(stop(transcriptFile()), state.paths.stateDir);
+      expect(block?.session).toBe(SESSION);
+      expect(block?.state.since).toBe("2026-10-25T01:00:00.000Z");
     });
-    // The stop the block caused: the mark decides, and it was heard.
-    expect(await atStop(state, { stop_hook_active: true })).toEqual({});
-    expect(await atStop(state)).toEqual({});
+
+    test("the state: available is no block", async () => {
+      const state = await away();
+      await setAvailable(state.paths.stateDir);
+      expect(awayStopBlock(stop(transcriptFile()), state.paths.stateDir)).toBeNull();
+    });
+
+    test("`said`: this period, at any count, is no block; another period is", async () => {
+      const state = await away();
+      const dir = state.paths.stateDir;
+      await sayOnce(dir, SESSION, "2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z|7");
+      expect(awayStopBlock(stop(transcriptFile()), dir)).toBeNull();
+      await sayOnce(dir, SESSION, "2026-10-24T01:00:00.000Z|null|0");
+      expect(awayStopBlock(stop(transcriptFile()), dir)).not.toBeNull();
+    });
+
+    test("the transcript: this period's feedback is no block; another period's, or a quote, is", async () => {
+      const state = await away();
+      const mine = transcriptFile();
+      feedback(mine, `The person is unavailable … ${PERIOD}`);
+      expect(awayStopBlock(stop(mine), state.paths.stateDir)).toBeNull();
+
+      const older = transcriptFile();
+      feedback(older, "The person is unavailable … [away period 2026-10-24T01:00:00.000Z|null]");
+      expect(awayStopBlock(stop(older), state.paths.stateDir)).not.toBeNull();
+
+      const quoted = transcriptFile();
+      const quote = {
+        type: "assistant",
+        isSidechain: false,
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: `Stop hook feedback:\n${PERIOD}` }],
+        },
+      };
+      appendFileSync(quoted, `${JSON.stringify(quote)}\n`);
+      expect(awayStopBlock(stop(quoted), state.paths.stateDir)).not.toBeNull();
+    });
+
+    test("no transcript, or one it cannot read: no block, so a block it could not see never repeats", async () => {
+      const state = await away();
+      expect(awayStopBlock(stop(null), state.paths.stateDir)).toBeNull();
+      const gone = join(tempDir("none"), "gone.jsonl");
+      expect(awayStopBlock(stop(gone), state.paths.stateDir)).toBeNull();
+    });
+
+    test("it never reads `stopSaid`, the mark the Stop answer writes", async () => {
+      const state = await away();
+      const dir = state.paths.stateDir;
+      await stopSayOnce(dir, SESSION, "2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z|0");
+      expect(awayStopBlock(stop(transcriptFile()), dir)).not.toBeNull();
+    });
   });
 
-  test("another hook's block does not hide it: the mark decides, not `stop_hook_active`", async () => {
+  test("the notifier's prediction is the same before and after the Stop answer writes its mark", async () => {
     const state = await away();
-    expect(await atStop(state, { stop_hook_active: true })).toEqual({
-      stdout: JSON.stringify({ decision: "block", reason: BLOCK_REASON }),
-    });
-    expect(await atStop(state, { stop_hook_active: true })).toEqual({});
+    const transcript = transcriptFile();
+    const input = stop(transcript);
+    // `notify` reads first ...
+    expect(awayStopWouldBlock(input, state.paths)).toBe(true);
+    expect(reasonOf(await atStop(state, transcript))).toBe(BLOCK_REASON);
+    // ... or after: the same stop, the same answer.
+    expect(awayStopWouldBlock(input, state.paths)).toBe(true);
+    // Claude Code writes the feedback after every Stop hook answered: the next stop ends the turn.
+    feedback(transcript, BLOCK_REASON);
+    const next = stop(transcript, { stop_hook_active: true });
+    expect(awayStopWouldBlock(next, state.paths)).toBe(false);
   });
 
-  test("heard at the stop: the next prompt does not say it again", async () => {
+  test("a state file the prediction cannot read is no block", async () => {
     const state = await away();
-    await atStop(state);
+    writeFileSync(awayStateFile(state.paths.stateDir), "{ nope");
+    expect(awayStopWouldBlock(stop(transcriptFile()), state.paths)).toBe(false);
+  });
+
+  test("unavailable and not heard yet: one block with the note; once its feedback is in the transcript, silence", async () => {
+    const state = await away();
+    const transcript = transcriptFile();
+    expect(await atStop(state, transcript)).toEqual({
+      stdout: JSON.stringify({ decision: "block", reason: BLOCK_REASON }),
+    });
+    feedback(transcript, BLOCK_REASON);
+    expect(await atStop(state, transcript, { stop_hook_active: true })).toEqual({});
+    expect(await atStop(state, transcript)).toEqual({});
+    // The block is recorded in its own mark, never in `said`.
+    expect(readAway(state.paths.stateDir).said).toEqual({});
+    expect(readAway(state.paths.stateDir).stopSaid).toEqual({
+      [SESSION]: "2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z|0",
+    });
+  });
+
+  test("another hook's block does not hide it: `stop_hook_active` alone decides nothing", async () => {
+    const state = await away();
+    const transcript = transcriptFile();
+    feedback(transcript, "Run `bun run check` before you stop.");
+    const result = await atStop(state, transcript, { stop_hook_active: true });
+    expect(reasonOf(result)).toBe(BLOCK_REASON);
+  });
+
+  test("heard at the stop: the next prompt does not say it again, and `said` then covers the period", async () => {
+    const state = await away();
+    await atStop(state, transcriptFile());
     expect(await atPrompt(turn, state)).toBeNull();
+    expect(readAway(state.paths.stateDir).said).toEqual({
+      [SESSION]: "2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z|0",
+    });
   });
 
   test("heard at a prompt: the stop is silent", async () => {
     const state = await away();
     expect(await atPrompt(turn, state)).not.toBeNull();
-    expect(await atStop(state)).toEqual({});
+    expect(await atStop(state, transcriptFile())).toEqual({});
   });
 
   test("a count change alone does not block at the stop; the next prompt still says it", async () => {
     const state = await away();
-    await atStop(state);
+    const transcript = transcriptFile();
+    feedback(transcript, reasonOf(await atStop(state, transcript)) ?? "");
     // The session's own park (the skill's `Summary:` at the end of a stretch) changes the count.
     await parkItem(state.paths.stateDir, draft(), T0);
-    expect(await atStop(state)).toEqual({});
+    expect(await atStop(state, transcript)).toEqual({});
     expect(await atPrompt(turn, state)).toBe(
       `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
     );
@@ -767,50 +890,53 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
 
   test("a new away period blocks once more", async () => {
     const state = await away();
-    await atStop(state);
+    const transcript = transcriptFile();
+    feedback(transcript, reasonOf(await atStop(state, transcript)) ?? "");
     await setAvailable(state.paths.stateDir);
     await setUnavailable(state.paths.stateDir, T0, null);
-    const result = await atStop(state);
-    expect(JSON.parse(result.stdout ?? "{}")).toEqual({
-      decision: "block",
-      reason: `The person is unavailable since 01:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`,
-    });
+    expect(reasonOf(await atStop(state, transcript))).toBe(
+      `The person is unavailable since 01:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn. [away period 2026-10-25T01:00:00.000Z|null]`,
+    );
   });
 
-  test("available after hearing 'unavailable': never a block, and the next prompt still says 'available again'", async () => {
+  test("told only at its stop, a session still hears 'available again' at its next prompt, and is never blocked while available", async () => {
     const state = await away();
-    await atStop(state);
+    const transcript = transcriptFile();
+    await atStop(state, transcript);
     await setAvailable(state.paths.stateDir);
-    expect(await atStop(state)).toEqual({});
-    expect(await atStop(state)).toEqual({});
+    expect(await atStop(state, transcript)).toEqual({});
     expect(await atPrompt("next", state)).toBe(
       "The person is available again: ask your questions as usual. Nothing is left parked.",
     );
+    expect(await atPrompt("next", state)).toBeNull();
   });
 
   test("no session id: silent, and nothing is marked", async () => {
     const state = await away();
-    expect(await atStop(state, { session_id: undefined })).toEqual({});
+    expect(await atStop(state, transcriptFile(), { session_id: undefined })).toEqual({});
     expect(readAway(state.paths.stateDir).said).toEqual({});
+    expect(readAway(state.paths.stateDir).stopSaid).toEqual({});
   });
 
   test("a state file it cannot read: one line on stderr, no block", async () => {
     const state = await away();
     writeFileSync(awayStateFile(state.paths.stateDir), "{ nope");
-    const result = await atStop(state);
+    const result = await atStop(state, transcriptFile());
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
     expect(result.stderr).toContain("is not a state file");
   });
 
-  test("through the frame, with no project file: the block, then silence", async () => {
+  test("through the frame, with no project file: the block, then silence once its feedback is written", async () => {
     const { repo } = makeClone();
     const env = hookEnv();
     await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const input = { ...stop(), cwd: repo };
-    const blocked = await runHook(userAwayHook, input, env);
-    expect(JSON.parse(blocked.stdout ?? "{}").decision).toBe("block");
-    expect(await runHook(userAwayHook, input, env)).toEqual({});
+    const transcript = transcriptFile();
+    const input = { ...stop(transcript), cwd: repo };
+    const reason = reasonOf(await runHook(userAwayHook, input, env));
+    expect(reason).toStartWith("The person is unavailable since");
+    feedback(transcript, reason ?? "");
+    expect(await runHook(userAwayHook, { ...input, stop_hook_active: true }, env)).toEqual({});
   });
 });
 

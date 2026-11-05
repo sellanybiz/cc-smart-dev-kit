@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { createOut, textSink } from "../cli/ui/out";
@@ -119,9 +120,17 @@ describe("user unavailable, status, available", () => {
     const home = tempDir("user-cmd");
     const run = await user(["unavailable"], { home, env: ME });
     expect(stateOf(run).said).toEqual({ "sess-me": "2026-10-25T01:00:00.000Z|null|0" });
+    // A transcript with no Stop feedback in it: the decision reads it, and finds no earlier block.
+    const transcript = join(tempDir("user-cmd-transcript"), "session.jsonl");
+    writeFileSync(transcript, "");
     const stop = (session: string) =>
       userAwayAnswer(
-        { hook_event_name: "Stop", session_id: session, cwd: "/work/app" },
+        {
+          hook_event_name: "Stop",
+          session_id: session,
+          cwd: "/work/app",
+          transcript_path: transcript,
+        },
         "Stop",
         run.ctx.env,
         run.ctx.paths,

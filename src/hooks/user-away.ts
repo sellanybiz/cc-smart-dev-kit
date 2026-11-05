@@ -24,9 +24,9 @@
  *   own prompt, which never switches the state back by itself (it may be one line from a phone).
  *   A session that heard "unavailable" is told once that the person is available again.
  * - **Stop**: a session that works on its own gets no prompt, so it would never hear the switch.
- *   Its stop is blocked once per away period, with the same note and the same mark: heard at a
- *   prompt, the stop is silent; heard at the stop, the next prompt does not say it again.
- *   Available, a stop is never blocked (`stopAnswer`).
+ *   Its stop is blocked once per away period, with the same note: heard at a prompt, the stop is
+ *   silent; heard at the stop, the next prompt does not say it again. Available, a stop is never
+ *   blocked (`stopAnswer`; the decision, which `notify` asks too, in `user-away-stop.ts`).
  *
  * **A state it cannot read changes nothing.** A broken state file is one line on stderr and the
  * answer the hook would have given without this feature: the question or the ask goes to the
@@ -57,6 +57,7 @@ import {
   parkItem,
   readAway,
   sayOnce,
+  stopSayOnce,
 } from "../user-away/state";
 import { type OwnerSources, ownedItems, waitingLines } from "../user-away/whose";
 import {
@@ -79,6 +80,7 @@ import {
 } from "./io";
 import { hasNotPersonWrapper } from "./prompt-source";
 import type { Env } from "./run";
+import { awayStopBlock, periodTag, saidKey } from "./user-away-stop";
 
 /**
  * How long a park waits for the state's lock: half of what a guard keeps back for its answer
@@ -327,19 +329,6 @@ function parkedText(count: number): string {
   return `${plural(count, "item is", "items are")} parked.`;
 }
 
-/** The away period a note names: a new `user unavailable` (or a new `--until`) is a new one. */
-function periodKey(state: AwayState): string {
-  return `${state.since}|${state.until}`;
-}
-
-/**
- * What a session heard last (`said`): the period and the count, so a change is said again. The
- * `user unavailable` command writes it too, for the session that switches the state.
- */
-export function saidKey(state: AwayState): string {
-  return `${periodKey(state)}|${String(state.items.length)}`;
-}
-
 /** The standing note, at a prompt and at a stop: one home for its words. */
 function unavailableNote(when: string, count: number): string {
   return `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`;
@@ -347,14 +336,17 @@ function unavailableNote(when: string, count: number): string {
 
 /**
  * Stop: a session that works on its own gets no prompt from the person, so it would never hear
- * the switch and could end its turn on a question in prose that nobody reads. So the stop of a
- * session that has not heard this away period is blocked once, with the note. The mark is the
- * prompt's own (`said`): heard at a prompt, the stop is silent; heard here, the next prompt does
- * not say it again. A count change alone is not a block — a session's own park (the skill's
- * `Summary:` at the end of a stretch) changes it, and that turn must be able to end; the next
- * prompt still says the new count. The mark, not `stop_hook_active`, keeps it to one block: the
- * stop it caused finds the mark, and another hook's block does not hide the note. Available: never
- * a block, and the "available again" mark is left for the next prompt.
+ * the switch and could end its turn on a question in prose that nobody reads. So its stop is
+ * blocked once per away period, with the note — decided by `awayStopBlock`
+ * (`user-away-stop.ts`), which reads nothing written during a Stop, so `notify` can ask the same
+ * question in either order. The reason ends with the period's tag: Claude Code writes it to the
+ * transcript as the block's feedback, and that is what keeps the next stop silent, not
+ * `stop_hook_active` (another hook's block does not hide the note). A count change alone is not
+ * a block — a session's own park (the skill's `Summary:`) changes it, and that turn must be able
+ * to end; the next prompt says it. The block is recorded in `stopSaid`, which the decision never
+ * reads, so the next prompt does not say the note again, and "available again" still reaches the
+ * session. A mark that cannot be written keeps the block, with one line why: the next prompt then
+ * says the note once more.
  */
 async function stopAnswer(
   input: HookInput,
@@ -362,14 +354,21 @@ async function stopAnswer(
   nowMs: number,
   options: AwayOptions,
 ): Promise<HookResult> {
-  const session = stringField(input.session_id);
-  if (session === null) return SILENT;
-  const state = readAway(paths.stateDir);
-  if (!state.unavailable) return SILENT;
-  if (state.said[session]?.startsWith(`${periodKey(state)}|`) === true) return SILENT;
-  if (!(await sayOnce(paths.stateDir, session, saidKey(state)))) return SILENT;
-  const reason = `${unavailableNote(whenText(state, nowMs, options), state.items.length)} Do not end the turn on a question for them: park it with \`${COMMAND} user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`;
-  return { stdout: JSON.stringify({ decision: "block", reason }) };
+  const block = awayStopBlock(input, paths.stateDir);
+  if (block === null) return SILENT;
+  const { session, state } = block;
+  const reason = `${unavailableNote(whenText(state, nowMs, options), state.items.length)} Do not end the turn on a question for them: park it with \`${COMMAND} user park\` and go on with the work it does not block. If nothing is left to do, end the turn. ${periodTag(state)}`;
+  const answer = { stdout: JSON.stringify({ decision: "block", reason }) };
+  try {
+    await stopSayOnce(paths.stateDir, session, saidKey(state));
+    return answer;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      ...answer,
+      stderr: `cc-smart-dev-kit user-away: could not record the stop note: ${why}`,
+    };
+  }
 }
 
 async function noteAnswer(
@@ -402,7 +401,11 @@ async function noteAnswer(
     );
   }
   const when = whenText(state, nowMs, options);
-  const first = await sayOnce(paths.stateDir, session, saidKey(state));
+  const key = saidKey(state);
+  // Heard at its turn end (the Stop block): the note is not said again, and `said` now covers the
+  // period, so the stops after it are decided without reading the transcript.
+  const heardAtStop = state.stopSaid[session] === key;
+  const first = (await sayOnce(paths.stateDir, session, key)) && !heardAtStop;
   if (isPersonsPrompt(input)) {
     const waiting =
       count === 0

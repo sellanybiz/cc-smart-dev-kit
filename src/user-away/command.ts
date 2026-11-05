@@ -22,7 +22,7 @@ import type { Out } from "../cli/ui/out";
 import { formatClock } from "../gateway/limit-state";
 import { plainText } from "../gateway/plain-text";
 import type { Env } from "../hooks/run";
-import { saidKey } from "../hooks/user-away";
+import { saidKey } from "../hooks/user-away-stop";
 import {
   type AwayState,
   AwayStateError,

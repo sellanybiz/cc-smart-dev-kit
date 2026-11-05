@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
@@ -13,6 +13,7 @@ import {
   sayOnce,
   setAvailable,
   setUnavailable,
+  stopSayOnce,
 } from "./state";
 
 const T0 = Date.parse("2026-10-25T01:00:00.000Z");
@@ -42,6 +43,7 @@ describe("the state: unavailable, then available", () => {
       items: [],
       nextId: 1,
       said: {},
+      stopSaid: {},
     });
     expect(existsSync(awayStateFile(stateDir))).toBe(false);
   });
@@ -246,6 +248,39 @@ describe("saying a note once", () => {
     expect(await forgetSaid(stateDir, "s1")).toBe(false);
     expect(await forgetSaid(stateDir, "never")).toBe(false);
     expect(readAway(stateDir).said).toEqual({});
+  });
+
+  test("a note heard at the turn end has its own mark, and forgetting covers it too", async () => {
+    const stateDir = tempDir("away");
+    await setUnavailable(stateDir, T0, null);
+    expect(await stopSayOnce(stateDir, "s1", "k")).toBe(true);
+    expect(await stopSayOnce(stateDir, "s1", "k")).toBe(false);
+    expect(readAway(stateDir).said).toEqual({});
+    expect(readAway(stateDir).stopSaid).toEqual({ s1: "k" });
+    await setAvailable(stateDir);
+    // Told only at its turn end, the session is still told once that the person is back.
+    expect(await forgetSaid(stateDir, "s1")).toBe(true);
+    expect(readAway(stateDir).stopSaid).toEqual({});
+    expect(await forgetSaid(stateDir, "s1")).toBe(false);
+  });
+
+  test("a file written before the turn-end mark existed still reads, with none", () => {
+    const stateDir = tempDir("away");
+    const file = awayStateFile(stateDir);
+    mkdirSync(join(stateDir, "user-away"), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({
+        unavailable: true,
+        since: "a",
+        until: null,
+        items: [],
+        nextId: 1,
+        said: { s1: "k" },
+      }),
+    );
+    expect(readAway(stateDir).stopSaid).toEqual({});
+    expect(readAway(stateDir).said).toEqual({ s1: "k" });
   });
 });
 

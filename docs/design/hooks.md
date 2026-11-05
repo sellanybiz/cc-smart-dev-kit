@@ -754,7 +754,8 @@ another `CLAUDE_CONFIG_DIR`, whose sessions then need their own `user unavailabl
 written whole through the kit's atomic write, under the folder's **own** lock (not setup's: a
 hook that parks must never wait for a setup run) so two sessions that park at once both keep
 their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, the `items`,
-`nextId` (an id is never reused) and `said` (the note each session heard). `until` is a note
+`nextId` (an id is never reused), `said` (the note each session heard at a prompt, or by
+`user unavailable` itself) and `stopSaid` (the note it heard by the Stop block). `until` is a note
 only: it shows in the notes and never switches back. An item has a kind — `question` (with its
 options and the recommended one), `action` (with its exact command) or `decision` (what was
 chosen, why, how to undo it) — the session that parked it, its folder and the time. The same
@@ -848,15 +849,28 @@ where there was a question, or a note, never an allow.
   the person, so it never heard the switch and could end its turn on a question in prose that
   nobody reads. Its stop is **blocked once** (`decision: "block"`), with the same note and a
   line to park what needs the person (`user park`) and go on, or end the turn if nothing is
-  left. **The same mark as the prompt's** (`said`): heard at a prompt, the stop is silent; heard
-  at the stop, the next prompt does not say it again. The stop blocks only when the session has
-  not heard **this away period** (`since|until`): a count change alone is the prompt's to say,
-  because a session's own park (the skill's `Summary:` at the end of a stretch) changes the
-  count, and that turn must be able to end. The mark, not `stop_hook_active`, keeps it to one
-  block: the stop the block caused finds the mark, and another Stop hook's block does not hide
-  the note. **Available: never a block**, and the "available again" note stays for the next
-  prompt. No `session_id`: silent. `claude -p` is treated like any session, as `keep-going` and
-  `verify-gate` are; it hears the note at its first prompt anyway. A subagent never hears it
+  left. **The decision reads nothing written during a Stop** (`awayStopBlock`,
+  `src/hooks/user-away-stop.ts`, one home), because Claude Code runs an event's hooks in
+  parallel and `notify` asks the same decision. It blocks when all three hold: the state is
+  unavailable; the session's `said` mark does not cover **this away period** (`since|until`;
+  only the prompt note and `user unavailable` write `said`); and the transcript's tail holds no
+  `user-away` Stop feedback for this period. The block's reason ends with the period's tag
+  (`[away period <since>|<until>]`), Claude Code writes the reason as `Stop hook feedback:` after
+  every Stop hook has answered, and `stopFeedbackGiven` (`src/hooks/transcript.ts`, the reader
+  `keep-going` uses) finds it at the next stop. So the stop the block caused is silent, and
+  another Stop hook's block (`stop_hook_active`) does not hide the note. A count change alone is
+  no block: a session's own park (the skill's `Summary:` at the end of a stretch) changes the
+  count, and that turn must be able to end; the next prompt says it. **The Stop answer's own
+  mark is `stopSaid`**, written during the Stop and never read by the decision: only the prompt
+  note reads it, so a prompt after the block does not say the first note again (and writes
+  `said`, so later stops need no transcript read). `forgetSaid` covers both marks, so a session
+  told only at its stop still hears "available again" at its next prompt. **Available: never a
+  block.** No `session_id`, no transcript or one it cannot read: no block — it could not see its
+  own earlier block, and a block it cannot see would come back at every stop. Costs: while the
+  person is away and `said` does not cover the period, each stop reads the transcript's last
+  512 KB; a session that no prompt reaches for longer than that tail after its block is blocked
+  once more, as `keep-going` would be. `claude -p` is treated like any session, as `keep-going`
+  and `verify-gate` are; it hears the note at its first prompt anyway. A subagent never hears it
   here (`SubagentStop` is not wired): it never asks the person.
 
   **The session that switches the state is told already.** `user unavailable` marks the session
@@ -869,14 +883,12 @@ where there was a question, or a note, never an allow.
   `user unavailable` would mark its lead as told; the skill is the lead's, and no brief asks a
   subagent to run it.
 
-  **The notifier's "finished" alert does not ask this decision**, so the stop this hook blocks
-  may raise it once per session and away period, before the turn really ends. `verify-gate`'s
-  and `keep-going`'s predictions are safe because their mark is their own block's feedback line
-  in the transcript, which Claude Code writes after every Stop hook has answered. This hook's
-  mark is `said`, which `stopAnswer` writes **during** the Stop, and Claude Code runs an event's
-  hooks in parallel: a notifier that reads `said` after this hook wrote it sees "heard" and alerts
-  as before; one that reads it first predicts the block. No state the notifier can read stays the
-  same across that write, so a prediction from `said` would be right in one order only.
+  **The notifier's "finished" alert asks the same decision** (`awayStopWouldBlock`, read only),
+  beside `verify-gate`'s and `keep-going`'s, so it waits for the stop that really ends the turn,
+  whichever hook runs first. **The accepted trade:** when `user-away` fails to block a stop the
+  decision says it blocks (it crashes, runs past its timeout, or no bun runs it), the turn
+  ends there and the notifier skips that one "finished" alert. A state file the notifier cannot
+  read is no block, and the alert goes out.
 
 **Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
 state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
@@ -1139,7 +1151,7 @@ ends it, and only for ten minutes so a wait that ended unrecorded never hides a 
 a turn another session started (`startedByPeer`: `turnOrigin: "peer"` without a
 `senderTaskId`, a human prompt into the turn or a helper agent's launch alerting as before);
 the same error twice in a row (a per-session file remembers the last error, cleared by a turn
-that ends well); a stop `verify-gate` or `keep-going` will block (the turn goes on, so the
+that ends well); a stop `verify-gate`, `keep-going` or `user-away` will block (the turn goes on, so the
 finished alert waits for the stop that ends it — a per-session file remembers the alert already
 shown for the turn, cleared at the next prompt). One alert per
 session per event, never two.
