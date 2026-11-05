@@ -28,8 +28,18 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   so the merge guard asks.
 - **The agent guard reads an agent's own frontmatter.** A launch that names no `model` or
   `effort` takes them from the agent's definition, found in Claude Code's own order. A
-  definition the guard cannot see is refused, as before. Workflow scripts are now read by one
-  lexer that understands regular expressions, and a script it cannot read is refused.
+  definition the guard cannot see is refused, as before. Workflow scripts are now read by a
+  real JavaScript parser (`acorn`, the one new dependency, in the agent guard's bundle only),
+  and a script whose agent launches it cannot judge is refused.
+- **The kit tells you when the lead is not Claude Opus.** Once per model, a line to you (it
+  costs Claude no tokens) says the kit works best with the lead on Claude Opus at `high`, and
+  how to switch. A person who leads on another model on purpose turns it off with
+  `cc-smart-dev-kit workflow set switches.leadHint false`.
+- **Claude sees the plan usage left.** When the status line's 5-hour or 7-day window first
+  passes 50, 75 or 90 %, Claude gets one line, and picks cheaper agents as usage runs low. It
+  never skips a test or a review for it. Only on your plan's login.
+- **Prompt-cache misses show.** The status line names the cause of a new prompt-cache miss
+  for a minute, and `doctor --live` reports it.
 - **The shipped workflows cost less and lose less.** Their `sonnet` agents run at `high`, not
   `max`. A finding nobody could prove or refute is listed under Hunches, never dropped. Review
   and audit tracks cannot edit files or start agents.
