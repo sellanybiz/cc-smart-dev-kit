@@ -5,8 +5,8 @@
  * to do instead — park it for the person and go on (`cc-smart-dev-kit user park`) — and keeps the
  * list the person goes through when they are back.
  *
- * Four answers, one state file, **never looser than before**: each is a deny where there was a
- * question, never an allow.
+ * Five answers, one state file, **never looser than before**: each is a deny where there was a
+ * question, or a note, never an allow.
  *
  * - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`**: denied, with the step that parks the
  *   question (or the plan awaiting approval). Nothing is parked here: the session parks the
@@ -23,6 +23,10 @@
  *   expected return or the number of parked items — and again, in its own words, at the person's
  *   own prompt, which never switches the state back by itself (it may be one line from a phone).
  *   A session that heard "unavailable" is told once that the person is available again.
+ * - **Stop**: a session that works on its own gets no prompt, so it would never hear the switch.
+ *   Its stop is blocked once per away period, with the same note and the same mark: heard at a
+ *   prompt, the stop is silent; heard at the stop, the next prompt does not say it again.
+ *   Available, a stop is never blocked (`stopAnswer`).
  *
  * **A state it cannot read changes nothing.** A broken state file is one line on stderr and the
  * answer the hook would have given without this feature: the question or the ask goes to the
@@ -323,6 +327,48 @@ function parkedText(count: number): string {
   return `${plural(count, "item is", "items are")} parked.`;
 }
 
+/** The away period a note names: a new `user unavailable` (or a new `--until`) is a new one. */
+function periodKey(state: AwayState): string {
+  return `${state.since}|${state.until}`;
+}
+
+/** What a session heard last (`said`): the period and the count, so a change is said again. */
+function saidKey(state: AwayState): string {
+  return `${periodKey(state)}|${String(state.items.length)}`;
+}
+
+/** The standing note, at a prompt and at a stop: one home for its words. */
+function unavailableNote(when: string, count: number): string {
+  return `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`;
+}
+
+/**
+ * Stop: a session that works on its own gets no prompt from the person, so it would never hear
+ * the switch and could end its turn on a question in prose that nobody reads. So the stop of a
+ * session that has not heard this away period is blocked once, with the note. The mark is the
+ * prompt's own (`said`): heard at a prompt, the stop is silent; heard here, the next prompt does
+ * not say it again. A count change alone is not a block — a session's own park (the skill's
+ * `Summary:` at the end of a stretch) changes it, and that turn must be able to end; the next
+ * prompt still says the new count. The mark, not `stop_hook_active`, keeps it to one block: the
+ * stop it caused finds the mark, and another hook's block does not hide the note. Available: never
+ * a block, and the "available again" mark is left for the next prompt.
+ */
+async function stopAnswer(
+  input: HookInput,
+  paths: CliPaths,
+  nowMs: number,
+  options: AwayOptions,
+): Promise<HookResult> {
+  const session = stringField(input.session_id);
+  if (session === null) return SILENT;
+  const state = readAway(paths.stateDir);
+  if (!state.unavailable) return SILENT;
+  if (state.said[session]?.startsWith(`${periodKey(state)}|`) === true) return SILENT;
+  if (!(await sayOnce(paths.stateDir, session, saidKey(state)))) return SILENT;
+  const reason = `${unavailableNote(whenText(state, nowMs, options), state.items.length)} Do not end the turn on a question for them: park it with \`${COMMAND} user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`;
+  return { stdout: JSON.stringify({ decision: "block", reason }) };
+}
+
 async function noteAnswer(
   input: HookInput,
   env: Env,
@@ -353,7 +399,7 @@ async function noteAnswer(
     );
   }
   const when = whenText(state, nowMs, options);
-  const first = await sayOnce(paths.stateDir, session, `${state.since}|${state.until}|${count}`);
+  const first = await sayOnce(paths.stateDir, session, saidKey(state));
   if (isPersonsPrompt(input)) {
     const waiting =
       count === 0
@@ -365,10 +411,7 @@ async function noteAnswer(
     );
   }
   if (!first) return SILENT;
-  return addContext(
-    "UserPromptSubmit",
-    `The person is unavailable${when}. Follow ${UNAVAILABLE_SKILL}: park what needs them, go on with the rest. ${parkedText(count)}`,
-  );
+  return addContext("UserPromptSubmit", unavailableNote(when, count));
 }
 
 /**
@@ -393,6 +436,7 @@ export async function userAwayAnswer(
     }
     if (event === "PermissionRequest") return await permissionAnswer(input, paths, nowMs, options);
     if (event === "UserPromptSubmit") return await noteAnswer(input, env, paths, nowMs, options);
+    if (event === "Stop") return await stopAnswer(input, paths, nowMs, options);
     return SILENT;
   } catch (error) {
     if (error instanceof AwayStateError) return { stderr: stateLine(error) };

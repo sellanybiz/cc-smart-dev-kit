@@ -690,6 +690,130 @@ describe("the note at each prompt", () => {
   });
 });
 
+describe("the note at turn end (Stop): a session the person never prompts hears the switch", () => {
+  const stop = (over: Record<string, unknown> = {}) => ({
+    hook_event_name: "Stop",
+    session_id: SESSION,
+    cwd: "/work/app",
+    stop_hook_active: false,
+    ...over,
+  });
+  const turn = "<task-notification><task-id>x</task-id></task-notification>";
+  const BLOCK_REASON = `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`;
+
+  async function atStop(
+    state: { env: Record<string, string>; paths: ReturnType<typeof cliPaths> },
+    over: Record<string, unknown> = {},
+  ) {
+    return userAwayAnswer(stop(over), "Stop", state.env, state.paths, T0, OPTIONS);
+  }
+
+  async function atPrompt(
+    text: string,
+    state: { env: Record<string, string>; paths: ReturnType<typeof cliPaths> },
+  ): Promise<string | null> {
+    const result = await userAwayAnswer(
+      { hook_event_name: "UserPromptSubmit", session_id: SESSION, cwd: "/work/app", prompt: text },
+      "UserPromptSubmit",
+      state.env,
+      state.paths,
+      T0,
+      OPTIONS,
+    );
+    if (result.stdout === undefined) return null;
+    return JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+  }
+
+  test("unavailable and not heard yet: one block with the note, then silence", async () => {
+    const state = await away();
+    expect(await atStop(state)).toEqual({
+      stdout: JSON.stringify({ decision: "block", reason: BLOCK_REASON }),
+    });
+    // The stop the block caused: the mark decides, and it was heard.
+    expect(await atStop(state, { stop_hook_active: true })).toEqual({});
+    expect(await atStop(state)).toEqual({});
+  });
+
+  test("another hook's block does not hide it: the mark decides, not `stop_hook_active`", async () => {
+    const state = await away();
+    expect(await atStop(state, { stop_hook_active: true })).toEqual({
+      stdout: JSON.stringify({ decision: "block", reason: BLOCK_REASON }),
+    });
+    expect(await atStop(state, { stop_hook_active: true })).toEqual({});
+  });
+
+  test("heard at the stop: the next prompt does not say it again", async () => {
+    const state = await away();
+    await atStop(state);
+    expect(await atPrompt(turn, state)).toBeNull();
+  });
+
+  test("heard at a prompt: the stop is silent", async () => {
+    const state = await away();
+    expect(await atPrompt(turn, state)).not.toBeNull();
+    expect(await atStop(state)).toEqual({});
+  });
+
+  test("a count change alone does not block at the stop; the next prompt still says it", async () => {
+    const state = await away();
+    await atStop(state);
+    // The session's own park (the skill's `Summary:` at the end of a stretch) changes the count.
+    await parkItem(state.paths.stateDir, draft(), T0);
+    expect(await atStop(state)).toEqual({});
+    expect(await atPrompt(turn, state)).toBe(
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
+    );
+  });
+
+  test("a new away period blocks once more", async () => {
+    const state = await away();
+    await atStop(state);
+    await setAvailable(state.paths.stateDir);
+    await setUnavailable(state.paths.stateDir, T0, null);
+    const result = await atStop(state);
+    expect(JSON.parse(result.stdout ?? "{}")).toEqual({
+      decision: "block",
+      reason: `The person is unavailable since 01:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn.`,
+    });
+  });
+
+  test("available after hearing 'unavailable': never a block, and the next prompt still says 'available again'", async () => {
+    const state = await away();
+    await atStop(state);
+    await setAvailable(state.paths.stateDir);
+    expect(await atStop(state)).toEqual({});
+    expect(await atStop(state)).toEqual({});
+    expect(await atPrompt("next", state)).toBe(
+      "The person is available again: ask your questions as usual. Nothing is left parked.",
+    );
+  });
+
+  test("no session id: silent, and nothing is marked", async () => {
+    const state = await away();
+    expect(await atStop(state, { session_id: undefined })).toEqual({});
+    expect(readAway(state.paths.stateDir).said).toEqual({});
+  });
+
+  test("a state file it cannot read: one line on stderr, no block", async () => {
+    const state = await away();
+    writeFileSync(awayStateFile(state.paths.stateDir), "{ nope");
+    const result = await atStop(state);
+    expect(result.stdout).toBeUndefined();
+    expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
+    expect(result.stderr).toContain("is not a state file");
+  });
+
+  test("through the frame, with no project file: the block, then silence", async () => {
+    const { repo } = makeClone();
+    const env = hookEnv();
+    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
+    const input = { ...stop(), cwd: repo };
+    const blocked = await runHook(userAwayHook, input, env);
+    expect(JSON.parse(blocked.stdout ?? "{}").decision).toBe("block");
+    expect(await runHook(userAwayHook, input, env)).toEqual({});
+  });
+});
+
 describe("the hook as the frame runs it", () => {
   test("a hook run from the spec: AskUserQuestion denied with no project file, and silent after available", async () => {
     const { repo } = makeClone();
@@ -756,7 +880,7 @@ describe("what the review found", () => {
   test("a crash on the events that ask nobody is one line on stderr, and on the question tools an ask", async () => {
     const { env, paths } = await away();
     const context = { env, paths, nowMs: T0 };
-    for (const event of ["PermissionRequest", "UserPromptSubmit"]) {
+    for (const event of ["PermissionRequest", "UserPromptSubmit", "Stop"]) {
       const result = userAwayHook.onCrash?.("boom", permissionRequest("Bash", {}), event, context);
       expect(result?.stderr).toBe("cc-smart-dev-kit user-away: boom");
       expect(result?.stdout).toBeUndefined();

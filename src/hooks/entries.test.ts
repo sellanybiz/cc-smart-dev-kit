@@ -242,7 +242,13 @@ esac
     ]);
     const bundlesFor = (event: string) =>
       wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
-    expect(bundlesFor("Stop")).toEqual(["notify", "fable-session", "verify-gate", "keep-going"]);
+    expect(bundlesFor("Stop")).toEqual([
+      "notify",
+      "fable-session",
+      "verify-gate",
+      "keep-going",
+      "user-away",
+    ]);
     expect(bundlesFor("SessionStart")).toContain("task-start");
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([
@@ -276,19 +282,22 @@ esac
     expect(matcher).toBe("Bash|PowerShell");
   });
 
-  test("the user-away hook: the two tools that ask the person on PreToolUse, a permission prompt, and each prompt", () => {
+  test("the user-away hook: the two tools that ask the person on PreToolUse, a permission prompt, each prompt and each stop", () => {
     const entries = wired.filter(({ handler }) => bundleOf(handler) === "user-away");
     // Written by hand, so a changed list is seen here and not only in the constant.
     expect(entries.map(({ event, matcher }) => [event, matcher])).toEqual([
       ["PreToolUse", "AskUserQuestion|ExitPlanMode"],
+      ["Stop", null],
       ["UserPromptSubmit", null],
       ["PermissionRequest", null],
     ]);
     expect(entries.map(({ event }) => event).sort()).toEqual([...userAwayHook.events].sort());
     expect(AWAY_ASK_TOOLS.join("|")).toBe("AskUserQuestion|ExitPlanMode");
-    // Only its PreToolUse entry fails closed; the other two never stop a prompt or a permission.
+    // Only its PreToolUse entry fails closed; the other three never stop a prompt, a permission
+    // or a turn's end (`onFailure: block` never goes on a Stop entry).
     expect(entries.map(({ handler }) => handler.onFailure)).toEqual([
       "block",
+      undefined,
       undefined,
       undefined,
     ]);
