@@ -45,8 +45,7 @@ the real Chrome, and never touches the real `~/.config/google-chrome`.
 
 **Never the host.** A test that runs the CLI as its own process gives it a PATH of fakes
 (plus bun's folder, and git alone when it needs the real one), never the host's PATH,
-and the host's facts in `CC_SMART_DEV_KIT_TEST_HOST` (platform, arch, os-release, the Warp app's
-path), so its exact output is the same on any machine.
+and the host's facts in `CC_SMART_DEV_KIT_TEST_HOST` (platform, arch, os-release, user id), so its exact output is the same on any machine.
 
 ## Never the live router's port
 

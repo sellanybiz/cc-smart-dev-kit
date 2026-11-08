@@ -57,10 +57,10 @@ the first time you use it.
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
 | `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`; `init.ts` plans and writes the two files `project init` makes. |
-| `src/workflow/` | The workflow: the settings it holds (`schema.ts`), the resolution order and the switches (`resolve.ts`), the one auto-merge decision (`auto-merge.ts`, whose refusal is the merge guard's reason), the writers (`write.ts`), the review record (`reviews.ts`), the alerts a hook reads (`alerts.ts`), and the command (`commands.ts`). |
+| `src/workflow/` | The workflow: the settings it holds (`schema.ts`), the resolution order and the switches (`resolve.ts`), the one auto-merge decision (`auto-merge.ts`, whose refusal is the merge guard's reason), the writers (`write.ts`), the review record (`reviews.ts`), the statusline's usage warning setting (`alerts.ts`), and the command (`commands.ts`). |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
 | `src/cli/` | The CLI's own parts: the paths (`paths.ts`, from `cliPaths()`), the commands that live here — `setup`, `doctor` (its `--live` proof in `live-check.ts`; the current folder's project checks in `project-checks.ts`), `project init` (the two files a project opts in with, `project-init.ts`), `migrate`, `restore`, `update`, `statusline`, `subagent-statusline`, `usage` — and their helpers (`secret-line.ts`, `git-bash.ts`, `bun-check.ts`). |
-| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, Warp, `Machine` (the system, faked in tests), the host's platform (`host.ts`), and opening a URL on the person's desktop (`open-url.ts`). |
+| `src/machine/` | Machine setup: the companion plugins, claude-mem's settings, the optional Herdr GUI install, `Machine` (the system, faked in tests), the host's platform (`host.ts`), and opening a URL on the person's desktop (`open-url.ts`). |
 | `src/gateway/` | The optional AI gateway: the router, its config and slots (the model slots, the judge test and its proof too), a model slot's fallback answer made safe for Claude (`fallback-answer.ts`), the limit state file, `gateway <command>`, its service (a socket unit and the router unit) and its doctor checks. |
 | `src/omniroute/` | OmniRoute, the program the affordable slots answer from: which release a machine may install (`registry.ts`), where it is installed and its unit (`install.ts`), and the `omniroute` command (`commands.ts`). |
 | `src/portal/` | The portal's server and its door (`guard.ts`), its health answer (`health.ts`), its life — the copy, the start, the restart, the stop (`lifecycle.ts`), the session-start part (`session-start.ts`) — the pages (`views.ts`, `assets.ts`), the actions that run the CLI's own code, and the `portal` command (`command.ts`; `.claude/rules/portal.md`). |
@@ -77,7 +77,7 @@ the first time you use it.
 | `src/user-away/` | The `cc-smart-dev-kit user` command (`unavailable`, `available`, `status`, `park`, `list`, `clear`): whether the person can answer, and the list of what waits for them (`state.ts`); the user-away hook reads the same state. |
 | `src/workflows/` | The test side of the workflow scripts in `plugin/workflows/`: the runner that executes a script with fakes for `agent`, `parallel` and the rest (`script-runner.ts`), and a test file for each script. The scripts themselves ship in `plugin/`. |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
-| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the StopFailure usage-limit alert, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
+| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the guards, the notes, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
 | `src/jobs/` | The heavy-job queue: kinds, the one-slot lease store, the queue, the launch, `job <command>`, the classifier, and the queue as data (`status.ts`: one reader for `job status`, `/api/jobs` and the Machine page). |
 | `src/shell/` | The shell text: the lexer that reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`), and the PowerShell single-quoted literal. |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |
@@ -122,7 +122,6 @@ Each rule loads itself when you touch a file it covers.
 | `dynamic.md` | `src/`, `scripts/`, `plugin/`, `docs/`, `README.md` | One source per value: names, paths, ports, versions, lists. |
 | `hooks.md` | `src/hooks/`, the hook entries in `src/entries/`, `plugin/hooks/`, `plugin/bin/` | The hook contract: who wires it, the bun shim, the frame, quiet output, the one shell reader, timeouts, tests. |
 | `hooks-guards.md` | guards and hook specs | Machine-wide guards, `ownHooks`, fail-closed behavior and the fail-safe table. |
-| `notify.md` | `src/hooks/notify*`, `stop-failure*`, `desktop-alert*`, `terminal*`, `alert-sound.ts`, `src/setup/user-notify-hook.ts` | The notifier: its two wirings, the desktop and terminal routes, `terminalSequence`, and the usage-limit hook. |
 | `session-start.md` | `src/update/`, `src/portal/session-start.ts`, `lifecycle.ts`, the SessionStart hooks | What a session start may do, the background self-update, and the major-version hold. |
 | `browser.md` | `src/browser/`, `src/hooks/playwright-output*`, `src/mcp/`, `src/testing/chrome-world.ts` | The browser: never stdout, the required token, Chrome's own profile, read-only Preferences, the costs upstream will not fix. |
 | `setup-and-managed-files.md` | `src/setup/`, `src/cli/restore.ts`, `src/cli/paths.ts`, `src/workflow/write.ts` | How the command changes user files: the managed writers, never take what is not ours, the lock, `--dry-run` and `restore`. |
@@ -161,7 +160,7 @@ Each rule loads itself when you touch a file it covers.
   the shared view, and its limits.
 - `docs/windows-setup.md` — native Windows: the one path layout, the `.cmd` launcher, file
   modes vs the profile's ACL, Git Bash, and what still has to be tested on Windows; with its
-  four companions: `docs/windows-hooks.md`, `docs/windows-notify.md`, `docs/windows-jobs.md`
+  three companions: `docs/windows-hooks.md`, `docs/windows-jobs.md`
   and `docs/windows-gateway.md`.
 
 **Keep them true in the same change.** Change how a part works: update its page under

@@ -36,7 +36,6 @@ import {
   settingsData,
   slotRows,
   switchFacts,
-  warpRow,
 } from "./facts";
 import type { HealthData, MachineData, OverviewData, OverviewRequests, SlotsData } from "./views";
 import type { WorkflowAdapter } from "./workflow-adapter";
@@ -141,7 +140,6 @@ export async function machineData(deps: PageDataDeps): Promise<MachineData> {
       newest: updates.newest,
       summary: updates.summary,
     },
-    warp: await warpRow(deps.action.portal),
   };
 }
 

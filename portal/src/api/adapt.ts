@@ -1,4 +1,3 @@
-import { KIT_NAME, slotName } from "@/lib/format";
 import type {
   BranchVerdict,
   FlowReport,
@@ -8,8 +7,6 @@ import type {
   HistoryKeys,
   JobsData,
   MachineData,
-  NeedsData,
-  NeedsItem,
   OverviewData,
   ProjectData,
   ProjectInitAnswers,
@@ -34,7 +31,6 @@ import type {
   JobsAnswer,
   MachineAnswer,
   MergeVerdict,
-  NeedsAnswer,
   OverviewAnswer,
   PortalFacts,
   ProjectAnswer,
@@ -142,7 +138,6 @@ export function machineOf(answer: MachineAnswer, facts: PortalFacts): MachineDat
     gatewayKey: answer.gatewayKey,
     mcp: answer.mcp,
     omniroute: answer.omniroute,
-    warp: answer.warp,
   };
 }
 
@@ -302,76 +297,6 @@ export function workOf(answer: WorkAnswer): WorkData {
       sessionId: session.id,
       state: session.state,
     })),
-  };
-}
-
-/** The command that lets Claude answer a slot again while its targets rest. */
-function claudeSlotCommand(slot: string): string {
-  return `${KIT_NAME} gateway slot ${slotName(slot)} claude`;
-}
-
-/** "Needs you": everything the server lists, newest first. `installed` is the running version. */
-export function needsOf(answer: NeedsAnswer, installed: string): NeedsData {
-  const items: NeedsItem[] = [];
-  for (const wait of answer.permissions) {
-    items.push({
-      asker: wait.asker,
-      detail: wait.kind ?? `asked by ${wait.asker}`,
-      id: `permission-${wait.session}-${String(wait.at)}`,
-      kind: "permission",
-      project: wait.project,
-      session: wait.session,
-      since: new Date(wait.at).toISOString(),
-      tool: wait.tool,
-    });
-  }
-  if (answer.update !== null) {
-    items.push({
-      held: answer.update,
-      id: `update-${answer.update.version}`,
-      installed,
-      kind: "update",
-      since: answer.update.at,
-    });
-  }
-  // A failure is as old as the doctor pass that found it; with no pass time, it is new.
-  const doctorAt = new Date(answer.doctor.at ?? Date.now()).toISOString();
-  answer.doctor.failures.forEach((failure, index) => {
-    items.push({
-      fix: failure.fix,
-      id: `doctor-${String(index)}`,
-      kind: "doctor",
-      section: failure.section ?? "",
-      since: doctorAt,
-      text: failure.text,
-    });
-  });
-  for (const breaker of answer.breakers) {
-    items.push({
-      breaker: {
-        held: breaker.held,
-        heldNow: breaker.heldNow,
-        since: Date.parse(breaker.since),
-        targets: breaker.targets.map((target) => ({
-          status: target.status,
-          target: target.target,
-          until: Date.parse(target.until),
-        })),
-      },
-      command: claudeSlotCommand(breaker.slot),
-      id: `breaker-${breaker.slot}`,
-      kind: "breaker",
-      since: breaker.since,
-      slot: breaker.slot,
-    });
-  }
-  items.sort((a, b) => Date.parse(b.since) - Date.parse(a.since));
-  return {
-    items,
-    note:
-      answer.permissionsError === null
-        ? null
-        : `Permission prompts could not be read: ${answer.permissionsError}`,
   };
 }
 

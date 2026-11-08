@@ -63,6 +63,29 @@ function fileOf(root: string): string {
   return join(root, ".claude", "cc-smart-dev-kit.json");
 }
 
+test("init preserves retired raw alert keys when active workflow answers change", () => {
+  const alerts = { events: ["finished"], sound: true, usagePercent: 91 };
+  const plan = planProjectInit(
+    input({
+      existing: JSON.stringify({ workflow: { alerts } }),
+      answers: { ...ANSWERS, workflow: { autoCommit: true, alerts: { usagePercent: 92 } } },
+    }),
+  );
+  expect(JSON.parse(plan.text).workflow).toEqual({
+    autoCommit: true,
+    alerts: { events: ["finished"], sound: true, usagePercent: 92 },
+  });
+  const unset = planProjectInit(
+    input({
+      existing: JSON.stringify({ workflow: { alerts } }),
+      answers: { ...ANSWERS, workflow: {} },
+    }),
+  );
+  expect(JSON.parse(unset.text).workflow).toEqual({
+    alerts: { events: ["finished"], sound: true },
+  });
+});
+
 describe("planProjectInit", () => {
   test("a fresh project: requires names 0.5.2, and the baseRef line", () => {
     const root = tempDir("project-init");

@@ -424,8 +424,6 @@ footer.bottom .wrap {
 .segment button[aria-pressed="true"][disabled] {
   border-color: var(--dashed); background: var(--disabled-bg); color: var(--muted-2);
 }
-.events label { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; }
-.events input { width: 18px; height: 18px; accent-color: var(--accent); }
 .numrow { gap: 8px; }
 .numinput {
   min-height: 44px; width: 96px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px;
@@ -710,27 +708,6 @@ export const PORTAL_JS = `(function () {
       else if (putBack) putBack();
     });
   };
-
-  Array.prototype.forEach.call(document.querySelectorAll("[data-events]"), function (group) {
-    var key = group.getAttribute("data-events");
-    var boxes = group.querySelectorAll("input[type=checkbox]");
-    var picked = function () {
-      var chosen = [];
-      Array.prototype.forEach.call(boxes, function (box) { if (box.checked) chosen.push(box.value); });
-      return chosen;
-    };
-    var lastGood = picked();
-    group.addEventListener("change", function () {
-      var before = lastGood;
-      var chosen = picked();
-      lastGood = chosen;
-      setSetting(group, key, chosen, function () {
-        Array.prototype.forEach.call(boxes, function (box) {
-          box.checked = before.indexOf(box.value) !== -1;
-        });
-      });
-    });
-  });
 
   Array.prototype.forEach.call(document.querySelectorAll("[data-setting]"), function (input) {
     var key = input.getAttribute("data-setting");

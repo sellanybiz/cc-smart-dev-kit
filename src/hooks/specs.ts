@@ -26,14 +26,9 @@
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
  * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change — at the prompt, or by one block at the stop of a session that has not heard it (`user-away.ts`) |
  *
- * Three more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they are about
- * the person, not a project, so they never enter the frame and need no `cc-smart-dev-kit.json`
- * to act (the notifier and the limit alert read a project's `workflow.alerts` settings when
- * one has them: `src/workflow/alerts.ts`) —
- * `stop-failure` (the usage-limit alert), `update-check` (the background self-update and the
- * instructions copy), `notify` (the alerts: desktop, SSH terminal, Warp; `notify.ts`) and
- * `playwright-output` (a caller-named screenshot goes into the browser's output folder,
- * `playwright-output.ts`).
+ * Two more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they need no
+ * project file — `update-check` (the background self-update and instructions copy) and
+ * `playwright-output` (screenshots saved in the browser output folder).
  *
  * Every hook here is wired by the plugin, in `plugin/hooks/hooks.json`. The worktree engine
  * a project used to wire itself is retired (1.0.0): its three hook names only print the fix
@@ -618,15 +613,9 @@ export const GUARD_BUNDLES: ReadonlySet<string> = new Set(
  * The plugin's other bundles in `plugin/hooks/hooks.json`, by name: hooks about the person,
  * not a project, so no `HookSpec` here — they never enter the frame (`run.ts`) and read no
  * `cc-smart-dev-kit.json` (`ownHooks` lists only `HOOKS`). Each has its own entry and its own logic:
- * `stop-failure` (the usage-limit alert, `src/hooks/stop-failure.ts`), `update-check`
- * (the background self-update, `src/update/`) and `notify` (the alerts, `src/hooks/notify.ts`).
+ * `update-check` (the background self-update) and `playwright-output` (screenshots).
  */
-export const USER_HOOKS: readonly string[] = [
-  "stop-failure",
-  "update-check",
-  "notify",
-  "playwright-output",
-];
+export const USER_HOOKS: readonly string[] = ["update-check", "playwright-output"];
 
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles

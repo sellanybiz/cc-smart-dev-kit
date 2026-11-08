@@ -223,7 +223,6 @@ export function chromeMachine(world: ChromeWorld): Machine {
     confirm: null,
     exists: world.deps.exists ?? (() => false),
     fetchText: async () => "",
-    macApp: join(world.home, "no-Warp.app"),
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: world.deps.platform,
     run: world.deps.run ?? (() => ({ exitCode: 1, output: "" })),

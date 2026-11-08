@@ -7,7 +7,7 @@ import { ActionButton } from "@/components/action-button";
 import { Button } from "@/components/ui/button";
 
 /**
- * A held major version's What's new, and its Install (D33). One home: Needs you and Machine.
+ * A held major version's What's new, and its Install (D33). Shown on Machine.
  * `onDone` hears the install's result, so the page keeps it once the held version is gone.
  */
 export function HeldMajorActions({

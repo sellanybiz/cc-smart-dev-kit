@@ -27,19 +27,6 @@ export const FEDORA = 'NAME="Fedora Linux"\nID=fedora\n';
 export const ARCH_LINUX = 'NAME="Arch Linux"\nID=arch\n';
 export const FAKE_KEY =
   "-----BEGIN PGP PUBLIC KEY BLOCK-----\nfake\n-----END PGP PUBLIC KEY BLOCK-----\n";
-/** Warp's key fingerprint, written by hand (the one `gpg --show-keys` prints for warp.asc). */
-export const WARP_FPR = "0913165C78D5B7A41B42AC657FF7AB39D60F803F";
-
-/** What `gpg --show-keys --with-colons` prints for one key with this fingerprint. */
-export function showKeysOutput(...fingerprints: string[]): string {
-  return fingerprints
-    .map(
-      (fpr) =>
-        `pub:-:4096:1:${fpr.slice(-16)}:1707685932:::-:::scESC::::::23::0:\nfpr:::::::::${fpr}:\n`,
-    )
-    .join("");
-}
-
 /** The plugin's real instructions folder: setup installs them as it does for a person. */
 const PLUGIN_INSTRUCTIONS = join(import.meta.dir, "..", "..", "plugin", "instructions");
 
@@ -149,6 +136,8 @@ export function world(options: WorldOptions = {}) {
   mkdirSync(bin);
   mkdirSync(staged);
   const bodies: Record<string, string> = {
+    sh: "exit 0",
+    "powershell.exe": "exit 0",
     sudo: [
       // Keep a copy of each file handed to `install`, to check what root would get.
       'if [ "$1" = install ]; then for a do src=$dst; dst=$a; done;',
@@ -163,11 +152,6 @@ export function world(options: WorldOptions = {}) {
     claude: options.mcp
       ? `[ "$1" = mcp ] && exec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(bin, "fake-claude-mcp.js"))} "$@"\nexit 0`
       : "exit 0",
-    // --show-keys: Warp's one key. --dearmor --yes --output OUT IN: a copy stands in.
-    gpg: [
-      `case "$*" in *--show-keys*) printf '${showKeysOutput(WARP_FPR)}' ;;`,
-      '  *--dearmor*) cp "$5" "$4" ;; esac',
-    ].join("\n"),
     ...options.bins,
   };
   if (options.mcp) writeFileSync(join(bin, "fake-claude-mcp.js"), FAKE_CLAUDE_MCP_JS);
@@ -226,7 +210,6 @@ export function world(options: WorldOptions = {}) {
     platform: options.platform ?? "linux",
     arch: options.arch ?? "x64",
     osRelease: () => options.os ?? UBUNTU,
-    macApp: "/Applications/Warp.app",
     exists: (path) => existing.has(path),
     fetchText: async () => FAKE_KEY,
   };
@@ -234,8 +217,6 @@ export function world(options: WorldOptions = {}) {
     runSetup(paths, {
       dryRun: false,
       yes: false,
-      warp: false,
-      removeWarp: false,
       project: home,
       machine,
       instructions: null,
@@ -250,7 +231,7 @@ export function world(options: WorldOptions = {}) {
     });
   /**
    * Every call but the read-only questions about what is installed, and the MCP
-   * registrations (`claude mcp …`): a test about Warp or setup's files should not have to
+   * registrations (`claude mcp …`): a test about setup's files should not have to
    * carry those lines. The MCP registrations are asserted in `src/mcp/register.test.ts` and
    * `src/mcp/mcp.test.ts`.
    */

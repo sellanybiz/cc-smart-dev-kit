@@ -3,6 +3,34 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 3.0.0
+
+- **Breaking: Warp support is removed.** Setup no longer accepts `--warp` or
+  `--remove-warp`. Doctor, session reopening and the portal no longer integrate with Warp.
+  Existing apps, saved tabs, package sources and unowned plugin registrations stay untouched.
+- **All kit custom notifications are removed.** Desktop popups, sounds, terminal/SSH alerts,
+  agent-view sends, usage-limit alerts and updater notifications no longer run. Claude Code's
+  built-in notifications and other plugins are unchanged. The status line keeps its usage
+  warning, model plan-limit messages and reset times.
+- **Safe retirement on setup.** Only exact recorded kit notification hooks and tmux lines
+  are removed. Edited, unowned or unreadable registrations are preserved for manual review.
+  Retired `alerts.events` and `alerts.sound` values are accepted but ignored; unrelated
+  settings writes preserve them. `alerts.usagePercent` remains the status-line threshold.
+- **Breaking: Needs you is removed.** Its page, navigation, polling and API are gone.
+  `/needs`, `/needs/` and `/api/needs` return not found, including with a stale copied export.
+  Work, Flow, guard questions, gateway limits and Machine update controls remain.
+- **Latest Herdr GUI offered during manual setup.** Setup uses the official GUI installer
+  and its normal missing-core bootstrap, not the TUI. It shows the change before consent;
+  noninteractive installation requires `--yes`. `--no-herdr` skips it for that run. Existing
+  GUI installs stay untouched. Setup does not launch it or change preferences. Upstream owns
+  its app, core and shortcuts; kit restore does not uninstall them.
+
+**What to run:** explicitly update to this major version with `cc-smart-dev-kit update`,
+then restart Claude Code. Run `cc-smart-dev-kit setup --dry-run` and inspect the proposed
+retirement and Herdr installation. Run `cc-smart-dev-kit setup` to apply it, or add
+`--no-herdr` to skip the GUI. Review any manual-cleanup guidance for edited old hooks or
+independently installed Warp plugins; the kit never guesses their ownership.
+
 ## 2.2.0
 
 - **Model and effort by judgment of the job.** For each agent it starts, the lead weighs three

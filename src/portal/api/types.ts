@@ -582,52 +582,6 @@ export interface GuardAsksAnswer {
   skipped: number;
 }
 
-/** Why the person is needed, from the flow report: a permission prompt or a question. */
-export interface PermissionWait {
-  asker: string;
-
-  /** Milliseconds since the epoch. */
-  at: number;
-
-  kind: null | string;
-  project: string;
-  session: string;
-  tool: string;
-}
-
-/** An open breaker: a slot whose every target is limited or down. */
-export interface BreakerNeed {
-  /** Requests the breaker held since it opened. */
-  held: number;
-  /** Requests it holds right now, from the router's live answer; null when the router does not say. */
-  heldNow: null | number;
-  since: string;
-  slot: string;
-  targets: { status: null | number; target: string; until: string }[];
-}
-
-/** A doctor failure, with the line that fixes it and the report group it belongs to (doctor's own words). */
-export interface DoctorFailure {
-  /** The command that fixes it, or the one step a person takes; null when the check names none. */
-  fix: null | string;
-  /** The report group's title (`CHECK_GROUPS`), or null when the check names none. */
-  section: null | string;
-  text: string;
-}
-
-/** `GET /api/needs`: everything that waits on the person (D52). */
-export interface NeedsAnswer {
-  /** Why cleanup facts could not be read; null when they were. */
-  /** Every breaker open now, by slot. */
-  breakers: BreakerNeed[];
-  doctor: { at: null | number; failures: DoctorFailure[] };
-  permissions: PermissionWait[];
-  /** Why the permission prompts could not be read (the flow report did not run); null when they were. */
-  permissionsError: null | string;
-  /** A held major update (D33); null when there is none. */
-  update: null | { at: string; from: null | string; notes: string[]; version: string };
-}
-
 /**
  * `GET /api/worktrees`'s types come from its one builder (`src/worktrees/command.ts`): the
  * CLI's `worktrees --json` prints that answer and the portal reads it in a child

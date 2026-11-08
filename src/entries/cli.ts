@@ -17,7 +17,6 @@ import {
   commandWords,
   HELP_COMMAND,
   HOOK_HELP,
-  HOOK_NAMES,
   helpTextFor,
   unknownCommand,
   usageError,
@@ -43,19 +42,11 @@ import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { loopbackFetch, realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
-import {
-  ALERT_SCREEN_MS,
-  parseNotifyWorkerAlert,
-  runDesktopAlert,
-  type Watch,
-} from "../hooks/desktop-alert";
-import { runtimeDir } from "../hooks/notify";
-import { runNotifyEntry } from "../hooks/notify-entry";
 import { recordSessionName } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
-import { ALERT_WORKER_COMMAND, parseAlert, runAlert, spawnRunner } from "../hooks/stop-failure";
 import { runIssue } from "../issues/command";
 import { runJobCommand } from "../jobs/commands";
+import { NO_HERDR_FLAG } from "../machine/herdr";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
 import { mcpServerStatus, mcpServerStatusLine } from "../mcp/status";
@@ -71,7 +62,6 @@ import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
 import { MAX_SUBAGENTS_FLAG, parseMaxSubagents } from "../setup/max-subagents";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
-import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { runUser } from "../user-away/command";
 import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
@@ -233,31 +223,6 @@ function omnirouteContext(paths: ReturnType<typeof cliPaths>) {
   };
 }
 
-/**
- * Reads a program's stdout line by line while it runs: the notification server's signal
- * monitor (`gdbus monitor`, `src/hooks/desktop-alert.ts`). The alert's wait ends on one of
- * those lines, or on the minute; `stop` ends the monitor either way.
- */
-const watchLines: Watch = (argv, onLine) => {
-  const monitor = Bun.spawn(argv, { stdin: "ignore", stderr: "ignore", stdout: "pipe" });
-  const read = async (): Promise<void> => {
-    const decoder = new TextDecoder();
-    let rest = "";
-    for await (const chunk of monitor.stdout) {
-      rest += decoder.decode(chunk, { stream: true });
-      const lines = rest.split("\n");
-      rest = lines.pop() ?? "";
-      for (const line of lines) onLine(line);
-    }
-  };
-  read().catch((error) =>
-    // The monitor dying early only means the alert waits out its minute instead of the
-    // click; one line says so, and the process is one the hook never sees.
-    console.error(`${COMMAND}: the notification monitor stopped: ${String(error)}`),
-  );
-  return { stop: () => monitor.kill() };
-};
-
 async function main(argv: string[]): Promise<number> {
   // The one argument step, before any command runs: `-h` or `--help` anywhere before a `--`
   // prints that command's own help and exits 0. So `worktrees --help` never scans, and neither
@@ -283,10 +248,9 @@ async function main(argv: string[]): Promise<number> {
   switch (command) {
     case "setup": {
       const flags = [
+        NO_HERDR_FLAG,
         "--dry-run",
         "--yes",
-        "--warp",
-        "--remove-warp",
         "--no-instructions",
         "--instructions",
         "--statusline",
@@ -339,10 +303,6 @@ async function main(argv: string[]): Promise<number> {
         );
         return 2;
       }
-      if (rest.includes("--warp") && rest.includes("--remove-warp")) {
-        console.error(usageError("--warp and --remove-warp do opposite things: give one", "setup"));
-        return 2;
-      }
       if (!existsSync(project) || !statSync(project).isDirectory()) {
         // Not a usage mistake: the option is spelled right, the folder is wrong (UX-13).
         console.error(
@@ -364,12 +324,11 @@ async function main(argv: string[]): Promise<number> {
         tavilyKeyStdin = value;
       }
       return runSetup(paths, {
+        herdr: !rest.includes(NO_HERDR_FLAG),
         dryRun: rest.includes("--dry-run"),
         tavilyKeyStdin,
         env: process.env,
         yes: rest.includes("--yes"),
-        warp: rest.includes("--warp"),
-        removeWarp: rest.includes("--remove-warp"),
         project,
         machine: realMachine(process.env, ask),
         instructions: off ? false : on ? true : null,
@@ -398,40 +357,6 @@ async function main(argv: string[]): Promise<number> {
     case "report":
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());
-    case ALERT_WORKER_COMMAND: {
-      // Not in --help: the notifier starts it, detached, through the launcher, so the wait for a
-      // click — a minute on screen — runs from the installed version, not the hook's version
-      // folder (src/entries/notify.ts). The usage-limit hook shows its plain alert itself; the
-      // worker still reads that hook's own format, for an older hook in a running session.
-      const argument = rest.length === 1 ? (rest[0] ?? "") : null;
-      const notifyAlert = argument === null ? null : parseNotifyWorkerAlert(argument);
-      if (notifyAlert !== null) {
-        // The notifier's alert: the desktop extras around it, everything that waits, and
-        // the window raised on a click (`src/hooks/desktop-alert.ts`).
-        const outcome = await runDesktopAlert(notifyAlert, {
-          capture: spawnRunner,
-          nowMs: () => Date.now(),
-          screenMs: ALERT_SCREEN_MS,
-          sleep: (ms) => Bun.sleep(ms),
-          stateDir: runtimeDir(process.env),
-          watch: watchLines,
-          which: (command) => Bun.which(command, { PATH: process.env.PATH ?? "" }),
-        });
-        if (outcome === "no notifier") {
-          console.error(`${COMMAND}: ${notifyAlert.title}. ${notifyAlert.body}`);
-        }
-        return 0;
-      }
-      const alert = argument === null ? null : parseAlert(argument);
-      if (alert === null) {
-        console.error(`Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON> (the hook runs it)`);
-        return 2;
-      }
-      if (runAlert(alert, process.platform, spawnRunner) === "no notifier") {
-        console.error(`${COMMAND}: ${alert.title}. ${alert.body}`);
-      }
-      return 0;
-    }
     case "doctor": {
       const unknown = rest.filter((arg) => !DOCTOR_FLAGS.includes(arg));
       if (unknown.length > 0) {
@@ -478,13 +403,6 @@ async function main(argv: string[]): Promise<number> {
         console.log(HOOK_HELP);
         return 0;
       }
-      if (name === USER_NOTIFY_HOOK_NAME && extra.length === 0) {
-        // The same wiring as `plugin/dist/notify.js`: one function, one answer. This is the
-        // command the user-level hook setup writes for agent view runs
-        // (`src/setup/user-notify-hook.ts`).
-        await runNotifyEntry();
-        return 0;
-      }
       // A line the retired worktree engine had a project wire: the fix, never the old answer.
       // Read nothing: whatever Claude Code sent on stdin does not change it.
       //
@@ -503,10 +421,8 @@ async function main(argv: string[]): Promise<number> {
         );
         return 1;
       }
-      // The only hook left is the notifier, which ran above. Every other name is unknown.
-      console.error(
-        `Unknown hook: ${[name, ...extra].join(" ")}\n\n${usageError(`Usage: ${COMMAND} hook <${HOOK_NAMES}>`, "hook")}`,
-      );
+      // No user-invoked hooks remain.
+      console.error(`Unknown hook: ${[name, ...extra].join(" ")}\n\n${HOOK_HELP}`);
       return 2;
     }
     case "project": {

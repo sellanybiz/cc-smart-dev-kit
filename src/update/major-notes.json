@@ -1,4 +1,5 @@
 {
   "1.0.0": "it refuses old project fields",
-  "2.0.0": "it removes the crew: finish crew work first"
+  "2.0.0": "it removes the crew: finish crew work first",
+  "3.0.0": "it removes Warp support, custom notifications and Needs you; manual setup offers the Herdr GUI"
 }

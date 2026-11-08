@@ -108,7 +108,7 @@ place (`auto-merge.ts`).
 | `autoMerge` | the **merge guard hook** (`src/hooks/merge-guard.ts`), PreToolUse on Bash and PowerShell — the one step a hook can stand in front of. `mergeMethod` and `deleteBranch` stay instructions: they say how a merge the guard allowed is made. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the merge guard reads it. |
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
-| `alerts.events`, `alerts.sound` | the two alert hooks, `notify` and `stop-failure` (§ The notifier). |
+| `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 
@@ -381,12 +381,9 @@ person's own files (the record, `workflow.json`), drop `CLAUDECODE` (`env -u CLA
 push to a branch the person may push to. What holds against that is the repository's own
 branch protection and the person's yes to a merge.
 
-**The alert settings** are read by hooks that run often and must never fail
-(`src/workflow/alerts.ts`): `alertsAt(paths, cwd, env)` resolves them once per run — the
-project's over the person's over the built-in defaults — and a file it cannot use (a broken
-`cc-smart-dev-kit.json`, a broken personal `workflow.json`) drops that file alone: every value
-that can still be read stays, the project's over the person's (`alertsFrom({}, project)` when
-the person's file is the broken one), with one line for stderr. A folder that is not a project, or a hook input with no `cwd`, is not a problem
-and says nothing. The sound itself is one home per platform (`src/hooks/alert-sound.ts`): the
-freedesktop sound through `paplay` or `canberra-gtk-play` on Linux, a system sound through
-`afplay` on macOS, the toast's own sound on Windows, and the SSH terminal's bell in `notify.ts`.
+**The usage-warning setting** is read by the status line through `src/workflow/alerts.ts`.
+`alertsAt(paths, cwd, env)` resolves `alerts.usagePercent` once per run: the project's over
+the person's over the built-in default. An unreadable project or personal settings file
+drops only that file, keeps every value it can read, and returns one line for stderr.
+A folder outside a project, or no `cwd`, is not a problem. Retired `alerts.events` and
+`alerts.sound` values load but are discarded by the schema, not used by the status line.

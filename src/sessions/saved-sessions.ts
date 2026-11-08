@@ -1,5 +1,5 @@
 /**
- * Reading Claude Code's saved sessions, and turning one into a saved Warp tab.
+ * Reading saved sessions and preparing terminal commands to resume them.
  *
  * Claude Code writes every session to disk as it goes — one `.jsonl` file per session, under
  * `<config folder>/projects/<folder>/`, named by the session's id. The id does not change
@@ -177,61 +177,6 @@ export function sessionLabel(session: SavedSession): string {
   return session.folder === null ? name : `${name} — ${lastPart(session.folder)}`;
 }
 
-/**
- * The file name of a session's saved Warp tab, without `.toml`: `claude_<key>_<id8>`.
- *
- * `key` names the project (`repoKey` of its main checkout). Warp keeps every project's tabs
- * in ONE folder, and a run removes the tabs of the sessions gone quiet — so the name must
- * say which project a tab belongs to, or one project's run removes another's. Tabs written
- * before the key existed carry none: those are told apart by their own `directory` line.
- */
-export function tabConfigName(key: string, session: SavedSession): string {
-  return `claude_${key}_${session.id.slice(0, 8)}`;
-}
-
-/** The main checkout a saved tab's text runs in, or null when its text does not say. */
-export function tabCheckoutOf(text: string): null | string {
-  const match = /^directory = (".*")$/m.exec(text);
-  if (match?.[1] === undefined) return null;
-  try {
-    const value: unknown = JSON.parse(match[1]);
-    return typeof value === "string" ? value : null;
-  } catch {
-    // A tab with a line this cannot read (someone edited it, or a TOML string we never
-    // wrote): it names no project, so no run removes it.
-    return null;
-  }
-}
-
-/** The first line of every tab file this writes — only files that carry it are ever removed. */
-export const TAB_CONFIG_MARK = "# Written by cc-smart-dev-kit `sessions`.";
-
-/**
- * The saved Warp tab for one session: a tab in the main checkout that resumes it.
- *
- * The folder is the MAIN checkout on purpose. A session that works in a worktree made with
- * `git worktree add` is resumed from the main checkout, and Claude Code moves it back into
- * its worktree. The tab runs `claude` itself: a Warp tab is a login shell, where Claude Code
- * is on PATH.
- */
-export function warpTabConfig(session: SavedSession, mainCheckout: string): string {
-  const label = sessionLabel(session);
-  // A JSON string is a valid TOML string: the same quotes, the same escapes.
-  return [
-    TAB_CONFIG_MARK,
-    "# It is rewritten on every run, so do not edit it.",
-    `name = ${JSON.stringify(`Claude · ${label}`)}`,
-    `title = ${JSON.stringify(session.name ?? label)}`,
-    "",
-    "[[panes]]",
-    'id = "main"',
-    'type = "terminal"',
-    `directory = ${JSON.stringify(mainCheckout)}`,
-    `commands = [${JSON.stringify(`claude --resume ${session.id}`)}]`,
-    "",
-  ].join("\n");
-}
-
 /** A session id Claude Code wrote: letters, digits and dashes only. It goes into a shell command. */
 export function isSessionId(id: string): boolean {
   return /^[A-Za-z0-9-]{8,64}$/.test(id);
@@ -239,9 +184,9 @@ export function isSessionId(id: string): boolean {
 
 /**
  * The command that opens one session in an XFCE Terminal window of its own — the Linux
- * counterpart of its Warp tab: in the main checkout, resuming it. A window per session, not
+ * terminal: in the main checkout, resuming it. A window per session, not
  * a tab, because a click on a Claude Code notification raises a window. A login shell, so
- * `claude` is on PATH; it stays open after Claude exits, as a Warp tab does. Null for an id
+ * `claude` is on PATH; it stays open after Claude exits, for another command. Null for an id
  * that is not a session's — it goes into a shell command.
  */
 export function xfceTerminalCommand(session: SavedSession, mainCheckout: string): null | string[] {
@@ -263,10 +208,10 @@ export function xfceTerminalCommand(session: SavedSession, mainCheckout: string)
 
 /**
  * The command that opens one session in a Windows Terminal window of its own — the Windows
- * counterpart of its Warp tab and of the XFCE Terminal window: in the main checkout,
+ * terminal: in the main checkout,
  * resuming it. `wt.exe` makes a window when the person has none open and a tab in the
  * window they have, which is what a person asking for their sessions back wants. `cmd /k`
- * keeps the window open after Claude exits, as a Warp tab does. Null for an id that is not a
+ * keeps the window open after Claude exits, for another command. Null for an id that is not a
  * session's — it goes into a command line.
  */
 export function windowsTerminalCommand(
@@ -277,23 +222,16 @@ export function windowsTerminalCommand(
   return ["wt.exe", "-d", mainCheckout, "cmd", "/k", `claude --resume ${session.id}`];
 }
 
-/** Where `--open` brings sessions back: Warp tabs, XFCE Terminal or Windows Terminal windows, or nowhere. */
-export type ReopenIn = "nowhere" | "warp" | "windows-terminal" | "xfce-terminal";
+/** Where `--open` brings sessions back: XFCE Terminal or Windows Terminal windows, or nowhere. */
+export type ReopenIn = "nowhere" | "windows-terminal" | "xfce-terminal";
 
-/**
- * Picks the terminal from what this machine has. Warp wins wherever it is: its data folder
- * shows it on Windows and macOS, but on Linux that folder does not exist until Warp has run,
- * so there the installed `warp-terminal` counts too. XFCE Terminal is Linux's fallback,
- * Windows Terminal's (`wt.exe`) is Windows's (`docs/windows-setup.md`).
- */
+/** Picks a supported terminal from the programs installed on this platform. */
 export function pickReopenTerminal(machine: {
   hasProgram: (name: string) => boolean;
   platform: NodeJS.Platform;
-  warpDataFolder: boolean;
 }): ReopenIn {
   const linux = machine.platform === "linux";
   const windows = machine.platform === "win32";
-  if (machine.warpDataFolder || (linux && machine.hasProgram("warp-terminal"))) return "warp";
   if (linux && machine.hasProgram("xfce4-terminal")) return "xfce-terminal";
   if (windows && machine.hasProgram("wt.exe")) return "windows-terminal";
   return "nowhere";
@@ -303,7 +241,7 @@ export function pickReopenTerminal(machine: {
  * The command that opens a window on the Linux desktop: through `systemd-run --user` where
  * there is one, so the window takes the desktop session's environment and opens there even
  * over SSH. `--wait` passes the command's own exit code back. `outlivesCommand`: the program
- * the command starts outlives the command itself — a Warp that `xdg-open` started — so the
+ * the command starts outlives the command itself — a program that a desktop opener started — so the
  * unit must end only when its whole cgroup does (ExitType=cgroup, systemd 250+); otherwise
  * systemd would stop that program together with the command. Not for XFCE Terminal, whose
  * command IS the terminal or exits at once: there the unit ends with it.

@@ -27,11 +27,12 @@
  * action and the live stream answer while a 300-second `claude plugin …` install runs.
  */
 
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { type Check, checkLine } from "../cli/doctor";
 import { type JobsAnswer, jobsAnswer, readJobs } from "../jobs/status";
 import {
+  ACTION_NAMES,
   type ActionContext,
   type ActionResult,
   type DoctorSource,
@@ -87,6 +88,15 @@ import {
 
 /** The page routes the server itself draws, and which screen each one is. */
 const SERVED_PAGES = new Set(["/", "/health", "/machine", "/settings", "/slots"]);
+/** Pages supplied only by the frontend export, not by the fallback renderer. */
+const EXPORT_PAGES = new Set([
+  "/usage",
+  "/work",
+  "/tasks",
+  "/flow",
+  "/guards",
+  "/settings/project",
+]);
 
 /** What a test needs to build a portal with fakes; the real values come from the entry. */
 export interface PortalOptions {
@@ -425,7 +435,9 @@ export async function startPortal(
       if (method === "GET") {
         const answer = await answerApi(pageDeps(readConfig(ctx)), url);
         return answer === null
-          ? json({ lines: ["An action is a POST."], ok: false }, 405)
+          ? ACTION_NAMES.some((name) => url.pathname === `/api/${name}`)
+            ? json({ lines: ["An action is a POST."], ok: false }, 405)
+            : json({ error: "not found" }, 404)
           : json(answer.body, answer.status);
       }
       if (method !== "POST") return json({ lines: ["An action is a POST."], ok: false }, 405);
@@ -475,11 +487,13 @@ export async function startPortal(
     if (url.pathname === "/privacy") {
       return html(privacyPage(shell), {});
     }
-    // The export's pages, when the folder is there. A route it does not have falls back to
-    // the server-rendered page, so the switch-over costs nothing.
+    // Check supported routes before reading export HTML: a copied export can hold a
+    // removed page. Images and fonts keep their existing non-HTML serving path.
+    const page = url.pathname.endsWith("/") ? url.pathname.slice(0, -1) || "/" : url.pathname;
+    const supported = SERVED_PAGES.has(page) || EXPORT_PAGES.has(page);
     if (source !== null) {
       const file = source.page(url.pathname);
-      if (file !== null) {
+      if (file !== null && (supported || extname(file).toLowerCase() !== ".html")) {
         const answer = exportResponse(source, file, state.csrf);
         if (answer !== null) return answer;
       }

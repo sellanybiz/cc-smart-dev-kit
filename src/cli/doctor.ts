@@ -18,7 +18,6 @@ import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
-import { hasDesktop } from "../hooks/desktop-alert";
 import { heavyJobChecks } from "../jobs/doctor";
 import {
   MEMORY_USE_KEY,
@@ -31,7 +30,6 @@ import {
 } from "../machine/claude-mem";
 import { companionChecks, pluginEnabled } from "../machine/companions";
 import type { Machine } from "../machine/machine";
-import { warpCheck } from "../machine/warp";
 import { type McpDoctorDeps, mcpChecks } from "../mcp/doctor";
 import { omnirouteDoctorLine } from "../omniroute/commands";
 import type { RegistryFetch } from "../omniroute/registry";
@@ -71,15 +69,7 @@ import {
 import { maxSubagentsLine, maxSubagentsState } from "../setup/max-subagents";
 import { retryWatchdogLine, retryWatchdogState } from "../setup/retry-watchdog";
 import { TASK_ALLOW_PATH, TASK_DENY_PATH } from "../setup/task-tools";
-import {
-  TMUX_LINE,
-  TMUX_MIN_VERSION,
-  TMUX_NOW_COMMAND,
-  tmuxLineIn,
-  tmuxPassthroughOf,
-} from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
-import { USER_NOTIFY_COMMAND, userNotifyHookState } from "../setup/user-notify-hook";
 import { RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { openWorkDb, WORK_SCHEMA_VERSION, workDbFile } from "../tasks/work/db";
 import type { CommandRunner } from "../update/apply";
@@ -1081,125 +1071,6 @@ async function omnirouteCheck(paths: CliPaths, env: Env, gateway: DoctorGateway)
   return line === null ? [] : [{ info: true, ok: true, text: line.text }];
 }
 
-/**
- * tmux: an alert from a pane reaches the terminal the person is looking at only with tmux
- * 3.3 or newer and its passthrough allowed (`all`, so a window the person is not looking at
- * works too), which is why `cc-smart-dev-kit setup` writes one managed line into `~/.tmux.conf` and
- * `restore` takes it out. Both lines are information (`·`), never failures: tmux is
- * optional, and so is this.
- */
-async function checkTmux(
-  paths: CliPaths,
-  env: Env,
-  machine: Machine,
-  read: CommandRunner,
-): Promise<Check[]> {
-  // Windows has no tmux, and setup manages `~/.tmux.conf` only where it is installed:
-  // information, never a failure (`docs/windows-setup.md`).
-  if (machine.platform === "win32") {
-    return [
-      {
-        info: true,
-        ok: true,
-        text: "tmux: not on Windows, so no passthrough line is managed there",
-      },
-    ];
-  }
-  if (machine.which("tmux") === null) return [];
-  const checks: Check[] = [];
-  const conf = tildify(paths.tmuxConfFile, paths.home);
-  if (!tmuxLineIn(paths.tmuxConfFile)) {
-    checks.push({
-      info: true,
-      ok: true,
-      text: `${conf} has no "${TMUX_LINE}" line, so tmux drops an alert from a pane. To add it: ${COMMAND} setup`,
-    });
-  }
-  if ((env.TMUX ?? "") !== "" && (await tmuxPassthroughOf(read)) !== "all") {
-    checks.push({
-      info: true,
-      ok: true,
-      text: `tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: ${TMUX_NOW_COMMAND} (a restart works too); it needs tmux ${TMUX_MIN_VERSION} or newer`,
-    });
-  }
-  return checks;
-}
-
-/**
- * The user-level `Notification` hook setup writes for agent view: Claude Code's list of
- * sessions runs only the hooks in settings files, never a plugin's `hooks.json`, so its
- * `agent_needs_input` and `agent_completed` alerts reach the notifier only through this
- * entry (`src/setup/user-notify-hook.ts`, `docs/claude-code-contract.md`).
- */
-export function checkUserNotifyHook(paths: CliPaths): Check {
-  const where = tildify(paths.settingsFile, paths.home);
-  const state = userNotifyHookState(paths.settingsFile);
-  if (state === "current") {
-    return {
-      ok: true,
-      text: `agent view's notification hook is set in ${where}: ${USER_NOTIFY_COMMAND}`,
-    };
-  }
-  if (state === "edited") {
-    // The person's own version of the managed hook: it still runs the notifier, so it is
-    // information, never a failure (an owned key the person changed is theirs, too).
-    return {
-      ok: true,
-      info: true,
-      text: `agent view's notification hook in ${where} was edited since setup wrote it; it still runs ${USER_NOTIFY_COMMAND}, and cc-smart-dev-kit leaves it alone`,
-    };
-  }
-  return {
-    ok: false,
-    text:
-      state === "elsewhere"
-        ? `agent view's notification hook in ${where} does not run ${USER_NOTIFY_COMMAND}, so agent view's alerts never reach the notifier`
-        : `agent view's notification hook is missing from ${where}, so agent view's alerts never arrive`,
-    fix: SETUP_FIX,
-  };
-}
-
-/**
- * The Linux desktop extras the notifier can use (`src/hooks/desktop-alert.ts`): a click on
- * an alert that raises the session's terminal window, the alert's minute on screen, one
- * alert per session, and the XFCE Do-Not-Disturb check. Each is skipped in silence when
- * its tool is missing, so doctor names the missing tool — as information (`·`), never a
- * failure: a desktop without them still shows every alert, exactly as before.
- *
- * The Do-Not-Disturb line is for an XFCE session only (`xfconf-query` is XFCE's own
- * tool, and no other desktop has that setting to miss); everything else is looked up on
- * any Linux desktop.
- */
-function checkDesktopExtras(platform: NodeJS.Platform, env: Env, machine: Machine): Check[] {
-  if (platform !== "linux" || !hasDesktop(platform, env)) return [];
-  const checks: Check[] = [];
-  if (machine.which("gdbus") === null) {
-    checks.push({
-      info: true,
-      ok: true,
-      text: "gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together",
-    });
-  }
-  if (machine.which("xdotool") === null) {
-    checks.push({
-      info: true,
-      ok: true,
-      text: "xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window",
-    });
-  }
-  if (
-    (env.XDG_CURRENT_DESKTOP ?? "").toLowerCase().includes("xfce") &&
-    machine.which("xfconf-query") === null
-  ) {
-    checks.push({
-      info: true,
-      ok: true,
-      text: "xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on",
-    });
-  }
-  return checks;
-}
-
 /** What the gateway checks need: the plugin's router bundle, a runner, and this machine's service. */
 export interface DoctorGateway {
   bundle: string;
@@ -1213,7 +1084,7 @@ export interface DoctorGateway {
   read?: CommandRunner;
   /** The service this machine can run the router under (`routerServiceKind`). */
   service: RouterServiceKind;
-  /** Asks the system about Warp (its package manager); a test passes fakes. */
+  /** The system facts and command lookup; tests pass fakes. */
   machine: Machine;
   /**
    * The projects `gateway projects` lists — the portal's own `projectsList`, wired by the
@@ -1316,8 +1187,7 @@ export interface DoctorOptions {
   /** Check the project of this folder (`project-checks.ts`); null: no project checks. */
   project: DoctorProject | null;
   /**
-   * How `doctor`'s own reads run: the launcher's `version`, the old launcher's, Warp's package
-   * manager. Default: the command line's `Bun.spawnSync`. The portal passes its asynchronous
+   * How `doctor`'s own reads run: the launcher's `version`, the old launcher's. Default: the command line's `Bun.spawnSync`. The portal passes its asynchronous
    * runner (`ReadRunner`), because it shows this pass on the Machine page and a page load must
    * never freeze on one (`Bun.spawnSync`) — `.claude/rules/portal.md`.
    */
@@ -1383,11 +1253,7 @@ function doctorGroups(
     },
     {
       group: "companions",
-      run: async () => [
-        ...companionChecks(paths),
-        ...claudeMemChecks(paths),
-        await warpCheck(machine, paths, readCommand),
-      ],
+      run: async () => [...companionChecks(paths), ...claudeMemChecks(paths)],
     },
     {
       group: "mcp",
@@ -1397,9 +1263,6 @@ function doctorGroups(
     {
       group: "alerts",
       run: async () => [
-        checkUserNotifyHook(paths),
-        ...(await checkTmux(paths, env, machine, readCommand)),
-        ...checkDesktopExtras(machine.platform, env, machine),
         checkRetryWatchdog(paths),
         checkMaxSubagents(paths),
         ...heavyJobChecks(paths),

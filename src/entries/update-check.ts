@@ -10,7 +10,7 @@ import { startPortalAtSessionStart } from "../portal/session-start";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { findUserInstall } from "../setup/installed-plugins";
 import { instructionsFolder, instructionsPaths } from "../setup/instructions";
-import { capturingRunner, commandContext, notifyCommand } from "../update/apply";
+import { capturingRunner, commandContext } from "../update/apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
@@ -37,10 +37,6 @@ if (process.argv.includes("--background")) {
     now: () => Date.now(),
     claude: which("claude"),
     run,
-    notify: (text) => {
-      const argv = notifyCommand(text, process.platform, which);
-      if (argv !== null) run(argv);
-    },
   });
 } else {
   try {

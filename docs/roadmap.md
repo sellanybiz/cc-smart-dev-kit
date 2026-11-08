@@ -1,5 +1,10 @@
 # Roadmap
 
+Current removal: Warp support, all custom notification sends, and the portal Needs you
+page/API are retired. Statusline usage warnings remain. Manual setup offers the latest
+Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
+not features that still exist.
+
 ## 2.0.0 — subagent-driven parallel development
 
 The main session orchestrates one builder per phase, disjoint phases in parallel worktrees,
@@ -80,7 +85,7 @@ The crew sessions this release brought were removed in 2.0.0; the rest stays.
   "Invalid `signature`" 400), and gives a backend its own signature back.
 - **The breaker** (D42): while every target of a slot is limited or down, the router holds the
   request (up to 240 s) and then answers a 429 Claude Code retries; a heartbeat-only target
-  rests like any other failure; the status line and the StopFailure alert name it.
+  rests like any other failure; the status line names it.
 - **Claude judges first** (D44): auto mode's checks go to Claude first; while Claude is limited
   or down, the worker slot's tested targets judge in its place. WebSearch never falls back to
   them, and opus and fable keep no fallback.
@@ -168,15 +173,8 @@ Done in this release:
   when `autoMerge` allows it, every required check is green, and the head commit's review is
   recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
   `workflow show` says whether the commit here has one.
-- **The alert settings** (`alerts.events`, `alerts.sound`, `alerts.usagePercent`): the two
-  alert hooks and the status line read them — which moments alert, a sound where the platform
-  has one, and the plan share the status line warns from.
-- **The Linux desktop extras of the alerts** (`docs/design/hooks.md` § The notifier): a click on an
-  alert raises the session's terminal window, the alert leaves the screen for the
-  notification centre after a minute, one alert per session is on screen, and XFCE's Do Not
-  Disturb keeps an ordinary alert's sound off — each where its tool is installed (`gdbus`,
-  `xdotool`, `xfconf-query`), in the detached worker, ported from the older notification
-  script so a machine that moves to the plugin loses nothing.
+- **The statusline usage warning** still reads `alerts.usagePercent`. Retired `alerts.events`
+  and `alerts.sound` are ignored on load; unrelated writes preserve their raw stored values.
 - **The skills follow the workflow**: the commit, pull-request, review and worktree skills,
   and the general instructions, read `cc-smart-dev-kit workflow show`, so one policy — not an
   older hard-coded default — says when a step goes by itself.
@@ -351,8 +349,7 @@ affordable models to subagent slots, and an opt-in judge for auto mode's safety 
   `cc-smart-dev-kit.json` when there is one, Claude Code's default when there is not.
 - The guards (git, an edit in a guarded main checkout, a message to another project's
   session, the Agent model rules), session names, the note after a merge, the
-  worktree-leftovers note, and the notifications (desktop, SSH as OSC 777, or Warp's own
-  plugin).
+  worktree-leftovers note. The former custom notification transports are now removed.
 - `cc-smart-dev-kit doctor --live`: a throwaway session in a temp repo that proves the hooks
   and the worktree contract on the installed Claude Code. It makes the live rows of
   `claude-code-contract.md` repeatable.
@@ -402,13 +399,13 @@ sessions closed in the same moment before the machine started (`docs/windows-set
 
 ## 6 — Notifications, claude-mem settings, the auto-mode block (done, 0.3.0)
 
-- Notification hooks (a finished turn, a question, a plan, a permission prompt, a stopped
-  turn), with a sound and a mark per session.
+- Notification hooks shipped in this phase; all custom senders are now removed.
 - claude-mem settings: `setup` points it at the gateway's affordable model, with Claude
   Haiku as its quota fallback.
 - The auto-mode block: `setup` copies each opted-in project's `autoMode` rules into
   the user's settings, after it shows them and asks.
-- The Warp terminal and its plugin, opt-in (`setup --warp`).
+- Warp support shipped in this phase; its setup flags, probes and portal card are now removed.
+  Existing apps, data and unproved plugin ownership are left alone.
 
 ## 7 — Opus and Fable slots (done, 0.3.0)
 

@@ -689,8 +689,7 @@ switches `--fallback-model` (a 529 does after three).
   502, 503, 504, 529, a network error, no response headers in time, or no real event in time),
   or rests, or is being probed by another request;
 - the last target is an affordable backend. **Anthropic's own answers always pass unchanged**
-  (a stream silent for `timeouts.streamIdleMs` is ended: § Fallback rules), quota 429 included: Claude Code's auto-continue, its watchdog's wait for a reset and the
-  StopFailure alert need the real headers. A refused key (401, 403), a refusal (400, 422) and
+  (a stream silent for `timeouts.streamIdleMs` is ended: § Fallback rules), quota 429 included: Claude Code's auto-continue and its watchdog's wait for a reset need the real headers. A refused key (401, 403), a refusal (400, 422) and
   an error inside a 200 stream are not capacity failures: the person must fix them, and they
   are never held.
 - **The one exception (the owner's D65): a Claude target behind the first, at a plan limit the
@@ -765,8 +764,7 @@ switches `--fallback-model` (a 529 does after three).
 all targets limited, holding requests since 21:05 (omniroute:a 429 until 21:07; …)`; a profile's
 record is named by its key, `<profile>/cc-smart-dev-kit-worker`. The status line
 shows `<slot> slot: every target limited since 21:05 → gateway slot <slot> <targets>` while the
-record is fresh, and a turn that still stops gives the StopFailure alert once per opening
-(§ The limit state, the status line, the alert); for a profile's breaker both name the profile
+record is fresh (§ The limit state, the status line, the alert); for a profile's breaker it names the profile
 and its command, `gateway profile <name> slot worker <targets>`, never `gateway slot`, which would
 change the machine's chain. The way out is in the answer:
 `cc-smart-dev-kit gateway slot worker <targets>` (a changed chain is served
@@ -1191,59 +1189,9 @@ Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router pa
 unchanged; the router records no percentage. After a refused request Claude Code has no
 new numbers, which is why the limit comes from the state file.
 
-**The alert**, the plugin's StopFailure hook (`src/hooks/stop-failure.ts`). Claude Code
-runs it when a turn ends on an API error, with `error: "rate_limit"` for the plan limit
-and for a short rate limit alike. The hook tells them apart by Claude Code's own words
-("You've hit your limit …" against "… (not your usage limit) …", which wins) or by a
-plan limit the router saw in the last two minutes. It acts only once the gateway is set
-up (`gateway.json` exists); a `gateway.json` that cannot be read still gives the plain
-alert. Which model hit the limit: the session's own (the last `claude-…` model in the
-transcript the input's `transcript_path` names) when the state file has a limit for it; else
-the freshest limit of a Claude model whose family has a slot (`familySlotFor`).
-
-**The alert says what happened and nothing else** (owner, 2026-10-25): which limit was hit
-and when it resets, and that Claude Code continues by itself after the reset. It offers no
-model, no chain, no fallback switch and no `gateway on`, and it has no button — whatever the
-session runs on (the machine's gateway, a project that is off, a profile, a launch). So the
-hook shows the platform's plain notification itself (`plainNotification`: `notify-send`,
-`osascript` or a toast, started detached) and starts no worker; the `alert-worker` command
-stays for the notifier's own alerts that wait for a click (`docs/design/hooks.md` § The
-notifier).
-
-A Claude limit that does not hold the session gets no reset date (TV1): the alert asks
-`claudeLimitHolds` (`src/gateway/limit-holds.ts`) against the chain in use, and when the
-slot's first target is another model it says the limit "does not hold this session" and names
-that target, so the date of a limit that cannot stop the session is never told.
-
-The one thing it adds is a plain fact about the slot that answers the model, when that fact
-explains a stop that should not have happened (`slotFact`): the slot's chain starts with a
-backend (Claude was not its first answer), or the chain holds two targets or more and its
-fallback is on (`fallbackOn`: the 0.5.0 `fallback` field, or a 0.4.x `modelSlots` entry). It
-points at `gateway status` and stops there. The fact is read only for a session a slot
-answers: **which gateway it judges** is the session's own (RF1-2, `sessionGatewayOf`, shared
-with the Agent guard), the session's effective `ANTHROPIC_BASE_URL`, which Claude Code hands the
-hook in its environment (`docs/claude-code-contract.md` § Hooks). No URL, or Anthropic's own
-address (what `gateway off` and `gateway project off` write): no slot answers that session,
-so it gets the plain line. `…/p/<name>` reads that profile's own chains (`profileView`, or
-`plainClaudeView` for a name the config lacks); any other address reads the machine's.
-- In `claude -p`, Claude Code may exit before the hook finishes, and the hook is cut off
-  (seen live, 2.1.300); in the interactive `claude` it runs to the end.
-
-**The breaker's 429 is the same hook's other alert** (`breakerAlert`, BR2). Claude Code puts
-its own words around the router's message for either login type (`Request rejected (429) ·
-<message>` under an API key, "Server is temporarily limiting requests (not your usage limit)"
-under a subscription), so the slot is read wherever they sit. With a fresh breaker record for
-that slot (`currentBreakers`) the hook alerts **once per opening**: the record's `since` is
-kept in `~/.claude/cc-smart-dev-kit/breaker-alerted.json`, so a second stop of the same
-opening hears nothing, a new opening alerts again, and a record the router stopped touching
-15 minutes ago alerts nothing. The alert names the slot (and the profile, for a profile's
-breaker), when the breaker opened, and each target with why it rests. It is facts only, with
-no button: the router's own message already names the command that changes the chain. The last
-words say "Then send a message to go on", or "Claude Code goes on by itself" when the retry
-watchdog's key is in the settings (`src/setup/retry-watchdog.ts`).
-While the opening is marked, the notifier stays out of a breaker stop too: the StopFailure
-hook owns every one of them (`stopFailureWillAlert`), so a marked stop never becomes the
-notifier's "the turn stopped" line.
+The kit sends no usage-limit or breaker notifications. The status line, `gateway status`,
+`doctor` and portal keep their existing limit and breaker information. Claude Code's own
+retry behaviour and watchdog remain unchanged.
 
 **`cc-smart-dev-kit usage`** is not part of the router: it reads Claude Code's transcripts
 (`<config>/projects/*/<session>.jsonl`, `…/<session>/subagents/*.jsonl` and `.meta.json`)
@@ -1718,7 +1666,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 
 | What | Where |
 |---|---|
-| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `history.ts`, `history-read.ts`, `prices.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts` with `commands-project.ts` (a project's state), `commands-profile.ts` (a profile's chains), `commands-chains.ts` and `commands-out.ts` (the words and checks the slot, profile and project commands share), `project-state.ts` (the one project-state reader), `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts`; the alert: `src/hooks/stop-failure.ts`, `src/entries/stop-failure.ts` |
+| Source | `src/gateway/`: `router.ts`, `targets.ts`, `config.ts`, `limit-state.ts`, `safety-checks.ts`, `history.ts`, `history-read.ts`, `prices.ts`, `judge-test.ts`, `fallback-answer.ts`, `backends.ts`, `settings.ts`, `health.ts`, `service.ts`, `commands.ts` with `commands-project.ts` (a project's state), `commands-profile.ts` (a profile's chains), `commands-chains.ts` and `commands-out.ts` (the words and checks the slot, profile and project commands share), `project-state.ts` (the one project-state reader), `doctor.ts`; the bundle entry `src/entries/router.ts`. The status line and `usage`: `src/cli/statusline.ts`, `src/cli/usage.ts` |
 | Config: backend keys, slots, profiles, aliases, port | `~/.config/cc-smart-dev-kit/gateway.json`, mode **600**. A file others can read is refused — off Windows, where the bits decide: on Windows a mode says nothing and the profile's ACL protects the file, so no config is refused there (`isOwnerOnly`). Read again when it changes, so `gateway slot` and `gateway profile` are live. A bad edit keeps the last good config, with one error line. A command saves it atomically, inside the state lock, and keeps any field it does not know |
 | A project's own gateway state | `<main checkout>/.claude/settings.local.json` (the personal file, excluded from git by a managed line in `.git/info/exclude`), or `<folder>/.claude/settings.json` (the team file) with `--team`. Written as an owned key through `src/setup/`, so `restore` takes it back (§ Per project) |
 | A setup that did not finish | `~/.claude/cc-smart-dev-kit/restart-pending` (the state folder): written before the copy and the unit, removed once the restarted router answers |
@@ -1728,7 +1676,7 @@ cannot send those cross-site without a CORS preflight, which the router never an
 | The socket that holds the port | `~/.config/systemd/user/cc-smart-dev-kit-router.socket` (`ListenStream=127.0.0.1:<port>`) |
 | The router's inner socket | `$XDG_RUNTIME_DIR/cc-smart-dev-kit-router/router-<pid>.sock` (systemd makes the folder, mode 0700, and removes it when the unit stops) |
 | Health | `GET http://127.0.0.1:<port>/__cc-smart-dev-kit/health`: counts, resting targets (a Claude model at its plan limit among them), slots (the chain in use — a slot absent from it answers as Claude), the last 200 routed requests (`recent`: time, slot, target, status, ms, whether a next target answered — metadata only, never a prompt or an answer), and the Claude model ids seen (`seenClaude`); never a key |
-| The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback, the breakers open, the Claude ids Claude Code sent. Read by `cc-smart-dev-kit statusline`, the StopFailure hook and the portal |
+| The limit state | `~/.local/state/cc-smart-dev-kit/gateway-state.json`, mode 600, written by the router: plan limits seen, slots on a fallback, the breakers open, the Claude ids Claude Code sent. Read by `cc-smart-dev-kit statusline` and the portal |
 | The safety-check counts | `~/.local/state/cc-smart-dev-kit/safety-checks.json`, mode 600, written by the router: auto mode's checks by local day, who answered each (Anthropic or the judge), and the tokens their answers reported. Read by `cc-smart-dev-kit usage`; the newest 30 days are kept (§ The safety-check counts) |
 | The request history | `~/.local/state/cc-smart-dev-kit/history.db` (with its `-wal`), mode 600, written by the router in the background: one row per routed `/v1/messages` request, never a prompt or an answer, kept 90 days by default (`history.retentionDays`, 0 turns it off). Read by `gateway history`, `doctor`, `gateway status` and the portal (§ The request history) |
 
@@ -1886,8 +1834,8 @@ it). It then says to restart every open Claude session: a running session may ke
 removed keys until it restarts (`docs/claude-code-contract.md`: a removed key was not
 watched). A plugin update alone never swaps the router: the router that runs is the copy in
 `~/.local/share/cc-smart-dev-kit/`, and only `gateway setup` (or `migrate`) writes it; until then
-the older router answers, the update's notification says to run `gateway setup`, and
-`doctor` says the copy is not this version's.
+the older router answers, and `doctor` says the copy is not this version's and gives the
+`gateway setup` command. The updater records its result without sending a notification.
 
 The service unit: the absolute path of the `bun` that ran setup on the copy, with
 `--no-env-file`; `Wants=` and `After=` the socket; `RuntimeDirectory=cc-smart-dev-kit-router`

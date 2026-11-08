@@ -26,12 +26,6 @@ export const SLOTS_REFRESH: RefreshOn = (message) =>
 export const HEALTH_REFRESH: RefreshOn = (message) =>
   message.name === "state" || actionResult(message, "router.");
 
-export const NEEDS_REFRESH: RefreshOn = (message) =>
-  message.name === "update" ||
-  message.name === "doctor" ||
-  message.name === "state" ||
-  actionResult(message, "update.");
-
 export const MACHINE_REFRESH: RefreshOn = (message) =>
   message.name === "update" ||
   message.name === "doctor" ||

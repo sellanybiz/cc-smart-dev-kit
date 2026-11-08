@@ -430,7 +430,6 @@ describe("the B6d facts", () => {
       },
       project: {} as MachineAnswer["project"],
       updates: { heldSince: null, installed: null, last: null, newest: null, summary: "" },
-      warp: { detail: "", installed: false },
     } satisfies MachineAnswer;
     const facts = {
       platform: "linux" as const,

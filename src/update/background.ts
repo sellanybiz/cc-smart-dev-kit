@@ -36,13 +36,10 @@ import {
 import { LockBusyError, withLock } from "../setup/lock";
 import { formatKeyPath } from "../setup/managed-json";
 import { redactUrlsIn } from "../setup/marketplace-access";
-import { userNotifyHookState } from "../setup/user-notify-hook";
 import {
   type ApplyResult,
   applyUpdate,
   type CommandRunner,
-  installedText,
-  NOTIFY_HOOK_SETUP_HINT,
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "./apply";
@@ -201,8 +198,6 @@ export interface BackgroundDeps {
   /** The claude command's path, or null when it is not on PATH. */
   claude: null | string;
   run: CommandRunner;
-  /** Shows a desktop notification, where the machine has a way to. */
-  notify: (text: string) => void;
 }
 
 /** What the instructions refresh needs: where the copy goes, and this session's version. */
@@ -281,7 +276,7 @@ async function turnOffAutoUpdateQuietly(
  * again whether a check is due, updates are not held and not switched off, so two
  * sessions that start together check once. Then: the check, and when there is something
  * newer, the two `claude plugin` commands. Each step goes to `update.log`; the result to
- * `update-check.json`; a new version installed gives one desktop notification.
+ * `update-check.json`. No notification is sent and setup never runs here.
  *
  * A marketplace that cannot be read is `unreachable` (information) until it has been so
  * for 24 h in a row, then `failed`. Claude Code busy with the same marketplace copy is
@@ -377,16 +372,10 @@ export async function backgroundCheck(deps: BackgroundDeps): Promise<void> {
               return;
             }
             const routerChanged = routerNeedsSetup(deps.paths);
-            // A background update never runs setup, so the user-level notification hook is
-            // missing after it: one hint says who writes it. An edited one still runs, so it
-            // asks for nothing.
-            const notifyState = userNotifyHookState(deps.paths.settingsFile);
-            const notifyHookMissing = notifyState === "missing" || notifyState === "elsewhere";
             record(
               "updated",
-              `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}${notifyHookMissing ? `; ${NOTIFY_HOOK_SETUP_HINT}` : ""}`,
+              `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`,
             );
-            deps.notify(installedText(result.after, routerChanged, notifyHookMissing));
             return;
           }
         }

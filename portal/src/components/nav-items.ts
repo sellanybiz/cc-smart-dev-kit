@@ -1,6 +1,5 @@
 import {
   ActivityIcon,
-  BellDotIcon,
   CoinsIcon,
   GaugeIcon,
   ListChecksIcon,
@@ -35,14 +34,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         title: "Overview",
         href: "/",
         icon: GaugeIcon,
-        about: "Who answers your requests, and whether anything needs you",
-      },
-      {
-        title: "Needs you",
-        href: "/needs",
-        icon: BellDotIcon,
-        about:
-          "Permission prompts, failing checks, open breakers and held updates that wait for you",
+        about: "Who answers your requests",
       },
       {
         title: "Usage",

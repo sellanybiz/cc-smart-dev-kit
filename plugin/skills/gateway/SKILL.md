@@ -127,7 +127,7 @@ again), and a refused key is never held, with one exception (D65):
   back at once. `gateway breaker <slot> on` turns it back on. The change is live; no restart.
 - What you see: `gateway status` names an open breaker and when each target may answer again.
   The status line shows `<slot> slot: every target limited since <time> → gateway slot <slot>
-  <targets>`. If a turn still stops, the StopFailure alert says so once per opening.
+  <targets>`. The kit sends no separate alert when a turn stops.
 - The way out is a new chain: `cc-smart-dev-kit gateway slot <slot> <targets>`, served within
   a second. Take every target from `gateway models`; never pick one from memory.
 - The whole contract: `docs/gateway.md` § The breaker.
@@ -155,14 +155,8 @@ Opus request, the main session's included:
   conversation may be more than a backend takes. Its 400 gets a WARN in the router log:
   `/compact`, a new session, or a target with a larger window first.
 
-**The alert.** With the gateway set up, a turn stopped at the limit shows a plain desktop
-notification about the session's own model: which limit was hit and when it resets, and that
-Claude Code continues by itself after the reset. It offers nothing — no model, no chain, no
-fallback switch, no `gateway on`, no button — whatever the session runs on. When a stop should
-not have happened (the slot that answers the model starts with a backend, or its fallback is
-on), it adds that one fact and points at `cc-smart-dev-kit gateway status`. To change a chain or
-a fallback, use `gateway slot` and `gateway fallback` yourself. A `gateway.json` that cannot
-be read still gives the plain alert.
+The kit sends no usage-limit or breaker notifications. Read `gateway status` and the status
+line for the limit, reset and chain facts; change a chain with `gateway slot` yourself.
 
 **The status line.** `cc-smart-dev-kit setup --statusline` (asked once in a terminal when none is
 set; a "no" is remembered) shows the 5-hour and 7-day usage, warns from 85 %, and shows

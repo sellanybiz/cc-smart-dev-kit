@@ -145,7 +145,6 @@ function worldMachine(): Machine {
     confirm: null,
     exists: () => false,
     fetchText: async () => "",
-    macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: "linux",
     run: (argv) => ({ exitCode: 0, output: `ran ${argv.join(" ")}` }),
@@ -359,7 +358,6 @@ async function open(options: {
     // Chrome CANDIDATES are system paths — read-only checks, nothing is opened.
     exists: (path) => existsSync(path),
     fetchText: async () => "",
-    macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform: options.platform ?? "linux",
     run: (argv) => {
@@ -514,7 +512,7 @@ async function open(options: {
           local: { cwd, instructionsSource: join(pluginFolder, "instructions") },
           mcp: realMcpDoctorDeps(ctx.runRead),
           project: null,
-          // The pass's own reads (the launcher's `version`, Warp's package manager) run through
+          // The pass's own reads (such as the launcher's `version`) run through
           // the portal's read runner, as the entry does; the test's sync `runner` refuses them.
           read: ctx.runRead,
         };
@@ -1278,14 +1276,7 @@ describe("every answer", () => {
       expect(machine.status).toBe(200);
       expect(machine.body).toContain("<title>cc-smart-dev-kit — Machine</title>");
       expect(machine.body).toContain("<h1>Machine</h1>");
-      for (const heading of [
-        "Updates",
-        "Heavy-job queue",
-        "Companions",
-        "Warp terminal",
-        "OmniRoute",
-        "Doctor",
-      ]) {
+      for (const heading of ["Updates", "Heavy-job queue", "Companions", "OmniRoute", "Doctor"]) {
         expect(machine.body).toContain(`${heading}</h2>`);
       }
       // Doctor's own line about the gateway is information (`·`), never a failure.
@@ -2593,19 +2584,18 @@ describe("the actions", () => {
     }
   });
 
-  test("the Machine page shows the Warp commands to copy, and never runs them", async () => {
+  test("the Machine page has no retired Warp card or commands", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
       await world.call("/");
       const page = await world.call("/machine");
       expect(page.status).toBe(200);
-      expect(page.body).toContain("Warp terminal");
-      expect(page.body).toContain("cc-smart-dev-kit setup --warp");
-      expect(page.body).toContain("cc-smart-dev-kit setup --remove-warp");
+      expect(page.body).not.toContain("Warp terminal");
+      expect(page.body).not.toContain("cc-smart-dev-kit setup --warp");
+      expect(page.body).not.toContain("cc-smart-dev-kit setup --remove-warp");
       // Nothing here calls an action: both need sudo, so they are only ever copied.
       expect(page.body).not.toContain('data-action="warp');
-      expect(page.body).toContain("which this page never runs");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2762,7 +2752,7 @@ describe("the settings page", () => {
       expect(page.status).toBe(200);
       // The three cards, in the design's words and order.
       expect(page.body).toContain('<h2 id="flow-h">Work flow</h2>');
-      expect(page.body).toContain('<h2 id="alerts-h">Alerts</h2>');
+      expect(page.body).toContain('<h2 id="alerts-h">Status line</h2>');
       expect(page.body).toContain('<h2 id="switches-h">Switches</h2>');
       // Rows: the label and its own help line, word for word.
       expect(page.body).toContain(">Auto commit<");
@@ -2771,7 +2761,7 @@ describe("the settings page", () => {
       expect(page.body).toContain(
         "A second read of the whole change before it leaves this computer: one premium second opinion.",
       );
-      expect(page.body).toContain("Which events alert you.");
+      expect(page.body).not.toContain("Which events alert you.");
       expect(page.body).toContain("No new kit version installs until you turn this off again.");
       // The three source tags, with the values the resolver gave.
       expect(page.body).toContain('<span class="src personal">yours</span>');
@@ -2782,7 +2772,7 @@ describe("the settings page", () => {
       expect(page.body).toContain("Your choices are saved on this computer for every project.");
       // Every row carries a control the page can send: the keys are the module's own.
       expect(page.body).toContain("&quot;key&quot;:&quot;autoCommit&quot;");
-      expect(page.body).toContain('data-events="alerts.events"');
+      expect(page.body).not.toContain('data-events="alerts.events"');
       expect(page.body).toContain('data-setting="alerts.usagePercent"');
     } finally {
       world.portal.stop();
@@ -2846,9 +2836,8 @@ describe("the settings page", () => {
         ["mergeMethod", "fast-forward", "mergeMethod is one of merge, squash, rebase"],
         ["alerts.usagePercent", 140, "alerts.usagePercent is a whole number 1-100"],
         ["alerts.usagePercent", "85", "alerts.usagePercent is a whole number 1-100"],
-        ["alerts.events", [], "alerts.events is a list of needs-you, question, finished, failed"],
-        ["alerts.events", ["needs-you", "needs-you"], "alerts.events: an event is listed twice"],
-        ["alerts.events", ["finished", "later"], "alerts.events: unknown later"],
+        ["alerts.events", [], '"alerts.events" is not a setting this page shows.'],
+        ["alerts.sound", true, '"alerts.sound" is not a setting this page shows.'],
         ["autoCommit", "yes", "autoCommit is true or false"],
         ["switches.statusLine", 1, "switches.statusLine is true or false"],
         ["not-a-setting", true, '"not-a-setting" is not a setting this page shows.'],
@@ -3569,10 +3558,11 @@ describe("the real workflow module", () => {
       // The project's file parsed, so there is no "no project's own values" line.
       expect(settings.body).not.toContain("No project&#39;s own values here");
       // Every row the file sets is the project's, read-only here, with the file's own value:
-      // `autoCommit: true`, `openPr: "draft"`, `alerts.sound: true`, `sessionNames: true` and
+      // `autoCommit: true`, `openPr: "draft"`, `sessionNames: true` and
       // `jobs.route: true`.
       expect(settings.body).toContain('<span class="src project">this project</span>');
-      for (const row of ["set-commit", "set-names", "set-jobs", "set-sound"]) {
+      expect(settings.body).not.toContain('id="set-sound"');
+      for (const row of ["set-commit", "set-names", "set-jobs"]) {
         expect(settings.body).toContain(
           `role="switch" aria-checked="true" aria-labelledby="${row}" class="switch" disabled`,
         );
@@ -3956,12 +3946,15 @@ function holderRecord(gb: number, what: string): string {
 }
 
 describe("the JSON API", () => {
-  test("an action is still a POST: a GET on a write path is 405, on an unknown API path too", async () => {
+  test("an action is still a POST: a known write path is 405, an unknown API path is 404", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
       expect((await world.call("/api/switch")).status).toBe(405);
-      expect((await world.call("/api/not-a-read")).status).toBe(405);
+      expect((await world.call("/api/not-a-read")).status).toBe(404);
+      for (const path of ["/needs", "/needs/", "/api/needs"]) {
+        expect((await world.call(path)).status).toBe(404);
+      }
     } finally {
       world.portal.stop();
       backend.stop();
@@ -4048,7 +4041,6 @@ describe("the JSON API", () => {
         "omniroute",
         "project",
         "updates",
-        "warp",
       ]);
       // No gateway: the OmniRoute card's key field says so, in a word (PK1).
       expect(machine.gatewayKey).toBe("not-set-up");
@@ -4155,95 +4147,6 @@ describe("the JSON API", () => {
           since: "2026-10-22T10:00:00.000Z",
           slot: true,
           user: "my-host",
-        },
-      ]);
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("needs: every open breaker, and the router's own count of what waits right now", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const now = Date.now();
-    const world = await open({
-      backendPort: backend.port,
-      routerBreakers: {
-        "cc-smart-dev-kit-scout": {
-          held: 4,
-          heldNow: 2,
-          since: now - 120_000,
-          targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: now + 30_000 }],
-        },
-        "cc-smart-dev-kit-worker": {
-          held: 9,
-          heldNow: 0,
-          since: now - 60_000,
-          targets: [{ status: 503, target: "omniroute:deepseek-v4.1-flash", until: now + 10_000 }],
-        },
-      },
-    });
-    try {
-      mkdirSync(dirname(world.paths.gatewayStateFile), { recursive: true });
-      writeFileSync(
-        world.paths.gatewayStateFile,
-        JSON.stringify({
-          breakers: {
-            "cc-smart-dev-kit-worker": {
-              held: 9,
-              lastAt: now,
-              since: now - 60_000,
-              targets: [
-                { status: 503, target: "omniroute:deepseek-v4.1-flash", until: now + 10_000 },
-              ],
-            },
-            "cc-smart-dev-kit-scout": {
-              held: 4,
-              lastAt: now,
-              since: now - 120_000,
-              targets: [{ status: 429, target: "omniroute:glm-5.3-flash", until: now + 30_000 }],
-            },
-          },
-          fallbacks: {},
-          limits: {},
-          version: 1,
-        }),
-      );
-      const body = JSON.parse((await world.call("/api/needs")).body) as {
-        breakers: {
-          held: number;
-          heldNow: null | number;
-          since: string;
-          slot: string;
-          targets: { status: null | number; target: string; until: string }[];
-        }[];
-      };
-      expect(body.breakers).toEqual([
-        {
-          held: 4,
-          heldNow: 2,
-          since: new Date(now - 120_000).toISOString(),
-          slot: "cc-smart-dev-kit-scout",
-          targets: [
-            {
-              status: 429,
-              target: "omniroute:glm-5.3-flash",
-              until: new Date(now + 30_000).toISOString(),
-            },
-          ],
-        },
-        {
-          held: 9,
-          heldNow: 0,
-          since: new Date(now - 60_000).toISOString(),
-          slot: "cc-smart-dev-kit-worker",
-          targets: [
-            {
-              status: 503,
-              target: "omniroute:deepseek-v4.1-flash",
-              until: new Date(now + 10_000).toISOString(),
-            },
-          ],
         },
       ]);
     } finally {
@@ -4946,11 +4849,13 @@ describe("the Next.js export, served", () => {
       join(folder, "index.html"),
       '<!doctype html><html><head><meta charset="utf-8"><title>Portal</title></head><body><div id="root"></div></body></html>',
     );
-    mkdirSync(join(folder, "work"));
-    writeFileSync(
-      join(folder, "work", "index.html"),
-      "<html><head></head><body>work</body></html>",
-    );
+    for (const page of ["work", "flow", "tasks", "usage", "guards", "settings/project"]) {
+      mkdirSync(join(folder, page), { recursive: true });
+      writeFileSync(
+        join(folder, page, "index.html"),
+        `<html><head></head><body>${page}</body></html>`,
+      );
+    }
     mkdirSync(join(folder, "_next", "static", "chunks"), { recursive: true });
     writeFileSync(join(folder, "_next", "static", "chunks", "app.js"), "console.log(1);\n");
     writeFileSync(
@@ -4959,6 +4864,44 @@ describe("the Next.js export, served", () => {
     );
     return folder;
   }
+
+  test("removed and unknown routes stay not found behind the door, even in a stale export", async () => {
+    const folder = exportFixture();
+    for (const page of ["needs", "nowhere"]) {
+      mkdirSync(join(folder, page));
+      writeFileSync(
+        join(folder, page, "index.html"),
+        "<html><head></head><body>stale page</body></html>",
+      );
+    }
+    const world = await open({ backendPort: 0, withConfig: false, staticFolder: folder });
+    try {
+      for (const path of ["/needs", "/needs/", "/nowhere", "/api/needs", "/api/unknown"]) {
+        const answer = await world.call(path);
+        expect({ path, status: answer.status }).toEqual({ path, status: 404 });
+        expect(answer.body).not.toContain("stale page");
+        for (const headers of [
+          { host: "evil.example" },
+          { origin: "http://evil.example" },
+          { "sec-fetch-site": "cross-site" },
+        ]) {
+          expect((await world.call(path, { headers })).status).toBe(403);
+        }
+      }
+      expect((await world.call("/api/switch")).status).toBe(405);
+      for (const path of [
+        "/api/work",
+        "/api/flow",
+        "/api/machine",
+        "/api/settings",
+        "/api/guard-asks",
+      ]) {
+        expect((await world.call(path)).status).toBe(200);
+      }
+    } finally {
+      world.portal.stop();
+    }
+  });
 
   test("the pages, the trailing slash, the chunk, and the CSRF meta with the export's policy", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
@@ -4976,8 +4919,13 @@ describe("the Next.js export, served", () => {
       );
       expect(root.body).toContain('<div id="root">');
       // A page under a folder answers with and without the trailing slash.
-      expect((await world.call("/work")).body).toContain("work");
-      expect((await world.call("/work/")).body).toContain("work");
+      for (const page of ["work", "flow", "tasks", "usage", "guards", "settings/project"]) {
+        for (const path of [`/${page}`, `/${page}/`]) {
+          const answer = await world.call(path);
+          expect(answer.status).toBe(200);
+          expect(answer.body).toContain(`<body>${page}</body>`);
+        }
+      }
       // The build output is served like the assets: no CSRF meta in it.
       const chunk = await world.call("/_next/static/chunks/app.js");
       expect(chunk.status).toBe(200);
@@ -5223,7 +5171,6 @@ test("every read is a GET behind the door: a foreign Origin, a wrong Host and cr
       "/api/projects/no-such-project",
       "/api/work",
       "/api/flow?range=1d",
-      "/api/needs",
       "/api/guard-asks?hook=git-guard",
       "/api/worktrees",
       "/api/update",

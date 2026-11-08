@@ -351,7 +351,11 @@ export interface RemovedHooks {
  * its record, so it stays and only the record goes. An event list or `hooks` object
  * cc-smart-dev-kit created goes with its last entry.
  */
-export function removeManagedHooks(stateDir: string, file: string): RemovedHooks {
+export function removeManagedHooks(
+  stateDir: string,
+  file: string,
+  options: { dryRun?: boolean; matches?: (event: string, entry: HookEntry) => boolean } = {},
+): RemovedHooks {
   const real = realTarget(file);
   const snapshot = readOwnedHooks(stateDir);
   const events = snapshot[real];
@@ -363,6 +367,7 @@ export function removeManagedHooks(stateDir: string, file: string): RemovedHooks
     let written = false;
     let next = snapshot;
     for (const [event, record] of Object.entries(events)) {
+      if (options.matches !== undefined && !options.matches(event, record.entry)) continue;
       const list = eventList(data, real, event);
       if (list === null) {
         next = withRecord(next, real, event, null);
@@ -392,6 +397,7 @@ export function removeManagedHooks(stateDir: string, file: string): RemovedHooks
       }
       next = withRecord(next, real, event, null);
     }
+    if (options.dryRun) return { removed, written: false, backup: null };
     if (removed.length > 0) {
       const result = writeManagedFile(real, `${JSON.stringify(data, null, indent)}\n`, {
         stateDir,

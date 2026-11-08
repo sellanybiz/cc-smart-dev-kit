@@ -80,23 +80,14 @@ Windows CI job.
 
 ## The user's own hook line
 
-The **user-level notification hook** `setup` writes uses shell form, with the launcher and
-the same reasoning:
+Setup no longer installs a notification hook. It removes only the exact owned entry
+recorded by an older setup; edited or unowned entries stay for manual cleanup
+(`docs/design/hooks.md` § The notifier). There is no replacement hook or Windows toast.
 
-```json
-{ "type": "command", "command": "\"$HOME/.local/bin/cc-smart-dev-kit\" hook notify", "timeout": 10 }
-```
-
-No `args`, and the quoting wraps the whole path including `$HOME`. On Windows the shell is
-Git Bash: it sets `$HOME`, and it runs the extensionless launcher because the file starts
-with `#!` — MSYS2 marks a file executable by its first two characters as well as by
-extension, which matters because Windows has no execute bit for `setup` to set. The Windows
-CI job runs this exact line against a stand-in launcher, so the form is proved there; the
-real launcher's own body (bun from its baked path, the installed plugin's CLI) is proved on
-Linux and macOS and is owed one Windows run.
-
-The line sits in Claude Code's user settings, not a project's, and agent view runs it there
-on Windows through Git Bash like any other shell-form hook.
+The notifier-only launcher case was removed from `scripts/windows-hook-smoke.sh`.
+That script no longer proves `$HOME` expansion or execution of the extensionless launcher
+in Git Bash. The real launcher's body is proved on Linux and macOS and is still owed one
+Windows run. No notification send or replacement launcher case is installed.
 
 ## What Windows costs these hooks
 

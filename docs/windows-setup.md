@@ -17,20 +17,28 @@ Windows yet.
 | `setup`, `doctor`, `restore` | Work. File modes are not protection there (below); `doctor` checks Git Bash and the `.cmd`. |
 | The hooks | Need Git Bash (`doctor` checks it). The hook launch path itself is the hook work in `claude-code-contract.md`. |
 | The portal | Opens the person's browser with `cmd.exe /c start "" <url>`. |
-| `sessions` | Lists sessions and saves Warp tabs. `--open` brings sessions back in Warp tabs where Warp is there, else in **Windows Terminal** window each (`wt.exe`), else it says what to do by hand. |
+| `sessions` | Lists sessions. `--open` brings sessions back in a **Windows Terminal** window each (`wt.exe`), else it says what to do by hand. Old saved tabs are left alone. |
 | `worktrees` | The scan and the removal are already Windows-aware (a PowerShell process scan, `hostPath`, move-before-delete). |
 | The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
 | The heavy-job queue | One heavy run at a time per machine. A named-file run bypasses the queue; no memory or priority settings. See [Windows jobs](windows-jobs.md). |
-| Notifications | A desktop toast through PowerShell, and Windows plays the sound of its own notification; the terminal route (`terminalSequence`) is Claude Code's own and platform-neutral (`windows-notify.md`). |
+| Notifications | No custom kit desktop, sound or terminal notifications. Claude Code and other plugins keep their own behaviour. |
 | **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run, so with the route on a heavy PowerShell line is refused with the Bash line to run instead (`src/hooks/job-route.ts` § `jobRoute`; the live check is owed, `docs/windows-jobs.md`). The session-escape guard asks on a `C:\…` settings path, on Git Bash's own `/c/…` form of it, and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`, `shellTargetPath`). |
 | **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
 | **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
 | **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
 | **The retry watchdog keys** (CC1) | **Works.** Three owned keys under `env` in `settings.json`, written through the managed-key path (`src/setup/retry-watchdog.ts` § `RETRY_WATCHDOG_SETTINGS`). No platform code. |
 | **The major-version hold and `autoUpdate: false`** (D33, D39) | **Works.** State files and one managed settings key: no platform code (`src/update/major.ts`, `src/setup/auto-update.ts`). |
-| **The usage-limit alert** (BR2) | **Works** as every alert: a PowerShell toast (`docs/windows-notify.md`). The alert has no button on any platform (it says which limit was hit and when it resets, and offers nothing), so the hook shows the plain toast itself and starts no detached worker. |
 | **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
 | **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every guard uses; its tests run in the Windows CI job. |
+
+Herdr GUI is offered only by manual setup, with `--no-herdr` to skip this run. Its official
+PowerShell installer and normal core bootstrap own their app/core, shortcuts and user PATH
+changes. No GUI is launched and no preferences are changed. See `README.md` § Herdr GUI for
+consent, dry-run, preservation and download boundaries. Real Windows installation is unproved.
+
+The background self-update still uses the detached Windows trampoline
+(`src/hooks/detached.ts`); it records its result without sending a toast. Native proof that
+the child survives its hook, including odd paths and `.cmd` resolution, is still owed.
 
 ## Where things live: one folder, three shells
 
@@ -54,8 +62,8 @@ Why, and what it costs:
   would need every path to come through one resolver that also knows those variables, and it
   would split Git Bash (`$HOME\.config`) from the CLI — two homes for one rule. The places that
   *do* read `AppData` are folders belonging to **other** programs (Chrome's own user data, where
-  the `claude-code` profile lives, and Warp's tab configs), and they build it from the home
-  folder on purpose.
+  the `claude-code` profile lives). Herdr uses its upstream `%LOCALAPPDATA%` destinations,
+  not the kit layout, and those files stay outside kit restore.
 - **Cost, stated plainly:** a hidden `.local`, `.config` folder in a Windows profile looks
   unusual, and a person browsing their profile will not expect it. The alternative costs
   more than it is worth (above).
@@ -186,11 +194,9 @@ The gateway and the heavy-job queue have Windows answers of their own (`windows-
 - **The portal** opens the person's default browser with `cmd.exe /c start "" <url>`; there is
   no `xdg-open` on Windows. One home for that rule (`src/machine/open-url.ts`), used by the
   portal and by `sessions` alike.
-- **`sessions --open`** brings sessions back in Warp tabs when Warp is installed (its data
-  folder shows it), else in a **Windows Terminal** window each: `wt.exe -d <main checkout> cmd
-  /k "claude --resume <id>"`. `cmd /k` keeps the window open after Claude exits, as a Warp tab
-  and an XFCE Terminal window do. With neither Warp nor Windows Terminal it says so and prints
-  each `claude --resume` line instead of failing.
+- **`sessions --open`** brings sessions back in a **Windows Terminal** window each:
+  `wt.exe -d <main checkout> cmd /k "claude --resume <id>"`. `cmd /k` keeps the window open
+  after Claude exits. With no Windows Terminal it prints each resume command instead.
 - **A clean shutdown**: Windows' own shutdown log (`wevtutil qe System`) is not read. The sign
   every platform uses is the time one — several sessions that closed in the same moment before
   the machine started were closed by the shutdown. One session alone still cannot be told from
@@ -242,13 +248,11 @@ exit code is 0.
 - ask it to run `git push --force` — the git guard **asks** (it must not run in silence);
 - ask it to run `claude --bg "x"` — the shell judge **asks**, saying to build the work with
   subagents instead;
-- let a permission prompt wait, then end a turn — a **Windows toast** shows each, and the
-  terminal title/badge shows Warp's or Windows Terminal's own alert where they have one;
 - ask it to edit a file in the main checkout from a session in a worktree — the main-folder
   guard asks.
 
 Shows: the hooks run through Git Bash and fail closed where they should; no console window
-flashes; the toasts are the ones `windows-notify.md` describes (toast or balloon).
+flashes. No kit notification sender is installed.
 
 **4. The gateway on.**
 

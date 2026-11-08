@@ -20,7 +20,6 @@ export function testPortalContext(
     confirm: null,
     exists: (path) => existsSync(path),
     fetchText: async () => "",
-    macApp: "/Applications/Warp.app",
     osRelease: () => 'NAME="Ubuntu"\n',
     platform,
     run: () => ({ exitCode: 0, output: "" }),

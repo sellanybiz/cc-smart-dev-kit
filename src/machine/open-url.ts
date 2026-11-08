@@ -1,8 +1,7 @@
 /**
- * Opening a URL in the person's own desktop — a browser page (the portal) or a program's own
- * link (a Warp tab, which is a `warp://` URL).
+ * Opening a URL in the person's own desktop — a browser page such as the portal.
  *
- * One home for the three ways this works, so the portal and `sessions` cannot drift apart:
+ * One home for the three ways this works, so desktop callers cannot drift apart:
  *
  * - **Windows:** `cmd.exe /c start "" <url>`. There is no `xdg-open` there, and `start` is
  *   cmd's own builtin. The empty `""` is the window title `start` takes first: without it a

@@ -26,7 +26,6 @@ import { installLauncherCmd } from "../setup/launcher-cmd";
 import { applyManagedJson } from "../setup/managed-json";
 import { restore } from "../setup/restore";
 import { retryWatchdogDeclinedFile } from "../setup/retry-watchdog";
-import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { listBackups, writeManagedFile } from "../setup/write";
 import { FAKE_CLAUDE_MCP_JS } from "../testing/fake-claude-mcp";
 import { subprocessGuard } from "../testing/port-guard";
@@ -276,7 +275,6 @@ function setup(options: SetupOptions = {}) {
       platform: "linux",
       arch: "x64",
       osRelease: null,
-      macApp: join(home, "no-such-Warp.app"),
     }),
   };
   // The CLI runs in the temp HOME, never in this repo: doctor reads the CLAUDE.md files of
@@ -358,7 +356,7 @@ const readJson = (file: string) => JSON.parse(readFileSync(file, "utf8"));
  * For setup or doctor run in this process: a Linux with no package manager cc-smart-dev-kit knows,
  * no Warp app and no command on PATH, so nothing of the host this test runs on is read.
  */
-function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
+function noHostMachine(confirm: Machine["confirm"]): Machine {
   return {
     run: () => ({ exitCode: 1, output: "" }),
     runOnTerminal: () => 1,
@@ -368,7 +366,6 @@ function noHostMachine(home: string, confirm: Machine["confirm"]): Machine {
     platform: "linux",
     arch: "x64",
     osRelease: () => null,
-    macApp: join(home, "no-such-Warp.app"),
     exists: () => false,
     fetchText: () => Promise.reject(new Error("no network in this test")),
   };
@@ -383,10 +380,8 @@ function setupOptions(
   return {
     dryRun: false,
     yes: false,
-    warp: false,
-    removeWarp: false,
     project: home,
-    machine: noHostMachine(home, confirm),
+    machine: noHostMachine(confirm),
     instructions: null,
     instructionsSource: PLUGIN_INSTRUCTIONS,
     statusline: false,
@@ -496,6 +491,8 @@ function setupStdout(
     heading,
     "",
     ...sections,
+    "· Terminal              1 note",
+    "  · Herdr GUI skipped: no desktop display (DISPLAY or WAYLAND_DISPLAY). See https://herdr.dev/download/",
     "",
     ...verdict,
     ...(steps.length === 0 ? [] : ["", "Next steps:", ...steps]),
@@ -524,15 +521,6 @@ const MCP_DOCTOR_OK = [
   '✓ MCP server "cc-smart-dev-kit-tasks": Connected',
 ];
 
-/** The user-level Notification hook setup writes for agent view, and its line. */
-const NOTIFY_HOOK_ENTRY = {
-  matcher: "agent_needs_input|agent_completed",
-  hooks: [
-    { type: "command", command: '"$HOME/.local/bin/cc-smart-dev-kit" hook notify', timeout: 10 },
-  ],
-};
-const NOTIFY_HOOK_ADDED = `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook ("$HOME/.local/bin/cc-smart-dev-kit" hook notify)`;
-
 /** The block setup writes into ~/.claude/CLAUDE.md. */
 const BLOCK = [
   "<!-- cc-smart-dev-kit:begin -->",
@@ -554,6 +542,13 @@ const INSTRUCTIONS_OK =
   "✓ the instructions copy ~/.claude/cc-smart-dev-kit/instructions/ is this version's, and ~/.claude/CLAUDE.md imports it";
 
 describe("cc-smart-dev-kit setup", () => {
+  test("--no-herdr is a per-run opt-out, not a saved preference", () => {
+    const { run } = setup();
+    const optedOut = run(["setup", "--no-herdr"]);
+    expect(optedOut.exitCode).toBe(0);
+    expect(optedOut.stdout).not.toContain("Herdr");
+    expect(run(["setup"]).stdout).toContain("Herdr GUI skipped: no desktop display");
+  });
   test("installs the launcher and turns Claude Code's own plugin auto-update off, keeping the other settings", () => {
     const { settingsFile, launcher, run, pluginCalls } = setup();
     const result = run(["setup"]);
@@ -566,7 +561,7 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  12 changes, 2 notes",
+          "✓ Claude Code settings  11 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -577,7 +572,6 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
           '  ~ ~/.claude/settings.json: task permission added "TaskGet"',
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
-          NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
@@ -587,7 +581,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -595,7 +589,6 @@ describe("cc-smart-dev-kit setup", () => {
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
       remoteControlAtStartup: true,
-      hooks: { Notification: [NOTIFY_HOOK_ENTRY] },
       permissions: {
         allow: ["mcp__cc-smart-dev-kit-tasks__*"],
         deny: ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TodoWrite"],
@@ -660,7 +653,7 @@ describe("cc-smart-dev-kit setup", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
     // Two changes to settings.json: the auto-update key, then the notification hook.
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(3);
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
     expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
       // Claude Code's own user-scope config: the fake `claude mcp add-json` writes it.
@@ -678,7 +671,7 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(NOTHING_TO_CHANGE);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(3);
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
   });
 
   test("--dry-run prints the changes and writes nothing at all: no state folder, no lock", () => {
@@ -692,7 +685,7 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "· The command           1 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "· Claude Code settings  12 to change, 2 notes",
+          "· Claude Code settings  11 to change, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -703,7 +696,6 @@ describe("cc-smart-dev-kit setup", () => {
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
           '  ~ ~/.claude/settings.json: task permission added "TaskGet"',
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
-          NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           SUBAGENT_CAP_DRY_NOTE,
           "· Instructions          3 to change",
@@ -714,7 +706,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 21 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 20 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -959,7 +951,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  12 changes, 2 notes",
+          "✓ Claude Code settings  11 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -970,7 +962,6 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
           '  ~ ~/.claude/settings.json: task permission added "TaskGet"',
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
-          NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           SUBAGENT_CAP_NOTE,
           "✓ Instructions          1 change",
@@ -980,7 +971,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 19 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 18 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1152,18 +1143,16 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Updates            3 passed, 1 note",
         // The self-update has not checked yet: information, not a failure.
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✓ Companion plugins  3 passed, 2 notes",
+        "✓ Companion plugins  3 passed, 1 note",
         // claude-mem 15.x has My Work: its auto-refresh runs agents outside the kit's route.
         '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
-        // Warp is optional.
-        "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
         "✓ MCP servers        3 passed, 1 note",
         // Tavily is optional: without a key its server is skipped, never a failure.
         `  ${tavilyDoctorSkipped(home)}`,
         "✓ Browser            6 passed, 1 note",
         // Chrome closed is the state a restart leaves: the first browser call starts it.
         '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
-        "✓ Alerts and limits  1 passed, 3 notes",
+        "· Alerts and limits  3 notes",
         "  · retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
         "  · max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
         "  · Heavy-job limit: 1 (default)",
@@ -1171,8 +1160,8 @@ describe("cc-smart-dev-kit doctor", () => {
         "· Gateway            1 note",
         "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
         "",
-        "✓ Everything works: 23 checks passed.",
-        "To see the 23 lines that passed too: cc-smart-dev-kit doctor --verbose",
+        "✓ Everything works: 22 checks passed.",
+        "To see the 22 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
     );
@@ -1205,12 +1194,11 @@ describe("cc-smart-dev-kit doctor", () => {
       "✓ no other extension is in that profile",
       "✓ that profile lets the extension open file:// pages",
       `✓ the browser token is set (${join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token")}, mode 600)`,
-      `✓ agent view's notification hook is set in ~/.claude/settings.json: "$HOME/.local/bin/cc-smart-dev-kit" hook notify`,
     ]) {
       expect(verbose).toContain(`\n  ${line}\n`);
     }
     expect(verbose).not.toContain("--verbose");
-    expect(verbose).toEndWith("\n✓ Everything works: 23 checks passed.\n");
+    expect(verbose).toEndWith("\n✓ Everything works: 22 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
     // Then which project the folder is in (this fake git says: none) — once for the project
     // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor
@@ -1270,73 +1258,17 @@ describe("cc-smart-dev-kit doctor", () => {
     expect((JSON.parse(fine.stdout) as DoctorReport).ok).toBe(true);
   });
 
-  test("tmux: the managed passthrough line, and the fix when the running server does not pass alerts through", () => {
-    const { fakeBin, home, run } = setup();
+  test("doctor no longer probes notification-only desktop or tmux tools", () => {
+    const { run } = setup();
     run(["setup"]);
-    // tmux is installed: this fake answers "a server is running" and the option read.
-    const tmuxFake = (value: string) =>
-      ["#!/bin/sh", `[ "$1" = show-options ] && { echo "${value}"; exit 0; }`, "exit 0", ""].join(
-        "\n",
-      );
-    writeFileSync(join(fakeBin, "tmux"), tmuxFake("allow-passthrough off"));
-    chmodSync(join(fakeBin, "tmux"), 0o755);
-    const result = run(["doctor", "--verbose"], { TMUX: "/tmp/tmux-1001/default,1234,0" });
-    expect(result.exitCode).toBe(0); // information, never a failure
-    expect(result.stdout).toContain(
-      '· ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup\n',
-    );
-    expect(result.stdout).toContain(
-      "· tmux: alerts are not passed through (its allow-passthrough is not all). To apply it now: tmux set -g allow-passthrough all (a restart works too); it needs tmux 3.3 or newer\n",
-    );
-
-    // The line in place, and the running server on `all`: nothing about tmux at all.
-    writeFileSync(join(home, ".tmux.conf"), "set -g allow-passthrough all\n");
-    writeFileSync(join(fakeBin, "tmux"), tmuxFake("all"));
-    expect(
-      run(["doctor", "--verbose"], { TMUX: "/tmp/tmux-1001/default,1234,0" }).stdout,
-    ).not.toContain("tmux");
-
-    // Outside tmux the running server is not read: only the config file is checked.
-    writeFileSync(join(home, ".tmux.conf"), "");
-    expect(
-      run(["doctor", "--verbose"], { TMUX: "" })
-        .stdout.split("\n")
-        .filter((line) => line.includes("tmux")),
-    ).toEqual([
-      '  · ~/.tmux.conf has no "set -g allow-passthrough all" line, so tmux drops an alert from a pane. To add it: cc-smart-dev-kit setup',
-    ]);
-  });
-
-  test("the Linux desktop extras: a missing tool is named as information, and no desktop means no line", () => {
-    const { fakeBin, run } = setup();
-    run(["setup"]);
-    // No DISPLAY: an SSH session or a headless machine — nothing about the desktop at all.
-    expect(run(["doctor", "--verbose"]).stdout).not.toContain("xdotool");
-    // A desktop with none of the extras' tools: one line each, information, never a failure.
-    const desktop = run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
-    expect(desktop.exitCode).toBe(0);
-    expect(desktop.stdout).toContain(
-      "· gdbus is not installed (glib's libglib2.0-bin provides it): a desktop alert has no minute on screen, and two alerts of one session can stay there together\n",
-    );
-    expect(desktop.stdout).toContain(
-      "· xdotool is not installed: a click on a desktop alert cannot raise the session's terminal window\n",
-    );
-    expect(desktop.stdout).toContain(
-      "· xfconf-query is not installed: an alert's sound plays while XFCE's Do Not Disturb is on\n",
-    );
-    // Another desktop (or none named): the XFCE setting is not this machine's to miss.
-    expect(
-      run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "GNOME" }).stdout,
-    ).not.toContain("xfconf-query");
-    // The tools installed: nothing about them.
-    for (const tool of ["gdbus", "xdotool", "xfconf-query"]) {
-      writeFileSync(join(fakeBin, tool), "#!/bin/sh\nexit 0\n");
-      chmodSync(join(fakeBin, tool), 0o755);
-    }
-    const complete = run(["doctor", "--verbose"], { DISPLAY: ":0", XDG_CURRENT_DESKTOP: "XFCE" });
-    expect(complete.stdout).not.toContain("gdbus");
-    expect(complete.stdout).not.toContain("xdotool");
-    expect(complete.stdout).not.toContain("xfconf-query");
+    const result = run(["doctor", "--verbose"], {
+      DISPLAY: ":0",
+      XDG_CURRENT_DESKTOP: "XFCE",
+      TMUX: "test",
+    });
+    expect(result.exitCode).toBe(0);
+    for (const tool of ["gdbus", "xdotool", "xfconf-query", "tmux"])
+      expect(result.stdout).not.toContain(tool);
   });
 
   test("on a Bun older than 1.4.3: ✗ first, and the gateway checks, which send the key, are skipped", async () => {
@@ -1391,7 +1323,7 @@ describe("cc-smart-dev-kit doctor", () => {
     );
     writeFileSync(join(omniroute, "bin", "omniroute.mjs"), "// the program\n");
     // doctor's Warp check reads nothing of the host this test runs on.
-    const fakeMachine = noHostMachine(home, null);
+    const fakeMachine = noHostMachine(null);
     // A pipe's terminal: plain words, so the text below is exactly what a log would hold.
     let printed = "";
     const out = createOut(
@@ -1455,24 +1387,21 @@ describe("cc-smart-dev-kit doctor", () => {
         "  ✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ Updates            3 passed, 1 note",
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
-        "✗ Companion plugins  1 to fix, 2 passed, 2 notes",
+        "✗ Companion plugins  1 to fix, 2 passed, 1 note",
         "  ✓ claude-mem@thedotmack 15.5.0 is installed and on",
         "  ✓ frontend-design@claude-plugins-official 8f814f49002f is installed and on",
         // No setup ran here: claude-mem's memory-use block is still on (D68).
         "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write. Work state must be off so the kit owns the task list",
         "    Fix: cc-smart-dev-kit setup",
         '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
-        "  · Warp: not installed (optional: cc-smart-dev-kit setup --warp)",
-        "✗ Alerts and limits  1 to fix, 3 notes",
-        "  ✗ agent view's notification hook is missing from ~/.claude/settings.json, so agent view's alerts never arrive",
-        "    Fix: cc-smart-dev-kit setup",
+        "· Alerts and limits  3 notes",
         "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
         "  · max subagents: Claude Code's own default; to use the kit's 10, run: cc-smart-dev-kit setup",
         "  · Heavy-job limit: 1 (default)",
         "· Gateway            1 note",
         "  · gateway: not checked on this Bun (its checks send the backend key)",
         "",
-        "✗ 6 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
+        "✗ 5 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
         "To see the 3 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
@@ -1484,10 +1413,8 @@ describe("cc-smart-dev-kit doctor", () => {
     expect(registryAsked).toEqual(["https://registry.npmjs.org/omniroute"]);
   });
 
-  test("the host is the test's: a macOS with the Warp app (given, not read) is information, and setup leaves Warp alone", () => {
+  test("the host is the test's: a macOS browser (given, not read) is checked without probing retired apps", () => {
     const { home, run } = setup();
-    const macApp = join(home, "Applications", "Warp.app");
-    mkdirSync(macApp, { recursive: true });
     // The browser as macOS keeps it, so `doctor` reads this world and never the host's Chrome.
     const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     const macProfile = join(
@@ -1510,7 +1437,6 @@ describe("cc-smart-dev-kit doctor", () => {
     const host = {
       [TEST_HOST_VAR]: JSON.stringify({
         existing: [
-          macApp,
           macChrome,
           macProfile,
           join(home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
@@ -1518,7 +1444,6 @@ describe("cc-smart-dev-kit doctor", () => {
         platform: "darwin",
         arch: "arm64",
         osRelease: null,
-        macApp,
       }),
     };
     const setupResult = run(["setup"], host);
@@ -1526,9 +1451,7 @@ describe("cc-smart-dev-kit doctor", () => {
     // No `claude plugin …` step: the companions are there, and this world's claude is a fake.
     expect(setupResult.stdout).toContain("+ MCP server playwright registered for your user\n");
     const result = run(["doctor", "--verbose"], host);
-    expect(result.stdout).toContain(
-      "· Warp is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)\n",
-    );
+    expect(result.stdout).not.toContain("Warp");
     expect(result.exitCode).toBe(0);
   });
 
@@ -2060,7 +1983,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  12 changes, 2 notes",
+          "✓ Claude Code settings  11 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -2070,7 +1993,6 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
           '  ~ ~/.claude/settings.json: task permission added "TaskGet"',
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
-          NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
@@ -2081,7 +2003,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2167,7 +2089,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  12 changes, 2 notes",
+          "✓ Claude Code settings  11 changes, 2 notes",
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -2177,7 +2099,6 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           '  ~ ~/.claude/settings.json: task permission added "TaskList"',
           '  ~ ~/.claude/settings.json: task permission added "TaskGet"',
           '  ~ ~/.claude/settings.json: task permission added "TodoWrite"',
-          NOTIFY_HOOK_ADDED,
           WATCHDOG_ON_NOTE,
           SUBAGENT_CAP_NOTE,
           "✓ Instructions          3 changes",
@@ -2902,9 +2823,17 @@ describe("cc-smart-dev-kit setup: claude-mem on the scout slot's affordable mode
 });
 
 describe("cc-smart-dev-kit setup: options", () => {
-  test("--warp and --remove-warp together, or a --project with no folder: exit 2", () => {
-    const { run } = setup();
-    expect(run(["setup", "--warp", "--remove-warp"]).exitCode).toBe(2);
+  test("retired Warp flags are rejected before setup changes anything", () => {
+    const { home, run, claudeCalls } = setup();
+    const settings = join(home, ".claude", "settings.json");
+    const before = readFileSync(settings, "utf8");
+    for (const flag of ["--warp", "--remove-warp"]) {
+      const result = run(["setup", flag]);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr).toContain(flag);
+      expect(readFileSync(settings, "utf8")).toBe(before);
+      expect(claudeCalls()).toBe("");
+    }
     expect(run(["setup", "--project"]).exitCode).toBe(2);
   });
 
@@ -3030,23 +2959,15 @@ describe("cc-smart-dev-kit version and help", () => {
     expect(gateway.stdout).toContain("fallback <slot> on|off");
   });
 
-  test("CM-12: the hook list is the one name left, and the top-level help types none", () => {
-    // The worktree engine's names are retired: `notify` is the one hook left, and the help and
-    // the refusal both read its constant rather than typing it.
-    expect(USER_NOTIFY_HOOK_NAME).toBe("notify");
+  test("hook help offers no notification command", () => {
     const result = setup().run(["hook", "--help"]);
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.split("\n")[0]).toBe(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
-    // No engine name survives in the help a person reads.
-    expect(result.stdout).not.toContain("worktree-create");
-    expect(result.stdout).not.toContain("worktree-remove");
-    expect(result.stdout).not.toContain("subagent-stop");
-    // The dispatcher's own refusal reads the same name.
-    const refused = setup().run(["hook", "git-guard"]);
+    expect(result.stdout).toBe(
+      "Usage: cc-smart-dev-kit hook\n\nThe plugin has no user-invoked hooks.\n",
+    );
+    const refused = setup().run(["hook", "notify"]);
     expect(refused.exitCode).toBe(2);
-    expect(refused.stderr).toContain(`Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`);
-    // The list is written once, in the constant: the top-level help does not repeat it.
-    expect(setup().run([]).stdout).not.toContain("<worktree-create");
+    expect(refused.stdout).toBe("");
   });
 
   test("CM-12: the status line's help names the workflow's own warning share, not a typed 85", () => {
@@ -4078,7 +3999,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
     expect(restored.stdout).toContain(
-      'env.TAVILY_API_KEY, env, the entry "TaskCreate", the entry "TaskUpdate", the entry "TaskList", the entry "TaskGet", the entry "TodoWrite", the hook entry in hooks.Notification; everything else kept',
+      'env.TAVILY_API_KEY, env, the entry "TaskCreate", the entry "TaskUpdate", the entry "TaskList", the entry "TaskGet", the entry "TodoWrite"; everything else kept',
     );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
@@ -4267,7 +4188,6 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
         platform: "win32",
         arch: "x64",
         osRelease: null,
-        macApp: "C:\\no-such-Warp.app",
       }),
       ...extra,
     };
@@ -4337,9 +4257,7 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
       "    Fix: install Git for Windows (https://git-scm.com/download/win), or set CLAUDE_CODE_GIT_BASH_PATH to bash.exe, then run: cc-smart-dev-kit doctor\n",
     );
     // The Linux-only parts are information, never a failure.
-    expect(result.stdout).toContain(
-      "· tmux: not on Windows, so no passthrough line is managed there",
-    );
+    expect(result.stdout).not.toContain("tmux");
   });
 
   test("doctor on Windows with no launcher at all names the sh one first", () => {

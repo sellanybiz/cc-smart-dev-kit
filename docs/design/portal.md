@@ -1,5 +1,11 @@
 # The portal
 
+The Needs you page and `/api/needs` are removed, with no redirect or replacement inbox.
+The network door still runs first. Unsupported HTML routes are rejected before reading
+exported HTML, so a stale `needs/index.html` cannot restore the page. Unknown API GETs
+return 404; GETs for registered POST-only actions keep their 405 response. Work/Flow waits,
+guard asks, user-away parking, doctor and held-update controls remain.
+
 
 `cc-smart-dev-kit portal` (`src/portal/`) starts a page on this machine, on `127.0.0.1` only,
 to see and change the gateway's settings, the updates, the heavy-job queue, the companions
@@ -82,13 +88,12 @@ not a network read.
   before it sends the POST (`data-confirm`) and the action passes the command line its `--yes`.
   The auto-mode trust rules need an explicit confirmation on the page, which stands in for
   the terminal question `setup` asks.
-- **What needs `sudo` is not run.** Installing or removing the Warp app shows the exact
-  command to copy (the Machine page's Warp card, next to `doctor`'s own line for it).
+- **No app installer runs through the portal.** Herdr is offered by manual setup only.
 - **The gateway is optional, and the pages say so.** With no config to read, Overview, Slots
   and Health draw one page: "The gateway is not set up", the command that sets it up, and a
   button to Machine. Machine, Settings, the Project card and the privacy page draw anyway —
   updates, the heavy-job queue, the companions, `doctor` (its gateway line is information,
-  never a failure), the workflow settings, OmniRoute and Warp all work without a gateway, and
+  never a failure), the workflow settings and OmniRoute all work without a gateway, and
   `doctor` matters most on a machine that has none. What
   does need the config says so in a short line instead of an invented value: the header's
   router pill, the OmniRoute card's Backend line, the card at the foot of Machine, and the
@@ -515,22 +520,16 @@ read is shown and not kept. **The removal path stays uncached**: `sessions.rm` c
 `readPortalAgents` itself, so a list kept for a few seconds can never authorize a removal. When
 any action ends, `runAction` drops the kept lists (`forgetPageReads`, `api/page-reads.ts`), so
 the page that reloads after it is not served a read from before it.
-**The router's journal, its port holder and Warp's version are reads too.** `journalctl --user`
-(20–65 ms on a Health or Overview load), `systemctl --user is-active` (about 6 ms) and the package
-manager's `dpkg-query`, `rpm -q` or `brew list` (the Machine page's Warp card, twice a load) are
-awaited through `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`, never
-`Bun.spawnSync`, in the portal process (`src/entries/portal.ts`) with the actions' runner's 300 s
-timeout. `routerLog`, `portHolder` and `warpRow` (`src/portal/facts.ts`) await it;
-`portHolderCheck` (`src/gateway/doctor.ts`) awaits its runner too, and `warpAppCommand` /
-`warpAppFrom` / `warpCheckFrom` (`src/machine/warp.ts`) split the Warp read from its verdict, so
-doctor's synchronous runner and the portal's asynchronous one run the same commands and say the
-same words.
+**The router's journal and port holder are reads too.** `routerLog` and `portHolder`
+(`src/portal/facts.ts`) await `runRead` (`ReadRunner`, `src/portal/context.ts`): `Bun.spawn`,
+never `Bun.spawnSync`, in the portal process. `portHolderCheck` (`src/gateway/doctor.ts`)
+awaits its runner too.
 **The doctor pass and the project read are reads too, and every command they ask runs off the
 loop.** The Machine page runs the doctor's own pass (`doctor.run` is that same pass), and the
 pass's own reads go through `DoctorOptions.read` — the portal's `ReadRunner`: the launcher's own
-`version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher, Warp's package
-manager, the live record's `claude --version`, the marketplace's own source
-(`canReadGitRemoteAsync`: `git ls-remote`, up to 10 s a check) and tmux's `show-options`, and the
+`version` (and, on Windows, its `.cmd` twin), the old 0.3.0 plugin's launcher,
+the live record's `claude --version`, the marketplace's own source
+(`canReadGitRemoteAsync`: `git ls-remote`, up to 10 s a check), and the
 gateway's checks, `RouterService.stateAsync` (does it run, and its state, in one awaited ask with
 the same words the synchronous pair gives) and `portHolderCheck`. `claude mcp get` runs through
 the mcp deps' own runner (`realMcpDoctorDeps(runRead)`), which is also how its child gets

@@ -42,7 +42,7 @@ fix. How setup writes a file: `setup-and-managed-files.md`. What setup may run:
   ~/.claude/cc-smart-dev-kit/backups/." — the backup sentence only when a file was written;
   "Nothing to change. Setup is up to date." when nothing changed; "Setup is not finished: …"
   on exit 1), then **Next steps** in the order a person does them: PATH (the line for their
-  shell), what applies a change to a running program (tmux), `browser setup`, a new Claude
+  shell), what applies a change to a running program, `browser setup`, a new Claude
   Code session. Each part another command shares (`restore`, `doctor`) keeps its own line
   text; setup reads its mark once (`reportLine`). `project init` has the same shape, a group
   per file.
@@ -56,7 +56,7 @@ fix. How setup writes a file: `setup-and-managed-files.md`. What setup may run:
   every line, each `✗` with its `Fix:` line. Then one verdict line. `--verbose` opens every
   group; `--json` prints `DoctorReport` and nothing else, and **the installers read only that**,
   never the text a person reads (its folds, wraps and marks change with the terminal). A part
-  the person may leave out (the gateway, never set up; Warp, with or without its plugin) is a
+  the person may leave out (the gateway, never set up) is a
   `·` line: information, never a failure. A `!` line is a warning (a portal still running
   an older version), never a failure either. The list of checks is in `README.md` § `doctor`; keep it in
   step.

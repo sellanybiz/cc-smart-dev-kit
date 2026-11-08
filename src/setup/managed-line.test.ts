@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { applyManagedLine, removeManagedLines } from "./managed-line";
 import { restore } from "./restore";
-import { listBackups } from "./write";
+import { forgetManagedLines, listBackups, readChanged, writeManagedFile } from "./write";
 
 const LINE = "set -g allow-passthrough all";
 
@@ -16,6 +16,32 @@ function setup(content: string | null) {
 }
 
 const read = (file: string) => readFileSync(file, "utf8");
+
+test("releasing a retired line preserves other claims and their original baseline", () => {
+  const { file, stateDir } = setup("personal\n");
+  applyManagedLine({ file, stateDir, line: LINE });
+  applyManagedLine({ file, stateDir, line: "other managed line" });
+  writeManagedFile(file, `${read(file)}other managed content\n`, { stateDir, kind: "whole-file" });
+  const before = readChanged(stateDir)[file];
+  if (before === undefined || before.baseline === null) {
+    throw new Error("The managed fixture must have a recorded baseline backup");
+  }
+  expect(existsSync(before.baseline)).toBe(true);
+  forgetManagedLines(stateDir, file, [LINE]);
+  expect(readChanged(stateDir)[file]).toEqual({
+    kinds: ["file-line", "whole-file"],
+    baseline: before.baseline,
+    lines: ["other managed line"],
+  });
+  forgetManagedLines(stateDir, file, ["other managed line"]);
+  expect(readChanged(stateDir)[file]).toEqual({
+    kinds: ["whole-file"],
+    baseline: before.baseline,
+  });
+  const state = readFileSync(join(stateDir, "changed.json"), "utf8");
+  forgetManagedLines(stateDir, file, [LINE]);
+  expect(readFileSync(join(stateDir, "changed.json"), "utf8")).toBe(state);
+});
 
 describe("applyManagedLine", () => {
   test("appends the line at the end, keeping the person's own lines and their order", () => {

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import type { RefreshOn } from "./hooks";
 import {
   GATEWAY_CARD_REFRESH,
-  NEEDS_REFRESH,
   OVERVIEW_REFRESH,
   PROJECT_REFRESH,
   TASKS_REFRESH,
@@ -40,5 +39,4 @@ test("session and worktree results refresh only their resources", () => {
   expect(refresh(WORK_REFRESH, result("sessions.rm"))).toBe(true);
   expect(refresh(WORKTREES_REFRESH, result("worktrees.clean"))).toBe(true);
   expect(refresh(OVERVIEW_REFRESH, result("sessions.rm"))).toBe(false);
-  expect(refresh(NEEDS_REFRESH, { name: "doctor", data: null })).toBe(true);
 });

@@ -53,14 +53,13 @@ import {
   resolveWorkflow,
   type WorkflowSource,
 } from "../workflow/resolve";
-import type { AlertEvent, SwitchName, WorkflowKey } from "../workflow/schema";
+import type { SwitchName, WorkflowKey } from "../workflow/schema";
 import { writePersonalSetting, writeProjectSetting } from "../workflow/write";
 
 /** The environment git and the command line run with. */
 export type Env = Record<string, string | undefined>;
 
 export type {
-  AlertEvent,
   CcSmartDevKitConfig,
   ProjectInitAnswers,
   ProjectInitInput,

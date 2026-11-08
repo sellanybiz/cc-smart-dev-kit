@@ -49,9 +49,8 @@ major version by itself the day it runs.
   version with the copy's (`src/update/check.ts`). When either is behind it runs `claude
   plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit
   --scope user` when the copy holds a newer version; logs each step to
-  `<stateDir>/update.log`; records the result in `update-check.json`; and shows one
-  desktop notification when a new version was installed (with the `gateway setup` hint
-  when its router differs from the running copy). The detached process and both commands
+  `<stateDir>/update.log`; and records the result in `update-check.json`. It sends no
+  desktop or terminal notification. The detached process and both commands
   run in the home folder, without git variables that point at another repo (`GIT_DIR`,
   `GIT_INDEX_FILE`, …, which a session inside a git hook may carry). A command's output
   that goes into a record passes through the URL redaction. Not failures: a marketplace

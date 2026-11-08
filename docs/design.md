@@ -19,7 +19,6 @@ parts, then the part you are changing.
 | [Per-project opt-in](design/project-json.md) | `.claude/cc-smart-dev-kit.json`: every field, and how a project adds its own part to a general skill. |
 | [Updates](design/updates.md) | The hourly background check, the major-version hold, and `cc-smart-dev-kit update`'s steps. |
 | [Companion plugins](design/companions.md) | claude-mem and frontend-design: why the plugin does not load without them. |
-| [Warp](design/warp.md) | The optional terminal: its signed source, the pinned key, `--warp` and `--remove-warp`. |
 | [Notes](design/notes.md) | Neutral by design, keeping up with Claude Code, and the alternatives we did not take. |
 
 ## The gateway and its machine
@@ -44,7 +43,7 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [The hooks](design/hooks.md) | One frame for every hook, the plugin's hooks, the Agent guard, each subagent's usage, the session-escape guard, the Fable-session note, the notifier, the Bash judge and the job route, `doctor --live`, the safe switch, and Claude Code's own worktrees (and the finished ones that clean themselves). |
+| [The hooks](design/hooks.md) | One frame for every hook, the plugin's hooks, the Agent guard, each subagent's usage, the session-escape guard, the Fable-session note, notification retirement, the Bash judge and the job route, `doctor --live`, the safe switch, and Claude Code's own worktrees (and the finished ones that clean themselves). |
 
 ## The work and its pages
 

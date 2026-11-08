@@ -39,7 +39,7 @@ export interface PortalContext {
   env: Record<string, string | undefined>;
   /** The real network, for the registry and the backend checks. */
   fetch: PortalFetch;
-  /** The system, through `src/machine/` (commands, the platform, the Warp app). */
+  /** The system, through `src/machine/` (commands and the platform). */
   machine: Machine;
   /** Milliseconds since the epoch. */
   now: () => number;

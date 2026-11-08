@@ -110,7 +110,7 @@ in this turn.
   not write to `console` and be scraped.
 - **A page that needs no gateway keeps working without one.** With no usable `gateway.json`,
   Machine and the privacy page render (`updates`, the job queue, the companions, `doctor`,
-  OmniRoute, Warp — `doctor` matters most on a machine that has none), and anything on them
+  OmniRoute — `doctor` matters most on a machine that has none), and anything on them
   that needs the config says "not set up" in a short line: never an invented port or value.
   Overview, Slots and Health need it, so they show the not-set-up page, which points at
   Machine. A new page follows that: work without the config, or say what it needs.

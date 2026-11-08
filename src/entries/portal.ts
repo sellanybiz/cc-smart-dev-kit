@@ -252,8 +252,8 @@ async function runServer(
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
       project: { cwd: process.cwd(), pluginHooksFile: join(folder, "hooks", "hooks.json") },
-      // The pass's own reads — the launcher's `version`, the old launcher's, Warp's package
-      // manager, `claude --version` for the live record — run off the loop too: the Machine
+      // The pass's own reads — the launcher's `version`, the old launcher's,
+      // `claude --version` for the live record — run off the loop too: the Machine
       // page shows this pass, and a page load must never freeze on one (B6e's rule).
       read: runRead,
     };

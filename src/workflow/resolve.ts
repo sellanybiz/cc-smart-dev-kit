@@ -49,7 +49,6 @@ import { statuslineSetting } from "../setup/statusline";
 import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
-  type AlertEvent,
   type PersonalWorkflow,
   personalWorkflowSchema,
   type Workflow,
@@ -90,8 +89,6 @@ export interface ResolvedWorkflow {
     readyLabel: ResolvedValue<string>;
   };
   alerts: {
-    events: ResolvedValue<AlertEvent[]>;
-    sound: ResolvedValue<boolean>;
     usagePercent: ResolvedValue<number>;
   };
   switches: {
@@ -187,8 +184,6 @@ export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkf
     source: sourceOf(personal, project, key),
   });
   return {
-    events: of("alerts.events", alerts.events ?? workflowDefaults.alerts.events),
-    sound: of("alerts.sound", alerts.sound ?? workflowDefaults.alerts.sound),
     usagePercent: of(
       "alerts.usagePercent",
       alerts.usagePercent ?? workflowDefaults.alerts.usagePercent,
@@ -213,8 +208,6 @@ export function resolveAlerts(
 /** Every alert setting at its built-in default: what a hook falls back to, never throwing. */
 export function defaultAlerts(): ResolvedWorkflow["alerts"] {
   return {
-    events: { value: [...workflowDefaults.alerts.events], source: "default" },
-    sound: { value: workflowDefaults.alerts.sound, source: "default" },
     usagePercent: { value: workflowDefaults.alerts.usagePercent, source: "default" },
   };
 }
@@ -400,8 +393,6 @@ const RESOLVED: {
   "issues.foundLabel": (r) => r.issues.foundLabel,
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
-  "alerts.events": (r) => r.alerts.events,
-  "alerts.sound": (r) => r.alerts.sound,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,

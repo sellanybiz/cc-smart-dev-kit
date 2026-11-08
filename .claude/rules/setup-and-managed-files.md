@@ -182,7 +182,7 @@ Each of them:
   - Lines (`file-line`): removes exactly the lines in `changed.json` and keeps every
     other line, in the person's own order. A line the person edited or removed since is
     not there to remove. A line they wrote themselves is never claimed, so restore keeps
-    it (the tmux line, `src/setup/tmux.ts`).
+    it. Retired notification ownership: `docs/design/hooks.md` § The notifier.
   - Files owned whole (the launcher): puts back the **baseline**, the backup made at
     cc-smart-dev-kit's first change to the file since the last restore. When setup created
     the file, it removes it.

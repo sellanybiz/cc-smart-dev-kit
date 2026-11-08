@@ -77,7 +77,6 @@ function world(options: { bundle?: boolean; startGives?: PortalState; state?: Po
     confirm: null,
     exists: () => false,
     fetchText: async () => "",
-    macApp: "/Applications/Warp.app",
     osRelease: () => null,
     platform: "linux",
     run: () => ({ exitCode: 0, output: "" }),

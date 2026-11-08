@@ -80,7 +80,6 @@ function cliPaths(env = process.env) {
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
@@ -125,7 +124,7 @@ import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.2.0",
+  version: "3.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

@@ -29,8 +29,6 @@ export function defaultResolved(): ResolvedWorkflow {
   });
   return {
     alerts: {
-      events: at(["needs-you", "question", "finished", "failed"]),
-      sound: at(false),
       usagePercent: at(85),
     },
     autoCommit: at(false),

@@ -11,7 +11,7 @@ name: Windows
 # readers whose rule is "is this file the owner's alone?" (`isOwnerOnly`: on Windows the mode
 # says nothing and the profile's ACL is the protection) — and the smoke test that runs a real
 # hook bundle through the real shim in Git Bash. Everything else in the suite is Linux-only for
-# now — it spawns `/bin/sh`, reads `/proc`, fakes `notify-send`, or fakes a bun with a shell
+# now — it spawns `/bin/sh`, reads `/proc`, fakes a bun with a shell
 # script (Windows cannot run one as bun.exe) — and runs in the Linux job. As each part of the
 # plugin becomes Windows-shaped, add its tests here; nothing is skipped silently: a POSIX-only
 # assertion is marked `skipIf(NO_POSIX_MODES)` in the file, next to the Windows case.

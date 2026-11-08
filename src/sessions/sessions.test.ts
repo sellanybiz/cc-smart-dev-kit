@@ -14,8 +14,6 @@ import {
   openedMarkerFile,
   runSessions,
   savedSessions,
-  saveWarpTabs,
-  warpTabConfigDir,
 } from "./command";
 import {
   belongsToRepo,
@@ -28,24 +26,12 @@ import {
   sessionLabel,
   sessionsToReopen,
   stoppedByRestart,
-  tabConfigName,
-  warpTabConfig,
   windowsTerminalCommand,
   xfceTerminalCommand,
 } from "./saved-sessions";
 
 /** One line of a session file, as Claude Code writes it. */
 const line = (fields: Record<string, unknown>): string => `${JSON.stringify(fields)}\n`;
-
-/** The main checkout a saved Warp tab in `dir` runs in: its own `directory` line. */
-function tabCheckout(dir: string, name: string): string {
-  const text = readFileSync(join(dir, name), "utf8");
-  const match = /^directory = (".*")$/m.exec(text);
-  if (match?.[1] === undefined) throw new Error(`${name} names no directory`);
-  const value: unknown = JSON.parse(match[1]);
-  if (typeof value !== "string") throw new Error(`${name} names no directory`);
-  return value;
-}
 
 const session = (over: Partial<SavedSession> = {}): SavedSession => ({
   branch: null,
@@ -195,59 +181,7 @@ describe("reading a saved session", () => {
   });
 });
 
-describe("the saved Warp tab", () => {
-  test("a tab in the main checkout that resumes the session, and the one that runs --open", () => {
-    const tab = warpTabConfig(session({ name: 'Fix "the" login' }), "/work/my-app");
-    expect(tab).toContain('name = "Claude · Fix \\"the\\" login — my-app"');
-    expect(tab).toContain('directory = "/work/my-app"');
-    expect(tab).toContain('commands = ["claude --resume aaaaaaaa-1111-2222-3333-444444444444"]');
-    // The name carries the project's key, so two projects' tabs never fight over one name.
-    expect(tabConfigName("a-project-key", session())).toBe("claude_a-project-key_aaaaaaaa");
-  });
-
-  test("Warp's tab folder, by platform", () => {
-    expect(warpTabConfigDir("/home/user", "linux")).toBe(
-      "/home/user/.local/share/warp-terminal/tab_configs",
-    );
-    expect(warpTabConfigDir("/Users/user", "darwin")).toBe("/Users/user/.warp/tab_configs");
-    expect(warpTabConfigDir("C:\\Users\\user", "win32")).toBe(
-      "C:\\Users\\user/AppData/Roaming/warp/Warp/data/tab_configs",
-    );
-  });
-
-  test("CM-6: saving one project's tabs leaves another project's tabs alone", () => {
-    // Warp keeps every project's tabs in one folder, and the file name alone tells two
-    // projects' tabs apart — under the old names, one run removed the other project's tabs
-    // and took over its "bring back the sessions" tab.
-    const dir = tempDir("warp-tabs");
-    const other = "/work/other-project";
-    const ours = "/work/my-app";
-    saveWarpTabs(
-      dir,
-      [session({ name: "the other project's session" })],
-      other,
-      "cc-smart-dev-kit",
-    );
-    saveWarpTabs(
-      dir,
-      [session({ id: "bbbbbbbb-1111-2222-3333-444444444444", name: "ours" })],
-      ours,
-      "cc-smart-dev-kit",
-    );
-    const tabs = readdirSync(dir);
-    expect(tabs).toHaveLength(4);
-    expect(tabs.map((name) => tabCheckout(dir, name)).sort()).toEqual([ours, ours, other, other]);
-    // A run with nothing to save removes THIS project's stale session tab, and only its own:
-    // its "bring back the sessions" tab stays (this run wrote it again), and so do the other
-    // project's two.
-    saveWarpTabs(dir, [], ours, "cc-smart-dev-kit");
-    expect(
-      readdirSync(dir)
-        .map((name) => tabCheckout(dir, name))
-        .sort(),
-    ).toEqual([ours, other, other]);
-  });
-
+describe("the supported terminals", () => {
   test("the XFCE Terminal window: a login shell, and never an id that is not a session's", () => {
     const argv = xfceTerminalCommand(session(), "/work/my-app");
     expect(argv).toContain("--working-directory=/work/my-app");
@@ -269,42 +203,24 @@ describe("the saved Warp tab", () => {
     ).toBeNull();
   });
 
-  test("which terminal brings sessions back", () => {
+  test("which terminal brings sessions back ignores retired Warp programs", () => {
     const has = (names: string[]) => (name: string) => names.includes(name);
-    expect(
-      pickReopenTerminal({ hasProgram: has([]), platform: "linux", warpDataFolder: true }),
-    ).toBe("warp");
-    expect(
-      pickReopenTerminal({
-        hasProgram: has(["warp-terminal"]),
-        platform: "linux",
-        warpDataFolder: false,
-      }),
-    ).toBe("warp");
+    expect(pickReopenTerminal({ hasProgram: has(["warp-terminal"]), platform: "linux" })).toBe(
+      "nowhere",
+    );
     expect(
       pickReopenTerminal({
-        hasProgram: has(["xfce4-terminal"]),
+        hasProgram: has(["warp-terminal", "xfce4-terminal"]),
         platform: "linux",
-        warpDataFolder: false,
       }),
     ).toBe("xfce-terminal");
-    expect(
-      pickReopenTerminal({ hasProgram: has([]), platform: "darwin", warpDataFolder: false }),
-    ).toBe("nowhere");
-    // Windows: Warp wins where its data folder is there, else Windows Terminal, else nothing.
-    expect(
-      pickReopenTerminal({ hasProgram: has([]), platform: "win32", warpDataFolder: true }),
-    ).toBe("warp");
-    expect(
-      pickReopenTerminal({ hasProgram: has(["wt.exe"]), platform: "win32", warpDataFolder: false }),
-    ).toBe("windows-terminal");
-    expect(
-      pickReopenTerminal({
-        hasProgram: has(["xfce4-terminal"]),
-        platform: "win32",
-        warpDataFolder: false,
-      }),
-    ).toBe("nowhere");
+    expect(pickReopenTerminal({ hasProgram: has([]), platform: "darwin" })).toBe("nowhere");
+    expect(pickReopenTerminal({ hasProgram: has(["wt.exe"]), platform: "win32" })).toBe(
+      "windows-terminal",
+    );
+    expect(pickReopenTerminal({ hasProgram: has(["xfce4-terminal"]), platform: "win32" })).toBe(
+      "nowhere",
+    );
   });
 
   test("a window on the Linux desktop opens through systemd-run where there is one", () => {
@@ -312,11 +228,17 @@ describe("the saved Warp tab", () => {
       ["systemd-run", "--user", "--wait", "--collect", "--quiet", "--", "xfce4-terminal"],
     );
     expect(
-      desktopLaunch(["xdg-open", "warp://x"], { outlivesCommand: true, systemdRun: true }),
+      desktopLaunch(["xdg-open", "https://example.com"], {
+        outlivesCommand: true,
+        systemdRun: true,
+      }),
     ).toContain("--property=ExitType=cgroup");
     expect(
-      desktopLaunch(["xdg-open", "warp://x"], { outlivesCommand: true, systemdRun: false }),
-    ).toEqual(["xdg-open", "warp://x"]);
+      desktopLaunch(["xdg-open", "https://example.com"], {
+        outlivesCommand: true,
+        systemdRun: false,
+      }),
+    ).toEqual(["xdg-open", "https://example.com"]);
   });
 });
 
@@ -451,7 +373,7 @@ describe("the sessions command", () => {
     expect(text).toContain("Fix the login bug — my-app-wt-fix-login");
     expect(text).toContain("claude --resume aaaaaaaa-1111-2222-3333-444444444444");
     expect(text).not.toContain("bbbbbbbb");
-    expect(text).toContain("Warp is not installed here, so no tabs were saved");
+    expect(text).toContain("No supported terminal is installed here");
   });
 
   test("--open with no terminal says what it would open, and opens nothing", async () => {
@@ -480,53 +402,40 @@ describe("the sessions command", () => {
     expect(opened).toEqual([]);
   });
 
-  test("with Warp: a tab is saved for every session, and the stale ones are removed", async () => {
-    const home = tempDir("sessions-warp");
-    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
-    const project = "/work/my-app";
-    const folder = join(paths.claudeConfigDir, "projects", projectFolderName(project));
-    mkdirSync(folder, { recursive: true });
-    const id = "aaaaaaaa-1111-2222-3333-444444444444";
-    writeFileSync(
-      join(folder, `${id}.jsonl`),
-      line({ agentName: "Fix the login bug", type: "agent-name" }),
-    );
-    const tabDir = warpTabConfigDir(home, "linux");
-    mkdirSync(tabDir, { recursive: true });
-    // A tab an older run wrote for a session that is gone now: its own `directory` line says
-    // it is this project's, so this run removes it (the name carries no project key).
-    writeFileSync(
-      join(tabDir, "claude_gone.toml"),
-      '# Written by cc-smart-dev-kit `sessions`.\nname = "old"\ndirectory = "/work/my-app"\n',
-    );
-    // A tab someone else wrote: never removed.
-    writeFileSync(join(tabDir, "claude_mine.toml"), 'name = "a tab of my own"\n');
-
+  test("listing sessions leaves existing Warp tabs untouched", async () => {
+    const now = 100 * 3_600_000;
+    const w = world([
+      {
+        id: "aaaaaaaa-1111-2222-3333-444444444444",
+        tail: line({ agentName: "Keep existing terminal tabs", type: "agent-name" }),
+        writtenAt: now - 60_000,
+      },
+    ]);
+    const dir = join(w.paths.home, ".local", "share", "warp-terminal", "tab_configs");
+    mkdirSync(dir, { recursive: true });
+    const old = '# Written by cc-smart-dev-kit `sessions`.\nname = "old"\n';
+    writeFileSync(join(dir, "claude_gone.toml"), old);
+    const probes: string[] = [];
     const { deps: fake } = deps({
-      which: (command) => (command === "warp-terminal" ? "/usr/bin/warp-terminal" : null),
+      which: (name) => {
+        probes.push(name);
+        return null;
+      },
     });
-    const print = spyOn(console, "log").mockImplementation(() => undefined);
+    const listing: string[] = [];
+    const print = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+      listing.push(args.join(" "));
+    });
     try {
-      expect(await runSessions(paths, { dryRun: false, open: false }, fake, project)).toBe(0);
+      expect(await runSessions(w.paths, { dryRun: false, open: false }, fake, w.project)).toBe(0);
     } finally {
       print.mockRestore();
     }
-    // This project's two tabs, under names that carry its key; the person's own tab stays.
-    const tabs = readdirSync(tabDir).sort();
-    expect(tabs).toContain("claude_mine.toml");
-    expect(tabs.filter((name) => name !== "claude_mine.toml")).toHaveLength(2);
-    for (const name of tabs.filter((one) => one !== "claude_mine.toml")) {
-      expect(tabCheckout(tabDir, name)).toBe(project);
-    }
-    const sessionTab = tabs.find((name) => name.endsWith("_aaaaaaaa.toml"));
-    const restoreAllTab = tabs.find((name) => name.endsWith("_restore_all.toml"));
-    expect(sessionTab).toBeDefined();
-    expect(restoreAllTab).toBeDefined();
-    const tab = readFileSync(join(tabDir, sessionTab ?? ""), "utf8");
-    expect(tab).toContain('commands = ["claude --resume aaaaaaaa-1111-2222-3333-444444444444"]');
-    expect(readFileSync(join(tabDir, restoreAllTab ?? ""), "utf8")).toContain(
-      'commands = ["cc-smart-dev-kit sessions --open"]',
-    );
+    expect(listing.join("\n")).toContain("Keep existing terminal tabs");
+    expect(probes).toContain("xfce4-terminal");
+    expect(readdirSync(dir)).toEqual(["claude_gone.toml"]);
+    expect(readFileSync(join(dir, "claude_gone.toml"), "utf8")).toBe(old);
+    expect(probes).not.toContain("warp-terminal");
   });
 
   test("a session already running is never opened again", async () => {
@@ -613,7 +522,7 @@ describe("the sessions command", () => {
         writtenAt: now - 1000,
       },
       // A file name is not a promise about its content: `weird; rm -rf ~` is a title, but the
-      // id would be pasted into `claude --resume <id>` in a Warp tab.
+      // id would be pasted into `claude --resume <id>` in a terminal.
       {
         id: "weird;-rm-rf-~",
         tail: line({ agentName: "not a session", type: "agent-name" }),

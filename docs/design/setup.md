@@ -157,3 +157,16 @@ not to retry. The key exists from Claude Code v2.1.217; the live check is still 
 `src/setup/max-subagents.ts`): the kit's value, the person's own value, a key the person removed
 (Claude Code's own default), or no key yet, each with how to change it. Setup prints the same
 line when it leaves a person's value alone, and one line when it sets or changes its own.
+
+## Optional Herdr GUI
+
+Manual setup offers the latest GUI by default. `--no-herdr` skips only this run.
+An existing GUI stays unchanged; root, unsupported builds and Linux without a desktop
+get manual guidance. All questions finish before the download or staging begins.
+Consent, official installer/core bootstrap and upstream ownership boundaries live in
+`.claude/rules/setup-commands.md`; the user-facing contract is `README.md` § Herdr GUI.
+`src/machine/herdr.ts` plans the offer; `src/setup/herdr.ts` stages it under the setup lock,
+uses explicit interpreter argv with installer controls cleared only in the child, checks
+GUI/core presence without launching either, and removes its staging files. A missing core
+after GUI installation is reported distinctly. These fake-machine tests are not native
+platform installation proof.

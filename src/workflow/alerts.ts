@@ -1,9 +1,8 @@
 /**
- * The alerts settings, as a hook reads them — and the one place that says how a hook reads
+ * The usage-warning setting, as the status line reads it — and the one place that says how a hook reads
  * them at all.
  *
- * The `notify` and `stop-failure` hooks run on many events, and a bug in one must never get
- * in the way of the person's work. So this reader:
+ * A broken configuration must not hide the status line. So this reader:
  *
  * - **reads once per hook run**, not once per event: one call, the answer handed around;
  * - **never throws**: a project's `cc-smart-dev-kit.json` it cannot read drops that file, and
@@ -21,7 +20,7 @@ import { alertsFrom, type ResolvedWorkflow, resolveAlerts } from "./resolve";
 
 type Env = Record<string, string | undefined>;
 
-/** The three alert settings, each with where its value came from. */
+/** The usage-warning threshold and where its value came from. */
 export type ResolvedAlerts = ResolvedWorkflow["alerts"];
 
 export interface AlertsHere {
