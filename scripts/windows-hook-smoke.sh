@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # The proof the Windows CI job runs, on a real Windows machine, that the plugin's hooks work
-# there (docs/windows-hooks.md says why each piece is shaped the way it is). Five cases:
+# there (docs/windows-hooks.md says why each piece is shaped the way it is). Four cases:
 #
 #   1. a hook bundle runs through the shim, through Git Bash — the shell Claude Code gives a
 #      shell-form hook on Windows — and the git guard answers;
 #   2. with no bun anywhere, the guard still fails closed: the shim's `--missing=ask` answer;
-#   3. the line `cc-smart-dev-kit setup` writes into the person's own settings runs: the shell
-#      expands `$HOME`, and Git Bash runs the extensionless `#!/bin/sh` launcher under it
-#      (Windows has no execute bit, so what runs it is Git Bash's own rule for a file
-#      starting with `#!`);
 #   4. `--missing=fail`, the mode the plugin's command runs: no bun is one line on stderr and
 #      exit 1, because a command must never report success when it did not run;
 #   5. a process that ended is seen as gone: `process.kill(deadPid, 0)` throws `ESRCH` in Bun
@@ -87,21 +83,6 @@ case "$answer" in
   *) fail "with no bun the shim did not say so: $answer" ;;
 esac
 
-# 3. The line `cc-smart-dev-kit setup` writes into the person's own settings
-#    (src/setup/user-notify-hook.ts), taken from that code rather than copied, so this check
-#    follows the source. The launcher here is a stand-in: what is proved is the LINE — `$HOME`
-#    expanding, and Git Bash running the extensionless `#!/bin/sh` file it points at.
-mkdir -p "$home/.local/bin"
-printf '#!/bin/sh\nprintf "launcher ran: %%s\\n" "$*"\n' >"$home/.local/bin/cc-smart-dev-kit"
-chmod +x "$home/.local/bin/cc-smart-dev-kit"
-line="$(cd "$root" && bun -e 'const { USER_NOTIFY_COMMAND } = await import("./src/setup/user-notify-hook.ts"); process.stdout.write(USER_NOTIFY_COMMAND);')"
-case "$line" in
-  '"$HOME/.local/bin/cc-smart-dev-kit" hook notify') ;;
-  *) fail "the user-hook line changed shape, so this check no longer checks it: $line" ;;
-esac
-ran="$(HOME="$home" "$bash_bin" -c "$line")"
-[ "$ran" = "launcher ran: hook notify" ] || fail "the user-wired line did not run the launcher: $ran"
-
 # 4. With no bun anywhere, `--missing=fail` — the mode `plugin/bin/cc-smart-dev-kit` runs the
 #    command through — writes one line on stderr and exits 1. A command that did not run must
 #    never report success.
@@ -135,4 +116,4 @@ process.stdout.write(`${code} ${gone} ${alive}`);
 ')"
 [ "$proved" = "ESRCH true true" ] || fail "a process that ended is not seen as gone (the code Bun threw, processIsGone of the ended child, not of this process): $proved"
 
-echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, the user-wired line ran the launcher, --missing=fail exited 1, and an ended process is seen as gone"
+echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, --missing=fail exited 1, and an ended process is seen as gone"

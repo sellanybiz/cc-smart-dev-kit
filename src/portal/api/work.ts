@@ -1,6 +1,5 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { groupTitle } from "../../cli/check";
 import { historyDbExists } from "../../gateway/history";
 import {
   bucketStart,
@@ -11,24 +10,21 @@ import {
   type RecentRequestRow,
   recentRequests,
 } from "../../gateway/history-read";
-import { currentBreakers, parseLimitState } from "../../gateway/limit-state";
 import { oneLine } from "../../gateway/plain-text";
 import { readSafetyChecks, safetyCheckWindow } from "../../gateway/safety-checks-read";
 import { askLogFile } from "../../hooks/ask-log";
 import { locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
 import { readFinishedSessions } from "../../sessions/finished";
-import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS, type OpenWait } from "../../sessions/flow";
+import { FLOW_DAYS_KEPT, OPEN_WAIT_MAX_AGE_MS } from "../../sessions/flow";
 import type { SavedSession } from "../../sessions/saved-sessions";
 import type { MergeVerdict as CheckVerdict } from "../../workflow/merge-check";
-import { routerFacts, shownDetail } from "../facts";
+import { shownDetail } from "../facts";
 import { openWaitsOffLoop, readFlowOffLoop } from "../flow-read";
-import { type PageDataDeps, updateFacts } from "../page-data";
+import type { PageDataDeps } from "../page-data";
 import { readWorktreesOffLoop } from "../worktrees-read";
 import { readPortalAgentsForPage } from "./agents-read";
 import {
-  type BreakerNeed,
-  type DoctorFailure,
   type FlowAnswer,
   type GuardAskItem,
   type GuardAsksAnswer,
@@ -37,8 +33,6 @@ import {
   type HistoryRange,
   type HistoryRequest,
   type MergeVerdict,
-  type NeedsAnswer,
-  type PermissionWait,
   type RequestsAnswer,
   type SessionSummary,
   type WorkAnswer,
@@ -163,83 +157,6 @@ export function mergeVerdictOf(verdict: CheckVerdict): MergeVerdict {
     case "late":
       return { kind: "late", number: verdict.number, what: verdict.what };
   }
-}
-
-/** One open permission prompt. */
-export function permissionWaitOf(wait: OpenWait): PermissionWait {
-  return {
-    asker: wait.asker,
-    at: wait.at,
-    kind: wait.kind,
-    project: wait.project,
-    session: wait.session,
-    tool: wait.tool,
-  };
-}
-
-/** `/api/needs`: everything that waits on the person (D52). */
-export async function needsAnswer(deps: PageDataDeps): Promise<NeedsAnswer> {
-  const _paths = deps.action.portal.paths;
-  const now = deps.action.portal.now();
-  const waits = await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS);
-  const permissions: PermissionWait[] =
-    "open" in waits ? waits.open.map((wait) => permissionWaitOf(wait)) : [];
-  const doctor = await deps.doctor();
-  const update = updateFacts(deps.action).held;
-  return {
-    breakers: await breakersOf(deps, now),
-    doctor: {
-      at: doctor?.at ?? null,
-      failures: (doctor?.checks ?? []).flatMap((check): DoctorFailure[] =>
-        check.ok
-          ? []
-          : [
-              {
-                fix: check.fix,
-                section: check.group === undefined ? null : groupTitle(check.group),
-                text: check.text,
-              },
-            ],
-      ),
-    },
-    permissions,
-    permissionsError: "error" in waits ? waits.error : null,
-    update,
-  };
-}
-/**
- * Every breaker open now, from the state file the router writes, with the router's own live
- * count of the requests it holds right now. A router that does not answer (or no gateway config
- * names one) leaves `heldNow` null: the answer never guesses a number.
- */
-async function breakersOf(deps: PageDataDeps, now: number): Promise<BreakerNeed[]> {
-  let text: string;
-  try {
-    text = readFileSync(deps.action.portal.paths.gatewayStateFile, "utf8");
-  } catch {
-    return [];
-  }
-  const state = parseLimitState(text);
-  if (state === null) return [];
-  const open = currentBreakers(state, now);
-  // Nothing open: the router is not asked at all, so a healthy machine pays no probe.
-  if (open.length === 0) return [];
-  const router =
-    "config" in deps.found ? await routerFacts(deps.action.portal, deps.found.config.port) : null;
-  const live = router?.up === true ? router.breakers : null;
-  return open.map(([slot, record]) => ({
-    held: record.held,
-    // The router answered: a slot it does not list holds nothing right now. Only a router
-    // that did not answer leaves the count unknown.
-    heldNow: live === null ? null : (live[slot]?.heldNow ?? 0),
-    since: new Date(record.since).toISOString(),
-    slot,
-    targets: record.targets.map((target) => ({
-      status: target.status,
-      target: target.target,
-      until: new Date(target.until).toISOString(),
-    })),
-  }));
 }
 
 /** The filters and the page `/api/guard-asks` takes. */

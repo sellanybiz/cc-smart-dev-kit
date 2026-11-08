@@ -116,12 +116,6 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "issues.foundLabel", source: "default", value: "kit:found" },
   { key: "issues.fixedLabel", source: "default", value: "fixed-unreleased" },
   { key: "issues.readyLabel", source: "default", value: "kit:ready" },
-  {
-    key: "alerts.events",
-    source: "default",
-    value: ["needs-you", "question", "finished", "failed"],
-  },
-  { key: "alerts.sound", source: "default", value: false },
   { key: "alerts.usagePercent", source: "default", value: 85 },
   { key: "switches.sessionNames", source: "project", value: true },
   { key: "switches.jobRoute", source: "project", value: true },

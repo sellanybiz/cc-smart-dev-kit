@@ -78,7 +78,6 @@ function cliPaths(env = process.env) {
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
@@ -6021,7 +6020,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "2.2.0",
+  version: "3.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6081,8 +6080,6 @@ function parseUserJson(text) {
 }
 
 // src/workflow/schema.ts
-var ALERT_EVENTS = ["needs-you", "question", "finished", "failed"];
-var alertEventsSchema = array(_enum(ALERT_EVENTS)).min(1).refine((events) => new Set(events).size === events.length, "an event is listed twice");
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
 function numberSchema(rule) {
@@ -6149,10 +6146,10 @@ var workflowSchema = strictObject({
       context.addIssue({ code: "custom", message: clash });
   }).optional(),
   alerts: strictObject({
-    events: alertEventsSchema.optional(),
-    sound: boolean2().optional(),
+    events: unknown().optional(),
+    sound: unknown().optional(),
     usagePercent: numberField("alerts.usagePercent")
-  }).optional(),
+  }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
@@ -6181,8 +6178,6 @@ var workflowDefaults = {
     readyLabel: "kit:ready"
   },
   alerts: {
-    events: [...ALERT_EVENTS],
-    sound: false,
     usagePercent: 85
   }
 };
@@ -6211,8 +6206,6 @@ var POLICY_KEYS = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.events",
-  "alerts.sound",
   "alerts.usagePercent"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);

@@ -9,7 +9,6 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { decodedToastText } from "../hooks/windows-toast";
 import { AUTO_UPDATE_KEY } from "../setup/auto-update";
 import {
   installInstructions,
@@ -22,13 +21,7 @@ import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import {
-  capturingRunner,
-  companionsBehind,
-  companionsBehindDetail,
-  installedText,
-  notifyCommand,
-} from "./apply";
+import { capturingRunner, companionsBehind, companionsBehindDetail } from "./apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
@@ -240,7 +233,7 @@ function machine(options: MachineOptions = {}) {
   const cli = (args: string[]) => spawn([CLI, ...args]);
   /**
    * Waits until the background check wrote a result other than "checking" and let go of
-   * the update lock: its notification comes after the result, still under the lock.
+   * the update lock: the result is recorded before the lock is released.
    */
   const settled = async (timeoutMs = 15_000) => {
     const deadline = Date.now() + timeoutMs;
@@ -295,16 +288,12 @@ describe("the SessionStart hook and the background check, end to end", () => {
     m.release();
     const last = await m.settled();
     expect(last.result).toBe("updated");
-    expect(last.detail).toBe(
-      "1.1.0 (was 1.0.0); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
-    );
+    expect(last.detail).toBe("1.1.0 (was 1.0.0)");
     expect(m.read("claude.log")).toBe(
       "plugin marketplace update cc-smart-dev-kit\nplugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user\n",
     );
     expect(m.installedVersion()).toBe("1.1.0");
-    expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
-    );
+    expect(m.read("notify.log")).toBe("");
     // git: the remote head (no password prompt), then the copy's head.
     expect(m.read("git.log")).toBe(
       [
@@ -320,7 +309,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
         "newer: installed 1.0.0, the marketplace copy 1.0.0, and the copy is behind the remote",
         "run: claude plugin marketplace update cc-smart-dev-kit",
         "run: claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user",
-        "updated: 1.1.0 (was 1.0.0); agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+        "updated: 1.1.0 (was 1.0.0)",
         "",
       ].join("\n"),
     );
@@ -497,7 +486,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
     expect((await m.hook()).stdout).toBe("");
   }, 30_000);
 
-  test("a new version whose router differs from the running copy: the notification adds the gateway setup hint", async () => {
+  test("a new version whose router differs from the running copy: the saved result keeps the gateway setup hint without sending", async () => {
     const m = machine({ remoteHead: HEAD_B });
     // The gateway runs a copy of the old router; the installed version has another one.
     const installPath = join(
@@ -519,15 +508,13 @@ describe("the SessionStart hook and the background check, end to end", () => {
     await m.hook();
     expect(await m.settled()).toMatchObject({
       detail:
-        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
+        "1.1.0 (was 1.0.0); its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it",
       result: "updated",
     });
-    expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it\n",
-    );
+    expect(m.read("notify.log")).toBe("");
   }, 30_000);
 
-  test("the notification hook is already set: no `setup` hint in the update's text", async () => {
+  test("an old notification hook stays untouched by the background update", async () => {
     const m = machine({ remoteHead: HEAD_B });
     writeFileSync(
       m.paths.settingsFile,
@@ -550,9 +537,7 @@ describe("the SessionStart hook and the background check, end to end", () => {
     );
     await m.hook();
     expect(await m.settled()).toMatchObject({ detail: "1.1.0 (was 1.0.0)", result: "updated" });
-    expect(m.read("notify.log")).toBe(
-      "notify-send cc-smart-dev-kit cc-smart-dev-kit 1.1.0 installed; restart Claude sessions to load it\n",
-    );
+    expect(m.read("notify.log")).toBe("");
   }, 30_000);
 
   test("Claude Code's switch for updates set: the hook starts nothing, says nothing, and records why", async () => {
@@ -613,7 +598,7 @@ describe("Claude Code's switches for updates", () => {
     await backgroundCheck({
       claude: "/nowhere/claude",
       env: { ...m.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
-      notify: () => {},
+
       now: () => NOW,
       paths: m.paths,
       run: () => {
@@ -637,7 +622,7 @@ describe("a failure: when it counts, and who is told", () => {
     backgroundCheck({
       claude: null,
       env: m.env,
-      notify: () => {},
+
       now: () => nowMs,
       paths: m.paths,
       run: () => ({ exitCode: 1, output: "" }),
@@ -745,7 +730,7 @@ describe("a failure: when it counts, and who is told", () => {
       backgroundCheck({
         claude: found ? join(m.home, "fake", "bin", "claude") : null,
         env: m.env,
-        notify: () => {},
+
         now: () => nowMs,
         paths: m.paths,
         run: capturingRunner(m.env, m.home),
@@ -925,7 +910,7 @@ describe("the throttle, the hold and the lock", () => {
     await backgroundCheck({
       claude: "/nowhere/claude",
       env: m.env,
-      notify: () => {},
+
       now: () => NOW,
       paths: m.paths,
       run: () => {
@@ -952,7 +937,7 @@ describe("the throttle, the hold and the lock", () => {
     await backgroundCheck({
       claude: "/nowhere/claude",
       env: m.env,
-      notify: () => {},
+
       now: () => NOW,
       paths: m.paths,
       run: () => {
@@ -973,7 +958,7 @@ describe("the throttle, the hold and the lock", () => {
     await backgroundCheck({
       claude: "/nowhere/claude",
       env: m.env,
-      notify: () => {},
+
       now: () => NOW,
       paths: m.paths,
       run: () => {
@@ -1185,59 +1170,7 @@ describe("running sessions and the version they loaded", () => {
   }, 30_000);
 });
 
-describe("the notification", () => {
-  const which = (found: string[]) => (command: string) =>
-    found.includes(command) ? `/usr/bin/${command}` : null;
-
-  test("notify-send on Linux, osascript on macOS, a PowerShell toast on Windows, nothing without the tool", () => {
-    const text = installedText("1.2.3");
-    expect(text).toBe("cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it");
-    expect(notifyCommand(text, "linux", which(["notify-send"]))).toEqual([
-      "/usr/bin/notify-send",
-      "cc-smart-dev-kit",
-      text,
-    ]);
-    expect(notifyCommand(text, "linux", which([]))).toBe(null);
-    expect(notifyCommand(text, "darwin", which(["osascript"]))).toEqual([
-      "/usr/bin/osascript",
-      "-e",
-      'display notification "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it" with title "cc-smart-dev-kit"',
-    ]);
-    expect(notifyCommand(text, "win32", which(["notify-send", "osascript"]))).toBe(null);
-    // Windows: the toast, with the alert's words in the encoded script, never on the command
-    // line (`windows-toast.ts`; the script itself is pinned in its own test file).
-    const toast = notifyCommand(text, "win32", which(["powershell"]));
-    expect(toast?.slice(0, 4)).toEqual([
-      "/usr/bin/powershell",
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-    ]);
-    // The words are base64 of UTF-8 inside the script, which decodes them itself: no
-    // character of the alert is part of the script's own source (`decodedToastText`).
-    const script = Buffer.from(toast?.[4] ?? "", "base64").toString("utf16le");
-    expect(decodedToastText(script, "title")).toBe("cc-smart-dev-kit");
-    expect(decodedToastText(script, "body")).toBe(text);
-  });
-
-  test("the setup hints: the router's, the missing notification hook's, or both", () => {
-    expect(installedText("1.2.3", false, true)).toBe(
-      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
-    );
-    expect(installedText("1.2.3", true, true)).toBe(
-      "cc-smart-dev-kit 1.2.3 installed; restart Claude sessions to load it; its router changed: to run it, cc-smart-dev-kit gateway setup (it asks before the restart); a machine set up before Claude became the default runs cc-smart-dev-kit setup once first, which moves it; agent view's notification hook is missing: cc-smart-dev-kit setup writes it",
-    );
-  });
-
-  test("a version that is not plain text never reaches the notifier", () => {
-    expect(installedText('1.0" & do shell script "x')).toBe(
-      "cc-smart-dev-kit a new version installed; restart Claude sessions to load it",
-    );
-    expect(installedText(null)).toBe(
-      "cc-smart-dev-kit a new version installed; restart Claude sessions to load it",
-    );
-  });
-
+describe("update version comparison", () => {
   test("isOlder: a missing installed version is older; a missing available one is not newer", () => {
     expect(isOlder("1.0.0", "1.1.0")).toBe(true);
     expect(isOlder("1.1.0", "1.1.0")).toBe(false);
@@ -1441,7 +1374,7 @@ async function checkHere(m: ReturnType<typeof machine>) {
   await backgroundCheck({
     claude: Bun.which("claude", { PATH: m.env.PATH ?? "" }),
     env: m.env,
-    notify: (text) => notified.push(text),
+
     now: () => NOW,
     paths: m.paths,
     run: capturingRunner(m.env, m.home),
@@ -1468,7 +1401,7 @@ describe("D33: a major version waits for the person", () => {
     const { last, notified } = await checkHere(m);
     expect(last?.result).toBe("updated");
     expect(m.installedVersion()).toBe("0.6.1");
-    expect(notified).toHaveLength(1);
+    expect(notified).toEqual([]);
     expect(readHeldMajor(m.files)).toBeNull();
   });
 

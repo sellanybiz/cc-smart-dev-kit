@@ -227,7 +227,6 @@ esac
     // (each subagent's cost on record). SubagentStart is `review-record`'s own start (it notes the commit a
     // review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
-      "Notification",
       "PermissionRequest",
       "PostModelSwitch",
       "PostToolUse",
@@ -235,20 +234,13 @@ esac
       "PreToolUse",
       "SessionStart",
       "Stop",
-      "StopFailure",
       "SubagentStart",
       "SubagentStop",
       "UserPromptSubmit",
     ]);
     const bundlesFor = (event: string) =>
       wired.filter(({ event: one }) => one === event).map(({ handler }) => bundleOf(handler));
-    expect(bundlesFor("Stop")).toEqual([
-      "notify",
-      "fable-session",
-      "verify-gate",
-      "keep-going",
-      "user-away",
-    ]);
+    expect(bundlesFor("Stop")).toEqual(["fable-session", "verify-gate", "keep-going", "user-away"]);
     expect(bundlesFor("SessionStart")).toContain("task-start");
     expect(bundlesFor("SubagentStart")).toEqual(["review-record"]);
     expect(bundlesFor("SubagentStop")).toEqual([

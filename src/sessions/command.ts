@@ -1,49 +1,14 @@
-/**
- * `cc-smart-dev-kit sessions` — get your Claude Code sessions back, by name.
- *
- * WHY THIS EXISTS
- *   A power cut closes every terminal tab and every running Claude. The sessions themselves
- *   are not lost — Claude Code saves each one to disk as it goes, and `claude --resume <id>`
- *   brings it back — but nothing told you which ids, or in which folder to start them. Warp's
- *   own "restore tabs" is saved when you QUIT Warp, so after a power cut it brings back an
- *   old layout, and never a running Claude.
- *
- * WHAT IT DOES
- *   cc-smart-dev-kit sessions           lists this project's sessions of the last two days,
- *                                       by name and worktree, and saves one Warp tab for
- *                                       each — in Warp's "+" menu as "Claude · <name>".
- *                                       Opening one starts in the main checkout and resumes
- *                                       that session.
- *   cc-smart-dev-kit sessions --open    after a restart, a shutdown, a power cut or a closed
- *                                       window: also opens every session that was open then
- *                                       and nobody has resumed yet — in Warp, or in XFCE
- *                                       Terminal on Linux.
- *   --dry-run with --open               says what it would open, opens nothing.
- *
- *   A power cut KILLS a session: its file never gets Claude Code's end marker. A clean
- *   shutdown CLOSES it, writing the same marker as /exit; a closed terminal window does the
- *   same. The sign is time: several sessions that closed in the same moment before the
- *   machine started were closed by the shutdown, and several that closed together since it
- *   started were closed with one window. One session alone cannot be told from one closed
- *   with /exit.
- *
- * Everything is read from Claude Code's own files; nothing is tracked on the side. The
- * project is found from the working folder: its main checkout, whose own sessions are listed,
- * and every session in a worktree under `<main checkout>/.claude/worktrees/` with them.
- */
+/** Lists saved sessions and reopens stopped sessions in a supported terminal. */
 import {
   closeSync,
   existsSync,
-  mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
-import { platform } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
@@ -51,10 +16,8 @@ import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
 import { liveSessions } from "../hooks/sessions";
 import { callClaude, findClaude } from "../machine/claude";
-import { openUrlCandidates } from "../machine/open-url";
 import { locateCheckout } from "../project/resolve";
 import { atomicWrite } from "../setup/write";
-import { repoKey } from "../workflow/reviews";
 import {
   FINISHED_SESSION_AGE_MS,
   readFinishedSessions,
@@ -73,10 +36,6 @@ import {
   sessionLabel,
   sessionsToReopen,
   stoppedByRestart,
-  TAB_CONFIG_MARK,
-  tabCheckoutOf,
-  tabConfigName,
-  warpTabConfig,
   windowsTerminalCommand,
   xfceTerminalCommand,
 } from "./saved-sessions";
@@ -87,14 +46,6 @@ const PIN_HOURS = 48;
 const RESTORE_HOURS = 12;
 /** Claude Code repeats a session's name and folder all through its file. */
 const TAIL_BYTES = 512 * 1024;
-
-/** Where Warp keeps its saved tabs, by platform. */
-export function warpTabConfigDir(home: string, on: NodeJS.Platform = platform()): string {
-  if (on === "win32")
-    return join(home, "AppData", "Roaming", "warp", "Warp", "data", "tab_configs");
-  if (on === "darwin") return join(home, ".warp", "tab_configs");
-  return join(home, ".local", "share", "warp-terminal", "tab_configs");
-}
 
 function readTail(path: string, size: number): string {
   const start = Math.max(0, size - TAIL_BYTES);
@@ -198,7 +149,7 @@ export function savedSessions(
       const session = readSession(file);
       // A session Claude never titled is a one-shot run (`claude -p`), not one to come back to.
       // The id must be a session id (letters, digits and dashes): it goes into a shell command
-      // (`warpTabConfig`, xfceTerminalCommand) and names `--open`'s marker file, and a file
+      // (`xfceTerminalCommand`) and names `--open`'s marker file, and a file
       // name on disk is not a promise about its content.
       if (session.name !== null && isSessionId(session.id)) sessions.push(session);
     }
@@ -206,68 +157,7 @@ export function savedSessions(
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
 }
 
-/** Every saved tab of this project starts with this, and one of another project never does. */
-function tabPrefix(key: string): string {
-  return `claude_${key}_`;
-}
-
-/**
- * Write a tab for every session, and remove this project's tabs for sessions gone quiet.
- *
- * Only this project's tabs are touched: the name carries the project's key, and a tab
- * written before the key existed is recognized by its own `directory` line. Warp keeps
- * every project's tabs in one folder, so removing "every tab of ours that is not in `keep`"
- * once removed another project's tabs and took over its "bring back the sessions" tab.
- */
-export function saveWarpTabs(
-  dir: string,
-  sessions: SavedSession[],
-  mainCheckout: string,
-  command: string,
-): void {
-  mkdirSync(dir, { recursive: true });
-  const key = repoKey(mainCheckout);
-  const prefix = tabPrefix(key);
-  const restoreAll = `${prefix}restore_all`;
-  const keep = new Set([restoreAll, ...sessions.map((session) => tabConfigName(key, session))]);
-  for (const name of readdirSync(dir)) {
-    if (!name.startsWith("claude_") || !name.endsWith(".toml")) continue;
-    if (keep.has(name.slice(0, -".toml".length))) continue;
-    const path = join(dir, name);
-    let text: string;
-    try {
-      text = readFileSync(path, "utf8");
-    } catch {
-      // Removed between the listing and the look, or not ours to read: nothing to remove.
-      continue;
-    }
-    if (!text.startsWith(TAB_CONFIG_MARK)) continue;
-    if (name.startsWith(prefix) || tabCheckoutOf(text) === mainCheckout) rmSync(path);
-  }
-  for (const session of sessions) {
-    writeFileSync(
-      join(dir, `${tabConfigName(key, session)}.toml`),
-      warpTabConfig(session, mainCheckout),
-    );
-  }
-  writeFileSync(
-    join(dir, `${restoreAll}.toml`),
-    [
-      TAB_CONFIG_MARK,
-      'name = "Claude · bring back the sessions a restart or a closed window stopped"',
-      'title = "restore Claude sessions"',
-      "",
-      "[[panes]]",
-      'id = "main"',
-      'type = "terminal"',
-      `directory = ${JSON.stringify(mainCheckout)}`,
-      `commands = [${JSON.stringify(`${command} sessions --open`)}]`,
-      "",
-    ].join("\n"),
-  );
-}
-
-/** Up to this long a Warp link waits for the Warp the first one started to come up. */
+/** Time allowed for the terminal to hand a window to an existing process. */
 const HANDOVER_MS = 3000;
 
 /**
@@ -333,20 +223,7 @@ export interface SessionsDeps {
   uptimeSeconds: number;
 }
 
-/**
- * Opens one window on the Linux desktop — an XFCE Terminal window, or a Warp tab; says
- * whether it opened.
- *
- * Through `systemd-run --user` where there is one (`desktopLaunch`): the window then takes
- * the desktop session's environment, not this command's — which may come from an editor or a
- * Claude session — and it opens on the desktop even when this runs over SSH.
- *
- * Both openers hand the new window to the program already running and exit (an
- * `xfce4-terminal` at once, `xdg-open` with a `warp://` link once Warp passes it on); with
- * none running, the command BECOMES the terminal and runs until its last window closes. So a
- * command still running after `HANDOVER_MS` is showing the window, and one that exits 0
- * handed it over.
- */
+/** Opens a terminal window and waits for its launch or handover result. */
 async function openOnDesktop(
   command: string[],
   options: { outlivesCommand: boolean },
@@ -593,24 +470,16 @@ export async function runSessions(
     console.log(`      claude --resume ${session.id}     (run it in ${mainCheckout})\n`);
   }
 
-  const tabDir = warpTabConfigDir(paths.home, deps.platform);
   const reopenIn = pickReopenTerminal({
     hasProgram: (name) => deps.which(name) !== null,
     platform: deps.platform,
-    warpDataFolder: existsSync(dirname(tabDir)),
   });
-  if (reopenIn === "warp") {
-    // Saved even before Warp's first start (saveWarpTabs makes the folder).
-    saveWarpTabs(tabDir, sessions, mainCheckout, deps.command);
-    console.log(
-      `Saved a Warp tab for each: the "+" menu → "Claude · <name>". They are in\n${tabDir}\n`,
-    );
-  } else if (reopenIn === "xfce-terminal") {
+  if (reopenIn === "xfce-terminal") {
     console.log("--open reopens the stopped ones, each in an XFCE Terminal window of its own.\n");
   } else if (reopenIn === "windows-terminal") {
     console.log("--open reopens the stopped ones, each in a Windows Terminal window of its own.\n");
   } else {
-    console.log("Warp is not installed here, so no tabs were saved — use the commands above.\n");
+    console.log("No supported terminal is installed here — use the commands above.\n");
   }
 
   if (!options.open) {
@@ -640,31 +509,12 @@ export async function runSessions(
   }
 
   let failed = false;
-  let warpLinks = 0;
   for (const session of toOpen) {
-    let opened: boolean;
-    if (reopenIn === "warp") {
-      const link = `warp://tab_config/${tabConfigName(repoKey(mainCheckout), session)}`;
-      // Which program opens a link, per platform: `open-url.ts` (the portal uses the same
-      // one). The first candidate is this platform's opener for a desktop link.
-      const opener = openUrlCandidates(deps.platform, link)[0];
-      opened = await openOnDesktop(opener, { outlivesCommand: true }, deps);
-      // Warp takes one link at a time; two in the same instant open one tab. The first link
-      // may have to start Warp itself, so the wait after it is the longer one.
-      warpLinks += 1;
-      await deps.sleep(warpLinks === 1 ? 2000 : 700);
-      if (warpLinks === 1 && !opened) {
-        console.log(
-          "  (Warp may still be starting: the next sessions may not open — run this again if some are missing.)",
-        );
-      }
-    } else {
-      const argv =
-        reopenIn === "windows-terminal"
-          ? windowsTerminalCommand(session, mainCheckout)
-          : xfceTerminalCommand(session, mainCheckout);
-      opened = argv !== null && (await openOnDesktop(argv, { outlivesCommand: false }, deps));
-    }
+    const argv =
+      reopenIn === "windows-terminal"
+        ? windowsTerminalCommand(session, mainCheckout)
+        : xfceTerminalCommand(session, mainCheckout);
+    const opened = argv !== null && (await openOnDesktop(argv, { outlivesCommand: false }, deps));
     failed ||= !opened;
     // Only what really opened is marked: a failed window has to be openable again right away.
     if (opened) markOpened(paths.stateDir, session.id, deps.now);

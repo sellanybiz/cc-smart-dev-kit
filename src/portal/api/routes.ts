@@ -21,7 +21,6 @@ import {
   guardAsksAnswer,
   historyAnswer,
   historyFilters,
-  needsAnswer,
   requestsAnswer,
   workAnswer,
   worktreesAnswer,
@@ -96,7 +95,6 @@ export const API_READS: Readonly<
   // The Tasks tab (D76): every project's work tree and task files at once.
   "/api/tasks": async (deps) => ok(await tasksAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
-  "/api/needs": async (deps) => ok(await needsAnswer(deps)),
   "/api/worktrees": async (deps) => ok(await worktreesAnswer(deps)),
   "/api/update": (deps) => ok(updateAnswer(deps)),
   "/api/jobs": async (deps) => ok(await jobsAnswerFor(deps)),
@@ -210,7 +208,7 @@ export const PROJECT_PARTS: Readonly<
 
 /**
  * The answer for one GET under `/api/`, or null when no read route lives there (the server
- * then answers the path as it always did: an action is a POST).
+ * distinguishes known POST-only actions from unknown paths).
  */
 export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer | null> {
   const path = url.pathname;

@@ -24,25 +24,13 @@ import {
   TODO_TOOLS_KEY,
 } from "../machine/claude-mem";
 import {
-  type CompanionStep,
   companionPlan,
   marketplaceAdded,
   runCompanionSteps,
-} from "../machine/companions";
-import type { Machine } from "../machine/machine";
-import {
-  clearWarpStage,
-  detectSystem,
-  detectWarpApp,
-  removeWarpDesktopEntries,
   showCommand,
-  stageWarpFiles,
-  warpDesktopEntries,
-  warpInstallCommands,
-  warpPluginRemoveSteps,
-  warpPluginSteps,
-  warpRemoveCommands,
-} from "../machine/warp";
+} from "../machine/companions";
+import { herdrPlan } from "../machine/herdr";
+import type { Machine } from "../machine/machine";
 import {
   type McpRecord,
   markMcpServerAdding,
@@ -68,6 +56,7 @@ import {
   autoModeSource,
 } from "../setup/auto-mode";
 import { AUTO_UPDATE_KEY, AUTO_UPDATE_VALUE } from "../setup/auto-update";
+import { installHerdr } from "../setup/herdr";
 import {
   type InstructionsPaths,
   installInstructions,
@@ -111,9 +100,8 @@ import {
 } from "../setup/retry-watchdog";
 import { STATUSLINE_KEY, statuslineSetting } from "../setup/statusline";
 import { applyTaskPermissions } from "../setup/task-tools";
-import { applyTmuxLine, TMUX_LINE, TMUX_NOW_COMMAND, tmuxServerRunning } from "../setup/tmux";
 import { readUserJson } from "../setup/user-json";
-import { applyUserNotifyHook, USER_NOTIFY_COMMAND } from "../setup/user-notify-hook";
+import { retireNotifications } from "../setup/user-notify-hook";
 import { atomicWrite, realTarget } from "../setup/write";
 import { TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { retiredRepoLines } from "../update/retired-repos";
@@ -133,15 +121,13 @@ import { currentTerminal } from "./ui/terminal";
 export interface SetupOptions {
   /** Show every change; write and run nothing (and reach no network). */
   dryRun: boolean;
+  /** Per-run opt-out; absent means offer the latest Herdr GUI. */
+  herdr?: boolean;
   /**
    * Write a project's auto-mode entries without asking. Only on a terminal: with no
    * terminal they are left out whatever the flags. They are still shown.
    */
   yes: boolean;
-  /** Install the Warp app (asked first, on a terminal), then its Claude plugin. */
-  warp: boolean;
-  /** Remove the Warp app, its package source and key, its shortcuts, and its plugin. */
-  removeWarp: boolean;
   /** The folder whose project's `.claude/cc-smart-dev-kit.json` gives the auto-mode entries. */
   project: string;
   machine: Machine;
@@ -252,8 +238,6 @@ interface Managed {
   tavilyKeyPlan: { kind: "keep" } | { kind: "remove" } | { kind: "write"; value: string };
   /** The Tavily key that arrived on stdin, to write to the key file first, or null. */
   tavilyKeyFile: null | string;
-  /** Add tmux's passthrough line (`tmux` is installed, so the person uses tmux). */
-  tmuxLine: boolean;
 }
 
 /**
@@ -312,8 +296,6 @@ function reportLines(section: SetupSection, texts: readonly string[]): ReportLin
 /** What `applySetup` did (or, in a dry run, would do). */
 interface Applied {
   lines: Report;
-  /** The tmux line was (or would be) added in this run. */
-  tmuxAdded: boolean;
   /** claude-mem's settings changed: its start hook and its worker read them when they start. */
   claudeMemChanged: boolean;
 }
@@ -513,27 +495,9 @@ function applySetup(
     }
   }
 
-  // Agent view (Claude Code's list of sessions) runs only the hooks in settings files, never
-  // a plugin's hooks.json, so its two notification types need this one user-level entry. The
-  // command runs the launcher, which survives a plugin update (`user-notify-hook.ts`).
-  const notifyHook = applyUserNotifyHook(paths, dryRun);
-  const notifyWhere = `${short(paths.settingsFile)}: ${formatKeyPath(["hooks", "Notification"])}`;
-  if (notifyHook.action === "left") {
-    // The person edited the managed entry: it is theirs now, and setup adds no second one.
-    add(
-      "settings",
-      "info",
-      `${notifyWhere}: a hook with this matcher was edited since setup wrote it (${USER_NOTIFY_COMMAND}); it stays, and no second one was added`,
-    );
-  } else if (notifyHook.action !== "unchanged") {
-    add(
-      "settings",
-      "changed",
-      notifyHook.action === "replaced"
-        ? `${notifyWhere}: replaced the hand-written notify hook with the managed one (${USER_NOTIFY_COMMAND})`
-        : `${notifyWhere}: ${notifyHook.action === "updated" ? "updated" : "added"} the agent-view notification hook (${USER_NOTIFY_COMMAND})`,
-    );
-  }
+  const retiredNotifications = retireNotifications(paths, dryRun);
+  for (const text of retiredNotifications.changes) add("settings", "changed", text);
+  for (const text of retiredNotifications.info) add("settings", "info", text);
 
   let claudeMemChanged = false;
   if (managed.claudeMem !== null) {
@@ -548,19 +512,6 @@ function applySetup(
     // A key that holds the wanted value already is claude-mem's own default (the plan
     // stops at any other value of the person's): nothing worth a line.
     claudeMemChanged = result.changes.length > 0;
-  }
-
-  let tmuxAdded = false;
-  if (managed.tmuxLine) {
-    const line = applyTmuxLine({ dryRun, file: paths.tmuxConfFile, stateDir: paths.stateDir });
-    if (line.outcome !== "unchanged") {
-      tmuxAdded = true;
-      add(
-        "terminal",
-        line.outcome === "created" ? "created" : "changed",
-        `${short(paths.tmuxConfFile)}: added ${TMUX_LINE}`,
-      );
-    }
   }
 
   // What an older setup left for Serena, retired: its context file (while no registration
@@ -579,81 +530,12 @@ function applySetup(
   for (const line of instructions) {
     lines.push(reportLine("instructions", `${line.mark} ${short(line.file)}: ${line.what}`));
   }
-  return { lines, tmuxAdded, claudeMemChanged };
+  return { lines, claudeMemChanged };
 }
 
 /** Whether setup printed anything while it asked: a blank line then parts the questions from the report. */
 interface Screen {
   spoke: boolean;
-}
-
-/**
- * Shows commands that change the system and asks before they run. True to run them.
- * With no terminal, or a "no", it says so (in the report), and they do not run.
- */
-function askToRun(
-  machine: Machine,
-  out: Out,
-  screen: Screen,
-  what: string,
-  commands: readonly string[][],
-  rerun: string,
-  report: Report,
-): boolean {
-  screen.spoke = true;
-  out.say(`${what}:`);
-  for (const command of commands) out.line("run", showCommand(command), { indent: 2 });
-  if (machine.confirm === null) {
-    report.push({
-      section: "terminal",
-      mark: "fail",
-      text: "Warp: no terminal, so these commands were not run.",
-      fix: `run \`${rerun}\` in a terminal`,
-    });
-    return false;
-  }
-  if (!machine.confirm("Run these commands now?")) {
-    report.push({
-      section: "terminal",
-      mark: "warn",
-      text: "Warp: these commands were not run (you said no).",
-    });
-    return false;
-  }
-  return true;
-}
-
-/**
- * Runs each command on the terminal, in order; stops at the first that fails. When one
- * fails after others ran, it says what was done, and how to undo it (`undo`).
- */
-function runOnTerminal(
-  machine: Machine,
-  commands: readonly string[][],
-  undo: string | null,
-  report: Report,
-): boolean {
-  for (const [index, command] of commands.entries()) {
-    const code = machine.runOnTerminal(command);
-    if (code === 0) continue;
-    const done = commands.slice(0, index);
-    report.push({
-      section: "terminal",
-      mark: "fail",
-      text: `${showCommand(command)} failed (exit ${code}). Nothing after it ran.`,
-      ...(done.length === 0
-        ? {}
-        : {
-            detail: [
-              "These ran before it:",
-              ...done.map((ran) => `  $ ${showCommand(ran)}`),
-              ...(undo === null ? [] : [`To undo them: ${undo}`]),
-            ],
-          }),
-    });
-    return false;
-  }
-  return true;
 }
 
 /** The auto-mode entries a run would write, and the change they make. */
@@ -882,69 +764,6 @@ function personalTodoToolsValue(paths: CliPaths): { path: KeyPath; value: unknow
   return ownership(records, path, current) === "ours" ? null : { path, value: current.value };
 }
 
-/** What `--warp`, `--remove-warp` or plain setup does about Warp. */
-interface WarpWork {
-  /** System commands, shown and asked before they run. */
-  commands: string[][];
-  /** Make the files the commands need, right before they run. */
-  stage: boolean;
-  /** `claude plugin` steps for Warp's plugin. */
-  pluginSteps: CompanionStep[];
-  removeShortcuts: boolean;
-  info: string[];
-}
-
-const NO_WARP: WarpWork = {
-  commands: [],
-  stage: false,
-  pluginSteps: [],
-  removeShortcuts: false,
-  info: [],
-};
-
-function planWarp(paths: CliPaths, options: SetupOptions): WarpWork | { error: string } {
-  // Plain setup leaves Warp alone: the app and its plugin come only with --warp.
-  if (!options.warp && !options.removeWarp) return NO_WARP;
-  const machine = options.machine;
-  const system = detectSystem(machine);
-  const app = detectWarpApp(machine, system);
-  const version = app.version === null ? "" : ` ${app.version}`;
-  if (options.removeWarp) {
-    const commands = warpRemoveCommands(machine, system, app);
-    const info: string[] = [];
-    const packageManagerRemovesIt =
-      system.kind === "apt" || system.kind === "dnf" || (system.kind === "brew" && app.viaBrew);
-    if (app.installed && !packageManagerRemovesIt) {
-      info.push(
-        machine.platform === "darwin"
-          ? "! Warp was not installed with Homebrew: move Warp.app from Applications to the Bin by hand"
-          : `! Warp${version} was not installed by a package manager cc-smart-dev-kit knows: remove it by hand`,
-      );
-    }
-    return {
-      ...NO_WARP,
-      commands,
-      pluginSteps: warpPluginRemoveSteps(paths),
-      removeShortcuts: warpDesktopEntries(paths).length > 0,
-      info,
-    };
-  }
-  if (app.installed) {
-    return {
-      ...NO_WARP,
-      pluginSteps: warpPluginSteps(paths),
-      info: [`  Warp${version} is installed already`],
-    };
-  }
-  if (system.kind === "none") return { error: system.reason };
-  return {
-    ...NO_WARP,
-    commands: warpInstallCommands(machine, system, paths),
-    stage: system.kind === "apt" || system.kind === "dnf",
-    pluginSteps: warpPluginSteps(paths),
-  };
-}
-
 /**
  * The step that puts the launcher's folder on PATH, for this person's shell: the exact line
  * and the file it goes in (UX-7), or Windows' own settings window, where `~` means nothing
@@ -1026,11 +845,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   }
 
   // Plan everything first: nothing is written, run or asked before the read-only pass.
-  const warp = planWarp(paths, options);
-  if ("error" in warp) {
-    console.error(`Cannot install Warp here: ${warp.error}`);
-    return 1;
-  }
   out.heading(
     options.dryRun
       ? `${COMMAND} ${VERSION}: what setup would change (dry run)`
@@ -1041,11 +855,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   let ok = true;
   const companions = companionPlan(paths);
   report.push(...reportLines("companions", companions.notes));
-  // Warp's plugin steps run with the companions' and print in Warp's own section.
-  const warpSteps = new Set(warp.pluginSteps);
-  const stepSection = (step: CompanionStep | undefined): SetupSection =>
-    step !== undefined && warpSteps.has(step) ? "terminal" : "companions";
-  let claudeSteps = [...companions.steps, ...warp.pluginSteps];
+  let claudeSteps = [...companions.steps];
   if (claudeSteps.length > 0 && machine.which("claude") === null) {
     // Only these steps need claude: the rest of setup still runs.
     report.push({
@@ -1064,11 +874,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const gatewayAfter = gatewayAfterStep(claudeDefaults);
   const claudeMem = await decideClaudeMem(paths, options.dryRun, report, out, gatewayAfter);
   const autoMode = planAutoMode(paths, options, report);
-  // tmux's passthrough line is for a person who uses tmux: it goes in only when tmux is
-  // installed. A running server keeps its own value until the line is applied to it, which
-  // setup never does itself: it prints the command to run.
-  const tmuxLine = machine.which("tmux") !== null;
-  const tmuxRunning = tmuxLine && tmuxServerRunning(machine.run);
   // The Tavily key: from the environment or the settings' own `env` (nothing to write), from
   // `--tavily-key-stdin` or from the key file (an owned secret key in the settings, so Claude
   // Code's "${TAVILY_API_KEY}" gets it), or missing (the server is skipped, with the plan's
@@ -1096,7 +901,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
           : { kind: "remove" },
     // A key from stdin is written to the key file first: the one home of that key.
     tavilyKeyFile: options.tavilyKeyStdin,
-    tmuxLine,
   };
 
   // The MCP servers: what setup registered last time, what Claude Code holds now, and what to
@@ -1170,7 +974,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   // A read-only pass: a key the user set (autoUpdate: true) throws ForeignKeyError here,
   // before anything is asked, written or run, the launcher and the state folder included.
   const planned = applySetup(paths, managed, true, plannedRemovals, machine.platform);
-  const tmuxNow = `tmux is running: run \`${TMUX_NOW_COMMAND}\` to apply the line now (a restart works too)`;
+  const herdr = options.herdr === false ? null : herdrPlan(paths, machine, options.env);
+  if (herdr !== null) {
+    report.push(reportLine("terminal", herdr.kind === "install" ? herdr.disclosure : herdr.note));
+  }
 
   if (options.dryRun) {
     if (
@@ -1185,15 +992,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     }
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
     report.push(
-      ...warp.commands.map(
-        (command): ReportLine => ({ section: "terminal", mark: "run", text: showCommand(command) }),
-      ),
-      ...claudeSteps.map((step) => reportLine(stepSection(step), step.line)),
-      ...reportLines("terminal", warp.removeShortcuts ? removeWarpDesktopEntries(paths, true) : []),
+      ...claudeSteps.map((step) => reportLine("companions", step.line)),
       ...reportLines("mcp", wouldRegister.wouldRun),
       ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)),
       ...planned.lines,
-      ...reportLines("terminal", warp.info),
       ...reportLines("mcp", wouldRegister.notes),
     );
     // The entries above are left out in a run with no terminal, whatever the flags: the
@@ -1201,9 +1003,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     if (autoMode !== null) {
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null) report.push(asking.note);
-    }
-    if (planned.tmuxAdded && tmuxRunning) {
-      report.push({ section: "terminal", mark: "info", text: tmuxNow });
     }
     const counts = printSections(out, report, true);
     out.blank();
@@ -1214,7 +1013,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   }
 
   // Every question before anything runs. A "no" to one leaves the others as answered;
-  // only what depends on it goes (Warp's plugin and shortcuts go with Warp's commands).
+  // only what depends on it goes.
   const screen: Screen = { spoke: false };
   const confirm = machine.confirm;
   const asking: Machine = {
@@ -1254,43 +1053,28 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
             : "task tools allow rule left out (you said no)",
       });
   }
+  let herdrAccepted = false;
+  if (herdr?.kind === "install") {
+    out.say(herdr.disclosure);
+    screen.spoke = true;
+    herdrAccepted =
+      options.yes ||
+      (asking.confirm?.("Install the latest Herdr GUI with its normal core bootstrap?") ?? false);
+    if (!herdrAccepted)
+      report.push(
+        reportLine(
+          "terminal",
+          asking.confirm === null
+            ? "Herdr left out: run setup on a terminal or pass --yes to consent."
+            : "Herdr left out (you said no).",
+        ),
+      );
+  }
   const declined = askStatusline(paths, asking, managed, options.yes);
   // `--no-retry-watchdog` is a "no": remembered, so a later plain setup leaves the keys out.
   const watchdogDeclined = options.retryWatchdog === false;
-  let warpYes = true;
-  if (warp.commands.length > 0) {
-    const what = options.removeWarp
-      ? `To remove Warp, ${COMMAND} runs these commands (sudo asks for your password)`
-      : `To install Warp from its signed source, ${COMMAND} runs these commands (sudo asks for your password)`;
-    const rerun = options.removeWarp ? `${COMMAND} setup --remove-warp` : `${COMMAND} setup --warp`;
-    warpYes = askToRun(asking, out, screen, what, warp.commands, rerun, report);
-  }
   if (screen.spoke) out.blank();
 
-  let warpDone = warpYes;
-  if (warp.commands.length > 0 && warpYes) {
-    try {
-      if (warp.stage) await stageWarpFiles(machine, detectSystem(machine), paths);
-      const undo = options.removeWarp ? null : `${COMMAND} setup --remove-warp`;
-      warpDone = runOnTerminal(machine, warp.commands, undo, report);
-    } catch (error) {
-      report.push({
-        section: "terminal",
-        mark: "fail",
-        text: `${messageOf(error)}. No Warp command was run.`,
-      });
-      warpDone = false;
-    } finally {
-      if (warp.stage) clearWarpStage(paths);
-    }
-  }
-  if (!warpDone) {
-    ok = false;
-    // Warp's plugin and shortcuts follow the app: none of them without it.
-    claudeSteps = claudeSteps.filter((step) => !warpSteps.has(step));
-  }
-
-  report.push(...reportLines("terminal", warp.info));
   if (claudeSteps.length > 0) {
     const ran = claudeSteps;
     const steps = await out.progress("Adding the companion plugins…", async () =>
@@ -1299,8 +1083,8 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     // One line per step, in the steps' order. A step's `!` line is its failure (Claude Code's
     // own words, `runCompanionSteps`), and the run exits 1 for it: a ✗, not a warning.
     report.push(
-      ...steps.lines.map((line, index): ReportLine => {
-        const read = reportLine(stepSection(ran[index]), line);
+      ...steps.lines.map((line): ReportLine => {
+        const read = reportLine("companions", line);
         return read.mark === "warn" ? { ...read, mark: "fail" } : read;
       }),
     );
@@ -1326,8 +1110,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         const mcp = applyMcpServers(mcpPlan, claudeRun, machine.which, false, (name, json) => {
           markMcpServerAdding(paths.stateDir, name, json, now);
         });
-        const shortcuts =
-          warp.removeShortcuts && warpDone ? removeWarpDesktopEntries(paths, false) : [];
         // D66: the move to the Claude defaults, planned again under the lock (a setup that held
         // it first has written its marker, and this one then does nothing), before the files
         // below: the gateway's address goes to Anthropic's own, then the other settings follow.
@@ -1351,7 +1133,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         return {
           gateway: reportLines("gateway", gateway),
           mcp,
-          files: { ...files, lines: [...reportLines("terminal", shortcuts), ...files.lines] },
+          files,
         };
       },
       { waitMs: 10_000 },
@@ -1364,6 +1146,14 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
     ...written.files.lines,
   );
   if (!written.mcp.ok) ok = false;
+
+  if (herdrAccepted) {
+    const installed = await out.progress("Installing the latest Herdr GUI…", () =>
+      installHerdr(paths, machine, options.env),
+    );
+    report.push(...reportLines("terminal", installed.lines));
+    if (!installed.ok) ok = false;
+  }
 
   const counts = printSections(out, report, false);
   // A file was written: each one has its backup (the MCP registrations are Claude Code's own).
@@ -1383,12 +1173,6 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
   const next: NextStep[] = [];
   if (!(options.env.PATH ?? "").split(delimiter).includes(paths.binDir)) {
     next.push(pathStep(paths, machine.platform, options.env));
-  }
-  if (written.files.tmuxAdded && tmuxRunning) {
-    next.push({
-      text: "Apply the tmux line to the tmux server that runs now (a restart of tmux works too):",
-      command: TMUX_NOW_COMMAND,
-    });
   }
   if (browser.next !== null) next.push(browser.next);
   if (report.some((line) => CHANGE_MARKS.has(line.mark) && RESTART_SECTIONS.has(line.section))) {

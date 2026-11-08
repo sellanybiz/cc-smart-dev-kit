@@ -21,6 +21,21 @@ function gapStep(name: string): number | null {
 }
 
 describe("the sidebar's menus", () => {
+  test("the sidebar keeps the working pages without a Needs link or badge", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <SidebarProvider>
+          <NavMain />
+        </SidebarProvider>
+      </TooltipProvider>,
+    );
+    expect(html).not.toContain('href="/needs"');
+    expect(html).not.toContain("Needs you");
+    expect(html).not.toContain('data-sidebar="menu-badge"');
+    for (const path of ["/work", "/flow", "/guards", "/machine", "/settings"]) {
+      expect(html).toContain(`href="${path}"`);
+    }
+  });
   // UI1: with no gap, a hovered item's background met the active item's, and the 2px focus
   // outline, drawn outside the item, covered the next item. One step (4px) clears the outline.
   test("every menu leaves room between its items, so a hovered item never meets the next", () => {

@@ -81,8 +81,6 @@ describe("workflow show", () => {
       "issues.foundLabel = kit:found (default)",
       "issues.fixedLabel = fixed-unreleased (default)",
       "issues.readyLabel = kit:ready (default)",
-      "alerts.events = needs-you, question, finished, failed (default)",
-      "alerts.sound = false (default)",
       "alerts.usagePercent = 85 (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
@@ -110,7 +108,7 @@ describe("workflow show", () => {
     const run = context(repo, env);
     expect(await runWorkflow([], run.context)).toBe(0);
     expect(run.lines).toContain("openPr = draft (project)");
-    expect(run.lines).toContain("alerts.sound = true (personal)");
+    expect(run.lines.join("\n")).not.toContain("alerts.sound");
     expect(run.lines).toContain("autoMerge = true (project)");
     expect(run.lines).toContain("switches.sessionNames = true (project)");
     expect(run.lines).toContain("switches.jobRoute = true (project)");
@@ -184,11 +182,13 @@ describe("workflow set and unset", () => {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, `{\n    "autoCommit": true\n}\n`);
     const run = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "alerts.sound", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "alerts.usagePercent", "70"], run.context)).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(
-      `{\n    "autoCommit": true,\n    "alerts": {\n        "sound": true\n    }\n}\n`,
+      `{\n    "autoCommit": true,\n    "alerts": {\n        "usagePercent": 70\n    }\n}\n`,
     );
-    expect(run.lines).toEqual(["~ ~/.config/cc-smart-dev-kit/workflow.json: alerts.sound = true"]);
+    expect(run.lines).toEqual([
+      "~ ~/.config/cc-smart-dev-kit/workflow.json: alerts.usagePercent = 70",
+    ]);
   });
 
   test("the same value again writes nothing", async () => {
@@ -207,24 +207,25 @@ describe("workflow set and unset", () => {
   test("unset takes the value out, and the default holds again", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    await runWorkflow(["set", "alerts.events", "finished"], run.context);
+    await runWorkflow(["set", "alerts.usagePercent", "70"], run.context);
     const off = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["unset", "alerts.events"], off.context)).toBe(0);
-    expect(off.lines).toEqual(["- ~/.config/cc-smart-dev-kit/workflow.json: alerts.events unset"]);
+    expect(await runWorkflow(["unset", "alerts.usagePercent"], off.context)).toBe(0);
+    expect(off.lines).toEqual([
+      "- ~/.config/cc-smart-dev-kit/workflow.json: alerts.usagePercent unset",
+    ]);
     const shown = context(tempDir("not-git"), env);
     await runWorkflow(["show"], shown.context);
-    expect(shown.lines).toContain(
-      "alerts.events = needs-you, question, finished, failed (default)",
-    );
+    expect(shown.lines).toContain("alerts.usagePercent = 85 (default)");
   });
 
-  test("a list of events is read from one quoted word", async () => {
+  test("retired notification settings are refused without creating a file", async () => {
     const env = hookEnv();
-    const run = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "alerts.events", "needs-you,finished"], run.context)).toBe(0);
-    expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
-      '{\n  "alerts": {\n    "events": ["needs-you", "finished"]\n  }\n}\n',
-    );
+    for (const key of ["alerts.events", "alerts.sound"]) {
+      const run = context(tempDir("not-git"), env);
+      expect(await runWorkflow(["set", key, "true"], run.context)).toBe(2);
+      expect(run.errors[0]).toContain("Unknown setting");
+    }
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
   });
 
   test("--project writes the project's file, keeping its other fields and its indentation", async () => {
@@ -545,7 +546,7 @@ describe("workflow set and unset", () => {
   test("set with two values, and set with none: exit 2", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "alerts.events", "finished", "failed"], run.context)).toBe(2);
+    expect(await runWorkflow(["set", "alerts.usagePercent", "70", "failed"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("set needs one value");
     const none = context(tempDir("not-git"), env);
     expect(await runWorkflow(["set", "autoCommit"], none.context)).toBe(2);
@@ -905,7 +906,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.events, alerts.sound, alerts.usagePercent, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);

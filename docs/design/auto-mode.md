@@ -33,5 +33,5 @@ plugin only copies it.
   `cc-smart-dev-kit.json`, git older than 2.31, a worktree whose main checkout is gone) leaves
   the entries out with a note; the launcher, the auto-update key and the companions still
   happen. Outside git, setup needs no git.
-- **Every question first.** The auto-mode question and Warp's commands are asked before
+- **Every question first.** The auto-mode and Herdr questions are asked before
   anything runs or is written. A "no" drops only what depends on it.

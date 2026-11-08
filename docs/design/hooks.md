@@ -75,14 +75,14 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, user-away) | Any other plugin hook | `hook notify` |
-|---|---|---|---|
-| Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 | one stderr line, exit 0 |
-| The input is not JSON | **ask**, in general | one stderr line, exit 0 | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | **ask** (`agent-guard`, `message-guard`, `session-escape-guard`, `job-route`'s judge and `user-away` judge the call anyway) | one line of context or stderr (`keep-going`, `builder-finish`, `agent-usage`, `fable-session`, `tier-view` and `task-start` judge anyway) | not read |
-| No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 | the launcher's line, exit 1 (Claude Code goes on) |
-| The bundle file is gone | the shim **asks** | bun's error, exit 1 | not applicable |
-| Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on | Claude Code goes on |
+| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, user-away) | Any other plugin hook |
+|---|---|---|
+| Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 |
+| The input is not JSON | **ask**, in general | one stderr line, exit 0 |
+| `cc-smart-dev-kit.json` broken or too new | **ask** (`agent-guard`, `message-guard`, `session-escape-guard`, `job-route`'s judge and `user-away` judge the call anyway) | one line of context or stderr (`keep-going`, `builder-finish`, `agent-usage`, `fable-session`, `tier-view` and `task-start` judge anyway) |
+| No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 |
+| The bundle file is gone | the shim **asks** | bun's error, exit 1 |
+| Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on |
 
 The command `plugin/bin/cc-smart-dev-kit` runs through the same shim with `--missing=fail`: no
 bun is one stderr line and exit 1, because a command must never report success when it did not run.
@@ -213,7 +213,7 @@ that, so the plugin ships no worktree hook at all.
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, the message to send **the person's other sessions in this repo** when it went into `worktrees.base`, and it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). The message says what to do after the merge: never commit unfinished work for it, run the project's install if a lock file changed, run the tests it touched. A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. A stop records only for a run that was a review from start to end: the brief (the transcript's first user entry) and every prompt given after it each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). Tool results and Claude Code's own skill-load and system-reminder entries (a reminder must end at its closing tag) are no prompt; any other later entry is — a resume, a message from the session that started the agent (a `user` entry, or a `queued_command` attachment with a `prompt` and an `origin`), a task notification, Stop hook feedback. The whole transcript is read, up to 16 MB. A consult, a resumed consult, a review a Stop hook sent back, a review that compacted (the summary is a prompt), and a missing, unreadable or larger transcript record nothing. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
-| `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit counts only for a file inside the session's current checkout, after resolving symlinks (new code files count too). Relative paths use the edit record's own `cwd`, not the Stop folder. Missing or unusable paths, and relative paths without a known edit folder, count as changes: only a known path can prove an exclusion. Markdown (`.md`, `.mdx`), the repo's `.claude/plans/`, and Claude Code's `plansDirectory` (default `<Claude config>/plans`, with user, project and project-local settings read in that order) do not count. An edit whose result was an error or a refusal changed nothing. A shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. `notify` asks its decision (`verifyGateWouldBlockAt`), and `keep-going`'s (`keepGoingWouldBlockAt`), so the "finished" alert waits for the stop that really ends the turn. |
+| `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit counts only for a file inside the session's current checkout, after resolving symlinks (new code files count too). Relative paths use the edit record's own `cwd`, not the Stop folder. Missing or unusable paths, and relative paths without a known edit folder, count as changes: only a known path can prove an exclusion. Markdown (`.md`, `.mdx`), the repo's `.claude/plans/`, and Claude Code's `plansDirectory` (default `<Claude config>/plans`, with user, project and project-local settings read in that order) do not count. An edit whose result was an error or a refusal changed nothing. A shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. |
 | `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder` or `rules-maintainer`, the two agents the build skill gives a phase) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
 | `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once per stalled state** when a phase of a plan this Claude process works on is `in_progress`, no background work runs and the last answer has no `Waiting for:` line. The same reason already given, with no subagent started or resumed since, keeps it silent. The reason names the builder to resume with `SendMessage` (or the phase needing a fresh builder), the next ready phase, and how to close or record a blocker, and warns against moving a phase back to pending to end the turn. An unreadable transcript keeps the decision; an unreadable task store blocks nothing. § The keep-going guard. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
@@ -232,9 +232,7 @@ project file at all. So a project that never opted in sees only Claude Code's ow
 and the limits a session may not get around. `job-route` and `session-escape-guard` are also
 `alwaysOn`: `ownHooks` cannot switch them off, because they limit what the session itself may
 do. `user-away` is the third `alwaysOn` hook, for another reason: the switch is the person's
-(§ While the person is away). The machine-wide `notify` hook needs no project file and acts
-without one; the `workflow.alerts` settings are the one thing it reads from a project that has
-them (§ The notifier).
+(§ While the person is away). The former notification hooks are retired (§ The notifier).
 
 ### The Agent guard
 
@@ -278,16 +276,14 @@ run on:
    while the machine is off, and `launch --settings` are each judged as the session runs. No
    URL or Anthropic's own address is off; `…/p/<name>` reads that profile's chains
    (`profileView`), and a name the config lacks reads as plain Claude (`plainClaudeView`), as
-   the router answers it. The StopFailure alert reads the same facts, but only to say a plain
-   fact about the slot that answers the session (a session off the gateway gets the plain line,
-   and no alert offers a command: `docs/gateway.md` § The alert);
+   the router answers it;
 2. a full Claude id goes through its family's slot the same way; a slot key or
    `<backend>:<model>` is resolved as itself (a slot's first target answers); **any other name** (`best`, `opusplan`,
    `default`, `inherit`, a name no rule knows) is resolved the strictest way — the rule for a
    Claude id with no family to read — because only what the guard can prove affordable is
    affordable;
 3. a `fork` always inherits: its model is the session's own, read from the tail of the hook
-   input's `transcript_path` (`lastClaudeModel`, shared with the StopFailure alert; a
+   input's `transcript_path` (`lastClaudeModel`; a
    sidechain line is a subagent's, not the session's), else from `ANTHROPIC_MODEL`; an
    unknown one counts as Claude Opus.
 
@@ -627,9 +623,7 @@ cc-smart-dev-kit.json and runs in a project with none; a project that runs its o
 live session record and so no Claude process to hold a claim), and on any read of the task
 store it cannot make; an unreadable transcript only keeps the decision (item 5).
 A store it cannot read and a broken or too new project file are one stderr line; a crash is the
-frame's one line. `keepGoingWouldBlockAt` gives the same decision to a sibling Stop hook, the
-way `verifyGateWouldBlockAt` does, so the notifier can wait for the stop that really ends the
-turn.
+frame's one line.
 
 ### A builder's hand-back
 
@@ -877,8 +871,8 @@ where there was a question, or a note, never an allow.
   line to park what needs the person (`user park`) and go on, or end the turn if nothing is
   left. **The decision reads nothing written during a Stop** (`awayStopBlock`,
   `src/hooks/user-away-stop.ts`, one home), because Claude Code runs an event's hooks in
-  parallel and `notify` asks the same decision. **Never on a stop a Stop hook continued**
-  (`stop_hook_active`, an input field both read the same way): a belt against a loop, so even if
+  parallel. **Never on a stop a Stop hook continued**
+  (`stop_hook_active`, an input field): a belt against a loop, so even if
   Claude Code stored the feedback in another shape, a session is blocked at most once per chain
   of continued stops, never up to Claude Code's cap of 9; the cost is that a stop another hook
   continued does not carry the note, and the next stop no hook continued does. Otherwise it
@@ -917,13 +911,6 @@ where there was a question, or a note, never an allow.
   `user unavailable` would mark its lead as told; the skill is the lead's, and no brief asks a
   subagent to run it.
 
-  **The notifier's "finished" alert asks the same decision** (`awayStopWouldBlock`, read only),
-  beside `verify-gate`'s and `keep-going`'s, so it waits for the stop that really ends the turn,
-  whichever hook runs first. **The accepted trade:** when `user-away` fails to block a stop the
-  decision says it blocks (it crashes, runs past its timeout, or no bun runs it), the turn
-  ends there and the notifier skips that one "finished" alert. A state file the notifier cannot
-  read is no block, and the alert goes out.
-
 **Machine-wide and `alwaysOn`.** The person is one for the whole machine, so the hook reads the
 state file and never the project's: a broken or too new `cc-smart-dev-kit.json`, and a folder
 outside git, are judged the same way. `ownHooks` cannot switch it off — the switch is the
@@ -936,10 +923,6 @@ line on stderr and the session goes on.
 what it would have been without this feature: the question or the ask goes to the person as it
 always did.
 
-**The notifier stays quiet for a denied question.** `notify` raises "Claude asks you" on
-`AskUserQuestion` and `ExitPlanMode`; while the person is away those calls are denied and nothing
-waits for them, so it raises no alert (a state it cannot read keeps the alert).
-
 **What it cannot reach.** A project's own copy of a guard (`ownHooks`) answers in Claude Code
 directly: only the prompt Claude Code then raises is caught, by the `PermissionRequest` answer.
 **An MCP server's elicitation dialog** (a server asking the person for input mid-call) is
@@ -947,7 +930,7 @@ reached by neither event: Claude Code has its own `Elicitation` hook event for i
 `PermissionRequest` (read from the 2.1.310 binary: "Fired when an MCP server requests user input.
 Hooks can auto-respond (accept/decline) instead of showing the dialog" — read only, not proved
 live), and `user-away` wires neither. While the person is away, such a dialog waits for them like
-any other; the notifier still raises its alert. **A call two guards judge differently** (one
+any other. **A call two guards judge differently** (one
 denies, one asks — a `workflow review-done` `session-escape-guard` denies, with a force-push
 `git-guard` asks about, in one line) is parked by the asking guard's own process, which cannot see the other's deny: the
 list may hold a line a guard refuses. A yes to it runs the line again, through the same
@@ -1122,159 +1105,21 @@ gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and t
 
 ### The notifier
 
-`notify` is a `USER_HOOKS` bundle: it never enters the frame, because it is about the machine
-(`src/hooks/notify.ts`, its header is the full contract). Its own opt-in needs no
-`cc-smart-dev-kit.json`; the one thing it reads from a project's file is the `workflow.alerts`
-settings, when a project has them (§ The workflow › The alert settings).
+Custom kit notifications are retired. The `notify` and `stop-failure` hooks, the
+`hook notify` command, the alert worker and all custom desktop and terminal sends are gone.
+The updater records its result without a notification. Claude Code and other plugins keep
+their own notification behaviour.
 
-**Which events, one alert each** (`plugin/hooks/hooks.json`): `Notification` (a session's own
-"needs you" types, `worker_permission_prompt` included — `PLUGIN_NOTIFY_TYPES`; the idle
-wait is left out — the `Stop` alert
-already announced that turn); `Stop` (the turn's last answer as the body, from the
-transcript's tail, 300 ms after the event because Claude Code writes it just then);
-`PreToolUse` on `AskUserQuestion|ExitPlanMode` (Claude Code raises no Notification at the
-moment Claude asks, so this covers it); `PostToolUse`, `PostToolUseFailure` on the same two
-tools and `UserPromptSubmit` (that wait is over: the mark goes, nothing is shown); and
-`StopFailure` (the turn died). A `rate_limit` stop belongs to the `stop-failure` hook only
-where that hook will show its alert — a desktop to show it on, the gateway set up, and a
-plan limit (`stopFailureWillAlert`) — so one stop never gives two alerts; where it has no
-alert to give (no desktop, no gateway, a short rate limit, which is no plan limit), the
-notifier announces the stopped turn on its own routes.
+Setup's retirement helper (`src/setup/user-notify-hook.ts`) removes only the exact recorded
+`Notification` entry while it still matches the retired entry, and the exact recorded
+`set -g allow-passthrough all` line through the managed writers. Edited or unowned entries
+stay with a manual-cleanup message; unreadable records leave the affected file unchanged.
+It installs no replacement hook, restores no old `dist/notify.js` command and changes no
+running tmux server. `--dry-run` writes nothing.
 
-**Agent view and background sessions.** Claude Code raises `Notification` hooks in the
-list's own process while `claude agents` is open: `agent_needs_input` while a session waits,
-and `agent_completed` with "<label> finished" or "<label> failed". **That process runs only
-the hooks in settings files, never a plugin's `hooks.json`** (proved live on 2.1.302,
-`docs/claude-code-contract.md`), so `cc-smart-dev-kit setup` manages one user-level entry in
-`~/.claude/settings.json` (`src/setup/user-notify-hook.ts`): matcher
-`agent_needs_input|agent_completed`, the command
-`"$HOME/.local/bin/cc-smart-dev-kit" hook notify`, timeout 10. It runs the same function the
-bundle's entry runs (`src/hooks/notify-entry.ts`) through the launcher, so a plugin update
-that deletes the old version folder cannot break it. The plugin's `hooks.json` leaves these
-two types out (`NOTIFY_MATCHER`), so a normal session never runs the alert twice. The entry's
-record is `owned-hooks.json`, never a `changed.json` kind: an older running cc-smart-dev-kit
-(a portal copy, a session that has not restarted) refuses a changed.json kind it does not
-know. An entry the person edited (another timeout, a redirection) is theirs — setup leaves
-it, claims nothing and adds no second one, and `doctor` shows it as information, never a
-failure. A hand-written entry setup replaced (it ran the plugin's own `dist/notify.js`, from a
-version folder) does not come back on restore: the managed entry goes, and the file's backup
-has the old one. A background update never runs setup, so when the entry is missing its
-notification says `cc-smart-dev-kit setup` writes it (`NOTIFY_HOOK_SETUP_HINT`). The hook input is the
-list's session and folder, so those alerts carry no session name (`titled(kind, null)`), and
-the per-session question mark says nothing about them. `agent_needs_input` also comes from a
-session's own process (a teammate's setup question, auto mode's classifier notice), and the
-input carries no sign of which: both get the agent-view handling, so that one alert loses its
-`· <session>` and its mark — a cost taken knowingly, since guessing from the message's words
-would be wrong for one of them. On a Linux desktop the one-alert-per-session key adds the
-session the message names (`agentViewKey`): one background session's alert never closes
-another's. The list never writes a hook's `terminalSequence` out, so these types take the
-devices first (`device-then-field`), and the field only when no device is found. A background session has
-`CLAUDE_JOB_DIR` set (Claude Code's environment-variables page) and inherits the daemon's
-`DISPLAY` and terminal variables, so an alert of its own would go to the wrong place: the
-notifier and the usage-limit alert stay silent there, and agent view is the one place its
-alerts come from while the list is open (`background-session.ts`). The owner accepted the
-trade-off (2026-10-18): with no list open, a background session does not alert. The alert's
-moment is its own field (`Alert.moment`), set with its words in `alertFor`: the
-finished/failed split of `agent_completed` is what `alerts.events` filters on, like every
-other moment.
-
-**The waits that stay quiet**, all from the team's older notification script, which this
-replaces: the permission prompt about six seconds after a question (the same wait — a mark
-file per session, `/run/user/<uid>/cc-smart-dev-kit-notify-asked-<session>`, holds until anything
-ends it, and only for ten minutes so a wait that ended unrecorded never hides a later alert);
-a turn another session started (`startedByPeer`: `turnOrigin: "peer"` without a
-`senderTaskId`, a human prompt into the turn or a helper agent's launch alerting as before);
-the same error twice in a row (a per-session file remembers the last error, cleared by a turn
-that ends well); a stop `verify-gate`, `keep-going` or `user-away` will block (the turn goes on, so the
-finished alert waits for the stop that ends it — a per-session file remembers the alert already
-shown for the turn, cleared at the next prompt). One alert per
-session per event, never two.
-
-**The routes**, chosen per alert: **the desktop** — `notify-send` on Linux, and only with a
-desktop (`DISPLAY` or `WAYLAND_DISPLAY`: a session over SSH with no desktop has no bus to
-show anything on), `osascript` on
-macOS, a PowerShell toast on Windows (`src/hooks/windows-toast.ts`, `docs/windows-notify.md`),
-plus the freedesktop sound through `paplay`; **the SSH terminal** — with no desktop
-route and `SSH_CONNECTION` or `SSH_TTY` set, the same title and body as OSC 777
-(`ESC ] 777 ; notify ; <title> ; <body> BEL`), sanitised with `oneLine` (controls gone, one
-line, capped) and sent through the hook's `terminalSequence` output field (Claude Code 2.1.141
-and later writes it to the session's terminal itself, and wraps it for tmux — a wrapped
-sequence in the field is rejected, so the field carries the bare one), or straight to
-`/dev/tty` (wrapped for tmux by `tmuxPassthrough` when `TMUX` is set) for a Claude Code
-without that field; **Warp at the far end** — `farEndIsWarp` sends that SSH alert in Warp's
-own agent format instead: OSC 777 with `warp://cli-agent` and one JSON object (`v`, `agent`,
-`event`, `session_id`, `cwd`, `project`, then `response` for a stop or `summary` for a wait;
-`error_type` only when the input names a real StopFailure reason, because Warp shows it as a
-prefix of the text). Warp shows its popup while the person is in front, and a desktop
-notification with a sound while they are not, and it decides the sound itself: no extra BEL.
-Proved live 2026-10-18 on a Windows PC reached over SSH from a pane without Warp's shell
-integration; the plain OSC 777 gave a silent Windows notification there. The far end counts
-as Warp when `isWarpTerminal` says so, when `LC_TERMINAL=WarpTerminal` arrives (the client's
-`SetEnv`, through sshd's usual `AcceptEnv LANG LC_*`), or when the person set `sshWarp`; a
-named terminal in `TERM_PROGRAM` (VS Code's `vscode`) says it is not Warp, while tmux's own
-`tmux` says nothing about the far end. One function maps the event (`warpEventOf`): finished
-→ `stop`, failed → `stop_failure`, and every wait and question — a permission prompt, agent
-view's `agent_needs_input`, a question — → `permission_request`.
-`agent_needs_input` is never sent: Warp showed only a tab badge for it and no popup, while
-`permission_request` showed the popup (proved live on Windows Warp, 2026-10-19);
-**the session's own device** — for an event whose answer Claude Code does
-not read at all (`StopFailure`), for agent view's own alerts (the list reads the field but
-never writes it out: only a session's conversation view sets up that writer, 2.1.302, so the
-list's own pty is the route there), and for a Claude Code too old for the field, where `/dev/tty`
-is tried first and a hook on 2.1.301 has no controlling terminal at all (ENXIO): the pty
-Claude Code is attached to, found from its pid (`CLAUDE_PID`, then the hook's parent:
-`/proc/<pid>/fd/0`, then 1 and 2), written to only when this user owns it, and wrapped for
-tmux like `/dev/tty` (proved live 2026-10-16: the alert arrived in the terminal beyond tmux,
-exactly once; `src/hooks/terminal.ts`, `docs/claude-code-contract.md`); **nothing** — no desktop route, not over SSH, or **inside Warp** with
-Warp's own plugin on (`TERM_PROGRAM=WarpTerminal`, or the `WARP_*` pair a background session
-keeps), whose hooks already show a finished turn, a question, a permission prompt and an
-error. In Warp ours plays only the sound, and shows a question (`elicitation_*`), a waiting
-agent or agent view's finished/failed alert itself (Warp's plugin has no `agent_completed`):
-those may sit in a tab the person is not looking at (owner). A
-session that is none of those — no desktop, no SSH, no Warp — gets nothing, and that is not a
-failure: an alert on every turn would be noise.
-
-**The Linux desktop gives the alert more, where its tools are there**
-(`src/hooks/desktop-alert.ts`): a click raises the session's terminal window, the alert
-leaves the screen for the notification centre after a minute (`ALERT_SCREEN_MS`), only one
-alert per session is on screen at a time, and XFCE's Do Not Disturb keeps an ordinary
-alert's sound off (an urgent one sounds anyway, as XFCE shows those under Do Not Disturb
-too). These are the desktop behaviours of the older notification script this replaces,
-ported so a machine that moves to the plugin loses nothing.
-
-Everything that waits runs in a detached worker — the notifier's `alert-worker`, through the
-launcher, never in the hook (the usage-limit alert has no button and starts no worker: it says
-which limit was hit and, when that limit holds the session, when it resets — a limit that does
-not hold it gets no reset date, `docs/gateway.md` — and offers nothing) — and each extra runs only where its
-tool is on PATH: `xdotool` to raise a window (the terminal's `WINDOWID`, or a VS Code or
-Warp window found by its class and title); `gdbus`, the notification server itself, for the
-notification's id — the minute and the one-per-session rule need it, and `notify-send`
-never says which id it got — or a `notify-send` whose `--help` lists `--action` and
-`--wait`, where the server has actions; `xfconf-query` for XFCE's Do Not Disturb setting.
-Without them the hook keeps today's plain `notify-send`, and `doctor` names a missing tool
-as information. One thing the older script did is **not** ported: picking the session's tab
-inside XFCE Terminal (its accessibility service, AT-SPI, reached through Python bindings
-this plugin does not carry) — the window is raised, and the tab stays where it is. macOS,
-Windows and the SSH terminal are unchanged.
-
-**The title** is `<kind> · <session>`: the session's newest `customTitle` from the
-transcript's tail (`cleanSessionName`), else the folder of the hook's `cwd`; agent view's
-alerts carry no session name, because their input is the list's. **The settings**
-are `~/.claude/cc-smart-dev-kit/notify.json`: `desktopSound` (default on), `sshBell` (default off,
-one BEL after an SSH alert) and `sshWarp` (default off: the fallback that says the far end of
-an SSH session is Warp). The notifier starts detached, so a slow one never holds the
-hook. `setup` does not touch anyone's own notification hooks: a person with those removes
-them by hand when they switch to this one.
-
-**tmux** (`src/setup/tmux.ts`): a sequence written inside a pane is parsed by tmux and
-dropped, so it reaches the outer terminal only inside tmux's passthrough wrapper, and only
-while `allow-passthrough` allows it. `cc-smart-dev-kit setup` adds one managed line (`set -g
-allow-passthrough all`) to `~/.tmux.conf` when tmux is installed — `all`, so an alert from a
-window the person is not looking at arrives too (owner) — prints `tmux set -g
-allow-passthrough all` when a server is running (it never changes a running server itself),
-and `restore` takes the line out through the same `file-line` record (`managed-line.ts`) that
-keeps every line the person wrote. `doctor` reports, as information, a missing line and a
-running server that does not pass alerts through.
+`workflow.alerts.events` and `workflow.alerts.sound` are accepted on load and ignored,
+preserved on unrelated writes, and no longer shown or writable settings. The status line
+still reads `alerts.usagePercent` and shows usage, limits and reset information.
 
 ### The Bash judge and the job route
 
@@ -1402,13 +1247,7 @@ plugin registers:** the Serena root record (Serena's edits in the main-folder gu
 removes a worktree after the session lets go of it — the plugin removes one when its session
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
 folder before it deletes it, so a program still using it makes the removal fail and touch
-nothing (`docs/windows-setup.md`);
-and, from the older notification script, the tab pick inside XFCE Terminal (AT-SPI reached
-through Python bindings, which this plugin does not carry — the window raise itself came
-over, § The notifier). The alerts, the waits they skip, the titles, the sounds, the click
-that raises the window, the minute on screen, the one-alert-per-session rule and the XFCE
-Do-Not-Disturb check are the same as that script's — they are the `notify` hook's contract
-(§ The notifier, `src/hooks/desktop-alert.ts`).
+nothing (`docs/windows-setup.md`). Custom notification behaviour is retired (§ The notifier).
 
 ### `doctor --live`
 

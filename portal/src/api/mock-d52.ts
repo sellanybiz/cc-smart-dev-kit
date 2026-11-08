@@ -7,8 +7,6 @@ import type {
   GuardQuery,
   HeldMajor,
   JobsData,
-  NeedsData,
-  OpenBreaker,
   UpdateData,
   WorktreesData,
 } from "./types";
@@ -25,91 +23,6 @@ export function heldMajor(now: number): HeldMajor {
     notes: [
       "The gateway reads one config per project: a project without one keeps the machine's.",
       "`workflow.json` moves into the project's own file; `migrate` moves it for you.",
-    ],
-  };
-}
-
-export function needsData(
-  now: number,
-  empty: boolean,
-  breaker: OpenBreaker | undefined,
-): NeedsData {
-  if (empty) return { items: [], note: null };
-  return {
-    note: null,
-    items: [
-      {
-        kind: "permission",
-        id: "p-a1f04c2e",
-        since: iso(now - 4 * MINUTE),
-        asker: "git-guard",
-        session: "a1f04c2e-session",
-        project: "my-app",
-        tool: "Bash",
-        detail: "git push origin feature/b6b-live-stream: the git guard asks before a push",
-      },
-      {
-        kind: "permission",
-        id: "p-own-session",
-        since: iso(now - 14 * MINUTE),
-        asker: "claude",
-        session: "5c0e7d21-90ab-4cde-8f12-3456789abcde",
-        project: "docs-site",
-        // One of the person's own sessions: it runs in a terminal, so there is nothing to attach.
-        tool: "Write",
-        detail: "a write outside the project",
-      },
-      ...(breaker === undefined
-        ? []
-        : [
-            {
-              kind: "breaker" as const,
-              id: "b-fable",
-              since: iso(breaker.since),
-              slot: "cc-smart-dev-kit-fable",
-              breaker,
-              command: "cc-smart-dev-kit gateway slot fable claude",
-            },
-            {
-              kind: "breaker" as const,
-              id: "b-scout",
-              since: iso(now - 50 * MINUTE),
-              slot: "cc-smart-dev-kit-scout",
-              breaker: {
-                held: 12,
-                // The router did not answer: how many wait right now is not known.
-                heldNow: null,
-                since: now - 50 * MINUTE,
-                targets: [
-                  { status: 503, target: "omniroute:qwen-4-coder", until: now + 4 * MINUTE },
-                ],
-              },
-              command: "cc-smart-dev-kit gateway slot scout claude",
-            },
-          ]),
-      {
-        kind: "doctor",
-        id: "d-mcp-tavily",
-        since: iso(now - 2 * HOUR),
-        section: "mcp",
-        text: "tavily-websearch is not registered",
-        fix: "cc-smart-dev-kit setup",
-      },
-      {
-        kind: "doctor",
-        id: "d-browser-token",
-        since: iso(now - 2 * HOUR),
-        section: "browser",
-        text: "The browser extension's token is not set",
-        fix: null,
-      },
-      {
-        kind: "update",
-        id: "u-2.0.0",
-        since: iso(now - 26 * HOUR),
-        held: heldMajor(now),
-        installed: "1.1.0",
-      },
     ],
   };
 }

@@ -18,6 +18,74 @@ import { statuslineDeclinedFile } from "./setup";
 
 capturePrinted();
 
+describe("Herdr manual setup offer", () => {
+  test("default consent precedes writes; installation repeats preserve the GUI and never launch", async () => {
+    const w = world({
+      answer: (question) => {
+        if (question.includes("Herdr"))
+          expect(existsSync(join(w.paths.binDir, "cc-smart-dev-kit"))).toBe(false);
+        return true;
+      },
+    });
+    let fetched = 0;
+    let installed = false;
+    w.machine.fetchText = async () => {
+      fetched++;
+      expect(w.questions.some((q) => q.includes("Herdr"))).toBe(true);
+      return "fake data";
+    };
+    const run = w.machine.run;
+    w.machine.run = (argv, options) => {
+      if (argv[0]?.endsWith("/sh")) {
+        installed = true;
+        return { exitCode: 0, output: "fake" };
+      }
+      return run(argv, options);
+    };
+    w.machine.exists = (path) =>
+      installed && (path.endsWith("herdr-app") || path.endsWith("herdr-core"));
+    expect(await w.setup({ env: { DISPLAY: ":1" } })).toBe(0);
+    expect(fetched).toBe(1);
+    expect(printed.join("\n")).toContain("Herdr GUI installed; herdr-core is present");
+    expect(await w.setup({ env: { DISPLAY: ":1" } })).toBe(0);
+    expect(fetched).toBe(1);
+    expect(w.detached).toEqual([]);
+  });
+
+  test("opt-out, decline, dry-run and no terminal without yes never fetch", async () => {
+    for (const scenario of ["opt-out", "decline", "dry-run", "no-terminal"] as const) {
+      const w = world({ answer: scenario === "no-terminal" ? null : false });
+      w.machine.fetchText = async () => {
+        throw new Error("must not fetch");
+      };
+      expect(
+        await w.setup({
+          env: { DISPLAY: ":1" },
+          herdr: scenario !== "opt-out",
+          dryRun: scenario === "dry-run",
+        }),
+      ).toBe(0);
+      expect(w.detached).toEqual([]);
+      if (scenario === "opt-out" || scenario === "dry-run")
+        expect(w.questions.some((q) => q.includes("Herdr"))).toBe(false);
+    }
+  });
+
+  test("noninteractive yes consents, but installer failure leaves unrelated setup complete", async () => {
+    const w = world({ answer: null });
+    let fetched = 0;
+    w.machine.fetchText = async () => {
+      fetched++;
+      throw new Error("offline");
+    };
+    expect(await w.setup({ env: { DISPLAY: ":1" }, yes: true })).toBe(1);
+    expect(fetched).toBe(1);
+    expect(existsSync(join(w.paths.binDir, "cc-smart-dev-kit"))).toBe(true);
+    expect(printed.join("\n")).toContain("Herdr installation incomplete: offline");
+    expect(w.detached).toEqual([]);
+  });
+});
+
 const RULE = "In my-app: never touch the production database.";
 const QUESTION = "Write these auto-mode entries?";
 
@@ -117,60 +185,6 @@ describe("setup on a terminal: the auto-mode entries", () => {
   });
 });
 
-describe("setup and tmux: the one managed line", () => {
-  test("tmux installed: the line goes into ~/.tmux.conf, the person's own lines kept, and a running server gets the command printed", async () => {
-    const repo = project({ autoMode: [RULE] });
-    const w = world({ bins: { tmux: "exit 0" }, git: true });
-    writeFileSync(w.paths.tmuxConfFile, "set -g mouse on\n");
-    expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(printed).toContain("  ~ ~/.tmux.conf: added set -g allow-passthrough all");
-    expect(printed.join("\n")).toContain(
-      "Apply the tmux line to the tmux server that runs now (a restart of tmux works too):\n       tmux set -g allow-passthrough all\n",
-    );
-    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe(
-      "set -g mouse on\nset -g allow-passthrough all\n",
-    );
-    // A second run changes nothing, and says so.
-    printed.length = 0;
-    expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(changeLines()).toEqual([]);
-    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
-    expect(printed.join("\n")).not.toContain("tmux.conf");
-    // restore takes exactly that line out and keeps the person's own.
-    restore(w.paths.stateDir);
-    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe("set -g mouse on\n");
-  });
-
-  test("no tmux: nothing is written, and nothing is said about it", async () => {
-    const repo = project({ autoMode: [RULE] });
-    const w = world({ git: true });
-    expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(printed.join("\n")).not.toContain("tmux");
-    expect(existsSync(w.paths.tmuxConfFile)).toBe(false);
-  });
-
-  test("a line the person already wrote themselves is left alone: setup claims nothing, and restore keeps it", async () => {
-    const repo = project({ autoMode: [RULE] });
-    const w = world({ bins: { tmux: "exit 1" }, git: true }); // no server running
-    writeFileSync(w.paths.tmuxConfFile, "set -g allow-passthrough all\n");
-    expect(await w.setup({ project: repo, yes: true })).toBe(0);
-    expect(printed.join("\n")).not.toContain("tmux is running");
-    restore(w.paths.stateDir);
-    expect(readFileSync(w.paths.tmuxConfFile, "utf8")).toBe("set -g allow-passthrough all\n");
-  });
-
-  test("a dry run reports the line and the running server, and writes nothing", async () => {
-    const repo = project({ autoMode: [RULE] });
-    const w = world({ bins: { tmux: "exit 0" }, git: true });
-    expect(await w.setup({ project: repo, dryRun: true })).toBe(0);
-    expect(printed).toContain("  + ~/.tmux.conf: added set -g allow-passthrough all");
-    expect(printed).toContain(
-      "  · tmux is running: run `tmux set -g allow-passthrough all` to apply the line now (a restart works too)",
-    );
-    expect(existsSync(w.paths.tmuxConfFile)).toBe(false);
-  });
-});
-
 describe("setup in a worktree: where the entries come from", () => {
   test("the worktree's own file: the question names it, and says plainly that it differs from the main checkout's", async () => {
     const repo = project({ autoMode: [RULE] });
@@ -205,29 +219,7 @@ describe("setup in a worktree: where the entries come from", () => {
 });
 
 describe("every question comes first", () => {
-  test("both questions are asked before anything runs; a no to Warp keeps the yes to the auto-mode entries", async () => {
-    const repo = project({ autoMode: [RULE] });
-    const order: string[] = [];
-    const w = world({
-      git: true,
-      answer: (question) => {
-        order.push(`asked: ${question}`);
-        return question === QUESTION;
-      },
-      bins: { gpg: 'echo "gpg ran" >&2; exit 1' },
-    });
-    expect(await w.setup({ project: repo, warp: true })).toBe(1);
-    // Nothing of Warp's ran (gpg is the first thing it would run, staging the key).
-    expect(w.calls()).toBe("");
-    expect(order).toEqual([
-      `asked: ${QUESTION}`,
-      "asked: Allow the kit's task tools?",
-      "asked: Run these commands now?",
-    ]);
-    expect(readJson(w.paths.settingsFile).autoMode).toEqual({ environment: ["$defaults", RULE] });
-    expect(printed).toContain("  ! Warp: these commands were not run (you said no).");
-  });
-  test("the status-line question joins the same pass: auto mode, status line, Warp, all before anything runs", async () => {
+  test("the status-line question joins the same pass: auto mode and status line, all before anything runs", async () => {
     const repo = project({ autoMode: [RULE] });
     const order: string[] = [];
     const w = world({
@@ -235,19 +227,18 @@ describe("every question comes first", () => {
       statuslineAnswered: false,
       answer: (question) => {
         order.push(`asked: ${question}`);
-        return question !== "Run these commands now?";
+        return true;
       },
       bins: { gpg: 'echo "gpg ran" >&2; exit 1' },
     });
-    expect(await w.setup({ project: repo, warp: true })).toBe(1);
+    expect(await w.setup({ project: repo })).toBe(0);
     expect(w.calls()).toBe("");
     expect(order).toEqual([
       `asked: ${QUESTION}`,
       "asked: Allow the kit's task tools?",
       "asked: Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?",
-      "asked: Run these commands now?",
     ]);
-    // The yes to the status line stands; the no to Warp takes only Warp out.
+    // Both accepted settings are written.
     const settings = readJson(w.paths.settingsFile);
     expect(settings.statusLine.command).toEndWith("/.local/bin/cc-smart-dev-kit statusline");
     expect(settings.autoMode).toEqual({ environment: ["$defaults", RULE] });
@@ -333,181 +324,6 @@ describe("setup and the MCP servers' record", () => {
       "! cannot read ~/.claude/cc-smart-dev-kit/mcp-servers.json (",
     );
     expect(printed.join("\n")).not.toContain("registered again");
-  });
-});
-
-describe("setup manages agent view's notification hook", () => {
-  const MATCHER = "agent_needs_input|agent_completed";
-  const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
-  // What a manual test left behind: the plugin's shim and bundle, from its version folder.
-  const HAND_NOTIFY =
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder, filled in by Claude Code.
-    '"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh" --missing=quiet "${CLAUDE_PLUGIN_ROOT}/dist/notify.js"';
-  const MANAGED = {
-    matcher: MATCHER,
-    hooks: [{ type: "command", command: COMMAND, timeout: 10 }],
-  };
-
-  test("written once, in the person's own settings; a second setup changes nothing; restore removes it", async () => {
-    const w = world();
-    expect(await w.setup()).toBe(0);
-    expect(printed).toContain(
-      `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
-    );
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
-
-    printed.length = 0;
-    expect(await w.setup()).toBe(0);
-    expect(changeLines()).toEqual([]);
-    expect(printed.join("\n")).toContain("Nothing to change. Setup is up to date");
-    expect(printed.join("\n")).not.toContain("agent view");
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
-
-    restore(w.paths.stateDir);
-    expect(readJson(w.paths.settingsFile).hooks).toBeUndefined();
-  });
-
-  test("a hand-written entry that runs the plugin's dist/notify.js is replaced in place, not doubled", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const hand = {
-      matcher: MATCHER,
-      hooks: [{ type: "command", command: HAND_NOTIFY, timeout: 10 }],
-    };
-    settings.hooks = { Notification: [hand] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(printed).toContain(
-      `  ~ ~/.claude/settings.json: hooks.Notification: replaced the hand-written notify hook with the managed one (${COMMAND})`,
-    );
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
-    // Restore removes the managed entry and does not bring the replaced hand entry back:
-    // its version folder may be gone, and the person can restore the file's backup by hand.
-    // The list itself stays: it was in the person's file before setup touched it.
-    restore(w.paths.stateDir);
-    expect(readJson(w.paths.settingsFile).hooks).toEqual({ Notification: [] });
-  });
-
-  test("a version folder's notify.js named by its cache path: replaced too", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const hand = {
-      matcher: MATCHER,
-      hooks: [
-        {
-          type: "command",
-          command:
-            '"$HOME/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/0.5.2/dist/notify.js"',
-          timeout: 10,
-        },
-      ],
-    };
-    settings.hooks = { Notification: [hand] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([MANAGED]);
-  });
-
-  test("a hand entry that also runs a logger is never replaced: kept whole, ours added beside it", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const mixed = {
-      matcher: MATCHER,
-      hooks: [
-        { type: "command", command: HAND_NOTIFY, timeout: 10 },
-        { type: "command", command: "./my-logger.sh" },
-      ],
-    };
-    settings.hooks = { Notification: [mixed] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([mixed, MANAGED]);
-  });
-
-  test("another program's notify bundle, and the person's own hook: kept whole, ours added beside them", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const personal = {
-      matcher: MATCHER,
-      hooks: [{ type: "command", command: "node /home/user/my-notifier/dist/notify.js" }],
-    };
-    const foreign = {
-      matcher: MATCHER,
-      hooks: [{ type: "command", command: "./my-notify.sh" }],
-    };
-    settings.hooks = { Notification: [personal, foreign] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([personal, foreign, MANAGED]);
-  });
-
-  test("our command plus a logger: the person's edited copy, left whole and never doubled", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const mixed = {
-      matcher: MATCHER,
-      hooks: [
-        { type: "command", command: `${COMMAND} 2>>log` },
-        { type: "command", command: "./my-logger.sh" },
-      ],
-    };
-    settings.hooks = { Notification: [mixed] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(
-      printed.filter((line) =>
-        line.includes("hooks.Notification: a hook with this matcher was edited"),
-      ),
-    ).toHaveLength(1);
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([mixed]);
-  });
-
-  test("a person-edited managed entry: setup leaves it, adds none, and says so once", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const edited = {
-      matcher: MATCHER,
-      hooks: [{ type: "command", command: `${COMMAND} 2>>log`, timeout: 30 }],
-    };
-    settings.hooks = { Notification: [edited] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(printed).toContain(
-      `  · ~/.claude/settings.json: hooks.Notification: a hook with this matcher was edited since setup wrote it (${COMMAND}); it stays, and no second one was added`,
-    );
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([edited]);
-    restore(w.paths.stateDir);
-    expect(readJson(w.paths.settingsFile).hooks.Notification).toEqual([edited]);
-  });
-
-  test("the person's own hooks stay: another event, and a Notification hook of their own", async () => {
-    const w = world();
-    const settings = readJson(w.paths.settingsFile);
-    const own = {
-      matcher: "permission_prompt",
-      hooks: [{ type: "command", command: "./mine.sh" }],
-    };
-    const stop = { hooks: [{ type: "command", command: "./stop.sh", timeout: 5 }] };
-    settings.hooks = { Notification: [own], Stop: [stop] };
-    writeFileSync(w.paths.settingsFile, JSON.stringify(settings, null, 2));
-    expect(await w.setup()).toBe(0);
-    expect(readJson(w.paths.settingsFile).hooks).toEqual({
-      Notification: [own, MANAGED],
-      Stop: [stop],
-    });
-    restore(w.paths.stateDir);
-    expect(readJson(w.paths.settingsFile).hooks).toEqual({ Notification: [own], Stop: [stop] });
-  });
-
-  test("--dry-run shows the entry and writes nothing", async () => {
-    const w = world();
-    const before = readFileSync(w.paths.settingsFile, "utf8");
-    expect(await w.setup({ dryRun: true })).toBe(0);
-    expect(printed).toContain(
-      `  ~ ~/.claude/settings.json: hooks.Notification: added the agent-view notification hook (${COMMAND})`,
-    );
-    expect(readFileSync(w.paths.settingsFile, "utf8")).toBe(before);
-    expect(printed).toContain("Dry run: nothing was written or run.");
   });
 });
 

@@ -419,7 +419,18 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   else delete jobs.route;
   if (Object.keys(jobs).length > 0) next.jobs = jobs;
   else delete next.jobs;
-  if (Object.keys(answers.workflow).length > 0) next.workflow = answers.workflow;
+  // Retired keys are not answers, but an unrelated init must not erase the raw old values.
+  const beforeWorkflow = isObject(before.workflow) ? before.workflow : {};
+  const beforeAlerts = isObject(beforeWorkflow.alerts) ? beforeWorkflow.alerts : {};
+  const retiredAlerts: Record<string, unknown> = {};
+  for (const key of ["events", "sound"]) {
+    if (Object.hasOwn(beforeAlerts, key)) retiredAlerts[key] = beforeAlerts[key];
+  }
+  const workflow = { ...answers.workflow };
+  if (Object.keys(retiredAlerts).length > 0) {
+    workflow.alerts = { ...retiredAlerts, ...workflow.alerts };
+  }
+  if (Object.keys(workflow).length > 0) next.workflow = workflow;
   else delete next.workflow;
   // The floor depends on the fields the file ends up with: a file that sets
   // a newer setting needs the plugin that brought it, or every older plugin refuses the

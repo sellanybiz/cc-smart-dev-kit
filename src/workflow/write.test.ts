@@ -58,6 +58,22 @@ function projectWith(text: string): {
   return { repo, file, env };
 }
 
+test("unrelated personal and project writes preserve retired raw alert keys", () => {
+  const alerts = { events: ["finished"], sound: true, usagePercent: 91 };
+  const paths = cliPaths(hookEnv());
+  const file = personalWorkflowFile(paths);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ alerts }));
+  writePersonalSetting(paths, "autoCommit", true);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ alerts, autoCommit: true });
+  const project = projectWith(JSON.stringify({ workflow: { alerts } }));
+  writeProjectSetting(project.repo, "autoCommit", true, project.env);
+  expect(JSON.parse(readFileSync(project.file, "utf8")).workflow).toEqual({
+    alerts,
+    autoCommit: true,
+  });
+});
+
 describe("workflow set / unset --project", () => {
   test("a set leaves every line it does not touch byte for byte, and Biome has nothing to change", () => {
     const { repo, file, env } = projectWith(BIOME_PROJECT);
@@ -75,9 +91,9 @@ describe("workflow set / unset --project", () => {
 
   test("a new array value prints on one line", () => {
     const { repo, file, env } = projectWith(BIOME_PROJECT);
-    writeProjectSetting(repo, "alerts.events", ["needs-you", "question"], env);
+    writeProjectSetting(repo, "reviewAgents", ["custom:reviewer", "custom:checker"], env);
     const written = readFileSync(file, "utf8");
-    expect(written).toContain(`    "alerts": {\n      "events": ["needs-you", "question"]\n    }`);
+    expect(written).toContain(`    "reviewAgents": ["custom:reviewer", "custom:checker"]`);
     expect(biomeFormat(written)).toBe(written);
   });
 
@@ -114,10 +130,8 @@ describe("workflow set / unset (the person's own file)", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     const file = personalWorkflowFile(paths);
-    writePersonalSetting(paths, "alerts.events", ["needs-you"]);
-    expect(readFileSync(file, "utf8")).toBe(
-      `{\n  "alerts": {\n    "events": ["needs-you"]\n  }\n}\n`,
-    );
+    writePersonalSetting(paths, "alerts.usagePercent", 70);
+    expect(readFileSync(file, "utf8")).toBe(`{\n  "alerts": {\n    "usagePercent": 70\n  }\n}\n`);
     writeFileSync(file, `{\n  "alerts": { "events": ["needs-you"] },\n  "openPr": "draft"\n}\n`);
     writePersonalSetting(paths, "autoCommit", true);
     expect(readFileSync(file, "utf8")).toBe(

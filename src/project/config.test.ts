@@ -134,6 +134,7 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
 function keyPaths(schema: z.ZodType, prefix = ""): string[] {
+  if (schema instanceof z.ZodPipe) return keyPaths(schema.in as z.ZodType, prefix);
   if (schema instanceof z.ZodOptional) return keyPaths(schema.unwrap() as z.ZodType, prefix);
   if (schema instanceof z.ZodArray) return keyPaths(schema.element as z.ZodType, prefix);
   if (schema instanceof z.ZodRecord) return keyPaths(schema.valueType as z.ZodType, `${prefix}.*`);

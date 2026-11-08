@@ -5,11 +5,9 @@ paths:
   - "src/entries/agent-usage.ts"
   - "src/entries/builder-finish.ts"
   - "src/entries/fable-session.ts"
-  - "src/entries/notify.ts"
   - "src/entries/playwright-output.ts"
   - "src/entries/review-record.ts"
   - "src/entries/session-name.ts"
-  - "src/entries/stop-failure.ts"
   - "src/entries/subagent-background.ts"
   - "src/entries/update-check.ts"
   - "src/entries/user-away.ts"
@@ -28,7 +26,7 @@ together is `docs/design/hooks.md` § The hooks. The Claude Code behaviour behin
 the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
 hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
 
-Guard answers and failures: `hooks-guards.md`. Alerts: `notify.md`.
+Guard answers and failures: `hooks-guards.md`. Retired notifications: `docs/design/hooks.md` § The notifier.
 Session-start behavior and self-update: `session-start.md`.
 
 ## Who wires it
@@ -142,7 +140,7 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
 
-The frame stays general: later hooks (notifications, the routing of heavy jobs) are new
+The frame stays general: later hooks (such as the routing of heavy jobs) are new
 specs in it.
 
 ## Find the project from the input's `cwd`
@@ -209,6 +207,4 @@ in a worktree, with `ownHooks` listing it and with an unlisted project hook on t
 with `requires` not met, and with a broken `cc-smart-dev-kit.json` (`matrix.test.ts` runs the
 `ownHooks` and `requires` cases for every hook). Assert stdout exactly, and cover the
 missing-input and failure paths. Each plugin entry also runs once as a subprocess with stdin
-(`entries.test.ts`); the person's notify hook runs through `cc-smart-dev-kit hook`
-(`src/cli/hook-commands.test.ts`), once through the exact line setup writes. Never real user
-files. The shim has its own tests (`src/hooks/bun-shim.test.ts`).
+(`entries.test.ts`). Never real user files. The shim has its own tests (`src/hooks/bun-shim.test.ts`).

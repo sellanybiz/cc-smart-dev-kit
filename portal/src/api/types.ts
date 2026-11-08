@@ -404,12 +404,6 @@ export interface BrowserCardData {
   state: BrowserSetupState;
 }
 
-/** `src/portal/facts.ts` › `WarpRow`. */
-export interface WarpRow {
-  detail: string;
-  installed: boolean;
-}
-
 /** One `doctor` line (`src/cli/doctor.ts`): its mark and its words. */
 export interface DoctorLine {
   mark: "ok" | "warn" | "fail" | "info";
@@ -440,7 +434,6 @@ export interface MachineData {
   omniroute: OmnirouteRow;
   /** The gateway's own OmniRoute key, in a word: never the key (PK1). */
   gatewayKey: MachineAnswer["gatewayKey"];
-  warp: WarpRow;
   doctor: DoctorLine[];
   /** When the doctor pass these lines came from ran (ms); null before the first. */
   doctorAt: null | number;
@@ -452,7 +445,7 @@ export interface MachineData {
 export type WorkflowSource = "project" | "personal" | "default";
 
 /** `src/portal/settings.ts` › `SettingKind`. */
-export type SettingKind = "boolean" | "events" | "number" | "segment";
+export type SettingKind = "boolean" | "number" | "segment";
 
 /** `src/portal/settings.ts` › `SettingsRow` (`SettingSpec` with its value and source). */
 export interface SettingsRow {
@@ -641,56 +634,12 @@ export interface JobsData {
   stores: JobStore[];
 }
 
-// ── Needs you (owner decision D52; planned: `GET /api/needs`) ─────────────────────────
-
 /** `src/update/state.ts` › `HeldMajor`: a major version found and held for the person (D33). */
 export interface HeldMajor {
   version: string;
   from: null | string;
   at: string;
   notes: string[];
-}
-
-/** One thing that waits for the person. `since` is ISO 8601. */
-export type NeedsItem =
-  | {
-      kind: "permission";
-      id: string;
-      since: string;
-      /** Who asked (a guard, or Claude Code), the session, and the project it is in. */
-      asker: string;
-      session: string;
-      project: string;
-      /** The tool the prompt is about, and its one line. */
-      tool: string;
-      detail: string;
-    }
-  | { kind: "update"; id: string; since: string; held: HeldMajor; installed: string }
-  | {
-      kind: "doctor";
-      id: string;
-      since: string;
-      section: string;
-      text: string;
-      /** doctor's own `Fix:` line; null when it has none. */
-      fix: null | string;
-    }
-  | {
-      kind: "breaker";
-      id: string;
-      since: string;
-      /** The slot's key. */
-      slot: string;
-      /** `heldNow` is null when the answer does not say how many wait right now. */
-      breaker: Omit<OpenBreaker, "heldNow"> & { heldNow: null | number };
-      /** The command that gives the slot another target. */
-      command: string;
-    };
-
-export interface NeedsData {
-  items: NeedsItem[];
-  /** Why the permission prompts are missing from the list (the flow report did not run); null when they are not. */
-  note: null | string;
 }
 
 // ── Guard log (D52; planned: `GET /api/guard-asks?…`) ─────────────────────────────────

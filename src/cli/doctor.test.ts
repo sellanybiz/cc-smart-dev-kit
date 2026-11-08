@@ -13,7 +13,6 @@ import {
   checkPlugin,
   checkPortal,
   checkReviewAgent,
-  checkUserNotifyHook,
   claudeMemChecks,
   countChecks,
   doctorReport,
@@ -23,19 +22,6 @@ import {
   taskToolsCheck,
 } from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
-
-const COMMAND = '"$HOME/.local/bin/cc-smart-dev-kit" hook notify';
-const SETTINGS = "~/.claude/settings.json";
-
-/** The line doctor prints for a settings file holding `hooks`, written by hand. */
-function line(hooks: unknown): string {
-  const env = hookEnv();
-  const paths = cliPaths(env);
-  if (hooks !== undefined) {
-    writeFileSync(paths.settingsFile, `${JSON.stringify({ hooks }, null, 2)}\n`);
-  }
-  return checkLine(checkUserNotifyHook(paths));
-}
 
 describe("doctor: personal review agent migration", () => {
   test("missing and current lists need no migration", () => {
@@ -61,50 +47,6 @@ describe("doctor: personal review agent migration", () => {
     expect(checkLine(result)).toBe(
       "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
     );
-  });
-});
-
-describe("doctor: agent view's notification hook", () => {
-  test("missing: ✗, and the command to run", () => {
-    expect(line(undefined)).toBe(
-      `✗ agent view's notification hook is missing from ${SETTINGS}, so agent view's alerts never arrive Fix: cc-smart-dev-kit setup`,
-    );
-  });
-
-  test("a hook with the matcher that runs something else: ✗, and the command to run", () => {
-    expect(
-      line({ Notification: [{ matcher: "agent_needs_input|agent_completed", hooks: [] }] }),
-    ).toBe(
-      `✗ agent view's notification hook in ${SETTINGS} does not run ${COMMAND}, so agent view's alerts never reach the notifier Fix: cc-smart-dev-kit setup`,
-    );
-  });
-
-  test("a person-edited managed entry: · information, never a failure", () => {
-    expect(
-      line({
-        Notification: [
-          {
-            matcher: "agent_needs_input|agent_completed",
-            hooks: [{ type: "command", command: `${COMMAND} 2>>log`, timeout: 30 }],
-          },
-        ],
-      }),
-    ).toBe(
-      `· agent view's notification hook in ${SETTINGS} was edited since setup wrote it; it still runs ${COMMAND}, and cc-smart-dev-kit leaves it alone`,
-    );
-  });
-
-  test("the managed entry: ✓, with the command", () => {
-    expect(
-      line({
-        Notification: [
-          {
-            matcher: "agent_needs_input|agent_completed",
-            hooks: [{ type: "command", command: COMMAND, timeout: 10 }],
-          },
-        ],
-      }),
-    ).toBe(`✓ agent view's notification hook is set in ${SETTINGS}: ${COMMAND}`);
   });
 });
 

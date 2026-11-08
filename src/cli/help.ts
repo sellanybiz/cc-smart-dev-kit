@@ -21,9 +21,9 @@
  */
 import { COMMAND, VERSION } from "../build-info";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
-import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { ISSUE_USAGE } from "../issues/command";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
+import { NO_HERDR_FLAG } from "../machine/herdr";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
 import {
@@ -36,7 +36,6 @@ import {
   RETRY_WATCHDOG_ENV,
   RETRY_WATCHDOG_FLAG,
 } from "../setup/retry-watchdog";
-import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { TASK_USAGE } from "../tasks/command";
 import { USER_USAGE } from "../user-away/words";
 import { WORKFLOW_USAGE } from "../workflow/commands";
@@ -74,26 +73,16 @@ export interface CommandHelp {
 /** How wide a top-level help line may be: 80 columns, less a 4-column margin. */
 const WIDTH = 76;
 
-/**
- * The names `cc-smart-dev-kit hook` lists: the user-level notifier setup writes, from the one
- * constant that names it. The worktree engine's names are retired (a project now uses Claude
- * Code's own worktrees), so `notify` is the one left.
- */
-export const HOOK_NAMES = USER_NOTIFY_HOOK_NAME;
-
 /** The status line's warning share: the same default the status line itself reads. */
 const WARNING_PERCENT = workflowDefaults.alerts.usagePercent;
 
-export const HOOK_HELP = `Usage: ${COMMAND} hook <${HOOK_NAMES}>
+export const HOOK_HELP = `Usage: ${COMMAND} hook
 
-notify is the notifier hook, with the same input and answer as the plugin's own bundle.
-${COMMAND} setup wires it in your user settings for agent view, which runs no plugin hooks
-(Claude Code's list of sessions raises agent_needs_input and agent_completed there). It is
-not a project hook: it needs no settings from a project, and it works in every folder.`;
+The plugin has no user-invoked hooks.`;
 
-const SETUP_HELP = `Usage: ${COMMAND} setup [--dry-run] [--yes] [--project <dir>] [--warp | --remove-warp]
+const SETUP_HELP = `Usage: ${COMMAND} setup [--dry-run] [--yes] [--project <dir>]
        [--no-instructions | --instructions] [--statusline] [${RETRY_WATCHDOG_FLAG} | ${NO_RETRY_WATCHDOG_FLAG}]
-       [${MAX_SUBAGENTS_FLAG} <n>] [--tavily-key-stdin]
+       [${MAX_SUBAGENTS_FLAG} <n>] [--tavily-key-stdin] [${NO_HERDR_FLAG}]
 
 Installs the launcher in ~/.local/bin, turns Claude Code's own plugin auto-update off (the
 kit's background update is the one updater, so a major version waits for you), installs the
@@ -107,11 +96,13 @@ and asked on a terminal (--yes: shown, not asked); with no terminal they are lef
 with --yes. --yes skips the status-line question; the retry watchdog is on by default. It
 prints a section per part, one verdict line, and the next steps to run, in order.
 
+  ${NO_HERDR_FLAG}           skip the default latest Herdr GUI offer for this run. Otherwise,
+                       setup shows its official installer and normal core bootstrap and
+                       asks first (--yes also consents without a terminal). Existing GUI
+                       installs stay unchanged. No launch or preference changes; upstream
+                       owns the app, core, shortcuts and Windows user PATH; restore leaves them.
   --project <dir>      the project to read .claude/cc-smart-dev-kit.json from
                        (default: this folder)
-  --warp               install the Warp terminal (the commands are shown and asked; sudo
-                       asks for your password) and its Claude plugin
-  --remove-warp        take them out again
   --tavily-key-stdin   the Tavily key on stdin (never an argument); setup writes it to the
                        key file it reads a key from, mode 600 (README § MCP servers)
   --no-instructions    take the instructions out and keep them out: a later plain setup
@@ -212,7 +203,7 @@ const SESSIONS_HELP = `Usage: ${COMMAND} sessions [--open] [--dry-run]
 
 This project's Claude Code sessions of the last two days, by name and worktree, with the
 command that resumes each. --open reopens every session that was open when the machine went
-down or its window closed (Warp tabs, or XFCE Terminal windows on Linux); --dry-run says what
+down or its window closed (Windows Terminal or XFCE Terminal windows); --dry-run says what
 it would open and opens nothing.
 
 --finished lists this machine's background sessions done or stopped for more than one day.
@@ -265,11 +256,6 @@ fallback the gateway is using. Reads the JSON Claude Code passes on stdin.`;
 const VERSION_HELP = `Usage: ${COMMAND} version
 
 Print the version.`;
-
-const ALERT_WORKER_HELP = `Usage: ${COMMAND} ${ALERT_WORKER_COMMAND} <alert JSON>
-
-Waits for a click on the desktop alert, then brings the alert's window back. The notify hook
-starts it, detached, through the launcher. It is not a command to run by hand.`;
 
 /**
  * Every command, in the order the top-level help shows them. A command the dispatcher knows and
@@ -370,7 +356,6 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   // Claude Code runs it from the plugin's settings.json: a status line's row body, not a
   // command for a person.
   { name: "subagent-statusline", help: SUBAGENT_STATUSLINE_HELP },
-  { name: ALERT_WORKER_COMMAND, help: ALERT_WORKER_HELP },
   // `help` prints the top-level help, which is built from this table (see `helpTextFor`).
   { name: HELP_COMMAND },
 ];

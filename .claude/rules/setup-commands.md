@@ -23,22 +23,23 @@ root, or writes a trust rule. How it writes: `setup-and-managed-files.md`. How i
   `claude plugin` commands and restarts nothing. Its one write to a user file is the
   managed `autoUpdate` key, `true` → `false`, only while that `true` is still setup's own
   (`src/setup/auto-update.ts`, D39).
-- **A running program is never changed behind the person's back**: the tmux line
-  (`src/setup/tmux.ts`) goes into `~/.tmux.conf` only when `tmux` is on PATH, and setup
-  **prints** `tmux set -g allow-passthrough all` for a running server instead of running
-  it — a running server keeps its own value until they apply it (or restart tmux).
+- **A running program is never changed behind the person's back.** Retiring an owned
+  tmux line must leave the running server unchanged.
 - Setup refuses to start before `claude plugin marketplace add` has run, and says which
   command to run.
-- **Commands that need root** (installing or removing the Warp app) run only in a manual
-  `setup --warp` / `--remove-warp`, after the exact list was shown and the person said yes
-  on a terminal. `--yes` never skips that question. With no terminal, or a "no", those
-  commands (and Warp's plugin and shortcuts, which go with them) are left out, the rest
-  of setup is done, and setup exits 1. `sudo` asks for the password itself:
-  cc-smart-dev-kit never sees, stores or pipes one, and never runs a downloaded script (no
-  `curl | sh`). Files root needs are made in `<stateDir>/warp/` and put in place with
-  `sudo install` (or `rpm --import` from there); that folder is removed after the run.
-  Warp's signing key is downloaded over HTTPS only (each redirect too) and must hold
-  exactly one key, with the pinned fingerprint (`WARP_KEY_FINGERPRINT`).
+- Downloaded installer scripts are forbidden except for the official Herdr GUI installer
+  below. Never see, store or pipe a sudo password.
+- **Herdr GUI is the only downloaded-installer exception.** Manual setup offers its latest
+  GUI by default, showing the official installer and its normal core bootstrap before any
+  changes. Ask on a terminal; without a terminal require `--yes`. Dry-run downloads and runs
+  nothing. Use only `https://releases.herdr.dev/app/install.sh` or its `install.ps1` sibling;
+  clear inherited app/core installer controls, including alternate release origins, version
+  pins, install-directory overrides and bundle-only mode, in that subprocess only. Preserve
+  ordinary user-directory and platform environment. The upstream installer checks release
+  artifact hashes, not the downloaded installer scripts. Leave an existing GUI alone. Never install the TUI, use root or a package
+  manager fallback, launch the GUI, or change its preferences, telemetry, themes or agents.
+  Upstream owns its app, core, shortcuts and PATH changes; kit restore leaves them alone.
+  This exception does not authorize other downloaded scripts or background installation.
 - **Trust rules always need a person at a terminal.** The auto-mode entries are shown as
   `+` / `-` lines, then asked; `--yes` skips the question only on a terminal. With no
   terminal they are left out whatever the flags, and setup says so. A project setup
@@ -58,11 +59,11 @@ root, or writes a trust rule. How it writes: `setup-and-managed-files.md`. How i
   written. A "no" to one drops only what depends on it.
 - **`claude plugin …` steps run only when a person runs `cc-smart-dev-kit setup`**; nothing in
   the background (hooks, the self-update) ever runs setup. They run only for what is
-  missing (a companion's marketplace or plugin; Warp's plugin, only with `--warp`). It
+  missing (a companion's marketplace or plugin). It
   never turns on a plugin the person turned off; it says what to run. Without `claude` on
   PATH, these steps are skipped and named, the rest is done, and setup exits 1.
 - **The system is reached through `Machine`** (`src/machine/machine.ts`): commands, the
-  terminal question, the platform, `/etc/os-release`, the Warp app's path, file checks
+  terminal question, the platform, `/etc/os-release`, file checks
   and downloads. A test in the same process hands in a fake one, with fake commands on a
   PATH of its own; a test that runs the CLI as its own process gives the host's facts in
   `CC_SMART_DEV_KIT_TEST_HOST` and a PATH of fakes, so it never reads the machine it runs on.

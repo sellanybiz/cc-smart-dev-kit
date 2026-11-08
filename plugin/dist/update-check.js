@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "2.2.0",
+  version: "3.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -101,7 +101,6 @@ function cliPaths(env = process.env) {
     routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
-    notifyConfigFile: join2(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
@@ -206,7 +205,7 @@ function startDetached(platform, argv, options) {
 }
 
 // src/portal/session-start.ts
-import { existsSync as existsSync16 } from "fs";
+import { existsSync as existsSync15 } from "fs";
 import { join as join15 } from "path";
 
 // src/hooks/attended.ts
@@ -1836,7 +1835,7 @@ function eventList(data, file, event) {
 function indexOf(list, wanted) {
   return list.findIndex((entry) => Bun.deepEquals(entry, wanted, true));
 }
-function removeManagedHooks(stateDir, file) {
+function removeManagedHooks(stateDir, file, options = {}) {
   const real = realTarget(file);
   const snapshot = readOwnedHooks(stateDir);
   const events = snapshot[real];
@@ -1849,6 +1848,8 @@ function removeManagedHooks(stateDir, file) {
     let written = false;
     let next = snapshot;
     for (const [event, record] of Object.entries(events)) {
+      if (options.matches !== undefined && !options.matches(event, record.entry))
+        continue;
       const list = eventList(data, real, event);
       if (list === null) {
         next = withRecord(next, real, event, null);
@@ -1871,6 +1872,8 @@ function removeManagedHooks(stateDir, file) {
       }
       next = withRecord(next, real, event, null);
     }
+    if (options.dryRun)
+      return { removed, written: false, backup: null };
     if (removed.length > 0) {
       const result = writeManagedFile(real, `${JSON.stringify(data, null, indent)}
 `, {
@@ -2251,74 +2254,8 @@ async function refreshInstructionsCopy(paths, version, options = {}) {
   return withLock(paths.stateDir, () => refreshDue(paths, version) ? installCopy(paths, false, version) : [], { waitMs: options.waitMs ?? 1e4 });
 }
 
-// src/setup/user-notify-hook.ts
-import { existsSync as existsSync12 } from "fs";
-
-// src/hooks/notify-types.ts
-var PLUGIN_NOTIFY_TYPES = [
-  "permission_prompt",
-  "elicitation_dialog",
-  "elicitation_url_dialog",
-  "worker_permission_prompt"
-];
-var AGENT_VIEW_TYPES = ["agent_needs_input", "agent_completed"];
-var NOTIFY_TYPES = [...PLUGIN_NOTIFY_TYPES, ...AGENT_VIEW_TYPES];
-var NOTIFY_MATCHER = PLUGIN_NOTIFY_TYPES.join("|");
-var AGENT_VIEW_MATCHER = AGENT_VIEW_TYPES.join("|");
-
-// src/setup/launcher.ts
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-
-// src/setup/user-notify-hook.ts
-var USER_NOTIFY_HOOK_NAME = "notify";
-var USER_NOTIFY_TIMEOUT = 10;
-var USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
-var USER_NOTIFY_ENTRY = {
-  matcher: AGENT_VIEW_MATCHER,
-  hooks: [{ type: "command", command: USER_NOTIFY_COMMAND, timeout: USER_NOTIFY_TIMEOUT }]
-};
-function runsHookNotify(command) {
-  const escaped = COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[\\s/"'])${escaped}["']?\\s+hook\\s+${USER_NOTIFY_HOOK_NAME}(\\s|;|$)`).test(command);
-}
-function isEditedNotify(entry) {
-  return entry.matcher === AGENT_VIEW_MATCHER && entry.hooks.some((h) => runsHookNotify(h.command));
-}
-function userNotifyHookState(file) {
-  if (!existsSync12(file))
-    return "missing";
-  let parsed;
-  try {
-    parsed = readUserJson(file);
-  } catch {
-    return "missing";
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
-    return "missing";
-  const hooks = parsed.hooks;
-  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks))
-    return "missing";
-  const list = hooks.Notification;
-  if (!Array.isArray(list))
-    return "missing";
-  if (list.some((entry) => Bun.deepEquals(entry, USER_NOTIFY_ENTRY, true)))
-    return "current";
-  const entries = list.filter(isHookEntry);
-  if (entries.some((entry) => isEditedNotify(entry)))
-    return "edited";
-  return entries.some((entry) => entry.matcher === AGENT_VIEW_MATCHER) ? "elsewhere" : "missing";
-}
-
 // src/update/apply.ts
-import { existsSync as existsSync14, readFileSync as readFileSync16 } from "fs";
+import { existsSync as existsSync13, readFileSync as readFileSync16 } from "fs";
 import { join as join13 } from "path";
 
 // src/build-info/manifest.ts
@@ -2351,72 +2288,8 @@ function readManifestDependencies(manifestFile) {
   return readDependencies(manifestFile, manifest.dependencies);
 }
 
-// src/shell/powershell.ts
-var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
-function powershellLiteral(value) {
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
-  }
-  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
-}
-
-// src/hooks/windows-toast.ts
-var TOAST_SHELL = "powershell";
-var TOAST_APP_ID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
-function base64Literal(text) {
-  return `'${Buffer.from(text, "utf8").toString("base64")}'`;
-}
-function decodedText(text) {
-  return `[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(${base64Literal(text)}))`;
-}
-function windowsToastScript(title, body, critical) {
-  const scenario = critical ? ' scenario="reminder"' : "";
-  return [
-    "$ErrorActionPreference = 'Stop'",
-    `$title = ${decodedText(title)}`,
-    `$body = ${decodedText(body)}`,
-    `$appId = ${powershellLiteral(TOAST_APP_ID)}`,
-    "try {",
-    "  $xml = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]::New()",
-    `  $xml.LoadXml('<toast${scenario}><visual><binding template="ToastGeneric"><text id="1" /><text id="2" /></binding></visual></toast>')`,
-    "  $texts = $xml.GetElementsByTagName('text')",
-    "  $null = $texts.Item(0).AppendChild($xml.CreateTextNode($title))",
-    "  $null = $texts.Item(1).AppendChild($xml.CreateTextNode($body))",
-    "  $toast = [Windows.UI.Notifications.ToastNotification, Windows.UI.Notifications, ContentType = WindowsRuntime]::New($xml)",
-    "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($appId).Show($toast)",
-    "} catch {",
-    "  try {",
-    "    Add-Type -AssemblyName System.Windows.Forms",
-    "    Add-Type -AssemblyName System.Drawing",
-    "    $balloon = New-Object System.Windows.Forms.NotifyIcon",
-    "    $balloon.Icon = [System.Drawing.SystemIcons]::Information",
-    "    $balloon.BalloonTipTitle = $title",
-    "    $balloon.BalloonTipText = $body",
-    "    $balloon.Visible = $true",
-    "    $balloon.ShowBalloonTip(10000)",
-    "    Start-Sleep -Milliseconds 4000",
-    "    $balloon.Dispose()",
-    "  } catch {",
-    "    [Console]::Error.WriteLine('cc-smart-dev-kit: the desktop notification could not be shown: ' + $_.Exception.Message)",
-    "    exit 1",
-    "  }",
-    "}"
-  ].join(`
-`);
-}
-function windowsToastArgv(shell, title, body, critical = false) {
-  const script = windowsToastScript(title, body, critical);
-  return [
-    shell,
-    "-NoProfile",
-    "-NonInteractive",
-    "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64")
-  ];
-}
-
 // src/machine/companions.ts
-import { existsSync as existsSync13 } from "fs";
+import { existsSync as existsSync12 } from "fs";
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -2440,8 +2313,7 @@ var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER}
 // src/machine/companions.ts
 var MARKETPLACE_SOURCES = {
   thedotmack: "thedotmack/claude-mem",
-  "claude-plugins-official": "anthropics/claude-plugins-official",
-  "claude-code-warp": "warpdotdev/claude-code-warp"
+  "claude-plugins-official": "anthropics/claude-plugins-official"
 };
 function companions(dependencies = DEPENDENCIES) {
   return dependencies.map((dependency) => {
@@ -2466,7 +2338,7 @@ function comparableVersion(version) {
 }
 function companionInstall(paths, companion) {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  return install === null || !existsSync13(install.installPath) ? null : install;
+  return install === null || !existsSync12(install.installPath) ? null : install;
 }
 function versionState(companion, version) {
   if (companion.range !== null && isValidRange(companion.range)) {
@@ -2654,42 +2526,14 @@ function companionsBehindDetail(version, behind) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync14(paths.routerCopy))
+  if (install === null || !existsSync13(paths.routerCopy))
     return false;
   const bundle = join13(install.installPath, "dist", "router.js");
-  return existsSync14(bundle) && readFileSync16(bundle, "utf8") !== readFileSync16(paths.routerCopy, "utf8");
+  return existsSync13(bundle) && readFileSync16(bundle, "utf8") !== readFileSync16(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
-var NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
 function shownVersion(version) {
   return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
-}
-function installedText(version, routerChanged = false, notifyHookMissing = false) {
-  const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
-  const hints = [
-    ...routerChanged ? [ROUTER_SETUP_HINT] : [],
-    ...notifyHookMissing ? [NOTIFY_HOOK_SETUP_HINT] : []
-  ];
-  return hints.length === 0 ? text : `${text}; ${hints.join("; ")}`;
-}
-function notifyCommand(text, platform, which, title = PLUGIN, critical = false) {
-  if (platform === "linux") {
-    const notifySend = which("notify-send");
-    return notifySend === null ? null : [notifySend, ...critical ? ["--urgency=critical"] : [], title, text];
-  }
-  if (platform === "darwin") {
-    const osascript = which("osascript");
-    return osascript === null ? null : [
-      osascript,
-      "-e",
-      `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`
-    ];
-  }
-  if (platform === "win32") {
-    const powershell = which(TOAST_SHELL);
-    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
-  }
-  return null;
 }
 function commandContext(env, home) {
   return { cwd: home, env: gitEnv(env) };
@@ -2756,7 +2600,7 @@ function blockingVar(env, settingsFile) {
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync15,
+  existsSync as existsSync14,
   mkdirSync as mkdirSync4,
   readdirSync as readdirSync5,
   readFileSync as readFileSync17,
@@ -2843,7 +2687,7 @@ function isDue(last, nowMs) {
   return nowMs - at >= CHECK_INTERVAL_MS || at > nowMs + 60000;
 }
 function isHeld(files) {
-  return existsSync15(files.hold);
+  return existsSync14(files.hold);
 }
 function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
@@ -3081,10 +2925,7 @@ async function backgroundCheck(deps) {
             return;
           }
           const routerChanged = routerNeedsSetup(deps.paths);
-          const notifyState = userNotifyHookState(deps.paths.settingsFile);
-          const notifyHookMissing = notifyState === "missing" || notifyState === "elsewhere";
-          record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}${notifyHookMissing ? `; ${NOTIFY_HOOK_SETUP_HINT}` : ""}`);
-          deps.notify(installedText(result.after, routerChanged, notifyHookMissing));
+          record("updated", `${result.after ?? "(no version)"} (was ${result.before ?? "none"})${routerChanged ? `; ${ROUTER_SETUP_HINT}` : ""}`);
           return;
         }
       }
@@ -9303,7 +9144,7 @@ function startPortalAtSessionStart(deps) {
   if (installed === null)
     return "no-bundle";
   const bundle = join15(installed.folder, "dist", "portal.js");
-  if (!existsSync16(bundle))
+  if (!existsSync15(bundle))
     return "no-bundle";
   deps.spawn(portalStarterArgv(deps.bunPath, bundle, installed.folder), deps.runIn);
   return "started";
@@ -9324,12 +9165,7 @@ if (process.argv.includes("--background")) {
     env,
     now: () => Date.now(),
     claude: which("claude"),
-    run,
-    notify: (text) => {
-      const argv = notifyCommand(text, process.platform, which);
-      if (argv !== null)
-        run(argv);
-    }
+    run
   });
 } else {
   try {

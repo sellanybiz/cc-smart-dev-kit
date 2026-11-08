@@ -1,7 +1,7 @@
 /**
  * Writing one workflow setting, in the place that setting really lives.
  *
- * - **The policy** — `autoCommit`, `openPr`, `alerts.sound`, … — goes into the person's own
+ * - **The policy** — `autoCommit`, `openPr`, `alerts.usagePercent`, … — goes into the person's own
  *   file, `~/.config/cc-smart-dev-kit/workflow.json` (folder 0700, file 0600, written atomically,
  *   the way the other config files are), or into the project's `workflow` object with
  *   `writeProjectSetting`. Every other field and the file's own indentation stay as they are.

@@ -1,119 +1,94 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { AGENT_VIEW_MATCHER } from "../hooks/notify-types";
 import { LAUNCHER_IN_SHELL } from "./launcher";
-import {
-  applyManagedHook,
-  type HookEntry,
-  isHookEntry,
-  type ManagedHookResult,
-  runsPluginNotify,
-} from "./managed-hook";
-import { readUserJson } from "./user-json";
+import { type HookEntry, isHookEntry, removeManagedHooks, runsPluginNotify } from "./managed-hook";
+import { isObject, readJsonObject } from "./managed-json";
+import { removeManagedLines } from "./managed-line";
+import { forgetManagedLines, readChanged, realTarget } from "./write";
 
-/**
- * The one user-level Claude Code hook `cc-smart-dev-kit setup` manages: agent view
- * (`claude agents`, the list of sessions) raises `Notification` with `agent_needs_input` and
- * `agent_completed` in its own process, and runs only the hooks in settings files — never a
- * plugin's `hooks.json` (proved live on Claude Code 2.1.302, `docs/claude-code-contract.md`).
- * So these two types reach the notifier only through an entry in the person's user settings
- * (`paths.settingsFile`), and that entry is this one.
- *
- * The command runs the stable launcher, never the plugin's version folder: an update deletes
- * the old folder, and the user hook would then point at nothing. The entry and its command
- * are defined once, here; `doctor` reads the same entry to check it.
- */
-
-/** The `hook` subcommand that runs the notifier (`cc-smart-dev-kit hook notify`). */
-export const USER_NOTIFY_HOOK_NAME = "notify";
-
-/** The entry's timeout, in seconds: the notifier's own hook timeout. */
-export const USER_NOTIFY_TIMEOUT = 10;
-
-/** The command the user-level hook runs: the launcher, so it survives a plugin update. */
-export const USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook ${USER_NOTIFY_HOOK_NAME}`;
-
-/** The entry setup manages in Claude Code's user settings. */
+/** Retirement identifiers only. No notification implementation remains. */
+export const USER_NOTIFY_COMMAND = `${LAUNCHER_IN_SHELL} hook notify`;
 export const USER_NOTIFY_ENTRY: HookEntry = {
-  matcher: AGENT_VIEW_MATCHER,
-  hooks: [{ type: "command", command: USER_NOTIFY_COMMAND, timeout: USER_NOTIFY_TIMEOUT }],
+  matcher: "agent_needs_input|agent_completed",
+  hooks: [{ type: "command", command: USER_NOTIFY_COMMAND, timeout: 10 }],
 };
+const TMUX_LINE = "set -g allow-passthrough all";
 
-/**
- * True when a command runs `cc-smart-dev-kit hook notify` through the launcher — as setup
- * writes it, or as a person edits it (another timeout, a redirection). The launcher may be
- * the bare name or a path to it; the quotes around it are optional.
- */
 export function runsHookNotify(command: string): boolean {
   const escaped = COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(
-    `(^|[\\s/"'])${escaped}["']?\\s+hook\\s+${USER_NOTIFY_HOOK_NAME}(\\s|;|$)`,
-  ).test(command);
+  return new RegExp(`(^|[\\s/"'])${escaped}["']?\\s+hook\\s+notify(\\s|;|$)`).test(command);
 }
 
-/**
- * The managed hook after a person edited it: the same matcher and the same command, in
- * another shape. It is theirs now — setup leaves it and claims nothing (`managed-hook.ts`).
- */
 export function isEditedNotify(entry: HookEntry): boolean {
-  return entry.matcher === AGENT_VIEW_MATCHER && entry.hooks.some((h) => runsHookNotify(h.command));
-}
-
-/**
- * A hand-written entry setup replaces instead of adding a second: the same matcher and EVERY
- * handler running THIS plugin's own `dist/notify.js` (in practice exactly one). That is the
- * shape a manual test leaves behind, and its path lives in a version folder an update deletes.
- * An entry that also runs something else is partly the person's: setup never replaces it.
- */
-export function isHandWrittenNotify(entry: HookEntry): boolean {
-  return (
-    entry.matcher === AGENT_VIEW_MATCHER &&
-    entry.hooks.length > 0 &&
-    entry.hooks.every((handler) => runsPluginNotify(handler.command))
+  return entry.hooks.some(
+    (handler) => runsHookNotify(handler.command) || runsPluginNotify(handler.command),
   );
 }
 
-/** Makes the managed entry exactly `USER_NOTIFY_ENTRY`; every other hook entry stays. */
-export function applyUserNotifyHook(paths: CliPaths, dryRun: boolean): ManagedHookResult {
-  return applyManagedHook({
-    file: paths.settingsFile,
-    stateDir: paths.stateDir,
-    event: "Notification",
-    entry: USER_NOTIFY_ENTRY,
-    replaces: isHandWrittenNotify,
-    ownEdited: isEditedNotify,
-    dryRun,
-  });
-}
-
-/**
- * What the person's settings say about the managed entry:
- * - `current`: the exact managed entry is there;
- * - `edited`: the person's own version of it (the same matcher and command, edited) — it
- *   still runs, so it is information, never a failure;
- * - `elsewhere`: a hook with the same matcher that runs something else (an older hand-written
- *   copy, or the person's own);
- * - `missing`: no hook with that matcher at all.
- * A file that cannot be read, or a list of another shape, counts as missing.
- */
-export type UserNotifyHookState = "current" | "edited" | "elsewhere" | "missing";
-
-export function userNotifyHookState(file: string): UserNotifyHookState {
-  if (!existsSync(file)) return "missing";
-  let parsed: unknown;
+/** Retires only exact recorded entries. Call under setup's lock, or read-only in dry-run. */
+export function retireNotifications(
+  paths: CliPaths,
+  dryRun: boolean,
+): { changes: string[]; info: string[] } {
+  const changes: string[] = [];
+  const info: string[] = [];
   try {
-    parsed = readUserJson(file);
-  } catch {
-    return "missing";
+    const result = removeManagedHooks(paths.stateDir, paths.settingsFile, {
+      dryRun,
+      matches: (event, entry) =>
+        event === "Notification" && Bun.deepEquals(entry, USER_NOTIFY_ENTRY, true),
+    });
+    if (result.removed.length > 0)
+      changes.push(`${paths.settingsFile}: removed the retired notification hook`);
+    const { data } = readJsonObject(paths.settingsFile);
+    if (isObject(data.hooks) && Array.isArray(data.hooks.Notification)) {
+      const remaining = data.hooks.Notification.filter(
+        (entry) => isHookEntry(entry) && isEditedNotify(entry),
+      );
+      if (remaining.length > (dryRun ? result.removed.length : 0)) {
+        info.push(
+          `${paths.settingsFile}: an edited or unowned notification hook stays; remove the stale hook notify or dist/notify.js command by hand`,
+        );
+      }
+    }
+  } catch (error) {
+    info.push(
+      `Notification hooks were left unchanged: ${error instanceof Error ? error.message : String(error)}. Check the ownership record and remove stale notification commands by hand.`,
+    );
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return "missing";
-  const hooks = (parsed as { hooks?: unknown }).hooks;
-  if (typeof hooks !== "object" || hooks === null || Array.isArray(hooks)) return "missing";
-  const list = (hooks as Record<string, unknown>).Notification;
-  if (!Array.isArray(list)) return "missing";
-  if (list.some((entry) => Bun.deepEquals(entry, USER_NOTIFY_ENTRY, true))) return "current";
-  const entries = list.filter(isHookEntry);
-  if (entries.some((entry) => isEditedNotify(entry))) return "edited";
-  return entries.some((entry) => entry.matcher === AGENT_VIEW_MATCHER) ? "elsewhere" : "missing";
+  try {
+    const record = readChanged(paths.stateDir)[realTarget(paths.tmuxConfFile)];
+    if (record?.kinds.includes("file-line") && record.lines?.includes(TMUX_LINE)) {
+      const result = removeManagedLines({
+        file: paths.tmuxConfFile,
+        lines: [TMUX_LINE],
+        stateDir: paths.stateDir,
+        dryRun,
+      });
+      if (result.removed.length > 0)
+        changes.push(
+          `${paths.tmuxConfFile}: removed the retired notification passthrough line; the running tmux server was not changed`,
+        );
+      else if (existsSync(paths.tmuxConfFile)) {
+        info.push(
+          `${paths.tmuxConfFile}: the recorded notification passthrough line was edited or removed; the file stays unchanged; check it by hand if passthrough is no longer needed`,
+        );
+      }
+      // Removal succeeded (or the person already changed it). A later copy is theirs.
+      if (!dryRun) forgetManagedLines(paths.stateDir, paths.tmuxConfFile, [TMUX_LINE]);
+    } else if (
+      existsSync(paths.tmuxConfFile) &&
+      readFileSync(paths.tmuxConfFile, "utf8").split("\n").includes(TMUX_LINE)
+    ) {
+      info.push(
+        `${paths.tmuxConfFile}: the unowned notification passthrough line stays; remove it by hand if no other tool needs it`,
+      );
+    }
+  } catch (error) {
+    info.push(
+      `The tmux file was left unchanged: ${error instanceof Error ? error.message : String(error)}. Check the ownership record before removing notification passthrough by hand.`,
+    );
+  }
+  return { changes, info };
 }

@@ -4,7 +4,7 @@
  * a page looks the same on every load.
  */
 
-import { guardAsks, jobsData, needsData, updateData, worktreesData } from "./mock-d52";
+import { guardAsks, jobsData, updateData, worktreesData } from "./mock-d52";
 import { flowBuckets, historyFor, historyKeys, requestsFor, seeded, TRAFFIC } from "./mock-history";
 import { type ProjectMocks, projectMocks } from "./mock-projects";
 import { tasksPagesFor } from "./mock-tasks";
@@ -21,7 +21,6 @@ import type {
   JobsData,
   LogLine,
   MachineData,
-  NeedsData,
   OpenBreaker,
   OverviewData,
   OverviewRequests,
@@ -334,39 +333,12 @@ function settingsRows(): SettingsRow[] {
     }),
     row({
       card: "alerts",
-      choices: [
-        { label: "Needs you", value: "needs-you" },
-        { label: "A question", value: "question" },
-        { label: "Finished", value: "finished" },
-        { label: "Failed", value: "failed" },
-      ],
-      help: "Which events alert you.",
-      id: "set-events",
-      key: "alerts.events",
-      kind: "events",
-      label: "Alert me about",
-      where: "personal",
-      value: ["needs-you", "question", "failed"],
-      source: "personal",
-    }),
-    row({
-      card: "alerts",
-      help: "A short sound with the alert, so you hear it while you work somewhere else.",
-      id: "set-sound",
-      key: "alerts.sound",
-      kind: "boolean",
-      label: "Sound",
-      where: "personal",
-      value: false,
-    }),
-    row({
-      card: "alerts",
       help: "Warn me when a usage window reaches this share of its limit.",
       id: "set-limit",
       key: "alerts.usagePercent",
       kind: "number",
       unit: "%",
-      label: "Usage-limit alert at",
+      label: "Status-line usage warning at",
       where: "personal",
       value: 80,
     }),
@@ -460,7 +432,6 @@ export interface MockData {
   historyRate: OverviewRequests;
   requests: (query: RequestQuery) => RequestPage;
   keys: HistoryKeys;
-  needs: NeedsData;
   jobs: JobsData;
   guardAsks: (query: GuardQuery) => GuardAsksPage;
   worktrees: WorktreesData;
@@ -635,7 +606,6 @@ export function mockData(empty: boolean): MockData {
     requests: (query) => requestsFor(now, query, empty),
     keys: historyKeys(empty),
     jobs,
-    needs: needsData(now, empty, breakers["cc-smart-dev-kit-fable"]),
     guardAsks: (query) =>
       guardAsks(
         now,
@@ -832,7 +802,6 @@ export function mockData(empty: boolean): MockData {
         unit: "omniroute.service",
       },
       gatewayKey: empty ? "not-set-up" : "set",
-      warp: { detail: "Warp is not installed. It is optional.", installed: false },
       doctor: [
         {
           fix: null,

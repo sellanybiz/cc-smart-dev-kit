@@ -381,7 +381,7 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
           flags.jobRoute = arg === "--job-route";
           break;
         case "--workflow": {
-          // One word, comma separated: `--workflow openPr=draft,alerts.sound=true`.
+          // One word, comma separated: `--workflow openPr=draft,alerts.usagePercent=90`.
           for (const word of value(arg, argv[index + 1]).split(",")) {
             if (word.trim() !== "") workflow.push(word.trim());
           }
@@ -535,7 +535,7 @@ function listOf(text: string): string[] {
 }
 
 /** A workflow policy as the question shows it, for an example. */
-const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.events=finished failed";
+const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.usagePercent=90";
 
 /** The word that answers a list question with an empty list: Enter keeps the default instead. */
 export const NONE = "none";
@@ -659,7 +659,7 @@ export function parseBases(text: string, where = ""): Record<string, string> {
   return bases;
 }
 
-/** A workflow policy as one line of `key=value`: `openPr=draft,alerts.sound=true`. */
+/** A workflow policy as one line of `key=value`: `openPr=draft,alerts.usagePercent=90`. */
 export function shownWorkflow(workflow: Workflow): string {
   const words: string[] = [];
   for (const key of WORKFLOW_KEYS) {

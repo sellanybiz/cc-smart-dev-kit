@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { recentOf } from "@/api/adapt";
 import { useLiveEvent, useResource } from "@/api/hooks";
-import { HISTORY_REFRESH, NEEDS_REFRESH, OVERVIEW_REFRESH } from "@/api/refresh";
+import { HISTORY_REFRESH, OVERVIEW_REFRESH } from "@/api/refresh";
 import type {
   FallbackRow,
   LimitRow,
@@ -18,7 +18,6 @@ import { FilterBar } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
 import { type HistoryState, useHistoryState, useSessionNames } from "@/components/history-state";
 import { METRICS } from "@/components/metrics";
-import { NeedsList } from "@/components/needs-list";
 import { RequestsTable } from "@/components/requests-table";
 import { AppLink } from "@/components/router";
 import { SavedSwitch } from "@/components/saved-switch";
@@ -141,7 +140,6 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
       />
       <div className="flex flex-col gap-4">
         <JobsTile jobs={jobs} />
-        <NeedsPanel />
       </div>
     </div>
   );
@@ -274,49 +272,6 @@ function JobsTile({ jobs }: { jobs: OverviewData["jobs"] }) {
         <TonePill tone="ok">free</TonePill>
       )}
     </AppLink>
-  );
-}
-
-function NeedsPanel() {
-  const needs = useResource((client) => client.needs(), "", NEEDS_REFRESH);
-  const items = needs.status === "ready" ? needs.data.items : [];
-  const note = needs.status === "ready" ? needs.data.note : null;
-  return (
-    <section
-      aria-labelledby="needs-title"
-      className="flex flex-col gap-1 rounded-xl border bg-card p-6 text-card-foreground shadow-xs"
-    >
-      <h2 id="needs-title" className="flex items-center gap-2 font-semibold">
-        Needs you
-        {items.length > 0 && <TonePill tone="warn">{items.length}</TonePill>}
-      </h2>
-      {needs.status === "loading" ? (
-        <p className="text-sm text-muted-foreground">Looking…</p>
-      ) : (
-        // Always the list, with its own empty state: what it settled stays in place.
-        <NeedsList
-          compact
-          items={[...items].sort((a, b) => Date.parse(b.since) - Date.parse(a.since)).slice(0, 3)}
-          empty={
-            note === null ? (
-              <p className="py-6 text-sm text-muted-foreground">
-                <span className="text-ok" aria-hidden="true">
-                  ✓{" "}
-                </span>
-                Nothing needs you.
-              </p>
-            ) : null
-          }
-        />
-      )}
-      {note !== null && <p className="text-sm text-warn">{note}</p>}
-      <AppLink
-        href="/needs"
-        className="mt-auto pt-2 text-sm font-medium underline-offset-4 hover:underline focus-visible:underline"
-      >
-        {items.length > 3 ? `All ${items.length}, with their actions` : "Open Needs you"}
-      </AppLink>
-    </section>
   );
 }
 

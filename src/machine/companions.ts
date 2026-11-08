@@ -20,7 +20,6 @@ import type { Machine } from "./machine";
 export const MARKETPLACE_SOURCES: Readonly<Record<string, string>> = {
   thedotmack: "thedotmack/claude-mem",
   "claude-plugins-official": "anthropics/claude-plugins-official",
-  "claude-code-warp": "warpdotdev/claude-code-warp",
 };
 
 export interface Companion {
@@ -278,4 +277,11 @@ export function companionCheck(companion: Companion, state: CompanionState): Che
         text: `${companion.id} ${state.version ?? "(no version)"} is installed and on`,
       };
   }
+}
+
+/** A command rendered for copying into a shell. */
+export function showCommand(argv: readonly string[]): string {
+  return argv
+    .map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`))
+    .join(" ");
 }

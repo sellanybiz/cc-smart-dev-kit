@@ -298,11 +298,6 @@ export interface BrowserCardData {
   };
 }
 
-export interface WarpRow {
-  detail: string;
-  installed: boolean;
-}
-
 /** `src/project/init.ts` › `SettingsFilePlan`. */
 export interface SettingsFilePlan {
   file: string;
@@ -432,7 +427,6 @@ export interface MachineAnswer {
   omniroute: OmnirouteRow;
   project: ProjectCardData;
   updates: MachineUpdate;
-  warp: WarpRow;
 }
 
 // ── Settings ───────────────────────────────────────────────────────────────────────────
@@ -456,8 +450,6 @@ export type WorkflowKey =
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
-  | "alerts.events"
-  | "alerts.sound"
   | "alerts.usagePercent"
   | "switches.statusLine"
   | "switches.sessionNames"
@@ -473,7 +465,7 @@ export interface SettingsRow {
   help: string;
   id: string;
   key: WorkflowKey;
-  kind: "boolean" | "events" | "number" | "segment";
+  kind: "boolean" | "number" | "segment";
   label: string;
   where: "personal" | "project";
   readOnly: boolean;
@@ -809,37 +801,6 @@ export interface GuardAsksAnswer {
   range: string;
   sessions: string[];
   skipped: number;
-}
-
-export interface PermissionWait {
-  asker: string;
-  at: number;
-  kind: null | string;
-  project: string;
-  session: string;
-  tool: string;
-}
-
-export interface BreakerNeed {
-  held: number;
-  heldNow: null | number;
-  since: string;
-  slot: string;
-  targets: { status: null | number; target: string; until: string }[];
-}
-
-export interface DoctorFailure {
-  fix: null | string;
-  section: null | string;
-  text: string;
-}
-
-export interface NeedsAnswer {
-  breakers: BreakerNeed[];
-  doctor: { at: null | number; failures: DoctorFailure[] };
-  permissions: PermissionWait[];
-  permissionsError: null | string;
-  update: null | { at: string; from: null | string; notes: string[]; version: string };
 }
 
 export interface WorktreeItem {

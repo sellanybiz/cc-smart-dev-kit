@@ -7,7 +7,6 @@ import { ActionResultLine, useAction } from "@/components/action-button";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -15,7 +14,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 /** The groups' headings, in the design's words and order (`SETTINGS_CARDS`, `src/portal/settings.ts`). */
 const CARDS: readonly { card: SettingsRow["card"]; title: string; about: string }[] = [
   { card: "flow", title: "Work flow", about: "What happens by itself once a step is finished." },
-  { card: "alerts", title: "Alerts", about: "When the kit tells you something, and how." },
+  { card: "alerts", title: "Status line", about: "When the usage warning appears." },
   { card: "switches", title: "Switches", about: "Parts of the kit you can turn on or off." },
 ];
 
@@ -45,16 +44,10 @@ export function settingGroups(
   })).filter((group) => group.rows.length > 0);
 }
 
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
-}
-
 /** A value changed on the page, and the server's value it was changed from. */
 export type Draft = null | { base: unknown; value: unknown };
 
-/** Two values the same, for a list too (`alerts.events`). */
+/** Whether a draft still matches the server value. */
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -117,42 +110,6 @@ function Control({
           ))}
         </ToggleGroup>
       );
-    case "events": {
-      const chosen = stringList(value);
-      return (
-        <fieldset
-          aria-labelledby={labelId}
-          className="flex flex-wrap gap-x-4 gap-y-2"
-          disabled={disabled}
-        >
-          {(row.choices ?? []).map((choice) => {
-            const id = `${row.id}-${choice.value}`;
-            // The list holds at least one event (`parseWorkflowValue`): the last one stays.
-            const last = chosen.length === 1 && chosen[0] === choice.value;
-            return (
-              <span key={choice.value} className="flex items-center gap-2">
-                <Checkbox
-                  id={id}
-                  title={last ? "At least one event stays chosen" : undefined}
-                  checked={chosen.includes(choice.value)}
-                  onCheckedChange={(on) =>
-                    change(
-                      on === true
-                        ? [...chosen, choice.value]
-                        : chosen.filter((v) => v !== choice.value),
-                    )
-                  }
-                  disabled={disabled || last}
-                />
-                <label htmlFor={id} className="text-sm">
-                  {choice.label}
-                </label>
-              </span>
-            );
-          })}
-        </fieldset>
-      );
-    }
     case "number": {
       const commit = () => {
         if (typeof value === "number" && Number.isFinite(value) && !sameValue(value, row.value)) {

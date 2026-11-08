@@ -24,9 +24,6 @@ describe("where the alerts come from", () => {
     const env = hookEnv();
     const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
     expect(here.problem).toBeNull();
-    expect(here.alerts.events.value).toEqual(["needs-you", "question", "finished", "failed"]);
-    expect(here.alerts.events.source).toBe("default");
-    expect(here.alerts.sound).toEqual({ value: false, source: "default" });
     expect(here.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
 
@@ -37,8 +34,6 @@ describe("where the alerts come from", () => {
     });
     const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
     expect(here.problem).toBeNull();
-    expect(here.alerts.events).toEqual({ value: ["finished", "failed"], source: "personal" });
-    expect(here.alerts.sound).toEqual({ value: true, source: "personal" });
     expect(here.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
   });
 
@@ -52,8 +47,6 @@ describe("where the alerts come from", () => {
     });
     const here = alertsAt(cliPaths(env), repo, env);
     expect(here.problem).toBeNull();
-    expect(here.alerts.events).toEqual({ value: ["needs-you"], source: "project" });
-    expect(here.alerts.sound).toEqual({ value: true, source: "personal" });
     expect(here.alerts.usagePercent).toEqual({ value: 90, source: "project" });
   });
 
@@ -69,10 +62,9 @@ describe("where the alerts come from", () => {
 describe("a folder that is no project: no line at all", () => {
   test("a hook input with no cwd: the person's file and the defaults", () => {
     const env = hookEnv();
-    writePersonal(env, { alerts: { sound: true } });
+    writePersonal(env, { alerts: { usagePercent: 70 } });
     const here = alertsAt(cliPaths(env), null, env);
     expect(here.problem).toBeNull();
-    expect(here.alerts.sound.value).toBe(true);
   });
 
   test("a cwd that is not a folder, and one not in git: silent, not a failure", () => {
@@ -89,8 +81,6 @@ describe("a file it cannot use: what can be read, and one line", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
     const here = alertsAt(cliPaths(env), repo, env);
-    expect(here.alerts.events.source).toBe("default");
-    expect(here.alerts.sound.value).toBe(false);
     expect(here.problem).toContain("cc-smart-dev-kit.json: worktree: unknown field");
     expect(here.problem).toStartWith(
       "cc-smart-dev-kit: the alerts use the settings that can be read (",
@@ -122,9 +112,7 @@ describe("a file it cannot use: what can be read, and one line", () => {
     });
     const here = alertsAt(cliPaths(env), repo, env);
     expect(here.problem).toContain(`Invalid ${file}: not valid JSON`);
-    expect(here.alerts.events).toEqual({ value: ["needs-you"], source: "project" });
     expect(here.alerts.usagePercent).toEqual({ value: 90, source: "project" });
-    expect(here.alerts.sound).toEqual({ value: false, source: "default" });
   });
 
   test("a project file that needs a newer plugin: the defaults, and the line says so", () => {
@@ -132,7 +120,6 @@ describe("a file it cannot use: what can be read, and one line", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99", fieldFromTheFuture: true });
     const here = alertsAt(cliPaths(env), repo, env);
-    expect(here.alerts.events.source).toBe("default");
     expect(here.problem).toContain("cc-smart-dev-kit.json");
   });
 });

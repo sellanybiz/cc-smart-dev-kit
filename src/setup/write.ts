@@ -333,6 +333,23 @@ function recordChange(
   return false;
 }
 
+/** Release only these exact line claims, preserving other kinds, lines and the baseline. */
+export function forgetManagedLines(stateDir: string, file: string, lines: readonly string[]): void {
+  const target = realTarget(file);
+  const files = readChanged(stateDir);
+  const entry = files[target];
+  if (!entry?.kinds.includes("file-line") || !entry.lines?.some((line) => lines.includes(line)))
+    return;
+  const remaining = entry.lines.filter((line) => !lines.includes(line));
+  if (remaining.length > 0) entry.lines = remaining;
+  else {
+    delete entry.lines;
+    entry.kinds = entry.kinds.filter((kind) => kind !== "file-line");
+    if (entry.kinds.length === 0) delete files[target];
+  }
+  writeChanged(stateDir, files);
+}
+
 /** Restore took everything of cc-smart-dev-kit out of `file`: stop tracking it. */
 export function forgetChange(stateDir: string, file: string): void {
   const files = readChanged(stateDir);

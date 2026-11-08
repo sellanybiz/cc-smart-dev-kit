@@ -22,21 +22,12 @@
  * does (`resolve.ts`). `switches.leadHint` lives in the person's file alone.
  *
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
- * without the person, every alert is on.
+ * without the person, and the status-line usage warning starts at 85 percent.
  *
  * **A group** (`alerts`, `fixesAfterReview`) is merged field by field like the rest,
- * and its fields are named with a dot (`alerts.sound`).
+ * and its fields are named with a dot (`alerts.usagePercent`).
  */
 import { z } from "zod";
-
-/** The four moments an alert is worth having. */
-export const ALERT_EVENTS = ["needs-you", "question", "finished", "failed"] as const;
-export type AlertEvent = (typeof ALERT_EVENTS)[number];
-
-const alertEventsSchema = z
-  .array(z.enum(ALERT_EVENTS))
-  .min(1)
-  .refine((events) => new Set(events).size === events.length, "an event is listed twice");
 
 /**
  * What a number setting takes: a whole number from `min` (up to `max`, when there is one), or
@@ -206,13 +197,13 @@ export const workflowSchema = z.strictObject({
     .optional(),
   alerts: z
     .strictObject({
-      /** Which moments alert. Default: all four. */
-      events: alertEventsSchema.optional(),
-      /** A sound with the alert. Default: no sound. */
-      sound: z.boolean().optional(),
+      /** Retired notification keys load but never reach runtime settings. */
+      events: z.unknown().optional(),
+      sound: z.unknown().optional(),
       /** The plan usage, in percent, a warning starts at. Default: 85. */
       usagePercent: numberField("alerts.usagePercent"),
     })
+    .transform(({ events: _events, sound: _sound, ...usage }) => usage)
     .optional(),
   /** 2.0 removed the crew; an old file's `crew` keys load and are ignored. */
   crew: z.unknown().optional(),
@@ -272,8 +263,6 @@ export const workflowDefaults = {
     readyLabel: "kit:ready",
   },
   alerts: {
-    events: [...ALERT_EVENTS] as AlertEvent[],
-    sound: false,
     usagePercent: 85,
   },
 } as const;
@@ -310,8 +299,6 @@ export type WorkflowKey =
   | "issues.foundLabel"
   | "issues.fixedLabel"
   | "issues.readyLabel"
-  | "alerts.events"
-  | "alerts.sound"
   | "alerts.usagePercent"
   | `switches.${SwitchName}`;
 
@@ -334,8 +321,6 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.events",
-  "alerts.sound",
   "alerts.usagePercent",
 ];
 
@@ -506,23 +491,6 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       };
     }
     return { ok: true, value: [...new Set(named)] };
-  }
-  if (key === "alerts.events") {
-    const named = value
-      .split(/[,\s]+/)
-      .map((word) => word.trim())
-      .filter((word) => word !== "");
-    if (named.length === 0)
-      return { ok: false, why: `alerts.events is a list of ${ALERT_EVENTS.join(", ")}` };
-    const unknown = named.filter((word) => !ALERT_EVENTS.includes(word as AlertEvent));
-    if (unknown.length > 0) {
-      return {
-        ok: false,
-        why: `alerts.events: unknown ${unknown.join(", ")} (one of ${ALERT_EVENTS.join(", ")})`,
-      };
-    }
-    const events = [...new Set(named)] as AlertEvent[];
-    return { ok: true, value: events };
   }
   if (value === "true" || value === "false") return { ok: true, value: value === "true" };
   return { ok: false, why: `${key} is true or false` };

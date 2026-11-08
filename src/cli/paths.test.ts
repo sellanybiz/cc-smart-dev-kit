@@ -70,12 +70,9 @@ describe("the plugin's paths on Windows", () => {
     );
   });
 
-  test("the two state files beside the config folder, not under the home", () => {
+  test("the key file beside the config folder, not under the home", () => {
     expect(paths.tavilyKeyFile).toBe(
       join(USERPROFILE, ".claude", "cc-smart-dev-kit", "tavily.key"),
-    );
-    expect(paths.notifyConfigFile).toBe(
-      join(USERPROFILE, ".claude", "cc-smart-dev-kit", "notify.json"),
     );
   });
 });

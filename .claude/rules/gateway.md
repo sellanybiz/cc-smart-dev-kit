@@ -140,7 +140,7 @@ safety checks), their ids in § Names. One rule set for all of them:
   one is a backend, the request is held and then answered with the breaker's 429
   (`slotRequest`, `holdRequest`). **Anthropic's own answers always pass unchanged** (a stream silent for
   `timeouts.streamIdleMs` is ended, above, and nothing else), its quota
-  429 included: Claude Code's auto-continue, its watchdog and our StopFailure alert read the
+  429 included: Claude Code's auto-continue and its watchdog read the
   real headers. A last target that is Anthropic is never held. **The one exception (the
   owner's D65):** a Claude target behind the first, at a plan limit the router already knows
   (`knownLimit`: in `limits`, its reset still ahead) is skipped while it rests, the last one

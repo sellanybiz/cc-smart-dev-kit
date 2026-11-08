@@ -609,20 +609,6 @@ function MachinePage({ data }: { data: MachineData }) {
         <OmnirouteCard data={data} />
         <ClaudeMemCard facts={data.claudeMem} />
         {data.autoMode !== null && <AutoModeCard change={data.autoMode} />}
-        <Card>
-          <CardHeader>
-            <CardTitle>Warp</CardTitle>
-            <CardDescription>
-              Optional. Installing or removing it needs sudo, so the portal never runs it.
-            </CardDescription>
-            <CardAction>
-              <TonePill tone={data.warp.installed ? "ok" : "info"}>
-                {data.warp.installed ? "installed" : "not installed"}
-              </TonePill>
-            </CardAction>
-          </CardHeader>
-          <CardContent className="text-sm">{data.warp.detail}</CardContent>
-        </Card>
         <WorktreesCard />
       </PagePad>
     </>

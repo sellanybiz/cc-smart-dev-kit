@@ -8,7 +8,7 @@ import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext } from "../actions";
 import type { PortalContext } from "../context";
-import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder, warpRow } from "../facts";
+import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { gatewayKeyState, overviewAnswer } from "./data";
 import { testPortalContext } from "./test-context";
@@ -175,46 +175,6 @@ describe("what holds the router's port", () => {
     expect(holder?.check).toEqual({
       ok: true,
       text: `the router's socket (${SOCKET_NAME}) holds 127.0.0.1:${port}`,
-    });
-  });
-});
-
-describe("the Warp card's version read", () => {
-  test("the package manager is asked off the loop, and doctor's line is the card's line", async () => {
-    // An Ubuntu machine with dpkg: the card's version comes from `dpkg-query`, awaited through
-    // `runRead`; `Machine.run` (Bun.spawnSync) throws if it is ever reached.
-    const which = (name: string) =>
-      name === "apt-get" || name === "dpkg-query" ? `/usr/bin/${name}` : null;
-    const machine: PortalContext["machine"] = {
-      arch: "x64",
-      confirm: null,
-      exists: () => false,
-      fetchText: async () => "",
-      macApp: "/Applications/Warp.app",
-      osRelease: () => 'NAME="Ubuntu"\nID=ubuntu\n',
-      platform: "linux",
-      run: () => {
-        throw new Error("the Warp version was read through the blocking machine runner");
-      },
-      runOnTerminal: () => 1,
-      spawnDetached: () => undefined,
-      which,
-    };
-    const { ctx } = world(
-      {},
-      {
-        machine,
-        runRead: async (cmd) => {
-          expect(cmd).toEqual(["dpkg-query", "--status", "warp-terminal"]);
-          return { exitCode: 0, output: "Status: install ok installed\nVersion: 0.1.0\n" };
-        },
-        which,
-      },
-    );
-    expect(await warpRow(ctx)).toEqual({
-      detail:
-        "Warp 0.1.0 is installed, without its Claude plugin (optional: cc-smart-dev-kit setup --warp)",
-      installed: true,
     });
   });
 });

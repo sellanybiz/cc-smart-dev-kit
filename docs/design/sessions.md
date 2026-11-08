@@ -14,7 +14,7 @@ asked for (`src/sessions/`, `src/worktrees/`):
   open a second copy. `--open` reopens what was open
   when the machine last went down or a window closed; the whole rule, and why one session
   alone cannot be told from `/exit`, is in the file's header. Which terminal does the opening
-  is picked from the machine (Warp wins where it is; XFCE Terminal is Linux's fallback), and
+  is picked from the machine (XFCE Terminal on Linux, Windows Terminal on Windows), and
   a session already running is never opened twice.
 - **`cc-smart-dev-kit worktrees`** judges every worktree of the repo against
   `origin/<base>`: the verdict is a pure function of the facts (`verdict.ts`), so every reason

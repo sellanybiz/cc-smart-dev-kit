@@ -187,9 +187,9 @@ describe("the flags", () => {
   });
 
   test("the workflow words become the policy the schema holds", async () => {
-    expect(workflowFromFlags(["openPr=draft", "alerts.events=finished failed"])).toEqual({
+    expect(workflowFromFlags(["openPr=draft", "alerts.usagePercent=90"])).toEqual({
       openPr: "draft",
-      alerts: { events: ["finished", "failed"] },
+      alerts: { usagePercent: 90 },
     });
     expect(() => workflowFromFlags(["autoMerge=maybe"])).toThrow("autoMerge is true or false");
     expect(() => workflowFromFlags(["switches.statusLine=true"])).toThrow(
@@ -198,8 +198,8 @@ describe("the flags", () => {
   });
 
   test("a policy is shown as one line, and read back", async () => {
-    expect(shownWorkflow({ openPr: "draft", alerts: { sound: true } })).toBe(
-      "openPr=draft,alerts.sound=true",
+    expect(shownWorkflow({ openPr: "draft", alerts: { usagePercent: 90 } })).toBe(
+      "openPr=draft,alerts.usagePercent=90",
     );
     expect(shownBases({ "hotfix/": "main" })).toBe("hotfix/=main");
   });
@@ -419,22 +419,23 @@ describe("the defaults from the repo", () => {
       },
     };
     // One flat key: the two groups the line does not name survive whole.
-    expect(
-      defaultAnswers(existing, facts, { dryRun: false, yes: true, workflow: ["autoPush=true"] })
-        .workflow,
-    ).toEqual({
+    const flatRaw: unknown = defaultAnswers(existing, facts, {
+      dryRun: false,
+      yes: true,
+      workflow: ["autoPush=true"],
+    }).workflow;
+    expect(flatRaw).toEqual({
       alerts: { sound: true, usagePercent: 80 },
       fixesAfterReview: { lines: 120, percent: 30 },
       autoPush: true,
     });
     // One dotted key: only that field changes, its group's other fields stay.
-    expect(
-      defaultAnswers(existing, facts, {
-        dryRun: false,
-        yes: true,
-        workflow: ["fixesAfterReview.lines=200"],
-      }).workflow,
-    ).toEqual({
+    const dottedRaw: unknown = defaultAnswers(existing, facts, {
+      dryRun: false,
+      yes: true,
+      workflow: ["fixesAfterReview.lines=200"],
+    }).workflow;
+    expect(dottedRaw).toEqual({
       alerts: { sound: true, usagePercent: 80 },
       fixesAfterReview: { lines: 200, percent: 30 },
     });
@@ -456,7 +457,7 @@ describe("the questions on a terminal", () => {
       '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
       '[3/8] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
       '[4/8] The fast check a session runs before it stops: one command ("none" for none) [none] ',
-      '[5/8] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.events=finished failed ("none" for none) ',
+      '[5/8] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.usagePercent=90 ("none" for none) ',
       "[6/8] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
       "[7/8] Name each session after its task? [Y/n] ",
       "[8/8] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
@@ -762,7 +763,7 @@ describe("the run", () => {
         {
           requires: ">=1.0",
           worktrees: { base: "main" },
-          workflow: { alerts: { sound: true }, fixesAfterReview: { lines: 120 } },
+          workflow: { alerts: { usagePercent: 90 }, fixesAfterReview: { lines: 120 } },
         },
         null,
         2,
@@ -776,7 +777,7 @@ describe("the run", () => {
       workflow: Record<string, unknown>;
     };
     expect(written.workflow).toEqual({
-      alerts: { sound: true },
+      alerts: { usagePercent: 90 },
       fixesAfterReview: { lines: 120 },
       autoPush: true,
     });

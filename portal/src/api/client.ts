@@ -27,7 +27,6 @@ import type {
   HistoryQuery,
   JobsData,
   MachineData,
-  NeedsData,
   OverviewData,
   OverviewRequests,
   PortalFacts,
@@ -80,7 +79,6 @@ export interface PortalClient {
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
-  needs(): Promise<NeedsData>;
   guardAsks(query: GuardQuery): Promise<GuardAsksPage>;
   worktrees(): Promise<WorktreesData>;
   update(): Promise<UpdateData>;
@@ -215,7 +213,6 @@ export function mockClient(scenario: MockScenario): PortalClient {
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
     onJobs: () => () => {},
-    needs: () => answer(() => data.needs),
     guardAsks: (query) => answer(() => data.guardAsks(query)),
     worktrees: () => answer(() => data.worktrees),
     update: () => answer(() => data.update),
@@ -338,10 +335,6 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
           listener(adapt.jobsOf(message.data));
         }
       }),
-    needs: async () => {
-      const [answer, frame] = await Promise.all([get<Wire.NeedsAnswer>("/api/needs"), facts()]);
-      return adapt.needsOf(answer, frame.version);
-    },
     guardAsks: async (query) =>
       adapt.guardAsksOf(await get<Wire.GuardAsksAnswer>(`/api/guard-asks?${guardQuery(query)}`)),
     worktrees: async () => {

@@ -18,7 +18,6 @@
  */
 
 import {
-  type AlertEvent,
   type ResolvedWorkflow,
   resolvedValueOf,
   type WorkflowKey,
@@ -26,7 +25,7 @@ import {
 } from "./workflow-adapter";
 
 /** One row's control. */
-export type SettingKind = "boolean" | "events" | "number" | "segment";
+export type SettingKind = "boolean" | "number" | "segment";
 
 export interface SettingChoice {
   label: string;
@@ -135,35 +134,11 @@ export const SETTINGS: readonly SettingSpec[] = [
   },
   {
     card: "alerts",
-    choices: [
-      { label: "Needs you", value: "needs-you" },
-      { label: "A question", value: "question" },
-      { label: "Finished", value: "finished" },
-      { label: "Failed", value: "failed" },
-    ],
-    help: "Which events alert you.",
-    id: "set-events",
-    key: "alerts.events",
-    kind: "events",
-    label: "Alert me about",
-    where: "personal",
-  },
-  {
-    card: "alerts",
-    help: "A short sound with the alert, so you hear it while you work somewhere else.",
-    id: "set-sound",
-    key: "alerts.sound",
-    kind: "boolean",
-    label: "Sound",
-    where: "personal",
-  },
-  {
-    card: "alerts",
     help: "Warn me when a usage window reaches this share of its limit.",
     id: "set-limit",
     key: "alerts.usagePercent",
     kind: "number",
-    label: "Usage-limit alert at",
+    label: "Status-line usage warning at",
     unit: "%",
     where: "personal",
   },
@@ -208,7 +183,7 @@ export const SETTINGS: readonly SettingSpec[] = [
 /** The card headings, in the design's words, in the design's order. */
 export const SETTINGS_CARDS: readonly { card: SettingSpec["card"]; title: string }[] = [
   { card: "flow", title: "Work flow" },
-  { card: "alerts", title: "Alerts" },
+  { card: "alerts", title: "Status line" },
   { card: "switches", title: "Switches" },
 ];
 
@@ -258,14 +233,6 @@ export function settingSpec(key: unknown): SettingSpec | undefined {
 /** What one POST may carry, or why it is refused — in the words the command line uses. */
 export type ParsedSetting = { ok: true; value: unknown } | { ok: false; why: string };
 
-/** The four moments, in the module's own spelling (`ALERT_EVENTS` in `src/workflow/schema.ts`). */
-const ALERT_EVENTS: readonly AlertEvent[] = ["needs-you", "question", "finished", "failed"];
-
-/** True when a string is one of the four. */
-function isAlertEvent(value: string): value is AlertEvent {
-  return ALERT_EVENTS.some((event) => event === value);
-}
-
 /**
  * One value from a POST body, checked against the row it belongs to. A value outside the
  * row's own set is refused with the words the command line refuses it in
@@ -289,27 +256,6 @@ export function parseSettingValue(spec: SettingSpec, value: unknown): ParsedSett
         return { ok: false, why: `${key} is a whole number 1-100` };
       }
       return { ok: true, value };
-    }
-    case "events": {
-      if (!Array.isArray(value) || value.length === 0) {
-        return { ok: false, why: `${key} is a list of ${ALERT_EVENTS.join(", ")}` };
-      }
-      const named = value.filter((one): one is string => typeof one === "string");
-      if (named.length !== value.length) {
-        return { ok: false, why: `${key} is a list of ${ALERT_EVENTS.join(", ")}` };
-      }
-      const unknown = named.filter((one) => !isAlertEvent(one));
-      if (unknown.length > 0) {
-        return {
-          ok: false,
-          why: `${key}: unknown ${unknown.join(", ")} (one of ${ALERT_EVENTS.join(", ")})`,
-        };
-      }
-      const events = named.filter(isAlertEvent);
-      if (new Set(events).size !== events.length) {
-        return { ok: false, why: `${key}: an event is listed twice` };
-      }
-      return { ok: true, value: events };
     }
   }
 }

@@ -73,8 +73,6 @@ export interface CliPaths extends RouterPaths {
   workflowConfigFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
   routerSocketFile: string;
-  /** The notifier's settings: `~/.claude/cc-smart-dev-kit/notify.json`. */
-  notifyConfigFile: string;
   /** The tmux line's file: `~/.tmux.conf` (setup adds one managed line there). */
   tmuxConfFile: string;
   /** The Tavily key file an owner may write: `<config dir>/cc-smart-dev-kit/tavily.key` (0600). */
@@ -176,7 +174,6 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "user",
       "cc-smart-dev-kit-router.socket",
     ),
-    notifyConfigFile: join(claudeConfigDir, "cc-smart-dev-kit", "notify.json"),
     workflowConfigFile: join(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
     tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),

@@ -3,7 +3,7 @@
  *
  * They follow the approved design (the owner's mockups, 2026-10-16), with two corrections
  * the owner asked for: the sample Bun version reads 1.4.3, and every "fix it" command is the
- * command that really works (`cc-smart-dev-kit setup --warp`,
+ * command that really works (for example,
  * `claude plugin enable frontend-design@claude-plugins-official`).
  *
  * Nothing here invents a number. Where the portal cannot know something — Claude Code's own
@@ -37,7 +37,6 @@ import type {
   SettingsData,
   SlotRow,
   SwitchFacts,
-  WarpRow,
 } from "./facts";
 import { settingsLineNote } from "./facts";
 import { barePage, command, escapeHtml, LOCK_ICON, layout, type Shell, switchButton } from "./page";
@@ -517,20 +516,6 @@ function settingControl(row: SettingsRow, disabled: boolean): string {
           return `<button type="button" aria-pressed="${pressed}"${action}>${escapeHtml(choice.label)}</button>`;
         })
         .join("")}</div>`;
-    case "events": {
-      // The resolver's value, taken as the list of names it is: anything else is no name.
-      const chosen = Array.isArray(row.value)
-        ? row.value.filter((one): one is string => typeof one === "string")
-        : [];
-      return `<div role="group" aria-labelledby="${row.id}" class="row events"${disabled ? "" : ` data-events="${row.key}"`}>${(
-        row.choices ?? []
-      )
-        .map(
-          (choice) =>
-            `<label class="row tap"><input type="checkbox" value="${escapeHtml(choice.value)}"${chosen.includes(choice.value) ? " checked" : ""}${disabled ? " disabled" : ""}>${escapeHtml(choice.label)}</label>`,
-        )
-        .join("")}</div>`;
-    }
     case "number":
       return `<div class="row numrow"><input type="number" min="1" max="100" value="${escapeHtml(String(row.value))}" aria-labelledby="${row.id}" class="numinput"${disabled ? " disabled" : ` data-setting="${row.key}"`}>${row.unit === undefined ? "" : `<span class="small">${row.unit}</span>`}</div>`;
   }
@@ -584,7 +569,7 @@ function autoMergeBox(data: SettingsData): string {
 const SHIELD_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"></path><path d="M12 9v4"></path><path d="M12 16h.01"></path></svg>`;
 
 /**
- * The Settings page: what Claude does after a step, what alerts the person, and the switches
+ * The Settings page: what Claude does after a step, the usage warning, and the switches
  * for this computer — each row with the value now and where it came from (`yours`,
  * `this project`, `default`). A row the project sets is read-only here and says where to
  * change it; the footer says the rule once (the project's choice wins).
@@ -607,7 +592,7 @@ ${rows
   const body = `<div class="pagehead">
 <div>
 <h1>Settings</h1>
-<p>What Claude does after it finishes a step, what alerts you, and the switches for this computer. Each row says where its value comes from.</p>
+<p>What Claude does after it finishes a step, the status-line usage warning, and the switches for this computer. Each row says where its value comes from.</p>
 </div>
 </div>
 ${
@@ -656,7 +641,6 @@ export interface MachineData {
   /** The card about the repo the portal was started in, and the form that sets it up. */
   project: ProjectCardData;
   updates: UpdateFacts;
-  warp: WarpRow;
 }
 
 function clockFrom(ms: number): string {
@@ -1100,13 +1084,7 @@ ${jobsCard}
 <div class="grid cards">${data.companions.map(companionCard).join("")}</div>
 </section>
 
-<section aria-labelledby="warp-h" class="card pad">
-<div class="spread"><h2 id="warp-h">Warp terminal</h2><span class="${data.warp.installed ? "ok" : "muted"}">${data.warp.installed ? "✓ installed" : "not installed"}</span></div>
-<p class="muted">${escapeHtml(data.warp.detail)}</p>
-<p class="small muted">Both commands need <span class="mono">sudo</span>, which this page never runs: copy one into your own terminal. <span class="mono">${COMMAND} setup --warp</span> shows each step and asks before it changes anything.</p>
-${command(`${COMMAND} setup --warp`, "Copy the Warp install command")}
-${command(`${COMMAND} setup --remove-warp`, "Copy the Warp remove command")}
-</section>
+
 
 ${omnirouteCard}
 ${browserCard(data.browser, browserChecks, shell.facts.platform)}

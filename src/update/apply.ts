@@ -12,7 +12,6 @@ import { COMMAND, DEPENDENCIES, MARKETPLACE, PLUGIN, PLUGIN_ID } from "../build-
 import { type Dependency, readManifestDependencies } from "../build-info/manifest";
 import type { CheckFailed } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
-import { TOAST_SHELL, windowsToastArgv } from "../hooks/windows-toast";
 import {
   companionCheck,
   companionInstall,
@@ -198,69 +197,9 @@ export function routerNeedsSetup(paths: CliPaths): boolean {
 /** Said after an update whose router changed. */
 export const ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 
-/**
- * Said after an update when agent view's user-level notification hook is missing: only a
- * person's `setup` writes it (a background update never runs setup), so the next update says
- * so rather than leaving agent view silent.
- */
-export const NOTIFY_HOOK_SETUP_HINT = `agent view's notification hook is missing: ${COMMAND} setup writes it`;
-
-/** A version safe to put in a notification and a shell-free argv: else a plain word. */
+/** A version safe to show in command output: else a plain word. */
 function shownVersion(version: null | string): string {
   return version !== null && /^[0-9A-Za-z.+-]{1,40}$/.test(version) ? version : "a new version";
-}
-
-/** The notification's text, with a hint for each thing the update left for a person's setup. */
-export function installedText(
-  version: null | string,
-  routerChanged = false,
-  notifyHookMissing = false,
-): string {
-  const text = `${PLUGIN} ${shownVersion(version)} installed; restart Claude sessions to load it`;
-  const hints = [
-    ...(routerChanged ? [ROUTER_SETUP_HINT] : []),
-    ...(notifyHookMissing ? [NOTIFY_HOOK_SETUP_HINT] : []),
-  ];
-  return hints.length === 0 ? text : `${text}; ${hints.join("; ")}`;
-}
-
-/**
- * The command that shows a desktop notification here, or null when there is none:
- * `notify-send` on Linux, `osascript` on macOS, and a PowerShell toast on Windows
- * (`windowsToastArgv`: the title and the text cannot change the program). `title` is the
- * notification's summary (the plugin's name by default). `critical` asks the desktop to
- * keep the notification on screen (and show it even under Do Not Disturb): for the alerts
- * where the person must act — a Windows reminder toast for the same reason.
- */
-export function notifyCommand(
-  text: string,
-  platform: NodeJS.Platform,
-  which: (command: string) => null | string,
-  title: string = PLUGIN,
-  critical = false,
-): null | string[] {
-  if (platform === "linux") {
-    const notifySend = which("notify-send");
-    return notifySend === null
-      ? null
-      : [notifySend, ...(critical ? ["--urgency=critical"] : []), title, text];
-  }
-  if (platform === "darwin") {
-    const osascript = which("osascript");
-    // `text` holds only fixed words and a checked version: no quote can end the string.
-    return osascript === null
-      ? null
-      : [
-          osascript,
-          "-e",
-          `display notification ${JSON.stringify(text)} with title ${JSON.stringify(title)}`,
-        ];
-  }
-  if (platform === "win32") {
-    const powershell = which(TOAST_SHELL);
-    return powershell === null ? null : windowsToastArgv(powershell, title, text, critical);
-  }
-  return null;
 }
 
 /**

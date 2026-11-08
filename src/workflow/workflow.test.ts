@@ -71,15 +71,10 @@ describe("the workflow schema", () => {
     expect(workflowSchema.safeParse({ alerts: { usagePercent: 80 } }).success).toBe(true);
   });
 
-  test("alerts.events refuses an unknown event, an empty list, and a doubled one", () => {
-    expect(workflowSchema.safeParse({ alerts: { events: ["done"] } }).success).toBe(false);
-    expect(workflowSchema.safeParse({ alerts: { events: [] } }).success).toBe(false);
-    expect(workflowSchema.safeParse({ alerts: { events: ["question", "question"] } }).success).toBe(
-      false,
-    );
-    expect(workflowSchema.safeParse({ alerts: { events: ["finished", "failed"] } }).success).toBe(
-      true,
-    );
+  test("retired notification keys are ignored", () => {
+    expect(workflowSchema.parse({ alerts: { events: ["finished"], sound: true } })).toEqual({
+      alerts: {},
+    });
   });
 
   test("D17: fixesAfterReview takes lines, files and percent, each a whole number 0 or more", () => {
@@ -126,25 +121,6 @@ describe("one value, as a person types it", () => {
     });
   });
 
-  test("the events are read from a comma list, without doubles", () => {
-    expect(parseWorkflowValue("alerts.events", "needs-you,question")).toEqual({
-      ok: true,
-      value: ["needs-you", "question"],
-    });
-    expect(parseWorkflowValue("alerts.events", "finished finished")).toEqual({
-      ok: true,
-      value: ["finished"],
-    });
-    expect(parseWorkflowValue("alerts.events", "done")).toEqual({
-      ok: false,
-      why: "alerts.events: unknown done (one of needs-you, question, finished, failed)",
-    });
-    expect(parseWorkflowValue("alerts.events", " ")).toEqual({
-      ok: false,
-      why: "alerts.events is a list of needs-you, question, finished, failed",
-    });
-  });
-
   test("D17: the limits after a review are whole numbers, 0 or more", () => {
     expect(parseWorkflowValue("fixesAfterReview.lines", "0")).toEqual({ ok: true, value: 0 });
     expect(parseWorkflowValue("fixesAfterReview.percent", "150")).toEqual({ ok: true, value: 150 });
@@ -157,21 +133,21 @@ describe("one value, as a person types it", () => {
 
 describe("setting one field of an object", () => {
   test("a nested field keeps its group's other fields", () => {
-    const before = { alerts: { sound: true, usagePercent: 70 } };
-    expect(setWorkflowValue(before, "alerts.usagePercent", 90)).toEqual({
-      alerts: { sound: true, usagePercent: 90 },
+    const before = { fixesAfterReview: { files: 3, lines: 70 } };
+    expect(setWorkflowValue(before, "fixesAfterReview.lines", 90)).toEqual({
+      fixesAfterReview: { files: 3, lines: 90 },
     });
   });
 
   test("unsetting the last field of a group drops the group", () => {
-    expect(unsetWorkflowValue({ alerts: { sound: true } }, "alerts.sound")).toEqual({});
+    expect(unsetWorkflowValue({ alerts: { usagePercent: 70 } }, "alerts.usagePercent")).toEqual({});
   });
 
   test("unsetting one of two keeps the other", () => {
     expect(
-      unsetWorkflowValue({ alerts: { sound: true, usagePercent: 70 } }, "alerts.sound"),
+      unsetWorkflowValue({ fixesAfterReview: { files: 3, lines: 70 } }, "fixesAfterReview.files"),
     ).toEqual({
-      alerts: { usagePercent: 70 },
+      fixesAfterReview: { lines: 70 },
     });
   });
 
@@ -194,11 +170,7 @@ describe("resolveWorkflow: the order", () => {
     expect(resolved.deleteBranch).toEqual({ value: false, source: "default" });
     expect(resolved.reviewBeforePush).toEqual({ value: true, source: "default" });
     expect(resolved.clearWorktreeAfterMerge).toEqual({ value: false, source: "default" });
-    expect(resolved.alerts.events).toEqual({
-      value: ["needs-you", "question", "finished", "failed"],
-      source: "default",
-    });
-    expect(resolved.alerts.sound).toEqual({ value: false, source: "default" });
+    expect(Object.keys(resolved.alerts)).toEqual(["usagePercent"]);
     expect(resolved.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
 
@@ -276,9 +248,7 @@ describe("resolveWorkflow: the order", () => {
     writePersonal(env, { autoCommit: true, alerts: { sound: true, usagePercent: 70 } });
     const resolved = resolveWorkflow(pathsFor(env), null);
     expect(resolved.autoCommit).toEqual({ value: true, source: "personal" });
-    expect(resolved.alerts.sound).toEqual({ value: true, source: "personal" });
     expect(resolved.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
-    expect(resolved.alerts.events.source).toBe("default");
   });
 
   test("the project wins field by field, and only where it says something", () => {
@@ -290,7 +260,6 @@ describe("resolveWorkflow: the order", () => {
     const resolved = resolveWorkflow(pathsFor(env), config);
     expect(resolved.autoCommit).toEqual({ value: true, source: "personal" });
     expect(resolved.openPr).toEqual({ value: "draft", source: "project" });
-    expect(resolved.alerts.sound).toEqual({ value: true, source: "personal" });
     expect(resolved.alerts.usagePercent).toEqual({ value: 60, source: "project" });
   });
 

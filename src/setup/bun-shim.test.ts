@@ -203,8 +203,7 @@ describe("the hooks' bun shim", () => {
       const command = expand(hook.command);
       expect(command).toStartWith(`"${SHIM}" `);
       // A guard fails closed: with no bun it asks, and its entry says `onFailure: "block"`,
-      // so a hook that cannot start blocks the tool call. Every other hook is quiet — the
-      // notifier is wired on PreToolUse too, and is not a guard.
+      // so a hook that cannot start blocks the tool call. Every other hook is quiet.
       const bundle = (command.match(/\/dist\/([a-z-]+)\.js"$/) ?? [])[1] ?? "";
       expect(command).toBe(
         `"${SHIM}" ${event === "PreToolUse" && GUARD_BUNDLES.has(bundle) ? "--missing=ask" : "--missing=quiet"} "${join(PLUGIN, "dist", `${bundle}.js`)}"`,
@@ -219,12 +218,10 @@ describe("the hooks' bun shim", () => {
         "PreToolUse",
         "PostToolUse",
         "PostToolUseFailure",
-        "Notification",
         "PermissionRequest",
         "PostModelSwitch",
         "SessionStart",
         "Stop",
-        "StopFailure",
         "SubagentStart",
         "SubagentStop",
         "UserPromptSubmit",

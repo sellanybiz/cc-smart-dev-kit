@@ -8,12 +8,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, VERSION } from "../build-info";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
-import { ALERT_WORKER_COMMAND } from "../hooks/stop-failure";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { TAKE_OVER_KEY_NOTE } from "../machine/claude-mem-choices";
 import { USAGE as OMNIROUTE_USAGE } from "../omniroute/commands";
 import { PORTAL_USAGE } from "../portal/command";
-import { USER_NOTIFY_HOOK_NAME } from "../setup/user-notify-hook";
 import { WORKFLOW_USAGE } from "../workflow/commands";
 import { workflowDefaults } from "../workflow/schema";
 import {
@@ -51,7 +49,7 @@ describe("the command table", () => {
     const notCommands = new Set(["undefined", '"--version"', '"--help"', '"-h"']);
     const names = dispatcherCases()
       .filter((one) => !notCommands.has(one))
-      .map((one) => (one === "ALERT_WORKER_COMMAND" ? ALERT_WORKER_COMMAND : one.slice(1, -1)));
+      .map((one) => one.slice(1, -1));
     // The dispatcher really has the commands this test says it has, so an empty read fails too.
     expect(names).toContain("setup");
     expect(names).toContain("worktrees");
@@ -72,12 +70,10 @@ describe("the command table", () => {
     expect(helpTextFor(["update"])).toStartWith(UPDATE_USAGE);
   });
 
-  test("CM-12: the hook help names the one hook left, from the constant that names it", () => {
-    // The worktree engine's names are retired, so `notify` is the one name: never typed here,
-    // read from the constant the notifier's own wiring uses.
-    expect(USER_NOTIFY_HOOK_NAME).toBe("notify");
-    expect(helpTextFor(["hook"])?.split("\n")[0]).toBe(
-      `Usage: ${COMMAND} hook <${USER_NOTIFY_HOOK_NAME}>`,
+  test("the removed alert worker has no help or dispatch", () => {
+    expect(helpTextFor(["alert-worker"])).toBeNull();
+    expect(helpTextFor(["hook"])).toBe(
+      "Usage: cc-smart-dev-kit hook\n\nThe plugin has no user-invoked hooks.",
     );
   });
 
