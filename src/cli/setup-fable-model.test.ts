@@ -9,7 +9,7 @@ import { capturePrinted, printed, world } from "../testing/fake-machine";
 capturePrinted();
 const PORT = 47123;
 const ADDRESS = `http://127.0.0.1:${PORT}`;
-const KEY = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY";
+const KEY = "ANTHROPIC_DEFAULT_FABLE_MODEL";
 function machine(address = ADDRESS, owned = true) {
   const w = world();
   mkdirSync(dirname(w.paths.gatewayConfigFile), { recursive: true });
@@ -43,17 +43,20 @@ function machine(address = ADDRESS, owned = true) {
 const settings = (w: ReturnType<typeof world>) =>
   JSON.parse(readFileSync(w.paths.settingsFile, "utf8"));
 
-describe("setup upgrades model discovery without switching the gateway", () => {
-  test("an owned active address gains owned discovery, and a second setup is unchanged", async () => {
+describe("setup upgrades model Fable pin without switching the gateway", () => {
+  test("an owned active address gains owned Fable pin, and a second setup is unchanged", async () => {
     const w = machine();
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env).toMatchObject({ ANTHROPIC_BASE_URL: ADDRESS, [KEY]: "1" });
+    expect(settings(w).env).toMatchObject({
+      ANTHROPIC_BASE_URL: ADDRESS,
+      [KEY]: "claude-fable-5-2",
+    });
     expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.settingsFile))).toContainEqual({
       path: ["env", KEY],
-      value: "1",
+      value: "claude-fable-5-2",
     });
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env[KEY]).toBe("1");
+    expect(settings(w).env[KEY]).toBe("claude-fable-5-2");
   });
   test("dry-run reports the addition without writing it", async () => {
     const w = machine();
@@ -73,23 +76,23 @@ describe("setup upgrades model discovery without switching the gateway", () => {
       expect(settings(w).env[KEY]).toBeUndefined();
     });
   }
-  test("a foreign discovery value is kept and named as information", async () => {
+  test("a foreign Fable pin value is kept and named as information", async () => {
     const w = machine();
     const value = settings(w);
-    value.env[KEY] = "0";
+    value.env[KEY] = "claude-fable-5-1";
     writeFileSync(w.paths.settingsFile, JSON.stringify(value));
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env[KEY]).toBe("0");
+    expect(settings(w).env[KEY]).toBe("claude-fable-5-1");
     expect(printed.join("\n")).toContain(`env.${KEY} stays`);
   });
-  test("a discovery key still ours is refreshed", async () => {
+  test("a Fable pin key still ours is refreshed", async () => {
     const w = machine();
     applyManagedJson({
       file: w.paths.settingsFile,
       stateDir: w.paths.stateDir,
-      set: [[["env", KEY], "0"]],
+      set: [[["env", KEY], "claude-fable-5-1"]],
     });
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env[KEY]).toBe("1");
+    expect(settings(w).env[KEY]).toBe("claude-fable-5-2");
   });
 });

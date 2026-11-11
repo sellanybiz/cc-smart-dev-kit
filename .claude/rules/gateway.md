@@ -208,6 +208,10 @@ safety checks), their ids in § Names. One rule set for all of them:
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id
   with no version, is left untouched.
+  **One exception (owner, 2026-11-11):** `GATEWAY_FABLE_MODEL` in `fable-model.ts` owns
+  the Fable id while the gateway is on. Claude Code 2.1.322 maps `fable` to an older model
+  behind a gateway, and subscription logins skip discovery. A test ties the pin to the
+  newest known Fable price row. No other family is pinned.
   Examples in help and errors take `<model>`, or an id from the person's own config.
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
@@ -326,9 +330,9 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 ## Settings and secrets
 
-- `gateway on` owns `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, so Claude Code can
-  list Anthropic's live models through the router. `off` removes it only while still owned.
-  Never pin a model or write an `ANTHROPIC_DEFAULT_*_MODEL` key to update the picker.
+- `gateway on` owns `env.ANTHROPIC_DEFAULT_FABLE_MODEL` from `GATEWAY_FABLE_MODEL`.
+  `off` removes only our unchanged value; a person's pin wins with an information line.
+  Normal setup refreshes it only for our owned address pointing at this router.
 
 - `gateway on` / `off`, `gateway project …` (a project's own `ANTHROPIC_BASE_URL`, in its
   `settings.local.json` or its team `.claude/settings.json`), and `gateway setup`'s removal of

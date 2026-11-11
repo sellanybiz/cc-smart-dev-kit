@@ -1969,34 +1969,25 @@ removed):
    tool definition on every turn (184K tokens of context on a first turn, against 70K). It
    stays: it is the one value that forces the deferred tools on every version.
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
-3. `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` = `1`: at startup Claude Code can add
-   Anthropic's live models to `/model`, without a kit update or a pinned model. `off` removes
-   this owned key too.
+3. `ANTHROPIC_DEFAULT_FABLE_MODEL` = the kit's current Fable model (`GATEWAY_FABLE_MODEL`,
+   currently `claude-fable-5-2`). It is an owned key: `off` removes it only while it still
+   holds our value. A value you set or changed stays and gets an information line.
 
-Normal `setup` also upgrades an already-on gateway: only while the user settings hold our
-still-owned address for this router, it adds or refreshes the owned discovery key. A foreign
-discovery value stays with an information line; an off gateway stays off. This is a separate
-idempotent step under setup's lock through `applyManagedJson`, also shown by `--dry-run`.
+**Why Fable is pinned (owner decision, 2026-11-11):** Claude Code 2.1.322's model table maps
+`fable` to `claude-fable-5` for the gateway provider, rather than the direct provider's
+`claude-fable-5-2`. Live, the gateway picker showed an older Fable. Model discovery does
+not fix a subscription login: a live debug log says `[gatewayDiscovery] skipped: no credential
+(ANTHROPIC_AUTH_TOKEN, apiKeyHelper, or API key)`. The kit writes no discovery or credential
+key. Opus, Sonnet and Haiku stay unpinned. A test ties the Fable pin to the newest Fable price
+row the kit knows, so a new Fable needs a kit release to move this pin.
 
-Discovery sends `GET /v1/models?limit=1000`, with a 3-second default timeout and no redirects.
-The router forwards the query and login headers unchanged, including under `/p/<profile>`;
-it does not invent a model list. Claude Code sends both `Authorization` and `x-api-key` when
-those credentials resolve, and skips discovery when neither resolves. In particular, the
-current docs do not promise discovery with only a saved subscription login. The kit never
-writes credentials to enable it. If discovery fails, Claude Code uses its cached list
-(`~/.claude/cache/gateway-models.json`), then its built-in list.
+Normal `setup` refreshes this pin only while user settings hold our still-owned address for
+this router. It adds an absent pin or refreshes one still ours; a foreign pin stays with an
+information line. An off gateway stays off. The separate step uses `applyManagedJson` under
+setup's lock, with the same preview in `--dry-run`. `doctor` names the kit's Fable pin or the
+settings value. A project's own model key still follows Claude Code's settings precedence.
 
-Discovery adds picker rows; it does not promise to change an alias. The current model docs
-say `ANTHROPIC_BASE_URL` changes the destination, not the model, and `fable` resolves to
-Fable 5.2 outside Claude apps gateway on Claude Code 2.1.321 or later. If `/model fable`
-still selects an older model, use `/model claude-fable-5-2`; `doctor` gives this hint as
-information, and the kit never pins the alias. The picker and subscription-login discovery
-remain owed live checks, not a claim proved by the router's unit tests.
-
-Sources, read 2026-11-11: [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)
-and [model configuration](https://code.claude.com/docs/en/model-config#fable-alias-resolution).
-
-**No model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
+**No other model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
 router takes it to its family's slot. Up to 0.4.3, `on` also wrote
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]` and
 `ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, each with `…_NAME` and
@@ -2010,7 +2001,7 @@ person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent l
 without a `model`, a reviewer say, would run on an affordable slot). `gateway status` warns
 when one of them is set.
 
-A gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
+Except for a personal Fable pin, which stays with an information line, a gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
 from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word of its
 own in that message: many people set it themselves. `on` also refuses while the router

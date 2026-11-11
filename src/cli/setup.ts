@@ -15,7 +15,7 @@ import {
   planClaudeDefaultsStep,
 } from "../gateway/claude-defaults";
 import { type GatewayConfig, messageOf } from "../gateway/config";
-import { applyModelDiscoveryStep } from "../gateway/model-discovery";
+import { applyFableModelStep } from "../gateway/fable-model-step";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,
@@ -998,7 +998,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)),
       ...reportLines(
         "gateway",
-        claudeDefaults.kind === "done" ? applyModelDiscoveryStep(paths, true) : [],
+        claudeDefaults.kind === "done" ? applyFableModelStep(paths, true) : [],
       ),
       ...planned.lines,
       ...reportLines("mcp", wouldRegister.notes),
@@ -1119,7 +1119,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         // it first has written its marker, and this one then does nothing), before the files
         // below: the gateway's address goes to Anthropic's own, then the other settings follow.
         const gateway = applyClaudeDefaultsStep(paths, planClaudeDefaultsStep(paths), false);
-        gateway.push(...applyModelDiscoveryStep(paths, false));
+        gateway.push(...applyFableModelStep(paths, false));
         // Only what was really taken out counts: a `claude mcp remove` that failed leaves the
         // registration, and whatever it names, where it was.
         const files = applySetup(paths, managed, false, mcp.removed, machine.platform);

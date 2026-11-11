@@ -1729,8 +1729,9 @@ describe("the actions", () => {
         env: Record<string, string>;
       };
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20199");
-      // No model is pinned: Claude Code sends each model's own id, the router finds its slot.
+      // Only Fable is pinned: the other families keep Claude Code's model ids.
       expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+      expect(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-2");
       // And off points the address back at Anthropic instead of removing the key (GP5): a
       // running session follows a changed value within about a second, where a removed key
       // reach it only if another file sets the key. The tool-search key is removed as before.
@@ -1741,6 +1742,7 @@ describe("the actions", () => {
       };
       expect(after.env?.ANTHROPIC_BASE_URL).toBe(DEFAULT_ANTHROPIC_BASE_URL);
       expect(after.env?.ENABLE_TOOL_SEARCH).toBeUndefined();
+      expect(after.env?.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
     } finally {
       world.portal.stop();
       backend.stop();

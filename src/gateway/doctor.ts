@@ -30,6 +30,7 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
+import { GATEWAY_FABLE_ENV, GATEWAY_FABLE_MODEL } from "./fable-model";
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
@@ -49,7 +50,7 @@ import {
   SOCKET_NAME,
 } from "./service";
 import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
-import { shownValue } from "./settings";
+import { readGatewaySettings, shownValue } from "./settings";
 import {
   FAMILY_SLOTS,
   isModelSlot,
@@ -165,10 +166,16 @@ export async function gatewayChecks(options: {
     return checks;
   }
 
+  const fable = readGatewaySettings(paths.settingsFile).modelKeys.find(
+    (fact) => fact.key === `env.${GATEWAY_FABLE_ENV}`,
+  );
   checks.push({
     ok: true,
     info: true,
-    text: "If /model fable still selects an older model, use /model claude-fable-5-2; the kit never pins the alias",
+    text:
+      fable === undefined
+        ? `Gateway Fable: ${GATEWAY_FABLE_MODEL} (kit pin while on)`
+        : `Gateway Fable: ${shownValue(fable.value)} (settings value)`,
   });
 
   if (options.service === "none") {
@@ -411,8 +418,8 @@ function modelKeyWarnings(
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }
   for (const key of file.subagentOverrides) {
@@ -424,7 +431,7 @@ function modelKeyWarnings(
       ok: true,
       warn: true,
       text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }
   return checks;

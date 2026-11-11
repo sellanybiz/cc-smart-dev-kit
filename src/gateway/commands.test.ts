@@ -147,13 +147,13 @@ function config(): GatewayConfig {
 }
 
 /**
- * The env block `on` writes on port 20100, written out by hand. No model is pinned: Claude
+ * The env block `on` writes on port 20100, written out by hand. Only Fable is pinned: Claude
  * Code sends each model's own id, and the router finds its family's slot (since 0.5.0).
  */
 const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
   ENABLE_TOOL_SEARCH: "true",
-  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
+  ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-2",
 };
 
 /** The model keys `on` wrote up to 0.4.3, with the values it wrote, by hand. */
@@ -219,7 +219,7 @@ describe("Claude Code settings: on / off", () => {
           .sort(),
       ).toEqual([
         "env.ANTHROPIC_BASE_URL",
-        "env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+        "env.ANTHROPIC_DEFAULT_FABLE_MODEL",
         "env.ENABLE_TOOL_SEARCH",
       ]);
     },
@@ -321,10 +321,10 @@ describe("Claude Code settings: on / off", () => {
     const { file, stateDir } = seed();
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const { result, foreign, switched } = turnOff({ settingsFile: file, stateDir });
-    // The address is set (GP5); tool search and discovery are removed.
+    // The address is set (GP5); tool search and Fable pin are removed.
     expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
-      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ENABLE_TOOL_SEARCH",
     ]);
     expect(switched).toBe(true);
@@ -344,7 +344,7 @@ describe("Claude Code settings: on / off", () => {
     expect(twice.switched).toBe(false);
     expect([...GATEWAY_ENV_KEYS].sort()).toEqual([
       "ANTHROPIC_BASE_URL",
-      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ENABLE_TOOL_SEARCH",
     ]);
   });
@@ -360,7 +360,7 @@ describe("Claude Code settings: on / off", () => {
     });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
-      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -439,7 +439,7 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
-      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ANTHROPIC_BASE_URL",
     ]);
     // The person points Claude Code at their own gateway: that key is their choice now, and
@@ -449,7 +449,7 @@ describe("Claude Code settings: on / off", () => {
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
-      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
     ]);
     // Restore leaves it (theirs), takes ours out, and gives up the ownership of it.
     expect(restore(stateDir).map((result) => result.action)).toEqual(["cleaned"]);

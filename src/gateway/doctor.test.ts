@@ -103,11 +103,19 @@ async function linesFor(
 }
 
 describe("doctor: a project on a profile, and the router that runs", () => {
-  test("gives a manual model choice without pinning an alias", async () => {
-    const lines = await linesFor(machine(), [], "current");
-    expect(lines).toContain(
-      "· If /model fable still selects an older model, use /model claude-fable-5-2; the kit never pins the alias",
+  test("names a personal Fable pin without a warning", async () => {
+    const m = machine();
+    writeFileSync(
+      m.paths.settingsFile,
+      JSON.stringify({ env: { ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" } }),
     );
+    const lines = await linesFor(m, [], "current");
+    expect(lines).toContain("· Gateway Fable: claude-fable-5-1 (settings value)");
+  });
+
+  test("names the gateway Fable pin", async () => {
+    const lines = await linesFor(machine(), [], "current");
+    expect(lines).toContain("· Gateway Fable: claude-fable-5-2 (kit pin while on)");
   });
 
   test("✗ an older router: the project's profile address fails every request", async () => {

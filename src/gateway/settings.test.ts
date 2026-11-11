@@ -11,6 +11,7 @@ import {
   BASE_URL_PATH,
   backendAddress,
   offAddressOf,
+  settingsReport,
   shownBackendUrl,
   turnOff,
   turnOn,
@@ -164,24 +165,38 @@ describe("Remote Control", () => {
   const envOf = (settings: Record<string, unknown>): Record<string, string> =>
     (settings.env ?? {}) as Record<string, string>;
 
+  test("on preserves a personal Fable pin without a login or subagent warning", () => {
+    const { file, stateDir, read } = machine({
+      env: { ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" },
+    });
+    const result = turnOn({ settingsFile: file, stateDir, port: 20123 });
+    expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-1");
+    expect(result.skipped).toContainEqual({
+      path: ["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"],
+      reason: "set or changed by you; left alone",
+    });
+    expect(settingsReport(file).loginOverrides).toEqual([]);
+    expect(settingsReport(file).subagentOverrides).toEqual([]);
+  });
+
   test("on points Claude Code at the router, a host that is not api.anthropic.com", () => {
     const { file, stateDir, read } = machine({});
     turnOn({ settingsFile: file, stateDir, port: 20123 });
     expect(new URL(envOf(read()).ANTHROPIC_BASE_URL as string).host).toBe("127.0.0.1:20123");
   });
 
-  test("discovery is owned while on, removed when off, and a changed value stays", () => {
+  test("Fable pin is owned while on, removed when off, and a changed value stays", () => {
     const { file, stateDir, read } = machine({ model: "fable" });
     turnOn({ settingsFile: file, stateDir, port: 20123 });
-    expect(envOf(read()).CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("1");
+    expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-2");
     turnOff({ settingsFile: file, stateDir });
-    expect(envOf(read())).not.toHaveProperty("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY");
+    expect(envOf(read())).not.toHaveProperty("ANTHROPIC_DEFAULT_FABLE_MODEL");
     turnOn({ settingsFile: file, stateDir, port: 20123 });
     const changed = read();
-    changed.env = { ...envOf(changed), CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "0" };
+    changed.env = { ...envOf(changed), ANTHROPIC_DEFAULT_FABLE_MODEL: "0" };
     writeFileSync(file, JSON.stringify(changed));
     turnOff({ settingsFile: file, stateDir });
-    expect(envOf(read()).CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("0");
+    expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("0");
     expect(read().model).toBe("fable");
   });
 

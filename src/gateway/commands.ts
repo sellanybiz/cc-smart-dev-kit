@@ -2489,6 +2489,8 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
       `Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`,
     );
   }
+  for (const skip of result.skipped)
+    out.line("info", `${skip.path.join(".")}: ${skip.reason}`, { indent: 2 });
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }
