@@ -77,7 +77,12 @@ export function SiteHeader() {
             {item?.title ?? "Portal"}
           </h1>
           {item !== null && (
-            <p className="hidden truncate text-sm text-muted-foreground xl:block">{item.about}</p>
+            <p
+              className="hidden truncate text-sm text-muted-foreground xl:block"
+              title={item.about}
+            >
+              {item.about}
+            </p>
           )}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">

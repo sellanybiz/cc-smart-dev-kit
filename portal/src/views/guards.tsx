@@ -1,12 +1,12 @@
 "use client";
 
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import { useId, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { type Resource, useResource } from "@/api/hooks";
 import { GUARDS_REFRESH } from "@/api/refresh";
 import type { ChartHistory, GuardAsk, GuardAsksPage, HistoryRange } from "@/api/types";
 import { columnsFor, PortalTable } from "@/components/data-table";
-import { RangeSwitch } from "@/components/filter-bar";
+import { FilterPick, RangeSwitch } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
 import { useSessionNames } from "@/components/history-state";
 import { METRICS } from "@/components/metrics";
@@ -15,7 +15,6 @@ import { SectionCards, StatCard } from "@/components/section-cards";
 import { ErrorState, LoadingState, PagePad } from "@/components/states";
 import { TonePill } from "@/components/status";
 import { Button } from "@/components/ui/button";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { clockSeconds, count } from "@/lib/format";
 import { DEFAULT_RANGE, isRange, rangeOf } from "@/lib/history";
 import { cn } from "@/lib/utils";
@@ -83,42 +82,6 @@ function asHistory(page: GuardAsksPage, range: HistoryRange): ChartHistory {
       })),
     })),
   };
-}
-
-function Picker({
-  label,
-  all,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  all: string;
-  value: null | string;
-  options: { value: string; label: string }[];
-  onChange: (value: null | string) => void;
-}) {
-  const id = useId();
-  return (
-    <>
-      <label htmlFor={id} className="sr-only">
-        {label}
-      </label>
-      <NativeSelect
-        id={id}
-        size="sm"
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value || null)}
-      >
-        <NativeSelectOption value="">{all}</NativeSelectOption>
-        {options.map((option) => (
-          <NativeSelectOption key={option.value} value={option.value}>
-            {option.label}
-          </NativeSelectOption>
-        ))}
-      </NativeSelect>
-    </>
-  );
 }
 
 /** Guard log (D52): what each guard asked or refused, from `guard-asks.jsonl`, already masked. */
@@ -221,14 +184,14 @@ export function GuardsView() {
       <search aria-label="Filters" className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
         <RangeSwitch value={range} onChange={(value) => set("range", value)} />
         <span className="mx-1 hidden h-5 w-px bg-border @3xl/main:block" aria-hidden="true" />
-        <Picker
+        <FilterPick
           label="Guard"
           all="All guards"
           value={guard}
           options={(ready?.guards ?? []).map((g) => ({ value: g, label: g }))}
           onChange={(value) => set("guard", value)}
         />
-        <Picker
+        <FilterPick
           label="Session"
           all="All sessions"
           value={session}

@@ -17,7 +17,9 @@ export function BarList({
           key={row.key}
           className="grid grid-cols-[minmax(7rem,12rem)_1fr_auto] items-center gap-3 text-sm"
         >
-          <span className="truncate">{row.label}</span>
+          <span className="truncate" title={row.label}>
+            {row.label}
+          </span>
           <svg className="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">
             <rect width="100%" height="100%" rx="3" className="fill-muted" />
             <rect

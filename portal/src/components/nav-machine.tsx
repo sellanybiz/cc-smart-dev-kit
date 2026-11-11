@@ -72,7 +72,9 @@ export function NavMachine() {
               <span className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">This machine</span>
                 {line !== null ? (
-                  <span className="truncate text-xs text-muted-foreground">{line}</span>
+                  <span className="truncate text-xs text-muted-foreground" title={line}>
+                    {line}
+                  </span>
                 ) : facts.status === "error" ? (
                   <span className="truncate text-xs text-muted-foreground">version not known</span>
                 ) : (

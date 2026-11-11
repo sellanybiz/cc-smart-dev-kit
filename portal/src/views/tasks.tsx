@@ -333,6 +333,8 @@ export function TasksPage({
   const shownView = unknown ? { ...view, project: null } : view;
   const work = scope.reduce((sum, one) => addCounts(sum, workCountsOf(one.tasks.work)), NO_WORK);
   const owed = scope.reduce((sum, one) => sum + fileCountsOf(one.tasks.files).open, 0);
+  const workWords = `Work on this machine · ${work.open} open`;
+  const owedWords = `Owed by ${scope.length === 1 ? "the project" : "the projects"} · ${owed}`;
   const cards = (
     <PagePad className="flex flex-col gap-4 md:gap-6">
       {unknown && (
@@ -385,24 +387,19 @@ export function TasksPage({
       >
         <div className="px-4 lg:px-6">
           {/* On a phone the full words do not fit side by side, so the list takes the whole
-              width and each tab shows short words; the full words show from the container's
-              xl size up, and a screen reader always hears them. */}
+              width and each tab shows short words; from the container's xl size up each tab
+              shows the full words and is as wide as they are. A tab never shrinks below its
+              words (the shared trigger does not wrap), and its name is always the full words.
+              Never `sr-only`/`not-sr-only` here: `not-sr-only` sets `white-space: normal`, and
+              the words wrapped out of the tab's fixed height. */}
           <TabsList aria-label="Work or files" className="w-full @xl/main:w-fit">
-            <TabsTrigger value="work" className="min-w-0 px-3">
-              <span className="@xl/main:hidden" aria-hidden="true">
-                Work · {work.open} open
-              </span>
-              <span className="sr-only @xl/main:not-sr-only">
-                Work on this machine · {work.open} open
-              </span>
+            <TabsTrigger value="work" aria-label={workWords} className="px-3 @xl/main:flex-none">
+              <span className="@xl/main:hidden">Work · {work.open} open</span>
+              <span className="hidden @xl/main:inline">{workWords}</span>
             </TabsTrigger>
-            <TabsTrigger value="files" className="min-w-0 px-3">
-              <span className="@xl/main:hidden" aria-hidden="true">
-                Owed · {owed}
-              </span>
-              <span className="sr-only @xl/main:not-sr-only">
-                Owed by {scope.length === 1 ? "the project" : "the projects"} · {owed}
-              </span>
+            <TabsTrigger value="files" aria-label={owedWords} className="px-3 @xl/main:flex-none">
+              <span className="@xl/main:hidden">Owed · {owed}</span>
+              <span className="hidden @xl/main:inline">{owedWords}</span>
             </TabsTrigger>
           </TabsList>
         </div>

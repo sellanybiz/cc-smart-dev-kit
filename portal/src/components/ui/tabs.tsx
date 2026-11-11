@@ -23,8 +23,11 @@ function Tabs({
   )
 }
 
+// Portal change: `max-w-full overflow-x-auto` (a bar wider than its column scrolls as a whole,
+// never the page) and `justify-center-safe` (an overflowing bar starts at its first tab, which
+// plain `justify-center` would push out of reach on the left).
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list inline-flex w-fit max-w-full items-center justify-center-safe overflow-x-auto rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {
