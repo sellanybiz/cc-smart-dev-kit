@@ -1,7 +1,7 @@
 export const meta = {
   name: 'research-sweep',
   description:
-    'Research one question from several angles: a read-only researcher per angle, a second agent to refute every claim the answer rests on by opening its source, and the verified claims returned with their sources.',
+    'Research a question and refute claims against their sources. Pass args: { question: string, angles: string[], budget?: number, context?: string } as an object, not JSON text; see /cc-smart-dev-kit:research-first.',
 }
 
 // The input is the Workflow tool's `args`: the research-first skill sets every field. A research

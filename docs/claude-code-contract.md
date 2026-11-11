@@ -32,6 +32,12 @@ Code's file; it shows we read the shape correctly, not that Claude Code still wr
 | An allow rule accepts a glob after a literal `mcp__<server>__` prefix; `mcp__cc-smart-dev-kit-tasks__*` allows all task tools. Setup asks for it (`TASK_TOOLS_ALLOW_RULE`, `src/tasks/words.ts`). | Documented; not proved live for D75 | code.claude.com/docs/en/permissions § Permission system. **Live owed:** a session calls a task tool with no prompt. |
 | A stdio MCP server is a descendant of its Claude process, so Linux `/proc` ancestry finds that session. | Not proved live | `src/tasks/context.ts` and the server's process resolver rely on the session record and process identity. **Live owed:** `/clear` and a background fork keep the same tasks, including through the server. |
 
+## Workflow discovery
+
+| Behaviour | Last proved on | How it is proved |
+|---|---|---|
+| A plugin workflow is also listed as a skill named `<plugin>:<meta.name>`, with `meta.description` as its visible description. The kit puts the argument object and calling skill there so a direct start sees the contract. | Live listing, 2026-11-12; version not independently checked | This build session's available-skills list showed `cc-smart-dev-kit:audit-run`, `cc-smart-dev-kit:review-split` and `cc-smart-dev-kit:research-sweep` with their shipped descriptions, not their calling skills' argument examples. Unit: `src/workflows/scripts.test.ts` checks each description's keys and caller, executes that caller's actual example with fake agents, and checks malformed arguments still refuse. **Live owed:** after installing this change, a fresh session's skill list shows the new argument descriptions and a direct Workflow launch accepts the object. |
+
 ## Background session forks
 
 | Behaviour | Last proved on | How it is proved |

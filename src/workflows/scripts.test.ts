@@ -16,6 +16,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type GuardContext, judgeWorkflow, readWorkflowScript } from "../hooks/agent-guard";
 import { workflowMetaName } from "../hooks/agent-guard-workflows";
@@ -85,6 +86,56 @@ describe("every shipped workflow script", () => {
       expect(workflowMetaName(script)).toBe(name);
     }
   });
+
+  test.each([
+    ["audit-run", "audit"],
+    ["review-split", "review"],
+    ["research-sweep", "research-first"],
+  ])(
+    "%s advertises its contract and accepts the %s skill's actual example",
+    async (name, skill) => {
+      const file = join(ROOT, "plugin", "workflows", `${name}.js`);
+      const script = readScript(file);
+      const metaStatement = script.match(/^export const meta = (\{[\s\S]*?\n\})/);
+      expect(metaStatement).not.toBeNull();
+      const meta = new Function(`return (${metaStatement?.[1]})`)();
+      const skillText = readFileSync(join(ROOT, "plugin", "skills", skill, "SKILL.md"), "utf8");
+      const example = skillText.match(/```\n(Workflow\([\s\S]*?\))\n```/);
+      expect(example).not.toBeNull();
+      // Execute only the checked-in example with a fake Workflow, never an actual tool or agent.
+      const input = new Function("Workflow", `return ${example?.[1]}`)((value: unknown) => value);
+      expect(input.name).toBe(`cc-smart-dev-kit:${name}`);
+      expect(meta.description).toContain(`args: {`);
+      expect(meta.description).toContain(`/cc-smart-dev-kit:${skill}`);
+      const shape = meta.description.match(/args: (\{[^}]+\})/);
+      expect(shape).not.toBeNull();
+      const fields = [...shape[1].matchAll(/(\w+)\??:/g)].map((one) => one[1]);
+      expect(fields.sort()).toEqual(Object.keys(input.args).sort());
+      const run = await runScript(file, { args: input.args });
+      expect(run.calls.length).toBeGreaterThan(0);
+      // One contract, no aliases or JSON-string coercion, even when launched directly.
+      for (const args of [
+        { ...input.args, area: "a guessed key" },
+        JSON.stringify(input.args),
+        [],
+      ]) {
+        await expect(runScript(file, { args })).rejects.toThrow(
+          name === "research-sweep" ? "needs an object" : "refused its arguments",
+        );
+      }
+      // The rejection still names every accepted field and its object shape.
+      try {
+        await runScript(file, { args: { ...input.args, area: "a guessed key" } });
+        throw new Error("the unknown key was accepted");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        if (!(error instanceof Error)) throw error;
+        const message = error.message;
+        expect(message).toMatch(/object:? \{/);
+        for (const field of fields) expect(message).toContain(field);
+      }
+    },
+  );
 
   test("the guard reads every launch: a literal model, effort and agent type", () => {
     for (const { file, script } of scripts) {
