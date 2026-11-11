@@ -1023,8 +1023,8 @@ cc-smart-dev-kit gateway slot opus claude                        # Opus answers 
   usage limit (five_hour, resets …); answering from <target> until <model> answers again`.
   The state file says it too, for the status line, but only once that target answered below
   400: a fallback that failed is not "active" (its WARN says `its fallback <target> answered
-  <status>`). It ends when the model answers a `/v1/messages` request below 400. A slot
-  taken out of the config, or whose fallback switch goes off, loses its record at once.
+  <status>`). It ends by the login recovery rule (§ The limit state, the status line, the alert).
+  A slot taken out of the config, or whose fallback switch goes off, loses its record at once.
 - **Never** the safety check (§ The judge slot), or a name an alias changed.
 - **Thinking blocks in the request:** an Opus conversation carries thinking blocks with
   signatures. A backend gets them as they are, but for the router's marked ones, which get
@@ -1141,7 +1141,9 @@ prove nothing. A record with no claim ends on any successful messages answer; a
 `seven_day_opus` or `seven_day_sonnet` record ends only within its family. Unknown claims
 still need the same model to answer. Each ended record ends the fallbacks that used it,
 with the usual log line. A 429 still records the limit as before. This rule belongs to
-`recordsEndedBy` in `limit-state.ts`; token-count answers never clear limits.
+`recordsEndedBy` in `limit-end.ts`; token-count answers never clear limits.
+Two logins through one router: one login's answer that proves room ends a record the other login
+still hits; that login's next 429 writes it again.
 
 **The state file**, `~/.local/state/cc-smart-dev-kit/gateway-state.json` (mode 600), written by
 the router in the background (never before an answer goes out; at most once a minute for

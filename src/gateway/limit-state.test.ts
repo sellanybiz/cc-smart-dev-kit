@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { z } from "zod";
+import { recordsEndedBy } from "./limit-end";
 import {
   type BreakerRecord,
   currentBreakers,
@@ -17,7 +18,6 @@ import {
   mergeSeenClaude,
   NO_RESET_FRESH_MS,
   parseLimitState,
-  recordsEndedBy,
   SEEN_CLAUDE_MAX,
 } from "./limit-state";
 
@@ -49,7 +49,36 @@ describe("records ended by a login's answer", () => {
       "claude-haiku-5",
     ]);
   });
-  for (const value of [null, "", " ", "not a number", "Infinity", "-0.1", "1", "1.2"]) {
+  it("each utilization header proves only its own window, including 95 percent", () => {
+    expect(
+      recordsEndedBy(
+        "claude-fable-5-2",
+        new Headers({
+          "anthropic-ratelimit-unified-5h-utilization": "0.2",
+        }),
+        limits,
+      ),
+    ).toEqual(["claude-sonnet-5", "claude-haiku-5"]);
+    expect(
+      recordsEndedBy(
+        "claude-fable-5-2",
+        new Headers({
+          "anthropic-ratelimit-unified-7d-utilization": "0.2",
+        }),
+        limits,
+      ),
+    ).toEqual(["claude-haiku-4-5", "claude-haiku-5"]);
+    expect(
+      recordsEndedBy(
+        "claude-fable-5-2",
+        new Headers({
+          "anthropic-ratelimit-unified-5h-utilization": "0.95",
+        }),
+        limits,
+      ),
+    ).toEqual(["claude-sonnet-5", "claude-haiku-5"]);
+  });
+  for (const value of [null, "", " ", "not a number", "Infinity", "-0.1", "1", "1.0", "1.2"]) {
     it(`does not treat ${JSON.stringify(value)} as proof of room`, () => {
       const headers = new Headers();
       if (value !== null) headers.set("anthropic-ratelimit-unified-5h-utilization", value);

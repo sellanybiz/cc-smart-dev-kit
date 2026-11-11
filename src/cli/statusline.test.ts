@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import type { LimitState } from "../gateway/limit-state";
+import type { LimitRecord, LimitState } from "../gateway/limit-state";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
 import { runStatusline, statuslineText } from "./statusline";
@@ -33,6 +33,21 @@ function input(five: null | number, seven: null | number): Record<string, unknow
 const EMPTY: LimitState = { fallbacks: {}, limits: {}, version: 1 };
 
 describe("the session's login windows", () => {
+  it("keeps records with no claim or without either reset", () => {
+    const limit: LimitRecord = { claim: null, resetsAt: AT_13, seenAt: NOW };
+    const state: LimitState = { ...EMPTY, limits: { "claude-sonnet-5": limit } };
+    expect(statuslineText(input(8, 9), state, NOW, "UTC")).toBe(
+      "Opus 5.5 · ⛔ claude-sonnet-5 at its plan limit until 13:00 · 5h 8% · 7d 9%",
+    );
+    limit.claim = "five_hour";
+    expect(
+      statuslineText({ rate_limits: { five_hour: { used_percentage: 8 } } }, state, NOW, "UTC"),
+    ).toBe("⛔ claude-sonnet-5 at its plan limit until 13:00 · 5h 8%");
+    limit.resetsAt = null;
+    expect(statuslineText(input(8, 9), state, NOW, "UTC")).toBe(
+      "Opus 5.5 · ⛔ claude-sonnet-5 at its plan limit · 5h 8% · 7d 9%",
+    );
+  });
   for (const claim of ["five_hour", "seven_day"]) {
     it(`hides a ${claim} limit and its fallback only for a different reset`, () => {
       const reset = claim === "five_hour" ? AT_13 : IN_3_DAYS;

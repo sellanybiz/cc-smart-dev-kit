@@ -1130,6 +1130,8 @@ model clears a shared window only when its headers prove room. After a login or 
 change, the status line hides a saved shared limit and its fallback when the session's own
 matching window has a different reset. A matching reset keeps a real limit visible;
 per-family limits and sessions with no usage input keep their existing display.
+Two logins through one router: one login's answer that proves room ends a record the other login
+still hits; that login's next 429 writes it again.
 
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
   `cc-smart-dev-kit statusline`. It shows the session's context use and reasoning effort

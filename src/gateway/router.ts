@@ -151,6 +151,7 @@ import {
 } from "./fallback-answer";
 import { createHistoryWriter, type HistoryRecorder, type HistoryRow } from "./history";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
+import { recordsEndedBy } from "./limit-end";
 import {
   type ChecksDownWhy,
   currentBreakers,
@@ -162,7 +163,6 @@ import {
   type LimitState,
   mergeSeenClaude,
   parseLimitState,
-  recordsEndedBy,
   scopeOfStateKey,
   stateKeyFor,
 } from "./limit-state";
@@ -1330,7 +1330,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
   /**
    * Read a Claude answer's headers (never its body): a plan usage limit is noted for the
    * status line and the hook; an answer below 400 ends the records `recordsEndedBy` proves
-   * recovered, and the fallback of any model slot that used them. Only a `/v1/messages` answer counts: `count_tokens` is not
+   * recovered, and the fallback of any model slot that used them. Only a `/v1/messages`
+   * answer counts: `count_tokens` is not
    * a model's answer, and a 200 to it during a rest says nothing about the limit. The answer
    * itself is not touched. Returns the limit, or null.
    */
@@ -1388,7 +1389,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    * A slot whose first target is a Claude model at its plan limit was answered by a next
    * target: one WARN when it starts, and the state file (the status line, the alert). Only
    * an answer below 400 makes the fallback active: a fallback that failed answered nothing,
-   * and its WARN says so. Observing the model answer again ends it (`observeClaude`).
+   * and its WARN says so. The login recovery rule ends it (`recordsEndedBy`, through `observeClaude`).
    */
   function noteFallback(
     slot: string,
