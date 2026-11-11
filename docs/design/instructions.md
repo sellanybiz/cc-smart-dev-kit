@@ -122,6 +122,19 @@ each option stand alone, with what is decided, why it matters, what each option 
 costs; sentences stay short, the meaning does not. The detail and the before/after examples live
 in `explain`'s `references/plain-english.md`; `plan-task` § 2 and the output style point to it.
 
+**The recommended option is the best one (owner, 2026-11-12).** The owner's words: "the
+recommended option should be always the best one, without jugaad, workarounds or laziness:
+actually the best." `core.md` § Ending a turn holds it, because it covers every
+`AskUserQuestion`, not only a plan's: the strongest complete solution on the facts, a workaround
+labelled with its debt, the cost said when the best costs more. It matters more than it looks:
+`user-unavailable` takes the recommended option by itself while the person is away. `plan-task`
+§ 2 and `plain-english.md` point to it.
+
+**The edge-case hunter runs on Opus (owner, 2026-11-12).** Its scenarios shape a plan or a
+change set before anyone tests it, so a missed one ships. `subagent-decision`'s table is the one
+home: `opus` at `high`, `xhigh` when security, money, data, concurrency, the router or user
+settings are at stake. `core.md`'s table lists it in the `opus` row; `review` points to the table.
+
 **Checks: what you changed while building, the full check once (owner, 2026-10-26).** In a big
 project a whole type check takes tens of seconds and a whole test run many minutes, and sessions
 and agents that queue them slow every other. So `verify-change` is the one home: § 2 lists what a
