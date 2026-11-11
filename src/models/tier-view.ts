@@ -13,13 +13,16 @@
  * the guard's own constants (`launch-policy.ts`), so Claude learns them from the note and not
  * from a refusal: the `opus` tier at `OPUS_ASK_EFFORT`, and any `fable` launch.
  *
- * A name the person's override or a slot answers with a stricter premium Claude model reads as
- * that tier (`sonnet` whose worker chain starts with a Claude Opus id is the `opus` tier).
+ * A name with no premium tier that the person's override or a slot answers with a premium Claude
+ * model reads as that tier (`sonnet` whose worker chain starts with a Claude Opus id is the `opus`
+ * tier). A premium name keeps its own: `opus` whose slot answers with Claude Fable is the `opus`
+ * tier, and its line names the model that answers (`- opus → Claude Fable.`).
  */
 
-import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
+import type { ClaudeFamily } from "../gateway/targets";
 import type { Env } from "../hooks/run";
 import {
+  answeringFamily,
   type GatewayFacts,
   type LaunchModel,
   OPUS_ASK_EFFORT,
@@ -41,12 +44,8 @@ function capitalised(family: ClaudeFamily): string {
 function modelName(real: LaunchModel): string {
   if (!real.claude) return `${real.model} (a backend)`;
   // The model that answers, never the tier's name: `real.family` keeps the NAME's family, so a
-  // scout slot on a Claude Sonnet id would read as Haiku. With no slot and no override the model
-  // is the family name itself (`haiku`).
-  const family =
-    claudeFamily(real.model) ??
-    CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ??
-    null;
+  // scout slot on a Claude Sonnet id would read as Haiku.
+  const family = answeringFamily(real);
   return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 

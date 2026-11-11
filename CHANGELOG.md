@@ -3,6 +3,16 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 3.0.1
+
+- **Fix: Claude Fable behind the `opus` slot is the `opus` tier.** When the `opus` slot (or
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`) puts Claude Fable first, an `opus` launch keeps the `opus`
+  tier's rules: it runs at `medium`, `high` or `xhigh` with no question and needs no
+  `Fable reason:` line. A fork from such a session is the `opus` tier too. The session gets no
+  Fable line and no lead hint, because you chose that mapping. The guard's messages and the
+  tier note name Fable as the model that answers. A `sonnet` or `haiku` slot that answers on
+  Claude Opus or Fable still counts as that premium tier.
+
 ## 3.0.0
 
 - **Breaking: Warp support is removed.** Setup no longer accepts `--warp` or

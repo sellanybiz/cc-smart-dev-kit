@@ -64,8 +64,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
-import { type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
+import { answeringFamily, type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
 import { resolveLeadHint } from "../workflow/resolve";
 import { sessionGatewayOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
@@ -104,19 +103,6 @@ export function sessionModelName(real: LaunchModel): string {
   }
   const tier = real.tier ?? real.family;
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
-}
-
-/**
- * The Claude family of the model that answers: read from its id, or the family name itself when
- * no slot or override stands in (`opus`). Null for a backend and a name no rule reads.
- */
-function answeringFamily(real: LaunchModel): ClaudeFamily | null {
-  if (!real.claude) return null;
-  return (
-    claudeFamily(real.model) ??
-    CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ??
-    null
-  );
 }
 
 /** The marks the hook keeps, per session, beside the session's own name files. */
@@ -161,12 +147,14 @@ export type LeadVerdict = "fable" | "lead" | "none";
 
 /**
  * The verdict for a session whose model resolves to `real`: the `fable` tier → the Fable line;
- * Claude Opus answering → nothing; anything else — another Claude family, a backend, the `opus`
- * tier a backend answers, a name no rule reads as a family — → the lead hint.
+ * the `opus` tier answered by Claude Opus, or by Claude Fable the person mapped behind it (the
+ * owner, 2026-11-11) → nothing; anything else — another Claude family, a backend, the `opus` tier
+ * a backend answers, a name no rule reads as a family — → the lead hint.
  */
 export function leadVerdict(real: LaunchModel): LeadVerdict {
   if (real.tier === "fable") return "fable";
-  if (real.tier === "opus" && answeringFamily(real) === "opus") return "none";
+  const answered = answeringFamily(real);
+  if (real.tier === "opus" && (answered === "opus" || answered === "fable")) return "none";
   return "lead";
 }
 

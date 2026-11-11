@@ -87,10 +87,11 @@
  *      is off: the Claude model itself answers, on the person's own login.
  * So `sonnet` is an affordable slot exactly when the gateway is on and the worker's chain
  * starts with a `<backend>:<model>`; a chain that starts with a `claude-…` model is Claude.
- * **A name never runs below the tier of what answers it:** when the override or the slot
- * answers a family name with a model the guard reads as a stricter premium family (`sonnet`
- * whose `ANTHROPIC_DEFAULT_SONNET_MODEL` is a Claude Opus id, or whose worker chain starts with
- * one), the launch is that family and its tier — it spends that tier's usage. A model the guard
+ * **A premium name keeps its own tier** (the owner, 2026-11-11): `opus` whose override or opus
+ * slot answers with Claude Fable is the `opus` tier, never `fable` — the person chose that
+ * mapping. Only a name with no premium tier runs at the tier of a premium Claude model that
+ * answers it (`sonnet` whose `ANTHROPIC_DEFAULT_SONNET_MODEL` is a Claude Opus id, or whose
+ * worker chain starts with one, is the `opus` tier — it spends that usage). A model the guard
  * cannot read as a family leaves the name's own tier (`asNamed`). A
  * `fork` runs on the session's model and effort — Claude Code ignores a `model` it is given —
  * so it is judged on the session's own: the last Claude model in the hook input's
@@ -131,6 +132,7 @@ import { baseUrlPointsAtGateway, routerBaseUrl } from "../gateway/settings";
 import { type AgentDefinition, agentDefinition } from "../models/agent-definition";
 import {
   ALLOWED_EFFORTS,
+  answeringFamily,
   EFFORT_AUTO,
   EFFORT_LEVEL_ENV,
   type EffectiveLaunch,
@@ -883,12 +885,16 @@ function uiDenial(real: LaunchModel, effort: null | string, declared: string): s
 }
 
 /**
- * How the guard's messages name the model behind a premium launch: Claude by its family when a
- * Claude model answers, else the tier and the model that answers it (owner, 2026-10-16), so an
- * `opus` whose slot answers with a backend never reads as Claude.
+ * How the guard's messages name the model behind a premium launch: Claude by its family when the
+ * Claude model of the launch's own tier answers (or one the guard cannot read), else the tier and
+ * the model that answers it (owner, 2026-10-16), so an `opus` whose slot answers with a backend
+ * never reads as Claude, and one whose slot answers with Claude Fable never reads as Claude Opus.
  */
 function namedModel(real: LaunchModel): string {
-  if (real.claude) return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  const answered = answeringFamily(real);
+  if (real.claude && (answered === null || answered === real.tier)) {
+    return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  }
   return `\`${real.tier ?? real.model}\` (answered by ${real.model})`;
 }
 

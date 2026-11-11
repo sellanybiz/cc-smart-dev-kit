@@ -1536,6 +1536,49 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     expect(deep.why).toBe("opus:max");
   });
 
+  it("`opus` over Claude Fable is the opus tier: no Fable reason line (owner, 2026-11-11)", () => {
+    const fableFirst: GuardContext = {
+      config: {
+        ...configWithModelSlot(),
+        slots: { "cc-smart-dev-kit-opus": ["claude-fable-5-2", OPUS_ID] },
+      },
+      gatewayOn: true,
+      sessionModel: null,
+    };
+    const review = {
+      effort: "high",
+      model: "opus",
+      prompt: "Scoped re-check of fix rounds",
+      subagent_type: "cc-smart-dev-kit:senior-engineer",
+    };
+    // The launch that was refused live: a reviewer that can change files, at high, no line.
+    const allowed = verdict(review, fableFirst);
+    expect(allowed.decision).toBe("allow");
+    expect(allowed.real).toEqual({
+      claude: true,
+      family: "opus",
+      model: "claude-fable-5-2",
+      tier: "opus",
+    });
+    expect(allowed.why).toBe("opus:high");
+    // `max` asks as the opus tier does, naming Fable as what answers, never as Claude Opus.
+    const asked = verdict({ ...review, effort: "max" }, fableFirst);
+    expect(asked.decision).toBe("ask");
+    expect(asked.reason).toContain("`opus` (answered by claude-fable-5-2) launch at effort `max`");
+    expect(asked.reason).not.toContain("Fable reason");
+    // A fork from a session the router answers with that Fable is the opus tier too.
+    const fork = verdict(
+      { prompt: "go on", subagent_type: "fork" },
+      { ...fableFirst, sessionModel: "claude-fable-5-2" },
+    );
+    expect(fork.decision).toBe("allow");
+    expect(fork.real?.tier).toBe("opus");
+    // The same override through Claude Code's own variable.
+    const viaEnv = verdict(review, CTX, { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-fable-5-2" });
+    expect(viaEnv.decision).toBe("allow");
+    expect(viaEnv.real?.tier).toBe("opus");
+  });
+
   it("`fable` over a backend keeps the Fable gate: a builder needs `build`", () => {
     const built = verdict(
       {

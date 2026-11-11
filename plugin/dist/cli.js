@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "3.0.0",
+  version: "3.0.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -32690,12 +32690,14 @@ function tierOfMappedId(model, gateway, env) {
   }
   return null;
 }
-function tierRank(tier) {
-  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
+function answeringFamily(real) {
+  if (!real.claude)
+    return null;
+  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
 }
 function asNamed(answered, family, tier) {
   const real = premiumTier(answered.family);
-  return tierRank(real) > tierRank(tier) ? { ...answered, tier: real } : { ...answered, family, tier };
+  return tier === null && real !== null ? { ...answered, tier: real } : { ...answered, family, tier };
 }
 function throughFamilySlot(claude, family, gateway) {
   const tier = tierOfReading(family);
@@ -32735,9 +32737,9 @@ function resolveLaunchModel(name, gateway, env) {
   if (family === undefined) {
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+    if (mapped === null)
       return resolved;
-    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
+    return { ...resolved, family: mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -44880,8 +44882,10 @@ function uiDenial(real, effort, declared) {
 `);
 }
 function namedModel(real) {
-  if (real.claude)
+  const answered = answeringFamily(real);
+  if (real.claude && (answered === null || answered === real.tier)) {
     return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  }
   return `\`${real.tier ?? real.model}\` (answered by ${real.model})`;
 }
 function atEffort(effort) {
@@ -45454,7 +45458,6 @@ function builderFinishAnswer(input, event, project, paths) {
 
 // src/hooks/fable-session.ts
 init_names();
-init_targets();
 init_launch_policy();
 init_resolve2();
 import { createHash as createHash8 } from "crypto";
@@ -45565,11 +45568,6 @@ function sessionModelName(real) {
   const tier = real.tier ?? real.family;
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
 }
-function answeringFamily(real) {
-  if (!real.claude)
-    return null;
-  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
-}
 function sessionMark(env, sessionId, kind) {
   return join77(namesDir(env), `${sessionId}.${kind}`);
 }
@@ -45589,7 +45587,8 @@ function firstTime(mark) {
 function leadVerdict(real) {
   if (real.tier === "fable")
     return "fable";
-  if (real.tier === "opus" && answeringFamily(real) === "opus")
+  const answered = answeringFamily(real);
+  if (real.tier === "opus" && (answered === "opus" || answered === "fable"))
     return "none";
   return "lead";
 }
@@ -47821,7 +47820,6 @@ function checkoutRootAt(dir) {
 init_launch_policy();
 
 // src/models/tier-view.ts
-init_targets();
 init_launch_policy();
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
 var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
@@ -47831,7 +47829,7 @@ function capitalised(family) {
 function modelName(real) {
   if (!real.claude)
     return `${real.model} (a backend)`;
-  const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+  const family = answeringFamily(real);
   return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;

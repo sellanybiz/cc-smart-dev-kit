@@ -401,6 +401,18 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
     expect(await runHook(fableSessionHook, start("claude-opus-5-5"), login)).toEqual({});
   });
 
+  it("Claude Fable the person put first in the opus slot: no Fable line and no hint (owner, 2026-11-11)", async () => {
+    const env = machine(ROUTER, ROUTER, {
+      slots: { "cc-smart-dev-kit-opus": ["claude-fable-5-2", "claude-opus-5-5"] },
+    });
+    // The start names Opus; the router answers it with Fable, so the stop's transcript says
+    // Fable. Both are the `opus` tier: the person chose that mapping.
+    expect(await runHook(fableSessionHook, start("claude-opus-5-5"), env)).toEqual({});
+    expect(await runHook(fableSessionHook, stop("claude-fable-5-2"), env)).toEqual({});
+    expect(existsSync(sessionMark(env, SESSION, "fable"))).toBe(false);
+    expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+  });
+
   it("the hint, then a switch to Fable: both lines, each once", async () => {
     const env = hookEnv();
     expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env))).toBe(

@@ -162,6 +162,15 @@ describe("the note at a session start", () => {
     );
   });
 
+  it("the opus tier answered by Claude Fable names Fable, and stays the opus tier", async () => {
+    const env = hookEnv();
+    writeGateway(env, { "cc-smart-dev-kit-opus": ["claude-fable-5-2", "claude-opus-5-5"] });
+    const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
+    expect(said(result)).toBe(
+      note(HAIKU_CLAUDE, SONNET_CLAUDE, "- opus → Claude Fable.", FABLE_CLAUDE),
+    );
+  });
+
   it("a worker slot that answers with a Claude Opus id is read as the opus tier", async () => {
     const env = hookEnv();
     writeGateway(env, { "cc-smart-dev-kit-worker": ["claude-opus-5-5"] });

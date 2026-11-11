@@ -11,6 +11,7 @@ import {
   effectiveLaunch,
   effortAllowed,
   type GatewayFacts,
+  type LaunchModel,
   resolveLaunchModel,
   UI_EFFORTS,
   UI_POLICY,
@@ -133,6 +134,50 @@ describe("which tier a model answers (`resolveLaunchModel`)", () => {
       tier: "opus",
     });
     expect(resolveLaunchModel("best", AFFORDABLE, NO_ENV)).toMatchObject({ tier: "opus" });
+  });
+
+  test("Claude Fable behind the opus name is the opus tier (owner, 2026-11-11)", () => {
+    const fableFirst: GatewayFacts = {
+      config: config("omniroute:glm-5.3-flash", "claude-fable-5-2"),
+      gatewayOn: true,
+    };
+    const asOpus: LaunchModel = {
+      claude: true,
+      family: "opus",
+      model: "claude-fable-5-2",
+      tier: "opus",
+    };
+    // Through the opus slot, through the person's override, and as the session's own model
+    // (a fork, the Fable-session hook) when the slot or the override names that id.
+    expect(resolveLaunchModel("opus", fableFirst, NO_ENV)).toEqual(asOpus);
+    const override = { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-fable-5-2" };
+    expect(resolveLaunchModel("opus", NO_GATEWAY, override)).toEqual(asOpus);
+    expect(resolveLaunchModel("claude-fable-5-2", fableFirst, NO_ENV)).toEqual(asOpus);
+    expect(resolveLaunchModel("claude-fable-5-2", NO_GATEWAY, override)).toEqual(asOpus);
+    // Unmapped, the id is Fable; and the `fable` name stays Fable.
+    expect(resolveLaunchModel("claude-fable-5-2", NO_GATEWAY, NO_ENV)).toMatchObject({
+      tier: "fable",
+    });
+    expect(resolveLaunchModel("fable", fableFirst, NO_ENV)).toMatchObject({ tier: "fable" });
+  });
+
+  test("a name with no premium tier still takes the tier of a premium Claude model behind it", () => {
+    const fableWorker: GatewayFacts = {
+      config: config("claude-fable-5-2", "omniroute:glm-5.3"),
+      gatewayOn: true,
+    };
+    expect(resolveLaunchModel("sonnet", fableWorker, NO_ENV)).toEqual({
+      claude: true,
+      family: "fable",
+      model: "claude-fable-5-2",
+      tier: "fable",
+    });
+    expect(resolveLaunchModel("sonnet", CLAUDE_SLOTS, NO_ENV)).toMatchObject({ tier: null });
+    const opusSonnet = { ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-opus-5-5" };
+    expect(resolveLaunchModel("sonnet", NO_GATEWAY, opusSonnet)).toMatchObject({
+      family: "opus",
+      tier: "opus",
+    });
   });
 });
 
