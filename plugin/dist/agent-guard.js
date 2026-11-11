@@ -19921,7 +19921,7 @@ import { existsSync as existsSync14 } from "fs";
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync13, mkdirSync as mkdirSync11, renameSync as renameSync2, writeFileSync as writeFileSync4 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync13, mkdirSync as mkdirSync11, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "fs";
 import { dirname as dirname12, join as join21 } from "path";
 
 // src/tasks/work/queries.ts
@@ -20006,6 +20006,21 @@ function claimState(task, isLive, who) {
     return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
+function waitsForTask(tasks, start, target) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set;
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id))
+      continue;
+    if (id === target)
+      return true;
+    reached.add(id);
+    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
+  }
+  return false;
+}
 
 // src/tasks/work/db.ts
 var WORK_SCHEMA_VERSION = 4;
@@ -20070,7 +20085,13 @@ function repairTaskLayers(sqlite, file) {
           writeFileSync4(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname12(file)}, the next task call tries again`);
+          let cleanup = "";
+          try {
+            rmSync2(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname12(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -20089,7 +20110,7 @@ function repairTaskLayers(sqlite, file) {
     if (!nested) {
       for (const [id, held] of originalHolds)
         for (const h of held) {
-          if (originalHolds.get(h)?.includes(id))
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
             continue;
           sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
         }
@@ -20753,7 +20774,7 @@ import { existsSync as existsSync17, mkdirSync as mkdirSync13, writeFileSync as 
 import { dirname as dirname13, join as join24 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync16, mkdirSync as mkdirSync12, readFileSync as readFileSync22, renameSync as renameSync3, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "fs";
+import { existsSync as existsSync16, mkdirSync as mkdirSync12, readFileSync as readFileSync22, renameSync as renameSync3, rmSync as rmSync3, writeFileSync as writeFileSync5 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join23 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -20813,7 +20834,7 @@ function sessionName(context) {
   const note = namingNote(sessionId, wanted);
   const reminded = join23(namesDir(env), `${sessionId}.reminded`);
   if (event === "SessionStart") {
-    rmSync2(reminded, { force: true });
+    rmSync3(reminded, { force: true });
     return addContext(event, note);
   }
   if (wanted === null) {
@@ -22593,7 +22614,7 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 }
 
 // src/workflow/review-cover.ts
-import { mkdtempSync, rmSync as rmSync3 } from "fs";
+import { mkdtempSync, rmSync as rmSync4 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { join as join27 } from "path";
 var MIN_COVER_GIT = "2.40.0";
@@ -22709,7 +22730,7 @@ async function readCover(checkout, target, records, limits, git) {
     };
   } finally {
     if (objects !== null)
-      rmSync3(objects, { recursive: true, force: true });
+      rmSync4(objects, { recursive: true, force: true });
   }
 }
 async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
@@ -24098,7 +24119,7 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync14, readFileSync as readFileSync29, rmSync as rmSync4, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync14, readFileSync as readFileSync29, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname16, join as join31 } from "path";
 
 // src/cli/usage-window.ts
@@ -24400,7 +24421,7 @@ function usageNote(paths, env, sessionId, cwd, nowMs, timeZone) {
 }
 function forgetUsage(env, sessionId) {
   try {
-    rmSync4(usageMark(env, sessionId), { force: true });
+    rmSync5(usageMark(env, sessionId), { force: true });
   } catch {}
 }
 function tierView(input, env, paths, nowMs = Date.now(), timeZone) {

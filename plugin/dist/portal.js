@@ -30106,7 +30106,7 @@ var TASK_DENY_PATH = ["permissions", "deny"];
 
 // src/tasks/work/db.ts
 import { Database as Database3 } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync49, mkdirSync as mkdirSync19, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync49, mkdirSync as mkdirSync19, renameSync as renameSync3, rmSync as rmSync14, writeFileSync as writeFileSync5 } from "fs";
 import { dirname as dirname22, join as join57 } from "path";
 
 // src/tasks/work/queries.ts
@@ -30281,6 +30281,21 @@ function claimState(task, isLive, who) {
     return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
+function waitsForTask(tasks, start, target) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set;
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id))
+      continue;
+    if (id === target)
+      return true;
+    reached.add(id);
+    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
+  }
+  return false;
+}
 
 // src/tasks/work/db.ts
 var WORK_SCHEMA_VERSION = 4;
@@ -30345,7 +30360,13 @@ function repairTaskLayers(sqlite, file) {
           writeFileSync5(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync3(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname22(file)}, the next task call tries again`);
+          let cleanup = "";
+          try {
+            rmSync14(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname22(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -30364,7 +30385,7 @@ function repairTaskLayers(sqlite, file) {
     if (!nested) {
       for (const [id, held] of originalHolds)
         for (const h of held) {
-          if (originalHolds.get(h)?.includes(id))
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
             continue;
           sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
         }
@@ -33978,7 +33999,7 @@ import { existsSync as existsSync55, mkdirSync as mkdirSync23, writeFileSync as 
 import { dirname as dirname26, join as join64 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync54, mkdirSync as mkdirSync22, readFileSync as readFileSync64, renameSync as renameSync4, rmSync as rmSync14, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync54, mkdirSync as mkdirSync22, readFileSync as readFileSync64, renameSync as renameSync4, rmSync as rmSync15, writeFileSync as writeFileSync7 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
 import { join as join63 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -34038,7 +34059,7 @@ function sessionName(context) {
   const note = namingNote(sessionId, wanted);
   const reminded = join63(namesDir(env), `${sessionId}.reminded`);
   if (event === "SessionStart") {
-    rmSync14(reminded, { force: true });
+    rmSync15(reminded, { force: true });
     return addContext(event, note);
   }
   if (wanted === null) {
@@ -36648,7 +36669,7 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync57, mkdirSync as mkdirSync24, readFileSync as readFileSync68, rmSync as rmSync15, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync57, mkdirSync as mkdirSync24, readFileSync as readFileSync68, rmSync as rmSync16, writeFileSync as writeFileSync9 } from "fs";
 import { dirname as dirname29, join as join68 } from "path";
 
 // src/machine/claude-settings.ts
@@ -36848,7 +36869,7 @@ function usageNote(paths, env, sessionId, cwd, nowMs, timeZone) {
 }
 function forgetUsage(env, sessionId) {
   try {
-    rmSync15(usageMark(env, sessionId), { force: true });
+    rmSync16(usageMark(env, sessionId), { force: true });
   } catch {}
 }
 function tierView(input, env, paths, nowMs = Date.now(), timeZone) {
@@ -40326,7 +40347,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync75, rmSync as rmSync16 } from "fs";
+import { readFileSync as readFileSync75, rmSync as rmSync17 } from "fs";
 import { relative as relative11 } from "path";
 
 // src/tasks/schemas.ts
@@ -40612,17 +40633,8 @@ function addBlockers(db, task, refs) {
       pending.push(...byId.get(id)?.waitsFor ?? []);
     }
     const tasks = [...byId.values()];
-    const reached = new Set;
-    const waits = [ref];
-    while (waits.length) {
-      const id = waits.pop();
-      if (!id || reached.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
-      reached.add(id);
-      waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
-    }
+    if (waitsForTask(tasks, ref, task.id))
+      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
@@ -41120,7 +41132,7 @@ ${historyText(gone, { full: input.history })}`;
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
-          rmSync16(task.file);
+          rmSync17(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok)

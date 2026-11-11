@@ -28402,10 +28402,25 @@ function claimState(task, isLive, who) {
     return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
+function waitsForTask(tasks, start, target) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set;
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id))
+      continue;
+    if (id === target)
+      return true;
+    reached.add(id);
+    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
+  }
+  return false;
+}
 
 // src/tasks/work/db.ts
 import { Database as Database3 } from "bun:sqlite";
-import { chmodSync as chmodSync3, existsSync as existsSync35, mkdirSync as mkdirSync16, renameSync as renameSync4, writeFileSync as writeFileSync6 } from "fs";
+import { chmodSync as chmodSync3, existsSync as existsSync35, mkdirSync as mkdirSync16, renameSync as renameSync4, rmSync as rmSync13, writeFileSync as writeFileSync6 } from "fs";
 import { dirname as dirname15, join as join41 } from "path";
 function workDbFile(paths) {
   return join41(paths.stateDir, "tasks", "work.db");
@@ -28431,7 +28446,13 @@ function repairTaskLayers(sqlite, file) {
           writeFileSync6(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync4(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname15(file)}, the next task call tries again`);
+          let cleanup = "";
+          try {
+            rmSync13(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname15(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -28450,7 +28471,7 @@ function repairTaskLayers(sqlite, file) {
     if (!nested) {
       for (const [id, held] of originalHolds)
         for (const h of held) {
-          if (originalHolds.get(h)?.includes(id))
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
             continue;
           sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
         }
@@ -28877,17 +28898,8 @@ function addBlockers(db, task, refs) {
       pending.push(...byId.get(id)?.waitsFor ?? []);
     }
     const tasks = [...byId.values()];
-    const reached = new Set;
-    const waits = [ref];
-    while (waits.length) {
-      const id = waits.pop();
-      if (!id || reached.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
-      reached.add(id);
-      waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
-    }
+    if (waitsForTask(tasks, ref, task.id))
+      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
@@ -29059,7 +29071,7 @@ var init_store2 = __esm(() => {
 });
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync41, rmSync as rmSync13 } from "fs";
+import { readFileSync as readFileSync41, rmSync as rmSync14 } from "fs";
 import { relative as relative5 } from "path";
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
@@ -29402,7 +29414,7 @@ ${historyText(gone, { full: input.history })}`;
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
-          rmSync13(task.file);
+          rmSync14(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok)
@@ -32018,7 +32030,7 @@ var init_claude = __esm(() => {
 });
 
 // src/cli/launch.ts
-import { rmSync as rmSync14 } from "fs";
+import { rmSync as rmSync15 } from "fs";
 import { join as join49 } from "path";
 function parseLaunchArgs(args) {
   const separator = args.indexOf("--");
@@ -32077,7 +32089,7 @@ function launchSettingsFile(stateDir, mode, pid = process.pid) {
 }
 function removeSettingsFile(file, ctx) {
   try {
-    rmSync14(file, { force: true });
+    rmSync15(file, { force: true });
   } catch (error) {
     ctx.error(`launch: its settings file could not be removed: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -35615,7 +35627,7 @@ import {
   readdirSync as readdirSync24,
   readFileSync as readFileSync57,
   readSync as readSync3,
-  rmSync as rmSync15,
+  rmSync as rmSync16,
   statSync as statSync21
 } from "fs";
 import { dirname as dirname21, join as join60, resolve as resolve15 } from "path";
@@ -35718,7 +35730,7 @@ function markOpened(stateDir, id, now) {
   for (const name of readdirSync24(dir)) {
     if (name === id || openedRecently(stateDir, name, now))
       continue;
-    rmSync15(join60(dir, name), { force: true });
+    rmSync16(join60(dir, name), { force: true });
   }
 }
 async function openOnDesktop(command, options, deps) {
@@ -39922,7 +39934,7 @@ import {
   readdirSync as readdirSync25,
   readFileSync as readFileSync63,
   rmdirSync,
-  rmSync as rmSync16,
+  rmSync as rmSync17,
   statSync as statSync22
 } from "fs";
 import { join as join65 } from "path";
@@ -40199,7 +40211,7 @@ function applySerenaCleanup(paths, plan, dryRun) {
   }
   if (plan.recordDir !== null) {
     if (!dryRun)
-      rmSync16(plan.recordDir, { force: true, recursive: true });
+      rmSync17(plan.recordDir, { force: true, recursive: true });
     changes.push(`- ${short(plan.recordDir)}/: removed (the serena-root hook's records; ${retired})`);
   }
   if (plan.kept !== null) {
@@ -40481,7 +40493,7 @@ init_path_compare();
 init_check2();
 init_installed_plugins();
 init_lock();
-import { existsSync as existsSync56, readdirSync as readdirSync27, readFileSync as readFileSync69, rmSync as rmSync17 } from "fs";
+import { existsSync as existsSync56, readdirSync as readdirSync27, readFileSync as readFileSync69, rmSync as rmSync18 } from "fs";
 import { join as join68, relative as relative11, sep as sep6 } from "path";
 
 // src/setup/managed-markdown.ts
@@ -41187,7 +41199,7 @@ function setInstructionsOptOut(stateDir, optOut, dryRun) {
     if (optOut) {
       atomicWrite(file, "Written by `cc-smart-dev-kit setup --no-instructions`. While this file is here, setup leaves the instructions out. `cc-smart-dev-kit setup --instructions` removes it.\n", 420);
     } else {
-      rmSync17(file, { force: true });
+      rmSync18(file, { force: true });
     }
   }
   return optOut ? {
@@ -41199,8 +41211,8 @@ function setInstructionsOptOut(stateDir, optOut, dryRun) {
 function forgetInstructionsState(stateDir) {
   const optOut = optOutFile(stateDir);
   const had = existsSync56(optOut);
-  rmSync17(optOut, { force: true });
-  rmSync17(versionStampFile(stateDir), { force: true });
+  rmSync18(optOut, { force: true });
+  rmSync18(versionStampFile(stateDir), { force: true });
   return had ? optOut : null;
 }
 function removeCopies(files, stateDir, dryRun) {
@@ -41294,7 +41306,7 @@ function removeInstructions(paths, dryRun) {
   }
   lines.push(...removeCopies(trackedCopies(paths.target, paths.stateDir), paths.stateDir, dryRun));
   if (!dryRun)
-    rmSync17(versionStampFile(paths.stateDir), { force: true });
+    rmSync18(versionStampFile(paths.stateDir), { force: true });
   return lines;
 }
 
@@ -41531,7 +41543,7 @@ import {
   mkdtempSync as mkdtempSync6,
   readFileSync as readFileSync72,
   realpathSync as realpathSync8,
-  rmSync as rmSync18,
+  rmSync as rmSync19,
   writeFileSync as writeFileSync7
 } from "fs";
 import { tmpdir as tmpdir7 } from "os";
@@ -42545,7 +42557,7 @@ function runLiveCheck(paths, env, deps) {
       lines.push(miss);
     return lines;
   } finally {
-    rmSync18(root, { recursive: true, force: true });
+    rmSync19(root, { recursive: true, force: true });
   }
 }
 
@@ -45724,7 +45736,7 @@ init_io();
 // src/hooks/session-name.ts
 init_names();
 init_io();
-import { existsSync as existsSync64, mkdirSync as mkdirSync26, readFileSync as readFileSync75, renameSync as renameSync5, rmSync as rmSync19, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync64, mkdirSync as mkdirSync26, readFileSync as readFileSync75, renameSync as renameSync5, rmSync as rmSync20, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { join as join76 } from "path";
 var MAX_SESSION_NAME = 60;
@@ -45794,7 +45806,7 @@ function sessionName(context) {
   const note = namingNote(sessionId, wanted);
   const reminded = join76(namesDir(env), `${sessionId}.reminded`);
   if (event === "SessionStart") {
-    rmSync19(reminded, { force: true });
+    rmSync20(reminded, { force: true });
     return addContext(event, note);
   }
   if (wanted === null) {
@@ -47830,7 +47842,7 @@ function taskStart(input, paths, env, now = Date.now) {
 
 // src/hooks/tier-view.ts
 init_names();
-import { existsSync as existsSync68, mkdirSync as mkdirSync28, readFileSync as readFileSync80, rmSync as rmSync20, writeFileSync as writeFileSync11 } from "fs";
+import { existsSync as existsSync68, mkdirSync as mkdirSync28, readFileSync as readFileSync80, rmSync as rmSync21, writeFileSync as writeFileSync11 } from "fs";
 import { dirname as dirname32, join as join81 } from "path";
 
 // src/cli/usage-window.ts
@@ -48239,7 +48251,7 @@ function usageNote(paths, env, sessionId, cwd, nowMs, timeZone) {
 }
 function forgetUsage(env, sessionId) {
   try {
-    rmSync20(usageMark(env, sessionId), { force: true });
+    rmSync21(usageMark(env, sessionId), { force: true });
   } catch {}
 }
 function tierView(input, env, paths, nowMs = Date.now(), timeZone) {
@@ -50253,7 +50265,7 @@ init_config();
 init_health();
 init_service();
 init_settings();
-import { existsSync as existsSync71, readdirSync as readdirSync30, readFileSync as readFileSync83, renameSync as renameSync6, rmSync as rmSync21, statSync as statSync27 } from "fs";
+import { existsSync as existsSync71, readdirSync as readdirSync30, readFileSync as readFileSync83, renameSync as renameSync6, rmSync as rmSync22, statSync as statSync27 } from "fs";
 import { basename as basename16, dirname as dirname34, join as join85 } from "path";
 init_path_compare();
 init_file_mode();
@@ -50536,14 +50548,14 @@ function absorbStateFolder(from, to, dryRun) {
     if (statSync27(source).isDirectory() && statSync27(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
-        rmSync21(source, { recursive: true, force: true });
+        rmSync22(source, { recursive: true, force: true });
       continue;
     }
     if (!dryRun)
-      rmSync21(source, { recursive: true, force: true });
+      rmSync22(source, { recursive: true, force: true });
   }
   if (!dryRun && readdirSync30(from).length === 0)
-    rmSync21(from, { recursive: true, force: true });
+    rmSync22(from, { recursive: true, force: true });
   return moved;
 }
 function rewriteStateFolder(stateDir, renamer, dryRun) {
@@ -50605,7 +50617,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
     if (existsSync71(target)) {
       for (const name of readdirSync30(folderPath))
         renameSync6(join85(folderPath, name), join85(target, name));
-      rmSync21(folderPath, { recursive: true, force: true });
+      rmSync22(folderPath, { recursive: true, force: true });
     } else {
       renameSync6(folderPath, target);
     }
@@ -50904,7 +50916,7 @@ async function runMigrate(paths, options) {
 ${MIGRATE_DRY_RUN}`);
       return 0;
     }
-    rmSync21(progressFile(paths.stateDir), { force: true });
+    rmSync22(progressFile(paths.stateDir), { force: true });
     return 0;
   }
   console.log(`${options.dryRun ? "A real run would do these steps" : "Steps"}: ${steps.join(", ")}.
@@ -51059,7 +51071,7 @@ ${parsed.error}`);
         confirm: null
       });
       for (const unit of existing)
-        rmSync21(unit.file, { force: true });
+        rmSync22(unit.file, { force: true });
       say2("-", existing.map((unit) => short(unit.file)).join(", "), "removed (this version's units are in their place)");
     },
     "old-plugin": () => {
@@ -51100,7 +51112,7 @@ The judge test does not carry over: its proof names the old command. Test the ju
 ${MIGRATE_DRY_RUN}`);
     return 0;
   }
-  rmSync21(progressFile(paths.stateDir), { force: true });
+  rmSync22(progressFile(paths.stateDir), { force: true });
   console.log(`
 Done. Restart every running Claude session: until then they still hold the old names (the router's aliases keep them working).`);
   if (instructionsToSetup(paths, options)) {
@@ -51121,7 +51133,7 @@ init_project_init();
 init_report();
 
 // src/cli/restore.ts
-import { existsSync as existsSync72, rmSync as rmSync22 } from "fs";
+import { existsSync as existsSync72, rmSync as rmSync23 } from "fs";
 import { basename as basename17, dirname as dirname35, join as join86 } from "path";
 init_build_info();
 init_commands();
@@ -51204,7 +51216,7 @@ function removeMcp(paths, options, short) {
   const lines = [...removal.removed, ...removal.notes];
   const ok = !removal.recordsUnreadable && removal.kept.length === 0;
   if (ok && existsSync72(mcpRecordsFile(paths.stateDir))) {
-    rmSync22(mcpRecordsFile(paths.stateDir), { force: true });
+    rmSync23(mcpRecordsFile(paths.stateDir), { force: true });
     lines.push(`- ${short(mcpRecordsFile(paths.stateDir))}: removed (the record of the MCP servers)`);
   }
   return { lines, ok };
@@ -51376,10 +51388,10 @@ async function runRestore(paths, options) {
       service.forget(options.runner);
     const mcp = removeMcp(paths, options, short);
     const browser = removeBrowser(paths, browserRecord, options.runner);
-    rmSync22(restartPendingFile(paths.stateDir), { force: true });
+    rmSync23(restartPendingFile(paths.stateDir), { force: true });
     const stateGone = routerTracked && existsSync72(paths.gatewayStateFile);
     if (stateGone)
-      rmSync22(paths.gatewayStateFile, { force: true });
+      rmSync23(paths.gatewayStateFile, { force: true });
     print(results, short);
     if (stateGone) {
       console.log(`- ${short(paths.gatewayStateFile)}: removed (the router's limit state)`);
@@ -51404,7 +51416,7 @@ async function runRestore(paths, options) {
 init_secret_line();
 
 // src/cli/setup.ts
-import { existsSync as existsSync76, mkdirSync as mkdirSync29, rmSync as rmSync24 } from "fs";
+import { existsSync as existsSync76, mkdirSync as mkdirSync29, rmSync as rmSync25 } from "fs";
 import { basename as basename18, delimiter, dirname as dirname36, isAbsolute as isAbsolute14, join as join90, relative as relative14 } from "path";
 init_build_info();
 init_config();
@@ -51500,7 +51512,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 init_herdr();
 init_lock();
 init_write();
-import { mkdtempSync as mkdtempSync7, rmSync as rmSync23 } from "fs";
+import { mkdtempSync as mkdtempSync7, rmSync as rmSync24 } from "fs";
 import { join as join88 } from "path";
 async function installHerdr(paths, machine, env) {
   try {
@@ -51545,7 +51557,7 @@ async function installHerdr(paths, machine, env) {
           ]
         };
       } finally {
-        rmSync23(staging, { recursive: true, force: true });
+        rmSync24(staging, { recursive: true, force: true });
       }
     }, { waitMs: 1e4 });
   } catch (error) {
@@ -52221,7 +52233,7 @@ async function runSetup(paths, options) {
 `, 384);
     }
     if (managed.retryWatchdog === "on") {
-      rmSync24(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
+      rmSync25(retryWatchdogDeclinedFile(paths.stateDir), { force: true });
     }
     return {
       gateway: reportLines("gateway", gateway),

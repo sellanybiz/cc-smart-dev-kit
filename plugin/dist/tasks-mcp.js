@@ -21550,7 +21550,7 @@ var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync7, rmSync as rmSync2 } from "fs";
+import { readFileSync as readFileSync7, rmSync as rmSync3 } from "fs";
 import { relative as relative2 } from "path";
 
 // src/tasks/schemas.ts
@@ -22662,7 +22662,7 @@ var TASK_COMMAND = `${COMMAND} task`;
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
 
 // src/tasks/work/queries.ts
@@ -22817,6 +22817,21 @@ function claimState(task, isLive, who) {
     return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
+function waitsForTask(tasks, start, target) {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set;
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id))
+      continue;
+    if (id === target)
+      return true;
+    reached.add(id);
+    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
+  }
+  return false;
+}
 
 // src/tasks/work/db.ts
 var WORK_SCHEMA_VERSION = 4;
@@ -22881,7 +22896,13 @@ function repairTaskLayers(sqlite, file) {
           writeFileSync2(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}, the next task call tries again`);
+          let cleanup = "";
+          try {
+            rmSync2(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -22900,7 +22921,7 @@ function repairTaskLayers(sqlite, file) {
     if (!nested) {
       for (const [id, held] of originalHolds)
         for (const h of held) {
-          if (originalHolds.get(h)?.includes(id))
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
             continue;
           sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
         }
@@ -23507,17 +23528,8 @@ function addBlockers(db, task, refs) {
       pending.push(...byId.get(id)?.waitsFor ?? []);
     }
     const tasks = [...byId.values()];
-    const reached = new Set;
-    const waits = [ref];
-    while (waits.length) {
-      const id = waits.pop();
-      if (!id || reached.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
-      reached.add(id);
-      waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
-    }
+    if (waitsForTask(tasks, ref, task.id))
+      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
@@ -24015,7 +24027,7 @@ ${historyText(gone, { full: input.history })}`;
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
-          rmSync2(task.file);
+          rmSync3(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);
           if (!result.ok)
