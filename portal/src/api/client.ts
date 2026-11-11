@@ -12,8 +12,9 @@
  */
 
 import * as adapt from "./adapt";
-import { csrfToken, type Fetch, getJson, postAction } from "./http";
+import { csrfToken, type Fetch, getJson, PortalRequestError, postAction } from "./http";
 import { mockData } from "./mock";
+import { mockTaskDetail } from "./mock-tasks";
 import { type LiveMessage, type LiveStream, startLiveStream } from "./stream";
 import type {
   Connection,
@@ -39,6 +40,7 @@ import type {
   RequestQuery,
   SettingsData,
   SlotsData,
+  TaskDetailAnswer,
   TasksData,
   UpdateData,
   WorkData,
@@ -76,6 +78,8 @@ export interface PortalClient {
   projectTasks(id: string): Promise<ProjectTasksData>;
   /** The Tasks tab (D76): every project with its work tree and its task files. */
   tasks(): Promise<TasksData>;
+  /** One work task as the store keeps it: its description, notes and history (the side panel). */
+  taskDetail(id: string): Promise<TaskDetailAnswer>;
   jobs(): Promise<JobsData>;
   /** The stream's `jobs` event: the queue's new state each time it changes. Returns the unsubscribe. */
   onJobs(listener: (jobs: JobsData) => void): () => void;
@@ -210,6 +214,12 @@ export function mockClient(scenario: MockScenario): PortalClient {
           return tasks === undefined ? [] : [{ project, tasks }];
         }),
       })),
+    taskDetail: (id) =>
+      answer(() => {
+        const found = mockTaskDetail(data.tasksPages, id);
+        if (found === null) throw new PortalRequestError("task not found", 404);
+        return found;
+      }),
     jobs: () => answer(() => data.jobs),
     // The mock's stream sends no change: the page keeps what `jobs()` answered.
     onJobs: () => () => {},
@@ -324,6 +334,7 @@ export function liveClient(world: { fetch: Fetch; stream: LiveStream }): PortalC
     projectTasks: (id) =>
       get<Wire.ProjectTasksAnswer>(`/api/projects/${encodeURIComponent(id)}/tasks`),
     tasks: async () => adapt.tasksOf(await get<Wire.TasksAnswer>("/api/tasks")),
+    taskDetail: (id) => get<Wire.TaskDetailAnswer>(`/api/tasks/${encodeURIComponent(id)}`),
     jobs: async () => {
       const answer = await get<Wire.ApiError | Wire.JobsAnswer>("/api/jobs");
       if ("error" in answer) throw new Error(answer.error);

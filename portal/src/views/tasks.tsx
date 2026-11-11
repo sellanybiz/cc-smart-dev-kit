@@ -1,24 +1,34 @@
 "use client";
 
 /**
- * The Tasks tab (D76, `/tasks`): every project's work on this machine as Plan › Phase › Task ›
- * Subtask, then what each project still owes in its task files. Read-only: a session changes a
- * task with its task tools, a person with `cc-smart-dev-kit task`. The filters live in the
- * address (`?project=<id>&show=recent&blocked=1&type=non-blocking`), so a link opens the tab as
- * it was, and the project page's card opens it on one project.
+ * The Tasks tab (D76, `/tasks`): every project's work on this machine as Session › Plan › Phase
+ * › Task, and, on its own tab, what each project still owes in its task files. Each level folds
+ * (remembered in this browser), the filter bar narrows it, the list shows a page of rows at a
+ * time, and a row opens the task in a side panel, where a plan or a task can move to another
+ * session. The view lives in the address (`?project=…&status=blocked&session=…&q=…&task=<id>`),
+ * so a link opens the tab as it was.
  */
 
-import { FilterXIcon, FolderGit2Icon, ListChecksIcon, SearchXIcon } from "lucide-react";
+import {
+  ChevronRightIcon,
+  FilterXIcon,
+  FolderGit2Icon,
+  ListChecksIcon,
+  SearchXIcon,
+} from "lucide-react";
 import { useId } from "react";
 import { useResource } from "@/api/hooks";
 import { TASKS_REFRESH } from "@/api/refresh";
-import type { TasksData, TasksProjectData } from "@/api/types";
+import type { TasksData, TasksProjectData, WorkTaskNode } from "@/api/types";
 import { AppLink, useAppQuery, useAppQueryReady, useSetAppQuery } from "@/components/router";
 import { SectionCards, StatCard } from "@/components/section-cards";
 import { EmptyState, LoadingState, PagePad, ResourceView } from "@/components/states";
 import { TonePill } from "@/components/status";
+import { TaskFilters } from "@/components/task-filters";
+import { TaskPanel } from "@/components/task-panel";
 import { TaskLegend } from "@/components/task-tree";
-import { TasksBody } from "@/components/tasks-card";
+import { type TreeUi, WorkSection } from "@/components/task-work";
+import { FilesSection } from "@/components/tasks-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,17 +39,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Switch } from "@/components/ui/switch";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useFolds } from "@/hooks/use-folds";
 import { KIT_NAME } from "@/lib/format";
 import {
+  filterGroups,
+  findTask,
+  foldKey,
+  isOpen,
+  plansOf,
+  sessionGroupsOf,
+  sessionsOf,
+} from "@/lib/task-groups";
+import {
   addCounts,
+  DEFAULT_FILTER,
   fileCountsOf,
-  filterTasks,
-  isDefaultFilter,
-  matchCount,
+  filesMatching,
   NO_WORK,
   narrowsWork,
   narrowWords,
@@ -50,26 +66,43 @@ import {
 } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 
-/** True when a project has something the tab shows: work tasks, files owed, or a fault. */
-function hasAnything(one: TasksProjectData): boolean {
-  const { work, files } = one.tasks;
-  return (
-    work.state === "unreadable" ||
-    (work.state === "ready" && work.tasks.length > 0) ||
-    files.state === "unavailable" ||
-    files.tasks.length > 0 ||
-    files.broken > 0
-  );
+/** True when a project has work to show: tasks, or a store it cannot read. */
+function hasWork(one: TasksProjectData): boolean {
+  const { work } = one.tasks;
+  return work.state === "unreadable" || (work.state === "ready" && work.tasks.length > 0);
+}
+
+/** True when a project has files to show: open ones, broken ones, or a folder it cannot read. */
+function hasFiles(one: TasksProjectData): boolean {
+  const { files } = one.tasks;
+  return files.state === "unavailable" || files.tasks.length > 0 || files.broken > 0;
 }
 
 /**
- * True when the whole tab shows the project's card: it has something, and when the filter
- * narrows the work (blocked, non-blocking), something under the filter.
+ * True when the whole tab shows the project's card: on the work tab, it has work and, when the
+ * filter narrows it, something under the filter; on the files tab, files the search keeps.
  */
 function shownOnAll(one: TasksProjectData, view: TaskView): boolean {
-  if (!narrowsWork(view)) return hasAnything(one);
+  if (view.tab === "files") {
+    const { files } = one.tasks;
+    if (view.q.trim() === "") return hasFiles(one);
+    return files.state === "ready" && filesMatching(files.tasks, view.q).length > 0;
+  }
+  if (!narrowsWork(view)) return hasWork(one);
   const { work } = one.tasks;
-  return work.state === "ready" && matchCount(filterTasks(work.tasks, view)) > 0;
+  return (
+    work.state === "ready" &&
+    filterGroups(sessionGroupsOf(work.tasks, work.sessions), view).length > 0
+  );
+}
+
+/** True when any project holds work with no session recorded. */
+function anyUnplaced(projects: readonly TasksProjectData[]): boolean {
+  return projects.some(
+    (one) =>
+      one.tasks.work.state === "ready" &&
+      one.tasks.work.tasks.some((root) => root.session === null),
+  );
 }
 
 function TasksStats({ projects }: { projects: readonly TasksProjectData[] }) {
@@ -90,7 +123,7 @@ function TasksStats({ projects }: { projects: readonly TasksProjectData[] }) {
         label="Open work"
         value={work.open}
         headline={`${work.inProgress} in progress`}
-        detail="Every layer counted: phases, tasks and subtasks"
+        detail="Every layer counted: plans, phases and tasks"
       />
       <StatCard
         label="Blocked"
@@ -126,119 +159,45 @@ function TasksStats({ projects }: { projects: readonly TasksProjectData[] }) {
   );
 }
 
-function Filters({
-  data,
-  view,
-  onView,
-}: {
-  data: TasksData;
-  view: TaskView;
-  onView: (view: TaskView) => void;
-}) {
-  const projectId = useId();
-  const blockedId = useId();
-  const typeId = useId();
-  return (
-    <search aria-label="Filters" className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
-      {data.projects.length > 1 && (
-        <>
-          <label htmlFor={projectId} className="sr-only">
-            Project
-          </label>
-          <NativeSelect
-            id={projectId}
-            size="sm"
-            value={view.project ?? ""}
-            onChange={(event) => onView({ ...view, project: event.target.value || null })}
-            className={cn(
-              "max-w-full",
-              view.project === null ? "text-muted-foreground" : "font-medium",
-            )}
-          >
-            <NativeSelectOption value="">All projects</NativeSelectOption>
-            {data.projects.map((one) => (
-              <NativeSelectOption key={one.project.id} value={one.project.id}>
-                {`${one.project.name} · ${workCountsOf(one.tasks.work).open} open`}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <span className="mx-1 hidden h-5 w-px bg-border @3xl/main:block" aria-hidden="true" />
-        </>
-      )}
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={view.show}
-        aria-label="Which tasks"
-        onValueChange={(next) => {
-          if (next === "open" || next === "recent") onView({ ...view, show: next });
-        }}
-      >
-        <ToggleGroupItem value="open" aria-label="Open tasks only" className="px-2.5">
-          Open
-        </ToggleGroupItem>
-        <ToggleGroupItem
-          value="recent"
-          aria-label="Open tasks, and those closed recently"
-          className="px-2.5"
-        >
-          Recent
-        </ToggleGroupItem>
-      </ToggleGroup>
-      <div className="flex items-center gap-2 px-1">
-        <Switch
-          id={blockedId}
-          size="sm"
-          checked={view.blocked}
-          onCheckedChange={(blocked) => onView({ ...view, blocked })}
-        />
-        <Label htmlFor={blockedId} className="text-sm font-normal">
-          Blocked only
-        </Label>
-      </div>
-      <div className="flex items-center gap-2 px-1">
-        <Switch
-          id={typeId}
-          size="sm"
-          checked={view.nonBlocking}
-          onCheckedChange={(nonBlocking) => onView({ ...view, nonBlocking })}
-        />
-        <Label htmlFor={typeId} className="text-sm font-normal">
-          Non-blocking only
-        </Label>
-      </div>
-      {!isDefaultFilter(view) && (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => onView({ ...view, show: "open", blocked: false, nonBlocking: false })}
-        >
-          <FilterXIcon data-icon="inline-start" aria-hidden="true" />
-          Clear filters
-        </Button>
-      )}
-    </search>
-  );
-}
-
-function ProjectTasks({
+function ProjectCard({
   one,
   view,
   onView,
+  ui,
 }: {
   one: TasksProjectData;
   view: TaskView;
   onView: (view: TaskView) => void;
+  ui: TreeUi;
 }) {
   const titleId = useId();
+  const bodyId = useId();
+  const key = foldKey.project(one.project.id);
+  // A search opens every card it finds something in.
+  const open = view.q.trim() !== "" || isOpen(ui.folds, key);
   return (
     <Card aria-labelledby={titleId} role="region">
       <CardHeader>
         <CardTitle>
           <h2 id={titleId} className="flex flex-wrap items-center gap-2 text-base font-semibold">
-            <FolderGit2Icon className="size-4 text-muted-foreground" aria-hidden="true" />
-            <span className="wrap-any">{one.project.name}</span>
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={bodyId}
+              onClick={() => ui.setFolds([key], open)}
+              className="inline-flex min-w-0 items-center gap-2 rounded-md text-left focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            >
+              <ChevronRightIcon
+                data-open={open}
+                className="size-4 shrink-0 text-muted-foreground transition-transform data-[open=true]:rotate-90 motion-reduce:transition-none"
+                aria-hidden="true"
+              />
+              <FolderGit2Icon
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <span className="wrap-any">{one.project.name}</span>
+            </button>
             {one.project.current && <TonePill tone="info">the portal's folder</TonePill>}
           </h2>
         </CardTitle>
@@ -254,27 +213,88 @@ function ProjectTasks({
           </Button>
         </CardAction>
       </CardHeader>
-      <CardContent className="flex flex-col gap-6">
-        <TasksBody
-          data={one.tasks}
-          filter={view}
-          onFilter={(filter) => onView({ ...view, ...filter })}
-        />
+      <CardContent id={bodyId} hidden={!open} className="flex flex-col gap-6">
+        {open &&
+          (view.tab === "files" ? (
+            <FilesSection files={one.tasks.files} q={view.q} />
+          ) : (
+            <WorkSection
+              // A new filter starts the list at its first page again.
+              key={JSON.stringify([
+                view.status,
+                view.nonBlocking,
+                view.q,
+                view.session,
+                view.plan,
+                view.live,
+              ])}
+              projectId={one.project.id}
+              work={one.tasks.work}
+              filter={view}
+              onFilter={(filter) => onView({ ...view, ...filter })}
+              ui={ui}
+            />
+          ))}
       </CardContent>
     </Card>
   );
 }
 
-/** The tab once its answer is there: the counts, the filters, the key, then each project. */
+/** What the tab says when no card is left: nothing matches, or nothing is there at all. */
+function NothingShown({ view, onView }: { view: TaskView; onView: (view: TaskView) => void }) {
+  if (view.tab === "files") {
+    return view.q.trim() !== "" ? (
+      <EmptyState title="Nothing matches the search">
+        <p>No open task file in any project holds “{view.q.trim()}” in its title or id.</p>
+      </EmptyState>
+    ) : (
+      <EmptyState title="Nothing owed in any project">
+        A project owes something once its repository has an open task file (
+        <code className="font-mono">{KIT_NAME} task add --kind production</code> and the like).
+      </EmptyState>
+    );
+  }
+  if (narrowsWork(view)) {
+    return (
+      <EmptyState title="Nothing matches the filters">
+        <p>No {narrowWords(view) || "matching"} task in any project.</p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          onClick={() => onView({ ...view, ...DEFAULT_FILTER })}
+        >
+          <FilterXIcon data-icon="inline-start" aria-hidden="true" />
+          Clear the filters
+        </Button>
+      </EmptyState>
+    );
+  }
+  return (
+    <EmptyState
+      title="No tasks in any project"
+      icon={<ListChecksIcon className="size-6 text-muted-foreground" aria-hidden="true" />}
+    >
+      A session makes a task with its task tools (<code className="font-mono">task_create</code>),
+      you with <code className="font-mono">{KIT_NAME} task add</code>.
+    </EmptyState>
+  );
+}
+
+/** The tab once its answer is there: the counts, the tabs, the filters, then each project. */
 export function TasksPage({
   data,
   view,
   onView,
+  onRefresh = () => {},
 }: {
   data: TasksData;
   view: TaskView;
   onView: (view: TaskView) => void;
+  /** Read the tasks again (after a move). */
+  onRefresh?: () => void;
 }) {
+  const { folds, setFolds } = useFolds();
   if (data.projects.length === 0) {
     return (
       <PagePad>
@@ -304,78 +324,99 @@ export function TasksPage({
   const scope = picked === null ? data.projects : [picked];
   const shown = picked === null ? scope.filter((one) => shownOnAll(one, view)) : scope;
   const quiet = scope.filter((one) => !shown.includes(one));
+  const ui: TreeUi = {
+    folds,
+    setFolds,
+    selected: view.task,
+    onOpen: (task: WorkTaskNode) => onView({ ...view, task: task.id }),
+  };
+  const shownView = unknown ? { ...view, project: null } : view;
+  const work = scope.reduce((sum, one) => addCounts(sum, workCountsOf(one.tasks.work)), NO_WORK);
+  const owed = scope.reduce((sum, one) => sum + fileCountsOf(one.tasks.files).open, 0);
+  const cards = (
+    <PagePad className="flex flex-col gap-4 md:gap-6">
+      {unknown && (
+        <Alert>
+          <SearchXIcon aria-hidden="true" />
+          <AlertTitle>No project on this machine has that id</AlertTitle>
+          <AlertDescription className="flex flex-col items-start gap-2">
+            <span>Every project is shown instead. Open it again from its project page.</span>
+            <Button variant="outline" size="sm" onClick={() => onView({ ...view, project: null })}>
+              Show every project
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      {view.tab === "work" && <TaskLegend />}
+      {shown.length === 0 && <NothingShown view={view} onView={onView} />}
+      {shown.map((one) => (
+        <ProjectCard key={one.project.id} one={one} view={view} onView={onView} ui={ui} />
+      ))}
+      {quiet.length > 0 && (
+        <p className="text-sm text-pretty text-muted-foreground">
+          {narrowsWork(view) || view.q.trim() !== ""
+            ? `Nothing matches in ${quiet.length === 1 ? "1 more project" : `${quiet.length} more projects`}: `
+            : `Nothing here in ${quiet.length === 1 ? "1 more project" : `${quiet.length} more projects`}: `}
+          {quiet.map((one, index) => (
+            <span key={one.project.id}>
+              {index > 0 && ", "}
+              <button
+                type="button"
+                onClick={() => onView({ ...view, project: one.project.id })}
+                aria-label={`Show ${one.project.name} alone`}
+                className="rounded-sm underline underline-offset-4 wrap-any hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+              >
+                {one.project.name}
+              </button>
+            </span>
+          ))}
+          .
+        </p>
+      )}
+    </PagePad>
+  );
   return (
     <>
       <TasksStats projects={scope} />
-      <Filters data={data} view={unknown ? { ...view, project: null } : view} onView={onView} />
-      <PagePad className="flex flex-col gap-4 md:gap-6">
-        {unknown && (
-          <Alert>
-            <SearchXIcon aria-hidden="true" />
-            <AlertTitle>No project on this machine has that id</AlertTitle>
-            <AlertDescription className="flex flex-col items-start gap-2">
-              <span>Every project is shown instead. Open it again from its project page.</span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onView({ ...view, project: null })}
-              >
-                Show every project
-              </Button>
-            </AlertDescription>
-          </Alert>
-        )}
-        <TaskLegend />
-        {shown.length === 0 &&
-          (narrowsWork(view) ? (
-            <EmptyState title="Nothing matches the filters">
-              <p>No {narrowWords(view)} task in any project.</p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3"
-                onClick={() => onView({ ...view, blocked: false, nonBlocking: false })}
-              >
-                <FilterXIcon data-icon="inline-start" aria-hidden="true" />
-                Clear the filters
-              </Button>
-            </EmptyState>
-          ) : (
-            <EmptyState
-              title="No tasks in any project"
-              icon={<ListChecksIcon className="size-6 text-muted-foreground" aria-hidden="true" />}
-            >
-              A session makes a task with its task tools (
-              <code className="font-mono">task_create</code>), you with{" "}
-              <code className="font-mono">{KIT_NAME} task add</code>. A project owes something once
-              its repository has a task file.
-            </EmptyState>
-          ))}
-        {shown.map((one) => (
-          <ProjectTasks key={one.project.id} one={one} view={view} onView={onView} />
-        ))}
-        {quiet.length > 0 && (
-          <p className="text-sm text-pretty text-muted-foreground">
-            {narrowsWork(view)
-              ? `Nothing matches in ${quiet.length === 1 ? "1 more project" : `${quiet.length} more projects`}: `
-              : `No tasks in ${quiet.length === 1 ? "1 more project" : `${quiet.length} more projects`}: `}
-            {quiet.map((one, index) => (
-              <span key={one.project.id}>
-                {index > 0 && ", "}
-                <button
-                  type="button"
-                  onClick={() => onView({ ...view, project: one.project.id })}
-                  aria-label={`Show ${one.project.name} alone`}
-                  className="rounded-sm underline underline-offset-4 wrap-any hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-                >
-                  {one.project.name}
-                </button>
-              </span>
-            ))}
-            .
-          </p>
-        )}
-      </PagePad>
+      <Tabs
+        value={view.tab}
+        onValueChange={(tab) => onView({ ...view, tab: tab === "files" ? "files" : "work" })}
+        className="gap-4"
+      >
+        <div className="px-4 lg:px-6">
+          <TabsList aria-label="Which tasks">
+            <TabsTrigger value="work" className="px-3">
+              Work on this machine · {work.open} open
+            </TabsTrigger>
+            <TabsTrigger value="files" className="px-3">
+              Owed by {scope.length === 1 ? "the project" : "the projects"} · {owed}
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        <TaskFilters
+          data={data}
+          view={shownView}
+          sessions={sessionsOf(scope)}
+          plans={plansOf(scope)}
+          unplaced={anyUnplaced(scope)}
+          onView={onView}
+        />
+        <TabsContent value="work" className={cn("text-base")}>
+          {view.tab === "work" && cards}
+        </TabsContent>
+        <TabsContent value="files" className="text-base">
+          {view.tab === "files" && cards}
+        </TabsContent>
+      </Tabs>
+      {view.task !== null && (
+        <TaskPanel
+          key={view.task}
+          id={view.task}
+          found={findTask(data.projects, view.task)}
+          onClose={() => onView({ ...view, task: null })}
+          onChanged={onRefresh}
+        />
+      )}
     </>
   );
 }
@@ -390,7 +431,12 @@ export function TasksView() {
   return (
     <ResourceView resource={tasks} label="the tasks">
       {(data) => (
-        <TasksPage data={data} view={view} onView={(next) => setQuery(queryOfView(next, query))} />
+        <TasksPage
+          data={data}
+          view={view}
+          onView={(next) => setQuery(queryOfView(next, query))}
+          onRefresh={tasks.refresh}
+        />
       )}
     </ResourceView>
   );

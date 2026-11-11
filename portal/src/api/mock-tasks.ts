@@ -1,5 +1,11 @@
 import type { ProjectListRow, ProjectTasksData } from "./types";
-import type { ProjectTaskRow, WorkTaskBlocker, WorkTaskNode } from "./wire";
+import type {
+  ProjectTaskRow,
+  TaskDetailAnswer,
+  TaskSession,
+  WorkTaskBlocker,
+  WorkTaskNode,
+} from "./wire";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -17,9 +23,12 @@ type NodeExtra = Partial<
     | "blocked"
     | "blockedBy"
     | "branch"
+    | "claim"
     | "kind"
+    | "notes"
     | "phase"
     | "plan"
+    | "session"
     | "type"
     | "worktree"
   >
@@ -45,12 +54,14 @@ function node(
   const blocking = (one: WorkTaskNode): WorkTaskNode[] =>
     one.type === "blocking" ? [one, ...one.children.flatMap(blocking)] : [];
   const steps = children.flatMap(blocking).filter((one) => one.status !== "dropped");
+  const notes = extra.notes ?? 0;
   return {
-    session: null,
+    session: extra.session ?? null,
     parentId: null,
-    claim: "none",
-    notes: 0,
-    events: 0,
+    claim: extra.claim ?? "none",
+    notes,
+    // Its creation, each note, and a change of status once it has left pending.
+    events: 1 + notes + (status === "pending" ? 0 : 1),
     agent: extra.agent ?? null,
     base: extra.base ?? null,
     blocked: extra.blocked ?? false,
@@ -149,21 +160,350 @@ function fullTree(now: number): WorkTaskNode[] {
     phase: "M",
     plan: "master-plan",
   });
-  return [
-    node(1, "master-plan", "in_progress", now - 4 * MINUTE, [phase, docs, release], {
-      kind: "plan",
-      plan: "master-plan",
-    }),
-    node(10, "Answer the person's question about the release date", "in_progress", now - MINUTE),
-    node(11, "Look at the flaky upload test", "pending", now - 3 * HOUR, [], {
-      type: "non-blocking",
-    }),
+  const roots = [
+    ownedBy(
+      SESSIONS.release.id,
+      node(1, "master-plan", "in_progress", now - 4 * MINUTE, [phase, docs, release], {
+        kind: "plan",
+        plan: "master-plan",
+      }),
+    ),
+    ownedBy(
+      SESSIONS.release.id,
+      node(
+        10,
+        "Answer the person's question about the release date",
+        "in_progress",
+        now - MINUTE,
+        [],
+        {
+          claim: "live",
+          notes: 1,
+        },
+      ),
+    ),
+    ownedBy(
+      SESSIONS.release.id,
+      node(11, "Look at the flaky upload test", "pending", now - 3 * HOUR, [], {
+        type: "non-blocking",
+      }),
+    ),
+    ...generatedPlans(now),
+    // Made before sessions were recorded: no session to name.
     node(2, "Rename the old setting", "done", now - 2 * DAY, [
       node(15, "Say the new name in the changelog", "pending", now - 2 * DAY, [], {
         type: "non-blocking",
       }),
     ]),
   ];
+  return placed(roots, null);
+}
+
+/** The sessions of the mock's first project: two running, one ended with a name, one without. */
+const SESSIONS = {
+  release: { id: "7f3c9a2e-41b8-4d6e-9a0f-2c5b8e1d4a73", live: true, name: "release-plan" },
+  docs: { id: "b2e8d4f1-9c3a-4e7b-8d2f-6a1c9e5b3f08", live: true, name: "docs-sweep" },
+  night: { id: "4a9d2c7e-5b1f-4c8a-9e3d-7f2a6b0c1d95", live: false, name: "night-build" },
+  old: { id: "e1f7b3a9-2d6c-4f0e-8b5a-3c9d1e7f2a46", live: false, name: null },
+} satisfies Record<string, TaskSession>;
+
+const MOCK_SESSIONS: TaskSession[] = [
+  SESSIONS.release,
+  SESSIONS.docs,
+  SESSIONS.night,
+  SESSIONS.old,
+];
+
+/** The node and its subtree, each made by `session` unless it names its own. */
+function ownedBy(session: string, one: WorkTaskNode): WorkTaskNode {
+  return {
+    ...one,
+    session: one.session ?? session,
+    children: one.children.map((child) => ownedBy(session, child)),
+  };
+}
+
+/** Each node with its parent's id, as the server sends it. */
+function placed(nodes: readonly WorkTaskNode[], parentId: null | string): WorkTaskNode[] {
+  return nodes.map((one) => ({ ...one, parentId, children: placed(one.children, one.id) }));
+}
+
+const VERBS = [
+  "Write",
+  "Check",
+  "Move",
+  "Rename",
+  "Test",
+  "Remove",
+  "Document",
+  "Split",
+  "Measure",
+];
+const THINGS = [
+  "the login form",
+  "the settings page",
+  "the upload queue",
+  "the search index",
+  "the email template",
+  "the order table",
+  "the cache keys",
+  "the error page",
+  "the date picker",
+  "the session store",
+  "the export button",
+  "the health check",
+  "the rate limit",
+];
+
+/** A plan laid out: each phase's status, and how many tasks of its own are done. */
+interface PlanShape {
+  first: number;
+  slug: string;
+  title: string;
+  session: string;
+  /** Each phase: its status and its count of tasks; an in-progress phase's first half is done. */
+  phases: { status: WorkTaskNode["status"]; tasks: number }[];
+  /** Hours ago it last changed. */
+  age: number;
+  /** The phase (by index) whose in-progress task a process still claims, and whether it runs. */
+  claimed?: { phase: number; claim: WorkTaskNode["claim"] };
+}
+
+/** The status of a phase's task `index` of `count`, from its phase's status. */
+function taskStatus(phase: WorkTaskNode["status"], index: number, count: number) {
+  if (phase === "done") return index === count - 1 ? "dropped" : "done";
+  if (phase !== "in_progress") return "pending";
+  const half = Math.floor(count / 2);
+  return index < half ? "done" : index === half ? "in_progress" : "pending";
+}
+
+function plan(shape: PlanShape, now: number): WorkTaskNode {
+  let number = shape.first;
+  const updated = now - shape.age * HOUR;
+  const phases: WorkTaskNode[] = [];
+  let lastOpen: null | WorkTaskNode = null;
+  for (const [index, phase] of shape.phases.entries()) {
+    const phaseNumber = number++;
+    const tasks: WorkTaskNode[] = [];
+    for (let at = 0; at < phase.tasks; at++) {
+      const status = taskStatus(phase.status, at, phase.tasks);
+      const n = number++;
+      const subject = `${VERBS[n % VERBS.length]} ${THINGS[(n * 7) % THINGS.length]}`;
+      // The first task of a pending phase waits for the open task of the phase before it.
+      const waits = phase.status === "pending" && at === 0 && lastOpen !== null;
+      const claimed =
+        shape.claimed?.phase === index && status === "in_progress" ? shape.claimed.claim : "none";
+      tasks.push(
+        node(n, subject, status, updated - (phase.tasks - at) * MINUTE, [], {
+          claim: claimed,
+          notes: n % 5 === 0 ? 2 : n % 3 === 0 ? 1 : 0,
+          type: n % 11 === 0 ? "non-blocking" : "blocking",
+          ...(waits && lastOpen !== null ? { blocked: true, blockedBy: [blocker(lastOpen)] } : {}),
+        }),
+      );
+    }
+    const open = tasks.find((one) => one.status === "in_progress");
+    if (open !== undefined) lastOpen = open;
+    const letter = String.fromCharCode(65 + index);
+    phases.push(
+      node(
+        phaseNumber,
+        `${letter}. ${VERBS[index % VERBS.length]} ${THINGS[index % THINGS.length]}`,
+        phase.status,
+        updated,
+        tasks,
+        {
+          kind: "phase",
+          phase: letter,
+          plan: shape.slug,
+          ...(phase.status === "in_progress"
+            ? {
+                agent: `builder-${shape.slug}-${letter.toLowerCase()}`,
+                branch: `plan/${shape.slug}`,
+              }
+            : {}),
+        },
+      ),
+    );
+  }
+  const status = shape.phases.every((one) => one.status === "done")
+    ? "done"
+    : shape.phases.some((one) => one.status !== "pending")
+      ? "in_progress"
+      : "pending";
+  return ownedBy(
+    shape.session,
+    node(shape.first - 1, shape.title, status, updated, phases, { kind: "plan", plan: shape.slug }),
+  );
+}
+
+/**
+ * The plans that make the first project's list long: several sessions, 200 tasks and more, a
+ * done plan (it starts folded), blocked work, and a claim whose process has ended.
+ */
+function generatedPlans(now: number): WorkTaskNode[] {
+  const loose = [
+    node(96, "Check the docs' links once the sweep is done", "pending", now - 30 * MINUTE),
+    node(97, "Ask about the screenshots in the guide", "in_progress", now - 20 * MINUTE, [], {
+      claim: "live",
+    }),
+    node(98, "Note the pages with old wording", "pending", now - 50 * MINUTE, [], {
+      type: "non-blocking",
+    }),
+  ].map((one) => ownedBy(SESSIONS.docs.id, one));
+  return [
+    plan(
+      {
+        first: 101,
+        slug: "web-cleanup",
+        title: "Web app clean-up: one home for every component",
+        session: SESSIONS.docs.id,
+        phases: [
+          { status: "done", tasks: 10 },
+          { status: "done", tasks: 12 },
+          { status: "in_progress", tasks: 12 },
+          { status: "pending", tasks: 12 },
+          { status: "pending", tasks: 10 },
+          { status: "pending", tasks: 8 },
+          { status: "pending", tasks: 10 },
+        ],
+        age: 1,
+        claimed: { phase: 2, claim: "live" },
+      },
+      now,
+    ),
+    ...loose,
+    plan(
+      {
+        first: 201,
+        slug: "bug-hunt",
+        title: "Bug hunt before the next release",
+        session: SESSIONS.night.id,
+        phases: [
+          { status: "done", tasks: 14 },
+          { status: "in_progress", tasks: 14 },
+          { status: "pending", tasks: 14 },
+          { status: "pending", tasks: 12 },
+          { status: "pending", tasks: 12 },
+          { status: "pending", tasks: 10 },
+          { status: "pending", tasks: 14 },
+        ],
+        age: 9,
+        // The session that worked on it ended: its claim is left behind.
+        claimed: { phase: 1, claim: "dead" },
+      },
+      now,
+    ),
+    plan(
+      {
+        first: 301,
+        slug: "store-v1",
+        title: "The first store",
+        session: SESSIONS.old.id,
+        phases: [
+          { status: "done", tasks: 6 },
+          { status: "done", tasks: 6 },
+          { status: "done", tasks: 5 },
+        ],
+        age: 40,
+      },
+      now,
+    ),
+  ];
+}
+
+/** Every node of a tree, depth first. */
+function everyNode(nodes: readonly WorkTaskNode[]): WorkTaskNode[] {
+  return nodes.flatMap((one) => [one, ...everyNode(one.children)]);
+}
+
+/**
+ * `GET /api/tasks/<id>` in the mock: the task as the store keeps it, with a description, its
+ * notes and its history made up from the node, or null when no mock project has it.
+ */
+export function mockTaskDetail(
+  pages: Readonly<Record<string, ProjectTasksData>>,
+  id: string,
+): null | TaskDetailAnswer {
+  for (const [project, page] of Object.entries(pages)) {
+    if (page.work.state !== "ready") continue;
+    const all = everyNode(page.work.tasks);
+    const one = all.find((candidate) => candidate.id === id);
+    if (one === undefined) continue;
+    const number = Number(one.ref.slice(1));
+    const updatedAt = Date.parse(one.updatedAt);
+    const createdAt = updatedAt - 3 * HOUR;
+    const session = page.work.sessions.find((candidate) => candidate.id === one.session);
+    const sessionName = session?.name ?? null;
+    const notes = Array.from({ length: one.notes }, (_, index) => ({
+      at: createdAt + (index + 1) * HOUR,
+      id: number * 10 + index,
+      sessionId: one.session,
+      taskId: one.id,
+      text:
+        index === 0
+          ? "Report: the first half is built; the tests for **the store** pass.\n\n- `bun test` green\n- one open question"
+          : "Ruling: keep the old name for one release — the docs still use it — cost if wrong: one rename later.",
+    }));
+    const event = (
+      offset: number,
+      action: "changed" | "created" | "noted",
+      changes: Record<string, [unknown, unknown]>,
+    ) => ({
+      action,
+      at: createdAt + offset,
+      changes,
+      id: number * 100 + offset,
+      number,
+      pid: 4242,
+      reason: null,
+      sessionId: one.session,
+      sessionName,
+      taskId: one.id,
+    });
+    const events = [
+      event(0, "created", { subject: [null, one.subject], status: [null, "pending"] }),
+      ...notes.map((note, index) =>
+        event(index + 1, "noted", { note: [null, note.text.slice(0, 40)] }),
+      ),
+      ...(one.status === "pending"
+        ? []
+        : [event(notes.length + 1, "changed", { status: ["pending", one.status] })]),
+    ];
+    const closed = one.status === "done" || one.status === "dropped";
+    const waitsFor = one.blockedBy.flatMap((blocking) => {
+      const found = all.find((candidate) => candidate.ref === blocking.ref);
+      return found === undefined ? [] : [found.id];
+    });
+    return {
+      events,
+      notes,
+      task: {
+        agent: one.agent,
+        base: one.base,
+        branch: one.branch,
+        claim: one.claim === "none" ? null : { pid: 4242, procStart: null, sessionId: one.session },
+        closedAt: closed ? updatedAt : null,
+        createdAt,
+        createdBy: one.session,
+        description: `## What\n\n${one.subject}.\n\n## Done when\n\n- the change is in\n- its test fails without it`,
+        id: one.id,
+        kind: one.kind,
+        number,
+        parentId: one.parentId,
+        phase: one.phase,
+        plan: one.plan,
+        project,
+        status: one.status,
+        subject: one.subject,
+        type: one.type,
+        updatedAt,
+        waitsFor,
+        worktree: one.worktree,
+      },
+    };
+  }
+  return null;
 }
 
 function file(
@@ -238,7 +578,14 @@ export function tasksPagesFor(
           state: "ready",
           tasks: FULL_FILES,
         },
-        work: { more: 0, recentDays: 7, sessions: [], sessionsWhy: null, state: "ready", tasks: fullTree(now) },
+        work: {
+          more: 0,
+          recentDays: 7,
+          sessions: MOCK_SESSIONS,
+          sessionsWhy: null,
+          state: "ready",
+          tasks: fullTree(now),
+        },
       };
     } else if (row.worktrees === null) {
       // A folder git cannot read: neither the store's key nor the files can be found.

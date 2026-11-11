@@ -8,7 +8,7 @@ import type { ProjectListRow, TasksData, TasksProjectData } from "@/api/types";
 import { NAV_GROUPS, navItemFor } from "@/components/nav-items";
 import { TasksCard } from "@/components/tasks-card";
 import { FULL, task, words } from "@/components/tasks-fixtures";
-import { DEFAULT_FILTER, type TaskView } from "@/lib/tasks";
+import { DEFAULT_VIEW, type TaskView } from "@/lib/tasks";
 import { TasksPage } from "@/views/tasks";
 
 function row(id: string, name: string): ProjectListRow {
@@ -65,11 +65,7 @@ const DATA: TasksData = {
 
 function page(view: Partial<TaskView> = {}, data: TasksData = DATA): string {
   return renderToStaticMarkup(
-    <TasksPage
-      data={data}
-      view={{ ...DEFAULT_FILTER, project: null, ...view }}
-      onView={() => {}}
-    />,
+    <TasksPage data={data} view={{ ...DEFAULT_VIEW, ...view }} onView={() => {}} />,
   );
 }
 
@@ -95,10 +91,15 @@ describe("the Tasks tab", () => {
     // The project with no store has nothing to show; the unreadable one says why.
     expect(cards(html)).toEqual(["my-app", "docs-site", "loose-folder"]);
     expect(text).toContain("The task list cannot be read");
-    expect(text).toContain("No tasks in 1 more project: api-service .");
-    // The key to the layers and the glyphs.
-    expect(text).toContain("Plan › Phase › Task");
-    expect(text).toContain("○ pending ◐ in progress ✓ done – dropped");
+    expect(text).toContain("Nothing here in 1 more project: api-service .");
+    // The key to the levels and the glyphs, exactly: no other level may creep back in.
+    const legend = html.match(/<p[^>]*><span[^>]*data-legend="levels".*?<\/p>/)?.[0] ?? "";
+    expect(words(legend)).toBe(
+      "Session › Plan › Phase › Task ○ pending ◐ in progress ✓ done – dropped",
+    );
+    // The two tabs, each with its count.
+    expect(text).toContain("Work on this machine · 7 open");
+    expect(text).toContain("Owed by the projects · 2");
     // Each card links to its project's page.
     expect(html).toContain('href="/settings/project?id=p1"');
   });
@@ -117,8 +118,8 @@ describe("the Tasks tab", () => {
     expect(words(none)).toContain("No work tasks here yet");
   });
 
-  test("blocked only keeps the projects with a blocked task, and names the others", () => {
-    const html = page({ blocked: true });
+  test("blocked keeps the projects with a blocked task, and names the others", () => {
+    const html = page({ status: "blocked" });
     expect(cards(html)).toEqual(["my-app"]);
     expect(words(html)).toContain("Nothing matches in 3 more projects:");
     // Each one named, a button that shows it alone.
@@ -130,16 +131,86 @@ describe("the Tasks tab", () => {
     expect(words(html)).toContain("Clear filters");
   });
 
-  test("non-blocking only, with recent: the filters show as they are set", () => {
-    const html = page({ nonBlocking: true, show: "recent" });
+  test("non-blocking only, with All: the filters show as they are set", () => {
+    const html = page({ nonBlocking: true, status: "all" });
     expect(cards(html)).toEqual(["my-app"]);
     expect(html).toMatch(/aria-checked="true"[^>]*>|data-state="on"/);
     expect(words(html)).toContain("closed ones stay 7 days");
   });
 
+  test("the search keeps the projects it finds something in, and opens their cards", () => {
+    const html = page({ q: "home page" });
+    expect(cards(html)).toEqual(["docs-site"]);
+    expect(html).toMatch(/type="search"[^>]*value="home page"|value="home page"[^>]*type="search"/);
+    expect(words(html)).toContain("Fix the home page link");
+    expect(words(html)).toContain("Nothing matches in 3 more projects:");
+  });
+
+  test("the files tab: each project's files, the search over them, no work filters", () => {
+    const html = page({ tab: "files" });
+    const text = words(html);
+    expect(cards(html)).toEqual(["my-app", "loose-folder"]);
+    expect(text).toContain("Owed by the project");
+    expect(text).toContain("Set the live key");
+    expect(text).not.toContain("Work on this machine 6 open");
+    expect(text).not.toContain("All sessions");
+    expect(text).not.toContain("Session › Plan");
+    const searched = words(page({ tab: "files", q: "retire" }));
+    expect(searched).toContain("Retire the old service");
+    expect(searched).not.toContain("Set the live key");
+  });
+
+  test("the session and plan pickers list what the projects hold", () => {
+    const withSessions: TasksData = {
+      note: null,
+      projects: [
+        {
+          project: row("p9", "with-sessions"),
+          tasks: {
+            files: EMPTY_FILES,
+            work: {
+              more: 0,
+              recentDays: 7,
+              sessions: [
+                { id: "s-live", live: true, name: "builder" },
+                { id: "s-gone-12345678", live: false, name: null },
+              ],
+              sessionsWhy: null,
+              state: "ready",
+              tasks: [
+                task(1, "Web clean-up", "in_progress", [], {
+                  kind: "plan",
+                  layer: "plan",
+                  plan: "web",
+                  session: "s-live",
+                }),
+                task(2, "Loose", "pending"),
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const text = words(page({}, withSessions));
+    expect(text).toContain(
+      "All sessions builder · running session s-gone-1 No session recorded Plan All plans Web clean-up (web) Not in a plan",
+    );
+  });
+
+  test("a task in the address opens its side panel, reading the task", () => {
+    const html = page({ task: "w6" });
+    expect(html).toMatch(/<dialog[^>]*aria-labelledby/);
+    const panel = words(html.slice(html.indexOf("<dialog")));
+    expect(panel).toContain("Task #6 · pending · my-app Write the docs page");
+    expect(panel).toContain("Reading the task…");
+    expect(html).toContain('aria-label="Close the task"');
+    // The row it shows is marked in the tree.
+    expect(html).toMatch(/data-selected="true"[^>]*>[\s\S]*?Write the docs page/);
+  });
+
   test("nothing matches anywhere, and an id no project has", () => {
     const quiet: TasksData = { note: null, projects: DATA.projects.slice(1, 3) };
-    const text = words(page({ blocked: true, nonBlocking: true }, quiet));
+    const text = words(page({ status: "blocked", nonBlocking: true }, quiet));
     expect(text).toContain("Nothing matches the filters");
     expect(text).toContain("No blocked, non-blocking task in any project.");
     const lost = words(page({ project: "gone" }));
