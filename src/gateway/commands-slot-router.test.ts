@@ -145,14 +145,14 @@ test("slot changes refresh the active owned menu", async () => {
   const m = machine("current");
   expect(await m.run(["on"])).toBe(0);
   let settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
-  expect(settings.modelPicker.options[3]).toEqual({
+  expect(settings.modelPicker.options[1]).toEqual({
     model: "sonnet",
     label: "Sonnet",
     description: "answered by glm-5.3-flash (worker slot)",
   });
   expect(await m.run(["slot", "worker", "claude"])).toBe(0);
   settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
-  expect(settings.modelPicker.options[3]).toEqual({
+  expect(settings.modelPicker.options[1]).toEqual({
     model: "sonnet",
     label: "Sonnet",
     description: "Claude's newest Sonnet",

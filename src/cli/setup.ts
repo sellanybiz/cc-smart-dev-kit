@@ -15,7 +15,7 @@ import {
   planClaudeDefaultsStep,
 } from "../gateway/claude-defaults";
 import { type GatewayConfig, messageOf } from "../gateway/config";
-import { applyModelPickerStep } from "../gateway/model-picker";
+import { applyModelPickerStep } from "../gateway/model-picker-step";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,

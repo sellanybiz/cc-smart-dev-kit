@@ -28,7 +28,7 @@ import {
 } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
-import { DEFAULT_ANTHROPIC_BASE_URL, emptyConfig, type GatewayConfig, profileView } from "./config";
+import { DEFAULT_ANTHROPIC_BASE_URL, emptyConfig, type GatewayConfig } from "./config";
 import { PICKER_PATH, pickerWrite } from "./model-picker";
 import { CLAUDE_FAMILIES, familyEnv } from "./targets";
 
@@ -551,26 +551,12 @@ export function setGatewayBaseUrl(options: {
   file: string;
   stateDir: string;
   value: string;
-  config?: GatewayConfig | undefined;
-  profile?: string | undefined;
 }): ManagedJsonResult {
-  const config = options.config ?? emptyConfig();
-  const off = normalizedBaseUrl(options.value) === DEFAULT_ANTHROPIC_BASE_URL;
-  const picker = off
-    ? { set: [], skipped: [] }
-    : pickerWrite(
-        options.file,
-        options.stateDir,
-        options.profile === undefined ? config : (profileView(config, options.profile) ?? config),
-      );
-  const result = applyManagedJson({
+  return applyManagedJson({
     file: options.file,
     stateDir: options.stateDir,
-    set: [[BASE_URL_PATH, options.value], ...picker.set],
-    remove: off ? [PICKER_PATH] : [],
+    set: [[BASE_URL_PATH, options.value]],
   });
-  result.skipped.push(...picker.skipped);
-  return result;
 }
 
 /**
@@ -585,7 +571,7 @@ export function clearGatewayBaseUrl(options: {
   return applyManagedJson({
     file: options.file,
     stateDir: options.stateDir,
-    remove: [BASE_URL_PATH, PICKER_PATH],
+    remove: [BASE_URL_PATH],
     createdObject: createdObjects(options.stateDir, options.file),
   });
 }

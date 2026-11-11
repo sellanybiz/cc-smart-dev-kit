@@ -332,8 +332,6 @@ async function applyProjectChange(
               file: plan.file,
               stateDir: paths.stateDir,
               value: plan.value,
-              config: readGatewayConfig(paths.gatewayConfigFile).config ?? undefined,
-              profile: urlMeaning(plan.value, view.routerUrl).profile ?? undefined,
             });
       return { exclude, plan, result, saved: projectStateOf(ctx, folder) };
     },
@@ -627,8 +625,11 @@ export async function commandProject(
   // Every word below comes from the state that applies after the write: the file this command
   // wrote may not be the one that decides (P3: the personal file beats the team file).
   const { effective } = written.saved;
+  out.line(
+    "info",
+    `The model menu follows the machine slots; ${COMMAND} launch --profile <name> carries a profile menu.`,
+  );
   for (const skipped of written.result.skipped) {
-    if (skipped.path[0] === "modelPicker") out.line("info", `modelPicker: ${skipped.reason}`);
     if (
       skipped.path.length === 2 &&
       skipped.path[0] === "env" &&

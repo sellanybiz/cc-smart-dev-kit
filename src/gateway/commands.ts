@@ -112,7 +112,7 @@ import {
   scopeOfStateKey,
   stateKeyFor,
 } from "./limit-state";
-import { applyModelPickerStep } from "./model-picker";
+import { applyModelPickerStep } from "./model-picker-step";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { decisionWords, type ProjectGatewayState } from "./project-state";
 import { effortPinForBackend, startRouter } from "./router";
@@ -1513,13 +1513,14 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         );
       }
       saveConfig(configPath, saved);
-      for (const line of applyModelPickerStep(ctx.paths, false)) ctx.print(line);
+      const menuLines = applyModelPickerStep(ctx.paths, false);
       if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
-      return { ...again, config: saved };
+      return { ...again, config: saved, menuLines };
     },
     { waitMs: 10_000 },
   );
   printSlotChange(out, slotChangeLines(plan));
+  out.marked(plan.menuLines);
   if (plan.profiles !== undefined && plan.profiles.length > 0) {
     out.line(
       "info",

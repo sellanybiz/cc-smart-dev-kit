@@ -1986,7 +1986,8 @@ removed):
 Outside `env`, `modelPicker` is an owned key while the gateway is on. It replaces the
 built-in choices with one alias row per `CLAUDE_FAMILIES` family (in that list's order).
 Claude Code keeps its own Default row. Each row says "Claude's newest <Family>" for
-Claude first or no chain, or "answered by <short model> (<slot> slot)" for a backend first.
+that same Claude family first or no chain. A backend or another Claude family first gets
+"answered by <short model> (<slot> slot)".
 The kit never writes a model id: aliases follow Claude Code's newest models automatically.
 The description names the first target, not a promise that a fallback will never answer.
 
@@ -1994,8 +1995,11 @@ The description names the first target, not a promise that a fallback will never
 Setup refreshes only our still-owned active address for this router; it never turns an off
 gateway on. A menu you set, changed or removed stays yours, with an information line.
 `gateway off` and `restore` remove only the unchanged owned menu. A profile launch carries
-its profile's rows in `--settings`; project on writes its rows beside the address in the
-personal file, and project off/default remove the owned rows. Setup previews the same step
+its profile's rows in `--settings` only when the user menu is still ours; a plain-Claude
+launch carries plain-Claude rows under the same ownership check. A launch never replaces your
+own menu. An unknown profile view also falls back to plain-Claude rows. Project switches
+write no menu: Claude Code ignores `modelPicker` in project and local settings. The command
+explains that the menu follows the machine slots; `launch --profile <name>` carries profile rows. Setup previews the same step
 in `--dry-run`. Doctor lists the rows and explains when your default `model` is fixed to
 an id: `/model <alias>` follows the newest instead.
 

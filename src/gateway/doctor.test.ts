@@ -13,6 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { checkLine } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
+import { applyManagedJson } from "../setup/managed-json";
 import { git, tempDir } from "../testing/temp";
 import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import { DEFAULT_ANTHROPIC_BASE_URL, saveConfig } from "./config";
@@ -138,12 +139,45 @@ describe("doctor: a project on a profile, and the router that runs", () => {
         expect(lines).toContain(
           kind === "missing"
             ? "· Gateway model menu: not set; run setup"
-            : "· Gateway model menu: Opus: Claude's newest Opus",
+            : "· Gateway model menu: your own menu",
         );
       if (kind !== "broken")
         expect(lines).toContain(
           "· Your default model is fixed to claude-opus-5-5; /model <alias> follows the newest.",
         );
+    });
+  }
+
+  for (const kind of ["owned", "removed", "null"] as const) {
+    test(`doctor menu ownership: ${kind}`, async () => {
+      const m = machine();
+      const menu = {
+        options:
+          kind === "null"
+            ? [null]
+            : [{ model: "opus", label: "Opus", description: "Claude's newest Opus" }],
+      };
+      applyManagedJson({
+        file: m.paths.settingsFile,
+        stateDir: m.paths.stateDir,
+        set: [
+          [["env", "ANTHROPIC_BASE_URL"], `http://127.0.0.1:${PORT}`],
+          [["modelPicker"], menu],
+        ],
+      });
+      if (kind === "removed")
+        writeFileSync(
+          m.paths.settingsFile,
+          JSON.stringify({ env: { ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}` } }),
+        );
+      const lines = await linesFor(m, [], "current");
+      expect(lines).toContain(
+        kind === "removed"
+          ? "· Gateway model menu: removed by you; cc-smart-dev-kit gateway off then cc-smart-dev-kit gateway on writes it again (setup leaves it removed)"
+          : kind === "null"
+            ? "· Gateway model menu: invalid row"
+            : "· Gateway model menu: Opus: Claude's newest Opus",
+      );
     });
   }
 

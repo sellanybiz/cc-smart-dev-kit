@@ -16,7 +16,11 @@ export function slotName(key: string): string {
   return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
 }
 
-export { targetModel } from "../../../src/gateway/target-label";
+/** The model part only: provider paths remain distinct in model lists. */
+export function targetModel(target: string): string {
+  const colon = target.indexOf(":");
+  return colon === -1 ? target : target.slice(colon + 1);
+}
 
 /** The backend part of a target, or `Claude login` for a `claude-…` model. */
 export function targetBackend(target: string): string {

@@ -7,7 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
-import { getKey, readJsonObject } from "../setup/managed-json";
+import { getKey, isObject, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
+import { realTarget } from "../setup/write";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
@@ -170,14 +171,35 @@ export async function gatewayChecks(options: {
     const settings = readJsonObject(paths.settingsFile).data;
     const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
     if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
-      const picker = settings.modelPicker as
-        | { options?: { label?: string; model?: string; description?: string }[] }
-        | undefined;
-      checks.push({
-        ok: true,
-        info: true,
-        text: `Gateway model menu: ${Array.isArray(picker?.options) ? picker.options.map((row) => `${row.label ?? row.model}: ${row.description ?? "custom"}`).join("; ") : "not set; run setup"}`,
-      });
+      const picker = getKey(settings, ["modelPicker"]);
+      const whose = ownership(
+        ownedRecords(paths.stateDir, realTarget(paths.settingsFile)),
+        ["modelPicker"],
+        picker,
+      );
+      let menu: string;
+      if (!picker.found)
+        menu =
+          whose === "changed"
+            ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)`
+            : "not set; run setup";
+      else if (whose !== "ours") menu = "your own menu";
+      else if (!isObject(picker.value) || !Array.isArray(picker.value.options))
+        menu = "invalid rows";
+      else
+        menu = picker.value.options
+          .map((row: unknown) => {
+            if (!isObject(row)) return "invalid row";
+            const label =
+              typeof row.label === "string"
+                ? row.label
+                : typeof row.model === "string"
+                  ? row.model
+                  : "unknown";
+            return `${label}: ${typeof row.description === "string" ? row.description : "custom"}`;
+          })
+          .join("; ");
+      checks.push({ ok: true, info: true, text: `Gateway model menu: ${menu}` });
     }
     if (typeof settings.model === "string" && settings.model.startsWith("claude-")) {
       checks.push({
@@ -434,7 +456,7 @@ function modelKeyWarnings(
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
       fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }

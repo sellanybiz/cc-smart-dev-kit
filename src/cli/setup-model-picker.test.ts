@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
-import { applyModelPickerStep } from "../gateway/model-picker";
+import { applyModelPickerStep } from "../gateway/model-picker-step";
 import { applyManagedJson, ownedRecords } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
@@ -123,4 +123,19 @@ test("removed by hand, setup again leaves the menu removed", async () => {
   expect(await w.setup()).toBe(0);
   expect(settings(w).modelPicker).toBeUndefined();
   expect(printed.join("\n")).toContain("modelPicker: set, changed or removed by you; left alone");
+});
+
+test("menu refresh retires the family pin, not older slot alias keys", () => {
+  const w = machine();
+  applyManagedJson({
+    file: w.paths.settingsFile,
+    stateDir: w.paths.stateDir,
+    set: [
+      [["env", "ANTHROPIC_DEFAULT_HAIKU_MODEL"], "old-scout"],
+      [["env", KEY], "claude-fable-5-2"],
+    ],
+  });
+  applyModelPickerStep(w.paths, false);
+  expect(settings(w).env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("old-scout");
+  expect(settings(w).env[KEY]).toBeUndefined();
 });

@@ -5,15 +5,16 @@ import { applyManagedJson } from "../setup/managed-json";
 import { restore } from "../setup/restore";
 import { tempDir } from "../testing/temp";
 import { emptyConfig } from "./config";
-import { pickerFor, writePicker } from "./model-picker";
+import { pickerFor } from "./model-picker";
+import { writePicker } from "./model-picker-step";
 import { turnOff, turnOn } from "./settings";
-import { targetModel } from "./target-label";
+import { shortTargetName } from "./target-label";
 
 const claudeRows = [
-  { model: "fable", label: "Fable", description: "Claude's newest Fable" },
-  { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
   { model: "opus", label: "Opus", description: "Claude's newest Opus" },
   { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+  { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+  { model: "fable", label: "Fable", description: "Claude's newest Fable" },
 ];
 test("alias rows on Claude; backend first on every routed family; profile overrides", () => {
   const config = emptyConfig();
@@ -25,15 +26,15 @@ test("alias rows on Claude; backend first on every routed family; profile overri
     "cc-smart-dev-kit-fable": ["claude-fable-5-2"],
   };
   expect(pickerFor(config).options).toEqual([
-    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
-    { model: "haiku", label: "Haiku", description: "answered by small (scout slot)" },
     { model: "opus", label: "Opus", description: "answered by large (opus slot)" },
     { model: "sonnet", label: "Sonnet", description: "answered by gpt-6.1-sol (worker slot)" },
+    { model: "haiku", label: "Haiku", description: "answered by small (scout slot)" },
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
   ]);
   config.profiles = { plain: { slots: { "cc-smart-dev-kit-opus": [] } } };
-  expect(pickerFor(config, "plain").options[2]).toEqual(claudeRows[2]);
-  expect(targetModel("omniroute:codex/gpt-6.1-sol")).toBe("gpt-6.1-sol");
-  expect(targetModel("claude-opus-5-5")).toBe("claude-opus-5-5");
+  expect(pickerFor(config, "plain").options[0]).toEqual(claudeRows[0]);
+  expect(shortTargetName("omniroute:codex/gpt-6.1-sol")).toBe("gpt-6.1-sol");
+  expect(shortTargetName("claude-opus-5-5")).toBe("claude-opus-5-5");
 });
 
 test("on writes, refresh updates, off removes; owned pin retires", () => {
@@ -53,7 +54,7 @@ test("on writes, refresh updates, off removes; owned pin retires", () => {
   config.slots["cc-smart-dev-kit-worker"] = ["omniroute:codex/gpt-6.1-sol"];
   writePicker({ file, stateDir, config });
   data = JSON.parse(readFileSync(file, "utf8"));
-  expect(data.modelPicker.options[3].description).toBe("answered by gpt-6.1-sol (worker slot)");
+  expect(data.modelPicker.options[1].description).toBe("answered by gpt-6.1-sol (worker slot)");
   turnOff({ settingsFile: file, stateDir });
   expect(JSON.parse(readFileSync(file, "utf8")).modelPicker).toBeUndefined();
 });
@@ -119,4 +120,18 @@ test("restore removes the owned menu and keeps a changed menu", () => {
   writeFileSync(file, JSON.stringify({ modelPicker: { options: [] } }));
   restore(stateDir);
   expect(JSON.parse(readFileSync(file, "utf8")).modelPicker).toEqual({ options: [] });
+});
+
+test("a different Claude family first is named, and an unknown profile is plain Claude", () => {
+  const config = emptyConfig();
+  config.slots["cc-smart-dev-kit-opus"] = ["claude-sonnet-5-5"];
+  expect(pickerFor(config).options.find((row) => row.model === "opus")).toEqual({
+    model: "opus",
+    label: "Opus",
+    description: "answered by claude-sonnet-5-5 (opus slot)",
+  });
+  expect(pickerFor(config, "missing")).toEqual({
+    replaceBuiltInOptions: true,
+    options: claudeRows,
+  });
 });

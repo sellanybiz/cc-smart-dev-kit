@@ -1794,10 +1794,10 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
 const PICKER_JSON = JSON.stringify({
   replaceBuiltInOptions: true,
   options: [
-    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
-    { model: "haiku", label: "Haiku", description: "answered by m1 (scout slot)" },
     { model: "opus", label: "Opus", description: "Claude's newest Opus" },
     { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+    { model: "haiku", label: "Haiku", description: "answered by m1 (scout slot)" },
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
   ],
 });
 
@@ -2266,8 +2266,8 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
     });
     const lines = await checksFor(m, [root]);
     expect(lines.filter((line) => line.warn).map((line) => line.check)).toEqual([
-      '! ~/Code/warny/.claude/settings.local.json sets model to "cc-smart-dev-kit-worker": it is Claude Code\'s own model key. Except for its owned Fable pin, cc-smart-dev-kit never writes these keys. It names a slot, so it bypasses the slots: Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
-      '! ~/Code/warny/.claude/settings.local.json sets env.ANTHROPIC_DEFAULT_HAIKU_MODEL to "omniroute:glm-5.3-flash": it is Claude Code\'s own model key. Except for its owned Fable pin, cc-smart-dev-kit never writes these keys. It names a backend target, so it bypasses the slots: the request goes to that backend alone, with no fallback. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
+      '! ~/Code/warny/.claude/settings.local.json sets model to "cc-smart-dev-kit-worker": it is Claude Code\'s own model key. cc-smart-dev-kit never writes these keys. It names a slot, so it bypasses the slots: Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
+      '! ~/Code/warny/.claude/settings.local.json sets env.ANTHROPIC_DEFAULT_HAIKU_MODEL to "omniroute:glm-5.3-flash": it is Claude Code\'s own model key. cc-smart-dev-kit never writes these keys. It names a backend target, so it bypasses the slots: the request goes to that backend alone, with no fallback. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
     ]);
   });
 

@@ -41,6 +41,7 @@ import {
   DEFAULT_ANTHROPIC_BASE_URL,
   emptyConfig,
   PROFILE_NAME_RULE,
+  plainClaudeView,
   profileNames,
 } from "../gateway/config";
 import {
@@ -49,11 +50,12 @@ import {
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
-import { pickerFor } from "../gateway/model-picker";
+import { PICKER_PATH, pickerFor } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
 import { claudeArgv, findClaude } from "../machine/claude";
+import { getKey, isOwnedValue, readJsonObject } from "../setup/managed-json";
 import { atomicWrite } from "../setup/write";
 import { tildify } from "./paths";
 
@@ -418,6 +420,19 @@ function settingsNotes(
   return lines;
 }
 
+/** Unreadable user settings cannot prove ownership; preserve the existing launch behavior. */
+function ownedUserPicker(ctx: LaunchContext): boolean {
+  try {
+    const current = getKey(readJsonObject(ctx.settingsFile).data, PICKER_PATH);
+    return (
+      current.found && isOwnedValue(ctx.stateDir, ctx.settingsFile, PICKER_PATH, current.value)
+    );
+  } catch {
+    // Claude Code reports invalid user settings itself; launch must not replace their menu.
+    return false;
+  }
+}
+
 /** `launch`; the exit code: the session's own, or 1 refused / 2 a usage mistake. */
 export async function runLaunch(args: readonly string[], ctx: LaunchContext): Promise<number> {
   const parsed = parseLaunchArgs(args);
@@ -466,12 +481,14 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
+      const ownPicker = ownedUserPicker(ctx);
+      const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
       const settings = {
         env: { ANTHROPIC_BASE_URL: target.url },
-        ...(parsed.mode.kind === "profile" || parsed.mode.kind === "gateway"
+        ...(ownPicker
           ? {
               modelPicker: pickerFor(
-                readGatewayConfig(ctx.configPath).config ?? emptyConfig(),
+                parsed.mode.kind === "no-gateway" ? plainClaudeView(config) : config,
                 parsed.mode.kind === "profile" ? parsed.mode.name : undefined,
               ),
             }

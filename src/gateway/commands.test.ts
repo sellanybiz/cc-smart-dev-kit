@@ -158,10 +158,10 @@ const ON_ENV = {
 const ON_PICKER = {
   replaceBuiltInOptions: true,
   options: [
-    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
-    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
     { model: "opus", label: "Opus", description: "Claude's newest Opus" },
     { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
   ],
 };
 

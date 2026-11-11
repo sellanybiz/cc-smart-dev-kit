@@ -19,6 +19,7 @@ import {
 import { dirname, join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
+import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
@@ -34,10 +35,10 @@ import {
 const expectedPicker = {
   replaceBuiltInOptions: true,
   options: [
-    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
-    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
     { model: "opus", label: "Opus", description: "Claude's newest Opus" },
     { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
   ],
 };
 
@@ -104,6 +105,11 @@ exit 7
 
 /** A gateway config the reader accepts, mode 600, with the profiles given. */
 function gatewayConfig(world: World, profiles: string[]): void {
+  applyManagedJson({
+    file: join(world.home, ".claude", "settings.json"),
+    stateDir: world.stateDir,
+    set: [[["modelPicker"], expectedPicker]],
+  });
   mkdirSync(join(world.home, ".config", "cc-smart-dev-kit"), { recursive: true });
   const body = {
     backends: {},
@@ -301,12 +307,45 @@ describe("launch", () => {
     config.profiles.fast.slots = { "cc-smart-dev-kit-opus": ["omniroute:codex/gpt-6.1-sol"] };
     writeFileSync(home.configPath, JSON.stringify(config), { mode: 0o600 });
     expect(await runLaunch(["--profile", "fast"], context(home))).toBe(7);
-    expect(JSON.parse(loggedSettings(home)).modelPicker.options[2]).toEqual({
+    expect(JSON.parse(loggedSettings(home)).modelPicker.options[0]).toEqual({
       model: "opus",
       label: "Opus",
       description: "answered by gpt-6.1-sol (opus slot)",
     });
   });
+
+  test("no-gateway overrides only our menu with plain Claude rows", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const config = JSON.parse(readFileSync(home.configPath, "utf8"));
+    config.backends = { omniroute: { baseUrl: "http://omni.test", apiKey: "test-key" } };
+    config.slots = { "cc-smart-dev-kit-opus": ["omniroute:codex/gpt-6.1-sol"] };
+    writeFileSync(home.configPath, JSON.stringify(config), { mode: 0o600 });
+    applyManagedJson({
+      file: join(home.home, ".claude", "settings.json"),
+      stateDir: home.stateDir,
+      set: [
+        [
+          ["modelPicker"],
+          { options: [{ model: "opus", description: "answered by gpt-6.1-sol (opus slot)" }] },
+        ],
+      ],
+    });
+    expect(await runLaunch(["--no-gateway"], context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+  });
+  for (const mode of [["--gateway"], ["--profile", "fast"], ["--no-gateway"]]) {
+    test(`launch ${mode.join(" ")} does not replace a personal menu`, async () => {
+      const home = world();
+      gatewayConfig(home, ["fast"]);
+      writeFileSync(
+        join(home.home, ".claude", "settings.json"),
+        JSON.stringify({ modelPicker: { options: [] } }),
+      );
+      expect(await runLaunch(mode, context(home))).toBe(7);
+      expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
+    });
+  }
 
   test("--profile on an older router (no profiles in its features) runs nothing, and names gateway setup", async () => {
     const home = world();
