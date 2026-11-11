@@ -457,7 +457,7 @@ describe("the hook", () => {
     expect(started[0]?.options.cwd).toBe(env.HOME);
     expect(existsSync(worktree)).toBe(true);
 
-    // The same pull request again is announced no more, and starts no second clean.
+    // The same pull request again starts no second clean.
     await runHook(afterMergeHook, input, env, start);
     expect(started).toHaveLength(1);
   });
