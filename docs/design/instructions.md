@@ -202,6 +202,13 @@ shipped script against fakes and checks the guard the plugin ships allows every 
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
 
+*Starting a workflow directly.* Claude Code also lists each shipped workflow as a skill, with
+its literal `meta.description` as the visible description. That description names the argument
+object and points to the calling skill, so a direct start need not guess the keys. The three
+calling skills keep their example objects; `src/workflows/scripts.test.ts` runs those actual
+examples against the scripts with fake agents and checks the listed keys and refusal messages.
+The validators stay strict: guessed aliases are not a second contract.
+
 *The arguments and the budget (1.3.0).* The Workflow tool hands `args` to the script verbatim,
 so a caller that passes the text of an object gets a string. Both scripts refuse that at the
 start: a string, `null`, an array, an unknown key or a wrong type throws one line that names the

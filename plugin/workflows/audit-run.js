@@ -1,7 +1,7 @@
 export const meta = {
   name: 'audit-run',
   description:
-    'Audit an area for one class of defect: one read-only auditor per track, a second auditor to refute every finding, and one writer for the findings file.',
+    'Audit and refute defects by track. Pass args: { target?: string, question?: string, tracks?: string[], budget?: number, findingsPath?: string } as an object, not JSON text; see /cc-smart-dev-kit:audit.',
 }
 
 // The input is the Workflow tool's `args`, passed verbatim: one object, which the audit skill
