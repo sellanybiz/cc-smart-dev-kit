@@ -71,6 +71,8 @@ export interface CliPaths extends RouterPaths {
   claudeMemSettingsFile: string;
   /** This person's workflow defaults: `~/.config/cc-smart-dev-kit/workflow.json` (0600). */
   workflowConfigFile: string;
+  /** The remote machine rules, beside workflow.json (0600). */
+  machinesFile: string;
   /** The socket unit that holds the router's port: `~/.config/systemd/user/cc-smart-dev-kit-router.socket`. */
   routerSocketFile: string;
   /** The tmux line's file: `~/.tmux.conf` (setup adds one managed line there). */
@@ -175,6 +177,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
       "cc-smart-dev-kit-router.socket",
     ),
     workflowConfigFile: join(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
+    machinesFile: join(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
     tmuxConfFile: join(router.home, ".tmux.conf"),
     tavilyKeyFile: join(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
     managedAgentsDir: managedAgentsDir(),
