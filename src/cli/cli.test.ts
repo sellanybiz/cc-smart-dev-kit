@@ -561,7 +561,8 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 2 notes",
+          "✓ Claude Code settings  12 changes, 2 notes",
+          '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -581,13 +582,14 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
     expect(existsSync(launcher)).toBe(true);
     expect(readJson(settingsFile)).toEqual({
       model: "opus",
+      plansDirectory: ".claude/plans",
       remoteControlAtStartup: true,
       permissions: {
         allow: ["mcp__cc-smart-dev-kit-tasks__*"],
@@ -652,8 +654,8 @@ describe("cc-smart-dev-kit setup", () => {
   test("the backups go into the state folder, never beside the files", () => {
     const { configDir, stateDir, settingsFile, binDir, run } = setup();
     run(["setup"]);
-    // Two changes to settings.json: the auto-update key, then the notification hook.
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
+    // Three writes to settings.json: general settings, the plan folder, then task permissions.
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(3);
     expect(readdirSync(binDir)).toEqual(["cc-smart-dev-kit"]);
     expect(readdirSync(configDir).sort()).toEqual([
       // Claude Code's own user-scope config: the fake `claude mcp add-json` writes it.
@@ -671,7 +673,7 @@ describe("cc-smart-dev-kit setup", () => {
     const result = run(["setup"]);
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe(NOTHING_TO_CHANGE);
-    expect(listBackups(stateDir, settingsFile)).toHaveLength(2);
+    expect(listBackups(stateDir, settingsFile)).toHaveLength(3);
   });
 
   test("--dry-run prints the changes and writes nothing at all: no state folder, no lock", () => {
@@ -685,7 +687,8 @@ describe("cc-smart-dev-kit setup", () => {
         [
           "· The command           1 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "· Claude Code settings  11 to change, 2 notes",
+          "· Claude Code settings  12 to change, 2 notes",
+          '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -706,7 +709,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 20 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 21 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -750,7 +753,7 @@ describe("cc-smart-dev-kit setup", () => {
   test("nothing to change, with lines of information: they show in their section, and the verdict says nothing changed", () => {
     const { settingsFile, run } = setup();
     run(["setup"]);
-    // The person's own auto-update key, with the value cc-smart-dev-kit wants: not cc-smart-dev-kit's.
+    // Clearing ownership makes the existing auto-update key and plan folder the person's own.
     const ownedFile = join(dirname(settingsFile), "cc-smart-dev-kit", "owned.json");
     writeFileSync(ownedFile, "{}\n");
     const result = run(["setup"]);
@@ -758,7 +761,8 @@ describe("cc-smart-dev-kit setup", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "· Claude Code settings  2 notes",
+          "· Claude Code settings  3 notes",
+          "  · ~/.claude/settings.json: plansDirectory: already set by someone else; left alone",
           '  · ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: already set by someone else; left alone',
           "  · max subagents: 10 at once (your own CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS in ~/.claude/settings.json; change it there to use another value)",
           ...MCP_TAVILY_ONLY,
@@ -951,7 +955,8 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 2 notes",
+          "✓ Claude Code settings  12 changes, 2 notes",
+          '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -971,7 +976,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 18 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 19 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1136,10 +1141,11 @@ describe("cc-smart-dev-kit doctor", () => {
       [
         `cc-smart-dev-kit ${VERSION}: checking this machine`,
         "",
-        "✓ The plugin         7 passed, 2 notes",
+        "✓ The plugin         7 passed, 3 notes",
         // The portal starts with the next session: information, not a failure.
         "  · the portal is not running; it starts with the next Claude Code session, or now: cc-smart-dev-kit portal",
         "  · task work store: not made yet",
+        "  · plan folder: .claude/plans (user setting; project settings may override it)",
         "✓ Updates            3 passed, 1 note",
         // The self-update has not checked yet: information, not a failure.
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
@@ -1372,7 +1378,7 @@ describe("cc-smart-dev-kit doctor", () => {
       [
         `cc-smart-dev-kit ${VERSION}: checking this machine`,
         "",
-        "✗ The plugin         4 to fix, 3 passed, 1 note",
+        "✗ The plugin         4 to fix, 3 passed, 2 notes",
         "  ✗ cc-smart-dev-kit needs Bun ≥ 1.4.3; this is 1.4.2 (/opt/bun/bin/bun)",
         "    Fix: upgrade this Bun (bun upgrade), then run: cc-smart-dev-kit doctor",
         `  ✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
@@ -1384,6 +1390,7 @@ describe("cc-smart-dev-kit doctor", () => {
         "  ✗ task tools: missing deny rules TaskCreate, TaskUpdate, TaskList, TaskGet, TodoWrite",
         "    Fix: cc-smart-dev-kit setup",
         "  · task work store: not made yet",
+        "  · plan folder: ~/.claude/plans (Claude Code default)",
         "  ✓ no other enabled plugin is named cc-smart-dev-kit",
         "✓ Updates            3 passed, 1 note",
         "  · background update: no check yet (a new Claude session checks, at most once an hour)",
@@ -1983,7 +1990,8 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 2 notes",
+          "✓ Claude Code settings  12 changes, 2 notes",
+          '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -2003,7 +2011,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2089,7 +2097,8 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
         [
           "✓ The command           1 change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
-          "✓ Claude Code settings  11 changes, 2 notes",
+          "✓ Claude Code settings  12 changes, 2 notes",
+          '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
           "  ~ ~/.claude/settings.json: remoteControlAtStartup: (none) -> true",
           ...WATCHDOG_LINES,
@@ -3999,7 +4008,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     // The line names the key's PATH, never its value. The `env` object setup made for it goes
     // with the key: this settings file had none of its own.
     expect(restored.stdout).toContain(
-      'env.TAVILY_API_KEY, env, the entry "TaskCreate", the entry "TaskUpdate", the entry "TaskList", the entry "TaskGet", the entry "TodoWrite"; everything else kept',
+      'env.TAVILY_API_KEY, env, plansDirectory, the entry "TaskCreate", the entry "TaskUpdate", the entry "TaskList", the entry "TaskGet", the entry "TodoWrite"; everything else kept',
     );
     expect(readJson(join(home, ".claude", "settings.json")).env).toBeUndefined();
   });
