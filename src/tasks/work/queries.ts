@@ -305,3 +305,21 @@ export function claimState(
   if (!task.claim || !isLive(task.claim)) return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
+
+/** Whether start already waits for target, through explicit blockers or parent completion holds. */
+export function waitsForTask(tasks: readonly WorkTask[], start: string, target: string): boolean {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set<string>();
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id)) continue;
+    if (id === target) return true;
+    reached.add(id);
+    pending.push(
+      ...(byId.get(id)?.waitsFor ?? []),
+      ...holdingUnder(tasks, id).map((task) => task.id),
+    );
+  }
+  return false;
+}

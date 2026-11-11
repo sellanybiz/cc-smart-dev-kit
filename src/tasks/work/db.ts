@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
-import { allTasks, holdingUnder } from "./queries";
+import { allTasks, holdingUnder, waitsForTask } from "./queries";
 import type { Result } from "./types";
 /**
  * The schema this code writes. Each step is additive (`MIGRATIONS`), so `min_compatible` stays 1:
@@ -103,8 +103,14 @@ function repairTaskLayers(sqlite: Database, file: string): void {
           writeFileSync(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 0o600 });
           renameSync(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
+          let cleanup = "";
+          try {
+            rmSync(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
           throw new BackupFailure(
-            `task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname(file)}, the next task call tries again`,
+            `task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname(file)}. The next task call tries again.${cleanup}`,
           );
         }
       }
@@ -140,7 +146,7 @@ function repairTaskLayers(sqlite: Database, file: string): void {
       for (const [id, held] of originalHolds)
         for (const h of held) {
           // A legacy parent cycle had no valid completion order; never turn it into a blocker cycle.
-          if (originalHolds.get(h)?.includes(id)) continue;
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id)) continue;
           sqlite
             .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
             .run(id, h);
