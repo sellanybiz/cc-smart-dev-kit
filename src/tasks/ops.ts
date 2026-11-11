@@ -248,7 +248,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               input.description !== undefined)
           )
             throw new Error(
-              "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
+              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
             );
           const slug = input.plan ?? ownPlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");

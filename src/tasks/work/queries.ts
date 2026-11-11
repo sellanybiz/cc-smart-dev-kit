@@ -139,7 +139,7 @@ function inProgressFirst(a: WorkTask, b: WorkTask): number {
     Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number
   );
 }
-export function openSubtasks(db: WorkDb, id: string): WorkTask[] {
+export function openChildren(db: WorkDb, id: string): WorkTask[] {
   return descendants(db, id).filter(isOpen).sort(inProgressFirst);
 }
 /** Kind is the layer, including a stray nested task from an older writer. */

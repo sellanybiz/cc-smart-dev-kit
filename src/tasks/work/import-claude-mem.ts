@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { type WorkDb, writeWork } from "./db";
-import { allTasks, eventsOf, isOpen, openSubtasks } from "./queries";
+import { LEGACY_LIFT_REASON, type WorkDb, writeWork } from "./db";
+import { allTasks, eventsOf, isOpen, openChildren } from "./queries";
 import { applySystemClose, type CreateTask, insertTask } from "./store";
 import { type Result, SUBJECT_LIMIT, type Who, type WorkTask } from "./types";
 
@@ -108,7 +108,7 @@ const NOT_WORK = "claude-mem's own list, not work: an earlier import took it by 
 /** True while only the import ever wrote the task: no session made, changed or noted it. */
 function importOnly(db: WorkDb, task: WorkTask): boolean {
   return eventsOf(db, task).every(
-    (event) => event.reason === IMPORTED || event.reason === "lift legacy nested task",
+    (event) => event.reason === IMPORTED || event.reason === LEGACY_LIFT_REASON,
   );
 }
 /**
@@ -125,13 +125,12 @@ function takenByMistake(db: WorkDb, project: string): MistakenList[] {
         eventsOf(db, task)[0]?.reason === IMPORTED,
     )
     .map((task) => {
-      const nested = openSubtasks(db, task.id);
+      const nested = openChildren(db, task.id);
       const lifted = allTasks(db, project).filter(
         (t) =>
           isOpen(t) &&
           eventsOf(db, t).some(
-            (e) =>
-              e.reason === "lift legacy nested task" && e.changes.parent?.[0] === `#${task.number}`,
+            (e) => e.reason === LEGACY_LIFT_REASON && e.changes.parent?.[0] === `#${task.number}`,
           ),
       );
       const open = [task, ...new Map([...nested, ...lifted].map((t) => [t.id, t])).values()];
@@ -232,9 +231,7 @@ export function importClaudeMem(options: ImportOptions): Result<ImportResult> {
           (t) =>
             isOpen(t) &&
             eventsOf(db, t).some(
-              (e) =>
-                e.reason === "lift legacy nested task" &&
-                e.changes.parent?.[0] === `#${task.number}`,
+              (e) => e.reason === LEGACY_LIFT_REASON && e.changes.parent?.[0] === `#${task.number}`,
             ),
         );
         for (const child of lifted)

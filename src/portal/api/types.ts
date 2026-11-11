@@ -374,7 +374,7 @@ export interface ProjectGatewayAnswer {
 /** A work task's status in the kit's store (`src/tasks/work/types.ts` › `WorkStatus`). */
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
-/** Where a task sits (D76): Plan › Phase › Task › Subtask (`src/tasks/work/types.ts` › `WorkLayer`). */
+/** Where a task sits (D76): Plan › Phase › Task (`src/tasks/work/types.ts` › `WorkLayer`). */
 export type WorkTaskLayer = "phase" | "plan" | "task";
 
 /** Blocking holds its parent while open; non-blocking holds nothing (D76, `WorkType`). */

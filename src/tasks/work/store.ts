@@ -5,7 +5,7 @@ import {
   descendants,
   holdingUnder,
   openBlockers,
-  openSubtasks,
+  openChildren,
   taskById,
 } from "./queries";
 import {
@@ -462,7 +462,7 @@ export function applySystemClose(
 ): WorkTask {
   const task = taskById(db, id);
   const open =
-    status === "done" ? holdingUnder(allTasks(db, task.project), id) : openSubtasks(db, id);
+    status === "done" ? holdingUnder(allTasks(db, task.project), id) : openChildren(db, id);
   for (const child of open) {
     const before = shape(db, child);
     db.sqlite
@@ -582,7 +582,12 @@ export function takeTasks(
         ? allTasks(db, project).filter((t) => t.plan === target.plan)
         : [target];
     for (const task of rows) {
-      if (options.from !== undefined && task.createdBy !== options.from)
+      if (
+        options.from !== undefined &&
+        (task.status === "pending" || task.status === "in_progress") &&
+        task.createdBy !== null &&
+        task.createdBy !== options.from
+      )
         throw new Error(
           `${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`,
         );
@@ -599,7 +604,7 @@ export function takeTasks(
     for (const task of rows) {
       db.sqlite
         .query(
-          "UPDATE tasks SET created_by=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?",
+          "UPDATE tasks SET created_by=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?",
         )
         .run(
           who.sessionId,
@@ -615,12 +620,16 @@ export function takeTasks(
         "changed",
         {
           createdBy: [task.createdBy, who.sessionId],
-          claim: [
-            task.claim,
-            who.pid === null
-              ? null
-              : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId },
-          ],
+          ...(task.claim === null
+            ? {}
+            : {
+                claim: [
+                  task.claim,
+                  who.pid === null
+                    ? null
+                    : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId },
+                ],
+              }),
         },
         who,
         now,

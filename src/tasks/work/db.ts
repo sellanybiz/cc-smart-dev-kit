@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import type { Result } from "./types";
@@ -9,12 +9,14 @@ import type { Result } from "./types";
  * know takes its default.
  */
 export const WORK_SCHEMA_VERSION = 4;
+export const LEGACY_LIFT_REASON = "lift legacy nested task";
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
 export const NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
 export interface WorkDb {
   sqlite: Database;
   writable: boolean;
+  writeRefusal?: string;
   close(): void;
 }
 export function workDbFile(paths: { stateDir: string }): string {
@@ -54,81 +56,92 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
    ALTER TABLE tasks ADD COLUMN base TEXT;`,
   repairTaskLayers,
 ];
-/** Lift legacy nested tasks while the write lock protects both the snapshot and the move. */
+class BackupFailure extends Error {}
+/** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */
 function repairTaskLayers(sqlite: Database, file: string): void {
-  type Nested = {
+  type Row = {
     id: string;
     project: string;
     number: number;
-    parent_id: string;
-    parent_number: number;
-    above: string | null;
+    parent_id: string | null;
+    kind: string;
     blocking: number;
-    parent_blocking: number;
     status: string;
   };
   let backed = false;
-  for (;;) {
-    const rows = sqlite
-      .query<Nested, []>(
-        `SELECT t.id,t.project,t.number,t.parent_id,p.number AS parent_number,p.parent_id AS above,t.blocking,p.blocking AS parent_blocking,t.status FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' ORDER BY t.number`,
-      )
-      .all();
-    if (!rows.length) return;
+  const move = (row: Row, parent: Row, above: Row | null, cycle = false) => {
     if (!backed) {
-      if (!existsSync(`${file}.v4.bak`))
-        writeFileSync(`${file}.v4.bak`, sqlite.serialize(), { mode: 0o600 });
+      if (!existsSync(`${file}.v4.bak`)) {
+        try {
+          writeFileSync(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 0o600 });
+          renameSync(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
+        } catch (error) {
+          throw new BackupFailure(
+            `task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname(file)}, then reopen the task store`,
+          );
+        }
+      }
       backed = true;
     }
-    for (const row of rows.slice(0, 1)) {
-      const seen = new Set([row.id]);
-      let up: string | null = row.parent_id;
-      while (up !== null) {
-        if (seen.has(up)) throw new Error("legacy task parents form a cycle");
-        seen.add(up);
-        up =
-          sqlite
-            .query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM tasks WHERE id=?")
-            .get(up)?.parent_id ?? null;
+    const blocking = parent.blocking === 0 ? 0 : row.blocking;
+    sqlite
+      .query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?")
+      .run(above?.id ?? null, blocking, row.id);
+    // A cycle has no valid completion order to preserve. Normal lifts retain every open hold.
+    if (!cycle && row.blocking !== 0 && (row.status === "pending" || row.status === "in_progress"))
+      sqlite
+        .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
+        .run(parent.id, row.id);
+    sqlite
+      .query(
+        "INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)",
+      )
+      .run(
+        row.id,
+        row.project,
+        row.number,
+        Date.now(),
+        JSON.stringify({
+          parent: [`#${parent.number}`, above === null ? null : `#${above.number}`],
+          ...(blocking !== row.blocking ? { type: ["blocking", "non-blocking"] } : {}),
+        }),
+        LEGACY_LIFT_REASON,
+      );
+  };
+  for (;;) {
+    const rows = sqlite
+      .query<Row, []>(
+        "SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number",
+      )
+      .all();
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const nested = rows.find(
+      (row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task",
+    );
+    if (!nested) return;
+    const chain: Row[] = [];
+    const positions = new Map<string, number>();
+    let up: Row | undefined = nested;
+    while (up) {
+      const at = positions.get(up.id);
+      if (at !== undefined) {
+        const lowest = chain
+          .slice(at)
+          .sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
+        if (!lowest) throw new Error("missing cycle member");
+        const parent = byId.get(lowest.parent_id ?? "");
+        if (!parent) throw new Error("missing cycle parent");
+        move(lowest, parent, null, true);
+        break;
       }
-      // Re-read after each move: an ancestor may have moved earlier in this pass.
-      const parent = sqlite
-        .query<{ parent_id: string | null; blocking: number }, [string]>(
-          "SELECT parent_id,blocking FROM tasks WHERE id=?",
-        )
-        .get(row.parent_id);
-      if (!parent) throw new Error("missing legacy task parent");
-      const above =
-        parent.parent_id === null
-          ? null
-          : sqlite
-              .query<{ number: number }, [string]>("SELECT number FROM tasks WHERE id=?")
-              .get(parent.parent_id)?.number;
-      sqlite
-        .query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?")
-        .run(parent.parent_id, parent.blocking === 0 ? 0 : row.blocking, row.id);
-      if (row.blocking !== 0 && (row.status === "pending" || row.status === "in_progress"))
-        sqlite
-          .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
-          .run(row.parent_id, row.id);
-      sqlite
-        .query(
-          "INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)",
-        )
-        .run(
-          row.id,
-          row.project,
-          row.number,
-          Date.now(),
-          JSON.stringify({
-            parent: [`#${row.parent_number}`, above == null ? null : `#${above}`],
-            ...(parent.blocking === 0 && row.blocking !== 0
-              ? { type: ["blocking", "non-blocking"] }
-              : {}),
-          }),
-          "lift legacy nested task",
-        );
+      positions.set(up.id, chain.length);
+      chain.push(up);
+      up = byId.get(up.parent_id ?? "");
     }
+    if (up) continue; // A cycle was broken; re-read before lifting any descendants.
+    const parent = byId.get(nested.parent_id ?? "");
+    if (!parent) throw new Error("missing legacy task parent");
+    move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);
   }
 }
 // `task_events` has no foreign key on purpose: a task's history outlives the task.
@@ -138,6 +151,7 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
   if (hook && fresh) throw new Error("task store does not exist");
   if (!hook) mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
+  let writeRefusal: string | undefined;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
@@ -170,7 +184,8 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
         sqlite.run("COMMIT");
       } catch (error) {
         sqlite.run("ROLLBACK");
-        throw error;
+        if (error instanceof BackupFailure) writeRefusal = error.message;
+        else throw error;
       }
     }
     // A hook only reads: in WAL a writer's open transaction never blocks it, and it sees the last
@@ -179,10 +194,12 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
       sqlite.query<{ value: string }, []>("SELECT value FROM meta WHERE key='min_compatible'").get()
         ?.value ?? WORK_SCHEMA_VERSION,
     );
-    if (hook || minimum > WORK_SCHEMA_VERSION) sqlite.run("PRAGMA query_only = ON");
+    if (hook || writeRefusal !== undefined || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
     return {
       sqlite,
-      writable: !hook && minimum <= WORK_SCHEMA_VERSION,
+      writable: !hook && writeRefusal === undefined && minimum <= WORK_SCHEMA_VERSION,
+      ...(writeRefusal === undefined ? {} : { writeRefusal }),
       close: () => sqlite.close(),
     };
   } catch (error) {
@@ -199,7 +216,7 @@ export function writeWork<T>(
   body: () => T,
   options: { rehearse?: boolean } = {},
 ): Result<T> {
-  if (!db.writable) return { ok: false, why: NEWER_STORE };
+  if (!db.writable) return { ok: false, why: db.writeRefusal ?? NEWER_STORE };
   let began = false;
   try {
     db.sqlite.run("BEGIN IMMEDIATE");

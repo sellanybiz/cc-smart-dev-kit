@@ -17,7 +17,7 @@ Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create:
-    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase).",
+    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase). A plan without parent creates the plan itself; to add a task to a named plan, give its phase as parent.",
   update:
     "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
   done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first.",

@@ -13,7 +13,7 @@ import {
   getTask,
   listTasks,
   notesOf,
-  openSubtasks,
+  openChildren,
   searchTasks,
 } from "./queries";
 import { hasOwnTask, startView } from "./read";
@@ -51,7 +51,7 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   });
   expect(updateTask(db, root.id, { waitsFor: { add: [child.id] } }, who, 12).ok).toBe(true);
   expect(listTasks(db, { project: "p", openOnly: true })[0]?.children[0]?.id).toBe(child.id);
-  expect(openSubtasks(db, root.id).map((t) => t.number)).toEqual([2]);
+  expect(openChildren(db, root.id).map((t) => t.number)).toEqual([2]);
   value(updateTask(db, child.id, { status: "in_progress" }, who, 13));
   expect(getTask(db, "p", "#2")?.claim).toEqual({ pid: 12, procStart: "34", sessionId: "session" });
   value(addNote(db, child.id, "literal %_", who, 14));

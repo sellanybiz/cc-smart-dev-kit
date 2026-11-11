@@ -11,7 +11,7 @@ import {
   getTask,
   listTasks,
   notesOf,
-  openSubtasks,
+  openChildren,
   searchTasks,
   subtreeProgress,
   taskById,
@@ -112,7 +112,7 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
       4,
     ),
   );
-  expect(openSubtasks(db, phase.id).map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
+  expect(openChildren(db, phase.id).map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
   expect(updateTask(db, plan.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
     why: "open tasks: #4 Beta, #2 Phase, #3 Alpha",

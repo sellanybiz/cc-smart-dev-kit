@@ -6,16 +6,7 @@
  * never shown as an empty list.
  */
 import { claimLive } from "./identity";
-import {
-  allTasks,
-  eventsOf,
-  isBlocked,
-  isOpen,
-  layerOf,
-  listTasks,
-  notesOf,
-  subtreeProgress,
-} from "./queries";
+import { allTasks, isBlocked, isOpen, layerOf, listTasks, subtreeProgress } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
 import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } from "./types";
 
@@ -167,17 +158,25 @@ export function projectTaskTree(
   options: { now: number; recentMs: number },
 ): ReadState<TaskTree> {
   const since = options.now - options.recentMs;
-  return readWorkStore(paths, (db) =>
-    shapeTrees(
+  return readWorkStore(paths, (db) => {
+    const counts = new Map<string, { notes: number; events: number }>();
+    for (const table of ["task_notes", "task_events"] as const) {
+      const key = table === "task_notes" ? "notes" : "events";
+      for (const row of db.sqlite
+        .query<{ task_id: string; n: number }, [string]>(
+          `SELECT x.task_id,COUNT(*) AS n FROM ${table} x JOIN tasks t ON t.id=x.task_id WHERE t.project=? GROUP BY x.task_id`,
+        )
+        .all(project)) {
+        const count = counts.get(row.task_id) ?? { notes: 0, events: 0 };
+        count[key] = row.n;
+        counts.set(row.task_id, count);
+      }
+    }
+    return shapeTrees(
       listTasks(db, { project, openOnly: false }),
       allTasks(db, project),
       (task) => recent(task, since),
-      new Map(
-        allTasks(db, project).map((t) => [
-          t.id,
-          { notes: notesOf(db, t).length, events: eventsOf(db, t).length },
-        ]),
-      ),
-    ),
-  );
+      counts,
+    );
+  });
 }
