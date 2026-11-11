@@ -11,7 +11,6 @@ import {
   isBlocked,
   isOpen,
   notesOf,
-  subtreeProgress,
 } from "./queries";
 import type { Who } from "./types";
 export type ReadState<T> =
@@ -87,19 +86,6 @@ export function startView(
     };
   });
 }
-/** The latest task claimed by this process and its progress. */
-export function statusTask(paths: Paths, project: string, who: Who) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const task = all
-      .filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who))
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (!task) return null;
-    const count = subtreeProgress(all, task.id);
-    return { number: task.number, subject: task.subject, closed: count.closed, total: count.total };
-  });
-}
-
 export function hasOwnTask(paths: Paths, project: string, sessionIds: string[]) {
   return readWorkStore(paths, (db) => own(db, project, sessionIds).some(isOpen));
 }

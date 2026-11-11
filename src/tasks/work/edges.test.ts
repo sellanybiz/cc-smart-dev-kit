@@ -16,7 +16,7 @@ import {
   subtreeProgress,
   taskById,
 } from "./queries";
-import { hasOwnTask, startView, statusTask } from "./read";
+import { hasOwnTask, startView } from "./read";
 import {
   addNote,
   deleteTask,
@@ -247,8 +247,8 @@ test("the start view shows phases, puts process claims first, and counts stale w
     "Old idea",
   ]);
 });
-test("progress counts done and dropped at every depth, the same in the status line's query", () => {
-  const { db, paths } = setup();
+test("subtree progress counts done and dropped tasks at every depth", () => {
+  const { db } = setup();
   const top = ok(createTask(db, { project: "p", subject: "Top", status: "in_progress" }, who, 1));
   const done = ok(createTask(db, { project: "p", subject: "Done", parentId: top.id }, who, 2));
   const dropped = ok(
@@ -262,10 +262,6 @@ test("progress counts done and dropped at every depth, the same in the status li
   ok(updateTask(db, dropped.id, { status: "dropped" }, who, 7));
   expect(subtreeProgress(allTasks(db, "p"), top.id)).toEqual({ closed: 2, total: 4 });
   db.close();
-  expect(statusTask(paths, "p", who)).toEqual({
-    state: "ready",
-    value: { number: 1, subject: "Top", closed: 2, total: 4 },
-  });
 });
 test("hook failures return unreadable, query-only blocks writes, schema versions persist", () => {
   const paths = { stateDir: tempDir() };
