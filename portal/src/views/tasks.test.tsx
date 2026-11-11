@@ -95,7 +95,7 @@ describe("the Tasks tab", () => {
     expect(text).toContain("The task list cannot be read");
     expect(text).toContain("No tasks in 1 more project: api-service .");
     // The key to the layers and the glyphs.
-    expect(text).toContain("Plan › Phase › Task › Subtask");
+    expect(text).toContain("Plan › Phase › Task");
     expect(text).toContain("○ pending ◐ in progress ✓ done – dropped");
     // Each card links to its project's page.
     expect(html).toContain('href="/settings/project?id=p1"');

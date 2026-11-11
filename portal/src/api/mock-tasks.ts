@@ -27,7 +27,7 @@ type NodeExtra = Partial<
 
 /**
  * A node, its subtree counted from its children the way the server counts (done or dropped),
- * and its children's layers worked out the way the store does: a task under a task is a subtask.
+ * and each child's kind remains its layer.
  * A phase's steps are counted the way `src/portal/api/phase-steps.ts` counts them: the blocking
  * work reached through blocking work, a dropped step left out.
  */
@@ -46,14 +46,17 @@ function node(
     one.type === "blocking" ? [one, ...one.children.flatMap(blocking)] : [];
   const steps = children.flatMap(blocking).filter((one) => one.status !== "dropped");
   return {
+    session: null,
+    parentId: null,
+    claim: "none",
+    notes: 0,
+    events: 0,
     agent: extra.agent ?? null,
     base: extra.base ?? null,
     blocked: extra.blocked ?? false,
     blockedBy: extra.blockedBy ?? [],
     branch: extra.branch ?? null,
-    children: children.map((child) =>
-      kind === "task" && child.kind === "task" ? { ...child, layer: "subtask" } : child,
-    ),
+    children,
     closed: all.filter((one) => one.status === "done" || one.status === "dropped").length,
     id: `w${number.toString(36).padStart(10, "0")}`,
     kind,

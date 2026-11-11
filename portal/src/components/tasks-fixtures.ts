@@ -24,6 +24,11 @@ export function task(
   more: Partial<WorkTaskNode> = {},
 ): WorkTaskNode {
   return {
+    session: null,
+    parentId: null,
+    claim: "none",
+    notes: 0,
+    events: 0,
     agent: null,
     base: null,
     blocked: false,
@@ -69,7 +74,7 @@ export const PHASE = task(
       "in_progress",
       [
         task(7, "Time the lock", "pending", [], {
-          layer: "subtask",
+          layer: "task",
           type: "non-blocking",
         }),
       ],
@@ -147,7 +152,7 @@ export const FULL: ProjectTasksData = {
         "done",
         [
           task(9, "Say it in the changelog", "pending", [], {
-            layer: "subtask",
+            layer: "task",
             type: "non-blocking",
           }),
         ],
