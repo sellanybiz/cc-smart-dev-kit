@@ -1,7 +1,9 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, rmdirSync } from "node:fs";
 import { tempDir } from "../../testing/temp";
+import { taskContext } from "../context";
+import { createTaskOps } from "../ops";
 import { LEGACY_LIFT_REASON, openWorkDb, workDbFile, writeWork } from "./db";
 import { openPhasesOf } from "./phases";
 import { allTasks, eventsOf, taskById } from "./queries";
@@ -48,8 +50,16 @@ test("four legacy task levels lift to the phase, closed children add no blocker,
         .filter((t) => t.kind === "task")
         .map((t) => t.parentId),
     ).toEqual([phase.id, phase.id, phase.id, phase.id]);
-    expect(taskById(repaired, a.id).waitsFor).toEqual([]);
-    expect(taskById(repaired, b.id).waitsFor).toEqual([c.id]);
+    expect(
+      taskById(repaired, a.id)
+        .waitsFor.map((id) => taskById(repaired, id).number)
+        .sort(),
+    ).toEqual([5, 6]);
+    expect(
+      taskById(repaired, b.id)
+        .waitsFor.map((id) => taskById(repaired, id).number)
+        .sort(),
+    ).toEqual([5, 6]);
     expect(taskById(repaired, c.id).waitsFor).toEqual([d.id]);
     expect(
       tasks.map((t) =>
@@ -182,5 +192,69 @@ test("take only moves existing claims, ignores closed and imported source owners
     ]);
   } finally {
     db.close();
+  }
+});
+
+test("the same ops retries after a failed snapshot is fixed", () => {
+  const cwd = tempDir();
+  const { paths, file, db } = fixture();
+  const ctx = taskContext(cwd, {});
+  if (!ctx.ok) throw new Error(ctx.why);
+  const a = ok(createTask(db, { project: ctx.project, subject: "A" }, who, 1));
+  const b = ok(createTask(db, { project: ctx.project, subject: "B" }, who, 2));
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(a.id, b.id);
+  db.close();
+  mkdirSync(`${file}.v4.bak.tmp`);
+  const ops = createTaskOps({ stateDir: paths.stateDir, caller: () => ({ ...who, cwd }) });
+  try {
+    expect(ops.call("create", { subject: "First" }).ok).toBe(false);
+    rmdirSync(`${file}.v4.bak.tmp`);
+    expect(ops.call("create", { subject: "Next" }).ok).toBe(true);
+  } finally {
+    ops.close();
+  }
+});
+test("take from another owner accepts rows already owned by the taker", () => {
+  const { db } = fixture();
+  try {
+    const plan = ok(ensurePlanTask(db, { project: "p", plan: "mix", subject: "Plan" }, who, 1));
+    ok(createTask(db, { project: "p", plan: "mix", subject: "Mine" }, next, 2));
+    expect(takeTasks(db, "p", plan.id, next, 3, { from: "old", isLive: () => false }).ok).toBe(
+      true,
+    );
+  } finally {
+    db.close();
+  }
+});
+test("mixed cycles never move a plan or phase, and cycles without nested tasks stay put", () => {
+  const { file, db } = fixture();
+  const phase = ok(
+    writeWork(db, () =>
+      layPhase(db, { project: "p", plan: "one", phase: "A", subject: "Phase" }, who, 1),
+    ),
+  ).task;
+  const a = ok(createTask(db, { project: "p", subject: "A", parentId: phase.id }, who, 2));
+  const b = ok(createTask(db, { project: "p", subject: "B" }, who, 3));
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(b.id, phase.id);
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(a.id, b.id);
+  const planId = phase.parentId;
+  db.close();
+  const repaired = openWorkDb(file, { mode: "write" });
+  try {
+    expect(taskById(repaired, phase.id).parentId).toBe(b.id);
+    expect(taskById(repaired, planId ?? "").parentId).toBeNull();
+    expect(taskById(repaired, a.id).parentId).toBeNull();
+    // No task-under-task edge: this malformed phase/task cycle is outside the lift's job.
+    repaired.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(phase.id, a.id);
+    repaired.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(a.id, phase.id);
+  } finally {
+    repaired.close();
+  }
+  const unchanged = openWorkDb(file, { mode: "write" });
+  try {
+    expect(taskById(unchanged, phase.id).parentId).toBe(a.id);
+    expect(taskById(unchanged, a.id).parentId).toBe(phase.id);
+  } finally {
+    unchanged.close();
   }
 });

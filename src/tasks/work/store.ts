@@ -586,6 +586,7 @@ export function takeTasks(
         options.from !== undefined &&
         (task.status === "pending" || task.status === "in_progress") &&
         task.createdBy !== null &&
+        task.createdBy !== who.sessionId &&
         task.createdBy !== options.from
       )
         throw new Error(

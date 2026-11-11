@@ -139,7 +139,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
   const env = options.env ?? process.env;
   const stateDir = options.stateDir ?? cliPaths(env).stateDir;
   let db: WorkDb | undefined;
-  const database = () => (db ??= openWorkDb(workDbFile({ stateDir }), { mode: "write" }));
+  const database = () => {
+    if (db?.writeRefusal !== undefined) {
+      db.close();
+      db = undefined;
+    }
+    if (db === undefined) db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    return db;
+  };
   function call(operation: TaskOperation, raw: unknown): TaskAnswer {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });

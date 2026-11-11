@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
+import { allTasks, holdingUnder } from "./queries";
 import type { Result } from "./types";
 /**
  * The schema this code writes. Each step is additive (`MIGRATIONS`), so `min_compatible` stays 1:
@@ -59,6 +60,12 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
 class BackupFailure extends Error {}
 /** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */
 function repairTaskLayers(sqlite: Database, file: string): void {
+  const nestedExists = sqlite
+    .query(
+      "SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1",
+    )
+    .get();
+  if (!nestedExists) return;
   type Row = {
     id: string;
     project: string;
@@ -68,8 +75,28 @@ function repairTaskLayers(sqlite: Database, file: string): void {
     blocking: number;
     status: string;
   };
+  const rows = sqlite
+    .query<Row, []>(
+      "SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number",
+    )
+    .all();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const originalHolds = new Map<string, string[]>();
+  const reader: WorkDb = { sqlite, writable: false, close() {} };
+  for (const project of new Set(rows.map((row) => row.project))) {
+    const tasks = allTasks(reader, project);
+    for (const task of tasks.filter(
+      (task) =>
+        task.kind === "task" &&
+        tasks.some((child) => child.kind === "task" && child.parentId === task.id),
+    ))
+      originalHolds.set(
+        task.id,
+        holdingUnder(tasks, task.id).map((held) => held.id),
+      );
+  }
   let backed = false;
-  const move = (row: Row, parent: Row, above: Row | null, cycle = false) => {
+  const move = (row: Row, parent: Row, above: Row | null) => {
     if (!backed) {
       if (!existsSync(`${file}.v4.bak`)) {
         try {
@@ -77,7 +104,7 @@ function repairTaskLayers(sqlite: Database, file: string): void {
           renameSync(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
           throw new BackupFailure(
-            `task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname(file)}, then reopen the task store`,
+            `task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname(file)}, the next task call tries again`,
           );
         }
       }
@@ -87,11 +114,6 @@ function repairTaskLayers(sqlite: Database, file: string): void {
     sqlite
       .query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?")
       .run(above?.id ?? null, blocking, row.id);
-    // A cycle has no valid completion order to preserve. Normal lifts retain every open hold.
-    if (!cycle && row.blocking !== 0 && (row.status === "pending" || row.status === "in_progress"))
-      sqlite
-        .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
-        .run(parent.id, row.id);
     sqlite
       .query(
         "INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)",
@@ -107,18 +129,24 @@ function repairTaskLayers(sqlite: Database, file: string): void {
         }),
         LEGACY_LIFT_REASON,
       );
+    row.parent_id = above?.id ?? null;
+    row.blocking = blocking;
   };
   for (;;) {
-    const rows = sqlite
-      .query<Row, []>(
-        "SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number",
-      )
-      .all();
-    const byId = new Map(rows.map((row) => [row.id, row]));
     const nested = rows.find(
       (row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task",
     );
-    if (!nested) return;
+    if (!nested) {
+      for (const [id, held] of originalHolds)
+        for (const h of held) {
+          // A legacy parent cycle had no valid completion order; never turn it into a blocker cycle.
+          if (originalHolds.get(h)?.includes(id)) continue;
+          sqlite
+            .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
+            .run(id, h);
+        }
+      return;
+    }
     const chain: Row[] = [];
     const positions = new Map<string, number>();
     let up: Row | undefined = nested;
@@ -127,18 +155,22 @@ function repairTaskLayers(sqlite: Database, file: string): void {
       if (at !== undefined) {
         const lowest = chain
           .slice(at)
+          .filter((row) => row.kind === "task")
           .sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
-        if (!lowest) throw new Error("missing cycle member");
+        if (!lowest) {
+          up = undefined;
+          break;
+        }
         const parent = byId.get(lowest.parent_id ?? "");
         if (!parent) throw new Error("missing cycle parent");
-        move(lowest, parent, null, true);
+        move(lowest, parent, null);
         break;
       }
       positions.set(up.id, chain.length);
       chain.push(up);
       up = byId.get(up.parent_id ?? "");
     }
-    if (up) continue; // A cycle was broken; re-read before lifting any descendants.
+    if (up) continue; // A cycle was broken; inspect the updated in-memory graph.
     const parent = byId.get(nested.parent_id ?? "");
     if (!parent) throw new Error("missing legacy task parent");
     move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);

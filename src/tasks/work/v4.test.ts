@@ -163,7 +163,11 @@ test("every write open lifts old nested tasks, preserves holds and takes a WAL b
   try {
     expect(allTasks(repaired, "p").map((t) => t.parentId)).toEqual([null, null, null]);
     expect(taskById(repaired, child.id).type).toBe("non-blocking");
-    expect(taskById(repaired, parent.id).waitsFor).toEqual([child.id]);
+    expect(
+      taskById(repaired, parent.id)
+        .waitsFor.map((id) => taskById(repaired, id).number)
+        .sort(),
+    ).toEqual([2, 3]);
     expect(eventsOf(repaired, child).at(-1)?.changes.parent).toEqual([`#${parent.number}`, null]);
     expect(existsSync(`${file}.v4.bak`)).toBe(true);
     const snapshot = new Database(`${file}.v4.bak`, { readonly: true });

@@ -74,12 +74,13 @@ session may write another nested task. Read-only hooks and the portal tolerate t
 the next repair. The repair takes the SQLite write lock and saves `work.db.v4.bak` through
 `serialize()`, including committed write-ahead-log data, before the first move. It keeps notes,
 claims and history, and records every parent change. An open blocking child becomes an explicit
-blocker of its former parent, preserving the hold on completion. A pending former parent also
+blocker of its former parent, preserving the hold on completion. Original holds are saved before
+any move, including holds reached through closed blocking tasks, then restored as dependencies. A pending former parent also
 cannot start until its lifted blocking children finish. Work below a non-blocking task
 inherits that type, so the lifted work does not start holding the phase. Old code can still read
 the store (`min_compatible` stays 1). The snapshot is written to a temporary file and renamed
 atomically. If it fails, the store opens read-only and writes report how to free space or fix
-folder rights; no task is lifted. A legacy parent cycle is broken by lifting its lowest-numbered
+folder rights; no task is lifted. The next task call reopens a refused handle and tries again. A legacy parent cycle is broken by lifting its lowest-numbered
 member to the top, with a history event, before the remaining tasks are lifted.
 
 **The type** says whether a task holds the one above it. A `blocking` task (the default) must
