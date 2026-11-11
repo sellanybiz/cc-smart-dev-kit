@@ -13,7 +13,6 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { checkLine } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
-import { applyManagedJson } from "../setup/managed-json";
 import { git, tempDir } from "../testing/temp";
 import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import { DEFAULT_ANTHROPIC_BASE_URL, saveConfig } from "./config";
@@ -104,47 +103,46 @@ async function linesFor(
 }
 
 describe("doctor: a project on a profile, and the router that runs", () => {
-  for (const kind of ["kit pin", "your value", "missing", "off", "broken"] as const) {
-    test(`Fable doctor: ${kind}`, async () => {
+  for (const kind of ["rows", "missing", "off", "broken"] as const) {
+    test(`model menu doctor: ${kind}`, async () => {
       const m = machine();
-      if (kind === "broken") writeFileSync(m.paths.settingsFile, "{ broken");
-      else {
-        writeFileSync(
-          m.paths.settingsFile,
-          JSON.stringify({
-            env: {
-              ANTHROPIC_BASE_URL:
-                kind === "off" ? "https://api.anthropic.com" : `http://127.0.0.1:${PORT}`,
-            },
-          }),
-        );
-        if (kind === "kit pin")
-          applyManagedJson({
-            file: m.paths.settingsFile,
-            stateDir: m.paths.stateDir,
-            set: [[["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"], "claude-fable-5-2"]],
-          });
-        if (kind === "your value")
-          writeFileSync(
-            m.paths.settingsFile,
-            JSON.stringify({
+      writeFileSync(
+        m.paths.settingsFile,
+        kind === "broken"
+          ? "{ broken"
+          : JSON.stringify({
+              model: "claude-opus-5-5",
               env: {
-                ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}`,
-                ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1",
+                ANTHROPIC_BASE_URL:
+                  kind === "off" ? "https://api.anthropic.com" : `http://127.0.0.1:${PORT}`,
               },
+              ...(kind === "rows"
+                ? {
+                    modelPicker: {
+                      options: [
+                        { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+                      ],
+                    },
+                  }
+                : {}),
             }),
-          );
-      }
+      );
       const lines = await linesFor(m, [], "current");
       if (kind === "off")
-        expect(lines.filter((line) => line.includes("Gateway Fable:"))).toEqual([]);
+        expect(lines.filter((line) => line.includes("Gateway model menu:"))).toEqual([]);
       else if (kind === "broken")
-        expect(lines.some((line) => line.startsWith("!") && line.includes("Fable"))).toBe(true);
+        expect(lines.some((line) => line.startsWith("!") && line.includes("model menu"))).toBe(
+          true,
+        );
       else
         expect(lines).toContain(
           kind === "missing"
-            ? "· Gateway Fable: missing: run setup"
-            : `· Gateway Fable: ${kind === "kit pin" ? "claude-fable-5-2" : "claude-fable-5-1"} (${kind})`,
+            ? "· Gateway model menu: not set; run setup"
+            : "· Gateway model menu: Opus: Claude's newest Opus",
+        );
+      if (kind !== "broken")
+        expect(lines).toContain(
+          "· Your default model is fixed to claude-opus-5-5; /model <alias> follows the newest.",
         );
     });
   }

@@ -37,13 +37,19 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
-import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  emptyConfig,
+  PROFILE_NAME_RULE,
+  profileNames,
+} from "../gateway/config";
 import {
   type HealthFetch,
   routerFeature,
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
+import { pickerFor } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
@@ -460,12 +466,19 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
+      const settings = {
+        env: { ANTHROPIC_BASE_URL: target.url },
+        ...(parsed.mode.kind === "profile" || parsed.mode.kind === "gateway"
+          ? {
+              modelPicker: pickerFor(
+                readGatewayConfig(ctx.configPath).config ?? emptyConfig(),
+                parsed.mode.kind === "profile" ? parsed.mode.name : undefined,
+              ),
+            }
+          : {}),
+      };
       // Publish the complete settings file with private permissions.
-      atomicWrite(
-        settingsFile,
-        `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: target.url } }, null, 2)}\n`,
-        0o600,
-      );
+      atomicWrite(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, 0o600);
     } catch (error) {
       ctx.error(
         `launch: its settings file could not be written: ${error instanceof Error ? error.message : String(error)}`,

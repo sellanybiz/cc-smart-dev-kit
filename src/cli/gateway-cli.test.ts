@@ -1426,14 +1426,14 @@ describe("cc-smart-dev-kit gateway setup: the port", () => {
 });
 
 describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
-  const STAGE_1_KEYS = `~ ~/.claude/settings.json: set env.ANTHROPIC_BASE_URL to ${DEFAULT_ANTHROPIC_BASE_URL}, removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL; everything else kept`;
+  const STAGE_1_KEYS = `~ ~/.claude/settings.json: set env.ANTHROPIC_BASE_URL to ${DEFAULT_ANTHROPIC_BASE_URL}, removed env.ENABLE_TOOL_SEARCH, modelPicker; everything else kept`;
 
   /**
    * `--now` takes both stages in one run, so nothing is written first: every key of ours is
    * removed plainly (`env` goes with its last one, which the kit created).
    */
   const NOW_KEYS =
-    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL, env.ANTHROPIC_BASE_URL, env; everything else kept";
+    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env, modelPicker; everything else kept";
 
   /**
    * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
@@ -1583,7 +1583,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(first.stderr).toBe("");
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toContain(
-      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL; everything else kept\n",
+      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, modelPicker; everything else kept\n",
     );
     expect(first.stdout).toContain(`${STAGE_1_UNWRITTEN}\n`);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
@@ -1791,6 +1791,16 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
   });
 });
 
+const PICKER_JSON = JSON.stringify({
+  replaceBuiltInOptions: true,
+  options: [
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+    { model: "haiku", label: "Haiku", description: "answered by m1 (scout slot)" },
+    { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+    { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+  ],
+});
+
 /** A fact, no suggestion: Claude Code allows Remote Control only with Anthropic's own host. */
 const REMOTE_CONTROL_LINE =
   "Remote Control is off while the gateway is on: Claude Code allows it only with api.anthropic.com as the address.";
@@ -1806,8 +1816,8 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(on.stdout).toBe(
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: (none) -> "claude-fable-5-2"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
+        `~ ~/.claude/settings.json: modelPicker: (none) -> ${PICKER_JSON}`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
         REMOTE_CONTROL_LINE,
@@ -1822,7 +1832,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
       [
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> "${DEFAULT_ANTHROPIC_BASE_URL}"`,
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: "true" -> (none)',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-2" -> (none)',
+        `~ ~/.claude/settings.json: modelPicker: ${PICKER_JSON} -> (none)`,
         "✓ Done. The gateway is off.",
         "Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.",
         "Next steps:",
@@ -1846,8 +1856,8 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(again.stdout).toBe(
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
-        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: (none) -> "claude-fable-5-2"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "${DEFAULT_ANTHROPIC_BASE_URL}" -> "http://127.0.0.1:${server.port}"`,
+        `~ ~/.claude/settings.json: modelPicker: (none) -> ${PICKER_JSON}`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
         REMOTE_CONTROL_LINE,

@@ -147,13 +147,22 @@ function config(): GatewayConfig {
 }
 
 /**
- * The env block `on` writes on port 20100, written out by hand. Only Fable is pinned: Claude
+ * The env block `on` writes on port 20100, written out by hand. No family is pinned: Claude
  * Code sends each model's own id, and the router finds its family's slot (since 0.5.0).
  */
 const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
   ENABLE_TOOL_SEARCH: "true",
-  ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-2",
+};
+
+const ON_PICKER = {
+  replaceBuiltInOptions: true,
+  options: [
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+    { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+    { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+  ],
 };
 
 /** The model keys `on` wrote up to 0.4.3, with the values it wrote, by hand. */
@@ -203,6 +212,7 @@ describe("Claude Code settings: on / off", () => {
       expect(JSON.parse(text)).toEqual({
         env: { CLAUDE_CODE_SUBAGENT_MODEL: "cc-smart-dev-kit-worker[1m]", FOO: "1", ...ON_ENV },
         model: "opus",
+        modelPicker: ON_PICKER,
         permissions: { allow: ["Bash(ls:*)"] },
       });
       expect(result.written).toBe(true);
@@ -217,11 +227,7 @@ describe("Claude Code settings: on / off", () => {
         ownedKeys(stateDir, file)
           .map((path) => path.join("."))
           .sort(),
-      ).toEqual([
-        "env.ANTHROPIC_BASE_URL",
-        "env.ANTHROPIC_DEFAULT_FABLE_MODEL",
-        "env.ENABLE_TOOL_SEARCH",
-      ]);
+      ).toEqual(["env.ANTHROPIC_BASE_URL", "env.ENABLE_TOOL_SEARCH", "modelPicker"]);
     },
   );
 
@@ -239,15 +245,17 @@ describe("Claude Code settings: on / off", () => {
     changed.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5-5";
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
     const result = turnOn({ settingsFile: file, stateDir, port: 20100 });
-    expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
+    expect(result.changes.map((change) => change.path.at(-1)).sort()).toEqual([
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
       "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
       "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+      "modelPicker",
     ]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       env: { ...ON_ENV, ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5", FOO: "1" },
+      modelPicker: ON_PICKER,
     });
   });
 
@@ -291,14 +299,17 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       env: { ...ON_ENV, ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5-5" },
+      modelPicker: ON_PICKER,
     });
   });
 
   it("on never writes CLAUDE_CODE_SUBAGENT_MODEL, its _FORCE, or a login key or token", () => {
     const { file, stateDir } = seed(null);
     turnOn({ settingsFile: file, stateDir, port: 20100 });
-    const written = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
-    expect(written).toEqual({ env: ON_ENV });
+    const written: { env: Record<string, string>; modelPicker: unknown } = JSON.parse(
+      readFileSync(file, "utf8"),
+    );
+    expect(written).toEqual({ env: ON_ENV, modelPicker: ON_PICKER });
     for (const key of [
       "ANTHROPIC_AUTH_TOKEN",
       "ANTHROPIC_API_KEY",
@@ -321,11 +332,11 @@ describe("Claude Code settings: on / off", () => {
     const { file, stateDir } = seed();
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const { result, foreign, switched } = turnOff({ settingsFile: file, stateDir });
-    // The address is set (GP5); tool search and Fable pin are removed.
-    expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
+    // The address is set (GP5); tool search and the model menu are removed.
+    expect(result.changes.map((change) => change.path.at(-1)).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ENABLE_TOOL_SEARCH",
+      "modelPicker",
     ]);
     expect(switched).toBe(true);
     expect(foreign).toEqual([]);
@@ -342,11 +353,7 @@ describe("Claude Code settings: on / off", () => {
     const twice = turnOff({ settingsFile: file, stateDir });
     expect(twice.result.changes).toEqual([]);
     expect(twice.switched).toBe(false);
-    expect([...GATEWAY_ENV_KEYS].sort()).toEqual([
-      "ANTHROPIC_BASE_URL",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
-      "ENABLE_TOOL_SEARCH",
-    ]);
+    expect([...GATEWAY_ENV_KEYS].sort()).toEqual(["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"]);
   });
 
   it("off takes out the model keys an older version wrote too, and keeps the address key", () => {
@@ -360,7 +367,6 @@ describe("Claude Code settings: on / off", () => {
     });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -439,7 +445,6 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
       "ANTHROPIC_BASE_URL",
     ]);
     // The person points Claude Code at their own gateway: that key is their choice now, and
@@ -447,10 +452,7 @@ describe("Claude Code settings: on / off", () => {
     const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
     changed.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
-    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
-      "ENABLE_TOOL_SEARCH",
-      "ANTHROPIC_DEFAULT_FABLE_MODEL",
-    ]);
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual(["ENABLE_TOOL_SEARCH"]);
     // Restore leaves it (theirs), takes ours out, and gives up the ownership of it.
     expect(restore(stateDir).map((result) => result.action)).toEqual(["cleaned"]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
@@ -1921,7 +1923,7 @@ describe("an older version's config and settings, as gateway setup upgrades them
     changed.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-5-5"; // theirs now
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
     const result = retireOldModelKeys({ settingsFile: file, stateDir });
-    expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
+    expect(result.changes.map((change) => change.path.at(-1)).sort()).toEqual([
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",

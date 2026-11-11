@@ -16,11 +16,7 @@ export function slotName(key: string): string {
   return key.startsWith(SLOT_PREFIX) ? key.slice(SLOT_PREFIX.length) : key;
 }
 
-/** `omniroute:glm-5.3` → `glm-5.3`; a Claude target stays as it is. */
-export function targetModel(target: string): string {
-  const colon = target.indexOf(":");
-  return colon === -1 ? target : target.slice(colon + 1);
-}
+export { targetModel } from "../../../src/gateway/target-label";
 
 /** The backend part of a target, or `Claude login` for a `claude-…` model. */
 export function targetBackend(target: string): string {

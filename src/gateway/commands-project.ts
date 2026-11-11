@@ -328,7 +328,13 @@ async function applyProjectChange(
       const result =
         plan.value === null
           ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir })
-          : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
+          : setGatewayBaseUrl({
+              file: plan.file,
+              stateDir: paths.stateDir,
+              value: plan.value,
+              config: readGatewayConfig(paths.gatewayConfigFile).config ?? undefined,
+              profile: urlMeaning(plan.value, view.routerUrl).profile ?? undefined,
+            });
       return { exclude, plan, result, saved: projectStateOf(ctx, folder) };
     },
     { waitMs: 10_000 },
@@ -622,6 +628,7 @@ export async function commandProject(
   // wrote may not be the one that decides (P3: the personal file beats the team file).
   const { effective } = written.saved;
   for (const skipped of written.result.skipped) {
+    if (skipped.path[0] === "modelPicker") out.line("info", `modelPicker: ${skipped.reason}`);
     if (
       skipped.path.length === 2 &&
       skipped.path[0] === "env" &&

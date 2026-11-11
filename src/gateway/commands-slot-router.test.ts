@@ -78,6 +78,7 @@ function machine(router: Router, options: { aliased?: boolean; workerIsClaude?: 
     error: (line) => errors.push(line),
   };
   return {
+    paths,
     asked,
     config: () => loadConfigFile(paths.gatewayConfigFile),
     file: () => readFileSync(paths.gatewayConfigFile, "utf8"),
@@ -137,5 +138,23 @@ describe("a slot change with no alias at a slot in Claude mode asks no router", 
     expect(await m.run([...args])).toBe(0);
     expect(m.asked).toEqual([]);
     expect(m.output()).not.toContain("does not answer");
+  });
+});
+
+test("slot changes refresh the active owned menu", async () => {
+  const m = machine("current");
+  expect(await m.run(["on"])).toBe(0);
+  let settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  expect(settings.modelPicker.options[3]).toEqual({
+    model: "sonnet",
+    label: "Sonnet",
+    description: "answered by glm-5.3-flash (worker slot)",
+  });
+  expect(await m.run(["slot", "worker", "claude"])).toBe(0);
+  settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  expect(settings.modelPicker.options[3]).toEqual({
+    model: "sonnet",
+    label: "Sonnet",
+    description: "Claude's newest Sonnet",
   });
 });

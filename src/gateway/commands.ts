@@ -26,6 +26,7 @@ import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
 import type { Terminal } from "../cli/ui/terminal";
 import { shellWord } from "../setup/launcher";
 import { withLock } from "../setup/lock";
+import { readJsonObject } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
@@ -77,7 +78,6 @@ import {
   saveConfig,
   workerJudgeTargets,
 } from "./config";
-import { GATEWAY_FABLE_ENV } from "./fable-model";
 import {
   type HealthFetch,
   type HealthProbe,
@@ -112,6 +112,7 @@ import {
   scopeOfStateKey,
   stateKeyFor,
 } from "./limit-state";
+import { applyModelPickerStep } from "./model-picker";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { decisionWords, type ProjectGatewayState } from "./project-state";
 import { effortPinForBackend, startRouter } from "./router";
@@ -1512,6 +1513,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         );
       }
       saveConfig(configPath, saved);
+      for (const line of applyModelPickerStep(ctx.paths, false)) ctx.print(line);
       if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
       return { ...again, config: saved };
     },
@@ -2260,9 +2262,14 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
         });
         if (retired.changes.length > 0) {
           ctx.print(changeLines(retired, paths.home).join("\n"));
-          ctx.print(
-            "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
-          );
+          if (
+            retired.changes.some((change) =>
+              RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1] ?? ""),
+            )
+          )
+            ctx.print(
+              "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
+            );
         }
         // Setup never turns the gateway on (D66): it says what is, and the one command.
         if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
@@ -2469,7 +2476,14 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
       `the router does not answer on 127.0.0.1:${port} (${health.error}); every Claude request would fail. Run ${COMMAND} gateway setup first.`,
     );
   }
-  const options = { settingsFile: paths.settingsFile, stateDir: paths.stateDir, port };
+  const options = {
+    settingsFile: paths.settingsFile,
+    stateDir: paths.stateDir,
+    port,
+    config: existsSync(paths.gatewayConfigFile)
+      ? loadConfigFile(paths.gatewayConfigFile)
+      : undefined,
+  };
   // A read-only pass first: a key someone else set stops it before anything is written.
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 10_000 });
@@ -2490,7 +2504,7 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
       `Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`,
     );
   }
-  for (const skip of result.skipped.filter((skip) => skip.path[1] === GATEWAY_FABLE_ENV))
+  for (const skip of result.skipped)
     out.line("info", `${skip.path.join(".")}: ${skip.reason}`, { indent: 2 });
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
@@ -2539,6 +2553,12 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   );
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
+  for (const skip of result.skipped.filter(
+    (skip) =>
+      skip.path[0] === "modelPicker" &&
+      readJsonObject(paths.settingsFile).data.modelPicker !== undefined,
+  ))
+    out.line("info", `modelPicker: ${skip.reason}`);
   const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {

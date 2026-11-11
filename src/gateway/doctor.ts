@@ -7,8 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
-import { getKey, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
-import { realTarget } from "../setup/write";
+import { getKey, readJsonObject } from "../setup/managed-json";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
@@ -32,7 +31,6 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
-import { GATEWAY_FABLE_ENV } from "./fable-model";
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
@@ -172,24 +170,27 @@ export async function gatewayChecks(options: {
     const settings = readJsonObject(paths.settingsFile).data;
     const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
     if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
-      const path = ["env", GATEWAY_FABLE_ENV];
-      const pin = getKey(settings, path);
-      const ours =
-        ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) ===
-        "ours";
+      const picker = settings.modelPicker as
+        | { options?: { label?: string; model?: string; description?: string }[] }
+        | undefined;
       checks.push({
         ok: true,
         info: true,
-        text: pin.found
-          ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})`
-          : "Gateway Fable: missing: run setup",
+        text: `Gateway model menu: ${Array.isArray(picker?.options) ? picker.options.map((row) => `${row.label ?? row.model}: ${row.description ?? "custom"}`).join("; ") : "not set; run setup"}`,
+      });
+    }
+    if (typeof settings.model === "string" && settings.model.startsWith("claude-")) {
+      checks.push({
+        ok: true,
+        info: true,
+        text: `Your default model is fixed to ${settings.model}; /model <alias> follows the newest.`,
       });
     }
   } catch (error) {
     checks.push({
       ok: true,
       warn: true,
-      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`,
+      text: `Gateway model menu: cannot read settings: ${messageOf(error)}`,
     });
   }
 

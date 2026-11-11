@@ -891,3 +891,24 @@ describe("Fable pin command diagnostics", () => {
     expect(m.output()).not.toContain("left alone");
   });
 });
+
+test("project on gets a menu, off removes it, default removes both owned keys", async () => {
+  const m = machine();
+  const root = repo("picker-project");
+  const file = join(root, ".claude", "settings.local.json");
+  expect(await m.run(["project", "on", "--folder", root])).toBe(0);
+  expect(settingsOf(file).modelPicker).toEqual({
+    replaceBuiltInOptions: true,
+    options: [
+      { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+      { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+      { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+      { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+    ],
+  });
+  expect(await m.run(["project", "off", "--folder", root])).toBe(0);
+  expect(settingsOf(file).modelPicker).toBeUndefined();
+  expect(await m.run(["project", "on", "--folder", root])).toBe(0);
+  expect(await m.run(["project", "default", "--folder", root])).toBe(0);
+  expect(existsSync(file) ? settingsOf(file).modelPicker : undefined).toBeUndefined();
+});

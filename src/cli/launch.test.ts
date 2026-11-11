@@ -31,6 +31,16 @@ import {
   type SignalPlan,
 } from "./launch";
 
+const expectedPicker = {
+  replaceBuiltInOptions: true,
+  options: [
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+    { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+    { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+  ],
+};
+
 /** A port no router uses: the config only names it, nothing connects. */
 const TEST_PORT = 45_321;
 const ROUTER_URL = `http://127.0.0.1:${TEST_PORT}`;
@@ -259,7 +269,7 @@ describe("launch", () => {
     const ctx = context(home);
     expect(await runLaunch(["--gateway", "--", "-p", "hi"], ctx)).toBe(7);
     expect(loggedSettings(home)).toBe(
-      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: ROUTER_URL } }, null, 2)}\n`,
+      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: ROUTER_URL }, modelPicker: expectedPicker }, null, 2)}\n`,
     );
     expect(runLog(home)).toContain(`arg=${settingsFileOf(home, "gateway")}`);
     expect(ctx.printed).toEqual([`launch: the gateway · ${ROUTER_URL}`]);
@@ -278,9 +288,24 @@ describe("launch", () => {
     const ctx = context(home);
     expect(await runLaunch(["--profile", "fast"], ctx)).toBe(7);
     expect(loggedSettings(home)).toBe(
-      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `${ROUTER_URL}/p/fast` } }, null, 2)}\n`,
+      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `${ROUTER_URL}/p/fast` }, modelPicker: expectedPicker }, null, 2)}\n`,
     );
     expect(ctx.printed[0]).toBe(`launch: the gateway, profile "fast" · ${ROUTER_URL}/p/fast`);
+  });
+
+  test("--profile carries backend rows instead of the machine's rows", async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    const config = JSON.parse(readFileSync(home.configPath, "utf8"));
+    config.backends = { omniroute: { baseUrl: "http://omni.test", apiKey: "test-key" } };
+    config.profiles.fast.slots = { "cc-smart-dev-kit-opus": ["omniroute:codex/gpt-6.1-sol"] };
+    writeFileSync(home.configPath, JSON.stringify(config), { mode: 0o600 });
+    expect(await runLaunch(["--profile", "fast"], context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker.options[2]).toEqual({
+      model: "opus",
+      label: "Opus",
+      description: "answered by gpt-6.1-sol (opus slot)",
+    });
   });
 
   test("--profile on an older router (no profiles in its features) runs nothing, and names gateway setup", async () => {
