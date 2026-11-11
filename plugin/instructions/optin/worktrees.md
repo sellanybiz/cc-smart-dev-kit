@@ -41,8 +41,8 @@ already inside one; from the main checkout it fails. A worktree outside
 `.claude/worktrees/` is entered by the person starting a session in that folder. A session
 already in a worktree that starts an **unrelated** task goes back to the main checkout first
 (`ExitWorktree`), then starts the new one from there. Every change goes: worktree → branch →
-commit → push → pull request into `base` → merge (after the person's yes) → tell the other
-sessions → clear the worktree.
+commit → push → pull request into `base` → merge (after the person's yes) → clear the
+worktree. A merge is never announced to the other sessions.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides
 another's uncommitted work, and a commit sweeps up files it did not write. In your own
@@ -89,16 +89,13 @@ to do: end the turn with a short status; the notification brings you back.
 
 - **Only sessions of this repo.** `ListAgents` lists every session on the machine, other
   projects too.
-- **Worth a message:** your merge into `base` (once, to every session of this repo); a reset
-  or schema change of a shared service; editing files another branch is changing; merging
-  its branch into yours; a decision that spans both areas — agree who owns which files; the
-  answer to a question it asked you.
-- **Told that `base` changed:** merge it at your next stop. Never into a branch whose pull
-  request goes somewhere else (a hotfix or release branch).
+- **Worth a message:** a reset or schema change of a shared service; editing files another
+  branch is changing; merging its branch into yours; a decision that spans both areas — agree
+  who owns which files; the answer to a question it asked you.
 - **A peer asks you to do something:** do it when it touches your branch, your files or your
   plan, or when it is a small step that unblocks that session, and say so in one line. Bigger
   work belongs to its own session — say so in one line.
-- **Never a message** about pushes, type checks, lint, test runs or builds. No "done", no
+- **Never a message** about merges, pushes, type checks, lint, test runs or builds. No "done", no
   "thanks", no reply to a message that needs none.
 - **Send** with `SendMessage` to the name `ListAgents` shows. Its user sees the first line
   first: one complete sentence saying what you need, then the detail. To wait on a busy

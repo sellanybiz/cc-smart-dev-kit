@@ -3,16 +3,14 @@
  * request (`gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge, a `gh` alias that
  * expands to one — `pullRequestMerges` below), for a project that works in worktrees
  * (`worktrees` in cc-smart-dev-kit.json). The moment a merge lands is the moment two things
- * are due, and both were forgotten when they lived only in written rules:
+ * are due:
  *
  * - **The worktree that was merged is finished.** When the session works in a worktree whose
  *   branch the pull request was, the note gives the steps that clear it.
- * - **The other sessions now work on an old base.** When the pull request went into
- *   `worktrees.base`, in this repo's own remote, in the last 15 minutes, and was not announced
- *   before, the note gives the exact message to send **the person's other sessions in this
- *   repo**. The message also names the prefixes of `worktrees.bases` whose own base is another
- *   one (`otherBaseCaution`): a session on such a branch must not merge the integration base in,
- *   because that would ship unreleased work.
+ * - **Finished worktrees can go.** When the pull request went into `worktrees.base`, in this
+ *   repo's own remote, in the last 15 minutes, and was not seen before, the auto-clean starts
+ *   (D48). Nothing is said to Claude about it, and **the other sessions are never told**: the
+ *   message the hook once gave them is gone (the owner, 2026-11-11).
  *
  * It looks the pull request up once with `gh pr view` (10 s at most). **The hook has 30 s,
  * and its children (the alias list, `git worktree list`, `gh pr view`, `git remote get-url`)
@@ -23,7 +21,7 @@
  * `gh pr merge` in a quote, a quoted here-doc or a comment (`src/shell/command.ts`, in the
  * dialect of the tool that ran the line). When the shell
  * command failed (PostToolUseFailure), only gh's word that the pull request IS merged
- * counts. Each pull request is announced once: a small file per number in the temp folder.
+ * counts. Each pull request is handled once: a small file per number in the temp folder.
  * Anything it cannot work out is skipped: a note is not worth a failed tool call.
  *
  * It reads the alias list (`gh alias list`, a local file read) only for a command with a
@@ -1479,11 +1477,12 @@ export function sameRepository(prUrl: string, origin: string): boolean {
 }
 
 /** A merge older than this is not news: the command only named an old pull request. */
-export const ANNOUNCE_WINDOW_MS = 15 * 60_000;
+export const RECENT_MERGE_MS = 15 * 60_000;
 
 export interface MergeOutcome {
-  /** The pull request to announce to the other sessions. */
-  announce: PullRequestView | null;
+  /** The pull request that just went into the base, seen for the first time: it starts the
+   * auto-clean. */
+  intoBase: PullRequestView | null;
   /** The worktree to clear: the session's own, when its branch was the one merged. */
   clear: { path: string; branch: string } | null;
 }
@@ -1493,7 +1492,7 @@ export interface MergeOutcome {
  * reports as not merged gets no note. `failed`: the shell command exited non-zero.
  */
 export function mergeOutcome(params: {
-  announced: boolean;
+  seen: boolean;
   base: string;
   failed: boolean;
   now: number;
@@ -1502,8 +1501,8 @@ export function mergeOutcome(params: {
   target: { ref: string | null };
   worktree: { branch: string | null; path: string } | null;
 }): MergeOutcome {
-  const { announced, base, failed, now, pr, sameRepo, target, worktree } = params;
-  const none = { announce: null, clear: null };
+  const { base, failed, now, pr, sameRepo, seen, target, worktree } = params;
+  const none = { clear: null, intoBase: null };
   if (pr === null ? failed : pr.state !== "MERGED" || !sameRepo) return none;
   const branch = worktree?.branch ?? null;
   // Merged without a name: the current branch's. Named: by its branch, or gh's head branch.
@@ -1513,15 +1512,9 @@ export function mergeOutcome(params: {
     (target.ref === null || target.ref === branch || pr?.head === branch);
   const clear = mergedHere && branch !== null ? { path: worktree.path, branch } : null;
   const mergedAt = pr === null || pr.mergedAt === null ? Number.NaN : Date.parse(pr.mergedAt);
-  const recent = now - mergedAt <= ANNOUNCE_WINDOW_MS;
-  const announce = pr !== null && pr.base === base && !announced && recent ? pr : null;
-  return { announce, clear };
-}
-
-/** A title safe to quote in a message: one line, no quotes, short. */
-function quotableTitle(title: string): string {
-  const line = title.replace(/["`]/g, "'").replace(/\s+/g, " ").trim();
-  return line.length > 100 ? `${line.slice(0, 99)}…` : line;
+  const recent = now - mergedAt <= RECENT_MERGE_MS;
+  const intoBase = pr !== null && pr.base === base && !seen && recent ? pr : null;
+  return { clear, intoBase };
 }
 
 /** True when a worktree lives under `<repo>/.claude/worktrees/`, where Claude Code made it. */
@@ -1543,42 +1536,6 @@ export function clearWorktreeNote(path: string, branch: string): string {
       ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.'
       : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
-  ].join("\n");
-}
-
-/**
- * A session on a branch whose pull request goes into ANOTHER base must not merge the
- * integration base in: that base holds work its own base has not released yet, so the merge
- * would ship it early. Named as the prefixes of `worktrees.bases` (`hotfix/`, `release/`),
- * and only those whose base is not `base` itself.
- */
-export function otherBaseCaution(bases: Record<string, string>, base: string): string | null {
-  const elsewhere = Object.entries(bases)
-    .filter(([, target]) => target !== base)
-    .map(([prefix]) => prefix);
-  if (elsewhere.length === 0) return null;
-  return (
-    `One exception: a branch whose pull request goes into another base (${elsewhere.join(", ")}) must NOT merge ${base} in, ` +
-    `because that would ship unreleased work. A branch there stays as it is.`
-  );
-}
-
-export function tellSessionsNote(
-  pr: PullRequestView,
-  base: string,
-  bases: Record<string, string> = {},
-): string {
-  const caution = otherBaseCaution(bases, base);
-  const message =
-    `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` +
-    `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` +
-    `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` +
-    `${caution === null ? "" : `${caution} `}No reply needed.`;
-  return [
-    `That merged #${pr.number} into ${base}.`,
-    "Tell the person's other sessions in this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
-    `"${message}"`,
-    "Merged several pull requests this turn? Send each session one message, naming every merged number.",
   ].join("\n");
 }
 
@@ -1615,8 +1572,8 @@ function viewPullRequest(
   }
 }
 
-/** The file that records one announced pull request of one repo. */
-function announcedFile(repo: string, number: number, env: Env): string {
+/** The file that records one handled pull request of one repo. */
+function seenFile(repo: string, number: number, env: Env): string {
   const key = createHash("sha256").update(repo).digest("hex").slice(0, 16);
   return join(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
@@ -1663,29 +1620,24 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
   const originLeft = timeFor(GUARD_GIT_TIMEOUT_MS);
   if (originLeft <= 0) return SILENT;
   const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
-  const record = pr === null ? null : announcedFile(repo, pr.number, env);
+  const record = pr === null ? null : seenFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
+    seen: record !== null && existsSync(record),
     target,
     worktree,
   });
-  const notes: string[] = [];
-  if (outcome.clear !== null) {
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
-  }
-  if (outcome.announce !== null && record !== null) {
-    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
-    // Each pull request is announced once: the marker says this one was.
+  if (outcome.intoBase !== null && record !== null) {
+    // Each pull request is handled once: the marker says this one was. Then finished worktrees
+    // clean themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
+    startAutoClean(context, repo, "merge");
   }
-  // A merge into the base (announced once per pull request): finished worktrees clean
-  // themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).
-  if (outcome.announce !== null) startAutoClean(context, repo, "merge");
-  return notes.length === 0 ? SILENT : addContext(event, notes.join("\n\n"));
+  if (outcome.clear === null) return SILENT;
+  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
 }
