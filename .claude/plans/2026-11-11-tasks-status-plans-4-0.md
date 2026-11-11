@@ -255,21 +255,23 @@ F1 builder, `sonnet`, `high` (it writes a user settings file); F2 `rules-maintai
 
 ### G. Fable 5.2 (code + docs)
 Builder, `sonnet`, `high`. A router change goes in the same release as A, so routers restart once.
-- **Goal: a new Claude model needs no kit change.** The router already routes by family and
-  passes `/v1/models` to Anthropic untouched (`router.ts:3218`).
-  - **Prove first,** live: `/model` shows Fable 5.1 with the gateway on (`ANTHROPIC_BASE_URL`), and
-    5.2 with it off.
-  - **The fix:** `gateway on` also writes `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, and
-    `gateway off` removes it. This is an owned key in the user settings `env`, written through
-    `applyManagedJson`. Claude Code then lists Anthropic's own live models, Fable 5.2 included,
-    from the router.
-  - **Check:** prove the picker then shows 5.2. Prove the router answers discovery within its
-    3-second timeout, with no redirect.
-  - **Limits:** the kit never pins a model, and no `ANTHROPIC_DEFAULT_*_MODEL` is written.
-  - **Docs:** a contract row for gateway model discovery; `.claude/rules/gateway.md` § Settings
-    names the new owned key.
-  - **If discovery does not change the alias:** `doctor` gives a `·` line with
-    `/model claude-fable-5-2`, and nothing is written.
+- **Changed during the build (owner, 2026-11-11), after two live proofs:**
+  - Claude Code skips gateway model discovery for a subscription login. The debug log says
+    `[gatewayDiscovery] skipped: no credential`.
+  - Claude Code 2.1.322's own model table maps the `fable` alias per provider:
+    `gateway: "claude-fable-5"`. So `/model` shows an older Fable behind `ANTHROPIC_BASE_URL`;
+    the owner saw Fable 5.1. Opus, Sonnet and Haiku are not affected.
+  - So discovery is dropped.
+- **The fix:** while the gateway is on, the kit pins `ANTHROPIC_DEFAULT_FABLE_MODEL` as an owned
+  key in the user settings `env`, through `applyManagedJson`.
+  - `gateway on` writes it, `gateway off` removes it while it is still ours, and a `setup` step
+    adds or refreshes it on a machine whose gateway is already on.
+  - A person's own value always wins.
+  - The id has one home (`GATEWAY_FABLE_MODEL`). A test ties it to the newest Fable row in
+    `CLAUDE_PRICES`, so a newer Fable cannot ship without moving the pin.
+  - `doctor` names the pin.
+- This is the one named exception to `.claude/rules/gateway.md`'s "no model id as a default",
+  written there with the owner's date. A contract row records Claude Code's per-provider map.
 - `CLAUDE_PRICES` gets the Fable 5.2 row, from Anthropic's pricing page on the day, cited.
   `CLAUDE_TARGET_RULES` gets a row only if Fable 5.2's migration guide names a refused field,
   with a test.
