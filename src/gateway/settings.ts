@@ -426,7 +426,7 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
  * of the person's own that already holds Anthropic's address sends every session exactly where
  * `off` would: it routes nothing, and "the gateway is not all off" would be untrue
  * (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
- * `ENABLE_TOOL_SEARCH` routes nothing either, and many people set it themselves. One home:
+ * `ENABLE_TOOL_SEARCH` and the Fable model pin route nothing either. One home:
  * `gateway off` and the setup step that turns the gateway off both ask it.
  */
 export function foreignRouting(
@@ -440,7 +440,10 @@ export function foreignRouting(
     ownAddressRoutes = true;
   }
   const routing = foreign.filter(
-    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+    (key) =>
+      key !== "ENABLE_TOOL_SEARCH" &&
+      key !== GATEWAY_FABLE_ENV &&
+      !(key === BASE_URL_KEY && !ownAddressRoutes),
   );
   return { routing, ownAddressRoutes };
 }

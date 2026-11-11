@@ -16,7 +16,12 @@ import { BASE_URL_PATH, normalizedBaseUrl, routerBaseUrl } from "./settings";
 /** No new routing choice: only refresh Fable pin while our own active address still matches. */
 export function applyFableModelStep(paths: CliPaths, dryRun: boolean): string[] {
   if (!existsSync(paths.gatewayConfigFile)) return [];
-  const settings = readJsonObject(paths.settingsFile).data;
+  let settings: ReturnType<typeof readJsonObject>["data"];
+  try {
+    settings = readJsonObject(paths.settingsFile).data;
+  } catch (error) {
+    return [`! gateway Fable pin was not refreshed: ${messageOf(error)}`];
+  }
   const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
   const address = getKey(settings, BASE_URL_PATH);
   if (!address.found || ownership(records, BASE_URL_PATH, address) !== "ours") return [];

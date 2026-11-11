@@ -430,3 +430,16 @@ describe("D66: setup is the only caller", () => {
     }
   });
 });
+
+test("D66 keeps a personal Fable pin without a routing warning", async () => {
+  const { w } = oldMachine();
+  const value = readJson(w.paths.settingsFile);
+  value.env.ANTHROPIC_DEFAULT_FABLE_MODEL = "claude-fable-5-1";
+  writeFileSync(w.paths.settingsFile, JSON.stringify(value));
+  expect(await w.setup()).toBe(0);
+  expect(baseUrl(w)).toBe(ANTHROPIC);
+  expect(readJson(w.paths.settingsFile).env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-1");
+  expect(printed.join("\n")).not.toContain(
+    "env.ANTHROPIC_DEFAULT_FABLE_MODEL stays: cc-smart-dev-kit did not set it. Remove it by hand to turn the gateway off",
+  );
+});

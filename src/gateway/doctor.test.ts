@@ -13,6 +13,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { checkLine } from "../cli/doctor";
 import { cliPaths } from "../cli/paths";
+import { applyManagedJson } from "../setup/managed-json";
 import { git, tempDir } from "../testing/temp";
 import { claudeDefaultsMarkerFile } from "./claude-defaults";
 import { DEFAULT_ANTHROPIC_BASE_URL, saveConfig } from "./config";
@@ -103,20 +104,50 @@ async function linesFor(
 }
 
 describe("doctor: a project on a profile, and the router that runs", () => {
-  test("names a personal Fable pin without a warning", async () => {
-    const m = machine();
-    writeFileSync(
-      m.paths.settingsFile,
-      JSON.stringify({ env: { ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" } }),
-    );
-    const lines = await linesFor(m, [], "current");
-    expect(lines).toContain("· Gateway Fable: claude-fable-5-1 (settings value)");
-  });
-
-  test("names the gateway Fable pin", async () => {
-    const lines = await linesFor(machine(), [], "current");
-    expect(lines).toContain("· Gateway Fable: claude-fable-5-2 (kit pin while on)");
-  });
+  for (const kind of ["kit pin", "your value", "missing", "off", "broken"] as const) {
+    test(`Fable doctor: ${kind}`, async () => {
+      const m = machine();
+      if (kind === "broken") writeFileSync(m.paths.settingsFile, "{ broken");
+      else {
+        writeFileSync(
+          m.paths.settingsFile,
+          JSON.stringify({
+            env: {
+              ANTHROPIC_BASE_URL:
+                kind === "off" ? "https://api.anthropic.com" : `http://127.0.0.1:${PORT}`,
+            },
+          }),
+        );
+        if (kind === "kit pin")
+          applyManagedJson({
+            file: m.paths.settingsFile,
+            stateDir: m.paths.stateDir,
+            set: [[["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"], "claude-fable-5-2"]],
+          });
+        if (kind === "your value")
+          writeFileSync(
+            m.paths.settingsFile,
+            JSON.stringify({
+              env: {
+                ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}`,
+                ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1",
+              },
+            }),
+          );
+      }
+      const lines = await linesFor(m, [], "current");
+      if (kind === "off")
+        expect(lines.filter((line) => line.includes("Gateway Fable:"))).toEqual([]);
+      else if (kind === "broken")
+        expect(lines.some((line) => line.startsWith("!") && line.includes("Fable"))).toBe(true);
+      else
+        expect(lines).toContain(
+          kind === "missing"
+            ? "· Gateway Fable: missing: run setup"
+            : `· Gateway Fable: ${kind === "kit pin" ? "claude-fable-5-2" : "claude-fable-5-1"} (${kind})`,
+        );
+    });
+  }
 
   test("✗ an older router: the project's profile address fails every request", async () => {
     const m = machine();

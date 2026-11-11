@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
+import { applyFableModelStep } from "../gateway/fable-model-step";
 import { applyManagedJson, ownedRecords } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
@@ -95,4 +96,20 @@ describe("setup upgrades model Fable pin without switching the gateway", () => {
     expect(await w.setup()).toBe(0);
     expect(settings(w).env[KEY]).toBe("claude-fable-5-2");
   });
+});
+
+test("the standalone refresh reports broken settings without throwing", () => {
+  const w = machine();
+  writeFileSync(w.paths.settingsFile, "{ broken");
+  expect(applyFableModelStep(w.paths, false)[0]).toContain("! gateway Fable pin was not refreshed");
+});
+
+test("an unfinished defaults step skips the pin refresh in preview and real setup", async () => {
+  const w = machine();
+  rmSync(claudeDefaultsMarkerFile(w.paths.stateDir));
+  writeFileSync(w.paths.gatewayConfigFile, "{ broken");
+  expect(await w.setup({ dryRun: true })).toBe(0);
+  expect(printed.join("\n")).not.toContain("gateway Fable pin was not refreshed");
+  expect(await w.setup()).toBe(0);
+  expect(printed.join("\n")).not.toContain("gateway Fable pin was not refreshed");
 });

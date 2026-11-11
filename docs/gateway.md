@@ -1985,7 +1985,10 @@ Normal `setup` refreshes this pin only while user settings hold our still-owned 
 this router. It adds an absent pin or refreshes one still ours; a foreign pin stays with an
 information line. An off gateway stays off. The separate step uses `applyManagedJson` under
 setup's lock, with the same preview in `--dry-run`. `doctor` names the kit's Fable pin or the
-settings value. A project's own model key still follows Claude Code's settings precedence.
+settings value. The pin lives in the user file only. A project that turns the gateway on
+for itself (`gateway project on`, including `/p/<profile>`) while the machine is off gets
+no pin, so its `fable` alias can still select the older gateway model. This is the design:
+a project's own model key follows Claude Code's settings precedence.
 
 **No other model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
 router takes it to its family's slot. Up to 0.4.3, `on` also wrote

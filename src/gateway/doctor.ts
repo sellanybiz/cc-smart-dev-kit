@@ -7,6 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
+import { getKey, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
+import { realTarget } from "../setup/write";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
@@ -30,7 +32,7 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
-import { GATEWAY_FABLE_ENV, GATEWAY_FABLE_MODEL } from "./fable-model";
+import { GATEWAY_FABLE_ENV } from "./fable-model";
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
@@ -50,7 +52,7 @@ import {
   SOCKET_NAME,
 } from "./service";
 import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
-import { readGatewaySettings, shownValue } from "./settings";
+import { baseUrlPointsAtGateway, shownValue } from "./settings";
 import {
   FAMILY_SLOTS,
   isModelSlot,
@@ -166,17 +168,30 @@ export async function gatewayChecks(options: {
     return checks;
   }
 
-  const fable = readGatewaySettings(paths.settingsFile).modelKeys.find(
-    (fact) => fact.key === `env.${GATEWAY_FABLE_ENV}`,
-  );
-  checks.push({
-    ok: true,
-    info: true,
-    text:
-      fable === undefined
-        ? `Gateway Fable: ${GATEWAY_FABLE_MODEL} (kit pin while on)`
-        : `Gateway Fable: ${shownValue(fable.value)} (settings value)`,
-  });
+  try {
+    const settings = readJsonObject(paths.settingsFile).data;
+    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
+      const path = ["env", GATEWAY_FABLE_ENV];
+      const pin = getKey(settings, path);
+      const ours =
+        ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) ===
+        "ours";
+      checks.push({
+        ok: true,
+        info: true,
+        text: pin.found
+          ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})`
+          : "Gateway Fable: missing: run setup",
+      });
+    }
+  } catch (error) {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`,
+    });
+  }
 
   if (options.service === "none") {
     checks.push({

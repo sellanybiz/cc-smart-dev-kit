@@ -7668,7 +7668,7 @@ describe("profiles: the /p/<profile> path (D29)", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("discovery reaches Anthropic directly with query and both credentials under every prefix", async () => {
+  it("/v1/models passes through to Anthropic with query and both credentials under every prefix", async () => {
     for (const prefix of ["", "/p/proj", "/p/typo"]) {
       const bytes = '{"data":[{"id":"claude-fable-5-2","display_name":"Fable 5.2"}]}';
       const { calls, handle } = router([() => new Response(bytes)], { config: profiled() });
