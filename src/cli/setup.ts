@@ -71,6 +71,7 @@ import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
   createdObjects,
+  ForeignKeyError,
   formatKeyPath,
   getKey,
   isObject,
@@ -422,6 +423,28 @@ function applySetup(
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
   });
+  // This default has its own write: a personal plan folder must not stop the other settings.
+  try {
+    const plans = applyManagedJson({
+      file: paths.settingsFile,
+      stateDir: paths.stateDir,
+      set: [[["plansDirectory"], ".claude/plans"]],
+      dryRun,
+    });
+    for (const skip of plans.skipped) {
+      add("settings", "info", `${short(plans.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+    }
+    for (const change of plans.changes) {
+      add(
+        "settings",
+        "changed",
+        `${short(plans.file)}: ${formatKeyPath(change.path)}: ${shownValue(change.path, change.before)} -> ${shownValue(change.path, change.after)}`,
+      );
+    }
+  } catch (error) {
+    if (!(error instanceof ForeignKeyError)) throw error;
+    add("settings", "info", error.message.replace(paths.settingsFile, short(paths.settingsFile)));
+  }
   // The Tavily key is its MCP server's: its line goes with the servers.
   const keySection = (path: KeyPath): SetupSection =>
     formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH) ? "mcp" : "settings";

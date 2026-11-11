@@ -359,6 +359,14 @@ entry out. It adds managed deny entries for `TaskCreate`, `TaskUpdate`, `TaskLis
 opt-in and turns off claude-mem work state; a `"true"` you set after that stays. Restore undoes
 these managed changes. [Setup design](docs/design/setup.md).
 
+Setup also sets `plansDirectory: ".claude/plans"` in `~/.claude/settings.json`, so plan
+mode uses the project's plan folder. It owns only that key, not the plan files; commit plans
+with the project. A value you set or changed stays yours: setup prints a note and continues
+its other changes. `setup --dry-run` shows the planned write; restore removes the key only
+while it still holds setup's value. Doctor names the user-level folder and notes that project
+settings may override it. The exact root used in a worktree session is still
+[to prove live](docs/claude-code-contract.md#relied-on-not-proved-yet).
+
 #### Subagent concurrency
 
 Setup writes `env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` as the managed string `"10"` in
