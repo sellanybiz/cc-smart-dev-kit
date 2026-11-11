@@ -11657,6 +11657,36 @@ var init_fallback_answer = __esm(() => {
   TOOL_USE_ID = /^[a-zA-Z0-9_-]+$/;
 });
 
+// src/gateway/limit-end.ts
+function recordsEndedBy(answerModel, headers, limits) {
+  const hasRoom = (window) => {
+    const value = headers.get(`anthropic-ratelimit-unified-${window}-utilization`);
+    if (value === null || value.trim() === "")
+      return false;
+    const utilization = Number(value);
+    return Number.isFinite(utilization) && utilization >= 0 && utilization < 1;
+  };
+  return Object.entries(limits).filter(([model, record]) => {
+    if (model === answerModel || record.claim === null)
+      return true;
+    switch (record.claim) {
+      case "five_hour":
+        return hasRoom("5h");
+      case "seven_day":
+        return hasRoom("7d");
+      case "seven_day_opus":
+        return claudeFamily(answerModel) === "opus";
+      case "seven_day_sonnet":
+        return claudeFamily(answerModel) === "sonnet";
+      default:
+        return false;
+    }
+  }).map(([model]) => model);
+}
+var init_limit_end = __esm(() => {
+  init_targets();
+});
+
 // src/gateway/listen.ts
 import { mkdtempSync as mkdtempSync2, rmSync as rmSync3 } from "fs";
 import net from "net";
@@ -12612,16 +12642,19 @@ function createRouter(deps) {
       }
       return limit;
     }
-    if (response.status >= 400 || !Object.hasOwn(limitState.limits, id))
+    if (response.status >= 400)
       return null;
-    delete limitState.limits[id];
+    const ended = recordsEndedBy(id, response.headers, limitState.limits);
+    for (const model of ended)
+      delete limitState.limits[model];
     for (const [key, record] of Object.entries(limitState.fallbacks)) {
-      if (record.model !== id)
+      if (!ended.includes(record.model))
         continue;
       delete limitState.fallbacks[key];
-      deps.log(`${key}: ${id} answers again; its fallback is over`);
+      deps.log(`${key}: ${record.model} answers again; its fallback is over`);
     }
-    persist();
+    if (ended.length > 0)
+      persist();
     return null;
   }
   function knownLimit(target, nowMs) {
@@ -14111,6 +14144,7 @@ var init_router = __esm(() => {
   init_config();
   init_fallback_answer();
   init_history();
+  init_limit_end();
   init_limit_state();
   init_listen();
   init_plain_text();
@@ -52140,14 +52174,22 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
   const aboutThisSession = (key) => session === null || session.gatewayOn && scopeOfStateKey(key).profile === session.profile;
   const covered = new Set;
   if (state !== null) {
+    const hidden = new Set(Object.entries(state.limits).filter(([, record]) => {
+      if (record.claim !== "five_hour" && record.claim !== "seven_day")
+        return false;
+      const window = windowOf(data, record.claim);
+      return window !== null && window.resetsAt !== null && record.resetsAt !== null && window.resetsAt !== record.resetsAt;
+    }).map(([model]) => model));
     for (const [key, record] of currentFallbacks(state, nowMs)) {
+      if (hidden.has(record.model))
+        continue;
       if (scopeOfStateKey(key).slot === JUDGE_SLOT || !aboutThisSession(key))
         continue;
       covered.add(record.model);
       parts.push(`\u26A0 ${record.model} at its limit \u2192 ${record.target}${until(record.resetsAt)}`);
     }
     for (const [limited, record] of currentLimits(state, nowMs)) {
-      if (!covered.has(limited))
+      if (!hidden.has(limited) && !covered.has(limited))
         parts.push(`\u26D4 ${limited} at its plan limit${until(record.resetsAt)}`);
     }
     for (const [key, record] of currentBreakers(state, nowMs)) {
