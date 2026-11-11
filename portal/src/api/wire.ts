@@ -646,6 +646,12 @@ export interface WorkTaskSteps {
   total: number;
 }
 
+/** A plan's or a phase's tasks closed of all, from the project's whole list (old ones too). */
+export interface WorkTaskProgress {
+  closed: number;
+  total: number;
+}
+
 /** One work task in the Tasks tab's tree. */
 export interface WorkTaskNode {
   session: null | string;
@@ -670,6 +676,8 @@ export interface WorkTaskNode {
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
+  /** A plan's or a phase's tasks closed of all; null for a task. */
+  progress: null | WorkTaskProgress;
   /** `#12`. */
   ref: string;
   status: WorkTaskStatus;
@@ -699,9 +707,23 @@ export interface ProjectTaskRow {
   when: "any" | "next-release" | "now" | null;
 }
 
+/** A session the Tasks tab names: in the tree, or running in the project now. */
+export interface TaskSession {
+  id: string;
+  name: null | string;
+  live: boolean;
+}
+
 /** The kit's work store for one project. */
 export type ProjectWorkTasks =
-  | { more: number; recentDays: number; state: "ready"; tasks: WorkTaskNode[] }
+  | {
+      more: number;
+      recentDays: number;
+      sessions: TaskSession[];
+      sessionsWhy: null | string;
+      state: "ready";
+      tasks: WorkTaskNode[];
+    }
   | { state: "none" }
   | { state: "unreadable"; why: string };
 
@@ -1189,8 +1211,11 @@ interface WorkNote {
   at: number;
 }
 
+/** One history entry, and what it changed in words: the server's `historyChanges`. */
+export type TaskDetailEvent = WorkEvent & { lines: string[] };
+
 export interface TaskDetailAnswer {
   task: WorkTask;
   notes: WorkNote[];
-  events: WorkEvent[];
+  events: TaskDetailEvent[];
 }

@@ -3,9 +3,12 @@ import { FULL, PHASE, task } from "@/components/tasks-fixtures";
 import {
   countTasks,
   DEFAULT_FILTER,
+  DEFAULT_VIEW,
+  filesMatching,
   filterTasks,
   ledgerOf,
   matchCount,
+  narrowWords,
   queryOfView,
   type ShownTask,
   tasksHref,
@@ -21,22 +24,43 @@ const tree = FULL.work.state === "ready" ? FULL.work.tasks : [];
 
 describe("the Tasks tab's address", () => {
   test("the defaults are an empty address, and every word reads back as written", () => {
-    expect(taskViewOf(new URLSearchParams())).toEqual({ ...DEFAULT_FILTER, project: null });
-    const view = { show: "recent", blocked: true, nonBlocking: true, project: "a1b2c3" } as const;
+    expect(taskViewOf(new URLSearchParams())).toEqual(DEFAULT_VIEW);
+    const view = {
+      status: "blocked",
+      nonBlocking: true,
+      q: "the store",
+      session: "s-1",
+      plan: "web-cleanup",
+      live: true,
+      project: "a1b2c3",
+      tab: "work",
+      task: "wabcdefghij",
+    } as const;
     const query = queryOfView(view, new URLSearchParams("mock=normal"));
     expect(query.toString()).toBe(
-      "mock=normal&project=a1b2c3&show=recent&blocked=1&type=non-blocking",
+      "mock=normal&project=a1b2c3&status=blocked&type=non-blocking&session=s-1&plan=web-cleanup&live=1&q=the+store&task=wabcdefghij",
     );
     expect(taskViewOf(query)).toEqual(view);
     // Back to the defaults: the words go, the address's other words stay.
-    expect(queryOfView({ ...DEFAULT_FILTER, project: null }, query).toString()).toBe("mock=normal");
+    expect(queryOfView(DEFAULT_VIEW, query).toString()).toBe("mock=normal");
+    expect(queryOfView({ ...DEFAULT_VIEW, tab: "files" }, query).toString()).toBe(
+      "mock=normal&tab=files",
+    );
+  });
+
+  test("an address from before 4.0 opens what it showed then, and its old words go on a change", () => {
+    expect(taskViewOf(new URLSearchParams("show=recent")).status).toBe("all");
+    expect(taskViewOf(new URLSearchParams("show=recent&blocked=1")).status).toBe("blocked");
+    const old = new URLSearchParams("show=recent&blocked=1&project=p1");
+    expect(queryOfView(taskViewOf(old), old).toString()).toBe("project=p1&status=blocked");
   });
 
   test("a word the page does not know reads as the default, and the project link is one id", () => {
-    expect(taskViewOf(new URLSearchParams("show=all&blocked=yes&type=x&project=%20"))).toEqual({
-      ...DEFAULT_FILTER,
-      project: null,
-    });
+    expect(
+      taskViewOf(
+        new URLSearchParams("status=late&show=all&blocked=yes&type=x&project=%20&tab=x&live=yes"),
+      ),
+    ).toEqual(DEFAULT_VIEW);
     expect(tasksHref("a b/c")).toBe("/tasks?project=a%20b%2Fc");
   });
 });
@@ -54,19 +78,56 @@ describe("what a filter shows", () => {
     ]);
   });
 
-  test("blocked only and non-blocking only keep the tasks above as places", () => {
-    const blocked = filterTasks(tree, { ...DEFAULT_FILTER, blocked: true });
+  test("each status: in progress, blocked, closed and all, the tasks above kept as places", () => {
+    expect(refs(filterTasks(tree, { ...DEFAULT_FILTER, status: "in_progress" }))).toEqual([
+      "#1",
+      "#2",
+      "#5",
+    ]);
+    const blocked = filterTasks(tree, { ...DEFAULT_FILTER, status: "blocked" });
     expect(refs(blocked)).toEqual(["~#1", "~#2", "#6"]);
     expect(matchCount(blocked)).toBe(1);
+    expect(refs(filterTasks(tree, { ...DEFAULT_FILTER, status: "closed" }))).toEqual([
+      "~#1",
+      "~#2",
+      "#3",
+      "#4",
+      "#8",
+    ]);
+    expect(matchCount(filterTasks(tree, { ...DEFAULT_FILTER, status: "all" }))).toBe(9);
+  });
+
+  test("non-blocking only keeps the tasks above as places; a closed one shows with All", () => {
     const noted = filterTasks(tree, { ...DEFAULT_FILTER, nonBlocking: true });
     expect(refs(noted)).toEqual(["~#1", "~#2", "~#5", "#7", "~#8", "#9"]);
     expect(matchCount(noted)).toBe(2);
-    // Recent and non-blocking: a closed non-blocking task shows too.
     const closed = task(1, "Noted and done", "done", [], { type: "non-blocking" });
     expect(refs(filterTasks([closed], { ...DEFAULT_FILTER, nonBlocking: true }))).toEqual([]);
     expect(
-      refs(filterTasks([closed], { ...DEFAULT_FILTER, nonBlocking: true, show: "recent" })),
+      refs(filterTasks([closed], { ...DEFAULT_FILTER, nonBlocking: true, status: "all" })),
     ).toEqual(["#1"]);
+  });
+
+  test("the search finds words in a subject, any case, or a task's number with or without #", () => {
+    expect(refs(filterTasks(tree, { ...DEFAULT_FILTER, q: "  TIME the " }))).toEqual([
+      "~#1",
+      "~#2",
+      "~#5",
+      "#7",
+    ]);
+    expect(refs(filterTasks(tree, { ...DEFAULT_FILTER, q: "#6" }))).toEqual(["~#1", "~#2", "#6"]);
+    expect(refs(filterTasks(tree, { ...DEFAULT_FILTER, q: "6" }))).toEqual(["~#1", "~#2", "#6"]);
+    // A number is matched whole: "1" is not #12.
+    expect(
+      refs(filterTasks([task(12, "Other", "pending")], { ...DEFAULT_FILTER, q: "1" })),
+    ).toEqual([]);
+  });
+
+  test("the filter in words", () => {
+    expect(narrowWords({ ...DEFAULT_FILTER, status: "blocked", nonBlocking: true, q: " x " })).toBe(
+      "blocked, non-blocking, matching “x”",
+    );
+    expect(narrowWords({ ...DEFAULT_FILTER, status: "all", live: true })).toBe("running-session");
   });
 
   test("the counts take every layer, and only open tasks", () => {
@@ -77,6 +138,18 @@ describe("what a filter shows", () => {
       blocked: 0,
       nonBlocking: 0,
     });
+  });
+});
+
+describe("the files", () => {
+  test("the files' search takes a title or an id, any case", () => {
+    const files = [
+      { id: "T-aaaaaa", title: "Set the live key" },
+      { id: "T-bbbbbb", title: "Drop the old table" },
+    ];
+    expect(filesMatching(files, "LIVE").map((one) => one.id)).toEqual(["T-aaaaaa"]);
+    expect(filesMatching(files, "t-bbb").map((one) => one.id)).toEqual(["T-bbbbbb"]);
+    expect(filesMatching(files, " ")).toHaveLength(2);
   });
 });
 

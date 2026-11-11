@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
+import { historyChanges } from "./history";
 import { claimLive } from "./identity";
 import {
   allTasks,
@@ -10,6 +11,7 @@ import {
   holdingUnder,
   isBlocked,
   isOpen,
+  layerProgress,
   notesOf,
 } from "./queries";
 import type { Who } from "./types";
@@ -130,12 +132,15 @@ export function planProgress(paths: Paths, project: string, who: Who) {
       task.plan === null
         ? null
         : (all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null);
-    const tasks =
-      task.plan === null ? [] : all.filter((t) => t.kind === "task" && t.plan === task.plan);
-    return { task, plan, closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+    // By plan membership: the plan task itself need not exist for its tasks to count.
+    const progress = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
+    return { task, plan, ...progress };
   });
 }
-/** Task detail from the same read-only store as the tree. Ids are unique across projects. */
+/**
+ * Task detail from the same read-only store as the tree. Ids are unique across projects. Each
+ * history entry carries its changes in words (`historyChanges`), the ones `task_get` prints.
+ */
 export function taskDetail(paths: Paths, id: string) {
   return readWorkStore(paths, (db) => {
     const row = db.sqlite
@@ -143,6 +148,8 @@ export function taskDetail(paths: Paths, id: string) {
       .get(id);
     if (!row) return null;
     const task = getTask(db, row.project, id);
-    return task === null ? null : { task, notes: notesOf(db, task), events: eventsOf(db, task) };
+    if (task === null) return null;
+    const events = eventsOf(db, task).map((event) => ({ ...event, lines: historyChanges(event) }));
+    return { task, notes: notesOf(db, task), events };
   });
 }

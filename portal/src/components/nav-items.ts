@@ -52,7 +52,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
         title: "Tasks",
         href: "/tasks",
         icon: ListChecksIcon,
-        about: "Each project's plans, phases, tasks and subtasks, and what it still owes",
+        about: "Each project's sessions, plans, phases and tasks, and what it still owes",
       },
       {
         title: "Flow",

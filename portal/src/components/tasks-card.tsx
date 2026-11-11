@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  ArrowRightIcon,
-  FilterXIcon,
-  InfoIcon,
-  ListChecksIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
+import { ArrowRightIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import { useId } from "react";
 import { useResource } from "@/api/hooks";
 import { TASKS_REFRESH } from "@/api/refresh";
@@ -15,151 +9,18 @@ import type {
   ProjectTaskFiles,
   ProjectTaskRow,
   ProjectTasksData,
-  ProjectWorkTasks,
 } from "@/api/types";
 import { AppLink } from "@/components/router";
 import { EmptyState } from "@/components/states";
 import { TonePill } from "@/components/status";
-import { TaskList } from "@/components/task-tree";
+import { CannotRead } from "@/components/task-work";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KIT_NAME } from "@/lib/format";
-import {
-  DEFAULT_FILTER,
-  fileCountsOf,
-  filterTasks,
-  narrowsWork,
-  narrowWords,
-  type TaskFilter,
-  tasksHref,
-  workCountsOf,
-} from "@/lib/tasks";
-
-// ── Work tasks ─────────────────────────────────────────────────────────────────────────
-
-function CannotRead({ title, why }: { title: string; why: string }) {
-  return (
-    <Alert className="border-bad/40">
-      <TriangleAlertIcon className="text-bad" aria-hidden="true" />
-      <AlertTitle>{title}</AlertTitle>
-      <AlertDescription className="wrap-any">{why}</AlertDescription>
-    </Alert>
-  );
-}
-
-/** Where a task comes from: the words every empty state ends with. */
-function WhereTasksComeFrom() {
-  return (
-    <>
-      A session makes one with its task tools (<code className="font-mono">task_create</code>), you
-      with <code className="font-mono">{KIT_NAME} task add</code>. Every worktree of the project
-      shares the list.
-    </>
-  );
-}
-
-function WorkSection({
-  work,
-  filter,
-  onFilter,
-}: {
-  work: ProjectWorkTasks;
-  filter: TaskFilter;
-  onFilter?: (filter: TaskFilter) => void;
-}) {
-  const titleId = useId();
-  const shown = work.state === "ready" ? filterTasks(work.tasks, filter) : [];
-  const counts = workCountsOf(work);
-  return (
-    <section aria-labelledby={titleId} className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <h3 id={titleId} className="font-semibold">
-          Work on this machine
-        </h3>
-        {work.state === "ready" && work.tasks.length > 0 && (
-          <span className="text-xs text-muted-foreground">
-            {[
-              `${counts.open} open`,
-              counts.blocked > 0 && `${counts.blocked} blocked`,
-              counts.nonBlocking > 0 && `${counts.nonBlocking} non-blocking`,
-              filter.show === "open"
-                ? "closed ones hidden"
-                : `closed ones stay ${work.recentDays} days`,
-            ]
-              .filter((part) => part !== false)
-              .join(" · ")}
-          </span>
-        )}
-      </div>
-      {work.state === "unreadable" ? (
-        <CannotRead
-          title="The task list cannot be read"
-          why={`${work.why}. ${KIT_NAME} doctor checks the store.`}
-        />
-      ) : work.state === "none" ? (
-        <EmptyState
-          title="No work tasks here yet"
-          icon={<ListChecksIcon className="size-6 text-muted-foreground" aria-hidden="true" />}
-        >
-          The kit's task list has nothing for this project on this machine. <WhereTasksComeFrom />
-        </EmptyState>
-      ) : work.tasks.length === 0 ? (
-        <EmptyState title="Nothing open">
-          No work task is open, and none closed in the last {work.recentDays} days.{" "}
-          <WhereTasksComeFrom />
-        </EmptyState>
-      ) : shown.length === 0 ? (
-        narrowsWork(filter) ? (
-          <EmptyState title="Nothing matches the filters">
-            <p>No {narrowWords(filter)} task here.</p>
-            {onFilter !== undefined && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3"
-                onClick={() => onFilter({ ...filter, blocked: false, nonBlocking: false })}
-              >
-                <FilterXIcon data-icon="inline-start" aria-hidden="true" />
-                Clear the filters
-              </Button>
-            )}
-          </EmptyState>
-        ) : (
-          <EmptyState title="Nothing open">
-            <p>
-              Every task here is closed: recent shows those closed in the last {work.recentDays}{" "}
-              days.
-            </p>
-            {onFilter !== undefined && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3"
-                onClick={() => onFilter({ ...filter, show: "recent" })}
-              >
-                Show recent
-              </Button>
-            )}
-          </EmptyState>
-        )
-      ) : (
-        <>
-          <TaskList tasks={shown} label="Work tasks" />
-          {work.more > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {work.more} more not shown:{" "}
-              <code className="font-mono">{KIT_NAME} task list --scope all</code> lists every one.
-            </p>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
+import { fileCountsOf, filesMatching, tasksHref, workCountsOf } from "@/lib/tasks";
 
 // ── Project task files ─────────────────────────────────────────────────────────────────
 
@@ -228,8 +89,13 @@ function FileRow({ task, staleDays }: { task: ProjectTaskRow; staleDays: number 
   );
 }
 
-function FilesSection({ files }: { files: ProjectTaskFiles }) {
+/**
+ * The project's task files on the Tasks tab's Files tab: the open ones by kind, what blocks a
+ * release first. `q` keeps the files whose title or id holds the words.
+ */
+export function FilesSection({ files, q = "" }: { files: ProjectTaskFiles; q?: string }) {
   const titleId = useId();
+  const matching = files.state === "ready" ? filesMatching(files.tasks, q) : [];
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-3">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
@@ -264,9 +130,13 @@ function FilesSection({ files }: { files: ProjectTaskFiles }) {
               No open task file in <code className="font-mono">{files.dir}</code>: nothing waits for
               production, the database or a teammate.
             </EmptyState>
+          ) : matching.length === 0 ? (
+            <EmptyState title="Nothing matches the search">
+              No open task file here holds “{q.trim()}” in its title or id.
+            </EmptyState>
           ) : (
             KINDS.map(({ kind, title }) => {
-              const group = files.tasks.filter((task) => task.kind === kind);
+              const group = matching.filter((task) => task.kind === kind);
               if (group.length === 0) return null;
               return (
                 <div key={kind} className="flex flex-col gap-2">
@@ -296,30 +166,7 @@ function FilesSection({ files }: { files: ProjectTaskFiles }) {
   );
 }
 
-// ── The cards ──────────────────────────────────────────────────────────────────────────
-
-/** One project's tasks on the Tasks tab: the work tree as the filter shows it, then the files. */
-export function TasksBody({
-  data,
-  filter = DEFAULT_FILTER,
-  onFilter,
-}: {
-  data: ProjectTasksData;
-  filter?: TaskFilter;
-  onFilter?: (filter: TaskFilter) => void;
-}) {
-  return (
-    <>
-      <WorkSection
-        work={data.work}
-        filter={filter}
-        {...(onFilter === undefined ? {} : { onFilter })}
-      />
-      <Separator />
-      <FilesSection files={data.files} />
-    </>
-  );
-}
+// ── The project page's card ─────────────────────────────────────────────────────────
 
 /** The project page's line: what is open and owed, counted, and the way to the Tasks tab. */
 function TasksSummary({ data }: { data: ProjectTasksData }) {

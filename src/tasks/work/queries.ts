@@ -97,6 +97,24 @@ export function taskById(db: WorkDb, id: string): WorkTask {
 export function isOpen(task: WorkTask): boolean {
   return task.status === "pending" || task.status === "in_progress";
 }
+/**
+ * What a plan or a phase counts as its progress: its tasks (kind `task`, never a phase), a
+ * plan's by its plan column, a phase's by parent, from the whole list (closed long ago too).
+ * Closed is done or dropped. A task counts none. The statusline and the portal both count so.
+ */
+export function layerProgress(
+  all: readonly WorkTask[],
+  layer: Pick<WorkTask, "id" | "kind" | "plan">,
+): { closed: number; total: number } {
+  const tasks = all.filter(
+    (t) =>
+      t.kind === "task" &&
+      (layer.kind === "plan"
+        ? layer.plan !== null && t.plan === layer.plan
+        : layer.kind === "phase" && t.parentId === layer.id),
+  );
+  return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+}
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);
@@ -268,6 +286,20 @@ export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
       pid: row.pid,
       reason: row.reason,
     }));
+}
+/**
+ * The name each session last wrote into the project's history, by session id: what the portal
+ * calls a session that runs no more. A session that never gave a name is left out.
+ */
+export function sessionNames(db: WorkDb, project: string): Map<string, string> {
+  // One row per session, its newest named entry: SQLite gives the bare columns of the row that
+  // holds the MAX(id), so a later name (a rename) wins and nothing older is read back.
+  const rows = db.sqlite
+    .query<{ session_id: string; session_name: string }, [string]>(
+      "SELECT session_id, session_name, MAX(id) AS last FROM task_events WHERE project=? AND session_id IS NOT NULL AND session_name IS NOT NULL AND session_name <> '' GROUP BY session_id",
+    )
+    .all(project);
+  return new Map(rows.map((row) => [row.session_id, row.session_name]));
 }
 /**
  * The history of a task no longer in the store, by its `#n` or id: a deleted task keeps its
