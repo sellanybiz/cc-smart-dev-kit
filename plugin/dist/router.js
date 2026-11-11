@@ -6268,7 +6268,7 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
-var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
