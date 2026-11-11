@@ -328,7 +328,11 @@ async function applyProjectChange(
       const result =
         plan.value === null
           ? clearGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir })
-          : setGatewayBaseUrl({ file: plan.file, stateDir: paths.stateDir, value: plan.value });
+          : setGatewayBaseUrl({
+              file: plan.file,
+              stateDir: paths.stateDir,
+              value: plan.value,
+            });
       return { exclude, plan, result, saved: projectStateOf(ctx, folder) };
     },
     { waitMs: 10_000 },
@@ -621,6 +625,10 @@ export async function commandProject(
   // Every word below comes from the state that applies after the write: the file this command
   // wrote may not be the one that decides (P3: the personal file beats the team file).
   const { effective } = written.saved;
+  out.line(
+    "info",
+    `The model menu follows the machine slots; ${COMMAND} launch --profile <name> carries profile rows unless your user settings hold a menu of your own.`,
+  );
   for (const skipped of written.result.skipped) {
     if (
       skipped.path.length === 2 &&

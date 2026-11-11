@@ -12,7 +12,7 @@
  * port (never 20100).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
@@ -78,6 +78,7 @@ function machine(router: Router, options: { aliased?: boolean; workerIsClaude?: 
     error: (line) => errors.push(line),
   };
   return {
+    paths,
     asked,
     config: () => loadConfigFile(paths.gatewayConfigFile),
     file: () => readFileSync(paths.gatewayConfigFile, "utf8"),
@@ -138,4 +139,35 @@ describe("a slot change with no alias at a slot in Claude mode asks no router", 
     expect(m.asked).toEqual([]);
     expect(m.output()).not.toContain("does not answer");
   });
+});
+
+test("slot changes refresh the active owned menu", async () => {
+  const m = machine("current");
+  expect(await m.run(["on"])).toBe(0);
+  let settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  expect(settings.modelPicker.options[1]).toEqual({
+    model: "sonnet",
+    label: "Sonnet",
+    description: "answered by glm-5.3-flash (worker slot)",
+  });
+  expect(await m.run(["slot", "worker", "claude"])).toBe(0);
+  settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  expect(settings.modelPicker.options[1]).toEqual({
+    model: "sonnet",
+    label: "Sonnet",
+    description: "Claude's newest Sonnet",
+  });
+});
+
+test("slot refresh does not repeat a foreign pin diagnostic", async () => {
+  const m = machine("current");
+  await m.run(["on"]);
+  const settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL = "my-pin";
+  writeFileSync(m.paths.settingsFile, JSON.stringify(settings));
+  await m.run(["slot", "worker", "claude"]);
+  expect(m.output()).not.toContain("ANTHROPIC_DEFAULT_FABLE_MODEL");
+  expect(
+    JSON.parse(readFileSync(m.paths.settingsFile, "utf8")).env.ANTHROPIC_DEFAULT_FABLE_MODEL,
+  ).toBe("my-pin");
 });

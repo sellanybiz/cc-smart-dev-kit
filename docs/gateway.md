@@ -327,8 +327,11 @@ the command's.
 
 - **Why a settings file** (R6): a settings file's `env` beats a shell export (P4), and a
   `--settings` file beats the project's personal file, its team file, the user file and the
-  shell (P3). So the launch writes one small file holding only `env.ANTHROPIC_BASE_URL` and
-  passes it with `--settings`; every other setting stays the person's. An environment variable
+  shell (P3). The launch file holds `env.ANTHROPIC_BASE_URL` and, where the kit may put a
+  menu, the profile's or plain-Claude `modelPicker` rows, fixed at launch. It passes that
+  file with `--settings`; every other setting stays the person's. `--gateway` uses the
+  live user menu when one is ours, and carries machine rows only when no user menu or
+  ownership record exists. An environment variable
   would lose to any settings file. **That is also its limit**: Claude Code merges `env` one
   variable at a time, so a key the launch file does not name keeps the value a lower file gives
   it. `--no-gateway` is plain Claude at Anthropic's address, on the claude.ai login **unless** the
@@ -1983,28 +1986,34 @@ removed):
    tool definition on every turn (184K tokens of context on a first turn, against 70K). It
    stays: it is the one value that forces the deferred tools on every version.
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
-3. `ANTHROPIC_DEFAULT_FABLE_MODEL` = the kit's current Fable model (`GATEWAY_FABLE_MODEL`,
-   currently `claude-fable-5-2`). It is an owned key: `off` removes it only while it still
-   holds our value. A value you set or changed stays and gets an information line.
+Outside `env`, `modelPicker` is an owned key while the gateway is on. It replaces the
+built-in choices with one alias row per `CLAUDE_FAMILIES` family (in that list's order).
+Claude Code keeps its own Default row. Each row says "Claude's newest <Family>" for
+no chain. Any first target, including a pinned Claude id, gets
+"answered by <short model> (<slot> slot)".
+The menu choices are aliases, never model ids. A slot chain can pin a target; its description names that target.
+The description names the first target, not a promise that a fallback will never answer.
 
-**Why Fable is pinned (owner decision, 2026-11-11):** Claude Code 2.1.322's model table maps
-`fable` to `claude-fable-5` for the gateway provider, rather than the direct provider's
-`claude-fable-5-2`. Live, the gateway picker showed an older Fable. Model discovery does
-not fix a subscription login: a live debug log says `[gatewayDiscovery] skipped: no credential
-(ANTHROPIC_AUTH_TOKEN, apiKeyHelper, or API key)`. The kit writes no discovery or credential
-key. Opus, Sonnet and Haiku stay unpinned. A test ties the Fable pin to the newest Fable price
-row the kit knows, so a new Fable needs a kit release to move this pin.
+`gateway on`, a machine slot change and normal `setup` refresh the owned user menu.
+Setup refreshes only our still-owned active address for this router; it never turns an off
+gateway on. A menu you set, changed or removed stays yours, with an information line.
+`gateway off` and `restore` remove only the unchanged owned menu. A profile launch carries
+its profile's rows in `--settings` when the user menu is absent and never managed, or still ours;
+a plain-Claude launch carries plain-Claude rows under that same rule. A launch never replaces your
+own menu. Profile and plain-Claude rows are fixed at launch. `launch --gateway` uses the live user menu when ours, so slot changes remain visible.
+When no user menu or ownership record exists, it carries machine rows fixed at launch instead. An unknown profile view also falls back to plain-Claude rows. Project switches
+write no menu: Claude Code ignores `modelPicker` in project and local settings. The command
+explains that the menu follows the machine slots; `launch --profile <name>` carries profile rows. Setup previews the same step
+in `--dry-run`. Doctor lists the rows and explains when your default `model` is fixed to
+an id: `/model <alias>` follows the newest instead.
 
-Normal `setup` refreshes this pin only while user settings hold our still-owned address for
-this router. It adds an absent pin or refreshes one still ours; a foreign pin stays with an
-information line. An off gateway stays off. The separate step uses `applyManagedJson` under
-setup's lock, with the same preview in `--dry-run`. `doctor` names the kit's Fable pin or the
-settings value. The pin lives in the user file only. A project that turns the gateway on
-for itself (`gateway project on`, including `/p/<profile>`) while the machine is off gets
-no pin, so its `fable` alias can still select the older gateway model. This is the design:
-a project's own model key follows Claude Code's settings precedence.
+The 4.0.0 `ANTHROPIC_DEFAULT_FABLE_MODEL` pin is retired on its own list,
+`RETIRED_MODEL_PIN_KEYS`. On, off, setup and restore remove it only while it is still ours.
+Your own value stays. The old "Fable 5.1" menu row came from Anthropic's bootstrap
+`additional_model_options`, not alias resolution. See `docs/claude-code-contract.md` § The gateway
+for the live menu proof and the published-catalog watch point.
 
-**No other model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
+**No model is pinned**: Claude Code sends each Claude model's own id, and the
 router takes it to its family's slot. Up to 0.4.3, `on` also wrote
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]` and
 `ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, each with `…_NAME` and
@@ -2018,7 +2027,7 @@ person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent l
 without a `model`, a reviewer say, would run on an affordable slot). `gateway status` warns
 when one of them is set.
 
-Except for a personal Fable pin, which stays with an information line, a gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
+A personal menu or retired pin stays with an information line. A routing key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
 from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word of its
 own in that message: many people set it themselves. `on` also refuses while the router

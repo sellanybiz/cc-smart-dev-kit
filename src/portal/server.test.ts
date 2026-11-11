@@ -40,6 +40,7 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
+import { isOwnedValue } from "../setup/managed-json";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -1729,9 +1730,16 @@ describe("the actions", () => {
         env: Record<string, string>;
       };
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20199");
-      // Only Fable is pinned: the other families keep Claude Code's model ids.
       expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
-      expect(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-2");
+      expect(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
+      expect(
+        isOwnedValue(
+          world.paths.stateDir,
+          world.paths.settingsFile,
+          ["modelPicker"],
+          JSON.parse(readFileSync(world.paths.settingsFile, "utf8")).modelPicker,
+        ),
+      ).toBe(true);
       // And off points the address back at Anthropic instead of removing the key (GP5): a
       // running session follows a changed value within about a second, where a removed key
       // reach it only if another file sets the key. The tool-search key is removed as before.
@@ -1741,6 +1749,9 @@ describe("the actions", () => {
         env?: Record<string, string>;
       };
       expect(after.env?.ANTHROPIC_BASE_URL).toBe(DEFAULT_ANTHROPIC_BASE_URL);
+      expect(
+        JSON.parse(readFileSync(world.paths.settingsFile, "utf8")).modelPicker,
+      ).toBeUndefined();
       expect(after.env?.ENABLE_TOOL_SEARCH).toBeUndefined();
       expect(after.env?.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
     } finally {

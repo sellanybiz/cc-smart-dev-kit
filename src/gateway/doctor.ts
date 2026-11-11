@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
-import { getKey, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
+import { getKey, isObject, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
@@ -32,7 +32,6 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
-import { GATEWAY_FABLE_ENV } from "./fable-model";
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
@@ -172,24 +171,48 @@ export async function gatewayChecks(options: {
     const settings = readJsonObject(paths.settingsFile).data;
     const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
     if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
-      const path = ["env", GATEWAY_FABLE_ENV];
-      const pin = getKey(settings, path);
-      const ours =
-        ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) ===
-        "ours";
+      const picker = getKey(settings, ["modelPicker"]);
+      const whose = ownership(
+        ownedRecords(paths.stateDir, realTarget(paths.settingsFile)),
+        ["modelPicker"],
+        picker,
+      );
+      let menu: string;
+      if (!picker.found)
+        menu =
+          whose === "changed"
+            ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)`
+            : "not set; run setup";
+      else if (whose !== "ours") menu = "your own menu";
+      else if (!isObject(picker.value) || !Array.isArray(picker.value.options))
+        menu = "invalid rows";
+      else
+        menu = picker.value.options
+          .map((row: unknown) => {
+            if (!isObject(row)) return "invalid row";
+            const label =
+              typeof row.label === "string"
+                ? row.label
+                : typeof row.model === "string"
+                  ? row.model
+                  : "unknown";
+            return `${label}: ${typeof row.description === "string" ? row.description : "custom"}`;
+          })
+          .join("; ");
+      checks.push({ ok: true, info: true, text: `Gateway model menu: ${menu}` });
+    }
+    if (typeof settings.model === "string" && settings.model.startsWith("claude-")) {
       checks.push({
         ok: true,
         info: true,
-        text: pin.found
-          ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})`
-          : "Gateway Fable: missing: run setup",
+        text: `Your default model is fixed to ${settings.model}; /model <alias> follows the newest.`,
       });
     }
   } catch (error) {
     checks.push({
       ok: true,
       warn: true,
-      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`,
+      text: `Gateway model menu: cannot read settings: ${messageOf(error)}`,
     });
   }
 
@@ -433,7 +456,7 @@ function modelKeyWarnings(
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
       fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }

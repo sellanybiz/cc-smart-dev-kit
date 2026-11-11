@@ -210,10 +210,10 @@ safety checks), their ids in § Names. One rule set for all of them:
   (`CLAUDE_TARGET_RULES`; the version read from the id, `claudeVersion`), never by one exact
   id: a newer version gets its family's newest row, and a version below every row, or an id
   with no version, is left untouched.
-  **One exception (owner, 2026-11-11):** `GATEWAY_FABLE_MODEL` in `fable-model.ts` owns
-  the Fable id while the gateway is on. Claude Code 2.1.322 maps `fable` to an older model
-  behind a gateway, and subscription logins skip discovery. A test ties the pin to the
-  newest known Fable price row. No other family is pinned.
+  Models are automatic: the kit never writes a model id. While the gateway is on,
+  it owns `modelPicker`: one alias row per `CLAUDE_FAMILIES` family, each naming the
+  slot's first answerer, or "Claude's newest <Family>" only when there is no chain. A person's menu stays theirs.
+  The old owned Fable pin is retired; a value the person set stays.
   Examples in help and errors take `<model>`, or an id from the person's own config.
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a
   `/v1/messages` answer starts or ends a target's rest, or notes or ends a plan limit
@@ -332,9 +332,10 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 ## Settings and secrets
 
-- `gateway on` owns `env.ANTHROPIC_DEFAULT_FABLE_MODEL` from `GATEWAY_FABLE_MODEL`.
-  `off` removes only our unchanged value; a person's pin wins with an information line.
-  Normal setup refreshes it only for our owned address pointing at this router.
+- `gateway on` owns `modelPicker`, with alias rows naming each first answerer.
+  Normal setup and slot changes refresh it only for our owned active router address.
+  A menu the person set, changed or removed stays theirs, with an information line.
+  On, off, setup and restore retire the old Fable pin only while it is ours.
 
 - `gateway on` / `off`, `gateway project …` (a project's own `ANTHROPIC_BASE_URL`, in its
   `settings.local.json` or its team `.claude/settings.json`), and `gateway setup`'s removal of

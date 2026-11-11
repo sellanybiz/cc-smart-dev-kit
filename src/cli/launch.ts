@@ -37,13 +37,20 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
-import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  emptyConfig,
+  PROFILE_NAME_RULE,
+  plainClaudeView,
+  profileNames,
+} from "../gateway/config";
 import {
   type HealthFetch,
   routerFeature,
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
+import { mayWritePicker, pickerFor } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
@@ -361,7 +368,7 @@ function claudeArgsSetModel(claudeArgs: readonly string[]): boolean {
 
 /**
  * One line per key the settings chain still gives a session this launch starts (facts only,
- * never a model suggested). The launch file names only the address, and Claude Code merges `env`
+ * never a model suggested). The launch file names only the address in `env`, and Claude Code merges `env`
  * one variable at a time (`docs/claude-code-contract.md`, P3), so:
  * - a login key or helper (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) in any
  *   file bills the session through it, not through the plan's login — in every mode that passes
@@ -412,6 +419,16 @@ function settingsNotes(
   return lines;
 }
 
+/** Unreadable user settings cannot prove ownership; preserve the existing launch behavior. */
+function launchMayWritePicker(ctx: LaunchContext, refreshOwned: boolean): boolean {
+  try {
+    return mayWritePicker(ctx.settingsFile, ctx.stateDir, refreshOwned);
+  } catch {
+    // Claude Code reports invalid user settings itself; launch must not replace their menu.
+    return false;
+  }
+}
+
 /** `launch`; the exit code: the session's own, or 1 refused / 2 a usage mistake. */
 export async function runLaunch(args: readonly string[], ctx: LaunchContext): Promise<number> {
   const parsed = parseLaunchArgs(args);
@@ -460,12 +477,21 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
+      const ownPicker = launchMayWritePicker(ctx, parsed.mode.kind !== "gateway");
+      const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
+      const settings = {
+        env: { ANTHROPIC_BASE_URL: target.url },
+        ...(ownPicker
+          ? {
+              modelPicker: pickerFor(
+                parsed.mode.kind === "no-gateway" ? plainClaudeView(config) : config,
+                parsed.mode.kind === "profile" ? parsed.mode.name : undefined,
+              ),
+            }
+          : {}),
+      };
       // Publish the complete settings file with private permissions.
-      atomicWrite(
-        settingsFile,
-        `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: target.url } }, null, 2)}\n`,
-        0o600,
-      );
+      atomicWrite(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, 0o600);
     } catch (error) {
       ctx.error(
         `launch: its settings file could not be written: ${error instanceof Error ? error.message : String(error)}`,

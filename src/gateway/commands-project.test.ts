@@ -891,3 +891,15 @@ describe("Fable pin command diagnostics", () => {
     expect(m.output()).not.toContain("left alone");
   });
 });
+
+test("project switches leave the menu alone and explain its scope", async () => {
+  const m = machine();
+  const root = repo("picker-project");
+  const file = join(root, ".claude", "settings.local.json");
+  writeSettings(file, { modelPicker: { options: [] } });
+  for (const mode of ["on", "off", "default"]) {
+    expect(await m.run(["project", mode, "--folder", root])).toBe(0);
+    expect(settingsOf(file).modelPicker).toEqual({ options: [] });
+    expect(m.output()).toContain("· The model menu follows the machine slots;");
+  }
+});

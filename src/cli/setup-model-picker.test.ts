@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
-import { applyFableModelStep } from "../gateway/fable-model-step";
+import { DEFAULT_PORT } from "../gateway/config";
+import { applyModelPickerStep } from "../gateway/model-picker-step";
 import { applyManagedJson, ownedRecords } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import { capturePrinted, printed, world } from "../testing/fake-machine";
@@ -44,26 +45,24 @@ function machine(address = ADDRESS, owned = true) {
 const settings = (w: ReturnType<typeof world>) =>
   JSON.parse(readFileSync(w.paths.settingsFile, "utf8"));
 
-describe("setup upgrades model Fable pin without switching the gateway", () => {
-  test("an owned active address gains owned Fable pin, and a second setup is unchanged", async () => {
+describe("setup refreshes the model menu without switching the gateway", () => {
+  test("an owned active address gains an owned menu, and a second setup is unchanged", async () => {
     const w = machine();
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env).toMatchObject({
-      ANTHROPIC_BASE_URL: ADDRESS,
-      [KEY]: "claude-fable-5-2",
-    });
+    expect(settings(w).env.ANTHROPIC_BASE_URL).toBe(ADDRESS);
+    expect(settings(w).modelPicker.options).toHaveLength(4);
     expect(ownedRecords(w.paths.stateDir, realTarget(w.paths.settingsFile))).toContainEqual({
-      path: ["env", KEY],
-      value: "claude-fable-5-2",
+      path: ["modelPicker"],
+      value: settings(w).modelPicker,
     });
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env[KEY]).toBe("claude-fable-5-2");
+    expect(settings(w).env[KEY]).toBeUndefined();
   });
   test("dry-run reports the addition without writing it", async () => {
     const w = machine();
     expect(await w.setup({ dryRun: true })).toBe(0);
     expect(settings(w).env[KEY]).toBeUndefined();
-    expect(printed.join("\n")).toContain(`env.${KEY}`);
+    expect(printed.join("\n")).toContain("modelPicker");
   });
   for (const [label, address, owned] of [
     ["off", "https://api.anthropic.com", true],
@@ -74,6 +73,7 @@ describe("setup upgrades model Fable pin without switching the gateway", () => {
       const w = machine(address, owned);
       expect(await w.setup()).toBe(0);
       expect(settings(w).env.ANTHROPIC_BASE_URL).toBe(address);
+      expect(settings(w).modelPicker).toBeUndefined();
       expect(settings(w).env[KEY]).toBeUndefined();
     });
   }
@@ -84,9 +84,9 @@ describe("setup upgrades model Fable pin without switching the gateway", () => {
     writeFileSync(w.paths.settingsFile, JSON.stringify(value));
     expect(await w.setup()).toBe(0);
     expect(settings(w).env[KEY]).toBe("claude-fable-5-1");
-    expect(printed.join("\n")).toContain(`env.${KEY} stays`);
+    expect(printed.join("\n")).toContain(`env.${KEY}`);
   });
-  test("a Fable pin key still ours is refreshed", async () => {
+  test("a Fable pin key still ours is retired", async () => {
     const w = machine();
     applyManagedJson({
       file: w.paths.settingsFile,
@@ -94,14 +94,16 @@ describe("setup upgrades model Fable pin without switching the gateway", () => {
       set: [[["env", KEY], "claude-fable-5-1"]],
     });
     expect(await w.setup()).toBe(0);
-    expect(settings(w).env[KEY]).toBe("claude-fable-5-2");
+    expect(settings(w).env[KEY]).toBeUndefined();
   });
 });
 
 test("the standalone refresh reports broken settings without throwing", () => {
   const w = machine();
   writeFileSync(w.paths.settingsFile, "{ broken");
-  expect(applyFableModelStep(w.paths, false)[0]).toContain("! gateway Fable pin was not refreshed");
+  expect(applyModelPickerStep(w.paths, false)[0]).toContain(
+    "! gateway model menu was not refreshed",
+  );
 });
 
 test("an unfinished defaults step skips the pin refresh in preview and real setup", async () => {
@@ -109,7 +111,52 @@ test("an unfinished defaults step skips the pin refresh in preview and real setu
   rmSync(claudeDefaultsMarkerFile(w.paths.stateDir));
   writeFileSync(w.paths.gatewayConfigFile, "{ broken");
   expect(await w.setup({ dryRun: true })).toBe(0);
-  expect(printed.join("\n")).not.toContain("gateway Fable pin was not refreshed");
+  expect(printed.join("\n")).not.toContain("gateway model menu was not refreshed");
   expect(await w.setup()).toBe(0);
-  expect(printed.join("\n")).not.toContain("gateway Fable pin was not refreshed");
+  expect(printed.join("\n")).not.toContain("gateway model menu was not refreshed");
+});
+
+test("removed by hand, setup again leaves the menu removed", async () => {
+  const w = machine();
+  expect(await w.setup()).toBe(0);
+  const value = settings(w);
+  delete value.modelPicker;
+  writeFileSync(w.paths.settingsFile, JSON.stringify(value));
+  expect(await w.setup()).toBe(0);
+  expect(settings(w).modelPicker).toBeUndefined();
+  expect(printed.join("\n")).toContain("modelPicker: set, changed or removed by you; left alone");
+});
+
+test("menu refresh retires the family pin, not older slot alias keys", () => {
+  const w = machine();
+  applyManagedJson({
+    file: w.paths.settingsFile,
+    stateDir: w.paths.stateDir,
+    set: [
+      [["env", "ANTHROPIC_DEFAULT_HAIKU_MODEL"], "old-scout"],
+      [["env", KEY], "claude-fable-5-2"],
+    ],
+  });
+  applyModelPickerStep(w.paths, false);
+  expect(settings(w).env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("old-scout");
+  expect(settings(w).env[KEY]).toBeUndefined();
+});
+
+test("setup writes the menu without gateway.json for our default router address", async () => {
+  const w = machine(`http://127.0.0.1:${DEFAULT_PORT}`);
+  rmSync(w.paths.gatewayConfigFile);
+  expect(await w.setup()).toBe(0);
+  expect(settings(w).modelPicker.options).toHaveLength(4);
+});
+test("broken config keeps the successful pin retirement lines", () => {
+  const w = machine();
+  applyManagedJson({
+    file: w.paths.settingsFile,
+    stateDir: w.paths.stateDir,
+    set: [[["env", KEY], "claude-fable-5-2"]],
+  });
+  writeFileSync(w.paths.gatewayConfigFile, "{ broken");
+  const lines = applyModelPickerStep(w.paths, false);
+  expect(lines[0]).toBe(`~ env.${KEY}: retired gateway key removed`);
+  expect(lines.at(-1)).toContain("! gateway model menu was not refreshed");
 });

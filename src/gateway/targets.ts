@@ -341,8 +341,14 @@ export function isModelSlot(slot: string): boolean {
 }
 
 /** The Claude families a model id can name: `claude-<family>-…` or `claude-3-5-<family>-…`. */
-export const CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"] as const;
+// The kit model menu reads this order: Claude Code's own /model order.
+export const CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
 export type ClaudeFamily = (typeof CLAUDE_FAMILIES)[number];
+
+/** A family as a person reads it in menus and model notes. */
+export function familyLabel(family: ClaudeFamily): string {
+  return family.charAt(0).toUpperCase() + family.slice(1);
+}
 
 /**
  * Claude Code's own override for a family: `ANTHROPIC_DEFAULT_OPUS_MODEL`, … (all four exist

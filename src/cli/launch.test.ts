@@ -13,12 +13,14 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import type { HealthFetch } from "../gateway/health";
+import { applyManagedJson } from "../setup/managed-json";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
@@ -30,6 +32,16 @@ import {
   runLaunch,
   type SignalPlan,
 } from "./launch";
+
+const expectedPicker = {
+  replaceBuiltInOptions: true,
+  options: [
+    { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+    { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+    { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+  ],
+};
 
 /** A port no router uses: the config only names it, nothing connects. */
 const TEST_PORT = 45_321;
@@ -94,6 +106,11 @@ exit 7
 
 /** A gateway config the reader accepts, mode 600, with the profiles given. */
 function gatewayConfig(world: World, profiles: string[]): void {
+  applyManagedJson({
+    file: join(world.home, ".claude", "settings.json"),
+    stateDir: world.stateDir,
+    set: [[["modelPicker"], expectedPicker]],
+  });
   mkdirSync(join(world.home, ".config", "cc-smart-dev-kit"), { recursive: true });
   const body = {
     backends: {},
@@ -219,11 +236,11 @@ describe("launch", () => {
       "arg=--settings",
       `arg=${settingsFile}`,
       "settings:",
-      "{",
-      '  "env": {',
-      `    "ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"`,
-      "  }",
-      "}",
+      ...JSON.stringify(
+        { env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL }, modelPicker: expectedPicker },
+        null,
+        2,
+      ).split("\n"),
       "arg=--model",
       "arg=haiku",
     ]);
@@ -234,7 +251,7 @@ describe("launch", () => {
     expect(existsSync(settingsFile)).toBe(false);
   });
 
-  test("the file is mode 0600 while the session runs, and it holds only the base URL", async () => {
+  test("the file is mode 0600 while the session runs, with the plain-Claude menu", async () => {
     const home = world();
     const seen: { mode: number; text: string }[] = [];
     const ctx = context(home, {
@@ -248,7 +265,7 @@ describe("launch", () => {
     expect(seen).toEqual([
       {
         mode: 0o600,
-        text: `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"\n  }\n}\n`,
+        text: `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL }, modelPicker: expectedPicker }, null, 2)}\n`,
       },
     ]);
   });
@@ -278,10 +295,58 @@ describe("launch", () => {
     const ctx = context(home);
     expect(await runLaunch(["--profile", "fast"], ctx)).toBe(7);
     expect(loggedSettings(home)).toBe(
-      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `${ROUTER_URL}/p/fast` } }, null, 2)}\n`,
+      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: `${ROUTER_URL}/p/fast` }, modelPicker: expectedPicker }, null, 2)}\n`,
     );
     expect(ctx.printed[0]).toBe(`launch: the gateway, profile "fast" · ${ROUTER_URL}/p/fast`);
   });
+
+  test("--profile carries backend rows instead of the machine's rows", async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    const config = JSON.parse(readFileSync(home.configPath, "utf8"));
+    config.backends = { omniroute: { baseUrl: "http://omni.test", apiKey: "test-key" } };
+    config.profiles.fast.slots = { "cc-smart-dev-kit-opus": ["omniroute:codex/gpt-6.1-sol"] };
+    writeFileSync(home.configPath, JSON.stringify(config), { mode: 0o600 });
+    expect(await runLaunch(["--profile", "fast"], context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker.options[0]).toEqual({
+      model: "opus",
+      label: "Opus",
+      description: "answered by gpt-6.1-sol (opus slot)",
+    });
+  });
+
+  test("no-gateway overrides only our menu with plain Claude rows", async () => {
+    const home = world();
+    gatewayConfig(home, []);
+    const config = JSON.parse(readFileSync(home.configPath, "utf8"));
+    config.backends = { omniroute: { baseUrl: "http://omni.test", apiKey: "test-key" } };
+    config.slots = { "cc-smart-dev-kit-opus": ["omniroute:codex/gpt-6.1-sol"] };
+    writeFileSync(home.configPath, JSON.stringify(config), { mode: 0o600 });
+    applyManagedJson({
+      file: join(home.home, ".claude", "settings.json"),
+      stateDir: home.stateDir,
+      set: [
+        [
+          ["modelPicker"],
+          { options: [{ model: "opus", description: "answered by gpt-6.1-sol (opus slot)" }] },
+        ],
+      ],
+    });
+    expect(await runLaunch(["--no-gateway"], context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+  });
+  for (const mode of [["--gateway"], ["--profile", "fast"], ["--no-gateway"]]) {
+    test(`launch ${mode.join(" ")} does not replace a personal menu`, async () => {
+      const home = world();
+      gatewayConfig(home, ["fast"]);
+      writeFileSync(
+        join(home.home, ".claude", "settings.json"),
+        JSON.stringify({ modelPicker: { options: [] } }),
+      );
+      expect(await runLaunch(mode, context(home))).toBe(7);
+      expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
+    });
+  }
 
   test("--profile on an older router (no profiles in its features) runs nothing, and names gateway setup", async () => {
     const home = world();
@@ -816,4 +881,38 @@ describe("RV3: launch says what its settings file leaves in place (the lead's ch
     expect(await runLaunch(["--no-gateway"], ctx)).toBe(7);
     expect(ctx.errors).toEqual([]);
   });
+});
+
+for (const mode of [["--profile", "fast"], ["--no-gateway"]]) {
+  test(`a never-managed menu permits launch ${mode.join(" ")} rows`, async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    rmSync(join(home.home, ".claude", "settings.json"));
+    rmSync(join(home.stateDir, "owned.json"));
+    expect(await runLaunch(mode, context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+  });
+  test(`a removed owned menu stays absent for launch ${mode.join(" ")}`, async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    rmSync(join(home.home, ".claude", "settings.json"));
+    expect(await runLaunch(mode, context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
+  });
+}
+
+test("gateway launch supplies rows only for a never-managed absent user menu", async () => {
+  const home = world();
+  gatewayConfig(home, []);
+  rmSync(join(home.home, ".claude", "settings.json"));
+  rmSync(join(home.stateDir, "owned.json"));
+  expect(await runLaunch(["--gateway"], context(home))).toBe(7);
+  expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+});
+test("gateway launch leaves a removed owned user menu absent", async () => {
+  const home = world();
+  gatewayConfig(home, []);
+  rmSync(join(home.home, ".claude", "settings.json"));
+  expect(await runLaunch(["--gateway"], context(home))).toBe(7);
+  expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
 });

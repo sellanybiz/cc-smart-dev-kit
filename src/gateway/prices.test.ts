@@ -6,7 +6,6 @@
  */
 import { describe, expect, it } from "bun:test";
 import { parseModelList } from "./backends";
-import { GATEWAY_FABLE_MODEL } from "./fable-model";
 import {
   backendCost,
   CLAUDE_PRICES,
@@ -16,24 +15,10 @@ import {
   listedPrice,
   priceFromModels,
 } from "./prices";
-import { claudeFamily, claudeVersion } from "./targets";
 
 const TOKENS = { cacheRead: 2000, cacheWrite: 100, input: 1000, output: 500 };
 
 describe("Claude's list price", () => {
-  it("the gateway Fable pin follows the newest known Fable price", () => {
-    const rows = CLAUDE_PRICES.filter((row) => row.family === "fable").toSorted(
-      (a, b) => b.major - a.major || b.minor - a.minor,
-    );
-    expect(claudeFamily(GATEWAY_FABLE_MODEL)).toBe("fable");
-    const newest = rows[0];
-    if (newest === undefined) throw new Error("Fable needs a published price row");
-    expect(claudeVersion(GATEWAY_FABLE_MODEL)).toEqual({
-      major: newest.major,
-      minor: newest.minor,
-    });
-  });
-
   it("prices the current models by family and version", () => {
     expect(claudePrice("claude-opus-5-5")).toEqual({
       cacheRead: 0.2,
