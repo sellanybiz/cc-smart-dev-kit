@@ -4,12 +4,55 @@
  * to read all of it.
  */
 import { describe, expect, test } from "bun:test";
+import { Children, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FilterPick, FilterToggle } from "@/components/filter-bar";
+import type { HistoryFilter } from "@/api/types";
+import { FilterBar, FilterPick, FilterToggle } from "@/components/filter-bar";
+import type { HistoryState } from "@/components/history-state";
 import { TabCount } from "@/components/tab-count";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const LONG = "a-plan-subject-long-enough-to-push-a-filter-row-off-the-page (release-plan)";
+
+type Props = Record<string, unknown> & { children?: ReactNode };
+
+/**
+ * What a component returns, drawn inside a host component so its hooks have a renderer (the
+ * way `overview.test.tsx` reads the real card's props, without replacing a module).
+ */
+function drawn(run: () => ReactNode): ReactNode {
+  let out: ReactNode = null;
+  function Host() {
+    out = run();
+    return null;
+  }
+  renderToStaticMarkup(<Host />);
+  return out;
+}
+
+/** The props of every element of the given type in a tree, in order. */
+function propsOf(node: ReactNode, type: unknown): Props[] {
+  const found: Props[] = [];
+  Children.forEach(node, (child) => {
+    if (!isValidElement<Props>(child)) return;
+    if (child.type === type) found.push(child.props);
+    found.push(...propsOf(child.props.children, type));
+  });
+  return found;
+}
+
+/** Call a handler found in the props, as the browser would. */
+function fire(handler: unknown, ...args: unknown[]): void {
+  if (typeof handler !== "function") throw new Error("no handler on that element");
+  handler(...args);
+}
+
+/** A select's change event, as far as a picker reads it. */
+function picked(value: string) {
+  return { target: { value } };
+}
 
 /** The class list of the first tag the pattern finds. */
 function classesOf(html: string, tag: RegExp): string[] {
@@ -68,6 +111,86 @@ describe("a filter row's switch", () => {
     );
     expect(classesOf(html, /<label[^>]*>/)).toContain("whitespace-nowrap");
     expect(html).toContain("Running sessions only");
+  });
+});
+
+describe("what a filter row's parts hand back", () => {
+  /** The select's change handler of a picker, and every value the picker handed back. */
+  function pickerSelect(value: null | string) {
+    const sent: (null | string)[] = [];
+    const tree = drawn(() =>
+      FilterPick({
+        label: "Plan",
+        all: "All plans",
+        value,
+        options: [{ value: "long", label: LONG }],
+        onChange: (next) => sent.push(next),
+      }),
+    );
+    const selects = propsOf(tree, NativeSelect);
+    expect(selects).toHaveLength(1);
+    return { onChange: selects[0]?.onChange, sent };
+  }
+
+  test("picking a value hands back that value", () => {
+    const { onChange, sent } = pickerSelect(null);
+    fire(onChange, picked("long"));
+    expect(sent).toEqual(["long"]);
+  });
+
+  test("picking the all-words again hands back null, never an empty value", () => {
+    const { onChange, sent } = pickerSelect("long");
+    fire(onChange, picked(""));
+    expect(sent).toEqual([null]);
+  });
+
+  test("the switch hands back on and off as they are", () => {
+    const sent: boolean[] = [];
+    const tree = drawn(() =>
+      FilterToggle({ label: "Errors only", checked: false, onChange: (on) => sent.push(on) }),
+    );
+    const switches = propsOf(tree, Switch);
+    expect(switches).toHaveLength(1);
+    fire(switches[0]?.onCheckedChange, true);
+    fire(switches[0]?.onCheckedChange, false);
+    expect(sent).toEqual([true, false]);
+  });
+
+  test("the charts' bar turns null into no filter, and keeps the other filters", () => {
+    const set: HistoryFilter[] = [];
+    const filter: HistoryFilter = { slot: "opus", model: "glm-5.3" };
+    const state: HistoryState = {
+      range: "1d",
+      by: "target",
+      filter,
+      key: "",
+      setRange: () => {},
+      setBy: () => {},
+      setFilter: (next) => set.push(next),
+    };
+    const tree = drawn(() => FilterBar({ state }));
+    const picks = propsOf(tree, FilterPick);
+    expect(picks.map((one) => one.label)).toEqual(["Slot", "Target", "Model", "Session"]);
+    const [slot, target, model, session] = picks;
+    fire(slot?.onChange, null);
+    fire(slot?.onChange, "fable");
+    fire(target?.onChange, "omniroute/deepseek");
+    fire(model?.onChange, null);
+    fire(session?.onChange, "s1");
+    const toggles = propsOf(tree, FilterToggle);
+    expect(toggles).toHaveLength(1);
+    fire(toggles[0]?.onChange, true);
+    fire(toggles[0]?.onChange, false);
+    // `toEqual` would let a key set to undefined pass for a missing one; `toStrictEqual` does not.
+    expect(set).toStrictEqual([
+      { slot: undefined, model: "glm-5.3" },
+      { slot: "fable", model: "glm-5.3" },
+      { slot: "opus", target: "omniroute/deepseek", model: "glm-5.3" },
+      { slot: "opus", model: undefined },
+      { slot: "opus", model: "glm-5.3", session: "s1" },
+      { slot: "opus", model: "glm-5.3", errorsOnly: true },
+      { slot: "opus", model: "glm-5.3", errorsOnly: undefined },
+    ]);
   });
 });
 
