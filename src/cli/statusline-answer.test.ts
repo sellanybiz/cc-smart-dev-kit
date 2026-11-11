@@ -39,6 +39,21 @@ it("both commands read their own history identity only on the gateway", async ()
       target: agent === null ? answer.target : "omniroute:glm",
       tokens: null,
     });
+  writer.record({
+    agent: "a-1",
+    at: Date.now(),
+    breaker: null,
+    cost: null,
+    model: "claude-haiku-5-5",
+    ms: 1,
+    nextTarget: null,
+    profile: null,
+    session: "s-1",
+    slot: answer.slot,
+    status: 200,
+    target: "omniroute:side-query",
+    tokens: null,
+  });
   writer.close();
   const lines: string[] = [];
   const log = console.log;
@@ -108,6 +123,58 @@ it("names a backend or fallback, but not the same Claude or a stale model", () =
       answer,
     ),
   ).toBe("Sonnet 5.5");
+});
+it.each(["anthropic (server tool web_search)", "router (server tool web_search; anthropic 529)"])(
+  "router words never become a model: %s",
+  (target) => {
+    const value = { ...answer, target };
+    expect(
+      statuslineText(
+        input,
+        null,
+        10,
+        "UTC",
+        85,
+        { gatewayOn: true, profile: null },
+        undefined,
+        value,
+      ),
+    ).toBe("Sonnet 5.5");
+    expect(
+      subagentRows(
+        { tasks: [{ id: "a-1", model: answer.model, effort: "high" }] },
+        new Map([["a-1", value]]),
+      ),
+    ).toEqual([{ id: "a-1", content: "worker → claude-sonnet-5-5 → high" }]);
+  },
+);
+it("gateway off never accesses the history path", async () => {
+  const home = tempDir("off-history");
+  const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: home });
+  Object.defineProperty(paths, "historyDbFile", {
+    get() {
+      throw new Error("history accessed while off");
+    },
+  });
+  const log = console.log;
+  console.log = () => {};
+  try {
+    await runStatusline(
+      paths,
+      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      Date.now(),
+      undefined,
+      { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+    );
+    await runSubagentStatusline(
+      async () =>
+        JSON.stringify({ session_id: "s-1", tasks: [{ id: "a-1", model: answer.model }] }),
+      paths,
+      { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+    );
+  } finally {
+    console.log = log;
+  }
 });
 it("a limit banner names the target only once", () => {
   const state = {

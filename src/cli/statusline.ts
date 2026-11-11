@@ -232,7 +232,7 @@ export function statuslineText(
     session?.gatewayOn &&
     id !== null &&
     withoutContextSuffix(answer.model) === id &&
-    answer.target !== "anthropic" &&
+    answerTargetName(answer.target) !== null &&
     withoutContextSuffix(answer.target) !== id &&
     !bannerTargets.has(answer.target) &&
     typeof model === "string" &&
@@ -241,22 +241,6 @@ export function statuslineText(
     parts[0] = `${model} → ${answerTargetName(answer.target)}`;
   }
   return parts.join(" · ");
-}
-
-/**
- * The gateway the session runs on, for the records its line shows. An environment with no
- * address at all says nothing: the contract proves the session's address there for a `--settings`
- * file and a project's own file (`docs/claude-code-contract.md`), so with none the machine's
- * records show, as they always did. An address decides, as `sessionGatewayOf` reads it for the
- * guards: Anthropic's own or an empty one (off), the router's, a profile's, and any other
- * address counts as the machine's gateway.
- */
-function sessionOf(
-  paths: CliPaths,
-  env: Env,
-): Pick<SessionGateway, "config" | "gatewayOn" | "profile"> {
-  if (env.ANTHROPIC_BASE_URL === undefined) return { config: null, gatewayOn: true, profile: null };
-  return sessionGatewayOf(paths, env);
 }
 
 /**
@@ -337,7 +321,12 @@ export async function runStatusline(
     // No router state yet.
     state = null;
   }
-  const session = isJsonObject(input) ? sessionOf(paths, env) : null;
+  const gateway = sessionGatewayOf(paths, env);
+  const session = isJsonObject(input)
+    ? env.ANTHROPIC_BASE_URL === undefined
+      ? { ...gateway, gatewayOn: true }
+      : gateway
+    : null;
   const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
   const task = currentTask(paths, input, env);
   const text = statuslineText(
@@ -353,7 +342,7 @@ export async function runStatusline(
       typeof input.session_id === "string" &&
       isJsonObject(input.model) &&
       typeof input.model.id === "string" &&
-      sessionGatewayOf(paths, env).gatewayOn
+      gateway.gatewayOn
       ? lastAnswer(paths.historyDbFile, input.session_id, null, session.profile, input.model.id)
       : null,
   );

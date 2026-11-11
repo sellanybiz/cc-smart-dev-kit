@@ -1,7 +1,8 @@
-import { claudeFamily, claudeVersion, familyLabel } from "./targets";
+import { claudeFamily, claudeVersion, familyLabel, parseTarget } from "./targets";
 
 /** The answering model's short label, using the same family and version readers as routing. */
-export function answerTargetName(target: string): string {
+export function answerTargetName(target: string): string | null {
+  if ("error" in parseTarget(target)) return null;
   const family = claudeFamily(target);
   const version = claudeVersion(target);
   return family === null || version === null

@@ -259,14 +259,16 @@ export class AnswerUsageReader {
   private tooBig = false;
   private start: CheckTokens | null = null;
   private failure: HistoryOutcome | null = null;
+  private stopped = false;
 
   /** Read after tokens(), which also finishes the last event or JSON body. */
   outcome(): HistoryOutcome | null {
-    return this.failure;
+    return this.failure ?? (this.streaming && !this.stopped ? "stream_error" : null);
   }
 
   private noteOutcome(value: unknown): void {
     if (!isJsonObject(value)) return;
+    if (value.type === "message_stop") this.stopped = true;
     if (value.type === "error") this.failure = "stream_error";
     else if (
       this.failure === null &&

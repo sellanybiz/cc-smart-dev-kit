@@ -522,6 +522,78 @@ describe("the router's request history", () => {
     ]);
   });
 
+  it("an HTTP 529 error keeps outcome null", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [() => Response.json({ type: "error" }, { status: 529 })],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).text();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([[529, null]]);
+  });
+
+  it("a client cancel mid-stream records a failed 200 answer", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [
+        () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('data: {"type":"message_start"}\n\n'));
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ],
+      { history: history.recorder },
+    );
+    const response = await handle(request({ body: message("claude-sonnet-5-5") }));
+    if (response.body === null) throw new Error("expected a streaming response");
+    const reader = response.body.getReader();
+    await reader.read();
+    await reader.cancel();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, "stream_error"],
+    ]);
+  });
+
+  it("a broken gzip body records a failed 200 answer", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [
+        () =>
+          new Response(new Uint8Array([31, 139, 8, 0, 1]), {
+            headers: { "content-type": "text/event-stream", "content-encoding": "gzip" },
+          }),
+      ],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).arrayBuffer();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, "stream_error"],
+    ]);
+  });
+
+  it.each([false, true])("a stream needs message_stop to count as whole (%s)", async (stopped) => {
+    const history = collector();
+    const body =
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+      (stopped ? 'data: {"type":"message_stop"}\n\n' : "");
+    const { handle, settled } = routerWithHistory(
+      [() => new Response(body, { headers: { "content-type": "text/event-stream" } })],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).text();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, stopped ? null : "stream_error"],
+    ]);
+  });
+
   it("one row per routed request: its exact fields, its tokens and its cost", async () => {
     const history = collector();
     let clock = START;

@@ -1,7 +1,7 @@
 /**
  * `cc-smart-dev-kit subagent-statusline`: the plugin's row body for each subagent in Claude
- * Code's agent panel — the slot the subagent's requests reach, the model Claude Code resolved
- * for it, and the effort it runs at (MD-13: `slot → model → effort`).
+ * Code's agent panel — the slot the subagent's requests reach, the model that answered while
+ * the gateway is on (the resolved model before that), and its effort (MD-13: `slot → model → effort`).
  *
  * **How Claude Code reads it** (`plugin/settings.json`, proved offline on 2.1.308:
  * `docs/claude-code-contract.md`): once per refresh tick it runs the plugin's
@@ -42,7 +42,7 @@
  */
 
 import { COMMAND } from "../build-info";
-import { type LastAnswer, lastAnswer } from "../gateway/history-read";
+import { type LastAnswer, lastAnswers } from "../gateway/history-read";
 import { cutText, oneLine } from "../gateway/plain-text";
 import { answerTargetName } from "../gateway/target-label";
 import { familySlotFor } from "../gateway/targets";
@@ -143,7 +143,8 @@ export function contextPart(task: StatusTask): null | string {
 
 /**
  * Where one subagent's requests go: `slot → model → effort`, who it is in front, and its
- * context use after.
+ * context use after. The model is who answered while the gateway is on; before that it is
+ * Claude Code's resolved model.
  *
  * **The context survives a cut.** Claude Code gives the row `columns` and the body is cut at the
  * end, so the context would go first. When the whole body is too wide, the label shrinks
@@ -158,9 +159,9 @@ export function rowContent(
 ): string {
   const slot = slotOf(task.model) ?? "?";
   const model =
-    answer === null || answer.target === "anthropic"
-      ? (task.model ?? "model not resolved yet")
-      : answerTargetName(answer.target);
+    (answer === null ? null : answerTargetName(answer.target)) ??
+    task.model ??
+    "model not resolved yet";
   // Claude Code leaves the effort out when it set none: the model's own default answers.
   const effort = task.effort ?? "default effort";
   const route = `${slot} → ${model} → ${effort}`;
@@ -227,11 +228,16 @@ export async function runSubagentStatusline(
     typeof input.session_id === "string"
   ) {
     const session = sessionGatewayOf(paths, env);
-    if (session.gatewayOn)
-      for (const task of statusTasks(input)) {
-        const answer = lastAnswer(paths.historyDbFile, input.session_id, task.id, session.profile);
-        if (answer !== null) answers.set(task.id, answer);
-      }
+    if (session.gatewayOn) {
+      const tasks = statusTasks(input).filter((task) => task.model !== null);
+      const found = lastAnswers(
+        paths.historyDbFile,
+        input.session_id,
+        session.profile,
+        tasks.map((task) => ({ agent: task.id, model: task.model ?? undefined })),
+      );
+      for (const [agent, answer] of found) if (agent !== null) answers.set(agent, answer);
+    }
   }
   for (const row of subagentRows(input, answers)) console.log(JSON.stringify(row));
   return 0;

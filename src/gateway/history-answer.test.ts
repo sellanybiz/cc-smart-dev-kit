@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import { createHistoryWriter, type HistoryRow } from "./history";
-import { lastAnswer } from "./history-read";
+import { lastAnswer, lastAnswers } from "./history-read";
 
 const NOW = Date.now();
 function file(): string {
@@ -49,6 +49,8 @@ describe("the status row's last answer", () => {
       row({ status: 502, target: "omniroute:failed" }),
       row({ outcome: "refused" }),
       row({ outcome: "stream_error" }),
+      row({ target: "anthropic (server tool web_search)" }),
+      row({ target: "router (server tool web_search; anthropic 529)" }),
     ]);
     expect(lastAnswer(path, "session-1", null, null, "claude-sonnet-5-5[1m]")).toEqual({
       at: NOW,
@@ -115,6 +117,29 @@ describe("the status row's last answer", () => {
       locked.run("ROLLBACK");
       locked.close();
     }
+  });
+  it("shares one connection and statement for ten agent lookups over 10k rows", () => {
+    const requests = Array.from({ length: 10 }, (_, i) => ({
+      agent: `agent-${i}`,
+      model: "claude-sonnet-5-5",
+    }));
+    const path = seed(Array.from({ length: 10_000 }, (_, i) => row({ agent: `agent-${i % 10}` })));
+    const start = performance.now();
+    const answers = lastAnswers(path, "session-1", null, requests);
+    expect([...answers.keys()]).toEqual([
+      "agent-0",
+      "agent-1",
+      "agent-2",
+      "agent-3",
+      "agent-4",
+      "agent-5",
+      "agent-6",
+      "agent-7",
+      "agent-8",
+      "agent-9",
+    ]);
+    console.log(`lastAnswers ten agents / 10k rows: ${(performance.now() - start).toFixed(3)} ms`);
+    expect(answers.get("agent-9")?.target).toBe("claude-sonnet-5-5");
   });
   it("reads 10k session rows with one indexed answer query per tick", () => {
     const path = seed(

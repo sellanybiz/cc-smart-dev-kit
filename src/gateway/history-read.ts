@@ -25,6 +25,7 @@
 
 import { Database } from "bun:sqlite";
 import { HISTORY_COLUMNS, historyDbExists, retentionWords, type StoredRow } from "./history";
+import { answerTargetName } from "./target-label";
 import { withoutContextSuffix } from "./targets";
 
 /** A whole answer for a status row, not a failed attempt. */
@@ -43,30 +44,47 @@ export function lastAnswer(
   profile: null | string,
   model?: string,
 ): LastAnswer | null {
-  if (!historyDbExists(file)) return null;
+  return lastAnswers(file, session, profile, [{ agent, model }]).get(agent) ?? null;
+}
+
+/** One connection and prepared statement per tick, reused for each visible row. */
+export function lastAnswers(
+  file: string,
+  session: string,
+  profile: null | string,
+  requests: readonly { agent: null | string; model: string | undefined }[],
+): Map<null | string, LastAnswer> {
+  const answers = new Map<null | string, LastAnswer>();
+  if (!historyDbExists(file)) return answers;
   let db: Database | null = null;
   try {
     db = new Database(file, { readonly: true });
     db.run("PRAGMA busy_timeout = 10");
     const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
-    if (!columns.some((column) => column.name === "agent")) return null;
+    if (!columns.some((column) => column.name === "agent")) return answers;
     const outcome = columns.some((column) => column.name === "outcome")
       ? "AND outcome IS NULL"
       : "";
-    return db
-      .query<LastAnswer, (string | null)[]>(`
+    const query = db.query<LastAnswer, (string | null)[]>(`
       SELECT at, model, slot, target FROM requests INDEXED BY requests_session_at
       WHERE session = ? AND agent IS ? AND profile IS ? AND status >= 200 AND status < 300
-      ${outcome} AND target NOT IN ('none', 'refused')
-      ${model === undefined ? "" : "AND replace(model, '[1m]', '') = ?"}
-      ORDER BY id DESC LIMIT 1
-    `)
-      .get(session, agent, profile, ...(model === undefined ? [] : [withoutContextSuffix(model)]));
+      ${outcome} AND (? IS NULL OR replace(model, '[1m]', '') = ?)
+      ORDER BY id DESC
+    `);
+    for (const { agent, model } of requests) {
+      const requested = model === undefined ? null : withoutContextSuffix(model);
+      for (const row of query.iterate(session, agent, profile, requested, requested)) {
+        if (answerTargetName(row.target) === null) continue;
+        answers.set(agent, row);
+        break;
+      }
+    }
+    return answers;
   } catch {
-    // Missing schema, a lock, or unreadable bytes: leave the current row alone.
-    return null;
+    // Missing schema, a lock, or unreadable bytes: leave the current rows alone.
+    return new Map();
   } finally {
-    db?.close(true);
+    db?.close();
   }
 }
 

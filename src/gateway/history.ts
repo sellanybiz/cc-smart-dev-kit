@@ -57,10 +57,11 @@ const HISTORY_RETRY_MS = 60 * 1000;
  */
 export const HISTORY_SCHEMA_VERSION = 2;
 
-/** What a request did, as one row: metadata only, never a word of the conversation. */
+/** A 2xx answer failed: stream_error means an error or incomplete body; refused means a refusal stop. */
 export const HISTORY_OUTCOMES = ["stream_error", "refused"] as const;
 export type HistoryOutcome = (typeof HISTORY_OUTCOMES)[number];
 
+/** What a request did, as one row: metadata only, never a word of the conversation. */
 export interface HistoryRow {
   /** The subagent id header; absent on a main request or an older recorder. */
   agent?: null | string;

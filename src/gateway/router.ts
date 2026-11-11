@@ -3705,10 +3705,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       };
       outcome = {
         ...answered,
-        response: observedAnswer(answered.response, (tokens, outcome) => {
+        response: observedAnswer(answered.response, (tokens, ended) => {
           deps.history?.record({
             ...row,
-            outcome,
+            outcome: answered.response.ok ? ended : null,
             cost: costOf(answered.target, model.name, tokens),
             tokens,
           });
