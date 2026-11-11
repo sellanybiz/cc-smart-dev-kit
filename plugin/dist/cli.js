@@ -45555,16 +45555,6 @@ function startView(paths, project, who, options) {
     };
   });
 }
-function statusTask(paths, project, who) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const task = all.filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (!task)
-      return null;
-    const count = subtreeProgress(all, task.id);
-    return { number: task.number, subject: task.subject, closed: count.closed, total: count.total };
-  });
-}
 function holdingSteps(paths, project, number) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
@@ -45575,6 +45565,18 @@ function holdingSteps(paths, project, number) {
       number: task.number,
       open: holdingUnder(all, task.id).map((t) => ({ number: t.number, subject: t.subject }))
     };
+  });
+}
+function planProgress(paths, project, who) {
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const started = (id) => eventsOf(db, id).filter((e) => e.changes.status?.[1] === "in_progress").at(-1)?.at ?? all.find((t) => t.id === id)?.createdAt ?? 0;
+    const task = all.filter((t) => t.status === "in_progress" && (claimHeldBy(t.claim, who) || who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)).sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];
+    if (!task)
+      return null;
+    const plan = task.plan === null ? null : all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null;
+    const tasks = task.plan === null ? [] : all.filter((t) => t.kind === "task" && t.plan === task.plan);
+    return { task, plan, closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
   });
 }
 
@@ -52425,14 +52427,12 @@ function pinnedEffortOf(config, model, state, profile, nowMs) {
 }
 
 // src/cli/statusline.ts
-var TASK_SUBJECT_MAX = 60;
 function taskSegment(paths, project, who) {
-  const read = statusTask(paths, project, who);
+  const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null)
     return null;
-  const task = read.value;
-  const subject = task.subject.length > TASK_SUBJECT_MAX ? `${task.subject.slice(0, TASK_SUBJECT_MAX - 1)}\u2026` : task.subject;
-  return `#${task.number} ${subject}${task.total > 0 ? ` \xB7 ${task.closed}/${task.total}` : ""}`;
+  const { task, plan, closed, total } = read.value;
+  return plan === null ? task.subject : `${closed}/${total} \xB7 ${task.subject}`;
 }
 function currentTask(paths, input, env) {
   if (!isJsonObject19(input) || typeof input.cwd !== "string")
@@ -52558,7 +52558,9 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
   const task = currentTask(paths, input, env);
   const text = statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value, session, contextFactsOf(paths, input, env, state, session, nowMs));
-  console.log([text, cacheMiss, task].filter((part) => part !== null && part !== "").join(" \xB7 "));
+  const firstRow = [text, cacheMiss].filter((part) => part !== null && part !== "").join(" \xB7 ");
+  console.log([firstRow, task].filter((part) => part !== null && part !== "").join(`
+`));
   return 0;
 }
 
