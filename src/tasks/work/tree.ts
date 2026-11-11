@@ -6,7 +6,16 @@
  * never shown as an empty list.
  */
 import { claimLive } from "./identity";
-import { allTasks, eventsOf, isBlocked, isOpen, layerOf, listTasks, notesOf } from "./queries";
+import {
+  allTasks,
+  eventsOf,
+  isBlocked,
+  isOpen,
+  layerOf,
+  listTasks,
+  notesOf,
+  subtreeProgress,
+} from "./queries";
 import { type ReadState, readWorkStore } from "./read";
 import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } from "./types";
 
@@ -25,7 +34,7 @@ export interface TaskTreeNode {
   subject: string;
   status: WorkStatus;
   kind: WorkKind;
-  /** Plan, phase, task or subtask (D76). */
+  /** Plan, phase or task. */
   layer: WorkLayer;
   /** Blocking holds its parent while open; non-blocking holds nothing (D76). */
   type: WorkType;
@@ -107,7 +116,7 @@ function shapeTrees(
       return null;
     }
     sent += 1;
-    const count = subtreeCount(task);
+    const count = task.kind === "plan" ? subtreeProgress(all, task.id) : subtreeCount(task);
     return {
       session: task.createdBy,
       parentId: task.parentId,

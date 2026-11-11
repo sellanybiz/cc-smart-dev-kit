@@ -104,7 +104,10 @@ export function descendants(db: WorkDb, id: string): WorkTask[] {
 }
 /** Every descendant counts toward progress. */
 export function countedUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
-  return descendantsIn(tasks, id);
+  const root = tasks.find((t) => t.id === id);
+  return root?.kind === "plan"
+    ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan)
+    : descendantsIn(tasks, id);
 }
 /** Closed (done or dropped), of all descendants. */
 export function subtreeProgress(
@@ -139,11 +142,8 @@ function inProgressFirst(a: WorkTask, b: WorkTask): number {
 export function openSubtasks(db: WorkDb, id: string): WorkTask[] {
   return descendants(db, id).filter(isOpen).sort(inProgressFirst);
 }
-/**
- * A task's layer (D76), from its parent alone: a task under a task is a subtask; one at the top,
- * under a plan or under a phase is a task. A task an older kit nested deeper reads as a subtask.
- */
-export function layerOf(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkLayer {
+/** Kind is the layer, including a stray nested task from an older writer. */
+export function layerOf(task: WorkTask, _byId: ReadonlyMap<string, WorkTask>): WorkLayer {
   return task.kind;
 }
 /** The open tasks a task is blocked by, in number order: it cannot start or be done while one is. */
@@ -209,7 +209,12 @@ export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
   const byId = new Map(nodes.map((t) => [t.id, t]));
   const roots: WorkTree[] = [];
   for (const t of nodes) {
-    const parent = t.parentId ? byId.get(t.parentId) : null;
+    const linked = t.parentId ? byId.get(t.parentId) : undefined;
+    const parent =
+      linked ??
+      (t.kind === "task" && t.plan !== null
+        ? nodes.find((n) => n.kind === "plan" && n.plan === t.plan)
+        : undefined);
     if (parent) parent.children.push(t);
     else roots.push(t);
   }

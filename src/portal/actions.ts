@@ -1891,7 +1891,7 @@ async function runActionByName(
       if (body.force === true && body.confirm !== true)
         return { ok: false, lines: ["confirm the forced take-over first"] };
       const session = liveSessions(action.portal.paths.claudeConfigDir).find(
-        (s) => s.sessionId === body.session,
+        (s) => s.sessionId === body.session && s.name.trim() !== "",
       );
       if (!session) return { ok: false, lines: ["unknown destination session; nothing changed"] };
       const ops = createTaskOps({

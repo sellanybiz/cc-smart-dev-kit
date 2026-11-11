@@ -57,30 +57,32 @@ The store enforces these rules, not the caller:
   transaction.
 - A task blocked by an open task can neither start nor be done.
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
-- Delete is for a mistake with no notes or subtasks, not for finished work. A deleted task's
+- Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
 
 ### Layers, types and blocked-by (D76)
 
-D76 (2026-11-03, 1.11.0) gives the work three layers under a plan: **phase › task ›
-subtask**. A task's layer is never stored. `layerOf` (`queries.ts`) reads it from the parent
-alone: a plan or a phase is its kind, a task under a task is a `subtask`, and any other task
-(at the top, under a plan, under a phase) is a `task`. So a move changes the layer with it, and
-there is no second value to drift. `placeValid` (`store.ts`) holds the shape, on create and on
-every move:
+The hierarchy is **Session › Plan › Phase › Task**. Plans sit at the top. A phase sits under
+its plan. A task sits under a phase or at the top; a task never holds another task. A top-level
+task may still belong to a plan: the `plan` column decides membership, not the parent chain.
+A task without a plan is loose. `placeValid` enforces new placements. `layerOf` returns the kind,
+including for a stray nested task written by an older kit.
 
-- Nothing goes under a subtask. The refusal names the task above it, where the new one fits.
-- A task that has subtasks cannot move under a task: its subtasks would be a fourth layer.
-- A plan stays at the top and a phase under its plan: neither can be moved.
-
-A store an older kit nested deeper reads as it is: anything below a task is a subtask. The
-layer rules hold only a move, so each of those tasks still changes and closes where it sits.
+Schema v4 lifts old tasks to tasks under the nearest phase, or to the top for loose work.
+This is a repair on **every write-mode open**, not just the version change: a still-running 3.x
+session may write another nested task. Read-only hooks and the portal tolerate those rows before
+the next repair. The repair takes the SQLite write lock and saves `work.db.v4.bak` through
+`serialize()`, including committed write-ahead-log data, before the first move. It keeps notes,
+claims and history, and records every parent change. An open blocking child becomes an explicit
+blocker of its former parent, preserving the hold on completion. Work below a non-blocking task
+inherits that type, so the lifted work does not start holding the phase. Old code can still read
+the store (`min_compatible` stays 1).
 
 **The type** says whether a task holds the one above it. A `blocking` task (the default) must
 be closed before its parent is done. A `non-blocking` one (a nice-to-have, a later idea) holds
 nothing. `holdingUnder` (`queries.ts`) is the one answer to "what holds this task": the open
 tasks below it, reached through blocking tasks only, those in progress first. It never walks
-into a non-blocking task, so a blocking subtask of a non-blocking task holds only that task.
+into a non-blocking task, so a blocking task of a non-blocking task holds only that task.
 It does walk on below a closed task, so a task closed early cannot hide open work under it.
 `doneValid`, the builder's hand-back check (`builder-finish`) and the portal's phase steps all
 use it.
@@ -91,9 +93,9 @@ or `done`; a blocker that is done or dropped lets it go. The check runs on the c
 only, so a task already in progress when a blocker is added keeps going, and says it is
 blocked. `addBlockers` refuses a blocked-by cycle, a task of another project, a task above
 this one, and a task that already waits for this one through a parent: a parent waits for its
-blocking subtasks, so a subtask blocked by its parent, or by a task that waits for that parent,
+blocking tasks, so a task blocked by its parent, or by a task that waits for that parent,
 could never start, and none of them could ever be done. That last walk follows both kinds of
-wait (blocked-by, and a parent for the subtasks that hold it), so the order the blocks were
+wait (blocked-by, and a parent for the tasks that hold it), so the order the blocks were
 added does not matter. Done is judged only on the move to done, so a done task's other fields
 still change.
 
@@ -103,7 +105,9 @@ under the plan task, once per plan and phase (`layPhase`). A second call answers
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
 out, it is the plan of the caller's latest own task that has one (made or claimed by it), never
 another session's plan. Only `task_list` with `scope: "plan"` falls back to the project's
-newest plan, to show it. `plan` alone makes the plan task, and takes a subject only.
+newest plan, to show it. `task_list` also takes `plan` (CLI: `--plan`) to select a slug.
+When the session owns several plans, `scope: "plan"` without a slug lists them all with their
+counts. The write default remains the latest own task with a plan. `plan` alone makes the plan task, and takes a subject only.
 Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
 each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
 
@@ -217,7 +221,7 @@ fields rather than writing null. References and evidence keep the task understan
 
 `cc-smart-dev-kit task mcp` runs the stdio MCP server. Its official SDK is isolated in
 `plugin/dist/tasks-mcp.js`, not `cli.js`. The tools are `task_create`, `task_update`,
-`task_done`, `task_note`, `task_list`, `task_get`, `task_search`, `task_delete`.
+`task_done`, `task_note`, `task_list`, `task_get`, `task_search`, `task_delete`, `task_take`.
 The CLI exposes the same operations, including import, branch lists, checks and release
 lists; [README](../../README.md) lists their arguments. `task_get` and `task show` cap
 long output and accept an offset. Search uses SQL `LIKE`, not FTS5.
@@ -243,15 +247,24 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
 - `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
   has open blocking steps (`holdingUnder`).
 
-Progress has one rule everywhere — the status line's `#12 Subject · 2/5`, `task_list` and the
-portal: the tasks under a task at every depth, closed (done or dropped) of all of them
-(`subtreeProgress`). Non-blocking tasks count too: progress says how much of the work is closed,
-and `holdingUnder` says what still holds the parent's done. A phase's steps on the portal are
-the one exception, and say so: they count blocking steps only, with a dropped step left out of
-both numbers ([portal](portal.md) § The pages' facts and actions (B6d)).
+`planProgress(paths, project, who)` reads the current in-progress claimed item, its plan, and
+closed/total **tasks**, by the `plan` column. Plans and phases are not counted. The most recently
+started claimed item wins; notes and edits to an older plan do not steal the status line.
+A claimed phase counts its own plan. A loose task has no plan totals. Plan counts in `task_list`
+and the portal use the same membership rule. A phase's subtree counts and blocking steps stay
+separate: progress says how much work closed, and `holdingUnder` says what holds completion.
+
+**Take-over.** `task_take {task: "slug-or-#n", from?: "session", force?: true}` and
+`task take <plan-slug|#n> [--from <session>] [--force]` move a plan and every member of it, or
+one task, into the calling session. A phase alone cannot move. One `BEGIN IMMEDIATE` transaction
+checks the project, optional source session and every claim before changing anything. A live
+claim refuses and names the session; `force` takes it and says so. A dead claim needs no force.
+Linux checks both pid and start time; elsewhere a reused live pid needs force. Each row's history
+keeps both session ids. A caller with only a session id gets ownership but no process claim;
+a caller with no identity cannot take work.
 
 The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
-each project's work tree as plan › phase › task › subtask, its open work and what closed in the
+each project's work tree as plan › phase › task, its open work and what closed in the
 last seven days, each row with its layer, type, blockers and progress, each phase with its
 ledger, then the open task files by kind, stale ones marked. Filters narrow it to one project,
 blocked work or non-blocking work, and keep each match under the tasks above it. A project's
@@ -269,7 +282,8 @@ allow entry, denies the five built-in list tools, withdraws its D68 opt-in, and 
 claude-mem work state. claude-mem seeds `"true"` itself, so only a `"true"` set after setup wrote
 `"false"` is the person's, and stays.
 
-Run `cc-smart-dev-kit task import claude-mem` once to move open lists. claude-mem keeps
+Run `cc-smart-dev-kit task import claude-mem` once to move open lists. Each list becomes a plan
+with one phase; its items become tasks under that phase. claude-mem keeps
 lists per project, named for the folder, so the import reads the project named for the
 current folder (`--project` selects another stored one) and writes into that folder's kit
 project. It reads claude-mem's database read-only and refuses an unknown schema. It folds the
@@ -296,3 +310,10 @@ integrity, and project-file findings. It does not replace the live checks in the
 
 FTS5 search, database snapshots, hand ordering, a Claude Code task-panel mirror,
 cross-machine sync of live work, and editing tasks from the portal are not built yet.
+
+`GET /api/tasks/<id>` returns `{task, notes, events}` from the read-only store (`read.ts`).
+The internal id is the tree row's `id`, not its project-local `#n`. `WorkTaskNode` carries
+`session` (creator/owner), `parentId`, `claim` (`live`, `dead`, `none`), and `notes` / `events`
+counts. `task.take` takes `{task, session, from?, force?, confirm?}` through the CLI's own
+operations. The destination must be a named live session; an unknown one changes nothing.
+A forced move also needs `confirm: true`.

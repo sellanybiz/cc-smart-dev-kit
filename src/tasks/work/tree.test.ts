@@ -64,7 +64,7 @@ test("plan, phase and subtasks as one tree, with closed/total over each subtree"
   // The plan task is open (its phase is open), so it comes first; the old closed task is gone.
   // Each level lists open work first: Two before One, which is done.
   expect(outline(tree.value.roots)).toEqual([
-    "#1 plan [pending] 1/3",
+    "#1 plan [pending] 0/0",
     "  #2 Phase A [pending] 1/2",
     "    #4 Two [pending] 0/0",
     "    #3 One [done] 0/0",

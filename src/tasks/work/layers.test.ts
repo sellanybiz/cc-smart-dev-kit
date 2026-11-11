@@ -55,7 +55,7 @@ test("each task's layer comes from its parent: plan, phase, task, subtask", () =
   db.close();
 });
 
-test("a subtask holds no subtasks, a task with subtasks never becomes one, plans and phases stay put", () => {
+test("a subtask holds no tasks, a task with tasks never becomes one, plans and phases stay put", () => {
   const { db } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
@@ -224,14 +224,14 @@ test("a block that would wait on itself through a parent is refused, at any dept
   ok(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 2));
   expect(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 3)).toEqual({
     ok: false,
-    why: '#3 "X" cannot be blocked by #1 "Parent": #1 "Parent" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+    why: '#3 "X" cannot be blocked by #1 "Parent": #1 "Parent" already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done',
   });
   // The other order: X waits for Parent first, then Child blocked by X.
   ok(updateTask(db, child.id, { waitsFor: { remove: [x.id] } }, who, 4));
   ok(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 5));
   expect(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 6)).toEqual({
     ok: false,
-    why: '#2 "Child" cannot be blocked by #3 "X": #3 "X" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+    why: '#2 "Child" cannot be blocked by #3 "X": #3 "X" already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done',
   });
   // A non-blocking child holds nothing, so the same chain waits on nothing: it is let through.
   ok(updateTask(db, child.id, { type: "non-blocking" }, who, 7));
@@ -487,7 +487,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     expect(ops.call("list", { scope: "all" })).toMatchObject({
       ok: true,
       text: [
-        "#1 [pending · plan] The plan · 0/3",
+        "#1 [pending · plan] The plan · 0/2",
         "  #2 [pending · phase A] Build A · 0/2 · agent none · branch none",
         "    #3 [pending] Step",
         "    #4 [pending · non-blocking · blocked by #3] Polish",

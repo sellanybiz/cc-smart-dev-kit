@@ -235,7 +235,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         }
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        if (input.phase !== undefined || input.plan !== undefined) {
+        if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
           if (input.status !== undefined)
@@ -309,6 +309,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           };
         }
         const parent = input.parent ? work(input.parent) : undefined;
+        if (input.plan !== undefined && parent?.plan !== input.plan)
+          throw new Error("parent belongs to another plan");
         // The task and its blockers go in one transaction: a refused blocker leaves no task.
         const task = value(
           writeWork(store, () =>
@@ -322,7 +324,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
-                plan: parent?.plan ?? ownPlan,
+                plan: input.plan ?? parent?.plan ?? ownPlan,
                 blockedBy,
               },
               who,

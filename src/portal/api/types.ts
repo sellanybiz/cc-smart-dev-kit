@@ -724,3 +724,10 @@ export type LiveEventName = keyof LiveEvents;
 
 /** What publishes to the stream: an event's name and exactly its data. */
 export type LivePublish = <K extends LiveEventName>(event: K, data: LiveEvents[K]) => void;
+
+/** GET /api/tasks/<id>: the complete stored task and its notes and history. */
+export interface TaskDetailAnswer {
+  task: import("../../tasks/work/types").WorkTask;
+  notes: import("../../tasks/work/types").WorkNote[];
+  events: import("../../tasks/work/types").WorkEvent[];
+}

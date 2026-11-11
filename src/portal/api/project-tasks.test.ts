@@ -11,12 +11,12 @@ import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { projectKey } from "../../tasks/context";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../../tasks/work/db";
-import { type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
+import { addNote, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
 import type { Result, Who } from "../../tasks/work/types";
 import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
-import { type ActionContext, portalOmnirouteContext } from "../actions";
+import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { addProjectRoot, forgetProjectsList } from "./projects";
 import { answerApi } from "./routes";
@@ -92,6 +92,34 @@ async function answerOf(deps: PageDataDeps, id: string) {
   const url = new URL(`http://127.0.0.1/api/projects/${id}/tasks`);
   return await answerApi(deps, url);
 }
+
+test("task detail returns description, notes and history and refuses an unknown move destination", async () => {
+  const { deps, paths } = await world(repo());
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const task = value(
+    createTask(db, { project: "p", subject: "Detail", description: "Full description" }, who, NOW),
+  );
+  value(addNote(db, task.id, "A note", who, NOW + 1));
+  db.close();
+  const answer = await answerApi(deps, new URL(`http://127.0.0.1/api/tasks/${task.id}`));
+  expect(answer?.status).toBe(200);
+  expect(answer?.body).toMatchObject({
+    task: { id: task.id, description: "Full description" },
+    notes: [{ text: "A note" }],
+    events: [{ action: "created" }, { action: "noted" }],
+  });
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/wabcdefghij")))?.status).toBe(
+    404,
+  );
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/%zz")))?.status).toBe(400);
+  expect(await runAction("task.take", { task: task.id, session: "unknown" }, deps.action)).toEqual({
+    ok: false,
+    lines: ["unknown destination session; nothing changed"],
+  });
+  expect(
+    await runAction("task.take", { task: task.id, session: "unknown", force: true }, deps.action),
+  ).toEqual({ ok: false, lines: ["confirm the forced take-over first"] });
+});
 
 beforeEach(() => {
   forgetProjectsList();
@@ -224,7 +252,7 @@ describe("a project's tasks answer (D75)", () => {
           ref: "#1",
           status: "pending",
           subject: "launch",
-          total: 2,
+          total: 0,
           type: "blocking",
           updatedAt: "2026-02-27T00:00:00.000Z",
         },

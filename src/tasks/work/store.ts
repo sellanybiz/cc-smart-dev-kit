@@ -165,14 +165,7 @@ function newId(): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   return `w${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
 }
-/**
- * Where a task may sit: never under itself or its own subtasks, never in another project, and
- * within the three layers (D76). Nothing goes under a subtask, and a task that has subtasks never
- * becomes a subtask itself, which would put them a fourth layer down. A plan and a phase stay where
- * the kit put them: a plan at the top, a phase under its plan. `moving` is null for a new task.
- * A task that stays where it is meets none of it: a store an older kit nested deeper keeps
- * every task workable where it sits, and only a move is held to the layers.
- */
+/** Validate a new placement. Legacy tasks left where they sit remain editable. */
 function placeValid(
   db: WorkDb,
   project: string,
@@ -216,7 +209,7 @@ function unblockedValid(db: WorkDb, task: WorkTask): void {
 /**
  * Adds blockers to a task: each in its project, never a cycle (a task waiting on itself), never
  * a task above it, and never a task that already waits for this one through a parent. A parent
- * waits for its blocking subtasks to be done, so a subtask blocked by its parent (or by a task
+ * waits for its blocking tasks to be done, so a task blocked by its parent (or by a task
  * that waits for that parent) could never start, and neither could ever be done.
  */
 function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void {
@@ -227,7 +220,7 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
     for (let up = byId.get(task.parentId ?? ""); up; up = byId.get(up.parentId ?? ""))
       if (up.id === other.id)
         throw new Error(
-          `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its subtasks`,
+          `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`,
         );
     const seen = new Set<string>();
     const pending = [ref];
@@ -238,7 +231,7 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
       seen.add(id);
       pending.push(...(byId.get(id)?.waitsFor ?? []));
     }
-    // A wait through a parent: a task waits for its blockers, and a parent for the subtasks that
+    // A wait through a parent: a task waits for its blockers, and a parent for the tasks that
     // hold it (`holdingUnder`). When the blocker already waits for this task that way, at any
     // depth and in either order the blocks were added, neither could ever be done.
     const tasks = [...byId.values()];
@@ -249,7 +242,7 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
       if (!id || reached.has(id)) continue;
       if (id === task.id)
         throw new Error(
-          `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done`,
+          `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`,
         );
       reached.add(id);
       waits.push(...(byId.get(id)?.waitsFor ?? []), ...holdingUnder(tasks, id).map((t) => t.id));
@@ -432,7 +425,7 @@ export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
   return writeWork(db, () => {
     const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
-      throw new Error("task has subtasks");
+      throw new Error("task has tasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
     const last: Record<string, [unknown, unknown]> = {};
@@ -455,7 +448,7 @@ export function systemClose(
 }
 /**
  * `systemClose` inside a transaction the caller holds: the kit closes a task and drops its open
- * subtasks, each with an automatic note and a history entry that give the reason. Closed as done
+ * tasks, each with an automatic note and a history entry that give the reason. Closed as done
  * (a merge), it drops only the open tasks that hold it (`holdingUnder`): non-blocking work stays
  * open for whoever picks it up. Dropped, it drops every open task under it.
  */

@@ -71,7 +71,7 @@ function repairTaskLayers(sqlite: Database, file: string): void {
   for (;;) {
     const rows = sqlite
       .query<Nested, []>(
-        `SELECT t.id,t.project,t.number,t.parent_id,p.number AS parent_number,p.parent_id AS above,t.blocking,p.blocking AS parent_blocking,t.status FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task'`,
+        `SELECT t.id,t.project,t.number,t.parent_id,p.number AS parent_number,p.parent_id AS above,t.blocking,p.blocking AS parent_blocking,t.status FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' ORDER BY t.number`,
       )
       .all();
     if (!rows.length) return;
@@ -80,7 +80,17 @@ function repairTaskLayers(sqlite: Database, file: string): void {
         writeFileSync(`${file}.v4.bak`, sqlite.serialize(), { mode: 0o600 });
       backed = true;
     }
-    for (const row of rows) {
+    for (const row of rows.slice(0, 1)) {
+      const seen = new Set([row.id]);
+      let up: string | null = row.parent_id;
+      while (up !== null) {
+        if (seen.has(up)) throw new Error("legacy task parents form a cycle");
+        seen.add(up);
+        up =
+          sqlite
+            .query<{ parent_id: string | null }, [string]>("SELECT parent_id FROM tasks WHERE id=?")
+            .get(up)?.parent_id ?? null;
+      }
       // Re-read after each move: an ancestor may have moved earlier in this pass.
       const parent = sqlite
         .query<{ parent_id: string | null; blocking: number }, [string]>(
@@ -151,7 +161,12 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
           else step(sqlite, file);
           sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
-        repairTaskLayers(sqlite, file);
+        const minimum = Number(
+          sqlite
+            .query<{ value: string }, []>("SELECT value FROM meta WHERE key='min_compatible'")
+            .get()?.value ?? 1,
+        );
+        if (minimum <= WORK_SCHEMA_VERSION) repairTaskLayers(sqlite, file);
         sqlite.run("COMMIT");
       } catch (error) {
         sqlite.run("ROLLBACK");
