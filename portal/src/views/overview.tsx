@@ -148,7 +148,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
 /**
  * The gateway and auto-mode judge switches run the CLI's own commands, asked first, its result in place.
  */
-function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number }) {
+export function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number }) {
   return (
     <PagePad>
       <Card>
