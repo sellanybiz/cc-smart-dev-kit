@@ -30,7 +30,6 @@ import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { loadConfigFile } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
-import { gatewayEnv } from "../gateway/settings";
 import { processStartTime } from "../setup/lock";
 import { backupDir, listBackups, realTarget } from "../setup/write";
 import { capturePrinted, printed } from "../testing/fake-machine";
@@ -943,9 +942,12 @@ describe("migrate — the later 0.3.0 development build", () => {
     expect(await m.run({ yes: true })).toBe(0);
     expectMoved(m);
 
-    // The settings: this version's values, and nothing else touched.
+    // Migration moves the old keys; it does not add keys introduced after that install.
     const settings = readJson(m.settingsFile);
-    expect(settings.env).toEqual(gatewayEnv(PORT));
+    expect(settings.env).toEqual({
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}`,
+      ENABLE_TOOL_SEARCH: "true",
+    });
     expect(settings.model).toBe("opus");
     expect(settings.extraKnownMarketplaces[OLD.marketplace]).toBeDefined();
 

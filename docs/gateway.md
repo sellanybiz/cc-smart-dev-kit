@@ -1522,7 +1522,7 @@ with no version, and a family with no row get the body with only `model` changed
 come from Anthropic's docs, read 2026-10-17: the per-model table in
 platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting, the extended
 thinking page ("Claude 4.7 and later models … reject" a budget; 4.5 and earlier refuse
-`adaptive`), and the migration guides of Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1. A
+`adaptive`), and the migration guides of Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1. Fable 5.2's [migration guide](https://platform.claude.com/docs/en/models/fable-5-2/migration-guide), read 2026-11-11, adds its sampling row. A
 newer version that changes a rule shows in the WARN line with Anthropic's reason, and its
 row changes then.
 
@@ -1532,6 +1532,7 @@ row changes then.
 | | Opus 5.5 and later, Fable 5 and later | no `thinking` field (they always think); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the Opus guide's own before / after); a named effort is kept |
 | | Opus 5, Haiku 5.5 and later | kept; an effort of `xhigh` or `max` becomes `high` (they take thinking off only up to `high`) |
 | `thinking: {type: "enabled", budget_tokens}` | every family, 4.7 and later | `{type: "adaptive"}`, `display` kept |
+| `temperature` other than 1, `top_p`, `top_k` | Fable 5.2 and later | left out, using the defaults (Fable 5.2 migration guide) |
 | `tool_choice` `any` or `tool` | Sonnet 5.5, Opus 5.5, Fable 5.1, and later | `{type: "auto"}`, `disable_parallel_tool_use` kept |
 | `temperature` other than 1, any `top_p`, any `top_k` | Sonnet 5.5, Opus 5.5, Haiku 5.5, and later | left out (the default) |
 
@@ -1982,8 +1983,28 @@ removed):
    tool definition on every turn (184K tokens of context on a first turn, against 70K). It
    stays: it is the one value that forces the deferred tools on every version.
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
+3. `ANTHROPIC_DEFAULT_FABLE_MODEL` = the kit's current Fable model (`GATEWAY_FABLE_MODEL`,
+   currently `claude-fable-5-2`). It is an owned key: `off` removes it only while it still
+   holds our value. A value you set or changed stays and gets an information line.
 
-**No model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
+**Why Fable is pinned (owner decision, 2026-11-11):** Claude Code 2.1.322's model table maps
+`fable` to `claude-fable-5` for the gateway provider, rather than the direct provider's
+`claude-fable-5-2`. Live, the gateway picker showed an older Fable. Model discovery does
+not fix a subscription login: a live debug log says `[gatewayDiscovery] skipped: no credential
+(ANTHROPIC_AUTH_TOKEN, apiKeyHelper, or API key)`. The kit writes no discovery or credential
+key. Opus, Sonnet and Haiku stay unpinned. A test ties the Fable pin to the newest Fable price
+row the kit knows, so a new Fable needs a kit release to move this pin.
+
+Normal `setup` refreshes this pin only while user settings hold our still-owned address for
+this router. It adds an absent pin or refreshes one still ours; a foreign pin stays with an
+information line. An off gateway stays off. The separate step uses `applyManagedJson` under
+setup's lock, with the same preview in `--dry-run`. `doctor` names the kit's Fable pin or the
+settings value. The pin lives in the user file only. A project that turns the gateway on
+for itself (`gateway project on`, including `/p/<profile>`) while the machine is off gets
+no pin, so its `fable` alias can still select the older gateway model. This is the design:
+a project's own model key follows Claude Code's settings precedence.
+
+**No other model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
 router takes it to its family's slot. Up to 0.4.3, `on` also wrote
 `ANTHROPIC_DEFAULT_HAIKU_MODEL` = `cc-smart-dev-kit-scout[1m]` and
 `ANTHROPIC_DEFAULT_SONNET_MODEL` = `cc-smart-dev-kit-worker[1m]`, each with `…_NAME` and
@@ -1997,7 +2018,7 @@ person's own login), nor `CLAUDE_CODE_SUBAGENT_MODEL` or `…_FORCE` (an agent l
 without a `model`, a reviewer say, would run on an affordable slot). `gateway status` warns
 when one of them is set.
 
-A gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
+Except for a personal Fable pin, which stays with an information line, a gateway key that exists and that `cc-smart-dev-kit` did not set stops `gateway on`, and the
 value is shown masked; nothing is overwritten. Remove it by hand first (a project moving
 from its own gateway does it in its migration). `ENABLE_TOOL_SEARCH` gets a word of its
 own in that message: many people set it themselves. `on` also refuses while the router

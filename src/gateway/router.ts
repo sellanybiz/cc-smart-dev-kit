@@ -775,6 +775,8 @@ interface ClaudeTargetRules {
  *   - the migration guides of Sonnet 5.5, Opus 5.5 and Haiku 5.5 (the sampling fields; a
  *     forced `tool_choice` on Sonnet and Opus 5.5) and of Fable 5.1 (a forced `tool_choice`,
  *     which Fable 5 still takes).
+ * Fable 5.2 also refuses sampling fields (read 2026-11-11):
+ * https://platform.claude.com/docs/en/models/fable-5-2/migration-guide
  * A rule a newer version changes shows in the WARN line with Anthropic's reason; its row
  * changes then.
  */
@@ -799,6 +801,15 @@ const CLAUDE_TARGET_RULES: Readonly<
         thinkingOff: "left out",
       },
       since: { major: 5, minor: 1 },
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out",
+      },
+      since: { major: 5, minor: 2 },
     },
   ],
   haiku: [

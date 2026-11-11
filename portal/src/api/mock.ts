@@ -582,7 +582,7 @@ export function mockData(empty: boolean): MockData {
       { backend: "Claude login", id: "claude-haiku-5-5", context: "the plan's", plan: true },
       { backend: "Claude login", id: "claude-sonnet-5-5", context: "the plan's", plan: true },
       { backend: "Claude login", id: "claude-opus-5-5", context: "the plan's", plan: true },
-      { backend: "Claude login", id: "claude-fable-5", context: "the plan's", plan: true },
+      { backend: "Claude login", id: "claude-fable-5-2", context: "the plan's", plan: true },
     ],
     slots: rows,
     switches: {
