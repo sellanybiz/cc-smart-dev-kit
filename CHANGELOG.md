@@ -12,8 +12,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
     Each old subtask becomes a task under the same phase, or a loose task. Its notes, history
     and claim stay. When a subtask used to hold its parent, the move keeps that hold as an
     explicit "blocked by".
-  - The move runs again whenever the store is opened for writing. So a task that an older 3.x
-    session nests after the update is moved up at the next open.
+  - The move runs again whenever a new process opens the store for writing: a new session, a
+    `task` command or the portal. So a task that an older 3.x session nests after the update is
+    moved up then. Until that happens, 4.0 reads such a task without trouble.
 - **Several plans per session, one at a time.** The task tools take `plan`, the plan's name
   (its slug), to pick which plan they act on. With several plans, `task_list` with
   `scope: "plan"` shows them all. The plan and build skills now run plans one after another,
@@ -47,10 +48,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **Claude Fable 5.2 through the gateway.** Behind a gateway, Claude Code maps `fable` to an
   older Fable. While the gateway is on, the kit now sets `ANTHROPIC_DEFAULT_FABLE_MODEL` to
   `claude-fable-5-2`, so `/model` lists Fable 5.2. `gateway off` removes the setting, and a
-  value you set yourself stays yours. The router's prices know Fable 5.2.
+  value you set yourself stays yours. The router's prices know Fable 5.2. When a slot's chain
+  names Fable 5.2, the router leaves out the sampling fields it refuses (`temperature` other
+  than 1, `top_p`, `top_k`), as Anthropic's migration guide says.
 - **The portal's switches say what they do.** The "opus and fable slots" switch is gone. Each
   slot keeps its own switch on the Slots page. The judge switch is now "Auto-mode judge". It
-  sits below the gateway switch and is off while the gateway is off.
+  sits below the gateway switch, and you cannot change it while the gateway is off.
 
 **What to run:** this is a major version, so update to it on purpose with
 `cc-smart-dev-kit update`, then restart Claude Code. The task store moves by itself the first

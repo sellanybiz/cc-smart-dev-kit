@@ -52439,8 +52439,8 @@ function taskSegment(paths, project, who) {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null)
     return null;
-  const { task, plan, closed, total } = read.value;
-  return plan === null ? task.subject : `${closed}/${total} \xB7 ${task.subject}`;
+  const { task, closed, total } = read.value;
+  return task.plan === null ? task.subject : `${closed}/${total} \xB7 ${task.subject}`;
 }
 function currentTask(paths, input, env) {
   if (!isJsonObject19(input) || typeof input.cwd !== "string")

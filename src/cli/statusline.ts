@@ -83,8 +83,9 @@ import type { AlertsHere } from "../workflow/alerts";
 export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null) return null;
-  const { task, plan, closed, total } = read.value;
-  return plan === null ? task.subject : `${closed}/${total} · ${task.subject}`;
+  // Plan membership is the task's own `plan` column: the plan task's row may be gone.
+  const { task, closed, total } = read.value;
+  return task.plan === null ? task.subject : `${closed}/${total} · ${task.subject}`;
 }
 
 function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {

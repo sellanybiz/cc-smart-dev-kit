@@ -157,6 +157,28 @@ describe("the current task's own row", () => {
     }
   });
 
+  it("counts a plan's tasks even when its plan task row is gone", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      const done = t.ok(
+        createTask(t.db, { project: t.project, plan: "kept", subject: "Done" }, t.who, 1),
+      );
+      t.ok(updateTask(t.db, done.id, { status: "done" }, t.who, 2));
+      t.ok(
+        createTask(
+          t.db,
+          { project: t.project, plan: "kept", subject: "Finish the import", status: "in_progress" },
+          t.who,
+          3,
+        ),
+      );
+      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n1/2 · Finish the import");
+    } finally {
+      t.db.close();
+    }
+  });
+
   it("shows a loose task's title alone", async () => {
     const w = world();
     const t = tasks(w);
