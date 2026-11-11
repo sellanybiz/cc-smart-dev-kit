@@ -418,6 +418,21 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
     );
   });
 
+  it("a switch names the tier by the alias the person picked, not the id an override resolved", async () => {
+    const line =
+      "cc-smart-dev-kit: this session runs on Claude Fable, the premium model — it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.";
+    // `/model opus` where ANTHROPIC_DEFAULT_OPUS_MODEL is a Fable id: the opus tier, no line.
+    const opusAsFable = { ...hookEnv(), ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-fable-5-2" };
+    const toOpus = { ...switchTo("claude-fable-5-2"), requested_model: "opus" };
+    expect(await runHook(fableSessionHook, toOpus, opusAsFable)).toEqual({});
+    // `/model fable` where ANTHROPIC_DEFAULT_FABLE_MODEL is an Opus id: the fable tier, the line.
+    const fableAsOpus = { ...hookEnv(), ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-opus-5-5" };
+    const toFable = { ...switchTo("claude-opus-5-5"), requested_model: "fable" };
+    expect(told(await runHook(fableSessionHook, toFable, fableAsOpus))).toBe(
+      line.replace("Claude Fable", "Claude Opus"),
+    );
+  });
+
   it("the hint, then a switch to Fable: both lines, each once", async () => {
     const env = hookEnv();
     expect(told(await runHook(fableSessionHook, start("claude-sonnet-5-5"), env))).toBe(

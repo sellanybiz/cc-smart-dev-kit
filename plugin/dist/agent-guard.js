@@ -18672,9 +18672,9 @@ function familyFirstTarget(gateway, family) {
     return null;
   return gateway.config.slots[slot]?.[0] ?? null;
 }
-function tierOfMappedId(model, gateway, env) {
+function tierOfMappedId(model, gateway, env, order) {
   const id = withoutContextSuffix(model.trim());
-  for (const premium of ["opus", "fable"]) {
+  for (const premium of order) {
     const override = stringField(env[familyEnv(premium)]);
     if (override !== null && withoutContextSuffix(override.trim()) === id)
       return premium;
@@ -18729,7 +18729,7 @@ function resolveLaunchModel(name, gateway, env) {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
-    const mapped = tierOfMappedId(text, gateway, env);
+    const mapped = tierOfMappedId(text, gateway, env, ["fable", "opus"]);
     const resolved = resolveName(text, gateway);
     if (mapped === null || resolved.tier !== null && resolved.family !== null)
       return resolved;
@@ -18748,7 +18748,7 @@ function resolveSessionModel(session, gateway, env) {
   const text = withoutContextSuffix(session.model.trim());
   const family = claudeFamily(text);
   const own = family !== null || text.startsWith("claude-") ? { claude: true, family, model: text, tier: tierOfReading(family) } : resolveTarget(text);
-  const mapped = tierOfMappedId(text, gateway, env);
+  const mapped = tierOfMappedId(text, gateway, env, ["opus", "fable"]);
   return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 var SUBAGENT_MODEL_FORCE_ENV = "CLAUDE_CODE_SUBAGENT_MODEL_FORCE";
@@ -20794,8 +20794,11 @@ function currentModel(event, input, env) {
   const asked = (model) => model === null ? null : { model, served: false };
   if (event === "SessionStart")
     return asked(stringField(input.model));
-  if (event === "PostModelSwitch")
-    return asked(stringField(input.to_model));
+  if (event === "PostModelSwitch") {
+    const alias = stringField(input.requested_model);
+    const family = alias === null ? undefined : CLAUDE_FAMILIES.find((one) => one === alias);
+    return asked(family ?? stringField(input.to_model));
+  }
   return sessionModelOf(input, env);
 }
 function fableSession(input, env, paths) {

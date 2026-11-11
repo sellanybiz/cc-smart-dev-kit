@@ -962,8 +962,10 @@ since left — and that it shows on `PostModelSwitch` and `Stop` is still not pr
 Which model, per event:
 - a **start**: only the `model` the input names — no fallback there (the schema Claude Code
   2.1.300 carries has `source` and an optional `model`);
-- a **switch** (`PostModelSwitch`): `to_model` — "the resolved model id the session runs after
-  the switch", from Claude Code's own input schema (2.1.302, read from the shipped binary). So
+- a **switch** (`PostModelSwitch`): the alias the person picked (`requested_model`, when it is a
+  family name: `opus`, `fable`), else `to_model` — "the resolved model id the session runs after
+  the switch", from Claude Code's own input schema (2.1.302, read from the shipped binary). The
+  alias names the tier asked for, so `/model opus` whose override is a Fable id stays `opus`. So
   the line appears AT the switch;
 - a **finished answer** (`Stop`): the model that answered, from the transcript's last assistant
   message, then `ANTHROPIC_MODEL` (`sessionModelOf`, one home with the guard's fork rule). This

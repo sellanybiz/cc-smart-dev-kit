@@ -200,14 +200,19 @@ function familyFirstTarget(gateway: GatewayFacts, family: ClaudeFamily | null): 
  * 2026-10-16). Both sides are compared without a context suffix (`[1m]`): the router sends the
  * model without it, so the id that answers never carries it.
  *
- * **`opus` is checked first** (the owner, 2026-11-11): an id the person mapped behind `opus` is
- * the `opus` tier, even when the same id also stands for `fable` (the fable slot, or
- * `ANTHROPIC_DEFAULT_FABLE_MODEL`, names it too). The person put it behind `opus`, and the kit
- * does not second-guess that mapping.
+ * An id both tiers name is read in `order`. **An id that answered reads `opus` first** (the owner,
+ * 2026-11-11): the person put it behind `opus`, and the kit does not second-guess that mapping.
+ * An id a launch NAMES reads `fable` first, the stricter one: it asks for a model, and nothing
+ * says which tier it meant.
  */
-function tierOfMappedId(model: string, gateway: GatewayFacts, env: Env): "fable" | "opus" | null {
+function tierOfMappedId(
+  model: string,
+  gateway: GatewayFacts,
+  env: Env,
+  order: readonly ["fable", "opus"] | readonly ["opus", "fable"],
+): "fable" | "opus" | null {
   const id = withoutContextSuffix(model.trim());
-  for (const premium of ["opus", "fable"] as const) {
+  for (const premium of order) {
     const override = stringField(env[familyEnv(premium)]);
     if (override !== null && withoutContextSuffix(override.trim()) === id) return premium;
     const first = familyFirstTarget(gateway, premium);
@@ -326,7 +331,7 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
     // launch that names an id asks for that model: `claude-fable-…` named outright is Fable,
     // even where the opus slot answers with it. Only an id that already ANSWERED reads as the
     // tier it was mapped behind (`resolveSessionModel`).
-    const mapped = tierOfMappedId(text, gateway, env);
+    const mapped = tierOfMappedId(text, gateway, env, ["fable", "opus"]);
     const resolved = resolveName(text, gateway);
     if (mapped === null || (resolved.tier !== null && resolved.family !== null)) return resolved;
     return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
@@ -376,7 +381,7 @@ export function resolveSessionModel(
     family !== null || text.startsWith("claude-")
       ? { claude: true, family, model: text, tier: tierOfReading(family) }
       : resolveTarget(text);
-  const mapped = tierOfMappedId(text, gateway, env);
+  const mapped = tierOfMappedId(text, gateway, env, ["opus", "fable"]);
   return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 

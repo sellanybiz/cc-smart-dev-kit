@@ -201,6 +201,20 @@ describe("which tier a model answers (`resolveLaunchModel`)", () => {
     expect(resolveSessionModel(served, opusSlot, fableEnv)).toMatchObject({ tier: "opus" });
   });
 
+  test("a backend id a launch NAMES, mapped behind both tiers, is fable: the stricter reading", () => {
+    const both = {
+      ANTHROPIC_DEFAULT_FABLE_MODEL: "omniroute:glm-x",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "omniroute:glm-x",
+    };
+    expect(resolveLaunchModel("omniroute:glm-x", NO_GATEWAY, both)).toMatchObject({
+      tier: "fable",
+    });
+    // The same id as the one that ANSWERED the session: opus, the person put it there.
+    expect(
+      resolveSessionModel({ model: "omniroute:glm-x", served: true }, NO_GATEWAY, both),
+    ).toMatchObject({ tier: "opus" });
+  });
+
   test("a slot target with a context suffix maps the id that answers without it", () => {
     const suffixed: GatewayFacts = {
       config: config("omniroute:glm-5.3-flash", "claude-fable-5-2[1m]"),

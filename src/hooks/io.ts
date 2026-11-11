@@ -23,6 +23,8 @@ export interface HookInput {
    */
   from_model?: unknown;
   to_model?: unknown;
+  /** PostModelSwitch: the alias the person picked (`opus`, `fable`, …), or null. */
+  requested_model?: unknown;
   /** WorktreeCreate. */
   name?: unknown;
   /** WorktreeRemove. */

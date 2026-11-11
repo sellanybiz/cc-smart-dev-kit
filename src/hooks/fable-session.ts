@@ -64,6 +64,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { CLAUDE_FAMILIES } from "../gateway/targets";
 import {
   answeringFamily,
   type LaunchModel,
@@ -174,7 +175,14 @@ function currentModel(event: string, input: HookInput, env: Env): null | Session
   // answered.
   const asked = (model: null | string) => (model === null ? null : { model, served: false });
   if (event === "SessionStart") return asked(stringField(input.model));
-  if (event === "PostModelSwitch") return asked(stringField(input.to_model));
+  if (event === "PostModelSwitch") {
+    // The alias the person picked (`requested_model`: `opus`, `fable`, or null) names the tier
+    // they asked for; `to_model` is only the id an override resolved it to. A family alias wins,
+    // so `/model opus` with `ANTHROPIC_DEFAULT_OPUS_MODEL` set to a Fable id is the opus tier.
+    const alias = stringField(input.requested_model);
+    const family = alias === null ? undefined : CLAUDE_FAMILIES.find((one) => one === alias);
+    return asked(family ?? stringField(input.to_model));
+  }
   return sessionModelOf(input, env);
 }
 
