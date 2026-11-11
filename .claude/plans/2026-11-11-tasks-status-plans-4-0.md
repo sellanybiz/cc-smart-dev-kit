@@ -298,8 +298,9 @@ Builder, `sonnet`, `high`. A router change goes in the same release as A, so rou
 - **Two logins at once** (two sessions on two accounts, or an API key, through one router): one
   login's answer, with room in its headers, ends a record the other login still hits. The other
   login's next 429 writes it again within one request. Accepted, and said in the docs.
-- **Discovery:** a router that is down at startup makes Claude Code fall back to its cached list
-  (`~/.claude/cache/gateway-models.json`), then to its built-in list. Nothing breaks.
+- **Fable pin:** a person's own `ANTHROPIC_DEFAULT_FABLE_MODEL` always wins, and `gateway off`
+  leaves it alone. A project that turns the gateway on for itself while the machine is off gets
+  no pin (the pin lives in the user file).
 - **Per-family limits:** a `seven_day_opus` record is never ended by a Sonnet answer.
 - **Migration:** a store that an older kit nested four deep; a subtask with blockers (kept); a
   database another session holds open (SQLite busy timeout, as today); an older kit reading a v4
@@ -332,4 +333,4 @@ cannot be undone by a lower version, but v3 code still reads the lifted tasks.
   - the portal's Tasks page: collapse, filter, open a task, move a plan to another session;
   - plan mode writes into the project's `.claude/plans`;
   - the judge switch leaves the gateway as it was;
-  - `/model` shows Fable 5.2 with the gateway on, from the live list.
+  - `/model` shows Fable 5.2 with the gateway on, in a new session after `setup` (the pin).
