@@ -22243,12 +22243,12 @@ async function sendBackendTest(baseUrl, apiKey, request, fetchImpl = (url, init)
 
 // src/gateway/model-picker-step.ts
 import { existsSync as existsSync32 } from "fs";
-function gatewayConfigOf(paths) {
+function pickerConfig(paths) {
   return existsSync32(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : emptyConfig();
 }
 function ourActiveGateway(paths) {
   const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
-  return ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), BASE_URL_PATH, address) === "ours" && normalizedBaseUrl(String(address.value)) === routerBaseUrl(gatewayConfigOf(paths).port);
+  return ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), BASE_URL_PATH, address) === "ours" && normalizedBaseUrl(String(address.value)) === routerBaseUrl(pickerConfig(paths).port);
 }
 function applyModelPickerStep(paths, dryRun, retirePin = true) {
   const lines = [];
@@ -22270,13 +22270,13 @@ function applyModelPickerStep(paths, dryRun, retirePin = true) {
         stateDir: paths.stateDir,
         dryRun
       });
-      lines.push(...stale.changes.map(() => "~ modelPicker: the gateway is off; menu removed"));
+      lines.push(...stale.changes.map(() => "~ modelPicker: your settings do not route through the kit's router; menu removed"));
       return lines;
     }
     const result = writePicker({
       file: paths.settingsFile,
       stateDir: paths.stateDir,
-      config: gatewayConfigOf(paths),
+      config: pickerConfig(paths),
       dryRun
     });
     lines.push(...result.changes.map(() => "~ modelPicker: refresh the gateway model menu"));
@@ -24713,6 +24713,13 @@ function isCostly(model) {
   return name.includes("-opus-") || name.includes("-fable-");
 }
 var SETUP = `${COMMAND} gateway setup`;
+function menuNotSetWords(paths) {
+  try {
+    return ourActiveGateway(paths) ? "not set; run setup" : "not written: your settings do not route through the kit's router, so setup leaves the menu out";
+  } catch {
+    return "cannot judge while the gateway config cannot be read (see the gateway config line)";
+  }
+}
 async function gatewayChecks(options) {
   const { paths } = options;
   const read = options.read ?? options.runner;
@@ -24760,7 +24767,7 @@ async function gatewayChecks(options) {
       const whose = ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), PICKER_PATH, picker);
       let menu;
       if (!picker.found)
-        menu = whose === "changed" ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)` : ourActiveGateway(paths) ? "not set; run setup" : "not written: the router address in your settings is not the kit's own, so setup leaves the menu out";
+        menu = whose === "changed" ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)` : menuNotSetWords(paths);
       else if (whose !== "ours")
         menu = "your own menu";
       else if (!isObject2(picker.value) || !Array.isArray(picker.value.options))
@@ -33615,7 +33622,7 @@ function sessionLaunchModel(sessionModel, served, gateway, env) {
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveSessionModel({ model: sessionModel, served }, gateway, env);
 }
-function gatewayConfigOf2(paths) {
+function gatewayConfigOf(paths) {
   try {
     return loadConfigFile(paths.gatewayConfigFile);
   } catch {
@@ -33633,7 +33640,7 @@ function sessionModelOf(input, env) {
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
   const url = raw === undefined || raw === "" ? null : raw;
-  const config = gatewayConfigOf2(paths);
+  const config = gatewayConfigOf(paths);
   if (!baseUrlPointsAtGateway(url))
     return { config, gatewayOn: false, profile: null };
   const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;

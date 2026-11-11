@@ -20,7 +20,7 @@ import {
   routerBaseUrl,
 } from "./settings";
 
-function gatewayConfigOf(paths: CliPaths): GatewayConfig {
+function pickerConfig(paths: CliPaths): GatewayConfig {
   return existsSync(paths.gatewayConfigFile)
     ? loadConfigFile(paths.gatewayConfigFile)
     : emptyConfig();
@@ -38,7 +38,7 @@ export function ourActiveGateway(paths: CliPaths): boolean {
       BASE_URL_PATH,
       address,
     ) === "ours" &&
-    normalizedBaseUrl(String(address.value)) === routerBaseUrl(gatewayConfigOf(paths).port)
+    normalizedBaseUrl(String(address.value)) === routerBaseUrl(pickerConfig(paths).port)
   );
 }
 
@@ -72,13 +72,17 @@ export function applyModelPickerStep(paths: CliPaths, dryRun: boolean, retirePin
         stateDir: paths.stateDir,
         dryRun,
       });
-      lines.push(...stale.changes.map(() => "~ modelPicker: the gateway is off; menu removed"));
+      lines.push(
+        ...stale.changes.map(
+          () => "~ modelPicker: your settings do not route through the kit's router; menu removed",
+        ),
+      );
       return lines;
     }
     const result = writePicker({
       file: paths.settingsFile,
       stateDir: paths.stateDir,
-      config: gatewayConfigOf(paths),
+      config: pickerConfig(paths),
       dryRun,
     });
     lines.push(...result.changes.map(() => "~ modelPicker: refresh the gateway model menu"));

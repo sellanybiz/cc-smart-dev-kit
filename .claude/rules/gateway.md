@@ -334,7 +334,7 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 - `gateway on` owns `modelPicker`, with alias rows naming each first answerer.
   Normal setup and slot changes refresh it only for our owned active router address
-  (`ourActiveGateway`); otherwise setup removes an unchanged owned menu. A rollback keeps
+  (`ourActiveGateway`); otherwise setup and a slot change remove an unchanged owned menu. A rollback keeps
   that removal and `turnOff`'s, as a retirement.
   A menu the person set, changed or removed stays theirs, with an information line.
   On, off, setup and restore retire the old Fable pin only while it is ours.

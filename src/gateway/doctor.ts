@@ -75,6 +75,18 @@ function isCostly(model: string): boolean {
 /** The fix most gateway checks name: setup puts the router and its service back. */
 const SETUP = `${COMMAND} gateway setup`;
 
+/** A missing menu: "run setup" only when setup would write it (the same predicate setup asks). */
+function menuNotSetWords(paths: CliPaths): string {
+  try {
+    return ourActiveGateway(paths)
+      ? "not set; run setup"
+      : "not written: your settings do not route through the kit's router, so setup leaves the menu out";
+  } catch {
+    // A broken gateway.json has its own `gateway config:` failure below; this line only defers.
+    return "cannot judge while the gateway config cannot be read (see the gateway config line)";
+  }
+}
+
 /** Every gateway check, in order. */
 export async function gatewayChecks(options: {
   paths: CliPaths;
@@ -184,9 +196,7 @@ export async function gatewayChecks(options: {
         menu =
           whose === "changed"
             ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)`
-            : ourActiveGateway(paths)
-              ? "not set; run setup"
-              : "not written: the router address in your settings is not the kit's own, so setup leaves the menu out";
+            : menuNotSetWords(paths);
       else if (whose !== "ours") menu = "your own menu";
       else if (!isObject(picker.value) || !Array.isArray(picker.value.options))
         menu = "invalid rows";

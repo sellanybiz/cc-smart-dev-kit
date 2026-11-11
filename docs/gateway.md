@@ -2022,7 +2022,7 @@ The description names the first target, not a promise that a fallback will never
 
 `gateway on`, a machine slot change and normal `setup` refresh the owned user menu.
 Setup refreshes only our still-owned active address for this router; it never turns an off
-gateway on. While the address is not ours or not this router's, setup removes an unchanged
+gateway on. While the address is not ours or not this router's, setup or a slot change removes an unchanged
 owned menu instead: the kit's menu exists only while its gateway is on, so a menu an older
 `gateway off` or a rollback left behind goes at the next setup. A menu you set, changed or
 removed stays yours, with an information line. `gateway off` and `restore` remove only the

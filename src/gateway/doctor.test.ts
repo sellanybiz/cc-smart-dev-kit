@@ -138,7 +138,7 @@ describe("doctor: a project on a profile, and the router that runs", () => {
       else
         expect(lines).toContain(
           kind === "missing"
-            ? "· Gateway model menu: not written: the router address in your settings is not the kit's own, so setup leaves the menu out"
+            ? "· Gateway model menu: not written: your settings do not route through the kit's router, so setup leaves the menu out"
             : "· Gateway model menu: your own menu",
         );
       if (kind !== "broken")
@@ -156,6 +156,26 @@ describe("doctor: a project on a profile, and the router that runs", () => {
       set: [[["env", "ANTHROPIC_BASE_URL"], `http://127.0.0.1:${PORT}`]],
     });
     expect(await linesFor(m, [], "current")).toContain("· Gateway model menu: not set; run setup");
+  });
+
+  test("doctor menu: a broken gateway.json defers to its own line and keeps the model line", async () => {
+    const m = machine();
+    applyManagedJson({
+      file: m.paths.settingsFile,
+      stateDir: m.paths.stateDir,
+      set: [
+        [["env", "ANTHROPIC_BASE_URL"], `http://127.0.0.1:${PORT}`],
+        [["model"], "claude-opus-5-5"],
+      ],
+    });
+    writeFileSync(m.paths.gatewayConfigFile, "{ broken", { mode: 0o600 });
+    const lines = await linesFor(m, [], "current");
+    expect(lines).toContain(
+      "· Gateway model menu: cannot judge while the gateway config cannot be read (see the gateway config line)",
+    );
+    expect(lines).toContain(
+      "· Your default model is fixed to claude-opus-5-5; /model <alias> follows the newest.",
+    );
   });
 
   for (const kind of ["owned", "removed", "null"] as const) {

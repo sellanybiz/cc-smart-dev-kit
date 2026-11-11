@@ -11,7 +11,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   Opus"; a slot set to a backend reads "answered by gpt-6.1-sol (worker slot)". The kit never
   writes a model id: each family follows the newest model your Claude Code knows. Anthropic's
   stale extra rows (an old "Fable 5.1") are hidden while the gateway is on. A menu you set
-  yourself stays yours. `gateway off` and `restore` remove the kit's menu, and `setup` removes
+  yourself stays yours. `gateway off` and `restore` remove the kit's menu, and `setup` or a slot change removes
   one left behind while the gateway is off.
   - `launch --profile <name>` carries that profile's rows, fixed for that session. `launch
     --no-gateway` carries plain-Claude rows only to replace the kit's menu; with no kit menu,

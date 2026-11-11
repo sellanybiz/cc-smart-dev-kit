@@ -15,6 +15,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { applyManagedJson } from "../setup/managed-json";
 import { tempDir } from "../testing/temp";
 import { type GatewayContext, runGateway } from "./commands";
 import { emptyConfig, loadConfigFile, saveConfig } from "./config";
@@ -156,6 +157,40 @@ test("slot changes refresh the active owned menu", async () => {
     model: "sonnet",
     label: "Sonnet",
     description: "Claude's newest Sonnet",
+  });
+});
+
+describe("a slot change while the gateway is off", () => {
+  const MENU = { replaceBuiltInOptions: true, options: [{ model: "sonnet", label: "Sonnet" }] };
+  test("removes the kit's menu an older gateway off left behind", async () => {
+    const m = machine("current");
+    // An older `gateway off`: the address back on Anthropic, the kit's menu still there.
+    applyManagedJson({
+      file: m.paths.settingsFile,
+      stateDir: m.paths.stateDir,
+      set: [
+        [["env", "ANTHROPIC_BASE_URL"], "https://api.anthropic.com"],
+        [["modelPicker"], MENU],
+      ],
+    });
+    expect(await m.run(["slot", "worker", "claude"])).toBe(0);
+    expect(JSON.parse(readFileSync(m.paths.settingsFile, "utf8")).modelPicker).toBeUndefined();
+    expect(m.output()).toContain(
+      "~ modelPicker: your settings do not route through the kit's router; menu removed",
+    );
+  });
+  test("leaves a menu the person set", async () => {
+    const m = machine("current");
+    mkdirSync(dirname(m.paths.settingsFile), { recursive: true });
+    writeFileSync(
+      m.paths.settingsFile,
+      JSON.stringify({
+        env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+        modelPicker: MENU,
+      }),
+    );
+    expect(await m.run(["slot", "worker", "claude"])).toBe(0);
+    expect(JSON.parse(readFileSync(m.paths.settingsFile, "utf8")).modelPicker).toEqual(MENU);
   });
 });
 

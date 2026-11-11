@@ -153,7 +153,9 @@ describe("an owned menu left behind while the gateway is off", () => {
     });
     expect(await w.setup()).toBe(0);
     expect(settings(w).modelPicker).toBeUndefined();
-    expect(printed.join("\n")).toContain("modelPicker: the gateway is off; menu removed");
+    expect(printed.join("\n")).toContain(
+      "modelPicker: your settings do not route through the kit's router; menu removed",
+    );
   });
   test("a dry run names the removal and keeps the menu", () => {
     const w = machine("https://api.anthropic.com");
@@ -163,7 +165,7 @@ describe("an owned menu left behind while the gateway is off", () => {
       set: [[["modelPicker"], MENU]],
     });
     expect(applyModelPickerStep(w.paths, true)).toEqual([
-      "~ modelPicker: the gateway is off; menu removed",
+      "~ modelPicker: your settings do not route through the kit's router; menu removed",
     ]);
     expect(settings(w).modelPicker).toEqual(MENU);
   });

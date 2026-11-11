@@ -25,9 +25,12 @@ function Tabs({
 
 // Portal change: `max-w-full overflow-x-auto` (a bar wider than its column scrolls as a whole,
 // never the page) and `justify-center-safe` (an overflowing bar starts at its first tab, which
-// plain `justify-center` would push out of reach on the left).
+// plain `justify-center` would push out of reach on the left). `overflow-y-hidden`: with
+// `overflow-x-auto` the other axis turns `auto` too, and each trigger's hidden underline
+// (`after:bottom-[-5px]`) then gave the bar a vertical scrollbar. The `line` variant shows that
+// underline, so it would be clipped; no portal view uses that variant.
 const tabsListVariants = cva(
-  "group/tabs-list inline-flex w-fit max-w-full items-center justify-center-safe overflow-x-auto rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  "group/tabs-list inline-flex w-fit max-w-full items-center justify-center-safe overflow-x-auto overflow-y-hidden rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
   {
     variants: {
       variant: {
