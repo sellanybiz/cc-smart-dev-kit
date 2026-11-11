@@ -423,8 +423,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · ${input.outcome}` };
         }
         const task = work(input.task);
-        // One transaction: a close the store refuses (an open subtask) keeps no note either, so
-        // a retry after finishing the subtask saves each note once.
+        // One transaction: a close the store refuses (an open blocking task) keeps no note either, so
+        // a retry after finishing the task saves each note once.
         const changed = value(
           writeWork(store, () => {
             for (const text of [input.note, input.evidence])

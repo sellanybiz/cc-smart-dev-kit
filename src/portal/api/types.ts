@@ -416,7 +416,7 @@ export interface WorkTaskNode {
   id: string;
 
   kind: "phase" | "plan" | "task";
-  /** Its layer, worked out from its parents: a task under a task is a subtask. */
+  /** Its kind is its layer; legacy nested tasks still read as tasks. */
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;

@@ -23,7 +23,7 @@ function value<T>(result: Result<T>): T {
   return result.value;
 }
 
-test("plan, phase and subtasks as one tree, with closed/total over each subtree", () => {
+test("plan, phase and tasks as one tree, with membership and subtree counts", () => {
   const paths = { stateDir: tempDir() };
   const db = openWorkDb(workDbFile(paths), { mode: "write" });
   const phase = value(

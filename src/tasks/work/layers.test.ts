@@ -1,5 +1,5 @@
 /**
- * D76: three layers (phase › task › subtask), a blocking or non-blocking type on each, and the
+ * Legacy nested graphs and the current plan › phase › task layers, a blocking or non-blocking type on each, and the
  * tasks each is blocked by. Every rule here is the store's, so the tools, the command, the guards
  * and the portal all meet the same one.
  */
@@ -31,7 +31,7 @@ function byIdOf(db: WorkDb): Map<string, WorkTask> {
   return new Map(allTasks(db, "p").map((t) => [t.id, t]));
 }
 
-test("each task's layer comes from its parent: plan, phase, task, subtask", () => {
+test("each kind stays its layer, even in a legacy nested graph", () => {
   const { db } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
@@ -44,7 +44,7 @@ test("each task's layer comes from its parent: plan, phase, task, subtask", () =
   const inPhase = add(db, "In the phase", { parentId: phase.id });
   const sub = add(db, "Sub", { parentId: inPhase.id });
   const deeper = add(db, "Deeper");
-  // An older kit nested deeper than three layers: it reads as a subtask.
+  // An older kit nested deeper than three layers: it still reads as a task.
   db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(sub.id, deeper.id);
   const byId = byIdOf(db);
   expect(
@@ -55,7 +55,7 @@ test("each task's layer comes from its parent: plan, phase, task, subtask", () =
   db.close();
 });
 
-test("a subtask holds no tasks, a task with tasks never becomes one, plans and phases stay put", () => {
+test("tasks cannot hold new tasks, and plans and phases stay put", () => {
   const { db } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
@@ -495,7 +495,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     });
     const got = ops.call("get", { task: "#4" });
     expect(got.ok ? got.text.split("\n").slice(0, 2) : got).toEqual([
-      // Under a phase it is a task: phase › task › subtask.
+      // Under a phase it is a task: plan › phase › task.
       '#4 "Polish" [task · pending · non-blocking · blocked by #3]',
       'Blocked by: #3 "Step" (pending)',
     ]);
