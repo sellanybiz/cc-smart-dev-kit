@@ -12,7 +12,7 @@
  * port (never 20100).
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
@@ -157,4 +157,17 @@ test("slot changes refresh the active owned menu", async () => {
     label: "Sonnet",
     description: "Claude's newest Sonnet",
   });
+});
+
+test("slot refresh does not repeat a foreign pin diagnostic", async () => {
+  const m = machine("current");
+  await m.run(["on"]);
+  const settings = JSON.parse(readFileSync(m.paths.settingsFile, "utf8"));
+  settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL = "my-pin";
+  writeFileSync(m.paths.settingsFile, JSON.stringify(settings));
+  await m.run(["slot", "worker", "claude"]);
+  expect(m.output()).not.toContain("ANTHROPIC_DEFAULT_FABLE_MODEL");
+  expect(
+    JSON.parse(readFileSync(m.paths.settingsFile, "utf8")).env.ANTHROPIC_DEFAULT_FABLE_MODEL,
+  ).toBe("my-pin");
 });

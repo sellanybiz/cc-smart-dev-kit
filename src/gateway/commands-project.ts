@@ -627,7 +627,7 @@ export async function commandProject(
   const { effective } = written.saved;
   out.line(
     "info",
-    `The model menu follows the machine slots; ${COMMAND} launch --profile <name> carries a profile menu.`,
+    `The model menu follows the machine slots; ${COMMAND} launch --profile <name> carries profile rows when the menu is absent and never managed, or still ours.`,
   );
   for (const skipped of written.result.skipped) {
     if (

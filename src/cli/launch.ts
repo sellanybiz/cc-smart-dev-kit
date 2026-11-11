@@ -50,12 +50,11 @@ import {
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
-import { PICKER_PATH, pickerFor } from "../gateway/model-picker";
+import { mayWritePicker, pickerFor } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
 import { claudeArgv, findClaude } from "../machine/claude";
-import { getKey, isOwnedValue, readJsonObject } from "../setup/managed-json";
 import { atomicWrite } from "../setup/write";
 import { tildify } from "./paths";
 
@@ -421,12 +420,9 @@ function settingsNotes(
 }
 
 /** Unreadable user settings cannot prove ownership; preserve the existing launch behavior. */
-function ownedUserPicker(ctx: LaunchContext): boolean {
+function launchMayWritePicker(ctx: LaunchContext): boolean {
   try {
-    const current = getKey(readJsonObject(ctx.settingsFile).data, PICKER_PATH);
-    return (
-      current.found && isOwnedValue(ctx.stateDir, ctx.settingsFile, PICKER_PATH, current.value)
-    );
+    return mayWritePicker(ctx.settingsFile, ctx.stateDir);
   } catch {
     // Claude Code reports invalid user settings itself; launch must not replace their menu.
     return false;
@@ -481,7 +477,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
-      const ownPicker = ownedUserPicker(ctx);
+      const ownPicker = parsed.mode.kind !== "gateway" && launchMayWritePicker(ctx);
       const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
       const settings = {
         env: { ANTHROPIC_BASE_URL: target.url },

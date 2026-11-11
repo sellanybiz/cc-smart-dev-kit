@@ -3,7 +3,7 @@ import { realTarget } from "../setup/write";
 import { slotName } from "./commands-chains";
 import { type GatewayConfig, plainClaudeView, profileView } from "./config";
 import { shortTargetName } from "./target-label";
-import { CLAUDE_FAMILIES, claudeFamily, familyLabel, familySlotKey, parseTarget } from "./targets";
+import { CLAUDE_FAMILIES, familyLabel, familySlotKey } from "./targets";
 
 export const PICKER_PATH = ["modelPicker"];
 
@@ -23,27 +23,28 @@ export function pickerFor(
       const label = familyLabel(family);
       const slot = familySlotKey(family);
       const first = slot === null ? undefined : view.slots[slot]?.[0];
-      const parsed = first === undefined ? null : parseTarget(first);
       return {
         model: family,
         label,
         description:
-          parsed !== null &&
-          "target" in parsed &&
-          (parsed.target.kind === "backend" || claudeFamily(parsed.target.model) !== family) &&
-          slot !== null
-            ? `answered by ${shortTargetName(parsed.target.model)} (${slotName(slot)} slot)`
+          first !== undefined && slot !== null
+            ? `answered by ${shortTargetName(first)} (${slotName(slot)} slot)`
             : `Claude's newest ${label}`,
       };
     }),
   };
 }
 
-/** Decide before the managed write, so env and menu share one backup and one write. */
-export function pickerWrite(file: string, stateDir: string, config: GatewayConfig) {
+/** The kit may write a missing, never-owned menu or refresh its unchanged menu. */
+export function mayWritePicker(file: string, stateDir: string): boolean {
   const current = getKey(readJsonObject(file).data, PICKER_PATH);
   const whose = ownership(ownedRecords(stateDir, realTarget(file)), PICKER_PATH, current);
-  if (whose === "changed" || (current.found && whose !== "ours")) {
+  return whose === "ours" || (whose === "none" && !current.found);
+}
+
+/** Decide before the managed write, so env and menu share one backup and one write. */
+export function pickerWrite(file: string, stateDir: string, config: GatewayConfig) {
+  if (!mayWritePicker(file, stateDir)) {
     return {
       set: [],
       skipped: [{ path: PICKER_PATH, reason: "set, changed or removed by you; left alone" }],

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
+import { DEFAULT_PORT } from "../gateway/config";
 import { applyModelPickerStep } from "../gateway/model-picker-step";
 import { applyManagedJson, ownedRecords } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
@@ -72,6 +73,7 @@ describe("setup refreshes the model menu without switching the gateway", () => {
       const w = machine(address, owned);
       expect(await w.setup()).toBe(0);
       expect(settings(w).env.ANTHROPIC_BASE_URL).toBe(address);
+      expect(settings(w).modelPicker).toBeUndefined();
       expect(settings(w).env[KEY]).toBeUndefined();
     });
   }
@@ -138,4 +140,23 @@ test("menu refresh retires the family pin, not older slot alias keys", () => {
   applyModelPickerStep(w.paths, false);
   expect(settings(w).env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe("old-scout");
   expect(settings(w).env[KEY]).toBeUndefined();
+});
+
+test("setup writes the menu without gateway.json for our default router address", async () => {
+  const w = machine(`http://127.0.0.1:${DEFAULT_PORT}`);
+  rmSync(w.paths.gatewayConfigFile);
+  expect(await w.setup()).toBe(0);
+  expect(settings(w).modelPicker.options).toHaveLength(4);
+});
+test("broken config keeps the successful pin retirement lines", () => {
+  const w = machine();
+  applyManagedJson({
+    file: w.paths.settingsFile,
+    stateDir: w.paths.stateDir,
+    set: [[["env", KEY], "claude-fable-5-2"]],
+  });
+  writeFileSync(w.paths.gatewayConfigFile, "{ broken");
+  const lines = applyModelPickerStep(w.paths, false);
+  expect(lines[0]).toBe(`~ env.${KEY}: retired gateway key removed`);
+  expect(lines.at(-1)).toContain("! gateway model menu was not refreshed");
 });

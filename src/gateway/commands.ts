@@ -1513,7 +1513,7 @@ async function commandSlot(ctx: GatewayContext, args: string[]): Promise<number>
         );
       }
       saveConfig(configPath, saved);
-      const menuLines = applyModelPickerStep(ctx.paths, false);
+      const menuLines = applyModelPickerStep(ctx.paths, false, false);
       if (again.next.length === 0) dropFallbackRecord(ctx.paths.gatewayStateFile, again.key);
       return { ...again, config: saved, menuLines };
     },
@@ -2506,7 +2506,7 @@ async function commandOn(ctx: GatewayContext): Promise<number> {
     );
   }
   for (const skip of result.skipped)
-    out.line("info", `${skip.path.join(".")}: ${skip.reason}`, { indent: 2 });
+    out.line("info", `${skip.path.join(".")}: yours; left alone`, { indent: 2 });
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }

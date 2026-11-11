@@ -29,7 +29,7 @@ test("alias rows on Claude; backend first on every routed family; profile overri
     { model: "opus", label: "Opus", description: "answered by large (opus slot)" },
     { model: "sonnet", label: "Sonnet", description: "answered by gpt-6.1-sol (worker slot)" },
     { model: "haiku", label: "Haiku", description: "answered by small (scout slot)" },
-    { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+    { model: "fable", label: "Fable", description: "answered by claude-fable-5-2 (fable slot)" },
   ]);
   config.profiles = { plain: { slots: { "cc-smart-dev-kit-opus": [] } } };
   expect(pickerFor(config, "plain").options[0]).toEqual(claudeRows[0]);
@@ -133,5 +133,23 @@ test("a different Claude family first is named, and an unknown profile is plain 
   expect(pickerFor(config, "missing")).toEqual({
     replaceBuiltInOptions: true,
     options: claudeRows,
+  });
+});
+
+test("explicit same-family pins and colon-bearing backend models name their target", () => {
+  const config = emptyConfig();
+  config.slots = {
+    "cc-smart-dev-kit-opus": ["claude-opus-4-1"],
+    "cc-smart-dev-kit-worker": ["omniroute:ollama/qwen2.5-coder:32b"],
+  };
+  expect(pickerFor(config).options[0]).toEqual({
+    model: "opus",
+    label: "Opus",
+    description: "answered by claude-opus-4-1 (opus slot)",
+  });
+  expect(pickerFor(config).options[1]).toEqual({
+    model: "sonnet",
+    label: "Sonnet",
+    description: "answered by qwen2.5-coder:32b (worker slot)",
   });
 });

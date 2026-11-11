@@ -224,7 +224,8 @@ For profile commands and inheritance, read `references/profiles.md` beside this 
 
 `cc-smart-dev-kit gateway off` sets the owned `ANTHROPIC_BASE_URL` to Anthropic's own address
 instead of removing it, so every running session switches to Anthropic by itself within about a
-second: nothing needs a restart. `ENABLE_TOOL_SEARCH` is removed, which routes nothing. The key
+second: nothing needs a restart. The unchanged owned model menu (`modelPicker`) and
+`ENABLE_TOOL_SEARCH` are removed; neither routes requests. The key
 stays owned (its value is the one `off` wrote), so `restore` takes it back later. A key the person
 set or changed since is theirs and stays. A project that set its own `on` keeps pointing at the
 router, so `off` names each one with the command that turns it off too. Stop the router only

@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -235,11 +236,11 @@ describe("launch", () => {
       "arg=--settings",
       `arg=${settingsFile}`,
       "settings:",
-      "{",
-      '  "env": {',
-      `    "ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"`,
-      "  }",
-      "}",
+      ...JSON.stringify(
+        { env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL }, modelPicker: expectedPicker },
+        null,
+        2,
+      ).split("\n"),
       "arg=--model",
       "arg=haiku",
     ]);
@@ -250,7 +251,7 @@ describe("launch", () => {
     expect(existsSync(settingsFile)).toBe(false);
   });
 
-  test("the file is mode 0600 while the session runs, and it holds only the base URL", async () => {
+  test("the file is mode 0600 while the session runs, with the plain-Claude menu", async () => {
     const home = world();
     const seen: { mode: number; text: string }[] = [];
     const ctx = context(home, {
@@ -264,7 +265,7 @@ describe("launch", () => {
     expect(seen).toEqual([
       {
         mode: 0o600,
-        text: `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${DEFAULT_ANTHROPIC_BASE_URL}"\n  }\n}\n`,
+        text: `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL }, modelPicker: expectedPicker }, null, 2)}\n`,
       },
     ]);
   });
@@ -275,7 +276,7 @@ describe("launch", () => {
     const ctx = context(home);
     expect(await runLaunch(["--gateway", "--", "-p", "hi"], ctx)).toBe(7);
     expect(loggedSettings(home)).toBe(
-      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: ROUTER_URL }, modelPicker: expectedPicker }, null, 2)}\n`,
+      `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: ROUTER_URL } }, null, 2)}\n`,
     );
     expect(runLog(home)).toContain(`arg=${settingsFileOf(home, "gateway")}`);
     expect(ctx.printed).toEqual([`launch: the gateway · ${ROUTER_URL}`]);
@@ -881,3 +882,21 @@ describe("RV3: launch says what its settings file leaves in place (the lead's ch
     expect(ctx.errors).toEqual([]);
   });
 });
+
+for (const mode of [["--profile", "fast"], ["--no-gateway"]]) {
+  test(`a never-managed menu permits launch ${mode.join(" ")} rows`, async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    rmSync(join(home.home, ".claude", "settings.json"));
+    rmSync(join(home.stateDir, "owned.json"));
+    expect(await runLaunch(mode, context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+  });
+  test(`a removed owned menu stays absent for launch ${mode.join(" ")}`, async () => {
+    const home = world();
+    gatewayConfig(home, ["fast"]);
+    rmSync(join(home.home, ".claude", "settings.json"));
+    expect(await runLaunch(mode, context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
+  });
+}

@@ -212,7 +212,7 @@ safety checks), their ids in § Names. One rule set for all of them:
   with no version, is left untouched.
   Models are automatic: the kit never writes a model id. While the gateway is on,
   it owns `modelPicker`: one alias row per `CLAUDE_FAMILIES` family, each naming the
-  slot's first answerer, or "Claude's newest <Family>" for that same family or no chain. A person's menu stays theirs.
+  slot's first answerer, or "Claude's newest <Family>" only when there is no chain. A person's menu stays theirs.
   The old owned Fable pin is retired; a value the person set stays.
   Examples in help and errors take `<model>`, or an id from the person's own config.
 - `count_tokens` follows the chain's first target alone (a backend there: a 404). Only a

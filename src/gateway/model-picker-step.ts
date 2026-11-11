@@ -11,7 +11,7 @@ import {
 } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import type { GatewayConfig } from "./config";
-import { loadConfigFile, messageOf } from "./config";
+import { emptyConfig, loadConfigFile, messageOf } from "./config";
 import { pickerWrite } from "./model-picker";
 import {
   BASE_URL_PATH,
@@ -21,24 +21,26 @@ import {
 } from "./settings";
 
 /** Setup and slot changes refresh only our active gateway, never turn it on. Caller holds the lock. */
-export function applyModelPickerStep(paths: CliPaths, dryRun: boolean): string[] {
+export function applyModelPickerStep(paths: CliPaths, dryRun: boolean, retirePin = true): string[] {
+  const lines: string[] = [];
   try {
     const retired = applyManagedJson({
       file: paths.settingsFile,
-      remove: RETIRED_MODEL_PIN_KEYS.map((key) => ["env", key]),
+      remove: retirePin ? RETIRED_MODEL_PIN_KEYS.map((key) => ["env", key]) : [],
       createdObject: createdObjects(paths.stateDir, paths.settingsFile),
       stateDir: paths.stateDir,
       dryRun,
     });
-    const lines = retired.changes.map(
-      (change) => `~ ${change.path.join(".")}: retired gateway key removed`,
+    lines.push(
+      ...retired.changes.map((change) => `~ ${change.path.join(".")}: retired gateway key removed`),
     );
     for (const skip of retired.skipped.filter(
       (skip) => getKey(readJsonObject(paths.settingsFile).data, skip.path).found,
     ))
-      lines.push(`· ${skip.path.join(".")}: ${skip.reason}`);
-    if (!existsSync(paths.gatewayConfigFile)) return lines;
-    const config = loadConfigFile(paths.gatewayConfigFile);
+      lines.push(`· ${skip.path.join(".")}: yours; left alone`);
+    const config = existsSync(paths.gatewayConfigFile)
+      ? loadConfigFile(paths.gatewayConfigFile)
+      : emptyConfig();
     const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
     if (
       ownership(
@@ -59,7 +61,7 @@ export function applyModelPickerStep(paths: CliPaths, dryRun: boolean): string[]
     lines.push(...result.skipped.map((skip) => `· ${skip.path.join(".")}: ${skip.reason}`));
     return lines;
   } catch (error) {
-    return [`! gateway model menu was not refreshed: ${messageOf(error)}`];
+    return [...lines, `! gateway model menu was not refreshed: ${messageOf(error)}`];
   }
 }
 
