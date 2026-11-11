@@ -15,15 +15,26 @@ export const MachinesSchema = z
   .strict();
 export type Machines = z.infer<typeof MachinesSchema>;
 export type MachineChange = { verb: "allow" | "forget" | "production"; name: string };
+
+/** The remote machine list cannot be read; its message names the file and the fix. */
+export class MachinesFileError extends Error {}
+
+/** A missing file is an empty list; an unreadable or broken one fails loudly with its fix. */
 export function readMachines(file: string): Machines {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, machines: {} };
-    throw error;
+    throw new MachinesFileError(`${file} cannot be read: ${(error as Error).message}`);
   }
-  return MachinesSchema.parse(JSON.parse(text));
+  try {
+    return MachinesSchema.parse(JSON.parse(text));
+  } catch (error) {
+    throw new MachinesFileError(
+      `${file} is not a machine list (${(error as Error).message.split("\n")[0]}). Fix it or remove it.`,
+    );
+  }
 }
 export function machineRule(list: Machines, name: string): "free" | "ask" | "production" {
   const entry = Object.hasOwn(list.machines, name) ? list.machines[name] : undefined;

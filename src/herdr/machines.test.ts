@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
-import { machineRule, readMachines, writeMachines } from "./machines";
+import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
 
 test("machine path shares the workflow config folder", () => {
   const paths = cliPaths({ HOME: tempDir() });
@@ -28,12 +28,21 @@ test("machine rules and locked private writes", async () => {
   await writeMachines(file, { verb: "forget", name: "remote" }, state);
   expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 1, machines: {} });
   for (const content of [
+    "",
     "{",
     '{"version":2,"machines":{}}',
     '{"version":1,"machines":{"r":{"allow":false}}}',
   ]) {
     writeFileSync(file, content);
-    expect(() => readMachines(file)).toThrow();
+    expect(() => readMachines(file)).toThrow(MachinesFileError);
+    let message = "";
+    try {
+      readMachines(file);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message.startsWith(`${file} is not a machine list (`)).toBe(true);
+    expect(message.endsWith("). Fix it or remove it.")).toBe(true);
     await expect(writeMachines(file, { verb: "allow", name: "other" }, state)).rejects.toThrow();
     expect(readFileSync(file, "utf8")).toBe(content);
   }

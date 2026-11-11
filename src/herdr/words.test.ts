@@ -9,11 +9,40 @@ import {
 } from "./words";
 
 test("every mode pair", () => {
-  for (const [i, lead] of MODE_ORDER.entries())
-    for (const [j, child] of MODE_ORDER.entries()) {
-      expect(modeWiderThan(child, lead)).toBe(j > i);
-      expect(childModeAllowed(lead, child).ok).toBe(i !== 0 && j <= i);
-    }
+  expect(MODE_ORDER).toEqual(["plan", "default", "acceptEdits", "auto", "dontAsk"]);
+  // Hand-written: each lead mode, and the child modes it may start. A lead in plan starts none.
+  const allowed: Record<string, string[]> = {
+    plan: [],
+    default: ["plan", "default"],
+    acceptEdits: ["plan", "default", "acceptEdits"],
+    auto: ["plan", "default", "acceptEdits", "auto"],
+    dontAsk: ["plan", "default", "acceptEdits", "auto", "dontAsk"],
+  };
+  const modes = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
+  for (const lead of modes)
+    for (const child of modes)
+      expect([lead, child, childModeAllowed(lead, child).ok]).toEqual([
+        lead,
+        child,
+        allowed[lead]?.includes(child) ?? false,
+      ]);
+  expect(modeWiderThan("dontAsk", "auto")).toBe(true);
+  expect(modeWiderThan("auto", "acceptEdits")).toBe(true);
+  expect(modeWiderThan("acceptEdits", "default")).toBe(true);
+  expect(modeWiderThan("default", "plan")).toBe(true);
+  expect(modeWiderThan("auto", "dontAsk")).toBe(false);
+  expect(modeWiderThan("auto", "auto")).toBe(false);
+  expect(childModeAllowed("plan", "plan")).toEqual({ ok: false, why: "Approve the plan first." });
+  for (const mode of modes) {
+    expect(childModeAllowed(mode, "bypassPermissions")).toEqual({
+      ok: false,
+      why: "bypassPermissions is never allowed.",
+    });
+    expect(childModeAllowed("bypassPermissions", mode)).toEqual({
+      ok: false,
+      why: "bypassPermissions is never allowed.",
+    });
+  }
   expect(normalizeMode("manual")).toBe("default");
   expect(normalizeMode("default")).toBe("default");
   expect(normalizeMode("bypassPermissions")).toBeNull();
@@ -22,7 +51,6 @@ test("every mode pair", () => {
     ok: false,
     why: "Unknown lead mode: ask the person.",
   });
-  expect(childModeAllowed("auto", "bypassPermissions").ok).toBe(false);
 });
 test("every verb", () => {
   expect(
