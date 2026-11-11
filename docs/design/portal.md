@@ -748,10 +748,18 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     a file that does not read as a task is counted, with `task check` to name it. Its filter bar
     keeps the project and the search only: a session, a plan or a work status means nothing for
     a task file.
-  - *Narrow screens.* The filter bar wraps; the status choice is a toggle group from the
-    `@4xl/main` width and a select below it; the search takes the whole row on a phone. Rows
-    wrap their marks under the subject, a phase's ledger takes its own line, and the panel is
-    the full width.
+  - *Narrow screens.* The two tabs share the whole width on a phone with short words ("Work ·
+    15 open", "Owed · 50"); from the `@xl/main` width each shows its full words and is as wide
+    as they are. A tab's words never wrap and its name is always the full words. A tab bar
+    wider than its column scrolls as a whole, never the page: the shared `TabsList` is
+    `max-w-full overflow-x-auto` and starts at its first tab (`justify-center-safe`), on every
+    page. The filter bar wraps; the status choice is a toggle group from the `@4xl/main` width
+    and a select below it; the search takes the whole row on a phone. Its pickers and switches
+    are the ones every filter row uses (`FilterPick`, `FilterToggle` in `filter-bar.tsx`: the
+    charts' bar, this bar and the guard log): a picker is never wider than its row and at most
+    `max-w-72` from the `@xl/main` width up, a cut name ends in "…" and its title holds all of
+    it, and a switch's words stay on one line. Rows wrap their marks under the subject, a
+    phase's ledger takes its own line, and the panel is the full width.
   - Every state has its words: loading is the page skeleton; no project at all points at
     Settings; a store with nothing yet, nothing open, nothing matching the filters (with a way to
     clear them or show all) and no task file each say what makes tasks appear (a session's

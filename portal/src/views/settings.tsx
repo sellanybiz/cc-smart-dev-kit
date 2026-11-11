@@ -16,6 +16,7 @@ import {
 import { AppLink, useAppQuery, useSetAppQuery } from "@/components/router";
 import { SettingsCards } from "@/components/settings-rows";
 import { EmptyState, ErrorState, LoadingState, PagePad } from "@/components/states";
+import { TabCount } from "@/components/tab-count";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -267,13 +268,10 @@ export function SettingsView() {
         }}
         className="gap-4"
       >
-        <TabsList
-          aria-label="Settings"
-          className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1"
-        >
+        <TabsList aria-label="Settings">
           <TabsTrigger value="machine">This machine</TabsTrigger>
           <TabsTrigger value="projects">
-            Projects {count > 0 && <Badge variant="secondary">{count}</Badge>}
+            Projects {count > 0 && <TabCount count={count} />}
           </TabsTrigger>
         </TabsList>
         <TabsContent value="machine">

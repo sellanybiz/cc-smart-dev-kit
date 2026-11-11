@@ -25,7 +25,7 @@ import {
   Columns3Icon,
 } from "lucide-react";
 import { type ReactNode, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { TabCount } from "@/components/tab-count";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -276,16 +276,11 @@ export function DataTable({
   return (
     <Tabs defaultValue={first} className="w-full flex-col justify-start gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2 px-4 lg:px-6">
-        <TabsList
-          aria-label={label}
-          className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1"
-        >
+        <TabsList aria-label={label}>
           {tabs.map((tab) => (
             <TabsTrigger key={tab.value} value={tab.value}>
               {tab.label}
-              {tab.badge !== undefined && tab.badge > 0 && (
-                <Badge variant="secondary">{tab.badge}</Badge>
-              )}
+              {tab.badge !== undefined && tab.badge > 0 && <TabCount count={tab.badge} />}
             </TabsTrigger>
           ))}
         </TabsList>

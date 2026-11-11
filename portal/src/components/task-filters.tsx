@@ -3,11 +3,10 @@
 import { FilterXIcon, SearchIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { TaskSession, TasksData } from "@/api/types";
+import { FilterPick, FilterToggle } from "@/components/filter-bar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import type { PlanChoice } from "@/lib/task-groups";
 import {
@@ -20,51 +19,12 @@ import {
   type TaskView,
   workCountsOf,
 } from "@/lib/tasks";
-import { cn } from "@/lib/utils";
 
 /** How long the search waits after the last key before it narrows the list. */
 export const SEARCH_WAIT_MS = 250;
 
 function isStatus(value: string): value is TaskStatusFilter {
   return STATUS_FILTERS.some((one) => one.value === value);
-}
-
-/** A select that narrows to one value or (empty) to all, muted while it narrows nothing. */
-function Pick({
-  label,
-  all,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  all: string;
-  value: null | string;
-  options: readonly { value: string; label: string }[];
-  onChange: (value: null | string) => void;
-}) {
-  const id = useId();
-  return (
-    <>
-      <label htmlFor={id} className="sr-only">
-        {label}
-      </label>
-      <NativeSelect
-        id={id}
-        size="sm"
-        value={value ?? ""}
-        onChange={(event) => onChange(event.target.value === "" ? null : event.target.value)}
-        className={cn("max-w-full", value === null ? "text-muted-foreground" : "font-medium")}
-      >
-        <NativeSelectOption value="">{all}</NativeSelectOption>
-        {options.map((option) => (
-          <NativeSelectOption key={option.value} value={option.value}>
-            {option.label}
-          </NativeSelectOption>
-        ))}
-      </NativeSelect>
-    </>
-  );
 }
 
 /** The status choice: a toggle group on a wide page, a select on a narrow one. */
@@ -178,27 +138,6 @@ function Search({
   );
 }
 
-/** A labelled switch of the bar. */
-function Toggle({
-  label,
-  checked,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  const id = useId();
-  return (
-    <div className="flex items-center gap-2 px-1">
-      <Switch id={id} size="sm" checked={checked} onCheckedChange={onChange} />
-      <Label htmlFor={id} className="text-sm font-normal">
-        {label}
-      </Label>
-    </div>
-  );
-}
-
 /** A session in the session picker: its name, or its short id, and whether it runs now. */
 function sessionChoice(session: TaskSession): { value: string; label: string } {
   const name = session.name ?? `session ${session.id.slice(0, 8)}`;
@@ -231,7 +170,7 @@ export function TaskFilters({
   return (
     <search aria-label="Filters" className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
       {data.projects.length > 1 && (
-        <Pick
+        <FilterPick
           label="Project"
           all="All projects"
           value={view.project}
@@ -250,7 +189,7 @@ export function TaskFilters({
       {work && (
         <>
           <StatusPick value={view.status} onChange={(status) => onView({ ...view, status })} />
-          <Pick
+          <FilterPick
             label="Session"
             all="All sessions"
             value={view.session}
@@ -260,7 +199,7 @@ export function TaskFilters({
             ]}
             onChange={(session) => onView({ ...view, session })}
           />
-          <Pick
+          <FilterPick
             label="Plan"
             all="All plans"
             value={view.plan}
@@ -273,12 +212,12 @@ export function TaskFilters({
             ]}
             onChange={(plan) => onView({ ...view, plan })}
           />
-          <Toggle
+          <FilterToggle
             label="Running sessions only"
             checked={view.live}
             onChange={(live) => onView({ ...view, live })}
           />
-          <Toggle
+          <FilterToggle
             label="Non-blocking only"
             checked={view.nonBlocking}
             onChange={(nonBlocking) => onView({ ...view, nonBlocking })}
