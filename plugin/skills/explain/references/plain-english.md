@@ -64,7 +64,8 @@ scrolling back.
 - **The label** is short (one to five words) and names the choice, not a code term.
 - **Each option's description** says what happens if it is picked, the main benefit, the
   downside or cost (time, money, risk, what the person must do), and for the recommended one,
-  why it fits this case.
+  why it fits this case. Which option is the recommended one: the core instructions, § Ending a
+  turn.
 - **Short sentences, full meaning.** Cut words, never the facts the choice turns on. A short
   option that leaves out its cost is worse than a longer one that says it.
 - **The same goes for a summary.** What changed, what was checked, what was not, and what the

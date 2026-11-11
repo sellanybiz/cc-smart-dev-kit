@@ -89,8 +89,8 @@ asked>`, and `agent-guard` asks the person.
   back to you. Without that line the agent treats the brief as a consult, and nothing records
   the review.
 - **A risky change set also gets the edge-case hunter.** In the same message as the senior
-  engineer, start one `cc-smart-dev-kit:edge-case-hunter` on the same change (`opus` at `xhigh`
-  where security, money, data or concurrency are at stake, else `sonnet` at `high`). Its
+  engineer, start one `cc-smart-dev-kit:edge-case-hunter` on the same change (model and
+  effort: `/cc-smart-dev-kit:subagent-decision`'s table). Its
   scenarios are not findings: once both agents are back, check each in the code, and for each
   real gap add a test and fix it inside the change set. It records no review.
 - **Commit before you start it, and do not commit while it runs.** With `reviewBeforePush`
