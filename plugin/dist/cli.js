@@ -28167,7 +28167,7 @@ var init_schemas3 = __esm(() => {
       type: type.optional(),
       blocked_by: blockedBy.optional(),
       phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-      plan: string2().trim().min(1).optional().describe("The plan's slug; the caller's latest plan when left out. With no phase or parent, it makes the plan task. To add a task, name its phase as parent."),
+      plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's latest own plan only while open, never an older plan. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase as parent."),
       ...projectFields
     }).strict(),
     take: object({
@@ -28295,6 +28295,10 @@ function isOpen(task) {
 function layerProgress(all, layer) {
   const tasks = all.filter((t) => t.kind === "task" && (layer.kind === "plan" ? layer.plan !== null && t.plan === layer.plan : layer.kind === "phase" && t.parentId === layer.id));
   return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+}
+function planIsOpen(all, plan) {
+  const row = all.find((task) => task.kind === "plan" && task.plan === plan);
+  return row ? isOpen(row) : all.some((task) => task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task));
 }
 function descendants(db, id) {
   const task = taskById(db, id);
@@ -28802,6 +28806,7 @@ function shape(db, task) {
     description: task.description,
     status: task.status,
     type: task.type,
+    plan: task.plan,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     agent: task.agent,
     branch: task.branch,
@@ -28910,15 +28915,25 @@ function addBlockers(db, task, refs) {
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
+function openPlanValid(tasks, plan) {
+  if (!planIsOpen(tasks, plan))
+    throw new Error(`Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`);
+}
 function insertTask(db, input, who, now, reason = null) {
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
+  const parentPlan = input.parentId ? taskById(db, input.parentId).plan : null;
+  const plan = input.plan ?? parentPlan;
+  if ((input.kind ?? "task") !== "plan" && plan !== null)
+    openPlanValid(allTasks(db, input.project), plan);
+  if (parentPlan !== null && parentPlan !== plan)
+    throw new Error("parent belongs to another plan");
   const id = newId();
   const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
-  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, input.plan ?? null, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
+  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
   addBlockers(db, taskById(db, id), input.blockedBy ?? []);
   const task = taskById(db, id);
   if (status === "in_progress")
@@ -28950,6 +28965,12 @@ function applyUpdate(db, id, change, who, now) {
   const status = change.status ?? task.status;
   const parent = change.parentId === undefined ? task.parentId : change.parentId;
   placeValid(db, task.project, task, parent, task.kind);
+  let plan = task.plan;
+  if (parent !== task.parentId && parent !== null) {
+    plan = taskById(db, parent).plan;
+    if (plan !== null)
+      openPlanValid(allTasks(db, task.project), plan);
+  }
   if (change.waitsFor)
     dependencies(db, task, change.waitsFor);
   if (status === "done" && task.status !== "done")
@@ -28958,7 +28979,7 @@ function applyUpdate(db, id, change, who, now) {
     unblockedValid(db, taskById(db, id));
   const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
   const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
-  db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, (change.type ?? task.type) === "non-blocking" ? 0 : 1, change.agent ?? task.agent, change.branch ?? task.branch, change.worktree ?? task.worktree, change.base ?? task.base, id);
+  db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, plan, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, (change.type ?? task.type) === "non-blocking" ? 0 : 1, change.agent ?? task.agent, change.branch ?? task.branch, change.worktree ?? task.worktree, change.base ?? task.base, id);
   const changed = taskById(db, id);
   recordChange2(db, before, changed, who, now, null);
   return changed;
@@ -29014,7 +29035,10 @@ function planTask(db, input, who, now) {
   return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
 }
 function layPhase(db, input, who, now) {
-  const there = allTasks(db, input.project).find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
+  const tasks = allTasks(db, input.project);
+  if (tasks.some((task) => task.plan === input.plan))
+    openPlanValid(tasks, input.plan);
+  const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
   if (there)
     return { task: there, made: false };
   const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
@@ -29157,6 +29181,7 @@ function createTaskOps(options = {}) {
       const all = allTasks(store, ctx.project);
       const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
+      const writePlan = ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -29223,7 +29248,7 @@ function createTaskOps(options = {}) {
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
             throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase");
-          const slug = input.plan ?? ownPlan;
+          const slug = input.plan ?? writePlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
@@ -29270,7 +29295,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: input.plan ?? parent?.plan ?? ownPlan,
+          plan: input.plan ?? parent?.plan ?? writePlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
