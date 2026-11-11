@@ -18,7 +18,7 @@ import { cliPaths } from "../cli/paths";
 import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import { projectKey, taskContext } from "../tasks/context";
 import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
-import { createTask, layPhase, updateTask } from "../tasks/work/store";
+import { createTask, ensurePlanTask, layPhase, updateTask } from "../tasks/work/store";
 import {
   hookEnv,
   makeClone,
@@ -125,11 +125,22 @@ function seedOpenStep(env: Record<string, string>, repo: string): string {
   const who = { sessionId: SESSION, pid: 12, procStart: "34" };
   const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
   try {
-    const phase = createTask(
+    const plan = ensurePlanTask(
       db,
-      { project: context.project, subject: "G2 the phase", kind: "phase" },
+      { project: context.project, plan: "matrix", subject: "Plan" },
       who,
       1,
+    );
+    if (!plan.ok) throw new Error(plan.why);
+    const phase = writeWork(
+      db,
+      () =>
+        layPhase(
+          db,
+          { project: context.project, plan: "matrix", phase: "G2", subject: "G2 the phase" },
+          who,
+          1,
+        ).task,
     );
     if (!phase.ok) throw new Error(phase.why);
     const step = createTask(
@@ -150,7 +161,7 @@ function seedOpenStep(env: Record<string, string>, repo: string): string {
       isSidechain: true,
       agentId: AGENT,
       type: "user",
-      message: { role: "user", content: "Build phase G2.\nYour task: #1\n" },
+      message: { role: "user", content: "Build phase G2.\nYour task: #2\n" },
     })}\n`,
   );
   return transcript;
@@ -160,8 +171,8 @@ function seedOpenStep(env: Record<string, string>, repo: string): string {
 const BUILDER_FINISH_BLOCK = JSON.stringify({
   decision: "block",
   reason: [
-    "Task #1 still has 1 open blocking step. Close each one, then hand back:",
-    '- #2 Write the test: finish it and close it with `task_done` (task "#2", with evidence), or drop it with `task_done` (task "#2", outcome "dropped") and a note saying why.',
+    "Task #2 still has 1 open blocking step. Close each one, then hand back:",
+    '- #3 Write the test: finish it and close it with `task_done` (task "#3", with evidence), or drop it with `task_done` (task "#3", outcome "dropped") and a note saying why.',
   ].join("\n"),
 });
 
