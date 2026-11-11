@@ -12,7 +12,7 @@ import {
 import { realTarget } from "../setup/write";
 import type { GatewayConfig } from "./config";
 import { emptyConfig, loadConfigFile, messageOf } from "./config";
-import { pickerWrite } from "./model-picker";
+import { PICKER_PATH, pickerWrite } from "./model-picker";
 import {
   BASE_URL_PATH,
   normalizedBaseUrl,
@@ -20,7 +20,33 @@ import {
   routerBaseUrl,
 } from "./settings";
 
-/** Setup and slot changes refresh only our active gateway, never turn it on. Caller holds the lock. */
+function gatewayConfigOf(paths: CliPaths): GatewayConfig {
+  return existsSync(paths.gatewayConfigFile)
+    ? loadConfigFile(paths.gatewayConfigFile)
+    : emptyConfig();
+}
+
+/**
+ * Whether the user settings route through our own router: the address is the kit's, unchanged,
+ * and names the configured port. Only then may the kit's menu exist; doctor asks the same.
+ */
+export function ourActiveGateway(paths: CliPaths): boolean {
+  const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
+  return (
+    ownership(
+      ownedRecords(paths.stateDir, realTarget(paths.settingsFile)),
+      BASE_URL_PATH,
+      address,
+    ) === "ours" &&
+    normalizedBaseUrl(String(address.value)) === routerBaseUrl(gatewayConfigOf(paths).port)
+  );
+}
+
+/**
+ * Setup and slot changes refresh the kit's menu while our gateway is on, and remove it while it
+ * is not: an older `gateway off`, or a rollback, can leave it behind. Never turns the gateway
+ * on. Caller holds the lock.
+ */
 export function applyModelPickerStep(paths: CliPaths, dryRun: boolean, retirePin = true): string[] {
   const lines: string[] = [];
   try {
@@ -38,23 +64,21 @@ export function applyModelPickerStep(paths: CliPaths, dryRun: boolean, retirePin
       (skip) => getKey(readJsonObject(paths.settingsFile).data, skip.path).found,
     ))
       lines.push(`· ${skip.path.join(".")}: yours; left alone`);
-    const config = existsSync(paths.gatewayConfigFile)
-      ? loadConfigFile(paths.gatewayConfigFile)
-      : emptyConfig();
-    const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
-    if (
-      ownership(
-        ownedRecords(paths.stateDir, realTarget(paths.settingsFile)),
-        BASE_URL_PATH,
-        address,
-      ) !== "ours" ||
-      normalizedBaseUrl(String(address.value)) !== routerBaseUrl(config.port)
-    )
+    if (!ourActiveGateway(paths)) {
+      // Removes only the menu the kit wrote and nobody changed; a person's own menu stays.
+      const stale = applyManagedJson({
+        file: paths.settingsFile,
+        remove: [PICKER_PATH],
+        stateDir: paths.stateDir,
+        dryRun,
+      });
+      lines.push(...stale.changes.map(() => "~ modelPicker: the gateway is off; menu removed"));
       return lines;
+    }
     const result = writePicker({
       file: paths.settingsFile,
       stateDir: paths.stateDir,
-      config,
+      config: gatewayConfigOf(paths),
       dryRun,
     });
     lines.push(...result.changes.map(() => "~ modelPicker: refresh the gateway model menu"));

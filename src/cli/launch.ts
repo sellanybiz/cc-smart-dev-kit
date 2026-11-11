@@ -50,7 +50,7 @@ import {
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
-import { mayWritePicker, pickerFor } from "../gateway/model-picker";
+import { pickerFor, pickerOwner } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
@@ -419,10 +419,18 @@ function settingsNotes(
   return lines;
 }
 
-/** Unreadable user settings cannot prove ownership; preserve the existing launch behavior. */
-function launchMayWritePicker(ctx: LaunchContext, refreshOwned: boolean): boolean {
+/**
+ * Whether the launch's own settings carry menu rows. A profile's rows go wherever the kit may put
+ * a menu. Plain Claude's rows only replace the kit's gateway rows: with no kit menu, Claude Code's
+ * own rows are already right. The gateway's rows only fill a menu nobody set. Unreadable user
+ * settings cannot prove ownership, so no rows.
+ */
+function launchCarriesPicker(ctx: LaunchContext, mode: LaunchMode["kind"]): boolean {
   try {
-    return mayWritePicker(ctx.settingsFile, ctx.stateDir, refreshOwned);
+    const owner = pickerOwner(ctx.settingsFile, ctx.stateDir);
+    if (mode === "profile") return owner !== "yours";
+    if (mode === "no-gateway") return owner === "ours";
+    return owner === "free";
   } catch {
     // Claude Code reports invalid user settings itself; launch must not replace their menu.
     return false;
@@ -477,7 +485,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
-      const ownPicker = launchMayWritePicker(ctx, parsed.mode.kind !== "gateway");
+      const ownPicker = launchCarriesPicker(ctx, parsed.mode.kind);
       const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
       const settings = {
         env: { ANTHROPIC_BASE_URL: target.url },

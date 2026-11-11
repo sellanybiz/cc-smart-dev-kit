@@ -20873,10 +20873,16 @@ function pickerFor(config, profile) {
     })
   };
 }
-function mayWritePicker(file, stateDir, refreshOwned = true) {
+function pickerOwner(file, stateDir) {
   const current = getKey(readJsonObject(file).data, PICKER_PATH);
   const whose = ownership(ownedRecords(stateDir, realTarget(file)), PICKER_PATH, current);
-  return refreshOwned && whose === "ours" || whose === "none" && !current.found;
+  if (whose === "ours")
+    return "ours";
+  return whose === "none" && !current.found ? "free" : "yours";
+}
+function mayWritePicker(file, stateDir, refreshOwned = true) {
+  const owner = pickerOwner(file, stateDir);
+  return refreshOwned && owner === "ours" || owner === "free";
 }
 function pickerWrite(file, stateDir, config) {
   if (!mayWritePicker(file, stateDir)) {
@@ -21026,7 +21032,7 @@ function turnOn(options) {
   });
   result.skipped.push(...picker.skipped);
   const settings = readSettings(options.settingsFile);
-  result.skipped = result.skipped.filter((skip) => getKey(settings, skip.path).found || skip.path[0] === "modelPicker");
+  result.skipped = result.skipped.filter((skip) => getKey(settings, skip.path).found || samePath(skip.path, PICKER_PATH));
   return result;
 }
 function retireOldModelKeys(options) {
@@ -22237,6 +22243,13 @@ async function sendBackendTest(baseUrl, apiKey, request, fetchImpl = (url, init)
 
 // src/gateway/model-picker-step.ts
 import { existsSync as existsSync32 } from "fs";
+function gatewayConfigOf(paths) {
+  return existsSync32(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : emptyConfig();
+}
+function ourActiveGateway(paths) {
+  const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
+  return ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), BASE_URL_PATH, address) === "ours" && normalizedBaseUrl(String(address.value)) === routerBaseUrl(gatewayConfigOf(paths).port);
+}
 function applyModelPickerStep(paths, dryRun, retirePin = true) {
   const lines = [];
   try {
@@ -22250,14 +22263,20 @@ function applyModelPickerStep(paths, dryRun, retirePin = true) {
     lines.push(...retired.changes.map((change) => `~ ${change.path.join(".")}: retired gateway key removed`));
     for (const skip of retired.skipped.filter((skip) => getKey(readJsonObject(paths.settingsFile).data, skip.path).found))
       lines.push(`\xB7 ${skip.path.join(".")}: yours; left alone`);
-    const config = existsSync32(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : emptyConfig();
-    const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
-    if (ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), BASE_URL_PATH, address) !== "ours" || normalizedBaseUrl(String(address.value)) !== routerBaseUrl(config.port))
+    if (!ourActiveGateway(paths)) {
+      const stale = applyManagedJson({
+        file: paths.settingsFile,
+        remove: [PICKER_PATH],
+        stateDir: paths.stateDir,
+        dryRun
+      });
+      lines.push(...stale.changes.map(() => "~ modelPicker: the gateway is off; menu removed"));
       return lines;
+    }
     const result = writePicker({
       file: paths.settingsFile,
       stateDir: paths.stateDir,
-      config,
+      config: gatewayConfigOf(paths),
       dryRun
     });
     lines.push(...result.changes.map(() => "~ modelPicker: refresh the gateway model menu"));
@@ -24578,8 +24597,8 @@ async function commandOff(ctx) {
   const { result, foreign, switched } = await withLock(paths.stateDir, () => turnOff({ settingsFile: paths.settingsFile, stateDir: paths.stateDir }), { waitMs: 1e4 });
   const out = gatewayOut(ctx);
   printChanges(out, result, paths.home);
-  for (const skip of result.skipped.filter((skip) => skip.path[0] === "modelPicker" && readJsonObject(paths.settingsFile).data.modelPicker !== undefined))
-    out.line("info", `modelPicker: ${skip.reason}`);
+  for (const skip of result.skipped.filter((skip) => samePath(skip.path, PICKER_PATH) && getKey(readJsonObject(paths.settingsFile).data, PICKER_PATH).found))
+    out.line("info", `${PICKER_PATH.join(".")}: ${skip.reason}`);
   const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {
@@ -24735,13 +24754,13 @@ async function gatewayChecks(options) {
   }
   try {
     const settings = readJsonObject(paths.settingsFile).data;
-    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    const address = getKey(settings, BASE_URL_PATH);
     if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
-      const picker = getKey(settings, ["modelPicker"]);
-      const whose = ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), ["modelPicker"], picker);
+      const picker = getKey(settings, PICKER_PATH);
+      const whose = ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), PICKER_PATH, picker);
       let menu;
       if (!picker.found)
-        menu = whose === "changed" ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)` : "not set; run setup";
+        menu = whose === "changed" ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)` : ourActiveGateway(paths) ? "not set; run setup" : "not written: the router address in your settings is not the kit's own, so setup leaves the menu out";
       else if (whose !== "ours")
         menu = "your own menu";
       else if (!isObject2(picker.value) || !Array.isArray(picker.value.options))
@@ -33596,7 +33615,7 @@ function sessionLaunchModel(sessionModel, served, gateway, env) {
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
   return resolveSessionModel({ model: sessionModel, served }, gateway, env);
 }
-function gatewayConfigOf(paths) {
+function gatewayConfigOf2(paths) {
   try {
     return loadConfigFile(paths.gatewayConfigFile);
   } catch {
@@ -33614,7 +33633,7 @@ function sessionModelOf(input, env) {
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
   const url = raw === undefined || raw === "" ? null : raw;
-  const config = gatewayConfigOf(paths);
+  const config = gatewayConfigOf2(paths);
   if (!baseUrlPointsAtGateway(url))
     return { config, gatewayOn: false, profile: null };
   const profile = config === null ? null : urlMeaning(url, routerBaseUrl(config.port)).profile;

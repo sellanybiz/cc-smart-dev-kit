@@ -138,7 +138,7 @@ describe("doctor: a project on a profile, and the router that runs", () => {
       else
         expect(lines).toContain(
           kind === "missing"
-            ? "· Gateway model menu: not set; run setup"
+            ? "· Gateway model menu: not written: the router address in your settings is not the kit's own, so setup leaves the menu out"
             : "· Gateway model menu: your own menu",
         );
       if (kind !== "broken")
@@ -147,6 +147,16 @@ describe("doctor: a project on a profile, and the router that runs", () => {
         );
     });
   }
+
+  test("doctor menu: our own address and no menu yet says run setup", async () => {
+    const m = machine();
+    applyManagedJson({
+      file: m.paths.settingsFile,
+      stateDir: m.paths.stateDir,
+      set: [[["env", "ANTHROPIC_BASE_URL"], `http://127.0.0.1:${PORT}`]],
+    });
+    expect(await linesFor(m, [], "current")).toContain("· Gateway model menu: not set; run setup");
+  });
 
   for (const kind of ["owned", "removed", "null"] as const) {
     test(`doctor menu ownership: ${kind}`, async () => {

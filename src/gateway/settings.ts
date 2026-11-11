@@ -25,6 +25,7 @@ import {
   ownedKeys,
   ownedRecords,
   ownership,
+  samePath,
 } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
@@ -358,7 +359,7 @@ export function turnOn(options: {
   result.skipped.push(...picker.skipped);
   const settings = readSettings(options.settingsFile);
   result.skipped = result.skipped.filter(
-    (skip) => getKey(settings, skip.path).found || skip.path[0] === "modelPicker",
+    (skip) => getKey(settings, skip.path).found || samePath(skip.path, PICKER_PATH),
   );
   return result;
 }

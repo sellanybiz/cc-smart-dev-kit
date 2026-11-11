@@ -2022,11 +2022,14 @@ The description names the first target, not a promise that a fallback will never
 
 `gateway on`, a machine slot change and normal `setup` refresh the owned user menu.
 Setup refreshes only our still-owned active address for this router; it never turns an off
-gateway on. A menu you set, changed or removed stays yours, with an information line.
-`gateway off` and `restore` remove only the unchanged owned menu. A profile launch carries
-its profile's rows in `--settings` when the user menu is absent and never managed, or still ours;
-a plain-Claude launch carries plain-Claude rows under that same rule. A launch never replaces your
-own menu. Profile and plain-Claude rows are fixed at launch. `launch --gateway` uses the live user menu when ours, so slot changes remain visible.
+gateway on. While the address is not ours or not this router's, setup removes an unchanged
+owned menu instead: the kit's menu exists only while its gateway is on, so a menu an older
+`gateway off` or a rollback left behind goes at the next setup. A menu you set, changed or
+removed stays yours, with an information line. `gateway off` and `restore` remove only the
+unchanged owned menu. `doctor` says "run setup" only when setup would write the menu. A
+profile launch carries its profile's rows in `--settings` when the user menu is absent and
+never managed, or still ours; a plain-Claude launch carries plain-Claude rows only while the
+user menu is still ours, to replace the gateway's rows. A launch never replaces your own menu. Profile and plain-Claude rows are fixed at launch. `launch --gateway` uses the live user menu when ours, so slot changes remain visible.
 When no user menu or ownership record exists, it carries machine rows fixed at launch instead. An unknown profile view also falls back to plain-Claude rows. Project switches
 write no menu: Claude Code ignores `modelPicker` in project and local settings. The command
 explains that the menu follows the machine slots; `launch --profile <name>` carries profile rows. Setup previews the same step

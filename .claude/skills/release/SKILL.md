@@ -123,3 +123,7 @@ Release a **new, higher** version with the old behaviour: revert the change, bum
 `patch`, and follow this skill from step 2. Never publish a lower version number, never
 force-push `main`, and never edit a version folder on a machine. Claude Code moves every
 machine forward to the new version, which is the one path they all take.
+
+A revert must not drop the code that removes a key the kit wrote into a person's settings
+(`gateway off`'s, `setup`'s, a `RETIRED_…` list): keep it as a retirement, or the reverted
+version leaves that key behind with no command that takes it out but `restore`.

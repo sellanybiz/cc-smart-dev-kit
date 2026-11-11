@@ -236,11 +236,10 @@ describe("launch", () => {
       "arg=--settings",
       `arg=${settingsFile}`,
       "settings:",
-      ...JSON.stringify(
-        { env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL }, modelPicker: expectedPicker },
-        null,
-        2,
-      ).split("\n"),
+      // No kit menu in the user settings: Claude Code's own rows are right, so none are added.
+      ...JSON.stringify({ env: { ANTHROPIC_BASE_URL: DEFAULT_ANTHROPIC_BASE_URL } }, null, 2).split(
+        "\n",
+      ),
       "arg=--model",
       "arg=haiku",
     ]);
@@ -253,6 +252,12 @@ describe("launch", () => {
 
   test("the file is mode 0600 while the session runs, with the plain-Claude menu", async () => {
     const home = world();
+    // The kit's gateway menu is in the user settings, so plain Claude's rows replace it.
+    applyManagedJson({
+      file: join(home.home, ".claude", "settings.json"),
+      stateDir: home.stateDir,
+      set: [[["modelPicker"], { options: [{ model: "opus", description: "answered by x" }] }]],
+    });
     const seen: { mode: number; text: string }[] = [];
     const ctx = context(home, {
       runSession: async () => {
@@ -883,14 +888,17 @@ describe("RV3: launch says what its settings file leaves in place (the lead's ch
   });
 });
 
-for (const mode of [["--profile", "fast"], ["--no-gateway"]]) {
-  test(`a never-managed menu permits launch ${mode.join(" ")} rows`, async () => {
+for (const [mode, rows] of [
+  [["--profile", "fast"], true],
+  [["--no-gateway"], false],
+] as const) {
+  test(`a never-managed menu: launch ${mode.join(" ")} ${rows ? "adds" : "adds no"} rows`, async () => {
     const home = world();
     gatewayConfig(home, ["fast"]);
     rmSync(join(home.home, ".claude", "settings.json"));
     rmSync(join(home.stateDir, "owned.json"));
-    expect(await runLaunch(mode, context(home))).toBe(7);
-    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+    expect(await runLaunch([...mode], context(home))).toBe(7);
+    expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(rows ? expectedPicker : undefined);
   });
   test(`a removed owned menu stays absent for launch ${mode.join(" ")}`, async () => {
     const home = world();

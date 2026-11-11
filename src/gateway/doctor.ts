@@ -36,6 +36,8 @@ import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles }
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
 import { scopeOfStateKey } from "./limit-state";
+import { PICKER_PATH } from "./model-picker";
+import { ourActiveGateway } from "./model-picker-step";
 import {
   decisionWords,
   gatewayCopiesAmong,
@@ -51,7 +53,7 @@ import {
   SOCKET_NAME,
 } from "./service";
 import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
-import { baseUrlPointsAtGateway, shownValue } from "./settings";
+import { BASE_URL_PATH, baseUrlPointsAtGateway, shownValue } from "./settings";
 import {
   FAMILY_SLOTS,
   isModelSlot,
@@ -169,12 +171,12 @@ export async function gatewayChecks(options: {
 
   try {
     const settings = readJsonObject(paths.settingsFile).data;
-    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    const address = getKey(settings, BASE_URL_PATH);
     if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
-      const picker = getKey(settings, ["modelPicker"]);
+      const picker = getKey(settings, PICKER_PATH);
       const whose = ownership(
         ownedRecords(paths.stateDir, realTarget(paths.settingsFile)),
-        ["modelPicker"],
+        PICKER_PATH,
         picker,
       );
       let menu: string;
@@ -182,7 +184,9 @@ export async function gatewayChecks(options: {
         menu =
           whose === "changed"
             ? `removed by you; ${COMMAND} gateway off then ${COMMAND} gateway on writes it again (setup leaves it removed)`
-            : "not set; run setup";
+            : ourActiveGateway(paths)
+              ? "not set; run setup"
+              : "not written: the router address in your settings is not the kit's own, so setup leaves the menu out";
       else if (whose !== "ours") menu = "your own menu";
       else if (!isObject(picker.value) || !Array.isArray(picker.value.options))
         menu = "invalid rows";

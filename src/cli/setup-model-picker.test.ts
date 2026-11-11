@@ -142,6 +142,41 @@ test("menu refresh retires the family pin, not older slot alias keys", () => {
   expect(settings(w).env[KEY]).toBeUndefined();
 });
 
+describe("an owned menu left behind while the gateway is off", () => {
+  const MENU = { replaceBuiltInOptions: true, options: [{ model: "sonnet", label: "Sonnet" }] };
+  test("setup removes the kit's unchanged menu", async () => {
+    const w = machine("https://api.anthropic.com");
+    applyManagedJson({
+      file: w.paths.settingsFile,
+      stateDir: w.paths.stateDir,
+      set: [[["modelPicker"], MENU]],
+    });
+    expect(await w.setup()).toBe(0);
+    expect(settings(w).modelPicker).toBeUndefined();
+    expect(printed.join("\n")).toContain("modelPicker: the gateway is off; menu removed");
+  });
+  test("a dry run names the removal and keeps the menu", () => {
+    const w = machine("https://api.anthropic.com");
+    applyManagedJson({
+      file: w.paths.settingsFile,
+      stateDir: w.paths.stateDir,
+      set: [[["modelPicker"], MENU]],
+    });
+    expect(applyModelPickerStep(w.paths, true)).toEqual([
+      "~ modelPicker: the gateway is off; menu removed",
+    ]);
+    expect(settings(w).modelPicker).toEqual(MENU);
+  });
+  test("a menu the person set stays", async () => {
+    const w = machine("https://api.anthropic.com");
+    const value = settings(w);
+    value.modelPicker = MENU;
+    writeFileSync(w.paths.settingsFile, JSON.stringify(value));
+    expect(await w.setup()).toBe(0);
+    expect(settings(w).modelPicker).toEqual(MENU);
+  });
+});
+
 test("setup writes the menu without gateway.json for our default router address", async () => {
   const w = machine(`http://127.0.0.1:${DEFAULT_PORT}`);
   rmSync(w.paths.gatewayConfigFile);

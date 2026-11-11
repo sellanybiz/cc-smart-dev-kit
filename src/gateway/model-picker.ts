@@ -35,11 +35,18 @@ export function pickerFor(
   };
 }
 
-/** The kit may write a missing, never-owned menu or refresh its unchanged menu. */
-export function mayWritePicker(file: string, stateDir: string, refreshOwned = true): boolean {
+/** Whose the user menu is: the kit's unchanged one, missing and never owned, or the person's. */
+export function pickerOwner(file: string, stateDir: string): "ours" | "free" | "yours" {
   const current = getKey(readJsonObject(file).data, PICKER_PATH);
   const whose = ownership(ownedRecords(stateDir, realTarget(file)), PICKER_PATH, current);
-  return (refreshOwned && whose === "ours") || (whose === "none" && !current.found);
+  if (whose === "ours") return "ours";
+  return whose === "none" && !current.found ? "free" : "yours";
+}
+
+/** The kit may write a missing, never-owned menu or refresh its unchanged menu. */
+export function mayWritePicker(file: string, stateDir: string, refreshOwned = true): boolean {
+  const owner = pickerOwner(file, stateDir);
+  return (refreshOwned && owner === "ours") || owner === "free";
 }
 
 /** Decide before the managed write, so env and menu share one backup and one write. */

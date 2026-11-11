@@ -11,15 +11,17 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   Opus"; a slot set to a backend reads "answered by gpt-6.1-sol (worker slot)". The kit never
   writes a model id: each family follows the newest model your Claude Code knows. Anthropic's
   stale extra rows (an old "Fable 5.1") are hidden while the gateway is on. A menu you set
-  yourself stays yours. `gateway off` and `restore` remove the kit's menu.
-  - `launch --profile <name>` carries that profile's rows, and `launch --no-gateway` plain-Claude
-    rows, fixed for that session. Claude Code reads the menu only from your user settings, so a
+  yourself stays yours. `gateway off` and `restore` remove the kit's menu, and `setup` removes
+  one left behind while the gateway is off.
+  - `launch --profile <name>` carries that profile's rows, fixed for that session. `launch
+    --no-gateway` carries plain-Claude rows only to replace the kit's menu; with no kit menu,
+    Claude Code's own rows stay. Claude Code reads the menu only from your user settings, so a
     project's own gateway (`gateway project`) cannot have its own menu; the command says so.
   - `doctor` names the menu's rows, and says when your default model is fixed to one id
     (`"model": "claude-…"`), which keeps you off newer models.
 - **The 4.0.0 Fable pin is gone.** 4.0.0 set `ANTHROPIC_DEFAULT_FABLE_MODEL` to one Fable id.
-  `setup`, `gateway on` and `gateway off` now remove it while it is still the kit's value; a
-  value you set yourself stays.
+  `gateway setup`, `setup`, `gateway on`, `gateway off` and `restore` now remove it while it is
+  still the kit's value; a value you set yourself stays.
 - **The status line names who really answered.** While the gateway is on, the main status line
   shows `Sonnet 5.5 → gpt-6.1-sol` when another model answered your session's model, a
   fallback included. Each subagent's row in the agent panel shows `worker → <the model that
@@ -37,8 +39,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 **What to run:** the update arrives by itself within the hour (or run `cc-smart-dev-kit update`).
 Then run `cc-smart-dev-kit gateway setup`: the router changed, so it asks before it restarts the
-router (a restart cuts answers in flight). Then run `cc-smart-dev-kit setup`: it removes the
-Fable pin and writes the menu. Then start a new Claude Code session and open `/model`.
+router (a restart cuts answers in flight); it also removes the 4.0.0 Fable pin. Then run
+`cc-smart-dev-kit setup`: it writes the menu. Then start a new Claude Code session and open `/model`.
 
 ## 4.0.0
 

@@ -26,7 +26,7 @@ import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
 import type { Terminal } from "../cli/ui/terminal";
 import { shellWord } from "../setup/launcher";
 import { withLock } from "../setup/lock";
-import { readJsonObject } from "../setup/managed-json";
+import { getKey, readJsonObject, samePath } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";
 import { checkBackendKey, listModels } from "./backends";
 import { breakerStatusLines } from "./breaker";
@@ -112,6 +112,7 @@ import {
   scopeOfStateKey,
   stateKeyFor,
 } from "./limit-state";
+import { PICKER_PATH } from "./model-picker";
 import { applyModelPickerStep } from "./model-picker-step";
 import { createOmnirouteKey, probeOmniroute } from "./omniroute-key";
 import { decisionWords, type ProjectGatewayState } from "./project-state";
@@ -2556,10 +2557,10 @@ async function commandOff(ctx: GatewayContext): Promise<number> {
   printChanges(out, result, paths.home);
   for (const skip of result.skipped.filter(
     (skip) =>
-      skip.path[0] === "modelPicker" &&
-      readJsonObject(paths.settingsFile).data.modelPicker !== undefined,
+      samePath(skip.path, PICKER_PATH) &&
+      getKey(readJsonObject(paths.settingsFile).data, PICKER_PATH).found,
   ))
-    out.line("info", `modelPicker: ${skip.reason}`);
+    out.line("info", `${PICKER_PATH.join(".")}: ${skip.reason}`);
   const { routing, ownAddressRoutes } = foreignRouting(foreign, paths.settingsFile);
   for (const key of foreign) {
     if (key === BASE_URL_KEY && !ownAddressRoutes) {

@@ -155,7 +155,8 @@ all tasks in the current plan, or the title alone for a loose task.
   update never reach it (a test walks their imports). `docs/gateway.md` § Slots and defaults.
 - **The gateway menu refresh is a separate setup step.** After the defaults step is done,
   setup retires the old kit-owned Fable pin and refreshes `modelPicker` only for our still-owned
-  active router address. A person's menu, including one removed by hand, stays theirs. The
+  active router address (`ourActiveGateway`, which doctor asks too); otherwise it removes an
+  unchanged kit menu left behind, so a rollback or an older `gateway off` heals. A person's menu, including one removed by hand, stays theirs. The
   step uses the managed JSON writer under setup's lock, with the same dry-run preview.
   `docs/gateway.md` § What `gateway on` writes describes the rows and all their writers.
 - **A manual run** (`cc-smart-dev-kit setup`, `cc-smart-dev-kit gateway setup`, `restore`) is the
