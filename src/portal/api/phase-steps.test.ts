@@ -47,7 +47,7 @@ test("a phase's steps: its blocking work done, of its blocking work, a dropped o
   step(db, api.id, "done");
   step(db, api.id, "in_progress");
   step(db, api.id, "dropped");
-  // A blocking subtask under a blocking task is a step of the phase too, and so is the task.
+  // A blocking task an older kit nested under a blocking task is a step of the phase too.
   const task = step(db, api.id, "done");
   step(db, task.id, "done");
   step(db, task.id, "pending");
@@ -56,8 +56,8 @@ test("a phase's steps: its blocking work done, of its blocking work, a dropped o
   step(db, note.id, "pending");
   const steps = phaseSteps(allTasks(db, "p"));
   db.close();
-  // Done: the two done steps, the done task and its done subtask. To do: one in progress, one
-  // pending subtask. The dropped step and the non-blocking branch count nowhere.
+  // Done: the two done steps, the done task and the done task under it. To do: one in progress, one
+  // pending task under it. The dropped step and the non-blocking branch count nowhere.
   expect(steps.get(api.id)).toEqual({ done: 4, total: 6 });
 });
 

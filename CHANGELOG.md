@@ -3,6 +3,61 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.0.0
+
+- **Breaking: tasks have three layers, with no subtasks.** Work is Plan › Phase › Task, plus
+  loose tasks with no plan. A task never holds a task. The task tools, the `task` command and
+  the hooks no longer speak of subtasks.
+  - The task store moves to schema v4 by itself, after it writes a backup next to the store.
+    Each old subtask becomes a task under the same phase, or a loose task. Its notes, history
+    and claim stay. When a subtask used to hold its parent, the move keeps that hold as an
+    explicit "blocked by".
+  - The move runs again whenever the store is opened for writing. So a task that an older 3.x
+    session nests after the update is moved up at the next open.
+- **Several plans per session, one at a time.** The task tools take `plan`, the plan's name
+  (its slug), to pick which plan they act on. With several plans, `task_list` with
+  `scope: "plan"` shows them all. The plan and build skills now run plans one after another,
+  each with its own plan task. `task import claude-mem` turns an old list into one plan with
+  one phase.
+- **Take over another session's work.** Run `task take <plan-slug|#n>` or call `task_take` to
+  move a plan, with its phases and tasks, or one task into this session. Use it after a crash
+  or a hand-over. It moves everything or nothing. A claim whose process has ended moves at
+  once. A claim that a running process still holds needs `--force`. The portal's task panel
+  has the same move, as "Move to session…".
+- **The portal's Tasks page is rebuilt.**
+  - Each project shows Session › Plan › Phase › Task as a tree. Every level folds, and the
+    browser remembers the folds. Done plans and phases start folded.
+  - Plans and phases show their progress, counted over every task, old closed ones too.
+  - A filter bar narrows the list by project, session, plan, status or words, and the address
+    keeps the whole view.
+  - The list shows 60 rows at a time and says how many are hidden.
+  - A click opens a side panel with the task's description, notes and history.
+- **The status line counts the plan's tasks.** The current task has its own row, written as
+  `3/10 · <full title>`: the plan's closed and total tasks, phases left out, then the whole
+  title. A task with no plan shows its title alone.
+- **Fix: a plan limit from another login no longer sticks.** The status line hides a router
+  limit record when this session's own usage window ends at a different time. That means
+  another login, or a window that has moved on. A limit for this same login still shows. The
+  router also ends a record of another model once a Claude answer's own headers show the
+  window has room. A per-family limit (Opus, Sonnet) ends only by an answer from that family.
+- **Plan files live in the project.** `setup` sets Claude Code's `plansDirectory` to
+  `.claude/plans` in your user settings, so plan mode writes each plan into the project. A
+  value you set yourself stays yours. Plans are committed with their branch, and `doctor`
+  names the plan folder in use. `restore` removes the setting.
+- **Claude Fable 5.2 through the gateway.** Behind a gateway, Claude Code maps `fable` to an
+  older Fable. While the gateway is on, the kit now sets `ANTHROPIC_DEFAULT_FABLE_MODEL` to
+  `claude-fable-5-2`, so `/model` lists Fable 5.2. `gateway off` removes the setting, and a
+  value you set yourself stays yours. The router's prices know Fable 5.2.
+- **The portal's switches say what they do.** The "opus and fable slots" switch is gone. Each
+  slot keeps its own switch on the Slots page. The judge switch is now "Auto-mode judge". It
+  sits below the gateway switch and is off while the gateway is off.
+
+**What to run:** this is a major version, so update to it on purpose with
+`cc-smart-dev-kit update`, then restart Claude Code. The task store moves by itself the first
+time it is opened, after a backup. Every router restarts once. Run `cc-smart-dev-kit setup` to
+write the plan folder setting and, with the gateway on, the Fable setting. Start a new
+session to see Fable 5.2 in `/model`.
+
 ## 3.1.0
 
 - **Merges are no longer announced to your other sessions.** After a merge into

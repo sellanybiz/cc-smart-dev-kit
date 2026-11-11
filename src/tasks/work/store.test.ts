@@ -44,7 +44,7 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
     why: "open tasks: #2 Child",
   });
   expect(updateTask(db, root.id, { parentId: child.id }, who, 12).ok).toBe(false);
-  // A subtask blocked by its own parent could never start, and neither could ever be done.
+  // A task blocked by its own parent could never start, and neither could ever be done.
   expect(updateTask(db, child.id, { waitsFor: { add: [root.id] } }, who, 12)).toEqual({
     ok: false,
     why: '#2 "Child" cannot be blocked by #1 "Root": it sits under it, and a parent waits for its tasks',

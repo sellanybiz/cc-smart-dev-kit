@@ -89,7 +89,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
       ok: false,
       why: "parent would make a cycle",
     });
-    // A subtask blocked by its own parent could never start (D76); the other way is fine.
+    // A task blocked by its own parent could never start (D76); the other way is fine.
     expect(ops.call("update", { task: "#2", blocked_by_add: ["#1"] })).toEqual({
       ok: false,
       why: '#2 "Child" cannot be blocked by #1 "Parent": it sits under it, and a parent waits for its tasks',

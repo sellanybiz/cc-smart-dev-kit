@@ -107,7 +107,7 @@ test("a task an older kit nested past three layers still changes and closes wher
   ok(updateTask(db, deeper.id, { status: "done" }, who, 3));
   ok(updateTask(db, deep.id, { status: "done" }, who, 4));
   ok(updateTask(db, middle.id, { type: "non-blocking" }, who, 5));
-  // A move is held to the layers: under a subtask is refused.
+  // A move is held to the layers: under a task is refused.
   expect(updateTask(db, add(db, "Loose").id, { parentId: deep.id }, who, 6)).toEqual({
     ok: false,
     why: "a task belongs under a phase or at the top; a task holds no tasks",
@@ -120,7 +120,7 @@ test("only blocking work holds its parent: a non-blocking task and what is under
   const parent = add(db, "Phase", { kind: "phase", plan: "plan", phase: "A" });
   const blocking = add(db, "Blocking", { parentId: parent.id });
   const noted = add(db, "Noted", { parentId: parent.id, type: "non-blocking" });
-  // A blocking subtask under the non-blocking task holds only that task, not the phase.
+  // A blocking task an older kit left under the non-blocking task holds only that task, not the phase.
   const step = add(db, "Step", { parentId: noted.id });
   expect(updateTask(db, parent.id, { status: "done" }, who, 2)).toEqual({
     ok: false,
@@ -220,7 +220,7 @@ test("a block that would wait on itself through a parent is refused, at any dept
   const parent = add(db, "Parent");
   const child = add(db, "Child", { parentId: parent.id });
   const x = add(db, "X");
-  // Child waits for X; X blocked by Parent would wait for Child, as Parent waits for its subtask.
+  // Child waits for X; X blocked by Parent would wait for Child, as Parent waits for the task under it.
   ok(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 2));
   expect(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 3)).toEqual({
     ok: false,
