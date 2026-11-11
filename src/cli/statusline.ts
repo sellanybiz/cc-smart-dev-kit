@@ -1,5 +1,5 @@
 /**
- * `cc-smart-dev-kit statusline`: one line for Claude Code's status bar.
+ * `cc-smart-dev-kit statusline`: rows for Claude Code's status bar.
  *
  * Claude Code runs the status line command after each reply and passes a JSON object on
  * stdin (docs/claude-code-contract.md). The usage numbers come from there:
@@ -8,7 +8,7 @@
  * `anthropic-ratelimit-unified-*` headers of Anthropic's answers, which the router passes
  * on unchanged; they are there only for a Claude subscription, after the first answer.
  *
- * What it shows, parts joined by ` · `:
+ * First row, parts joined by ` · `:
  *   - the model's display name;
  *   - the session's context use and reasoning effort, always (`ctx 312k · 78% of 400k · xhigh`,
  *     `statusline-context.ts`): measured against the auto-compact window the person set, and
@@ -34,12 +34,12 @@
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time;
  *   - `cache miss: tools_changed`, for a minute after a prompt-cache miss (`cache-miss.ts`:
  *     `prompt_cache.last_miss_at` and `last_miss_cause`, `CACHE_MISS_SHOW_MS`, no state), before
- *     the current task.
+ *     the current task on its own second row (`closed/total · title`, or a loose title alone).
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
  * Claude Code's settings files (the auto-compact window, each file once, `compactWindowsOf`), and
- * prints; no network, no git. **A fallback, breaker or
+ * prints; no network. The task lookup resolves the project through git. **A fallback, breaker or
  * failing-checks record shows only in a session on its chain** (`sessionGatewayOf`: the
  * `ANTHROPIC_BASE_URL` the command's environment carries is the session's own,
  * `docs/claude-code-contract.md`): the machine's records on the machine's address (or when it
@@ -75,21 +75,16 @@ import type { Env } from "../hooks/run";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
 import { taskContext } from "../tasks/context";
 import { callerOf } from "../tasks/work/identity";
-import { statusTask } from "../tasks/work/read";
+import { planProgress } from "../tasks/work/read";
 import type { Who } from "../tasks/work/types";
 import type { AlertsHere } from "../workflow/alerts";
 
-/** Keep long task titles from taking over the status bar. */
-const TASK_SUBJECT_MAX = 60;
+/** The current work's full title, with task-only totals for its plan. */
 export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
-  const read = statusTask(paths, project, who);
+  const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null) return null;
-  const task = read.value;
-  const subject =
-    task.subject.length > TASK_SUBJECT_MAX
-      ? `${task.subject.slice(0, TASK_SUBJECT_MAX - 1)}…`
-      : task.subject;
-  return `#${task.number} ${subject}${task.total > 0 ? ` · ${task.closed}/${task.total}` : ""}`;
+  const { task, plan, closed, total } = read.value;
+  return plan === null ? task.subject : `${closed}/${total} · ${task.subject}`;
 }
 
 function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {
@@ -284,7 +279,7 @@ function contextFactsOf(
 }
 
 /**
- * Runs the command: stdin from Claude Code, the router's state file; prints one line.
+ * Runs the command: stdin from Claude Code, the router's state file; prints the main row and, when present, a task row.
  * `alerts` is what the entry read once (`alertsAt`); one line on stderr says so when a
  * settings file could not be read and the defaults decided.
  */
@@ -331,6 +326,7 @@ export async function runStatusline(
     session,
     contextFactsOf(paths, input, env, state, session, nowMs),
   );
-  console.log([text, cacheMiss, task].filter((part) => part !== null && part !== "").join(" · "));
+  const firstRow = [text, cacheMiss].filter((part) => part !== null && part !== "").join(" · ");
+  console.log([firstRow, task].filter((part) => part !== null && part !== "").join("\n"));
   return 0;
 }

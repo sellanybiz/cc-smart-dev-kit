@@ -6,6 +6,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { taskContext } from "../tasks/context";
+import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
+import { createTask, ensurePlanTask, layPhase, updateTask } from "../tasks/work/store";
+import type { Result } from "../tasks/work/types";
 import { tempDir } from "../testing/temp";
 import { type CliPaths, cliPaths } from "./paths";
 import { runStatusline } from "./statusline";
@@ -72,6 +76,159 @@ function world() {
     user: join(paths.claudeConfigDir, "settings.json"),
   };
 }
+
+describe("the current task's own row", () => {
+  function tasks(w: ReturnType<typeof world>) {
+    const context = taskContext(w.folder, {});
+    if (!context.ok) throw new Error(context.why);
+    const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
+    const who = { sessionId: "status-session", pid: null, procStart: null };
+    function ok<T>(result: Result<T>): T {
+      if (!result.ok) throw new Error(result.why);
+      return result.value;
+    }
+    return {
+      db,
+      who,
+      ok,
+      project: context.project,
+      run: () =>
+        w.run(
+          { ...inputOf({ folder: w.folder }), cwd: w.folder },
+          {
+            CLAUDE_CODE_SESSION_ID: "status-session",
+          },
+        ),
+    };
+  }
+
+  it("counts plan tasks, including detached and dropped work, not phases", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      t.ok(ensurePlanTask(t.db, { project: t.project, plan: "work", subject: "Plan" }, t.who, 1));
+      const phase = t.ok(
+        writeWork(t.db, () =>
+          layPhase(
+            t.db,
+            {
+              project: t.project,
+              plan: "work",
+              phase: "A",
+              subject: "Build the feature",
+            },
+            t.who,
+            2,
+          ),
+        ),
+      ).task;
+      const done = t.ok(
+        createTask(t.db, { project: t.project, plan: "work", subject: "Done" }, t.who, 3),
+      );
+      t.ok(updateTask(t.db, done.id, { status: "done" }, t.who, 4));
+      const dropped = t.ok(
+        createTask(t.db, { project: t.project, plan: "work", subject: "Dropped" }, t.who, 5),
+      );
+      t.ok(updateTask(t.db, dropped.id, { status: "dropped" }, t.who, 6));
+      t.ok(createTask(t.db, { project: t.project, plan: "work", subject: "Open" }, t.who, 7));
+      t.ok(updateTask(t.db, phase.id, { status: "in_progress" }, t.who, 8));
+      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n2/3 · Build the feature");
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("shows 0/0 for a plan with no tasks yet", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      const plan = t.ok(
+        ensurePlanTask(
+          t.db,
+          { project: t.project, plan: "empty", subject: "Plan the feature" },
+          t.who,
+          1,
+        ),
+      );
+      t.ok(updateTask(t.db, plan.id, { status: "in_progress" }, t.who, 2));
+      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n0/0 · Plan the feature");
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("shows a loose task's title alone", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      t.ok(
+        createTask(
+          t.db,
+          { project: t.project, subject: "Fix the parser", status: "in_progress" },
+          t.who,
+          1,
+        ),
+      );
+      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\nFix the parser");
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("keeps a long title whole and leaves a cache miss on the first row", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      t.ok(
+        createTask(
+          t.db,
+          {
+            project: t.project,
+            subject:
+              "Keep the complete task title visible without cutting it after sixty characters in the command",
+            status: "in_progress",
+          },
+          t.who,
+          1,
+        ),
+      );
+      expect(
+        await w.run(
+          {
+            ...inputOf({ folder: w.folder }),
+            cwd: w.folder,
+            prompt_cache: {
+              last_miss_at: NOW / 1000,
+              last_miss_cause: { causes: ["tools_changed"] },
+            },
+          },
+          { CLAUDE_CODE_SESSION_ID: "status-session" },
+        ),
+      ).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M · cache miss: tools_changed\nKeep the complete task title visible without cutting it after sixty characters in the command",
+      );
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("adds no blank task row with no active work, or no store", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M");
+    } finally {
+      t.db.close();
+    }
+    const empty = world();
+    expect(
+      await empty.run(
+        { ...inputOf(), cwd: empty.folder },
+        { CLAUDE_CODE_SESSION_ID: "status-session" },
+      ),
+    ).toBe("Opus 5.5 · ctx 312k · 31% of 1M");
+  });
+});
 
 describe("SL1: the context segment", () => {
   it("measures against the model's per-model auto-compact window", async () => {
