@@ -327,8 +327,11 @@ the command's.
 
 - **Why a settings file** (R6): a settings file's `env` beats a shell export (P4), and a
   `--settings` file beats the project's personal file, its team file, the user file and the
-  shell (P3). So the launch writes one small file holding only `env.ANTHROPIC_BASE_URL` and
-  passes it with `--settings`; every other setting stays the person's. An environment variable
+  shell (P3). The launch file holds `env.ANTHROPIC_BASE_URL` and, where the kit may put a
+  menu, the profile's or plain-Claude `modelPicker` rows, fixed at launch. It passes that
+  file with `--settings`; every other setting stays the person's. `--gateway` uses the
+  live user menu when one is ours, and carries machine rows only when no user menu or
+  ownership record exists. An environment variable
   would lose to any settings file. **That is also its limit**: Claude Code merges `env` one
   variable at a time, so a key the launch file does not name keeps the value a lower file gives
   it. `--no-gateway` is plain Claude at Anthropic's address, on the claude.ai login **unless** the
@@ -1997,8 +2000,8 @@ gateway on. A menu you set, changed or removed stays yours, with an information 
 `gateway off` and `restore` remove only the unchanged owned menu. A profile launch carries
 its profile's rows in `--settings` when the user menu is absent and never managed, or still ours;
 a plain-Claude launch carries plain-Claude rows under that same rule. A launch never replaces your
-own menu. Profile and plain-Claude rows are fixed at launch. `launch --gateway` writes no
-menu override, so slot changes keep refreshing the user menu. An unknown profile view also falls back to plain-Claude rows. Project switches
+own menu. Profile and plain-Claude rows are fixed at launch. `launch --gateway` uses the live user menu when ours, so slot changes remain visible.
+When no user menu or ownership record exists, it carries machine rows fixed at launch instead. An unknown profile view also falls back to plain-Claude rows. Project switches
 write no menu: Claude Code ignores `modelPicker` in project and local settings. The command
 explains that the menu follows the machine slots; `launch --profile <name>` carries profile rows. Setup previews the same step
 in `--dry-run`. Doctor lists the rows and explains when your default `model` is fixed to

@@ -900,3 +900,19 @@ for (const mode of [["--profile", "fast"], ["--no-gateway"]]) {
     expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
   });
 }
+
+test("gateway launch supplies rows only for a never-managed absent user menu", async () => {
+  const home = world();
+  gatewayConfig(home, []);
+  rmSync(join(home.home, ".claude", "settings.json"));
+  rmSync(join(home.stateDir, "owned.json"));
+  expect(await runLaunch(["--gateway"], context(home))).toBe(7);
+  expect(JSON.parse(loggedSettings(home)).modelPicker).toEqual(expectedPicker);
+});
+test("gateway launch leaves a removed owned user menu absent", async () => {
+  const home = world();
+  gatewayConfig(home, []);
+  rmSync(join(home.home, ".claude", "settings.json"));
+  expect(await runLaunch(["--gateway"], context(home))).toBe(7);
+  expect(JSON.parse(loggedSettings(home)).modelPicker).toBeUndefined();
+});

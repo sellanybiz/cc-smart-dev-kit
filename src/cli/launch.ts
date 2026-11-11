@@ -368,7 +368,7 @@ function claudeArgsSetModel(claudeArgs: readonly string[]): boolean {
 
 /**
  * One line per key the settings chain still gives a session this launch starts (facts only,
- * never a model suggested). The launch file names only the address, and Claude Code merges `env`
+ * never a model suggested). The launch file names only the address in `env`, and Claude Code merges `env`
  * one variable at a time (`docs/claude-code-contract.md`, P3), so:
  * - a login key or helper (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) in any
  *   file bills the session through it, not through the plan's login — in every mode that passes
@@ -420,9 +420,9 @@ function settingsNotes(
 }
 
 /** Unreadable user settings cannot prove ownership; preserve the existing launch behavior. */
-function launchMayWritePicker(ctx: LaunchContext): boolean {
+function launchMayWritePicker(ctx: LaunchContext, refreshOwned: boolean): boolean {
   try {
-    return mayWritePicker(ctx.settingsFile, ctx.stateDir);
+    return mayWritePicker(ctx.settingsFile, ctx.stateDir, refreshOwned);
   } catch {
     // Claude Code reports invalid user settings itself; launch must not replace their menu.
     return false;
@@ -477,7 +477,7 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
-      const ownPicker = parsed.mode.kind !== "gateway" && launchMayWritePicker(ctx);
+      const ownPicker = launchMayWritePicker(ctx, parsed.mode.kind !== "gateway");
       const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
       const settings = {
         env: { ANTHROPIC_BASE_URL: target.url },

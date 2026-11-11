@@ -36,10 +36,10 @@ export function pickerFor(
 }
 
 /** The kit may write a missing, never-owned menu or refresh its unchanged menu. */
-export function mayWritePicker(file: string, stateDir: string): boolean {
+export function mayWritePicker(file: string, stateDir: string, refreshOwned = true): boolean {
   const current = getKey(readJsonObject(file).data, PICKER_PATH);
   const whose = ownership(ownedRecords(stateDir, realTarget(file)), PICKER_PATH, current);
-  return whose === "ours" || (whose === "none" && !current.found);
+  return (refreshOwned && whose === "ours") || (whose === "none" && !current.found);
 }
 
 /** Decide before the managed write, so env and menu share one backup and one write. */
