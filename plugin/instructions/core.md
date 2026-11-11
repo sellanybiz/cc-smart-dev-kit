@@ -110,13 +110,13 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 
 ## Ending a turn
 
-A question buried in a long final message does not get read. When you stop, give a short
+A question buried in a long final message goes unread. When you stop, give a short
 summary: what you did, what broke, what you left out. A decision between real options goes to
-`AskUserQuestion`, the recommended option first, never in prose or a numbered list in chat; an
-open question with no real options is one plain question at the end, not made-up options. **The
-recommended option is the strongest complete solution on the facts** — never the least work, a
-shortcut or a workaround. A workaround offered at all says it is one and names its debt; when
-the best option costs more, say the cost and still recommend it. Each question and option
+`AskUserQuestion`, the recommended option first, never in prose or a chat list; an open
+question with no real options is one plain question at the end. **The recommended option is
+the strongest complete solution on the facts** — never the least work, a shortcut or a
+workaround. Label any workaround as one, with its debt; if the best costs more, say so and
+still recommend it. Each question and option
 stands alone: what is decided, why it matters, what the option does and costs, in the person's
 words. Keep the sentences short, not the meaning. Nothing to decide: summary, then stop. Write
 plainly — short sentences, plain words, active voice, a technical word explained the first
