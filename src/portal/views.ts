@@ -203,12 +203,8 @@ export function overviewPage(shell: Shell, data: OverviewData): string {
 ${switchButton({ action: "switch", body: { name: "gateway", on: !data.switches.gateway }, confirm: SWITCH_CONFIRM, id: "sw-gw", label: "Gateway", on: data.switches.gateway, reload: true })}
 </div>
 <div class="row-wide">
-<div class="col g2 fill1"><span id="sw-judge" class="bold">Your own judge</span><span class="small muted">${data.switches.judgeUntested ? "A target has not passed the force-push test, so the router ignores it." : data.switches.judge ? "On: your judge judges every auto-mode safety check in Claude's place. A weak judge can let a risky command through, and it reads the conversation." : "Off: Claude judges auto mode's safety checks. It turns on only with a saved, fully force-push-tested chain."}</span></div>
-${switchButton({ action: "switch", body: { name: "judge", on: !data.switches.judge }, confirm: SWITCH_CONFIRM, id: "sw-judge", label: "Your own judge", on: data.switches.judge, reload: true })}
-</div>
-<div class="row-wide">
-<div class="col g2 fill1"><span id="sw-models" class="bold">opus and fable slots</span><span class="small muted">On: Opus and Fable requests go to the chains saved on the Slots page. Off: Opus and Fable answer themselves.</span></div>
-${switchButton({ action: "switch", body: { name: "models", on: !data.switches.models }, confirm: SWITCH_CONFIRM, id: "sw-models", label: "opus and fable slots", on: data.switches.models, reload: true })}
+<div class="col g2 fill1"><span id="sw-judge" class="bold">Auto-mode judge</span><span class="small muted">${!data.switches.gateway ? "Works only with the gateway on. Claude judges auto-mode safety checks." : data.switches.judgeUntested ? "Claude judges. A target has not passed the force-push test, so the router ignores it." : data.switches.judge ? "Your judge chain judges auto-mode safety checks. A weak judge can let a risky command through, and it reads the conversation." : "Claude judges auto-mode safety checks. It turns on only with a saved, fully force-push-tested chain."}</span></div>
+${switchButton({ action: "switch", body: { name: "judge", on: !data.switches.judge }, confirm: SWITCH_CONFIRM, disabled: !data.switches.gateway, id: "sw-judge", label: "Auto-mode judge", on: data.switches.judge, reload: true })}
 </div>
 <div class="foot">A switch changes every running Claude session from its next request. You confirm first.</div>
 <div class="foot" data-out-for="switch" role="status"></div>

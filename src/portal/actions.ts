@@ -34,7 +34,6 @@ import {
   BACKEND_EFFORT_LEVELS,
   isProfileName,
   JUDGE_SLOT,
-  MODEL_SLOTS,
   parseTarget,
   slotKeyFromArg,
 } from "../gateway/targets";
@@ -559,53 +558,6 @@ async function switchJudge(action: ActionContext, on: boolean): Promise<ActionRe
     };
   }
   return gateway(action, ["slot", "judge", mode]);
-}
-
-/**
- * The Overview's one switch for the opus and fable slots, until the Slots page gives each its
- * own: each slot's mode in turn (`setSlotMode`), one at a time (each takes setup's lock). A
- * slot already in that mode is left as it is; one with nothing saved is named, not invented.
- */
-async function switchModelSlots(action: ActionContext, on: boolean): Promise<ActionResult> {
-  const config = gatewayConfig(action);
-  const mode = on ? "custom" : "claude";
-  const missing: string[] = [];
-  const lines: string[] = [];
-  let changed = 0;
-  let ok = true;
-  for (const slot of Object.keys(MODEL_SLOTS)) {
-    if (slotMode(config, slot) === mode) continue;
-    if (on && keptChain(config, slot) === null) {
-      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
-      continue;
-    }
-    // A refusal is an error thrown by the command; it is this slot's answer, and the next
-    // slot is still switched.
-    let result: ActionResult;
-    try {
-      result = await gateway(action, ["slot", slot, mode]);
-    } catch (error) {
-      result = { lines: [messageOf(error)], ok: false };
-    }
-    ok = ok && result.ok;
-    lines.push(...result.lines);
-    if (result.ok) changed += 1;
-  }
-  if (missing.length > 0) {
-    lines.push(
-      `No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`,
-    );
-  }
-  if (changed === 0 && on) {
-    // Nothing was turned on, so the switch must not read as a success: the page shows these
-    // lines in its failure colour, and the switch's own state stays off.
-    lines.push("Nothing was turned on, so the switch is still off.");
-    return { lines, ok: false };
-  }
-  if (changed === 0 && lines.length === 0) {
-    return { lines: ["The opus and fable slots were already off."], ok: true };
-  }
-  return { lines, ok };
 }
 
 // ── The rest ────────────────────────────────────────────────────────────────────
@@ -1904,8 +1856,6 @@ async function runActionByName(
           return switchGateway(action, on);
         case "judge":
           return switchJudge(action, on);
-        case "models":
-          return switchModelSlots(action, on);
         case "hold":
           return switchHold(action, on);
         default:

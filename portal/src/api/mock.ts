@@ -587,7 +587,6 @@ export function mockData(empty: boolean): MockData {
     slots: rows,
     switches: {
       gateway: true,
-      models: true,
       judge: false,
       judgeUntested: false,
       settingsBaseUrl: "http://127.0.0.1:20100",

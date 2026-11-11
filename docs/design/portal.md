@@ -568,7 +568,12 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 - **Health**: what holds the router's port, in doctor's own words: `portHolderCheck`
   (`src/gateway/doctor.ts`) for systemd's socket unit or the Windows task; null where the machine
   runs neither. The router-down card names the unit from that socket, so the page never types it.
-- **Overview**: the plan's 5-hour window as the status line recorded it
+- **Overview**: Gateway and **Auto-mode judge** sit in separate rows, gateway first. The
+  judge says "Claude judges" or "Your judge chain judges". With the gateway off it is disabled
+  and says "Works only with the gateway on", from the existing `switches.gateway` fact.
+  It runs only `gateway slot judge custom|claude`, never `gateway on|off`: changing the judge
+  leaves `ANTHROPIC_BASE_URL` and the gateway state alone. The combined opus/fable switch is
+  gone; each model slot keeps its own switch on Slots. The plan's 5-hour window as the status line recorded it
   (`src/cli/usage-window.ts`, null for a window that is over). The file holds the 7-day window
   too since 2.2.0, but no page shows it yet, so the page says there is none. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
@@ -694,7 +699,7 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   (from `projects/<id>/tasks`), and opens the Tasks tab on that project (`/tasks?project=<id>`).
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
-something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
+something, its result in place: the Overview's two switches (`SavedSwitch`, shared with the
 Slots page's fallback and breaker), the Slots page's effort pin (`slot.effort`: asked first, it
 runs `gateway effort <slot> <target> <level>|off`, shows the test request and a refusal in
 place, and is offered only while the slot is Custom), the router restart, `doctor`, a companion's enable, the
