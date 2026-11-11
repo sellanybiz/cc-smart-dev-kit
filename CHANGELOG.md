@@ -3,6 +3,43 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.1.0
+
+- **The model menu follows Claude's newest models by itself.** While the gateway is on, the kit
+  writes Claude Code's `/model` menu: one row per family (Opus, Sonnet, Haiku, Fable), each
+  saying who answers it. A row whose slot passes straight to Claude reads "Claude's newest
+  Opus"; a slot set to a backend reads "answered by gpt-6.1-sol (worker slot)". The kit never
+  writes a model id: each family follows the newest model your Claude Code knows. Anthropic's
+  stale extra rows (an old "Fable 5.1") are hidden while the gateway is on. A menu you set
+  yourself stays yours. `gateway off` and `restore` remove the kit's menu.
+  - `launch --profile <name>` carries that profile's rows, and `launch --no-gateway` plain-Claude
+    rows, fixed for that session. Claude Code reads the menu only from your user settings, so a
+    project's own gateway (`gateway project`) cannot have its own menu; the command says so.
+  - `doctor` names the menu's rows, and says when your default model is fixed to one id
+    (`"model": "claude-…"`), which keeps you off newer models.
+- **The 4.0.0 Fable pin is gone.** 4.0.0 set `ANTHROPIC_DEFAULT_FABLE_MODEL` to one Fable id.
+  `setup`, `gateway on` and `gateway off` now remove it while it is still the kit's value; a
+  value you set yourself stays.
+- **The status line names who really answered.** While the gateway is on, the main status line
+  shows `Sonnet 5.5 → gpt-6.1-sol` when another model answered your session's model, a
+  fallback included. Each subagent's row in the agent panel shows `worker → <the model that
+  answered> → effort`. Only whole answers count: the router's request history now marks an
+  answer that broke mid-stream or was refused, and records which subagent sent each request.
+- **Fix: a new task never joins a closed plan.** A task created without a plan used to join the
+  session's latest plan even when that plan was done (a done plan then showed 17/18). New work
+  now joins only an open plan; moving a task into a closed plan is refused.
+- **Workflows started from the skill list get their arguments right.** Claude Code lists the
+  kit's workflows as skills and shows only their description. Each description now names the
+  arguments the workflow accepts and the skill that calls it, so a session no longer guesses a
+  key the workflow refuses.
+- **Instructions:** the edge-case hunter runs on `opus`; the `(Recommended)` option in every
+  question is the strongest complete one, never a shortcut, and a workaround is labelled as one.
+
+**What to run:** the update arrives by itself within the hour (or run `cc-smart-dev-kit update`).
+Then run `cc-smart-dev-kit gateway setup`: the router changed, so it asks before it restarts the
+router (a restart cuts answers in flight). Then run `cc-smart-dev-kit setup`: it removes the
+Fable pin and writes the menu. Then start a new Claude Code session and open `/model`.
+
 ## 4.0.0
 
 - **Breaking: tasks have three layers, with no subtasks.** Work is Plan › Phase › Task, plus
