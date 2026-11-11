@@ -411,6 +411,11 @@ describe("the lead hint: once a session, when the lead is not Claude Opus (2.2.0
     expect(await runHook(fableSessionHook, stop("claude-fable-5-2"), env)).toEqual({});
     expect(existsSync(sessionMark(env, SESSION, "fable"))).toBe(false);
     expect(existsSync(sessionMark(env, SESSION, "lead"))).toBe(false);
+    // A switch to Fable OUTRIGHT names the model it asks for: that is Fable, so the line speaks,
+    // though the same id already answered as the opus slot's.
+    expect(told(await runHook(fableSessionHook, switchTo("claude-fable-5-2"), env))).toBe(
+      "cc-smart-dev-kit: this session runs on Claude Fable, the premium model — it uses your plan's limits faster than Opus. Switch with /model if you did not mean to.",
+    );
   });
 
   it("the hint, then a switch to Fable: both lines, each once", async () => {

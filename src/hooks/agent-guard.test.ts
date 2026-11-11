@@ -1566,13 +1566,25 @@ describe("tiers, not vendors (owner, 2026-10-16)", () => {
     expect(asked.decision).toBe("ask");
     expect(asked.reason).toContain("`opus` (answered by claude-fable-5-2) launch at effort `max`");
     expect(asked.reason).not.toContain("Fable reason");
-    // A fork from a session the router answers with that Fable is the opus tier too.
+    // A fork from a session the router answered with that Fable (its transcript) is the opus
+    // tier too.
     const fork = verdict(
       { prompt: "go on", subagent_type: "fork" },
-      { ...fableFirst, sessionModel: "claude-fable-5-2" },
+      { ...fableFirst, sessionModel: "claude-fable-5-2", sessionServed: true },
     );
     expect(fork.decision).toBe("allow");
     expect(fork.real?.tier).toBe("opus");
+    // A session that ASKED for Fable outright (ANTHROPIC_MODEL, no transcript yet) is Fable.
+    const askedFork = verdict(
+      { prompt: "go on", subagent_type: "fork" },
+      { ...fableFirst, sessionModel: "claude-fable-5-2", sessionServed: false },
+    );
+    expect(askedFork.decision).toBe("deny");
+    expect(askedFork.real?.tier).toBe("fable");
+    // A launch that names the Fable id outright asks for Fable: the Fable gate holds.
+    const named = verdict({ ...review, model: "claude-fable-5-2" }, fableFirst);
+    expect(named.decision).toBe("deny");
+    expect(named.reason).toContain("Fable reason: build - <what the person asked>");
     // The same override through Claude Code's own variable.
     const viaEnv = verdict(review, CTX, { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-fable-5-2" });
     expect(viaEnv.decision).toBe("allow");

@@ -32681,11 +32681,13 @@ function familyFirstTarget(gateway, family) {
   return gateway.config.slots[slot]?.[0] ?? null;
 }
 function tierOfMappedId(model, gateway, env) {
-  for (const premium of ["fable", "opus"]) {
+  const id = withoutContextSuffix(model.trim());
+  for (const premium of ["opus", "fable"]) {
     const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === model)
+    if (override !== null && withoutContextSuffix(override.trim()) === id)
       return premium;
-    if (familyFirstTarget(gateway, premium) === model)
+    const first = familyFirstTarget(gateway, premium);
+    if (first !== null && withoutContextSuffix(first.trim()) === id)
       return premium;
   }
   return null;
@@ -32696,8 +32698,8 @@ function answeringFamily(real) {
   return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
 }
 function asNamed(answered, family, tier) {
-  const real = premiumTier(answered.family);
-  return tier === null && real !== null ? { ...answered, tier: real } : { ...answered, family, tier };
+  const real = premiumTier(answeringFamily(answered) ?? answered.family);
+  return tier === null && real !== null ? { ...answered, family: real, tier: real } : { ...answered, family, tier };
 }
 function throughFamilySlot(claude, family, gateway) {
   const tier = tierOfReading(family);
@@ -32737,9 +32739,9 @@ function resolveLaunchModel(name, gateway, env) {
   if (family === undefined) {
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    if (mapped === null)
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
       return resolved;
-    return { ...resolved, family: mapped, tier: mapped };
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -32747,6 +32749,15 @@ function resolveLaunchModel(name, gateway, env) {
     return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
   }
   return throughFamilySlot(text, family, gateway);
+}
+function resolveSessionModel(session, gateway, env) {
+  if (!session.served)
+    return resolveLaunchModel(session.model, gateway, env);
+  const text = withoutContextSuffix(session.model.trim());
+  const family = claudeFamily(text);
+  const own = family !== null || text.startsWith("claude-") ? { claude: true, family, model: text, tier: tierOfReading(family) } : resolveTarget(text);
+  const mapped = tierOfMappedId(text, gateway, env);
+  return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 function switchOn(value) {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
@@ -44966,7 +44977,7 @@ function judgeRan(launch, ran, ctx, env) {
     if (ran.effort === null)
       return judged(deny(null, print ? PRINT_NO_EFFORT : NO_EFFORT));
   }
-  const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
+  const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx.sessionServed === true, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
   const auto = ran.effortFrom === EFFORT_LEVEL_ENV && ran.effort === EFFORT_AUTO;
   if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
     return ran.effortFrom !== EFFORT_LEVEL_ENV ? judged(deny(real, effortDenial(ran.effort, ran.effortFrom === "frontmatter"))) : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
@@ -45056,10 +45067,10 @@ function judgeModel(launch, real, ctx, env) {
 function nobodyWatches(env) {
   return !isAttended(env);
 }
-function sessionLaunchModel(sessionModel, gateway, env) {
+function sessionLaunchModel(sessionModel, served, gateway, env) {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
-  return resolveLaunchModel(sessionModel, gateway, env);
+  return resolveSessionModel({ model: sessionModel, served }, gateway, env);
 }
 function gatewayConfigOf(paths) {
   try {
@@ -45071,7 +45082,10 @@ function gatewayConfigOf(paths) {
 function sessionModelOf(input, env) {
   const transcript = stringField(input.transcript_path);
   const answered = transcript === null ? null : lastClaudeModel(transcript);
-  return answered ?? stringField(env.ANTHROPIC_MODEL);
+  if (answered !== null)
+    return { model: answered, served: true };
+  const started = stringField(env.ANTHROPIC_MODEL);
+  return started === null ? null : { model: started, served: false };
 }
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
@@ -45090,6 +45104,7 @@ function sessionGatewayOf(paths, env) {
 }
 function readGuardContext(paths, input, env) {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  const session = sessionModelOf(input, env);
   const cwd = stringField(input.cwd);
   const definitions = new Map;
   const definition = (name) => {
@@ -45109,7 +45124,8 @@ function readGuardContext(paths, input, env) {
     config,
     gatewayOn,
     definition,
-    sessionModel: sessionModelOf(input, env)
+    sessionModel: session?.model ?? null,
+    sessionServed: session?.served ?? false
   };
 }
 function guardFacts(input, context) {
@@ -45571,8 +45587,9 @@ function sessionModelName(real) {
 function sessionMark(env, sessionId, kind) {
   return join77(namesDir(env), `${sessionId}.${kind}`);
 }
-function judgedMark(env, sessionId, model) {
-  const hash = createHash8("sha256").update(model).digest("hex").slice(0, 16);
+function judgedMark(env, sessionId, model, served = false) {
+  const key = served ? `served:${model}` : model;
+  const hash = createHash8("sha256").update(key).digest("hex").slice(0, 16);
   return join77(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
@@ -45593,10 +45610,11 @@ function leadVerdict(real) {
   return "lead";
 }
 function currentModel(event, input, env) {
+  const asked = (model) => model === null ? null : { model, served: false };
   if (event === "SessionStart")
-    return stringField(input.model);
+    return asked(stringField(input.model));
   if (event === "PostModelSwitch")
-    return stringField(input.to_model);
+    return asked(stringField(input.to_model));
   return sessionModelOf(input, env);
 }
 function fableSession(input, env, paths) {
@@ -45610,13 +45628,13 @@ function fableSession(input, env, paths) {
   const leadMark = sessionMark(env, sessionId, "lead");
   if (existsSync65(fableMark) && existsSync65(leadMark))
     return SILENT;
-  const model = currentModel(event, input, env);
-  if (model === null)
+  const session = currentModel(event, input, env);
+  if (session === null)
     return SILENT;
-  const judged = judgedMark(env, sessionId, model);
+  const judged = judgedMark(env, sessionId, session.model, session.served);
   if (existsSync65(judged))
     return SILENT;
-  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
+  const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
   let said = SILENT;
   if (verdict === "fable" && firstTime(fableMark)) {

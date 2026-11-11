@@ -975,17 +975,21 @@ last answer — the PREVIOUS turn's — so the hook ran one turn behind. It miss
 Fable, and then warned while the person was back on Opus. Stop judges the answer that just
 ended, and a switch back is a different answer.
 
-The tier is read the guard's way too (`resolveLaunchModel`, `ANTHROPIC_DEFAULT_FABLE_MODEL` and
+The tier is read the guard's way too (`resolveSessionModel`, `ANTHROPIC_DEFAULT_FABLE_MODEL` and
 the fable slot's chain while the gateway is on included), so there is no second list of what
 counts as Fable, and a tier a backend answers warns the same, naming the model (`the
-\`fable\` model, openai:gpt-5.5`). Claude Fable that the person put first in the `opus` slot (or
-in `ANTHROPIC_DEFAULT_OPUS_MODEL`) is the `opus` tier, so its session gets neither line: the
-person chose it (the owner, 2026-11-11).
+\`fable\` model, openai:gpt-5.5`). A start and a switch name the model Claude Code ASKS for, and it
+is resolved as a launch's; a stop reads the id that ANSWERED, which is never routed again and
+takes the tier the person mapped it behind (`opus` first when both name it). So Claude Fable put
+first in the `opus` slot (or in `ANTHROPIC_DEFAULT_OPUS_MODEL`) is the `opus` tier, and its
+session gets neither line: the person chose it (the owner, 2026-11-11). A switch to Fable
+outright still gets the Fable line: it asks for Fable, and its judged mark is kept apart from the
+mark of the same id read as an answer.
 
 **The lead hint** (2.2.0, the owner, 2026-11-05). The kit recommends the lead on Claude Opus at
 `high`; it never switches by itself, and it works fully on a backend lead. So the same hook says
-one more line, once a session, when the session's own model is anything but Claude Opus, or
-Claude Fable mapped behind the `opus` tier (`leadVerdict`): another Claude family, a backend, the `opus` tier a backend answers (`the
+one more line, once a session, when the session's own model is neither Claude Opus nor Claude
+Fable mapped behind the `opus` tier (`leadVerdict`): another Claude family, a backend, the `opus` tier a backend answers (`the
 \`opus\` model, omniroute:glm-x`), or a name no rule reads as a family. "This session runs on
 <model>. The kit works best with the lead on Claude Opus at high effort. Switch with /model.",
 with the switch that turns it off. When the `opus` tier itself is what a backend answers,

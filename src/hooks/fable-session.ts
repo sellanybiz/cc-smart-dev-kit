@@ -64,7 +64,12 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { answeringFamily, type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
+import {
+  answeringFamily,
+  type LaunchModel,
+  resolveSessionModel,
+  type SessionModel,
+} from "../models/launch-policy";
 import { resolveLeadHint } from "../workflow/resolve";
 import { sessionGatewayOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
@@ -120,10 +125,13 @@ export function fableSessionMark(env: Env, sessionId: string): string {
 
 /**
  * The mark that says `model` was judged in this session: nothing new can be said about it. Named
- * by a short hash, since a model text may hold `:`, `/` or `[`.
+ * by a short hash, since a model text may hold `:`, `/` or `[`. An id that answered (`served`)
+ * has its own mark: the same id asked for by a switch is judged again, since a switch to Fable
+ * outright gets the Fable line where the opus slot's own Fable does not.
  */
-export function judgedMark(env: Env, sessionId: string, model: string): string {
-  const hash = createHash("sha256").update(model).digest("hex").slice(0, 16);
+export function judgedMark(env: Env, sessionId: string, model: string, served = false): string {
+  const key = served ? `served:${model}` : model;
+  const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
   return join(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 
@@ -159,12 +167,14 @@ export function leadVerdict(real: LaunchModel): LeadVerdict {
 }
 
 /** The current model per event; null when the event names none. */
-function currentModel(event: string, input: HookInput, env: Env): null | string {
+function currentModel(event: string, input: HookInput, env: Env): null | SessionModel {
   // A start names it, a switch names the model it moved TO (`to_model`), and a stop is judged by
   // the answer that just finished — the only reading that cannot fire for a model the session
-  // has already left.
-  if (event === "SessionStart") return stringField(input.model);
-  if (event === "PostModelSwitch") return stringField(input.to_model);
+  // has already left. A start and a switch name what Claude Code asks for; a stop reads what
+  // answered.
+  const asked = (model: null | string) => (model === null ? null : { model, served: false });
+  if (event === "SessionStart") return asked(stringField(input.model));
+  if (event === "PostModelSwitch") return asked(stringField(input.to_model));
   return sessionModelOf(input, env);
 }
 
@@ -179,13 +189,13 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   const leadMark = sessionMark(env, sessionId, "lead");
   // Both lines said: nothing left to say, and nothing to read. This hook runs at every stop.
   if (existsSync(fableMark) && existsSync(leadMark)) return SILENT;
-  const model = currentModel(event, input, env);
-  if (model === null) return SILENT;
-  const judged = judgedMark(env, sessionId, model);
+  const session = currentModel(event, input, env);
+  if (session === null) return SILENT;
+  const judged = judgedMark(env, sessionId, session.model, session.served);
   if (existsSync(judged)) return SILENT;
   // The gateway THIS session runs on (its own `ANTHROPIC_BASE_URL`, a profile's chains), never
   // the machine's file: a project set to `off` is on the login, a profile has its own chains.
-  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
+  const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
   let said: HookResult = SILENT;
   if (verdict === "fable" && firstTime(fableMark)) {

@@ -8,10 +8,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **Fix: Claude Fable behind the `opus` slot is the `opus` tier.** When the `opus` slot (or
   `ANTHROPIC_DEFAULT_OPUS_MODEL`) puts Claude Fable first, an `opus` launch keeps the `opus`
   tier's rules: it runs at `medium`, `high` or `xhigh` with no question and needs no
-  `Fable reason:` line. A fork from such a session is the `opus` tier too. The session gets no
-  Fable line and no lead hint, because you chose that mapping. The guard's messages and the
-  tier note name Fable as the model that answers. A `sonnet` or `haiku` slot that answers on
-  Claude Opus or Fable still counts as that premium tier.
+  `Fable reason:` line. A fork from such a session is the `opus` tier too, and the session gets
+  no Fable line and no lead hint, because you chose that mapping. An id mapped behind both
+  premium tiers counts as `opus`. A launch that names a Fable id outright, and a `/model` switch
+  to Fable, are still Fable. The guard's messages and the tier note name Fable as the model that
+  answers. A `sonnet` or `haiku` slot that answers on Claude Opus or Fable still counts as that
+  premium tier, through a chain of overrides too.
 
 ## 3.0.0
 

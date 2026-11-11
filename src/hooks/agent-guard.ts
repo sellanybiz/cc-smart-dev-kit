@@ -96,6 +96,8 @@
  * `fork` runs on the session's model and effort — Claude Code ignores a `model` it is given —
  * so it is judged on the session's own: the last Claude model in the hook input's
  * `transcript_path` (`lastClaudeModel`), else `ANTHROPIC_MODEL`; unknowable → the `opus` tier.
+ * The transcript's model ANSWERED, so it is never routed again and takes the tier the person
+ * mapped it behind (`resolveSessionModel`): Claude Fable from the opus slot is the `opus` tier.
  *
  * **Every Workflow run** (G2). A Workflow call's launches run inside the tool and fire no hook of
  * their own, so the guard reads the script the call runs, however the call names it — an
@@ -145,6 +147,8 @@ import {
   OPUS_ASK_EFFORT,
   OPUS_FREE_EFFORTS,
   resolveLaunchModel,
+  resolveSessionModel,
+  type SessionModel,
   SUBAGENT_MODEL_ENV,
   SUBAGENT_MODEL_FORCE_ENV,
   UI_REASON_WORDS,
@@ -283,6 +287,9 @@ export interface GuardContext extends GatewayFacts {
   definition?: (name: null | string) => AgentDefinition | null;
   /** The session's own model, for a fork; null when it cannot be read. */
   sessionModel: null | string;
+  /** True when `sessionModel` is the id that answered (the transcript), not a name asked for:
+   * it takes the tier it was mapped behind and is never routed again (`resolveSessionModel`). */
+  sessionServed?: boolean;
   /** The subagent types a Fable launch may use; the plugin's list by default. */
   readOnlyAgents?: readonly string[];
 }
@@ -1039,7 +1046,7 @@ function judgeRan(
   // model it never runs on. FORCE without a model of its own does the same for every launch.
   const real =
     ran.modelFrom === "fork" || ran.modelFrom === "force-session"
-      ? sessionLaunchModel(ran.model, ctx, env)
+      ? sessionLaunchModel(ran.model, ctx.sessionServed === true, ctx, env)
       : resolveLaunchModel(ran.model ?? "", ctx, env);
   // The effort rule, before every model rule: a subagent never runs at `low` — on a Claude model
   // and an affordable slot alike. A level no rule knows is refused, not guessed.
@@ -1176,12 +1183,13 @@ function nobodyWatches(env: Env): boolean {
  */
 function sessionLaunchModel(
   sessionModel: null | string,
+  served: boolean,
   gateway: GatewayFacts,
   env: Env,
 ): LaunchModel {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
-  return resolveLaunchModel(sessionModel, gateway, env);
+  return resolveSessionModel({ model: sessionModel, served }, gateway, env);
 }
 
 /** The gateway config for a hook on this machine: null when there is none, or it cannot be used. */
@@ -1197,13 +1205,15 @@ export function gatewayConfigOf(paths: CliPaths): GatewayConfig | null {
 
 /**
  * The model the session itself runs on: the one that last answered in its transcript
- * (`lastClaudeModel`), else the model it was started on (`ANTHROPIC_MODEL`). One home: the
- * Agent guard's fork rule and `fable-session` both read it.
+ * (`lastClaudeModel`, served), else the model it was started on (`ANTHROPIC_MODEL`, asked for).
+ * One home: the Agent guard's fork rule and `fable-session` both read it.
  */
-export function sessionModelOf(input: HookInput, env: Env): null | string {
+export function sessionModelOf(input: HookInput, env: Env): null | SessionModel {
   const transcript = stringField(input.transcript_path);
   const answered = transcript === null ? null : lastClaudeModel(transcript);
-  return answered ?? stringField(env.ANTHROPIC_MODEL);
+  if (answered !== null) return { model: answered, served: true };
+  const started = stringField(env.ANTHROPIC_MODEL);
+  return started === null ? null : { model: started, served: false };
 }
 
 /** The gateway one session runs on: `GatewayFacts`, and the profile its URL names. */
@@ -1248,6 +1258,7 @@ export function sessionGatewayOf(paths: CliPaths, env: Env): SessionGateway {
  */
 export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): GuardContext {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  const session = sessionModelOf(input, env);
   const cwd = stringField(input.cwd);
   const definitions = new Map<string, AgentDefinition | null>();
   const definition = (name: null | string): AgentDefinition | null => {
@@ -1272,7 +1283,8 @@ export function readGuardContext(paths: CliPaths, input: HookInput, env: Env): G
     definition,
     // The session's own model, for a fork: what last answered, else the model the session was
     // started on, else unknowable.
-    sessionModel: sessionModelOf(input, env),
+    sessionModel: session?.model ?? null,
+    sessionServed: session?.served ?? false,
   };
 }
 

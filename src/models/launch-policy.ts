@@ -197,17 +197,21 @@ function familyFirstTarget(gateway: GatewayFacts, family: ClaudeFamily | null): 
  * The tier an id stands for when a person's own override or a premium family's slot answers
  * with it: the session's model may be the backend id an `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` or
  * the opus or fable slot's first target names, and that id is still the family's tier (owner,
- * 2026-10-16).
+ * 2026-10-16). Both sides are compared without a context suffix (`[1m]`): the router sends the
+ * model without it, so the id that answers never carries it.
+ *
+ * **`opus` is checked first** (the owner, 2026-11-11): an id the person mapped behind `opus` is
+ * the `opus` tier, even when the same id also stands for `fable` (the fable slot, or
+ * `ANTHROPIC_DEFAULT_FABLE_MODEL`, names it too). The person put it behind `opus`, and the kit
+ * does not second-guess that mapping.
  */
-export function tierOfMappedId(
-  model: string,
-  gateway: GatewayFacts,
-  env: Env,
-): "fable" | "opus" | null {
-  for (const premium of ["fable", "opus"] as const) {
+function tierOfMappedId(model: string, gateway: GatewayFacts, env: Env): "fable" | "opus" | null {
+  const id = withoutContextSuffix(model.trim());
+  for (const premium of ["opus", "fable"] as const) {
     const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === model) return premium;
-    if (familyFirstTarget(gateway, premium) === model) return premium;
+    if (override !== null && withoutContextSuffix(override.trim()) === id) return premium;
+    const first = familyFirstTarget(gateway, premium);
+    if (first !== null && withoutContextSuffix(first.trim()) === id) return premium;
   }
   return null;
 }
@@ -241,9 +245,11 @@ function asNamed(
   family: ClaudeFamily | null,
   tier: "fable" | "opus" | null,
 ): LaunchModel {
-  const real = premiumTier(answered.family);
+  // The model that really answers decides the raise: `sonnet` whose override is a Claude Opus id
+  // whose own slot answers with Claude Fable spends Fable, though that inner hop kept `opus`.
+  const real = premiumTier(answeringFamily(answered) ?? answered.family);
   return tier === null && real !== null
-    ? { ...answered, tier: real }
+    ? { ...answered, family: real, tier: real }
     : { ...answered, family, tier };
 }
 
@@ -315,13 +321,15 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
-    // A person's own override or a premium slot may name this id for a family: it is that
-    // family's tier then, whatever the id itself reads as (owner, 2026-11-11) — a session whose
-    // `opus` slot answers with Claude Fable runs `claude-fable-…`, and it is the `opus` tier.
+    // A person's own override may name this id for a family: it is that family's tier then,
+    // unless the id itself proves its family (a reading with no family is only a default). A
+    // launch that names an id asks for that model: `claude-fable-…` named outright is Fable,
+    // even where the opus slot answers with it. Only an id that already ANSWERED reads as the
+    // tier it was mapped behind (`resolveSessionModel`).
     const mapped = tierOfMappedId(text, gateway, env);
     const resolved = resolveName(text, gateway);
-    if (mapped === null) return resolved;
-    return { ...resolved, family: mapped, tier: mapped };
+    if (mapped === null || (resolved.tier !== null && resolved.family !== null)) return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
   }
   const tier = premiumTier(family);
   const override = stringField(env[familyEnv(family)]);
@@ -332,6 +340,44 @@ export function resolveLaunchModel(name: string, gateway: GatewayFacts, env: Env
     return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
   }
   return throughFamilySlot(text, family, gateway);
+}
+
+/**
+ * How the session's own model was read: a name Claude Code asked for (the start's or a switch's
+ * model, `ANTHROPIC_MODEL`), or the id that ANSWERED its last turn (the transcript).
+ */
+export interface SessionModel {
+  model: string;
+  /** True for the id that answered: the router already chose it, so it is never routed again. */
+  served: boolean;
+}
+
+/**
+ * The model behind the session's own model (a fork, FORCE with no model, the Fable-session
+ * hook). A name Claude Code asked for is resolved as a launch's (`resolveLaunchModel`). An id
+ * that answered is the model itself — never sent through a slot again, since the router already
+ * did — and its tier is the one the person mapped it behind (`tierOfMappedId`, `opus` first),
+ * else its own family's (owner, 2026-11-11): a session whose opus slot answers with Claude Fable
+ * leaves `claude-fable-…` in its transcript, and that is the `opus` tier.
+ *
+ * The transcript cannot tell that from a session switched to Fable outright: both answer with
+ * the same id. A switch itself is read from the name it asked for, so it still gets the Fable
+ * line; only a later read of the transcript takes the mapped tier.
+ */
+export function resolveSessionModel(
+  session: SessionModel,
+  gateway: GatewayFacts,
+  env: Env,
+): LaunchModel {
+  if (!session.served) return resolveLaunchModel(session.model, gateway, env);
+  const text = withoutContextSuffix(session.model.trim());
+  const family = claudeFamily(text);
+  const own: LaunchModel =
+    family !== null || text.startsWith("claude-")
+      ? { claude: true, family, model: text, tier: tierOfReading(family) }
+      : resolveTarget(text);
+  const mapped = tierOfMappedId(text, gateway, env);
+  return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 
 /**
