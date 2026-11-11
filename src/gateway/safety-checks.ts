@@ -22,6 +22,7 @@
  */
 
 import { z } from "zod";
+import type { HistoryOutcome } from "./history";
 
 /** How many days the file keeps. Older days are dropped as the router writes. */
 export const SAFETY_CHECK_DAYS = 30;
@@ -257,6 +258,24 @@ export class AnswerUsageReader {
   private body = "";
   private tooBig = false;
   private start: CheckTokens | null = null;
+  private failure: HistoryOutcome | null = null;
+
+  /** Read after tokens(), which also finishes the last event or JSON body. */
+  outcome(): HistoryOutcome | null {
+    return this.failure;
+  }
+
+  private noteOutcome(value: unknown): void {
+    if (!isJsonObject(value)) return;
+    if (value.type === "error") this.failure = "stream_error";
+    else if (
+      this.failure === null &&
+      (value.stop_reason === "refusal" ||
+        (isJsonObject(value.delta) && value.delta.stop_reason === "refusal") ||
+        (isJsonObject(value.message) && value.message.stop_reason === "refusal"))
+    )
+      this.failure = "refused";
+  }
   /** The counts the last `message_delta` named; a field it did not name is not here. */
   private delta: Partial<CheckTokens> = {};
 
@@ -291,6 +310,7 @@ export class AnswerUsageReader {
         // Not JSON: an error page, a half-written body — no usage to read.
         return null;
       }
+      this.noteOutcome(parsed);
       return tokensOf(isJsonObject(parsed) ? parsed.usage : undefined);
     }
     this.partial += this.decoder.decode();
@@ -356,6 +376,7 @@ export class AnswerUsageReader {
       return;
     }
     if (!isJsonObject(event)) return;
+    this.noteOutcome(event);
     if (event.type === "message_start" && isJsonObject(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }

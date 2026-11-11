@@ -1151,7 +1151,9 @@ still hits; that login's next 429 writes it again.
 
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
   `cc-smart-dev-kit statusline`. It shows the session's context use and reasoning effort
-  (below), your 5-hour and 7-day plan usage, warns from 85 %, shows any fallback in use, and,
+  (below), who really answered while the gateway is on (`Sonnet 5.5 → gpt-6.1-sol`
+  for a different backend or fallback; no repeated arrow when a limit banner names it),
+  your 5-hour and 7-day plan usage, warns from 85 %, shows any fallback in use, and,
   while a slot's breaker is open, `<slot> slot: every target limited since 21:05 → gateway slot
   <slot> <targets>`, and, while auto mode's safety checks fail because Claude is limited or down
   and nothing stood in, `⛔ auto mode's safety checks are failing since 09:40: Claude is at its plan
@@ -1199,7 +1201,9 @@ still hits; that login's next 429 writes it again.
 - **Each subagent's row in the agent panel.** The plugin's own `settings.json` sets Claude
   Code's `subagentStatusLine`, so every subagent's row reads `<label> · <slot> → <model> →
   <effort> · <context>` — the slot its requests reach (scout, worker, opus or fable, from the
-  model's Claude family), the model Claude Code resolved, the effort it runs at, and how much of
+  model's Claude family), the model that really answered while the gateway is on
+  (a backend or fallback included; Claude Code's resolved model before its first answer),
+  the effort it runs at, and how much of
   its context window it uses (`~45k/200k ctx (23%)`, about: the count runs a little high; left
   out until Claude Code reports a count). On a narrow terminal the label shrinks first, so the
   route and the context stay. It is the same routing `agent-guard` judges, on screen while the

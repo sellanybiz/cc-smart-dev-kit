@@ -149,7 +149,12 @@ import {
   thinkingForBackend,
   withoutRouterThinking,
 } from "./fallback-answer";
-import { createHistoryWriter, type HistoryRecorder, type HistoryRow } from "./history";
+import {
+  createHistoryWriter,
+  type HistoryOutcome,
+  type HistoryRecorder,
+  type HistoryRow,
+} from "./history";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import { recordsEndedBy } from "./limit-end";
 import {
@@ -359,9 +364,9 @@ const PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
  */
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
-/** The session id a request carried, or null. The one thing the history takes from a header. */
-export function sessionIdOf(headers: Headers): null | string {
-  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+/** A session or agent id a request carried, validated before it reaches the history. */
+export function sessionIdOf(headers: Headers, header = "x-claude-code-session-id"): null | string {
+  const value = (headers.get(header) ?? "").trim();
   return SESSION_ID.test(value) ? value : null;
 }
 
@@ -3096,11 +3101,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    */
   function observedAnswer(
     response: Response,
-    note: (tokens: null | CheckTokens) => void,
+    note: (tokens: null | CheckTokens, outcome: null | HistoryOutcome) => void,
   ): Response {
     const body = response.body;
     if (body === null) {
-      note(null);
+      note(null, null);
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
@@ -3112,6 +3117,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const usage = new AnswerUsageReader(streaming);
     // A compressed answer is decompressed on a second branch, for the reader only: the
     // client still gets the compressed bytes exactly as they came.
+    let broken = false;
     let decode: null | {
       done: Promise<void>;
       writer: { close(): Promise<void>; write(chunk: Uint8Array<ArrayBuffer>): Promise<void> };
@@ -3127,7 +3133,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           usage.push(step.value);
         }
       })().catch(() => {
-        // A compressed stream that cannot be decoded: what was read before it stands.
+        // Keep any tokens read, but never call a broken compressed body a whole answer.
+        broken = true;
       });
       decode = { done, writer };
     }
@@ -3138,7 +3145,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       ended = true;
       const task = (async () => {
         if (undecodable) {
-          note(null);
+          note(null, null);
           return;
         }
         if (decode !== null) {
@@ -3150,12 +3157,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           // `done` never rejects: a decode that failed kept what it had read.
           await decode.done;
         }
-        note(usage.tokens());
+        const tokens = usage.tokens();
+        note(tokens, broken ? "stream_error" : usage.outcome());
       })();
       deps.background?.(task);
     };
     const observed = new ReadableStream<Uint8Array>({
       cancel(reason) {
+        broken = true;
         finish();
         return reader.cancel(reason);
       },
@@ -3166,6 +3175,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         } catch (error) {
           // The client gets the same failure it got before the counting existed.
           controller.error(error);
+          broken = true;
           finish();
           return;
         }
@@ -3677,6 +3687,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ) {
       const answered = outcome;
       const row: Omit<HistoryRow, "cost" | "tokens"> = {
+        agent: sessionIdOf(req.headers, "x-claude-code-agent-id"),
         at: startMs,
         breaker:
           answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
@@ -3694,9 +3705,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       };
       outcome = {
         ...answered,
-        response: observedAnswer(answered.response, (tokens) => {
+        response: observedAnswer(answered.response, (tokens, outcome) => {
           deps.history?.record({
             ...row,
+            outcome,
             cost: costOf(answered.target, model.name, tokens),
             tokens,
           });

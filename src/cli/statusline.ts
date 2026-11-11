@@ -59,6 +59,7 @@ import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import { breakerChangeCommand, slotShortName } from "../gateway/breaker";
 import { checksDownStatusline } from "../gateway/checks-down";
+import { type LastAnswer, lastAnswer } from "../gateway/history-read";
 import {
   currentBreakers,
   currentChecksDown,
@@ -69,7 +70,8 @@ import {
   parseLimitState,
   scopeOfStateKey,
 } from "../gateway/limit-state";
-import { JUDGE_SLOT } from "../gateway/targets";
+import { answerTargetName } from "../gateway/target-label";
+import { JUDGE_SLOT, withoutContextSuffix } from "../gateway/targets";
 import { type SessionGateway, sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
@@ -142,6 +144,7 @@ export function statuslineText(
    * variable, else the settings keys), and the effort the slot's backend target pins. Null: none.
    */
   context: ContextFacts = NO_CONTEXT_FACTS,
+  answer: LastAnswer | null = null,
 ): string {
   const parts: string[] = [];
   const data = isJsonObject(input) ? input : {};
@@ -160,6 +163,7 @@ export function statuslineText(
   const aboutThisSession = (key: string): boolean =>
     session === null || (session.gatewayOn && scopeOfStateKey(key).profile === session.profile);
   const covered = new Set<string>();
+  const bannerTargets = new Set<string>();
   if (state !== null) {
     const hidden = new Set(
       Object.entries(state.limits)
@@ -180,6 +184,7 @@ export function statuslineText(
       // The judge is no fallback, whichever chain's record an older router wrote.
       if (scopeOfStateKey(key).slot === JUDGE_SLOT || !aboutThisSession(key)) continue;
       covered.add(record.model);
+      bannerTargets.add(record.target);
       parts.push(`⚠ ${record.model} at its limit → ${record.target}${until(record.resetsAt)}`);
     }
     for (const [limited, record] of currentLimits(state, nowMs)) {
@@ -217,6 +222,23 @@ export function statuslineText(
         ? `⚠ ${label} ${percent}%${numbers.resetsAt === null ? "" : ` (resets ${formatClock(numbers.resetsAt, nowMs, timeZone)})`}`
         : `${label} ${percent}%`,
     );
+  }
+  const id =
+    isJsonObject(data.model) && typeof data.model.id === "string"
+      ? withoutContextSuffix(data.model.id)
+      : null;
+  if (
+    answer !== null &&
+    session?.gatewayOn &&
+    id !== null &&
+    withoutContextSuffix(answer.model) === id &&
+    answer.target !== "anthropic" &&
+    withoutContextSuffix(answer.target) !== id &&
+    !bannerTargets.has(answer.target) &&
+    typeof model === "string" &&
+    parts[0] === model
+  ) {
+    parts[0] = `${model} → ${answerTargetName(answer.target)}`;
   }
   return parts.join(" · ");
 }
@@ -326,6 +348,14 @@ export async function runStatusline(
     alerts.alerts.usagePercent.value,
     session,
     contextFactsOf(paths, input, env, state, session, nowMs),
+    session?.gatewayOn &&
+      isJsonObject(input) &&
+      typeof input.session_id === "string" &&
+      isJsonObject(input.model) &&
+      typeof input.model.id === "string" &&
+      sessionGatewayOf(paths, env).gatewayOn
+      ? lastAnswer(paths.historyDbFile, input.session_id, null, session.profile, input.model.id)
+      : null,
   );
   const firstRow = [text, cacheMiss].filter((part) => part !== null && part !== "").join(" · ");
   console.log([firstRow, task].filter((part) => part !== null && part !== "").join("\n"));

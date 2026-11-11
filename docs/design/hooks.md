@@ -551,7 +551,12 @@ The **subagent status line** (MD-13) is the same fact on screen: `plugin/setting
 Claude Code's `subagentStatusLine` to `cc-smart-dev-kit subagent-statusline`
 (`src/cli/subagent-statusline.ts`), and the agent panel's row body for each subagent becomes
 `<label> · <slot> → <model> → <effort> · <context>`, the slot taken from the model's Claude
-family with the router's own mapping (`familySlotFor`). The context is the subagent's use,
+family with the router's own mapping (`familySlotFor`). While the gateway is on, the model
+comes from the last whole 2xx answer in the router history for that session, profile and
+agent id, including a backend or fallback. Before the first answer, or with missing, old
+or locked history, it keeps Claude Code's resolved model. The task id equals the request's
+`x-claude-code-agent-id` (proved offline on 2.1.322; the contract records the trace).
+The context is the subagent's use,
 `~45k/200k ctx (23%)`, from the task's `tokenCount` (the last request's input plus the output
 so far: the current context, a little too high) and `contextWindowSize`; it is left out when
 either is missing or the count is zero. On a narrow row the label shrinks first so the route and

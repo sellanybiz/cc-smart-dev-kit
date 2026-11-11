@@ -40,9 +40,15 @@
  * goes through `oneLine` first: one line, no control characters, cut to the row's own width.
  * A broken input prints nothing at all and exits 0 — a status line never breaks a session.
  */
+
 import { COMMAND } from "../build-info";
+import { type LastAnswer, lastAnswer } from "../gateway/history-read";
 import { cutText, oneLine } from "../gateway/plain-text";
+import { answerTargetName } from "../gateway/target-label";
 import { familySlotFor } from "../gateway/targets";
+import { sessionGatewayOf } from "../hooks/agent-guard";
+import type { Env } from "../hooks/run";
+import type { CliPaths } from "./paths";
 import { formatTokens } from "./statusline-context";
 
 /** One task's row body, as Claude Code reads it back. */
@@ -145,9 +151,16 @@ export function contextPart(task: StatusTask): null | string {
  * the route and the context together do not fit, the context goes in front of the route and the
  * end is cut.
  */
-export function rowContent(task: StatusTask, columns = DEFAULT_COLUMNS): string {
+export function rowContent(
+  task: StatusTask,
+  columns = DEFAULT_COLUMNS,
+  answer: LastAnswer | null = null,
+): string {
   const slot = slotOf(task.model) ?? "?";
-  const model = task.model ?? "model not resolved yet";
+  const model =
+    answer === null || answer.target === "anthropic"
+      ? (task.model ?? "model not resolved yet")
+      : answerTargetName(answer.target);
   // Claude Code leaves the effort out when it set none: the model's own default answers.
   const effort = task.effort ?? "default effort";
   const route = `${slot} → ${model} → ${effort}`;
@@ -174,7 +187,10 @@ export function rowContent(task: StatusTask, columns = DEFAULT_COLUMNS): string 
 }
 
 /** The rows an input makes: one per task, each with its own body. */
-export function subagentRows(input: unknown): SubagentRow[] {
+export function subagentRows(
+  input: unknown,
+  answers: ReadonlyMap<string, LastAnswer> = new Map(),
+): SubagentRow[] {
   const columns =
     typeof input === "object" &&
     input !== null &&
@@ -182,12 +198,17 @@ export function subagentRows(input: unknown): SubagentRow[] {
     typeof (input as Record<string, unknown>).columns === "number"
       ? ((input as Record<string, unknown>).columns as number)
       : DEFAULT_COLUMNS;
-  return statusTasks(input).map((task) => ({ content: rowContent(task, columns), id: task.id }));
+  return statusTasks(input).map((task) => ({
+    content: rowContent(task, columns, answers.get(task.id) ?? null),
+    id: task.id,
+  }));
 }
 
 /** Runs the command: stdin in, one JSON line per row out. Never fails a session. */
 export async function runSubagentStatusline(
   read: () => Promise<string> = () => Bun.stdin.text(),
+  paths?: CliPaths,
+  env: Env = {},
 ): Promise<number> {
   let input: unknown = null;
   try {
@@ -197,6 +218,21 @@ export async function runSubagentStatusline(
     // Not JSON: no rows, and the session goes on.
     return 0;
   }
-  for (const row of subagentRows(input)) console.log(JSON.stringify(row));
+  const answers = new Map<string, LastAnswer>();
+  if (
+    paths !== undefined &&
+    typeof input === "object" &&
+    input !== null &&
+    "session_id" in input &&
+    typeof input.session_id === "string"
+  ) {
+    const session = sessionGatewayOf(paths, env);
+    if (session.gatewayOn)
+      for (const task of statusTasks(input)) {
+        const answer = lastAnswer(paths.historyDbFile, input.session_id, task.id, session.profile);
+        if (answer !== null) answers.set(task.id, answer);
+      }
+  }
+  for (const row of subagentRows(input, answers)) console.log(JSON.stringify(row));
   return 0;
 }

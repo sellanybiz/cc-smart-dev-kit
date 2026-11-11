@@ -25,6 +25,50 @@
 
 import { Database } from "bun:sqlite";
 import { HISTORY_COLUMNS, historyDbExists, retentionWords, type StoredRow } from "./history";
+import { withoutContextSuffix } from "./targets";
+
+/** A whole answer for a status row, not a failed attempt. */
+export interface LastAnswer {
+  at: number;
+  model: string;
+  slot: null | string;
+  target: string;
+}
+
+/** One indexed answer query; unavailable or busy history never blocks a status tick. */
+export function lastAnswer(
+  file: string,
+  session: string,
+  agent: null | string,
+  profile: null | string,
+  model?: string,
+): LastAnswer | null {
+  if (!historyDbExists(file)) return null;
+  let db: Database | null = null;
+  try {
+    db = new Database(file, { readonly: true });
+    db.run("PRAGMA busy_timeout = 10");
+    const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "agent")) return null;
+    const outcome = columns.some((column) => column.name === "outcome")
+      ? "AND outcome IS NULL"
+      : "";
+    return db
+      .query<LastAnswer, (string | null)[]>(`
+      SELECT at, model, slot, target FROM requests INDEXED BY requests_session_at
+      WHERE session = ? AND agent IS ? AND profile IS ? AND status >= 200 AND status < 300
+      ${outcome} AND target NOT IN ('none', 'refused')
+      ${model === undefined ? "" : "AND replace(model, '[1m]', '') = ?"}
+      ORDER BY id DESC LIMIT 1
+    `)
+      .get(session, agent, profile, ...(model === undefined ? [] : [withoutContextSuffix(model)]));
+  } catch {
+    // Missing schema, a lock, or unreadable bytes: leave the current row alone.
+    return null;
+  } finally {
+    db?.close(true);
+  }
+}
 
 /** The ranges `GET /api/history?range=` and `gateway history` accept, and their buckets. */
 export const HISTORY_RANGES = ["1h", "4h", "1d", "7d", "14d", "30d", "90d"] as const;
