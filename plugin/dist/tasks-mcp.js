@@ -21643,13 +21643,18 @@ var taskSchemas = {
     ...bindings,
     description: description.optional(),
     kind: _enum(["work", ...fields.kind.options]).default("work"),
-    parent: ref.optional().describe("The task (#n) it goes under. Three layers: phase \u203A task \u203A subtask; a subtask holds no subtasks."),
+    parent: ref.optional().describe("The task (#n) it goes under. Layers: plan \u203A phase \u203A task; a task holds nothing."),
     status: _enum(["pending", "in_progress"]).optional(),
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-    plan: string2().trim().min(1).optional().describe("The plan's slug; the caller's latest plan when left out. With no phase, it makes the plan task."),
+    plan: string2().trim().min(1).optional().describe("The plan's slug; the caller's latest plan when left out. With no phase or parent, it makes the plan task. To add a task, name its phase as parent."),
     ...projectFields
+  }).strict(),
+  take: object({
+    task: ref.describe("A plan slug or task reference (#n)."),
+    from: string2().min(1).optional(),
+    force: boolean2().default(false)
   }).strict(),
   update: object({
     task: ref,
@@ -21673,6 +21678,7 @@ var taskSchemas = {
   note: object({ task: ref, text: note }).strict(),
   list: object({
     scope: _enum(["mine", "plan", "project", "all"]).default("mine"),
+    plan: string2().trim().min(1).optional(),
     open_only: boolean2().default(true)
   }).strict(),
   get: object({
@@ -22642,6 +22648,7 @@ function contextOf(checkout, cwd, env) {
 // src/tasks/words.ts
 var TASK_TOOL = {
   create: "task_create",
+  take: "task_take",
   update: "task_update",
   done: "task_done",
   note: "task_note",
@@ -22655,9 +22662,165 @@ var TASK_COMMAND = `${COMMAND} task`;
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
-var WORK_SCHEMA_VERSION = 3;
+
+// src/tasks/work/queries.ts
+function allTasks(db, project) {
+  const dependencies = new Map;
+  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
+    const refs = dependencies.get(row.task_id) ?? [];
+    refs.push(row.waits_for);
+    dependencies.set(row.task_id, refs);
+  }
+  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
+    id: row.id,
+    number: row.number,
+    project: row.project,
+    parentId: row.parent_id,
+    kind: row.kind,
+    subject: row.subject,
+    description: row.description,
+    status: row.status,
+    plan: row.plan,
+    phase: row.phase,
+    agent: row.agent ?? null,
+    branch: row.branch ?? null,
+    worktree: row.worktree ?? null,
+    base: row.base ?? null,
+    createdBy: row.created_by,
+    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    waitsFor: dependencies.get(row.id) ?? [],
+    type: row.blocking === 0 ? "non-blocking" : "blocking"
+  }));
+}
+function getTask(db, project, ref) {
+  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
+  return allTasks(db, project).find((t) => number === null ? t.id === ref : t.number === number) ?? null;
+}
+function taskById(db, id) {
+  const row = db.sqlite.query("SELECT project FROM tasks WHERE id=?").get(id);
+  if (!row)
+    throw new Error("task not found");
+  const task = getTask(db, row.project, id);
+  if (!task)
+    throw new Error("task not found");
+  return task;
+}
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function descendants(db, id) {
+  const task = taskById(db, id);
+  return descendantsIn(allTasks(db, task.project), id);
+}
+function countedUnder(tasks, id) {
+  const root = tasks.find((t) => t.id === id);
+  return root?.kind === "plan" ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan) : descendantsIn(tasks, id);
+}
+function subtreeProgress(tasks, id) {
+  const under = countedUnder(tasks, id);
+  return { closed: under.filter((t) => !isOpen(t)).length, total: under.length };
+}
+function descendantsIn(tasks, id) {
+  const ids = new Set([id]);
+  const result = [];
+  let added = true;
+  while (added) {
+    added = false;
+    for (const t of tasks)
+      if (t.parentId && ids.has(t.parentId) && !ids.has(t.id)) {
+        ids.add(t.id);
+        result.push(t);
+        added = true;
+      }
+  }
+  return result;
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+function layerOf(task, _byId) {
+  return task.kind;
+}
+function openBlockers(task, byId) {
+  return task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined && isOpen(t)).sort((a, b) => a.number - b.number);
+}
+function holdingUnder(tasks, id) {
+  const children = new Map;
+  for (const t of tasks) {
+    if (!t.parentId)
+      continue;
+    const siblings = children.get(t.parentId);
+    if (siblings)
+      siblings.push(t);
+    else
+      children.set(t.parentId, [t]);
+  }
+  const seen = new Set([id]);
+  const result = [];
+  const walk = (parent) => {
+    for (const child of children.get(parent) ?? []) {
+      if (seen.has(child.id) || child.type === "non-blocking")
+        continue;
+      seen.add(child.id);
+      if (isOpen(child))
+        result.push(child);
+      walk(child.id);
+    }
+  };
+  walk(id);
+  return result.sort(inProgressFirst);
+}
+function searchTasks(db, project, text) {
+  const pattern = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
+  const ids = new Set(db.sqlite.query("SELECT DISTINCT t.id FROM tasks t LEFT JOIN task_notes n ON n.task_id=t.id WHERE t.project=? AND (t.subject LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\' OR n.text LIKE ? ESCAPE '\\')").all(project, pattern, pattern, pattern).map((r) => r.id));
+  return allTasks(db, project).filter((t) => ids.has(t.id));
+}
+function notesOf(db, task) {
+  return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
+}
+function eventsOf(db, task) {
+  return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
+    id: row.id,
+    taskId: row.task_id,
+    number: row.number,
+    at: row.at,
+    action: row.action,
+    changes: JSON.parse(row.changes),
+    sessionId: row.session_id,
+    sessionName: row.session_name,
+    pid: row.pid,
+    reason: row.reason
+  }));
+}
+function deletedHistory(db, project, ref) {
+  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
+  const row = db.sqlite.query("SELECT task_id FROM task_events WHERE project=? AND (number=? OR task_id=?) ORDER BY id DESC LIMIT 1").get(project, number, ref);
+  if (!row)
+    return [];
+  const events = eventsOf(db, row.task_id);
+  return events.at(-1)?.action === "deleted" ? events : [];
+}
+function claimHeldBy(claim, who) {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
+    return false;
+  if (claim.procStart !== null && who.procStart !== null)
+    return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
+function claimState(task, isLive, who) {
+  if (!task.claim || !isLive(task.claim))
+    return "free";
+  return claimHeldBy(task.claim, who) ? "mine" : "another session";
+}
+
+// src/tasks/work/db.ts
+var WORK_SCHEMA_VERSION = 4;
+var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -22691,8 +22854,87 @@ var MIGRATIONS = [
   `ALTER TABLE tasks ADD COLUMN agent TEXT;
    ALTER TABLE tasks ADD COLUMN branch TEXT;
    ALTER TABLE tasks ADD COLUMN worktree TEXT;
-   ALTER TABLE tasks ADD COLUMN base TEXT;`
+   ALTER TABLE tasks ADD COLUMN base TEXT;`,
+  repairTaskLayers
 ];
+
+class BackupFailure extends Error {
+}
+function repairTaskLayers(sqlite, file) {
+  const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
+  if (!nestedExists)
+    return;
+  const rows = sqlite.query("SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number").all();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const originalHolds = new Map;
+  const reader = { sqlite, writable: false, close() {} };
+  for (const project of new Set(rows.map((row) => row.project))) {
+    const tasks = allTasks(reader, project);
+    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
+      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+  }
+  let backed = false;
+  const move = (row, parent, above) => {
+    if (!backed) {
+      if (!existsSync5(`${file}.v4.bak`)) {
+        try {
+          writeFileSync2(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
+          renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
+        } catch (error) {
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}, the next task call tries again`);
+        }
+      }
+      backed = true;
+    }
+    const blocking = parent.blocking === 0 ? 0 : row.blocking;
+    sqlite.query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?").run(above?.id ?? null, blocking, row.id);
+    sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)").run(row.id, row.project, row.number, Date.now(), JSON.stringify({
+      parent: [`#${parent.number}`, above === null ? null : `#${above.number}`],
+      ...blocking !== row.blocking ? { type: ["blocking", "non-blocking"] } : {}
+    }), LEGACY_LIFT_REASON);
+    row.parent_id = above?.id ?? null;
+    row.blocking = blocking;
+  };
+  for (;; ) {
+    const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
+    if (!nested) {
+      for (const [id, held] of originalHolds)
+        for (const h of held) {
+          if (originalHolds.get(h)?.includes(id))
+            continue;
+          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
+        }
+      return;
+    }
+    const chain = [];
+    const positions = new Map;
+    let up = nested;
+    while (up) {
+      const at = positions.get(up.id);
+      if (at !== undefined) {
+        const lowest = chain.slice(at).filter((row) => row.kind === "task").sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
+        if (!lowest) {
+          up = undefined;
+          break;
+        }
+        const parent = byId.get(lowest.parent_id ?? "");
+        if (!parent)
+          throw new Error("missing cycle parent");
+        move(lowest, parent, null);
+        break;
+      }
+      positions.set(up.id, chain.length);
+      chain.push(up);
+      up = byId.get(up.parent_id ?? "");
+    }
+    if (up)
+      continue;
+    const parent = byId.get(nested.parent_id ?? "");
+    if (!parent)
+      throw new Error("missing legacy task parent");
+    move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);
+  }
+}
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
   const fresh = !existsSync5(file);
@@ -22701,6 +22943,7 @@ function openWorkDb(file, options) {
   if (!hook)
     mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
   const sqlite = new Database(file, { create: !hook, readwrite: true });
+  let writeRefusal;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
@@ -22720,21 +22963,31 @@ function openWorkDb(file, options) {
           const step = MIGRATIONS[at - 1];
           if (step === undefined)
             throw new Error(`no migration from task schema ${at}`);
-          sqlite.run(step);
+          if (typeof step === "string")
+            sqlite.run(step);
+          else
+            step(sqlite, file);
           sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
+        const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
+        if (minimum <= WORK_SCHEMA_VERSION)
+          repairTaskLayers(sqlite, file);
         sqlite.run("COMMIT");
       } catch (error) {
         sqlite.run("ROLLBACK");
-        throw error;
+        if (error instanceof BackupFailure)
+          writeRefusal = error.message;
+        else
+          throw error;
       }
     }
     const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
-    if (hook || minimum > WORK_SCHEMA_VERSION)
+    if (hook || writeRefusal !== undefined || minimum > WORK_SCHEMA_VERSION)
       sqlite.run("PRAGMA query_only = ON");
     return {
       sqlite,
-      writable: !hook && minimum <= WORK_SCHEMA_VERSION,
+      writable: !hook && writeRefusal === undefined && minimum <= WORK_SCHEMA_VERSION,
+      ...writeRefusal === undefined ? {} : { writeRefusal },
       close: () => sqlite.close()
     };
   } catch (error) {
@@ -22744,7 +22997,7 @@ function openWorkDb(file, options) {
 }
 function writeWork(db, body, options = {}) {
   if (!db.writable)
-    return { ok: false, why: NEWER_STORE };
+    return { ok: false, why: db.writeRefusal ?? NEWER_STORE };
   let began = false;
   try {
     db.sqlite.run("BEGIN IMMEDIATE");
@@ -23142,161 +23395,6 @@ function callerOf(facts = {}) {
   } : null;
 }
 
-// src/tasks/work/queries.ts
-function allTasks(db, project) {
-  const dependencies = new Map;
-  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
-    const refs = dependencies.get(row.task_id) ?? [];
-    refs.push(row.waits_for);
-    dependencies.set(row.task_id, refs);
-  }
-  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
-    id: row.id,
-    number: row.number,
-    project: row.project,
-    parentId: row.parent_id,
-    kind: row.kind,
-    subject: row.subject,
-    description: row.description,
-    status: row.status,
-    plan: row.plan,
-    phase: row.phase,
-    agent: row.agent ?? null,
-    branch: row.branch ?? null,
-    worktree: row.worktree ?? null,
-    base: row.base ?? null,
-    createdBy: row.created_by,
-    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    closedAt: row.closed_at,
-    waitsFor: dependencies.get(row.id) ?? [],
-    type: row.blocking === 0 ? "non-blocking" : "blocking"
-  }));
-}
-function getTask(db, project, ref) {
-  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
-  return allTasks(db, project).find((t) => number === null ? t.id === ref : t.number === number) ?? null;
-}
-function taskById(db, id) {
-  const row = db.sqlite.query("SELECT project FROM tasks WHERE id=?").get(id);
-  if (!row)
-    throw new Error("task not found");
-  const task = getTask(db, row.project, id);
-  if (!task)
-    throw new Error("task not found");
-  return task;
-}
-function isOpen(task) {
-  return task.status === "pending" || task.status === "in_progress";
-}
-function descendants(db, id) {
-  const task = taskById(db, id);
-  return descendantsIn(allTasks(db, task.project), id);
-}
-function countedUnder(tasks, id) {
-  return descendantsIn(tasks, id);
-}
-function subtreeProgress(tasks, id) {
-  const under = countedUnder(tasks, id);
-  return { closed: under.filter((t) => !isOpen(t)).length, total: under.length };
-}
-function descendantsIn(tasks, id) {
-  const ids = new Set([id]);
-  const result = [];
-  let added = true;
-  while (added) {
-    added = false;
-    for (const t of tasks)
-      if (t.parentId && ids.has(t.parentId) && !ids.has(t.id)) {
-        ids.add(t.id);
-        result.push(t);
-        added = true;
-      }
-  }
-  return result;
-}
-function inProgressFirst(a, b) {
-  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
-}
-function layerOf(task, byId) {
-  if (task.kind !== "task")
-    return task.kind;
-  const parent = task.parentId === null ? undefined : byId.get(task.parentId);
-  return parent?.kind === "task" ? "subtask" : "task";
-}
-function openBlockers(task, byId) {
-  return task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined && isOpen(t)).sort((a, b) => a.number - b.number);
-}
-function holdingUnder(tasks, id) {
-  const children = new Map;
-  for (const t of tasks) {
-    if (!t.parentId)
-      continue;
-    const siblings = children.get(t.parentId);
-    if (siblings)
-      siblings.push(t);
-    else
-      children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result = [];
-  const walk = (parent) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking")
-        continue;
-      seen.add(child.id);
-      if (isOpen(child))
-        result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
-}
-function searchTasks(db, project, text) {
-  const pattern = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
-  const ids = new Set(db.sqlite.query("SELECT DISTINCT t.id FROM tasks t LEFT JOIN task_notes n ON n.task_id=t.id WHERE t.project=? AND (t.subject LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\' OR n.text LIKE ? ESCAPE '\\')").all(project, pattern, pattern, pattern).map((r) => r.id));
-  return allTasks(db, project).filter((t) => ids.has(t.id));
-}
-function notesOf(db, task) {
-  return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
-}
-function eventsOf(db, task) {
-  return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
-    id: row.id,
-    taskId: row.task_id,
-    number: row.number,
-    at: row.at,
-    action: row.action,
-    changes: JSON.parse(row.changes),
-    sessionId: row.session_id,
-    sessionName: row.session_name,
-    pid: row.pid,
-    reason: row.reason
-  }));
-}
-function deletedHistory(db, project, ref) {
-  const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
-  const row = db.sqlite.query("SELECT task_id FROM task_events WHERE project=? AND (number=? OR task_id=?) ORDER BY id DESC LIMIT 1").get(project, number, ref);
-  if (!row)
-    return [];
-  const events = eventsOf(db, row.task_id);
-  return events.at(-1)?.action === "deleted" ? events : [];
-}
-function claimHeldBy(claim, who) {
-  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
-    return false;
-  if (claim.procStart !== null && who.procStart !== null)
-    return claim.procStart === who.procStart;
-  return who.sessionId !== null && claim.sessionId === who.sessionId;
-}
-function claimState(task, isLive, who) {
-  if (!task.claim || !isLive(task.claim))
-    return "free";
-  return claimHeldBy(task.claim, who) ? "mine" : "another session";
-}
-
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
 function shape(db, task) {
@@ -23359,8 +23457,11 @@ function placeValid(db, project, moving, parent, kind) {
     return;
   if (moving !== null && moving.kind !== "task")
     throw new Error(`${label(moving)} is a ${moving.kind}: ${moving.kind === "plan" ? "a plan stays at the top" : "a phase stays under its plan"}`);
-  if (!parent)
+  if (!parent) {
+    if (kind === "phase")
+      throw new Error("a phase belongs under its plan");
     return;
+  }
   if (parent === moving?.id)
     throw new Error("a task cannot be its own parent");
   const target = taskById(db, parent);
@@ -23368,21 +23469,17 @@ function placeValid(db, project, moving, parent, kind) {
     throw new Error("parent belongs to another project");
   if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
-  if (kind !== "task" || target.kind !== "task")
-    return;
-  const tasks = allTasks(db, project);
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  if (layerOf(target, byId) === "subtask") {
-    const above = target.parentId === null ? undefined : byId.get(target.parentId);
-    throw new Error(`${label(target)} is a subtask, and a subtask holds no subtasks (the layers are phase \u203A task \u203A subtask): put it under ${above ? label(above) : "a task"}, or make it a task of its own`);
-  }
-  if (moving !== null && tasks.some((t) => t.parentId === moving.id))
-    throw new Error(`${label(moving)} has subtasks, so it stays a task: under ${label(target)} they would be a fourth layer. Move them first, or put it at the top or under a phase`);
+  if (kind === "task" && target.kind !== "phase")
+    throw new Error("a task belongs under a phase or at the top; a task holds no tasks");
+  if (kind === "phase" && target.kind !== "plan")
+    throw new Error("a phase belongs under its plan");
+  if (kind === "plan")
+    throw new Error("a plan belongs at the top");
 }
 function doneValid(db, task) {
   const open = holdingUnder(allTasks(db, task.project), task.id);
   if (open.length)
-    throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
+    throw new Error(`open tasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
 }
 function unblockedValid(db, task) {
   const open = openBlockers(task, new Map(allTasks(db, task.project).map((t) => [t.id, t])));
@@ -23397,7 +23494,7 @@ function addBlockers(db, task, refs) {
     const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
     for (let up = byId.get(task.parentId ?? "");up; up = byId.get(up.parentId ?? ""))
       if (up.id === other.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its subtasks`);
+        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`);
     const seen = new Set;
     const pending = [ref];
     while (pending.length) {
@@ -23417,7 +23514,7 @@ function addBlockers(db, task, refs) {
       if (!id || reached.has(id))
         continue;
       if (id === task.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done`);
+        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
       reached.add(id);
       waits.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((t) => t.id));
     }
@@ -23497,7 +23594,7 @@ function deleteTask(db, id, who, now) {
   return writeWork(db, () => {
     const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
-      throw new Error("task has subtasks");
+      throw new Error("task has tasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
     const last = {};
@@ -23538,6 +23635,37 @@ function ack(db, project, taskRef, now) {
   return writeWork(db, () => {
     db.sqlite.query("INSERT INTO acks VALUES (?,?,?) ON CONFLICT(project,task_ref) DO UPDATE SET at=excluded.at").run(project, taskRef, now);
     return true;
+  });
+}
+function takeTasks(db, project, id, who, now, options) {
+  return writeWork(db, () => {
+    if (!who.sessionId)
+      throw new Error("take needs a resolvable calling session");
+    const target = taskById(db, id);
+    if (target.project !== project)
+      throw new Error("task belongs to another project");
+    if (target.kind === "phase")
+      throw new Error("take a plan or one task, not a phase");
+    const rows = target.kind === "plan" ? allTasks(db, project).filter((t) => t.plan === target.plan) : [target];
+    for (const task of rows) {
+      if (options.from !== undefined && (task.status === "pending" || task.status === "in_progress") && task.createdBy !== null && task.createdBy !== who.sessionId && task.createdBy !== options.from)
+        throw new Error(`${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`);
+      if (task.claim && options.isLive(task.claim) && !options.force && !claimHeldBy(task.claim, who))
+        throw new Error(`${label(task)} is live in session ${task.claim.sessionId ?? task.createdBy ?? "unknown"}; use force to take it`);
+    }
+    for (const task of rows) {
+      db.sqlite.query("UPDATE tasks SET created_by=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?").run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, who.pid === null ? null : who.sessionId, now, task.id);
+      recordEvent(db, task, "changed", {
+        createdBy: [task.createdBy, who.sessionId],
+        ...task.claim === null ? {} : {
+          claim: [
+            task.claim,
+            who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
+          ]
+        }
+      }, who, now, options.force ? "forced take-over" : "take-over");
+    }
+    return rows.map((t) => taskById(db, t.id));
   });
 }
 
@@ -23601,7 +23729,15 @@ function createTaskOps(options = {}) {
   const env = options.env ?? process.env;
   const stateDir = options.stateDir ?? cliPaths(env).stateDir;
   let db;
-  const database = () => db ??= openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+  const database = () => {
+    if (db?.writeRefusal !== undefined) {
+      db.close();
+      db = undefined;
+    }
+    if (db === undefined)
+      db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    return db;
+  };
   function call(operation, raw) {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
@@ -23634,6 +23770,21 @@ function createTaskOps(options = {}) {
         return task;
       };
       const acked = (id) => !!store.sqlite.query("SELECT 1 FROM acks WHERE project=? AND task_ref=?").get(ctx.project, id);
+      if (operation === "take") {
+        const input = taskSchemas.take.parse(raw);
+        if (!caller?.sessionId)
+          throw new Error("take needs a resolvable calling session");
+        const target = all.find((t) => t.kind === "plan" && t.plan === input.task) ?? work(input.task);
+        const moved = value(takeTasks(store, ctx.project, target.id, who, now, {
+          ...input.from === undefined ? {} : { from: input.from },
+          force: input.force,
+          isLive: claimLive
+        }));
+        return {
+          ok: true,
+          text: `${moved.length} task(s) taken by session ${who.sessionId}${input.force ? " (forced)" : ""}${who.pid === null ? "; session only, no process claim" : ""}`
+        };
+      }
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
@@ -23659,13 +23810,13 @@ function createTaskOps(options = {}) {
           };
         }
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        if (input.phase !== undefined || input.plan !== undefined) {
+        if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
           if (input.status !== undefined)
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
-            throw new Error("A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers");
+            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase");
           const slug = input.plan ?? ownPlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -23703,6 +23854,8 @@ function createTaskOps(options = {}) {
           };
         }
         const parent = input.parent ? work(input.parent) : undefined;
+        if (input.plan !== undefined && parent?.plan !== input.plan)
+          throw new Error("parent belongs to another plan");
         const task = value(writeWork(store, () => insertTask(store, {
           project: ctx.project,
           subject: input.subject,
@@ -23711,7 +23864,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: parent?.plan ?? ownPlan,
+          plan: input.plan ?? parent?.plan ?? ownPlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -23887,8 +24040,9 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
           if (!caller)
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
         } else if (input.scope === "plan") {
-          const shown = ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
-          selected = selected.filter((t) => shown !== null && t.plan === shown && t.kind !== "task");
+          const shown = input.plan ?? ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
+          const ownPlans = new Set(all.filter(owns).map((t) => t.plan).filter((p) => p !== null));
+          selected = selected.filter((t) => t.kind !== "task" && (input.plan === undefined && ownPlans.size > 1 ? t.plan !== null && ownPlans.has(t.plan) : shown !== null && t.plan === shown));
         } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter((t) => (!openOnly || t.status === "open") && (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)));
       }
@@ -23930,18 +24084,19 @@ An obligation for production, the database, a teammate or later is a project tas
 The phase task's description is the builder's brief. Read it with task_get; save the report with task_note, starting Report:.
 The main session saves Ruling: notes and sets agent, branch, worktree and base on the phase.
 After compaction, task_list scope plan and git log are the truth.
-Finish or drop every blocking subtask before marking its parent done.
-Three layers: phase \u203A task \u203A subtask. A non-blocking task holds nothing; a task blocked by an open task waits for it.
+Finish or drop every blocking task before marking its parent done.
+Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
-  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase).",
+  take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
+  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase). A plan without parent creates the plan itself; to add a task to a named plan, give its phase as parent.",
   update: "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
-  done: "Finish or drop a task. Its open blocking subtasks must be finished or dropped first.",
+  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work and project tasks.",
-  delete: "Delete a mistaken task with no notes or subtasks, or an untracked project task file."
+  delete: "Delete a mistaken task with no notes or tasks, or an untracked project task file."
 };
 var READ_ONLY = new Set(["list", "get", "search"]);
 function createTaskServer(options = {}) {
