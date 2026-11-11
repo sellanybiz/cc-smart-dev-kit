@@ -80,8 +80,10 @@ cannot start until its lifted blocking children finish. Work below a non-blockin
 inherits that type, so the lifted work does not start holding the phase. Old code can still read
 the store (`min_compatible` stays 1). The snapshot is written to a temporary file and renamed
 atomically. If it fails, the store opens read-only and writes report how to free space or fix
-folder rights; no task is lifted. The next task call reopens a refused handle and tries again. A legacy parent cycle is broken by lifting its lowest-numbered
-member to the top, with a history event, before the remaining tasks are lifted.
+folder rights; no task is lifted. The next task call reopens a refused handle and tries again. A legacy parent cycle is broken by lifting its lowest-numbered **task**
+member to the top, with a history event, before the remaining tasks are lifted. Plans and phases
+never move. A cycle with no task-under-task link is left alone. Restored holds are checked against
+existing blockers and completion holds so they cannot introduce a wait cycle.
 
 **The type** says whether a task holds the one above it. A `blocking` task (the default) must
 be closed before its parent is done. A `non-blocking` one (a nice-to-have, a later idea) holds

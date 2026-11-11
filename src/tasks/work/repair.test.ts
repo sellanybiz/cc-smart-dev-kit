@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, rmdirSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import { copyFileSync, existsSync, mkdirSync, rmdirSync, writeFileSync } from "node:fs";
 import { tempDir } from "../../testing/temp";
 import { taskContext } from "../context";
 import { createTaskOps } from "../ops";
@@ -256,5 +256,55 @@ test("mixed cycles never move a plan or phase, and cycles without nested tasks s
     expect(taskById(unchanged, a.id).parentId).toBe(phase.id);
   } finally {
     unchanged.close();
+  }
+});
+
+test("restored holds never wait through a mixed parent cycle", () => {
+  const { file, db } = fixture();
+  const phase = ok(
+    writeWork(db, () =>
+      layPhase(db, { project: "p", plan: "one", phase: "A", subject: "Phase" }, who, 1),
+    ),
+  ).task;
+  const b = ok(createTask(db, { project: "p", subject: "B" }, who, 2));
+  const a = ok(createTask(db, { project: "p", subject: "A" }, who, 3));
+  for (const [id, parent] of [
+    [b.id, a.id],
+    [phase.id, b.id],
+    [a.id, phase.id],
+  ])
+    db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(parent ?? null, id ?? null);
+  db.close();
+  const repaired = openWorkDb(file, { mode: "write" });
+  try {
+    expect(taskById(repaired, a.id).waitsFor).toEqual([]);
+    expect(updateTask(repaired, a.id, { status: "done" }, who, 4).ok).toBe(true);
+    expect(updateTask(repaired, phase.id, { status: "done" }, who, 5).ok).toBe(true);
+    expect(updateTask(repaired, b.id, { status: "done" }, who, 6).ok).toBe(true);
+  } finally {
+    repaired.close();
+  }
+});
+
+test("failed serialization removes its partial temporary snapshot", () => {
+  const { file, db } = fixture();
+  const a = ok(createTask(db, { project: "p", subject: "A" }, who, 1));
+  const b = ok(createTask(db, { project: "p", subject: "B" }, who, 2));
+  db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(a.id, b.id);
+  db.close();
+  const broken = spyOn(Database.prototype, "serialize").mockImplementation(() => {
+    writeFileSync(`${file}.v4.bak.tmp`, "partial");
+    throw new Error("snapshot failed");
+  });
+  try {
+    const refused = openWorkDb(file, { mode: "write" });
+    try {
+      expect(refused.writable).toBe(false);
+      expect(existsSync(`${file}.v4.bak.tmp`)).toBe(false);
+    } finally {
+      refused.close();
+    }
+  } finally {
+    broken.mockRestore();
   }
 });

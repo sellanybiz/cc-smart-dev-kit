@@ -7,6 +7,7 @@ import {
   openBlockers,
   openChildren,
   taskById,
+  waitsForTask,
 } from "./queries";
 import {
   DESCRIPTION_LIMIT,
@@ -235,18 +236,10 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
     // hold it (`holdingUnder`). When the blocker already waits for this task that way, at any
     // depth and in either order the blocks were added, neither could ever be done.
     const tasks = [...byId.values()];
-    const reached = new Set<string>();
-    const waits = [ref];
-    while (waits.length) {
-      const id = waits.pop();
-      if (!id || reached.has(id)) continue;
-      if (id === task.id)
-        throw new Error(
-          `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`,
-        );
-      reached.add(id);
-      waits.push(...(byId.get(id)?.waitsFor ?? []), ...holdingUnder(tasks, id).map((t) => t.id));
-    }
+    if (waitsForTask(tasks, ref, task.id))
+      throw new Error(
+        `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`,
+      );
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
