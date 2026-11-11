@@ -50,14 +50,23 @@ export const HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
 const HISTORY_RETRY_MS = 60 * 1000;
 
 /**
- * The database's schema version (`PRAGMA user_version`); raise it when a column changes.
+ * The database's schema version (`PRAGMA user_version`); incompatible changes raise it.
+ * Nullable agent/outcome columns do not: older writers name their columns and keep working.
  * 2 since 1.2.0: `profile`, the profile a request came through (owner D29); a database from
  * version 1 keeps every row, and its rows read as the machine's default (`profile` null).
  */
 export const HISTORY_SCHEMA_VERSION = 2;
 
+/** A 2xx answer failed: stream_error means an error or incomplete body; refused means a refusal stop. */
+export const HISTORY_OUTCOMES = ["stream_error", "refused"] as const;
+export type HistoryOutcome = (typeof HISTORY_OUTCOMES)[number];
+
 /** What a request did, as one row: metadata only, never a word of the conversation. */
 export interface HistoryRow {
+  /** The subagent id header; absent on a main request or an older recorder. */
+  agent?: null | string;
+  /** Null for a whole answer; the HTTP status stays unchanged. */
+  outcome?: null | HistoryOutcome;
   /** When the request came in: milliseconds since the epoch. */
   at: number;
   /** Whether the breaker held it; null where the breaker did not apply. */
@@ -145,6 +154,8 @@ const CREATE_REQUESTS = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at INTEGER NOT NULL,
     session TEXT,
+    agent TEXT,
+    outcome TEXT,
     model TEXT NOT NULL,
     slot TEXT,
     profile TEXT,
@@ -200,6 +211,11 @@ function openDatabase(file: string): Database {
   if (!columns.some((column) => column.name === "profile")) {
     db.run("ALTER TABLE requests ADD COLUMN profile TEXT");
   }
+  for (const name of ["agent", "outcome"]) {
+    if (!columns.some((column) => column.name === name)) {
+      db.run(`ALTER TABLE requests ADD COLUMN ${name} TEXT`);
+    }
+  }
   if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
   }
@@ -240,8 +256,8 @@ export function retentionWords(days: number): string {
 /** The row inserted, in the table's column order. */
 const INSERT_ROW = `INSERT INTO requests
   (at, session, model, slot, profile, target, status, ms, next_target, breaker,
-   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated, agent, outcome)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 function insertValues(row: HistoryRow): (null | number | string)[] {
   return [
@@ -261,6 +277,8 @@ function insertValues(row: HistoryRow): (null | number | string)[] {
     row.tokens?.cacheWrite ?? null,
     row.cost?.usd ?? null,
     row.cost?.estimated === true ? 1 : 0,
+    row.agent ?? null,
+    row.outcome ?? null,
   ];
 }
 

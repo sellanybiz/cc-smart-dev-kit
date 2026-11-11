@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { subprocessGuard } from "../../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
-import { NEWER_STORE, openWorkDb, workDbFile } from "./db";
+import { NEWER_STORE, openWorkDb, workDbFile, writeWork } from "./db";
 import { importClaudeMem } from "./import-claude-mem";
 import {
   claimHeldBy,
@@ -17,7 +17,16 @@ import {
   searchTasks,
 } from "./queries";
 import { hasOwnTask, startView } from "./read";
-import { ack, addNote, deleteTask, ensurePlanTask, systemClose, updateTask } from "./store";
+import {
+  ack,
+  addNote,
+  createTask as createCurrentTask,
+  deleteTask,
+  ensurePlanTask,
+  layPhase,
+  systemClose,
+  updateTask,
+} from "./store";
 import type { Result } from "./types";
 
 const who = { sessionId: "session", pid: 12, procStart: "34" };
@@ -29,6 +38,40 @@ function setup() {
   const paths = { stateDir: tempDir() };
   return { paths, db: openWorkDb(workDbFile(paths), { mode: "write" }) };
 }
+for (const kind of ["task", "phase"] as const) {
+  test(`a second connection closing a selected plan prevents a ${kind} insert`, () => {
+    const { db, paths } = setup();
+    const writer = openWorkDb(workDbFile(paths), { mode: "write" });
+    try {
+      const plan = value(
+        ensurePlanTask(db, { project: "p", plan: "race", subject: "Plan" }, who, 1),
+      );
+      const selected = getTask(db, "p", plan.id);
+      expect(selected?.status).toBe("pending");
+      value(updateTask(writer, plan.id, { status: "done" }, who, 2));
+      const result =
+        kind === "task"
+          ? createCurrentTask(
+              db,
+              { project: "p", subject: "Task", plan: selected?.plan ?? null },
+              who,
+              3,
+            )
+          : writeWork(db, () =>
+              layPhase(db, { project: "p", plan: "race", phase: "A", subject: "Phase" }, who, 3),
+            );
+      expect(result).toEqual({
+        ok: false,
+        why: 'Plan "race" is closed: reopen it with task_update, or create a loose task (no plan).',
+      });
+      expect(db.sqlite.query("SELECT COUNT(*) AS n FROM tasks").get()).toEqual({ n: 1 });
+    } finally {
+      writer.close();
+      db.close();
+    }
+  });
+}
+
 test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   const { db, paths } = setup();
   const root = value(createTask(db, { project: "p", subject: " Root " }, who, 10));

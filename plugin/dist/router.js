@@ -5972,6 +5972,8 @@ var CREATE_REQUESTS = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at INTEGER NOT NULL,
     session TEXT,
+    agent TEXT,
+    outcome TEXT,
     model TEXT NOT NULL,
     slot TEXT,
     profile TEXT,
@@ -6014,6 +6016,11 @@ function openDatabase(file) {
   if (!columns.some((column) => column.name === "profile")) {
     db.run("ALTER TABLE requests ADD COLUMN profile TEXT");
   }
+  for (const name of ["agent", "outcome"]) {
+    if (!columns.some((column) => column.name === name)) {
+      db.run(`ALTER TABLE requests ADD COLUMN ${name} TEXT`);
+    }
+  }
   if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
   }
@@ -6022,8 +6029,8 @@ function openDatabase(file) {
 }
 var INSERT_ROW = `INSERT INTO requests
   (at, session, model, slot, profile, target, status, ms, next_target, breaker,
-   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated, agent, outcome)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 function insertValues(row) {
   return [
     row.at,
@@ -6041,7 +6048,9 @@ function insertValues(row) {
     row.tokens?.cacheRead ?? null,
     row.tokens?.cacheWrite ?? null,
     row.cost?.usd ?? null,
-    row.cost?.estimated === true ? 1 : 0
+    row.cost?.estimated === true ? 1 : 0,
+    row.agent ?? null,
+    row.outcome ?? null
   ];
 }
 function createHistoryWriter(options) {
@@ -6268,7 +6277,7 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
-var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 var WORKER_SLOT = "cc-smart-dev-kit-worker";
 var FAMILY_SLOTS = {
   "cc-smart-dev-kit-scout": "haiku",
@@ -8043,6 +8052,21 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
+  failure = null;
+  stopped = false;
+  outcome() {
+    return this.failure ?? (this.streaming && !this.stopped ? "stream_error" : null);
+  }
+  noteOutcome(value) {
+    if (!isJsonObject4(value))
+      return;
+    if (value.type === "message_stop")
+      this.stopped = true;
+    if (value.type === "error")
+      this.failure = "stream_error";
+    else if (this.failure === null && (value.stop_reason === "refusal" || isJsonObject4(value.delta) && value.delta.stop_reason === "refusal" || isJsonObject4(value.message) && value.message.stop_reason === "refusal"))
+      this.failure = "refused";
+  }
   delta = {};
   constructor(streaming) {
     this.streaming = streaming;
@@ -8072,6 +8096,7 @@ class AnswerUsageReader {
       } catch {
         return null;
       }
+      this.noteOutcome(parsed);
       return tokensOf(isJsonObject4(parsed) ? parsed.usage : undefined);
     }
     this.partial += this.decoder.decode();
@@ -8129,6 +8154,7 @@ class AnswerUsageReader {
     }
     if (!isJsonObject4(event))
       return;
+    this.noteOutcome(event);
     if (event.type === "message_start" && isJsonObject4(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
@@ -8223,6 +8249,15 @@ data: ${JSON.stringify(data)}
   ].join("");
 }
 
+// src/gateway/target-label.ts
+var SERVER_TOOL_TARGET_PREFIXES = [
+  "anthropic (server tool ",
+  "router (server tool "
+];
+function serverToolTarget(tool, routerStatus) {
+  return routerStatus === undefined ? `${SERVER_TOOL_TARGET_PREFIXES[0]}${tool})` : `${SERVER_TOOL_TARGET_PREFIXES[1]}${tool}; anthropic ${routerStatus ?? "did not answer"})`;
+}
+
 // src/gateway/threads.ts
 var THREAD_UNSUPPORTED_CODE = "thread_unsupported_request";
 var THREAD_REFUSAL_MESSAGE = "cc-smart-dev-kit-router: this gateway target keeps no thread: resend the whole conversation";
@@ -8254,8 +8289,8 @@ var ROUTER_FEATURES = ["profiles", "claude-slot-aliases"];
 var RECENT_MAX = 200;
 var PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
 var SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
-function sessionIdOf(headers) {
-  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+function sessionIdOf(headers, header = "x-claude-code-session-id") {
+  const value = (headers.get(header) ?? "").trim();
   return SESSION_ID.test(value) ? value : null;
 }
 var MESSAGES_PATH = "/v1/messages";
@@ -9854,7 +9889,7 @@ function createRouter(deps) {
   function observedAnswer(response, note) {
     const body = response.body;
     if (body === null) {
-      note(null);
+      note(null, null);
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
@@ -9862,6 +9897,7 @@ function createRouter(deps) {
     const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
     const undecodable = encoding !== "" && encoding !== "identity" && format === null;
     const usage = new AnswerUsageReader(streaming);
+    let broken = false;
     let decode = null;
     if (format !== null) {
       const decompressor = new DecompressionStream(format);
@@ -9874,7 +9910,9 @@ function createRouter(deps) {
             return;
           usage.push(step.value);
         }
-      })().catch(() => {});
+      })().catch(() => {
+        broken = true;
+      });
       decode = { done, writer };
     }
     const reader = body.getReader();
@@ -9885,7 +9923,7 @@ function createRouter(deps) {
       ended = true;
       const task = (async () => {
         if (undecodable) {
-          note(null);
+          note(null, null);
           return;
         }
         if (decode !== null) {
@@ -9894,12 +9932,14 @@ function createRouter(deps) {
           } catch {}
           await decode.done;
         }
-        note(usage.tokens());
+        const tokens = usage.tokens();
+        note(tokens, !streaming && broken ? "stream_error" : usage.outcome());
       })();
       deps.background?.(task);
     };
     const observed = new ReadableStream({
       cancel(reason) {
+        broken = true;
         finish();
         return reader.cancel(reason);
       },
@@ -9909,6 +9949,7 @@ function createRouter(deps) {
           step = await reader.read();
         } catch (error) {
           controller.error(error);
+          broken = true;
           finish();
           return;
         }
@@ -10004,14 +10045,13 @@ function createRouter(deps) {
       noteChecksDown(profile, why, claudeModel, outcome);
     });
     async function serverToolRoute(tool) {
-      const why = `server tool ${tool}`;
       const named = typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
       const result = await send(req, anthropicUpstream(req, url, config, sent), null);
       if (req.signal.aborted)
-        return closed(result, `anthropic (${why})`);
+        return closed(result, serverToolTarget(tool));
       const status = "response" in result ? result.response.status : null;
       if (url.pathname !== MESSAGES_PATH || status !== null && !capacityFailureStatus(status)) {
-        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+        return { ...answerDirect(result, named), target: serverToolTarget(tool) };
       }
       let limit = null;
       if ("response" in result) {
@@ -10036,7 +10076,7 @@ function createRouter(deps) {
           status: 200
         }),
         skipped: 0,
-        target: `router (${why}; anthropic ${status ?? "did not answer"})`
+        target: serverToolTarget(tool, status)
       };
     }
     function claudeFirstJudge() {
@@ -10205,6 +10245,7 @@ function createRouter(deps) {
     if (req.method === "POST" && url.pathname === MESSAGES_PATH && !model.guard && deps.history?.enabled() === true) {
       const answered = outcome;
       const row = {
+        agent: sessionIdOf(req.headers, "x-claude-code-agent-id"),
         at: startMs,
         breaker: answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
         model: model.name,
@@ -10218,9 +10259,10 @@ function createRouter(deps) {
       };
       outcome = {
         ...answered,
-        response: observedAnswer(answered.response, (tokens) => {
+        response: observedAnswer(answered.response, (tokens, ended) => {
           deps.history?.record({
             ...row,
+            outcome: answered.response.ok ? ended : null,
             cost: costOf(answered.target, model.name, tokens),
             tokens
           });

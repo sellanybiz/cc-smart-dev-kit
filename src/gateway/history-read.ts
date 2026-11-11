@@ -25,6 +25,73 @@
 
 import { Database } from "bun:sqlite";
 import { HISTORY_COLUMNS, historyDbExists, retentionWords, type StoredRow } from "./history";
+import { SERVER_TOOL_TARGET_PREFIXES } from "./target-label";
+import { withoutContextSuffix } from "./targets";
+
+/** A whole answer for a status row, not a failed attempt. */
+export interface LastAnswer {
+  at: number;
+  model: string;
+  slot: null | string;
+  target: string;
+}
+
+/** One indexed answer query; unavailable or busy history never blocks a status tick. */
+export function lastAnswer(
+  file: string,
+  session: string,
+  agent: null | string,
+  profile: null | string,
+  model?: string,
+): LastAnswer | null {
+  return lastAnswers(file, session, profile, [{ agent, model }]).get(agent) ?? null;
+}
+
+/** One connection and prepared statement per tick, reused for each visible row. */
+export function lastAnswers(
+  file: string,
+  session: string,
+  profile: null | string,
+  requests: readonly { agent: null | string; model: string | undefined }[],
+): Map<null | string, LastAnswer> {
+  const answers = new Map<null | string, LastAnswer>();
+  if (!historyDbExists(file)) return answers;
+  let db: Database | null = null;
+  try {
+    db = new Database(file, { readonly: true });
+    db.run("PRAGMA busy_timeout = 10");
+    const columns = db.query("PRAGMA table_info(requests)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === "agent")) return answers;
+    const outcome = columns.some((column) => column.name === "outcome")
+      ? "AND outcome IS NULL"
+      : "";
+    const query = db.query<LastAnswer, (string | null)[]>(`
+      SELECT at, model, slot, target FROM requests INDEXED BY requests_session_at
+      WHERE session = ? AND agent IS ? AND profile IS ? AND status >= 200 AND status < 300
+      ${outcome} AND (? IS NULL OR replace(model, '[1m]', '') = ?)
+      AND target NOT GLOB ? AND target NOT GLOB ?
+      ORDER BY id DESC LIMIT 1
+    `);
+    for (const { agent, model } of requests) {
+      const requested = model === undefined ? null : withoutContextSuffix(model);
+      const row = query.get(
+        session,
+        agent,
+        profile,
+        requested,
+        requested,
+        ...SERVER_TOOL_TARGET_PREFIXES.map((prefix) => `${prefix}*`),
+      );
+      if (row !== null) answers.set(agent, row);
+    }
+    return answers;
+  } catch {
+    // Missing schema, a lock, or unreadable bytes: leave the current rows alone.
+    return new Map();
+  } finally {
+    db?.close();
+  }
+}
 
 /** The ranges `GET /api/history?range=` and `gateway history` accept, and their buckets. */
 export const HISTORY_RANGES = ["1h", "4h", "1d", "7d", "14d", "30d", "90d"] as const;

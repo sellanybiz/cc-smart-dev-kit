@@ -161,6 +161,9 @@ describe("the current task's own row", () => {
     const w = world();
     const t = tasks(w);
     try {
+      const plan = t.ok(
+        ensurePlanTask(t.db, { project: t.project, plan: "kept", subject: "Plan" }, t.who, 0),
+      );
       const done = t.ok(
         createTask(t.db, { project: t.project, plan: "kept", subject: "Done" }, t.who, 1),
       );
@@ -173,6 +176,8 @@ describe("the current task's own row", () => {
           3,
         ),
       );
+      // An older store can retain members after its plan row is removed.
+      t.db.sqlite.query("DELETE FROM tasks WHERE id=?").run(plan.id);
       expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n1/2 · Finish the import");
     } finally {
       t.db.close();

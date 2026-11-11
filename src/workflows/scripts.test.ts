@@ -16,6 +16,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type GuardContext, judgeWorkflow, readWorkflowScript } from "../hooks/agent-guard";
 import { workflowMetaName } from "../hooks/agent-guard-workflows";
@@ -48,6 +49,37 @@ const scripts = shippedScripts().map((file) => ({
 const NEEDS_ARGS: Record<string, unknown> = {
   "research-sweep": { angles: ["the current docs"], question: "what does it do?" },
 };
+
+/** Read the checked-in declarations only, stopping before validation or any agent launch. */
+function argumentContract(script: string) {
+  const prefix = script.slice(0, script.indexOf("if (args"));
+  return new Function(`${prefix.replace(/^export /, "")}\nreturn {
+    description: meta.description, usage: USAGE,
+    keys: typeof CHECKS === 'undefined' ? FIELDS : Object.keys(CHECKS)
+  }`)();
+}
+
+/** Parse the whole typed object, including requiredness; reject a partial or untyped shape. */
+function argumentShape(text: string) {
+  const object = text.match(/\{([^}]+)\}/);
+  if (!object?.[1]) throw new Error("argument object missing");
+  return object[1]
+    .split(",")
+    .map((field) => {
+      const match = field.trim().match(/^(\w+)(\?)?: (string\[\]|string|number|boolean)$/);
+      if (!match?.[1] || !match[3]) throw new Error(`untyped argument: ${field}`);
+      return { key: match[1], optional: match[2] === "?", type: match[3] };
+    })
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function checkArgumentContract(script: string) {
+  const contract = argumentContract(script);
+  const shape = argumentShape(contract.description);
+  expect(shape).toEqual(argumentShape(contract.usage));
+  expect(shape.map((field) => field.key)).toEqual([...contract.keys].sort());
+  return shape;
+}
 
 /** A PreToolUse `Workflow` input, as Claude Code builds one for an inline script. */
 function workflowInput(script: string, cwd: string): string {
@@ -85,6 +117,78 @@ describe("every shipped workflow script", () => {
       expect(workflowMetaName(script)).toBe(name);
     }
   });
+
+  test.each([
+    ["audit-run", "audit"],
+    ["review-split", "review"],
+    ["research-sweep", "research-first"],
+  ])(
+    "%s advertises its contract and accepts the %s skill's actual example",
+    async (name, skill) => {
+      const file = join(ROOT, "plugin", "workflows", `${name}.js`);
+      const script = readScript(file);
+      const metaStatement = script.match(/^export const meta = (\{[\s\S]*?\n\})/);
+      expect(metaStatement).not.toBeNull();
+      const meta = new Function(`return (${metaStatement?.[1]})`)();
+      const skillText = readFileSync(join(ROOT, "plugin", "skills", skill, "SKILL.md"), "utf8");
+      const example = skillText.match(/```\n(Workflow\([\s\S]*?\))\n```/);
+      expect(example).not.toBeNull();
+      // Execute only the checked-in example with a fake Workflow, never an actual tool or agent.
+      const input = new Function("Workflow", `return ${example?.[1]}`)((value: unknown) => value);
+      expect(input.name).toBe(`cc-smart-dev-kit:${name}`);
+      expect(meta.description).toContain(`args: {`);
+      expect(meta.description).toContain(`/cc-smart-dev-kit:${skill}`);
+      const shape = checkArgumentContract(script);
+      const fields = shape.map((field) => field.key);
+      for (const field of shape) {
+        const without = { ...input.args };
+        delete without[field.key];
+        if (field.optional) {
+          expect((await runScript(file, { args: without })).calls.length).toBeGreaterThan(0);
+        } else {
+          await expect(runScript(file, { args: without })).rejects.toThrow(field.key);
+        }
+      }
+      // Mutate strings in memory only: the comparison must catch discovery and validator drift.
+      const descriptionEnd = script.indexOf("\n}") + 2;
+      for (const changed of [
+        script.slice(0, descriptionEnd).replace("budget?: number", "budget?: string"),
+        script.slice(0, descriptionEnd).replace("budget?: number", "budget: number"),
+      ]) {
+        expect(changed).not.toBe(script.slice(0, descriptionEnd));
+        expect(() => checkArgumentContract(changed + script.slice(descriptionEnd))).toThrow();
+      }
+      const extraKey = script.includes("const CHECKS = {")
+        ? script.replace("const CHECKS = {", "const CHECKS = { extra: [isText, 'a string'],")
+        : script.replace("const FIELDS = [", "const FIELDS = ['extra', ");
+      expect(extraKey).not.toBe(script);
+      expect(() => checkArgumentContract(extraKey)).toThrow();
+      expect(fields.sort()).toEqual(Object.keys(input.args).sort());
+      const run = await runScript(file, { args: input.args });
+      expect(run.calls.length).toBeGreaterThan(0);
+      // One contract, no aliases or JSON-string coercion, even when launched directly.
+      for (const args of [
+        { ...input.args, area: "a guessed key" },
+        JSON.stringify(input.args),
+        [],
+      ]) {
+        await expect(runScript(file, { args })).rejects.toThrow(
+          name === "research-sweep" ? "needs an object" : "refused its arguments",
+        );
+      }
+      // The rejection still names every accepted field and its object shape.
+      try {
+        await runScript(file, { args: { ...input.args, area: "a guessed key" } });
+        throw new Error("the unknown key was accepted");
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        if (!(error instanceof Error)) throw error;
+        const message = error.message;
+        expect(message).toMatch(/object:? \{/);
+        for (const field of fields) expect(message).toContain(field);
+      }
+    },
+  );
 
   test("the guard reads every launch: a literal model, effort and agent type", () => {
     for (const { file, script } of scripts) {

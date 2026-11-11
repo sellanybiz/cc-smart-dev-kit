@@ -115,6 +115,16 @@ export function layerProgress(
   );
   return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
 }
+/** A plan row decides; legacy plans without one stay open only while blocking tasks do. */
+export function planIsOpen(all: readonly WorkTask[], plan: string): boolean {
+  const row = all.find((task) => task.kind === "plan" && task.plan === plan);
+  return row
+    ? isOpen(row)
+    : all.some(
+        (task) =>
+          task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task),
+      );
+}
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);

@@ -64,7 +64,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CLAUDE_FAMILIES } from "../gateway/targets";
+import { CLAUDE_FAMILIES, familyLabel } from "../gateway/targets";
 import {
   answeringFamily,
   type LaunchModel,
@@ -103,9 +103,7 @@ export function leadHintMessage(named: string, viaGateway = false): string {
 export function sessionModelName(real: LaunchModel): string {
   if (real.claude) {
     const family = answeringFamily(real);
-    return family === null
-      ? real.model
-      : `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+    return family === null ? real.model : `Claude ${familyLabel(family)}`;
   }
   const tier = real.tier ?? real.family;
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;

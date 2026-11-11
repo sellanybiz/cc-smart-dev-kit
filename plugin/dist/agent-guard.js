@@ -5991,7 +5991,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.0.0",
+  version: "4.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -17917,7 +17917,10 @@ var MODEL_SLOTS = {
   "cc-smart-dev-kit-fable": "fable",
   "cc-smart-dev-kit-opus": "opus"
 };
-var CLAUDE_FAMILIES = ["fable", "haiku", "opus", "sonnet"];
+var CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
+function familyLabel(family) {
+  return family.charAt(0).toUpperCase() + family.slice(1);
+}
 function familyEnv(family) {
   return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
 }
@@ -18301,15 +18304,10 @@ function readJsonObject(file) {
   return { data: parsed, indent: detectIndent(text), text };
 }
 
-// src/gateway/fable-model.ts
-var GATEWAY_FABLE_MODEL = "claude-fable-5-2";
-var GATEWAY_FABLE_ENV = familyEnv("fable");
-
 // src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
-    [GATEWAY_FABLE_ENV]: GATEWAY_FABLE_MODEL,
     ANTHROPIC_BASE_URL: routerBaseUrl(port)
   };
 }
@@ -18331,8 +18329,13 @@ var RETIRED_GATEWAY_ENV_KEYS = [
   "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
   "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"
 ];
+var RETIRED_MODEL_PIN_KEYS = [familyEnv("fable")];
 var GATEWAY_ENV_KEYS = Object.keys(gatewayEnv(20100));
-var GATEWAY_ENV_KEYS_ALL = [...GATEWAY_ENV_KEYS, ...RETIRED_GATEWAY_ENV_KEYS];
+var GATEWAY_ENV_KEYS_ALL = [
+  ...GATEWAY_ENV_KEYS,
+  ...RETIRED_GATEWAY_ENV_KEYS,
+  ...RETIRED_MODEL_PIN_KEYS
+];
 var SUBAGENT_OVERRIDE_ENV = ["CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL_FORCE"];
 var LOGIN_OVERRIDE_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 function isJsonObject2(value) {
@@ -20859,7 +20862,7 @@ function leadHintMessage(named, viaGateway = false) {
 function sessionModelName(real) {
   if (real.claude) {
     const family = answeringFamily(real);
-    return family === null ? real.model : `Claude ${family.charAt(0).toUpperCase()}${family.slice(1)}`;
+    return family === null ? real.model : `Claude ${familyLabel(family)}`;
   }
   const tier = real.tier ?? real.family;
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
@@ -24267,14 +24270,11 @@ function checkoutRootAt(dir) {
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
 var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
-function capitalised(family) {
-  return `${family.charAt(0).toUpperCase()}${family.slice(1)}`;
-}
 function modelName(real) {
   if (!real.claude)
     return `${real.model} (a backend)`;
   const family = answeringFamily(real);
-  return family === null ? real.model : `Claude ${capitalised(family)}`;
+  return family === null ? real.model : `Claude ${familyLabel(family)}`;
 }
 var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
 function tierLine(tier, gateway, env) {

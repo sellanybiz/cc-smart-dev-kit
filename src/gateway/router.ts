@@ -149,7 +149,12 @@ import {
   thinkingForBackend,
   withoutRouterThinking,
 } from "./fallback-answer";
-import { createHistoryWriter, type HistoryRecorder, type HistoryRow } from "./history";
+import {
+  createHistoryWriter,
+  type HistoryOutcome,
+  type HistoryRecorder,
+  type HistoryRow,
+} from "./history";
 import { type BackendFetchOptions, backendFetch } from "./hosts";
 import { recordsEndedBy } from "./limit-end";
 import {
@@ -190,6 +195,7 @@ import {
   searchMessageAnswer,
   searchStreamAnswer,
 } from "./server-tools";
+import { serverToolTarget } from "./target-label";
 import {
   type ClaudeFamily,
   type ClaudeVersion,
@@ -359,9 +365,9 @@ const PRICE_REFRESH_MS = 6 * 60 * 60 * 1000;
  */
 const SESSION_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
-/** The session id a request carried, or null. The one thing the history takes from a header. */
-export function sessionIdOf(headers: Headers): null | string {
-  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+/** A session or agent id a request carried, validated before it reaches the history. */
+export function sessionIdOf(headers: Headers, header = "x-claude-code-session-id"): null | string {
+  const value = (headers.get(header) ?? "").trim();
   return SESSION_ID.test(value) ? value : null;
 }
 
@@ -3096,11 +3102,11 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
    */
   function observedAnswer(
     response: Response,
-    note: (tokens: null | CheckTokens) => void,
+    note: (tokens: null | CheckTokens, outcome: null | HistoryOutcome) => void,
   ): Response {
     const body = response.body;
     if (body === null) {
-      note(null);
+      note(null, null);
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
@@ -3112,6 +3118,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     const usage = new AnswerUsageReader(streaming);
     // A compressed answer is decompressed on a second branch, for the reader only: the
     // client still gets the compressed bytes exactly as they came.
+    let broken = false;
     let decode: null | {
       done: Promise<void>;
       writer: { close(): Promise<void>; write(chunk: Uint8Array<ArrayBuffer>): Promise<void> };
@@ -3127,7 +3134,8 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           usage.push(step.value);
         }
       })().catch(() => {
-        // A compressed stream that cannot be decoded: what was read before it stands.
+        // Keep any tokens read, but never call a broken compressed body a whole answer.
+        broken = true;
       });
       decode = { done, writer };
     }
@@ -3138,7 +3146,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       ended = true;
       const task = (async () => {
         if (undecodable) {
-          note(null);
+          note(null, null);
           return;
         }
         if (decode !== null) {
@@ -3150,12 +3158,14 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           // `done` never rejects: a decode that failed kept what it had read.
           await decode.done;
         }
-        note(usage.tokens());
+        const tokens = usage.tokens();
+        note(tokens, !streaming && broken ? "stream_error" : usage.outcome());
       })();
       deps.background?.(task);
     };
     const observed = new ReadableStream<Uint8Array>({
       cancel(reason) {
+        broken = true;
         finish();
         return reader.cancel(reason);
       },
@@ -3166,6 +3176,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
         } catch (error) {
           // The client gets the same failure it got before the counting existed.
           controller.error(error);
+          broken = true;
           finish();
           return;
         }
@@ -3352,14 +3363,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
      * once.
      */
     async function serverToolRoute(tool: string): Promise<Outcome> {
-      const why = `server tool ${tool}`;
       const named =
         typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
       const result = await send(req, anthropicUpstream(req, url, config, sent), null);
-      if (req.signal.aborted) return closed(result, `anthropic (${why})`);
+      if (req.signal.aborted) return closed(result, serverToolTarget(tool));
       const status = "response" in result ? result.response.status : null;
       if (url.pathname !== MESSAGES_PATH || (status !== null && !capacityFailureStatus(status))) {
-        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+        return { ...answerDirect(result, named), target: serverToolTarget(tool) };
       }
       let limit: null | PlanLimit = null;
       if ("response" in result) {
@@ -3392,7 +3402,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           },
         ),
         skipped: 0,
-        target: `router (${why}; anthropic ${status ?? "did not answer"})`,
+        target: serverToolTarget(tool, status),
       };
     }
 
@@ -3677,6 +3687,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
     ) {
       const answered = outcome;
       const row: Omit<HistoryRow, "cost" | "tokens"> = {
+        agent: sessionIdOf(req.headers, "x-claude-code-agent-id"),
         at: startMs,
         breaker:
           answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
@@ -3694,9 +3705,10 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
       };
       outcome = {
         ...answered,
-        response: observedAnswer(answered.response, (tokens) => {
+        response: observedAnswer(answered.response, (tokens, ended) => {
           deps.history?.record({
             ...row,
+            outcome: answered.response.ok ? ended : null,
             cost: costOf(answered.target, model.name, tokens),
             tokens,
           });

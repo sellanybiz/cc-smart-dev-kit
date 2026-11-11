@@ -71,8 +71,8 @@ the legacy paths (old stored values, columns, URLs, environment variables) — o
 new** — none of them, a clean break. Recommend the one the facts support, with its cost. The
 plan writes down which was chosen: never a silent legacy shim, and never a silent break.
 
-The recommended option is always the strongest one — never a shortcut dressed up as an
-option. Label a workaround as one and name its debt.
+What the recommended option must be, and how a workaround is labelled: the core instructions,
+§ Ending a turn.
 
 ## 3. Write the plan, before the first code edit
 

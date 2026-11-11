@@ -122,6 +122,19 @@ each option stand alone, with what is decided, why it matters, what each option 
 costs; sentences stay short, the meaning does not. The detail and the before/after examples live
 in `explain`'s `references/plain-english.md`; `plan-task` § 2 and the output style point to it.
 
+**The recommended option is the best one (owner, 2026-11-12).** The owner's words: "the
+recommended option should be always the best one, without jugaad, workarounds or laziness:
+actually the best." `core.md` § Ending a turn holds it, because it covers every
+`AskUserQuestion`, not only a plan's: the strongest complete solution on the facts, a workaround
+labelled with its debt, the cost said when the best costs more. It matters more than it looks:
+`user-unavailable` takes the recommended option by itself while the person is away. `plan-task`
+§ 2 and `plain-english.md` point to it.
+
+**The edge-case hunter runs on Opus (owner, 2026-11-12).** Its scenarios shape a plan or a
+change set before anyone tests it, so a missed one ships. `subagent-decision`'s table is the one
+home: `opus` at `high`, `xhigh` when security, money, data, concurrency, the router or user
+settings are at stake. `core.md`'s table lists it in the `opus` row; `review` points to the table.
+
 **Checks: what you changed while building, the full check once (owner, 2026-10-26).** In a big
 project a whole type check takes tens of seconds and a whole test run many minutes, and sessions
 and agents that queue them slow every other. So `verify-change` is the one home: § 2 lists what a
@@ -188,6 +201,13 @@ names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.te
 shipped script against fakes and checks the guard the plugin ships allows every launch. Biome
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
+
+*Starting a workflow directly.* Claude Code also lists each shipped workflow as a skill, with
+its literal `meta.description` as the visible description. That description names the argument
+object and points to the calling skill, so a direct start need not guess the keys. The three
+calling skills keep their example objects; `src/workflows/scripts.test.ts` runs those actual
+examples against the scripts with fake agents and checks the listed keys and refusal messages.
+The validators stay strict: guessed aliases are not a second contract.
 
 *The arguments and the budget (1.3.0).* The Workflow tool hands `args` to the script verbatim,
 so a caller that passes the text of an object gets a string. Both scripts refuse that at the

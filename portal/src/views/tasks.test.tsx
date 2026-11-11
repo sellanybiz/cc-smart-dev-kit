@@ -112,10 +112,22 @@ describe("the Tasks tab", () => {
     expect(list).toMatch(/class="[^"]*\bw-full @xl\/main:w-fit\b/);
     // The shared list's own bare `w-fit` is gone, so it cannot shrink the list back on a phone.
     expect(list).not.toMatch(/class="(?:[^"]*\s)?w-fit[\s"]/);
-    // Each tab: the short words show on a phone, the full words from xl up and to a screen reader.
+    // Too narrow for even the short words, the bar scrolls as a whole; the page never does.
+    expect(list).toMatch(/class="[^"]*\bmax-w-full\b/);
+    expect(list).toMatch(/class="[^"]*\boverflow-x-auto\b/);
+    // Each tab: the short words on a phone, the full words from xl up, its name always whole.
     const tabs = [...html.matchAll(/<button[^>]*role="tab"[^>]*>.*?<\/button>/g)].map((m) => m[0]);
     expect(tabs).toHaveLength(2);
-    expect(tabs.every((tab) => /class="[^"]*\bmin-w-0\b/.test(tab))).toBe(true);
+    expect(tabs.map((tab) => tab.match(/aria-label="([^"]*)"/)?.[1])).toEqual([
+      "Work on this machine · 7 open",
+      "Owed by the projects · 2",
+    ]);
+    // A tab never shrinks below its words (no `min-w-0`), and from xl up it is as wide as they are.
+    expect(tabs.some((tab) => /class="[^"]*\bmin-w-0\b/.test(tab))).toBe(false);
+    expect(tabs.every((tab) => /class="(?:[^"]*\s)?@xl\/main:flex-none[\s"]/.test(tab))).toBe(true);
+    // No `not-sr-only`: it sets `white-space: normal`, which wrapped the words onto two lines
+    // and out of the tab's fixed height.
+    expect(tabs.some((tab) => tab.includes("not-sr-only"))).toBe(false);
     const shown = (tab: string) =>
       [...tab.matchAll(/<span class="([^"]*)"[^>]*>(.*?)<\/span>/g)].map((m) => [
         m[1],
@@ -124,11 +136,11 @@ describe("the Tasks tab", () => {
     expect(tabs.map(shown)).toEqual([
       [
         ["@xl/main:hidden", "Work · 7 open"],
-        ["sr-only @xl/main:not-sr-only", "Work on this machine · 7 open"],
+        ["hidden @xl/main:inline", "Work on this machine · 7 open"],
       ],
       [
         ["@xl/main:hidden", "Owed · 2"],
-        ["sr-only @xl/main:not-sr-only", "Owed by the projects · 2"],
+        ["hidden @xl/main:inline", "Owed by the projects · 2"],
       ],
     ]);
   });

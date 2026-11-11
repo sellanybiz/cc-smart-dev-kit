@@ -4,7 +4,7 @@
  * unpriced requests is never "$0".
  */
 import { describe, expect, test } from "bun:test";
-import { costWords, usd } from "./format";
+import { costWords, targetModel, usd } from "./format";
 
 describe("costWords", () => {
   test("a sum with nothing unpriced is the money alone", () => {
@@ -28,4 +28,9 @@ describe("costWords", () => {
     // A free model's own list price is $0: the priced rows are a real nothing, not "no price".
     expect(costWords(0, 1, 1001)).toBe("$0 + 1 request with no price");
   });
+});
+
+test("model names keep provider paths distinct", () => {
+  expect(targetModel("omniroute:codex/x")).toBe("codex/x");
+  expect(targetModel("omniroute:openai/x")).toBe("openai/x");
 });

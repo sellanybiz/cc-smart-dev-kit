@@ -38,7 +38,8 @@ fixes the build id (`generateBuildId`), so a second build is byte for byte the s
 - An action runs through `components/action-button.tsx` (`useAction`, `ActionResultLine`) and
   asks first through `components/confirm-dialog.tsx`, a native `<dialog>`: its result shows in
   place, never by reloading the page.
-- `src/components/ui/` is shadcn's code, kept close to upstream; the rest of
+- `src/components/ui/` is shadcn's code, kept close to upstream (a portal change carries a
+  comment that says why, such as the tab list's sideways scroll in `tabs.tsx`); the rest of
   `src/components/` is the portal's own.
 
 ## The content policy

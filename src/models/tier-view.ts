@@ -19,7 +19,7 @@
  * tier, and its line names the model that answers (`- opus → Claude Fable.`).
  */
 
-import type { ClaudeFamily } from "../gateway/targets";
+import { familyLabel } from "../gateway/targets";
 import type { Env } from "../hooks/run";
 import {
   answeringFamily,
@@ -35,18 +35,13 @@ export const TIERS = ["haiku", "sonnet", "opus", "fable"] as const;
 /** The first line of the note. */
 export const TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
 
-/** Capitalised, for a Claude model's name. */
-function capitalised(family: ClaudeFamily): string {
-  return `${family.charAt(0).toUpperCase()}${family.slice(1)}`;
-}
-
 /** How the note names the model behind a tier: `Claude Sonnet`, or the backend target. */
 function modelName(real: LaunchModel): string {
   if (!real.claude) return `${real.model} (a backend)`;
   // The model that answers, never the tier's name: `real.family` keeps the NAME's family, so a
   // scout slot on a Claude Sonnet id would read as Haiku.
   const family = answeringFamily(real);
-  return family === null ? real.model : `Claude ${capitalised(family)}`;
+  return family === null ? real.model : `Claude ${familyLabel(family)}`;
 }
 
 /** The note's last line: how to choose, and the two launches the guard asks about. */

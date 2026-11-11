@@ -37,13 +37,20 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
-import { DEFAULT_ANTHROPIC_BASE_URL, PROFILE_NAME_RULE, profileNames } from "../gateway/config";
+import {
+  DEFAULT_ANTHROPIC_BASE_URL,
+  emptyConfig,
+  PROFILE_NAME_RULE,
+  plainClaudeView,
+  profileNames,
+} from "../gateway/config";
 import {
   type HealthFetch,
   routerFeature,
   routerHealth,
   routerLacksProfiles,
 } from "../gateway/health";
+import { pickerFor, pickerOwner } from "../gateway/model-picker";
 import { profileUrlOf, projectGatewayState, readGatewayConfig } from "../gateway/project-state";
 import { routerBaseUrl, shownValue } from "../gateway/settings";
 import { isProfileName, isSlotKey } from "../gateway/targets";
@@ -361,7 +368,7 @@ function claudeArgsSetModel(claudeArgs: readonly string[]): boolean {
 
 /**
  * One line per key the settings chain still gives a session this launch starts (facts only,
- * never a model suggested). The launch file names only the address, and Claude Code merges `env`
+ * never a model suggested). The launch file names only the address in `env`, and Claude Code merges `env`
  * one variable at a time (`docs/claude-code-contract.md`, P3), so:
  * - a login key or helper (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `apiKeyHelper`) in any
  *   file bills the session through it, not through the plan's login — in every mode that passes
@@ -412,6 +419,24 @@ function settingsNotes(
   return lines;
 }
 
+/**
+ * Whether the launch's own settings carry menu rows. A profile's rows go wherever the kit may put
+ * a menu. Plain Claude's rows only replace the kit's gateway rows: with no kit menu, Claude Code's
+ * own rows are already right. The gateway's rows only fill a menu nobody set. Unreadable user
+ * settings cannot prove ownership, so no rows.
+ */
+function launchCarriesPicker(ctx: LaunchContext, mode: LaunchMode["kind"]): boolean {
+  try {
+    const owner = pickerOwner(ctx.settingsFile, ctx.stateDir);
+    if (mode === "profile") return owner !== "yours";
+    if (mode === "no-gateway") return owner === "ours";
+    return owner === "free";
+  } catch {
+    // Claude Code reports invalid user settings itself; launch must not replace their menu.
+    return false;
+  }
+}
+
 /** `launch`; the exit code: the session's own, or 1 refused / 2 a usage mistake. */
 export async function runLaunch(args: readonly string[], ctx: LaunchContext): Promise<number> {
   const parsed = parseLaunchArgs(args);
@@ -460,12 +485,21 @@ export async function runLaunch(args: readonly string[], ctx: LaunchContext): Pr
   }
   if (settingsFile !== null && target.url !== null) {
     try {
+      const ownPicker = launchCarriesPicker(ctx, parsed.mode.kind);
+      const config = readGatewayConfig(ctx.configPath).config ?? emptyConfig();
+      const settings = {
+        env: { ANTHROPIC_BASE_URL: target.url },
+        ...(ownPicker
+          ? {
+              modelPicker: pickerFor(
+                parsed.mode.kind === "no-gateway" ? plainClaudeView(config) : config,
+                parsed.mode.kind === "profile" ? parsed.mode.name : undefined,
+              ),
+            }
+          : {}),
+      };
       // Publish the complete settings file with private permissions.
-      atomicWrite(
-        settingsFile,
-        `${JSON.stringify({ env: { ANTHROPIC_BASE_URL: target.url } }, null, 2)}\n`,
-        0o600,
-      );
+      atomicWrite(settingsFile, `${JSON.stringify(settings, null, 2)}\n`, 0o600);
     } catch (error) {
       ctx.error(
         `launch: its settings file could not be written: ${error instanceof Error ? error.message : String(error)}`,

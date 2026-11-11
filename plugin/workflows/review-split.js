@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review-split',
   description:
-    'The second opinion on one change set, split across review tracks: a read-only reviewer per track, a second reviewer to refute every finding, and the verified findings merged and ranked.',
+    'Review and refute a change set by track. Pass args: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number } as an object, not JSON text; see /cc-smart-dev-kit:review.',
 }
 
 // The input is the Workflow tool's `args`, passed verbatim: one object, which the review skill

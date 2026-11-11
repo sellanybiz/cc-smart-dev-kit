@@ -353,7 +353,7 @@ async function main(argv: string[]): Promise<number> {
     case "subagent-statusline":
       // Claude Code runs it from the plugin's settings: its input on stdin, one JSON line
       // per subagent row on stdout (`src/cli/subagent-statusline.ts`).
-      return runSubagentStatusline();
+      return runSubagentStatusline(() => Bun.stdin.text(), paths, process.env);
     case "report":
       // The flow report (`src/sessions/flow.ts`): counts, times, tool and hook names only.
       return runReport(paths, rest, Date.now());

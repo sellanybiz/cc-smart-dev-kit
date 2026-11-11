@@ -6,6 +6,7 @@ import {
   holdingUnder,
   openBlockers,
   openChildren,
+  planIsOpen,
   taskById,
   waitsForTask,
 } from "./queries";
@@ -32,6 +33,7 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     description: task.description,
     status: task.status,
     type: task.type,
+    plan: task.plan,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     agent: task.agent,
     branch: task.branch,
@@ -243,6 +245,12 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
+function openPlanValid(tasks: readonly WorkTask[], plan: string): void {
+  if (!planIsOpen(tasks, plan))
+    throw new Error(
+      `Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`,
+    );
+}
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
  * says why the kit made the task itself (an import), for its history.
@@ -257,6 +265,11 @@ export function insertTask(
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
+  const parentPlan = input.parentId ? taskById(db, input.parentId).plan : null;
+  const plan = input.plan ?? parentPlan;
+  if ((input.kind ?? "task") !== "plan" && plan !== null)
+    openPlanValid(allTasks(db, input.project), plan);
+  if (parentPlan !== null && parentPlan !== plan) throw new Error("parent belongs to another plan");
   const id = newId();
   // Never a deleted task's number: its history still answers to it (`task_get #n`).
   const number =
@@ -280,7 +293,7 @@ export function insertTask(
       subject,
       description,
       status,
-      input.plan ?? null,
+      plan,
       input.phase ?? null,
       input.agent ?? null,
       input.branch ?? null,
@@ -341,6 +354,12 @@ export function applyUpdate(
   const status = change.status ?? task.status;
   const parent = change.parentId === undefined ? task.parentId : change.parentId;
   placeValid(db, task.project, task, parent, task.kind);
+  // Moving to the top keeps plan membership; a new phase supplies its own plan.
+  let plan = task.plan;
+  if (parent !== task.parentId && parent !== null) {
+    plan = taskById(db, parent).plan;
+    if (plan !== null) openPlanValid(allTasks(db, task.project), plan);
+  }
   // The blockers change first, so one call can lift a block and start the task.
   if (change.waitsFor) dependencies(db, task, change.waitsFor);
   // Only the move to done is judged: a done task's other fields still change.
@@ -359,13 +378,14 @@ export function applyUpdate(
         : task.claim;
   db.sqlite
     .query(
-      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
+      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
     )
     .run(
       change.subject === undefined ? task.subject : subjectOf(change.subject),
       descriptionOf(change.description ?? task.description),
       status,
       parent,
+      plan,
       claim?.pid ?? null,
       claim?.procStart ?? null,
       claim?.sessionId ?? null,
@@ -506,7 +526,10 @@ export function layPhase(
   who: Who,
   now: number,
 ): { task: WorkTask; made: boolean } {
-  const there = allTasks(db, input.project).find(
+  const tasks = allTasks(db, input.project);
+  // A new slug can start a plan; an existing closed plan must be reopened first.
+  if (tasks.some((task) => task.plan === input.plan)) openPlanValid(tasks, input.plan);
+  const there = tasks.find(
     (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
   );
   if (there) return { task: there, made: false };

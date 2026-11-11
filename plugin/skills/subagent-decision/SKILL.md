@@ -43,7 +43,7 @@ Worked examples — judge new cases the same way:
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
 | Ordinary phase review | senior engineer, `sonnet`, `high`; small and low-risk → `medium` |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
-| Scenarios for a plan or a change | edge-case hunter, `sonnet`, `high`; risky (security, money, data, concurrency) → `opus`, `xhigh` |
+| Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
 | Stuck: two failed tries on the same problem | senior engineer, `opus`, `xhigh`; still stuck → `max` with the reason (asks) |
 | The person is unhappy with an answer | `fable` advice (asks) |

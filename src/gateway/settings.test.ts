@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { applyManagedJson } from "../setup/managed-json";
 import { realTarget } from "../setup/write";
 import { tempDir } from "../testing/temp";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "./config";
@@ -173,7 +174,7 @@ describe("Remote Control", () => {
     expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-1");
     expect(result.skipped).toContainEqual({
       path: ["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"],
-      reason: "set or changed by you; left alone",
+      reason: "not owned by cc-smart-dev-kit; left alone",
     });
     expect(settingsReport(file).loginOverrides).toEqual([]);
     expect(settingsReport(file).subagentOverrides).toEqual([]);
@@ -185,10 +186,15 @@ describe("Remote Control", () => {
     expect(new URL(envOf(read()).ANTHROPIC_BASE_URL as string).host).toBe("127.0.0.1:20123");
   });
 
-  test("Fable pin is owned while on, removed when off, and a changed value stays", () => {
+  test("an old owned Fable pin retires and a changed value stays", () => {
     const { file, stateDir, read } = machine({ model: "fable" });
+    applyManagedJson({
+      file,
+      stateDir,
+      set: [[["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"], "claude-fable-5-2"]],
+    });
     turnOn({ settingsFile: file, stateDir, port: 20123 });
-    expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-2");
+    expect(envOf(read()).ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
     turnOff({ settingsFile: file, stateDir });
     expect(envOf(read())).not.toHaveProperty("ANTHROPIC_DEFAULT_FABLE_MODEL");
     turnOn({ settingsFile: file, stateDir, port: 20123 });

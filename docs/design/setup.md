@@ -153,6 +153,12 @@ all tasks in the current plan, or the title alone for a loose task.
   folder) is written at the first real setup on every machine; `--dry-run` writes nothing, and
   `restore` leaves the marker, as it leaves `gateway.json`. A session start and the background
   update never reach it (a test walks their imports). `docs/gateway.md` § Slots and defaults.
+- **The gateway menu refresh is a separate setup step.** After the defaults step is done,
+  setup retires the old kit-owned Fable pin and refreshes `modelPicker` only for our still-owned
+  active router address (`ourActiveGateway`, which doctor asks too); otherwise it removes an
+  unchanged kit menu left behind, so a rollback or an older `gateway off` heals. A person's menu, including one removed by hand, stays theirs. The
+  step uses the managed JSON writer under setup's lock, with the same dry-run preview.
+  `docs/gateway.md` § What `gateway on` writes describes the rows and all their writers.
 - **A manual run** (`cc-smart-dev-kit setup`, `cc-smart-dev-kit gateway setup`, `restore`) is the
   only thing that restarts or stops a service or changes a permission. It shows the change
   first, and asks before it cuts the answers in flight. Two more restart a service, and both

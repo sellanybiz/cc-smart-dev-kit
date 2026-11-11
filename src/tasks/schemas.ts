@@ -55,7 +55,7 @@ export const taskSchemas = {
         .min(1)
         .optional()
         .describe(
-          "The plan's slug; the caller's latest plan when left out. With no phase or parent, it makes the plan task. To add a task, name its phase as parent.",
+          "The plan's slug; defaults to the caller's latest own plan only while open, never an older plan. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase as parent.",
         ),
       ...projectFields,
     })

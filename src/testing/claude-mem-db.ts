@@ -62,13 +62,24 @@ export function legacyCreateTask(db: WorkDb, input: CreateTask, who: Who, now: n
   return writeWork(db, () => {
     const task = insertTask(
       db,
-      { ...input, parentId: null, kind: input.kind === "phase" ? "task" : (input.kind ?? "task") },
+      {
+        ...input,
+        parentId: null,
+        plan: null,
+        kind: input.kind === "phase" ? "task" : (input.kind ?? "task"),
+      },
       who,
       now,
     );
     db.sqlite
-      .query("UPDATE tasks SET parent_id=?,kind=? WHERE id=?")
-      .run(input.parentId ?? null, input.kind ?? "task", task.id);
+      .query("UPDATE tasks SET parent_id=?,kind=?,plan=? WHERE id=?")
+      .run(input.parentId ?? null, input.kind ?? "task", input.plan ?? null, task.id);
+    if (input.plan)
+      db.sqlite
+        .query(
+          "UPDATE task_events SET changes=json_set(changes, '$.plan', json(?)) WHERE task_id=? AND action='created'",
+        )
+        .run(JSON.stringify([null, input.plan]), task.id);
     if (input.parentId) {
       const parent = taskById(db, input.parentId);
       db.sqlite
