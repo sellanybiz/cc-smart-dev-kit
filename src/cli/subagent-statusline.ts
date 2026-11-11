@@ -1,7 +1,7 @@
 /**
  * `cc-smart-dev-kit subagent-statusline`: the plugin's row body for each subagent in Claude
- * Code's agent panel — the slot the subagent's requests reach, the model Claude Code resolved
- * for it, and the effort it runs at (MD-13: `slot → model → effort`).
+ * Code's agent panel — the slot the subagent's requests reach, the model that answered while
+ * the gateway is on (the resolved model before that), and its effort (MD-13: `slot → model → effort`).
  *
  * **How Claude Code reads it** (`plugin/settings.json`, proved offline on 2.1.308:
  * `docs/claude-code-contract.md`): once per refresh tick it runs the plugin's
@@ -40,9 +40,15 @@
  * goes through `oneLine` first: one line, no control characters, cut to the row's own width.
  * A broken input prints nothing at all and exits 0 — a status line never breaks a session.
  */
+
 import { COMMAND } from "../build-info";
+import { type LastAnswer, lastAnswers } from "../gateway/history-read";
 import { cutText, oneLine } from "../gateway/plain-text";
+import { answerTargetName } from "../gateway/target-label";
 import { familySlotFor } from "../gateway/targets";
+import { sessionGatewayOf } from "../hooks/agent-guard";
+import type { Env } from "../hooks/run";
+import type { CliPaths } from "./paths";
 import { formatTokens } from "./statusline-context";
 
 /** One task's row body, as Claude Code reads it back. */
@@ -137,7 +143,8 @@ export function contextPart(task: StatusTask): null | string {
 
 /**
  * Where one subagent's requests go: `slot → model → effort`, who it is in front, and its
- * context use after.
+ * context use after. The model is who answered while the gateway is on; before that it is
+ * Claude Code's resolved model.
  *
  * **The context survives a cut.** Claude Code gives the row `columns` and the body is cut at the
  * end, so the context would go first. When the whole body is too wide, the label shrinks
@@ -145,9 +152,16 @@ export function contextPart(task: StatusTask): null | string {
  * the route and the context together do not fit, the context goes in front of the route and the
  * end is cut.
  */
-export function rowContent(task: StatusTask, columns = DEFAULT_COLUMNS): string {
+export function rowContent(
+  task: StatusTask,
+  columns = DEFAULT_COLUMNS,
+  answer: LastAnswer | null = null,
+): string {
   const slot = slotOf(task.model) ?? "?";
-  const model = task.model ?? "model not resolved yet";
+  const model =
+    (answer === null ? null : answerTargetName(answer.target)) ??
+    task.model ??
+    "model not resolved yet";
   // Claude Code leaves the effort out when it set none: the model's own default answers.
   const effort = task.effort ?? "default effort";
   const route = `${slot} → ${model} → ${effort}`;
@@ -174,7 +188,10 @@ export function rowContent(task: StatusTask, columns = DEFAULT_COLUMNS): string 
 }
 
 /** The rows an input makes: one per task, each with its own body. */
-export function subagentRows(input: unknown): SubagentRow[] {
+export function subagentRows(
+  input: unknown,
+  answers: ReadonlyMap<string, LastAnswer> = new Map(),
+): SubagentRow[] {
   const columns =
     typeof input === "object" &&
     input !== null &&
@@ -182,12 +199,17 @@ export function subagentRows(input: unknown): SubagentRow[] {
     typeof (input as Record<string, unknown>).columns === "number"
       ? ((input as Record<string, unknown>).columns as number)
       : DEFAULT_COLUMNS;
-  return statusTasks(input).map((task) => ({ content: rowContent(task, columns), id: task.id }));
+  return statusTasks(input).map((task) => ({
+    content: rowContent(task, columns, answers.get(task.id) ?? null),
+    id: task.id,
+  }));
 }
 
 /** Runs the command: stdin in, one JSON line per row out. Never fails a session. */
 export async function runSubagentStatusline(
   read: () => Promise<string> = () => Bun.stdin.text(),
+  paths?: CliPaths,
+  env: Env = {},
 ): Promise<number> {
   let input: unknown = null;
   try {
@@ -197,6 +219,26 @@ export async function runSubagentStatusline(
     // Not JSON: no rows, and the session goes on.
     return 0;
   }
-  for (const row of subagentRows(input)) console.log(JSON.stringify(row));
+  const answers = new Map<string, LastAnswer>();
+  if (
+    paths !== undefined &&
+    typeof input === "object" &&
+    input !== null &&
+    "session_id" in input &&
+    typeof input.session_id === "string"
+  ) {
+    const session = sessionGatewayOf(paths, env);
+    if (session.gatewayOn) {
+      const tasks = statusTasks(input).filter((task) => task.model !== null);
+      const found = lastAnswers(
+        paths.historyDbFile,
+        input.session_id,
+        session.profile,
+        tasks.map((task) => ({ agent: task.id, model: task.model ?? undefined })),
+      );
+      for (const [agent, answer] of found) if (agent !== null) answers.set(agent, answer);
+    }
+  }
+  for (const row of subagentRows(input, answers)) console.log(JSON.stringify(row));
   return 0;
 }

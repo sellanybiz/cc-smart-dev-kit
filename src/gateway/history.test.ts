@@ -396,6 +396,7 @@ function request(options: {
   body: Record<string, unknown>;
   path?: string;
   session?: null | string;
+  agent?: string;
 }): Request {
   const headers = new Headers({
     "anthropic-version": "2023-06-01",
@@ -405,6 +406,7 @@ function request(options: {
   if (options.session !== null && options.session !== undefined) {
     headers.set("x-claude-code-session-id", options.session);
   }
+  if (options.agent !== undefined) headers.set("x-claude-code-agent-id", options.agent);
   return new Request(`http://127.0.0.1:${PORT}${options.path ?? "/v1/messages"}`, {
     body: JSON.stringify(options.body),
     headers,
@@ -468,6 +470,136 @@ function answerWithUsage(): Response {
 }
 
 describe("the router's request history", () => {
+  it("records validated agent ids and in-band failures without changing the HTTP status", async () => {
+    const history = collector();
+    const replies = [
+      () => Response.json({ type: "message", stop_reason: "refusal" }),
+      () =>
+        new Response('data: {"type":"error"}\n\n', {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      answerWithUsage,
+    ];
+    const { handle, settled } = routerWithHistory(replies, { history: history.recorder });
+    for (const agent of ["agent-1", "bad id", "a".repeat(129)]) {
+      const response = await handle(
+        request({ body: message("claude-sonnet-5-5"), session: "sess-1", agent }),
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+      await settled();
+    }
+    expect(history.rows.map(({ agent, outcome, status }) => [agent, outcome, status])).toEqual([
+      ["agent-1", "refused", 200],
+      [null, "stream_error", 200],
+      [null, null, 200],
+    ]);
+  });
+
+  it("a body that fails after its headers records stream_error, not a whole 200 answer", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [
+        () =>
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                controller.error(new Error("cut connection"));
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ],
+      { history: history.recorder },
+    );
+    const response = await handle(
+      request({ body: message("claude-sonnet-5-5"), session: "sess-1" }),
+    );
+    await expect(response.text()).rejects.toThrow("cut connection");
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, "stream_error"],
+    ]);
+  });
+
+  it("an HTTP 529 error keeps outcome null", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [() => Response.json({ type: "error" }, { status: 529 })],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).text();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([[529, null]]);
+  });
+
+  it.each([false, true])("cancel only fails a stream before message_stop (%s)", async (stopped) => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [
+        () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    stopped
+                      ? 'data: {"type":"message_stop"}\n\n'
+                      : 'data: {"type":"message_start"}\n\n',
+                  ),
+                );
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      ],
+      { history: history.recorder },
+    );
+    const response = await handle(request({ body: message("claude-sonnet-5-5") }));
+    if (response.body === null) throw new Error("expected a streaming response");
+    const reader = response.body.getReader();
+    await reader.read();
+    await reader.cancel();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, stopped ? null : "stream_error"],
+    ]);
+  });
+
+  it("a broken gzip body records a failed 200 answer", async () => {
+    const history = collector();
+    const { handle, settled } = routerWithHistory(
+      [
+        () =>
+          new Response(new Uint8Array([31, 139, 8, 0, 1]), {
+            headers: { "content-type": "text/event-stream", "content-encoding": "gzip" },
+          }),
+      ],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).arrayBuffer();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, "stream_error"],
+    ]);
+  });
+
+  it.each([false, true])("a stream needs message_stop to count as whole (%s)", async (stopped) => {
+    const history = collector();
+    const body =
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n' +
+      (stopped ? 'data: {"type":"message_stop"}\n\n' : "");
+    const { handle, settled } = routerWithHistory(
+      [() => new Response(body, { headers: { "content-type": "text/event-stream" } })],
+      { history: history.recorder },
+    );
+    await (await handle(request({ body: message("claude-sonnet-5-5") }))).text();
+    await settled();
+    expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
+      [200, stopped ? null : "stream_error"],
+    ]);
+  });
+
   it("one row per routed request: its exact fields, its tokens and its cost", async () => {
     const history = collector();
     let clock = START;
@@ -490,6 +622,8 @@ describe("the router's request history", () => {
     await settled();
     expect(history.rows).toEqual([
       {
+        agent: null,
+        outcome: null,
         at: START,
         breaker: null,
         // Sonnet 5.5 list price: (1000×2 + 500×10 + 2000×0.2 + 100×2.5) / 1,000,000.
