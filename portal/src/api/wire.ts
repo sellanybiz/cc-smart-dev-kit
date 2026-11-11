@@ -153,7 +153,6 @@ export interface BackendRow {
 }
 
 export interface SwitchFacts {
-  models: boolean;
   gateway: boolean;
   judge: boolean;
   judgeUntested: boolean;

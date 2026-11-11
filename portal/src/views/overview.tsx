@@ -146,8 +146,7 @@ function Charts({ state, jobs }: { state: HistoryState; jobs: OverviewData["jobs
 }
 
 /**
- * The gateway's three switches, each the same command the CLI runs (`gateway on|off`, the judge
- * slot's mode, the opus and fable slots' mode), asked first, its result in place.
+ * The gateway and auto-mode judge switches run the CLI's own commands, asked first, its result in place.
  */
 function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number }) {
   return (
@@ -160,7 +159,7 @@ function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number 
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          <div className="grid gap-6 @3xl/main:grid-cols-3">
+          <div className="flex flex-col gap-6">
             <SavedSwitch
               label="Gateway"
               help={
@@ -174,30 +173,21 @@ function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: number 
               question={`Turn the gateway ${switches.gateway ? "off" : "on"}?`}
             />
             <SavedSwitch
-              label="Your own judge"
+              label="Auto-mode judge"
+              disabled={!switches.gateway}
               help={
-                switches.judgeUntested
-                  ? "A target has not passed the force-push test, so the router ignores it."
-                  : switches.judge
-                    ? "On: your judge judges every auto-mode safety check in Claude's place. A weak judge can let a risky command through, and it reads the conversation."
-                    : "Off: Claude judges auto mode's safety checks. It turns on only with a saved, fully force-push-tested chain."
+                !switches.gateway
+                  ? "Works only with the gateway on"
+                  : switches.judgeUntested
+                    ? "Claude judges. A target has not passed the force-push test, so the router ignores it."
+                    : switches.judge
+                      ? "Your judge chain judges auto-mode safety checks. A weak judge can let a risky command through, and it reads the conversation."
+                      : "Claude judges auto-mode safety checks. It turns on only with a saved, fully force-push-tested chain."
               }
               checked={switches.judge}
               action="switch"
               body={(on) => ({ name: "judge", on })}
-              question={`Turn your own judge ${switches.judge ? "off" : "on"}?`}
-            />
-            <SavedSwitch
-              label="opus and fable slots"
-              help={
-                switches.models
-                  ? "On: Opus and Fable requests go to the chains saved on the Slots page."
-                  : "Off: Opus and Fable answer themselves."
-              }
-              checked={switches.models}
-              action="switch"
-              body={(on) => ({ name: "models", on })}
-              question={`Turn the opus and fable slots ${switches.models ? "off" : "on"}?`}
+              question={`Turn your judge chain ${switches.judge ? "off" : "on"}?`}
             />
           </div>
           {switches.warnings.map((warning) => (

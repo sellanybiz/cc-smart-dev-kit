@@ -68,7 +68,6 @@ const NO_SWITCHES: SwitchFacts = {
   gateway: false,
   judge: false,
   judgeUntested: false,
-  models: false,
   settingsBaseUrl: null,
   warnings: [],
 };
