@@ -26769,9 +26769,6 @@ async function backendRows(ctx, config) {
   }
   return rows;
 }
-function modelSlotsOn(config) {
-  return Object.keys(MODEL_SLOTS).filter((slot) => Object.hasOwn(config.slots, slot));
-}
 function switchFacts(ctx, config) {
   const report = settingsReport(ctx.paths.settingsFile);
   const warnings = [];
@@ -26786,7 +26783,6 @@ function switchFacts(ctx, config) {
     gateway: baseUrlPointsAtGateway(report.baseUrl),
     judge: judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
-    models: modelSlotsOn(config).length > 0,
     settingsBaseUrl: report.baseUrl,
     warnings
   };
@@ -40224,43 +40220,6 @@ async function switchJudge(action, on) {
   }
   return gateway(action, ["slot", "judge", mode]);
 }
-async function switchModelSlots(action, on) {
-  const config = gatewayConfig2(action);
-  const mode = on ? "custom" : "claude";
-  const missing = [];
-  const lines = [];
-  let changed = 0;
-  let ok = true;
-  for (const slot of Object.keys(MODEL_SLOTS)) {
-    if (slotMode(config, slot) === mode)
-      continue;
-    if (on && keptChain(config, slot) === null) {
-      missing.push(slot.replace(/^cc-smart-dev-kit-/, ""));
-      continue;
-    }
-    let result;
-    try {
-      result = await gateway(action, ["slot", slot, mode]);
-    } catch (error) {
-      result = { lines: [messageOf(error)], ok: false };
-    }
-    ok = ok && result.ok;
-    lines.push(...result.lines);
-    if (result.ok)
-      changed += 1;
-  }
-  if (missing.length > 0) {
-    lines.push(`No saved chain for ${missing.join(" or ")}: go to Slots, pick it, add a model, and Save.`);
-  }
-  if (changed === 0 && on) {
-    lines.push("Nothing was turned on, so the switch is still off.");
-    return { lines, ok: false };
-  }
-  if (changed === 0 && lines.length === 0) {
-    return { lines: ["The opus and fable slots were already off."], ok: true };
-  }
-  return { lines, ok };
-}
 async function switchHold(action, on) {
   const sinks = collector();
   const code = await runUpdate(action.portal.paths, action.portal.env, [on ? "--hold" : "--resume"], action.portal.now, sinks);
@@ -41097,8 +41056,6 @@ async function runActionByName(name, body, action) {
           return switchGateway(action, on);
         case "judge":
           return switchJudge(action, on);
-        case "models":
-          return switchModelSlots(action, on);
         case "hold":
           return switchHold(action, on);
         default:
@@ -41375,7 +41332,6 @@ var NO_SWITCHES = {
   gateway: false,
   judge: false,
   judgeUntested: false,
-  models: false,
   settingsBaseUrl: null,
   warnings: []
 };
@@ -43895,12 +43851,8 @@ function overviewPage(shell, data) {
 ${switchButton({ action: "switch", body: { name: "gateway", on: !data.switches.gateway }, confirm: SWITCH_CONFIRM, id: "sw-gw", label: "Gateway", on: data.switches.gateway, reload: true })}
 </div>
 <div class="row-wide">
-<div class="col g2 fill1"><span id="sw-judge" class="bold">Your own judge</span><span class="small muted">${data.switches.judgeUntested ? "A target has not passed the force-push test, so the router ignores it." : data.switches.judge ? "On: your judge judges every auto-mode safety check in Claude's place. A weak judge can let a risky command through, and it reads the conversation." : "Off: Claude judges auto mode's safety checks. It turns on only with a saved, fully force-push-tested chain."}</span></div>
-${switchButton({ action: "switch", body: { name: "judge", on: !data.switches.judge }, confirm: SWITCH_CONFIRM, id: "sw-judge", label: "Your own judge", on: data.switches.judge, reload: true })}
-</div>
-<div class="row-wide">
-<div class="col g2 fill1"><span id="sw-models" class="bold">opus and fable slots</span><span class="small muted">On: Opus and Fable requests go to the chains saved on the Slots page. Off: Opus and Fable answer themselves.</span></div>
-${switchButton({ action: "switch", body: { name: "models", on: !data.switches.models }, confirm: SWITCH_CONFIRM, id: "sw-models", label: "opus and fable slots", on: data.switches.models, reload: true })}
+<div class="col g2 fill1"><span id="sw-judge" class="bold">Auto-mode judge</span><span class="small muted">${!data.switches.gateway ? "Works only with the gateway on. Claude judges auto-mode safety checks." : data.switches.judgeUntested ? "Claude judges. A target has not passed the force-push test, so the router ignores it." : data.switches.judge ? "Your judge chain judges auto-mode safety checks. A weak judge can let a risky command through, and it reads the conversation." : "Claude judges auto-mode safety checks. It turns on only with a saved, fully force-push-tested chain."}</span></div>
+${switchButton({ action: "switch", body: { name: "judge", on: !data.switches.judge }, confirm: SWITCH_CONFIRM, disabled: !data.switches.gateway, id: "sw-judge", label: "Auto-mode judge", on: data.switches.judge, reload: true })}
 </div>
 <div class="foot">A switch changes every running Claude session from its next request. You confirm first.</div>
 <div class="foot" data-out-for="switch" role="status"></div>
