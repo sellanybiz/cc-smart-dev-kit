@@ -114,7 +114,9 @@ out, writes use the plan of the caller's latest own task that has one (made or c
 only while that plan is open. Never another session's plan or an older open plan. A plan is
 open when its plan row is pending or in progress; without that row, it needs an open blocking
 task. A closed latest plan leaves new tasks loose; a phase still needs a named plan.
-The store checks under the write lock too, for a named plan or parent as well as the default.
+The store checks under the write lock too, for a named plan or parent as well as the default,
+and when `task_update` moves a task into a phase. That move takes the destination phase's plan;
+moving to the top keeps the task's plan. An unchanged placement stays editable after closure.
 To add work to a closed plan, reopen its plan row with `task_update`; otherwise create a loose
 task with no plan or parent. Reads keep the latest own plan even after it closes. Only
 `task_list` with `scope: "plan"` falls back to the project's newest plan, to show it.

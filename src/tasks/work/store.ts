@@ -33,6 +33,7 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     description: task.description,
     status: task.status,
     type: task.type,
+    plan: task.plan,
     parent: task.parentId === null ? null : numberOf(task.parentId),
     agent: task.agent,
     branch: task.branch,
@@ -353,6 +354,12 @@ export function applyUpdate(
   const status = change.status ?? task.status;
   const parent = change.parentId === undefined ? task.parentId : change.parentId;
   placeValid(db, task.project, task, parent, task.kind);
+  // Moving to the top keeps plan membership; a new phase supplies its own plan.
+  let plan = task.plan;
+  if (parent !== task.parentId && parent !== null) {
+    plan = taskById(db, parent).plan;
+    if (plan !== null) openPlanValid(allTasks(db, task.project), plan);
+  }
   // The blockers change first, so one call can lift a block and start the task.
   if (change.waitsFor) dependencies(db, task, change.waitsFor);
   // Only the move to done is judged: a done task's other fields still change.
@@ -371,13 +378,14 @@ export function applyUpdate(
         : task.claim;
   db.sqlite
     .query(
-      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
+      "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
     )
     .run(
       change.subject === undefined ? task.subject : subjectOf(change.subject),
       descriptionOf(change.description ?? task.description),
       status,
       parent,
+      plan,
       claim?.pid ?? null,
       claim?.procStart ?? null,
       claim?.sessionId ?? null,

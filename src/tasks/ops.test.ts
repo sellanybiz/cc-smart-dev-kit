@@ -90,6 +90,50 @@ for (const blocking of [true, false]) {
   });
 }
 
+for (const fromPlan of [false, true]) {
+  test(`moving ${fromPlan ? "another plan's" : "loose"} task checks the destination plan`, () => {
+    const cwd = tempDir();
+    const stateDir = tempDir();
+    const ops = createTaskOps({
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
+    });
+    const row = () => {
+      const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
+      try {
+        return db.sqlite
+          .query("SELECT parent_id,plan,subject,updated_at FROM tasks WHERE subject='Move me'")
+          .get();
+      } finally {
+        db.close();
+      }
+    };
+    try {
+      expect(ops.call("create", { subject: "Phase", plan: "closed", phase: "A" }).ok).toBe(true);
+      expect(ops.call("done", { task: "#2" }).ok).toBe(true);
+      expect(ops.call("done", { task: "#1" }).ok).toBe(true);
+      expect(ops.call("update", { task: "#2", subject: "Closed phase, renamed" }).ok).toBe(true);
+      if (fromPlan) expect(ops.call("create", { subject: "Other", plan: "other" }).ok).toBe(true);
+      expect(ops.call("create", { subject: "Move me" }).ok).toBe(true);
+      const ref = fromPlan ? "#4" : "#3";
+      const before = row();
+      expect(ops.call("update", { task: ref, parent: "#2", subject: "Must roll back" })).toEqual({
+        ok: false,
+        why: 'Plan "closed" is closed: reopen it with task_update, or create a loose task (no plan).',
+      });
+      expect(row()).toEqual(before);
+      expect(ops.call("update", { task: "#1", status: "pending" }).ok).toBe(true);
+      expect(ops.call("update", { task: ref, parent: "#2" }).ok).toBe(true);
+      expect(row()).toMatchObject({ plan: "closed" });
+      expect(ops.call("update", { task: ref, parent: null }).ok).toBe(true);
+      expect(row()).toMatchObject({ plan: "closed", parent_id: null });
+    } finally {
+      ops.close();
+    }
+  });
+}
+
 test("named phases and explicit parents refuse a closed plan", () => {
   const cwd = tempDir();
   const ops = createTaskOps({
