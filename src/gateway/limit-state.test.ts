@@ -17,11 +17,57 @@ import {
   mergeSeenClaude,
   NO_RESET_FRESH_MS,
   parseLimitState,
+  recordsEndedBy,
   SEEN_CLAUDE_MAX,
 } from "./limit-state";
 
 const NOW = Date.parse("2026-10-22T10:00:00.000Z");
 const MINUTE = 60_000;
+
+describe("records ended by a login's answer", () => {
+  const limits = {
+    "claude-sonnet-5": { claim: "five_hour", resetsAt: 100, seenAt: NOW },
+    "claude-haiku-4-5": { claim: "seven_day", resetsAt: 100, seenAt: NOW },
+    "claude-opus-5": { claim: "seven_day_opus", resetsAt: 100, seenAt: NOW },
+    "claude-sonnet-4-6": { claim: "seven_day_sonnet", resetsAt: 100, seenAt: NOW },
+    "claude-fable-5": { claim: "seven_day_oauth_apps", resetsAt: 100, seenAt: NOW },
+    "claude-haiku-5": { claim: null, resetsAt: null, seenAt: NOW },
+  };
+  it("ends proven shared windows, the answering family and no-claim records", () => {
+    expect(
+      recordsEndedBy(
+        "claude-opus-5-5",
+        new Headers({
+          "anthropic-ratelimit-unified-5h-utilization": "0.2",
+          "anthropic-ratelimit-unified-7d-utilization": "0",
+        }),
+        limits,
+      ),
+    ).toEqual(["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5", "claude-haiku-5"]);
+    expect(recordsEndedBy("claude-sonnet-5-5", new Headers(), limits)).toEqual([
+      "claude-sonnet-4-6",
+      "claude-haiku-5",
+    ]);
+  });
+  for (const value of [null, "", " ", "not a number", "Infinity", "-0.1", "1", "1.2"]) {
+    it(`does not treat ${JSON.stringify(value)} as proof of room`, () => {
+      const headers = new Headers();
+      if (value !== null) headers.set("anthropic-ratelimit-unified-5h-utilization", value);
+      expect(recordsEndedBy("claude-fable-5-2", headers, limits)).toEqual(["claude-haiku-5"]);
+    });
+  }
+  it("keeps same-model recovery for unknown claims and missing headers", () => {
+    expect(recordsEndedBy("claude-fable-5", new Headers(), limits)).toEqual([
+      "claude-fable-5",
+      "claude-haiku-5",
+    ]);
+    expect(recordsEndedBy("claude-sonnet-5", new Headers(), limits)).toEqual([
+      "claude-sonnet-5",
+      "claude-sonnet-4-6",
+      "claude-haiku-5",
+    ]);
+  });
+});
 
 const WORKER = "cc-smart-dev-kit-worker";
 const OPUS = "cc-smart-dev-kit-opus";

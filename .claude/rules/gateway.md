@@ -13,6 +13,8 @@ Claude login to the wrong place, change what a model is told, or stop every sess
 machine. How it works and why: `docs/gateway.md`. The Claude Code behaviour it relies on:
 `docs/claude-code-contract.md` § The gateway.
 
+Plan-limit records end by login, not only by model: `recordsEndedBy` owns the claim and header proof.
+
 ## Never change prompt text
 
 Claude Code's own prompts and auto mode stay exactly as Claude Code ships them.

@@ -32,6 +32,50 @@ function input(five: null | number, seven: null | number): Record<string, unknow
 
 const EMPTY: LimitState = { fallbacks: {}, limits: {}, version: 1 };
 
+describe("the session's login windows", () => {
+  for (const claim of ["five_hour", "seven_day"]) {
+    it(`hides a ${claim} limit and its fallback only for a different reset`, () => {
+      const reset = claim === "five_hour" ? AT_13 : IN_3_DAYS;
+      const state: LimitState = {
+        version: 1,
+        limits: { "claude-sonnet-5": { claim, resetsAt: reset + 60, seenAt: NOW } },
+        fallbacks: {
+          "cc-smart-dev-kit-worker": {
+            model: "claude-sonnet-5",
+            resetsAt: reset + 60,
+            since: NOW,
+            lastAt: NOW,
+            target: "omniroute:glm-5.3-flash",
+          },
+        },
+      };
+      expect(statuslineText(input(8, 9), state, NOW, "UTC")).toBe("Opus 5.5 · 5h 8% · 7d 9%");
+      const limit = state.limits["claude-sonnet-5"];
+      if (limit === undefined) throw new Error("missing limit fixture");
+      limit.resetsAt = reset;
+      expect(statuslineText(input(8, 9), state, NOW, "UTC")).toContain(
+        "claude-sonnet-5 at its limit",
+      );
+      limit.resetsAt = reset + 60;
+      expect(statuslineText(input(null, null), state, NOW, "UTC")).toContain(
+        "claude-sonnet-5 at its limit",
+      );
+      expect(
+        statuslineText(
+          input(claim === "five_hour" ? null : 8, claim === "seven_day" ? null : 9),
+          state,
+          NOW,
+          "UTC",
+        ),
+      ).toContain("claude-sonnet-5 at its limit");
+      limit.claim = "seven_day_sonnet";
+      expect(statuslineText(input(8, 9), state, NOW, "UTC")).toContain(
+        "claude-sonnet-5 at its limit",
+      );
+    });
+  }
+});
+
 describe("statusline", () => {
   it("shows the model and both windows below 85 %", () => {
     expect(statuslineText(input(23.5, 41.2), EMPTY, NOW, "UTC")).toBe("Opus 5.5 · 5h 24% · 7d 41%");

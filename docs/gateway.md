@@ -1134,6 +1134,15 @@ cc-smart-dev-kit gateway slot opus claude                        # Opus answers 
 
 ## The limit state, the status line, the alert
 
+A successful messages answer ends its own model's limit. It also ends another model's
+`five_hour` or `seven_day` record when that answer's matching unified utilization header
+proves room (a finite value from 0 up to, but not including, 1). Missing or invalid headers
+prove nothing. A record with no claim ends on any successful messages answer; a
+`seven_day_opus` or `seven_day_sonnet` record ends only within its family. Unknown claims
+still need the same model to answer. Each ended record ends the fallbacks that used it,
+with the usual log line. A 429 still records the limit as before. This rule belongs to
+`recordsEndedBy` in `limit-state.ts`; token-count answers never clear limits.
+
 **The state file**, `~/.local/state/cc-smart-dev-kit/gateway-state.json` (mode 600), written by
 the router in the background (never before an answer goes out; at most once a minute for
 a running fallback): the Claude models it last saw at the plan's limit (the window and its
@@ -1187,7 +1196,10 @@ shows every record. The usage numbers come from the status line's
 own input, `rate_limits.five_hour` / `.seven_day` (`used_percentage`, `resets_at`), which
 Claude Code fills from the `anthropic-ratelimit-unified-*` headers the router passes on
 unchanged; the router records no percentage. After a refused request Claude Code has no
-new numbers, which is why the limit comes from the state file.
+new numbers, which is why the limit comes from the state file. The session's own window
+wins when it names a different reset from a shared `five_hour` or `seven_day` record:
+that limit and its fallback banner are hidden in this session. The same reset keeps a real
+limit visible. A missing window, a missing reset or a per-family claim keeps the old display.
 
 The kit sends no usage-limit or breaker notifications. The status line, `gateway status`,
 `doctor` and portal keep their existing limit and breaker information. Claude Code's own

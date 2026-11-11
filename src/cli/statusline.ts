@@ -165,14 +165,29 @@ export function statuslineText(
     session === null || (session.gatewayOn && scopeOfStateKey(key).profile === session.profile);
   const covered = new Set<string>();
   if (state !== null) {
+    const hidden = new Set(
+      Object.entries(state.limits)
+        .filter(([, record]) => {
+          if (record.claim !== "five_hour" && record.claim !== "seven_day") return false;
+          const window = windowOf(data, record.claim);
+          return (
+            window !== null &&
+            window.resetsAt !== null &&
+            record.resetsAt !== null &&
+            window.resetsAt !== record.resetsAt
+          );
+        })
+        .map(([model]) => model),
+    );
     for (const [key, record] of currentFallbacks(state, nowMs)) {
+      if (hidden.has(record.model)) continue;
       // The judge is no fallback, whichever chain's record an older router wrote.
       if (scopeOfStateKey(key).slot === JUDGE_SLOT || !aboutThisSession(key)) continue;
       covered.add(record.model);
       parts.push(`⚠ ${record.model} at its limit → ${record.target}${until(record.resetsAt)}`);
     }
     for (const [limited, record] of currentLimits(state, nowMs)) {
-      if (!covered.has(limited))
+      if (!hidden.has(limited) && !covered.has(limited))
         parts.push(`⛔ ${limited} at its plan limit${until(record.resetsAt)}`);
     }
     for (const [key, record] of currentBreakers(state, nowMs)) {
