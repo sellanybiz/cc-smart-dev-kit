@@ -71,8 +71,8 @@ import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
   createdObjects,
-  formatKeyPath,
   ForeignKeyError,
+  formatKeyPath,
   getKey,
   isObject,
   type KeyPath,
