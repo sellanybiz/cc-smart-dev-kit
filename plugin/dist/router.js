@@ -6942,6 +6942,12 @@ var CLAUDE_PRICES = [
   {
     family: "fable",
     major: 5,
+    minor: 2,
+    price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 }
+  },
+  {
+    family: "fable",
+    major: 5,
     minor: 1,
     price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
   },
@@ -7726,6 +7732,33 @@ function cleanFallbackResponse(response, onChanged) {
   return { note: null, response: new Response(body, init) };
 }
 
+// src/gateway/limit-end.ts
+function recordsEndedBy(answerModel, headers, limits) {
+  const hasRoom = (window) => {
+    const value = headers.get(`anthropic-ratelimit-unified-${window}-utilization`);
+    if (value === null || value.trim() === "")
+      return false;
+    const utilization = Number(value);
+    return Number.isFinite(utilization) && utilization >= 0 && utilization < 1;
+  };
+  return Object.entries(limits).filter(([model, record]) => {
+    if (model === answerModel || record.claim === null)
+      return true;
+    switch (record.claim) {
+      case "five_hour":
+        return hasRoom("5h");
+      case "seven_day":
+        return hasRoom("7d");
+      case "seven_day_opus":
+        return claudeFamily(answerModel) === "opus";
+      case "seven_day_sonnet":
+        return claudeFamily(answerModel) === "sonnet";
+      default:
+        return false;
+    }
+  }).map(([model]) => model);
+}
+
 // src/gateway/listen.ts
 import { mkdtempSync, rmSync } from "fs";
 import net from "net";
@@ -8485,6 +8518,15 @@ var CLAUDE_TARGET_RULES = {
         thinkingOff: "left out"
       },
       since: { major: 5, minor: 1 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 2 }
     }
   ],
   haiku: [
@@ -8787,16 +8829,19 @@ function createRouter(deps) {
       }
       return limit;
     }
-    if (response.status >= 400 || !Object.hasOwn(limitState.limits, id))
+    if (response.status >= 400)
       return null;
-    delete limitState.limits[id];
+    const ended = recordsEndedBy(id, response.headers, limitState.limits);
+    for (const model of ended)
+      delete limitState.limits[model];
     for (const [key, record] of Object.entries(limitState.fallbacks)) {
-      if (record.model !== id)
+      if (!ended.includes(record.model))
         continue;
       delete limitState.fallbacks[key];
-      deps.log(`${key}: ${id} answers again; its fallback is over`);
+      deps.log(`${key}: ${record.model} answers again; its fallback is over`);
     }
-    persist();
+    if (ended.length > 0)
+      persist();
     return null;
   }
   function knownLimit(target, nowMs) {

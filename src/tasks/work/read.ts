@@ -1,14 +1,18 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
+import { historyChanges } from "./history";
 import { claimLive } from "./identity";
 import {
   allTasks,
   claimHeldBy,
   claimState,
+  eventsOf,
+  getTask,
   holdingUnder,
   isBlocked,
   isOpen,
-  subtreeProgress,
+  layerProgress,
+  notesOf,
 } from "./queries";
 import type { Who } from "./types";
 export type ReadState<T> =
@@ -84,19 +88,6 @@ export function startView(
     };
   });
 }
-/** The latest task claimed by this process and its progress. */
-export function statusTask(paths: Paths, project: string, who: Who) {
-  return readWorkStore(paths, (db) => {
-    const all = allTasks(db, project);
-    const task = all
-      .filter((t) => t.status === "in_progress" && claimHeldBy(t.claim, who))
-      .sort((a, b) => b.updatedAt - a.updatedAt)[0];
-    if (!task) return null;
-    const count = subtreeProgress(all, task.id);
-    return { number: task.number, subject: task.subject, closed: count.closed, total: count.total };
-  });
-}
-
 export function hasOwnTask(paths: Paths, project: string, sessionIds: string[]) {
   return readWorkStore(paths, (db) => own(db, project, sessionIds).some(isOpen));
 }
@@ -115,5 +106,50 @@ export function holdingSteps(paths: Paths, project: string, number: number) {
       number: task.number,
       open: holdingUnder(all, task.id).map((t) => ({ number: t.number, subject: t.subject })),
     };
+  });
+}
+
+/** Current claimed work and task-only progress, by plan membership rather than nesting. */
+export function planProgress(paths: Paths, project: string, who: Who) {
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const started = (id: string) =>
+      eventsOf(db, id)
+        .filter((e) => e.changes.status?.[1] === "in_progress")
+        .at(-1)?.at ??
+      all.find((t) => t.id === id)?.createdAt ??
+      0;
+    const task = all
+      .filter(
+        (t) =>
+          t.status === "in_progress" &&
+          (claimHeldBy(t.claim, who) ||
+            (who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)),
+      )
+      .sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];
+    if (!task) return null;
+    const plan =
+      task.plan === null
+        ? null
+        : (all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null);
+    // By plan membership: the plan task itself need not exist for its tasks to count.
+    const progress = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
+    return { task, plan, ...progress };
+  });
+}
+/**
+ * Task detail from the same read-only store as the tree. Ids are unique across projects. Each
+ * history entry carries its changes in words (`historyChanges`), the ones `task_get` prints.
+ */
+export function taskDetail(paths: Paths, id: string) {
+  return readWorkStore(paths, (db) => {
+    const row = db.sqlite
+      .query<{ project: string }, [string]>("SELECT project FROM tasks WHERE id=?")
+      .get(id);
+    if (!row) return null;
+    const task = getTask(db, row.project, id);
+    if (task === null) return null;
+    const events = eventsOf(db, task).map((event) => ({ ...event, lines: historyChanges(event) }));
+    return { task, notes: notesOf(db, task), events };
   });
 }

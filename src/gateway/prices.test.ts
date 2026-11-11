@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "bun:test";
 import { parseModelList } from "./backends";
+import { GATEWAY_FABLE_MODEL } from "./fable-model";
 import {
   backendCost,
   CLAUDE_PRICES,
@@ -15,10 +16,24 @@ import {
   listedPrice,
   priceFromModels,
 } from "./prices";
+import { claudeFamily, claudeVersion } from "./targets";
 
 const TOKENS = { cacheRead: 2000, cacheWrite: 100, input: 1000, output: 500 };
 
 describe("Claude's list price", () => {
+  it("the gateway Fable pin follows the newest known Fable price", () => {
+    const rows = CLAUDE_PRICES.filter((row) => row.family === "fable").toSorted(
+      (a, b) => b.major - a.major || b.minor - a.minor,
+    );
+    expect(claudeFamily(GATEWAY_FABLE_MODEL)).toBe("fable");
+    const newest = rows[0];
+    if (newest === undefined) throw new Error("Fable needs a published price row");
+    expect(claudeVersion(GATEWAY_FABLE_MODEL)).toEqual({
+      major: newest.major,
+      minor: newest.minor,
+    });
+  });
+
   it("prices the current models by family and version", () => {
     expect(claudePrice("claude-opus-5-5")).toEqual({
       cacheRead: 0.2,
@@ -33,6 +48,13 @@ describe("Claude's list price", () => {
       input: 2,
       output: 10,
     });
+    expect(claudePrice("claude-fable-5-2")).toEqual({
+      cacheRead: 0.2,
+      cacheWrite: 10,
+      input: 8,
+      output: 40,
+    });
+    expect(claudeCost("claude-fable-5-2", TOKENS)).toEqual({ estimated: true, usd: 0.0294 });
     expect(claudePrice("claude-fable-5-1")).toEqual({
       cacheRead: 0.25,
       cacheWrite: 12.5,
@@ -101,6 +123,7 @@ describe("Claude's list price", () => {
   const CACHE_READ_SHARE: Readonly<Record<string, number>> = {
     "fable 5.0": 0.1,
     "fable 5.1": 0.025,
+    "fable 5.2": 0.025,
     "haiku 3.5": 0.1,
     "haiku 4.5": 0.1,
     "haiku 5.5": 0.1,

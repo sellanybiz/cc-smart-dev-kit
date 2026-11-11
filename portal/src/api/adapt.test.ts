@@ -656,7 +656,6 @@ test("the Overview: the router's facts, the chains, and the plan window", () => 
       gateway: true,
       judge: false,
       judgeUntested: false,
-      models: false,
       settingsBaseUrl: null,
       warnings: [],
     },

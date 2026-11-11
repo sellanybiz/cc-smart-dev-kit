@@ -97,6 +97,24 @@ export function taskById(db: WorkDb, id: string): WorkTask {
 export function isOpen(task: WorkTask): boolean {
   return task.status === "pending" || task.status === "in_progress";
 }
+/**
+ * What a plan or a phase counts as its progress: its tasks (kind `task`, never a phase), a
+ * plan's by its plan column, a phase's by parent, from the whole list (closed long ago too).
+ * Closed is done or dropped. A task counts none. The statusline and the portal both count so.
+ */
+export function layerProgress(
+  all: readonly WorkTask[],
+  layer: Pick<WorkTask, "id" | "kind" | "plan">,
+): { closed: number; total: number } {
+  const tasks = all.filter(
+    (t) =>
+      t.kind === "task" &&
+      (layer.kind === "plan"
+        ? layer.plan !== null && t.plan === layer.plan
+        : layer.kind === "phase" && t.parentId === layer.id),
+  );
+  return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+}
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);
@@ -104,7 +122,10 @@ export function descendants(db: WorkDb, id: string): WorkTask[] {
 }
 /** Every descendant counts toward progress. */
 export function countedUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
-  return descendantsIn(tasks, id);
+  const root = tasks.find((t) => t.id === id);
+  return root?.kind === "plan"
+    ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan)
+    : descendantsIn(tasks, id);
 }
 /** Closed (done or dropped), of all descendants. */
 export function subtreeProgress(
@@ -136,17 +157,12 @@ function inProgressFirst(a: WorkTask, b: WorkTask): number {
     Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number
   );
 }
-export function openSubtasks(db: WorkDb, id: string): WorkTask[] {
+export function openChildren(db: WorkDb, id: string): WorkTask[] {
   return descendants(db, id).filter(isOpen).sort(inProgressFirst);
 }
-/**
- * A task's layer (D76), from its parent alone: a task under a task is a subtask; one at the top,
- * under a plan or under a phase is a task. A task an older kit nested deeper reads as a subtask.
- */
-export function layerOf(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkLayer {
-  if (task.kind !== "task") return task.kind;
-  const parent = task.parentId === null ? undefined : byId.get(task.parentId);
-  return parent?.kind === "task" ? "subtask" : "task";
+/** Kind is the layer, including a stray nested task from an older writer. */
+export function layerOf(task: WorkTask, _byId: ReadonlyMap<string, WorkTask>): WorkLayer {
+  return task.kind;
 }
 /** The open tasks a task is blocked by, in number order: it cannot start or be done while one is. */
 export function openBlockers(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkTask[] {
@@ -211,7 +227,12 @@ export function listTasks(db: WorkDb, options: ListOptions): WorkTree[] {
   const byId = new Map(nodes.map((t) => [t.id, t]));
   const roots: WorkTree[] = [];
   for (const t of nodes) {
-    const parent = t.parentId ? byId.get(t.parentId) : null;
+    const linked = t.parentId ? byId.get(t.parentId) : undefined;
+    const parent =
+      linked ??
+      (t.kind === "task" && t.plan !== null
+        ? nodes.find((n) => n.kind === "plan" && n.plan === t.plan)
+        : undefined);
     if (parent) parent.children.push(t);
     else roots.push(t);
   }
@@ -267,6 +288,20 @@ export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
     }));
 }
 /**
+ * The name each session last wrote into the project's history, by session id: what the portal
+ * calls a session that runs no more. A session that never gave a name is left out.
+ */
+export function sessionNames(db: WorkDb, project: string): Map<string, string> {
+  // One row per session, its newest named entry: SQLite gives the bare columns of the row that
+  // holds the MAX(id), so a later name (a rename) wins and nothing older is read back.
+  const rows = db.sqlite
+    .query<{ session_id: string; session_name: string }, [string]>(
+      "SELECT session_id, session_name, MAX(id) AS last FROM task_events WHERE project=? AND session_id IS NOT NULL AND session_name IS NOT NULL AND session_name <> '' GROUP BY session_id",
+    )
+    .all(project);
+  return new Map(rows.map((row) => [row.session_id, row.session_name]));
+}
+/**
  * The history of a task no longer in the store, by its `#n` or id: a deleted task keeps its
  * entries, the last one its last version. Empty when no task ever had it, or the task is there.
  */
@@ -301,4 +336,22 @@ export function claimState(
 ): "mine" | "another session" | "free" {
   if (!task.claim || !isLive(task.claim)) return "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
+}
+
+/** Whether start already waits for target, through explicit blockers or parent completion holds. */
+export function waitsForTask(tasks: readonly WorkTask[], start: string, target: string): boolean {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const reached = new Set<string>();
+  const pending = [start];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || reached.has(id)) continue;
+    if (id === target) return true;
+    reached.add(id);
+    pending.push(
+      ...(byId.get(id)?.waitsFor ?? []),
+      ...holdingUnder(tasks, id).map((task) => task.id),
+    );
+  }
+  return false;
 }

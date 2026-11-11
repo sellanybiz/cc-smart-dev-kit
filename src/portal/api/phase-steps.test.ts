@@ -7,6 +7,7 @@ import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../../tasks/work
 import { allTasks } from "../../tasks/work/queries";
 import { createTask, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
 import type { Result, Who, WorkStatus } from "../../tasks/work/types";
+import { legacyCreateTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { phaseSteps } from "./phase-steps";
 
@@ -32,7 +33,9 @@ function step(
   status: WorkStatus,
   type: "blocking" | "non-blocking" = "blocking",
 ) {
-  const made = value(createTask(db, { parentId, project: "p", subject: "A step", type }, who, 1));
+  const made = value(
+    legacyCreateTask(db, { parentId, project: "p", subject: "A step", type }, who, 1),
+  );
   if (status !== "pending") value(updateTask(db, made.id, { status }, who, 2));
   return made;
 }
@@ -44,7 +47,7 @@ test("a phase's steps: its blocking work done, of its blocking work, a dropped o
   step(db, api.id, "done");
   step(db, api.id, "in_progress");
   step(db, api.id, "dropped");
-  // A blocking subtask under a blocking task is a step of the phase too, and so is the task.
+  // A blocking task an older kit nested under a blocking task is a step of the phase too.
   const task = step(db, api.id, "done");
   step(db, task.id, "done");
   step(db, task.id, "pending");
@@ -53,8 +56,8 @@ test("a phase's steps: its blocking work done, of its blocking work, a dropped o
   step(db, note.id, "pending");
   const steps = phaseSteps(allTasks(db, "p"));
   db.close();
-  // Done: the two done steps, the done task and its done subtask. To do: one in progress, one
-  // pending subtask. The dropped step and the non-blocking branch count nowhere.
+  // Done: the two done steps, the done task and the done task under it. To do: one in progress, one
+  // pending task under it. The dropped step and the non-blocking branch count nowhere.
   expect(steps.get(api.id)).toEqual({ done: 4, total: 6 });
 });
 
@@ -74,4 +77,25 @@ test("a phase with no steps yet is 0 of 0; a plan or a task has no steps of its 
   expect(steps.has(empty.parentId ?? "")).toBe(false);
   // Only the two phases: the plan, the loose task and the steps have no entry.
   expect(steps.size).toBe(2);
+});
+
+test("flat v4 steps count only blocking tasks and exclude dropped work", () => {
+  const db = store();
+  try {
+    const api = phase(db, { phase: "flat" });
+    const done = value(createTask(db, { project: "p", subject: "Done", parentId: api.id }, who, 1));
+    value(updateTask(db, done.id, { status: "done" }, who, 2));
+    value(createTask(db, { project: "p", subject: "Open", parentId: api.id }, who, 3));
+    value(
+      createTask(
+        db,
+        { project: "p", subject: "Aside", type: "non-blocking", parentId: api.id },
+        who,
+        4,
+      ),
+    );
+    expect(phaseSteps(allTasks(db, "p")).get(api.id)).toEqual({ done: 1, total: 2 });
+  } finally {
+    db.close();
+  }
 });

@@ -7,6 +7,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info";
 import type { Check } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
+import { getKey, ownedRecords, ownership, readJsonObject } from "../setup/managed-json";
+import { realTarget } from "../setup/write";
 import type { CommandRunner } from "../update/apply";
 import { listModels } from "./backends";
 import { checksDownFix, checksDownNow, checksDownText } from "./checks-down";
@@ -30,6 +32,7 @@ import {
   messageOf,
   workerJudgeTargets,
 } from "./config";
+import { GATEWAY_FABLE_ENV } from "./fable-model";
 import { type HealthFetch, healthHasFeature, routerHealth, routerLacksProfiles } from "./health";
 import { historyDbBytes, historyDbExists } from "./history";
 import { historyWords } from "./history-read";
@@ -49,7 +52,7 @@ import {
   SOCKET_NAME,
 } from "./service";
 import { TASK_LABEL, taskFactsFrom, taskQueryCommand, taskRunsCopy } from "./service-windows";
-import { shownValue } from "./settings";
+import { baseUrlPointsAtGateway, shownValue } from "./settings";
 import {
   FAMILY_SLOTS,
   isModelSlot,
@@ -163,6 +166,31 @@ export async function gatewayChecks(options: {
       ...(await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config)),
     );
     return checks;
+  }
+
+  try {
+    const settings = readJsonObject(paths.settingsFile).data;
+    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
+      const path = ["env", GATEWAY_FABLE_ENV];
+      const pin = getKey(settings, path);
+      const ours =
+        ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) ===
+        "ours";
+      checks.push({
+        ok: true,
+        info: true,
+        text: pin.found
+          ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})`
+          : "Gateway Fable: missing: run setup",
+      });
+    }
+  } catch (error) {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`,
+    });
   }
 
   if (options.service === "none") {
@@ -405,8 +433,8 @@ function modelKeyWarnings(
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }
   for (const key of file.subagentOverrides) {
@@ -418,7 +446,7 @@ function modelKeyWarnings(
       ok: true,
       warn: true,
       text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`,
     });
   }
   return checks;

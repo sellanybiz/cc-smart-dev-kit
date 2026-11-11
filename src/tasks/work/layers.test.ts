@@ -1,9 +1,10 @@
 /**
- * D76: three layers (phase › task › subtask), a blocking or non-blocking type on each, and the
+ * Legacy nested graphs and the current plan › phase › task layers, a blocking or non-blocking type on each, and the
  * tasks each is blocked by. Every rule here is the store's, so the tools, the command, the guards
  * and the portal all meet the same one.
  */
 import { expect, test } from "bun:test";
+import { legacyCreateTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
@@ -24,13 +25,13 @@ function setup() {
   return { paths, db: openWorkDb(workDbFile(paths), { mode: "write" }) };
 }
 function add(db: WorkDb, subject: string, more: Partial<Parameters<typeof createTask>[1]> = {}) {
-  return ok(createTask(db, { project: "p", subject, ...more }, who, 1));
+  return ok(legacyCreateTask(db, { project: "p", subject, ...more }, who, 1));
 }
 function byIdOf(db: WorkDb): Map<string, WorkTask> {
   return new Map(allTasks(db, "p").map((t) => [t.id, t]));
 }
 
-test("each task's layer comes from its parent: plan, phase, task, subtask", () => {
+test("each kind stays its layer, even in a legacy nested graph", () => {
   const { db } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
@@ -43,18 +44,18 @@ test("each task's layer comes from its parent: plan, phase, task, subtask", () =
   const inPhase = add(db, "In the phase", { parentId: phase.id });
   const sub = add(db, "Sub", { parentId: inPhase.id });
   const deeper = add(db, "Deeper");
-  // An older kit nested deeper than three layers: it reads as a subtask.
+  // An older kit nested deeper than three layers: it still reads as a task.
   db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(sub.id, deeper.id);
   const byId = byIdOf(db);
   expect(
     [plan, phase, top, underPlan, inPhase, sub, deeper].map((t) =>
       layerOf(taskById(db, t.id), byId),
     ),
-  ).toEqual(["plan", "phase", "task", "task", "task", "subtask", "subtask"]);
+  ).toEqual(["plan", "phase", "task", "task", "task", "task", "task"]);
   db.close();
 });
 
-test("a subtask holds no subtasks, a task with subtasks never becomes one, plans and phases stay put", () => {
+test("tasks cannot hold new tasks, and plans and phases stay put", () => {
   const { db } = setup();
   const plan = ok(ensurePlanTask(db, { project: "p", plan: "plan", subject: "Plan" }, who, 1));
   const phase = ok(
@@ -64,27 +65,21 @@ test("a subtask holds no subtasks, a task with subtasks never becomes one, plans
   ).task;
   const task = add(db, "Task");
   const sub = add(db, "Sub", { parentId: task.id });
-  const refusal =
-    '#4 "Sub" is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under #3 "Task", or make it a task of its own';
+  const refusal = "a task belongs under a phase or at the top; a task holds no tasks";
   expect(createTask(db, { project: "p", subject: "Too deep", parentId: sub.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
   });
   const loose = add(db, "Loose");
-  expect(updateTask(db, loose.id, { parentId: sub.id }, who, 2)).toEqual({
+  expect(updateTask(db, loose.id, { parentId: task.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
   });
-  // A task with no subtasks may become one; one with subtasks may not.
-  ok(updateTask(db, loose.id, { parentId: task.id }, who, 2));
-  const other = add(db, "Other");
-  expect(updateTask(db, task.id, { parentId: other.id }, who, 3)).toEqual({
-    ok: false,
-    why: '#3 "Task" has subtasks, so it stays a task: under #6 "Other" they would be a fourth layer. Move them first, or put it at the top or under a phase',
-  });
-  // Under a phase or a plan it stays a task, with its subtasks under it.
   ok(updateTask(db, task.id, { parentId: phase.id }, who, 3));
-  ok(updateTask(db, task.id, { parentId: plan.id }, who, 3));
+  expect(updateTask(db, task.id, { parentId: plan.id }, who, 3)).toEqual({
+    ok: false,
+    why: refusal,
+  });
   expect(updateTask(db, phase.id, { parentId: task.id }, who, 4)).toEqual({
     ok: false,
     why: '#2 "Phase A" is a phase: a phase stays under its plan',
@@ -112,10 +107,10 @@ test("a task an older kit nested past three layers still changes and closes wher
   ok(updateTask(db, deeper.id, { status: "done" }, who, 3));
   ok(updateTask(db, deep.id, { status: "done" }, who, 4));
   ok(updateTask(db, middle.id, { type: "non-blocking" }, who, 5));
-  // A move is held to the layers: under a subtask is refused.
+  // A move is held to the layers: under a task is refused.
   expect(updateTask(db, add(db, "Loose").id, { parentId: deep.id }, who, 6)).toEqual({
     ok: false,
-    why: '#3 "Deep" is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under #2 "Middle", or make it a task of its own',
+    why: "a task belongs under a phase or at the top; a task holds no tasks",
   });
   db.close();
 });
@@ -125,11 +120,11 @@ test("only blocking work holds its parent: a non-blocking task and what is under
   const parent = add(db, "Phase", { kind: "phase", plan: "plan", phase: "A" });
   const blocking = add(db, "Blocking", { parentId: parent.id });
   const noted = add(db, "Noted", { parentId: parent.id, type: "non-blocking" });
-  // A blocking subtask under the non-blocking task holds only that task, not the phase.
+  // A blocking task an older kit left under the non-blocking task holds only that task, not the phase.
   const step = add(db, "Step", { parentId: noted.id });
   expect(updateTask(db, parent.id, { status: "done" }, who, 2)).toEqual({
     ok: false,
-    why: "open subtasks: #2 Blocking",
+    why: "open tasks: #2 Blocking",
   });
   ok(updateTask(db, blocking.id, { status: "done" }, who, 3));
   ok(updateTask(db, parent.id, { status: "done" }, who, 4));
@@ -137,7 +132,7 @@ test("only blocking work holds its parent: a non-blocking task and what is under
   expect(getTask(db, "p", noted.id)?.status).toBe("pending");
   expect(updateTask(db, noted.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
-    why: "open subtasks: #4 Step",
+    why: "open tasks: #4 Step",
   });
   // A task that becomes non-blocking stops holding; back to blocking, it holds again.
   const second = add(db, "Second");
@@ -225,18 +220,18 @@ test("a block that would wait on itself through a parent is refused, at any dept
   const parent = add(db, "Parent");
   const child = add(db, "Child", { parentId: parent.id });
   const x = add(db, "X");
-  // Child waits for X; X blocked by Parent would wait for Child, as Parent waits for its subtask.
+  // Child waits for X; X blocked by Parent would wait for Child, as Parent waits for the task under it.
   ok(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 2));
   expect(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 3)).toEqual({
     ok: false,
-    why: '#3 "X" cannot be blocked by #1 "Parent": #1 "Parent" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+    why: '#3 "X" cannot be blocked by #1 "Parent": #1 "Parent" already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done',
   });
   // The other order: X waits for Parent first, then Child blocked by X.
   ok(updateTask(db, child.id, { waitsFor: { remove: [x.id] } }, who, 4));
   ok(updateTask(db, x.id, { waitsFor: { add: [parent.id] } }, who, 5));
   expect(updateTask(db, child.id, { waitsFor: { add: [x.id] } }, who, 6)).toEqual({
     ok: false,
-    why: '#2 "Child" cannot be blocked by #3 "X": #3 "X" already waits for it, through what it is blocked by and the subtasks a parent waits for, so neither could ever be done',
+    why: '#2 "Child" cannot be blocked by #3 "X": #3 "X" already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done',
   });
   // A non-blocking child holds nothing, so the same chain waits on nothing: it is let through.
   ok(updateTask(db, child.id, { type: "non-blocking" }, who, 7));
@@ -254,7 +249,7 @@ test("a done task's other fields still change while a task under it is open; don
   ok(updateTask(db, done.id, { status: "in_progress" }, who, 4));
   expect(updateTask(db, done.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
-    why: "open subtasks: #2 Late",
+    why: "open tasks: #2 Late",
   });
   db.close();
 });
@@ -272,7 +267,7 @@ test("a schema 1 store reads as all blocking, takes the column on its first writ
     readWorkStore(paths, (hook) => allTasks(hook, "p").map((t) => [t.subject, t.type])),
   ).toEqual({ state: "ready", value: [["Before", "blocking"]] });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
-  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
   // Code from an older version folder inserts without the column: the task is blocking.
   moved.sqlite
     .query(
@@ -367,7 +362,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
           children: [
             {
               ref: "#3",
-              layer: "subtask",
+              layer: "task",
               type: "blocking",
               blockedBy: [],
               blocked: false,
@@ -375,7 +370,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
             },
             {
               ref: "#4",
-              layer: "subtask",
+              layer: "task",
               type: "non-blocking",
               blockedBy: [{ ref: "#3", subject: "First", status: "pending" }],
               blocked: true,
@@ -383,7 +378,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
             },
             {
               ref: "#5",
-              layer: "subtask",
+              layer: "task",
               type: "blocking",
               blockedBy: [{ ref: "#3", subject: "First", status: "pending" }],
               blocked: false,
@@ -475,7 +470,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     for (const extra of [{ blocked_by: ["#2"] }, { type: "non-blocking" }, { description: "x" }])
       expect(ops.call("create", { subject: "Other plan", plan: "other", ...extra })).toEqual({
         ok: false,
-        why: "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
+        why: "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
       });
     expect(ops.call("create", { subject: "Step", parent: "#2" })).toEqual({
       ok: true,
@@ -492,7 +487,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     expect(ops.call("list", { scope: "all" })).toMatchObject({
       ok: true,
       text: [
-        "#1 [pending · plan] The plan · 0/3",
+        "#1 [pending · plan] The plan · 0/2",
         "  #2 [pending · phase A] Build A · 0/2 · agent none · branch none",
         "    #3 [pending] Step",
         "    #4 [pending · non-blocking · blocked by #3] Polish",
@@ -500,7 +495,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     });
     const got = ops.call("get", { task: "#4" });
     expect(got.ok ? got.text.split("\n").slice(0, 2) : got).toEqual([
-      // Under a phase it is a task: phase › task › subtask.
+      // Under a phase it is a task: plan › phase › task.
       '#4 "Polish" [task · pending · non-blocking · blocked by #3]',
       'Blocked by: #3 "Step" (pending)',
     ]);

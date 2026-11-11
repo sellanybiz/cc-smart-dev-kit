@@ -17,7 +17,8 @@ build log, done lists or owed lists. Progress belongs in tasks; edit the file on
 design changes.
 
 The plan is a **file**, not only chat: it survives a compaction, a restart and a hand-off.
-Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md`.
+Where it lives: the add-on file says; else `.claude/plans/<YYYY-MM-DD>-<slug>.md` in the
+project, committed with its branch (in a worktree, on that worktree's branch).
 
 The phase task description holds its brief. Do not copy briefs or progress into a second
 folder or ledger; `/cc-smart-dev-kit:build` reads the tasks to execute the plan.
@@ -28,10 +29,11 @@ fewer whose design is settled — the task is the plan, and a change that small 
 **Plan in plan mode** — steps 1 to 4 — when a person is there to approve: call
 `EnterPlanMode` (the person can also press Shift+Tab, or type `/plan`). Plan mode lets you
 read, search and explore, and blocks every edit but its own plan file, so nothing is built
-before the yes. It keeps that file where the `plansDirectory` setting points: unset, that is
-`~/.claude/plans`, outside the repo; a project that keeps its plans in git sets it to its
-plans folder in `.claude/settings.json`. No plan mode — no `EnterPlanMode` among your tools,
-write the plan file yourself, then ask for approval with `AskUserQuestion` (§ 4).
+before the yes. It keeps that file where Claude Code's `plansDirectory` setting points,
+relative to the project root: the kit's setup sets `.claude/plans`, and a project's own value
+wins. Unset, or a path Claude Code cannot use, it falls back to `~/.claude/plans`, outside the
+repo; the file then moves home after the yes (§ 4). No plan mode — no `EnterPlanMode` among
+your tools, write the plan file yourself, then ask for approval with `AskUserQuestion` (§ 4).
 A subagent reports to its caller instead of asking the person.
 
 ## 1. Research and explore first
@@ -109,19 +111,21 @@ diagram or a mockup — rather than only describing it.
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
 `AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. After an explicit yes,
-move a plan kept outside its home there. Move full research to
+move a plan kept outside its home there, and commit the plan file on the current branch as the
+workflow allows. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 
 After approval, use `task_create` for the plan (`plan`: its slug, subject: its title), then
-one phase task per phase (`phase`: its id). Put the complete builder brief in each phase's
-description, in four parts: objective; files and boundaries; patterns and tools; output
-format (`Report:` task note and short status). Include interfaces, edge cases and done-check.
+one phase task per phase (`phase`: its id, with the same `plan`). Put the complete builder
+brief in each phase's description, in four parts: objective; files and boundaries; patterns
+and tools; output format (`Report:` task note and short status). Include interfaces, edge cases and done-check.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
-hand-back guard that reads it. Under each phase create steps with their checks. Steps may have subtasks;
-subtasks have none. Set `blocked_by` for real dependencies and shared-file phases.
+hand-back guard that reads it. Under each phase create its steps with their checks: tasks whose
+`parent` is the phase. A task holds no tasks. Set `blocked_by` for real dependencies and
+shared-file phases.
 Create project tasks for production, database, teammate and follow-up obligations.
 Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
@@ -152,6 +156,10 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 - During execution use the build skill's rulings and stop reasons. Update the plan only
   when a ruling changes the design.
 - Track a new ask before acting; scope still follows the core instructions' "one plan" rule.
+- **One plan at a time, several per session.** Finish the current plan (§ 8) or park it
+  before you plan the next. Each plan gets its own plan task. Name the intended plan with
+  `plan` on `task_list` and on every work-task `task_create` for it; never on a project task,
+  which refuses it.
 - After compaction, read the task tree for progress and the file for design.
 
 ## 7. Execute without check-ins between phases

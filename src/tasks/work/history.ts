@@ -1,7 +1,7 @@
 /**
  * A work task's history as text (D75): one line per change, oldest first, with when, what and
- * who. `task_get` and `task show` print it from here, so the server and the command never word
- * one change two ways. The entries themselves are written by `store.ts`, in the change's own
+ * who. `task_get`, `task show` and the portal's task panel word it from here, so none of them
+ * words one change another way. The entries themselves are written by `store.ts`, in the change's own
  * transaction.
  */
 import type { WorkEvent } from "./types";
@@ -63,11 +63,20 @@ function fieldText(event: WorkEvent, key: string, label: string): string | null 
   return `${label} ${shown(key, before)} → ${shown(key, after)}`;
 }
 
-/** One line for one entry. */
-export function historyLine(event: WorkEvent): string {
-  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter(
+/**
+ * What one entry changed, a phrase per field in the fixed order: `status pending → done`,
+ * `description changed, 12 → 40 characters`. `historyLine` joins them and the portal's task
+ * panel lists them, so a change is worded one way everywhere.
+ */
+export function historyChanges(event: WorkEvent): string[] {
+  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter(
     (text): text is string => text !== null,
   );
+}
+
+/** One line for one entry. */
+export function historyLine(event: WorkEvent): string {
+  const fields = historyChanges(event);
   const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
   return `${new Date(event.at).toISOString()} by ${actor(event)} · ${what} ${fields.join("; ")}`;
 }

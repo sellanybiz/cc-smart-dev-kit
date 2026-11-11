@@ -5,7 +5,7 @@ import { tempDir } from "../testing/temp";
 import { createTaskServer } from "./mcp";
 
 const resultSchema = z.object({ result: z.unknown() });
-test("SDK transport initializes, lists eight annotated tools and runs work", async () => {
+test("SDK transport initializes, lists nine annotated tools and runs work", async () => {
   const cwd = tempDir();
   const kit = createTaskServer({ stateDir: tempDir(), cwd: () => cwd, caller: () => null });
   const [client, transport] = InMemoryTransport.createLinkedPair();
@@ -48,6 +48,7 @@ test("SDK transport initializes, lists eight annotated tools and runs work", asy
       .parse(tools);
     expect(parsed.tools.map((t) => t.name)).toEqual([
       "task_create",
+      "task_take",
       "task_update",
       "task_done",
       "task_note",

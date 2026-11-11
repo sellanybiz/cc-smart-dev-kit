@@ -29,10 +29,11 @@ import {
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
 import { DEFAULT_ANTHROPIC_BASE_URL } from "./config";
+import { GATEWAY_FABLE_ENV, GATEWAY_FABLE_MODEL } from "./fable-model";
 import { CLAUDE_FAMILIES, familyEnv } from "./targets";
 
 /**
- * The env keys `gateway on` writes. No model is pinned: Claude Code sends each Claude
+ * The env keys `gateway on` writes. Only Fable is pinned (`fable-model.ts`): Claude Code sends each Claude
  * model's own id, and the router takes it to the slot of its family when that slot has a
  * chain (haiku → scout, sonnet → worker, opus, fable), or to Anthropic unchanged when it has
  * none. No `ANTHROPIC_AUTH_TOKEN`: without one, Claude Code sends the person's own login.
@@ -48,6 +49,7 @@ import { CLAUDE_FAMILIES, familyEnv } from "./targets";
 export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
+    [GATEWAY_FABLE_ENV]: GATEWAY_FABLE_MODEL,
     ANTHROPIC_BASE_URL: routerBaseUrl(port),
   };
 }
@@ -301,6 +303,7 @@ export function assertNoForeignGatewayKeys(settingsFile: string, stateDir: strin
   const owns = (key: string) =>
     owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
   for (const key of GATEWAY_ENV_KEYS) {
+    if (key === GATEWAY_FABLE_ENV) continue;
     if (!Object.hasOwn(env, key) || owns(key)) continue;
     // Many people set ENABLE_TOOL_SEARCH themselves, for their own reasons: say so.
     const yourOwn =
@@ -326,21 +329,30 @@ export function turnOn(options: {
   dryRun?: boolean;
 }): ManagedJsonResult {
   assertNoForeignGatewayKeys(options.settingsFile, options.stateDir);
-  const set = Object.entries(gatewayEnv(options.port)).map(
-    ([key, value]) => [envPath(key), value] as const,
-  );
+  const pin = getKey(readSettings(options.settingsFile), envPath(GATEWAY_FABLE_ENV));
+  const records = ownedRecords(options.stateDir, realTarget(options.settingsFile));
+  const foreignPin = pin.found && ownership(records, envPath(GATEWAY_FABLE_ENV), pin) !== "ours";
+  const set = Object.entries(gatewayEnv(options.port))
+    .filter(([key]) => key !== GATEWAY_FABLE_ENV || !foreignPin)
+    .map(([key, value]) => [envPath(key), value] as const);
   for (const [path] of set) {
     if (FORBIDDEN_ENV_KEYS.some((key) => path[1] === key)) {
       throw new Error(`the gateway never writes ${formatKeyPath(path)}`);
     }
   }
-  return applyManagedJson({
+  const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
     set,
     remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
+  if (foreignPin)
+    result.skipped.push({
+      path: envPath(GATEWAY_FABLE_ENV),
+      reason: "set or changed by you; left alone",
+    });
+  return result;
 }
 
 /**
@@ -414,7 +426,7 @@ export function turnOff(options: { settingsFile: string; stateDir: string; dryRu
  * of the person's own that already holds Anthropic's address sends every session exactly where
  * `off` would: it routes nothing, and "the gateway is not all off" would be untrue
  * (`baseUrlPointsAtGateway`, GP5). A file that cannot be read counts as routing.
- * `ENABLE_TOOL_SEARCH` routes nothing either, and many people set it themselves. One home:
+ * `ENABLE_TOOL_SEARCH` and the Fable model pin route nothing either. One home:
  * `gateway off` and the setup step that turns the gateway off both ask it.
  */
 export function foreignRouting(
@@ -428,13 +440,16 @@ export function foreignRouting(
     ownAddressRoutes = true;
   }
   const routing = foreign.filter(
-    (key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes),
+    (key) =>
+      key !== "ENABLE_TOOL_SEARCH" &&
+      key !== GATEWAY_FABLE_ENV &&
+      !(key === BASE_URL_KEY && !ownAddressRoutes),
   );
   return { routing, ownAddressRoutes };
 }
 
 /**
- * One of Claude Code's own model keys, and the value it holds. The kit never writes these keys
+ * One of Claude Code's own model keys, and the value it holds. Except for the gateway Fable pin, the kit never writes these keys
  * (`FORBIDDEN_ENV_KEYS` covers the subagent ones); it reads them only to warn: a project file
  * that names a slot or a backend target there sends that name past the gateway's slots
  * (`doctor`, GP4a). A value is a model name, never a secret.

@@ -24,6 +24,11 @@ export function task(
   more: Partial<WorkTaskNode> = {},
 ): WorkTaskNode {
   return {
+    session: null,
+    parentId: null,
+    claim: "none",
+    notes: 0,
+    events: 0,
     agent: null,
     base: null,
     blocked: false,
@@ -36,6 +41,7 @@ export function task(
     layer: "task",
     phase: null,
     plan: null,
+    progress: null,
     ref: `#${ref}`,
     status,
     steps: null,
@@ -69,7 +75,7 @@ export const PHASE = task(
       "in_progress",
       [
         task(7, "Time the lock", "pending", [], {
-          layer: "subtask",
+          layer: "task",
           type: "non-blocking",
         }),
       ],
@@ -132,6 +138,8 @@ export const FULL: ProjectTasksData = {
   work: {
     more: 2,
     recentDays: 7,
+    sessions: [],
+    sessionsWhy: null,
     state: "ready",
     tasks: [
       task(1, "plan", "in_progress", [PHASE], {
@@ -139,6 +147,8 @@ export const FULL: ProjectTasksData = {
         kind: "plan",
         layer: "plan",
         plan: "plan",
+        // The server's count from the whole list: more than the tree holds, old tasks too.
+        progress: { closed: 12, total: 20 },
         total: 6,
       }),
       task(
@@ -147,7 +157,7 @@ export const FULL: ProjectTasksData = {
         "done",
         [
           task(9, "Say it in the changelog", "pending", [], {
-            layer: "subtask",
+            layer: "task",
             type: "non-blocking",
           }),
         ],

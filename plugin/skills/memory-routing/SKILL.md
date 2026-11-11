@@ -21,7 +21,7 @@ person, or the whole team — and by **how fast it goes stale**.
 | **Doc** | the project's docs (in git) | whole team | how something works today, and why — never a rule |
 | **Hook** | the project's settings (in git) | whole team | what must happen every time, with no judgment |
 | **Memory** | `save_memory` (claude-mem), or the project's memory tool | this person, across sessions | a fact or preference that outlives one task |
-| **Work task** | the kit's local task store; no `kind` | sessions working on this project | live asks, subtasks, progress and work notes |
+| **Work task** | the kit's local task store; no `kind` | sessions working on this project | live asks, tasks, progress and work notes |
 | **Project task** | one file in `.claude/tasks/` (or the project's `tasks.dir`); `kind` = `production`, `database`, `teammate` or `follow-up` | everyone who pulls the branch | an obligation that outlives the session |
 | **Plan file** | the project's plans folder (`/cc-smart-dev-kit:plan-task`) | every session of the plan | design: context, decisions, approach, phases and verification |
 | **Live system** | the database, the service, the config | whoever asks | current data — columns, rows, lists of things. Never copy it into markdown; it drifts. |
@@ -55,7 +55,9 @@ obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `a
 
 - `task_update` keeps fields and status true: work is `pending`, `in_progress`, `done` or
   `dropped`; project tasks are `open`, `done` or `dropped`. Use `task_done` with evidence to
-  finish; its blocking subtasks must be done or dropped first. Record work notes with `task_note`.
+  finish; its blocking tasks must be done or dropped first. Record work notes with `task_note`.
+- `task_take` takes a plan slug or task reference into this session; live claims need `force`.
+  `task_list` takes `plan` to choose a named plan. A session can own several plans.
 - `task_list` reads `mine`, `plan`, `project` or `all` (open by default); `task_get` reads a task,
   with an offset for long text; `task_search` finds text. IDs look like `#12` or `T-7k2m4q`.
 - **A follow-up as an issue** (with `workflow.issues.enabled` on, the main session only):
@@ -64,9 +66,9 @@ obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `a
   one. Read the text first: its secret screen knows only common shapes. Put the printed URL
   in the project task's `refs`; never copy the issue's body into the task.
 - A teammate task's `task_done` means done on this machine; `for_everyone` closes it for all.
-  `task_delete` removes only a mistake that has no notes or subtasks; otherwise drop it.
+  `task_delete` removes only a mistake that has no notes or tasks; otherwise drop it.
 - Without the tools, use `cc-smart-dev-kit task`:
-  `add|set|start|done|drop|note|list|show|search|check|release|import|delete`. Never fall back to
+  `add|set|start|done|drop|note|list|show|search|check|release|import|delete|take`. Never fall back to
   a plan log or a second to-do system. If the CLI is missing too, report the blocker.
 
 For a plan, the phase description is the builder brief. Use work-task fields `agent`,

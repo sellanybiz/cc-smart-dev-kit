@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { scanProjectTasks } from "../project/files";
 import { openWorkDb, workDbFile } from "./db";
 import { historyText } from "./history";
 import { eventsOf } from "./queries";
-import { addNote, createTask, deleteTask, systemClose, updateTask } from "./store";
+import { addNote, deleteTask, systemClose, updateTask } from "./store";
 import type { Result, WorkEvent } from "./types";
 
 const at = (minute: number) => Date.UTC(2026, 10, 3, 9, minute);

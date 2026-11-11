@@ -15,6 +15,7 @@ import {
   planClaudeDefaultsStep,
 } from "../gateway/claude-defaults";
 import { type GatewayConfig, messageOf } from "../gateway/config";
+import { applyFableModelStep } from "../gateway/fable-model-step";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,
@@ -71,6 +72,7 @@ import { withLock } from "../setup/lock";
 import {
   applyManagedJson,
   createdObjects,
+  ForeignKeyError,
   formatKeyPath,
   getKey,
   isObject,
@@ -422,6 +424,28 @@ function applySetup(
     createdObject: createdObjects(paths.stateDir, paths.settingsFile),
     dryRun,
   });
+  // This default has its own write: a personal plan folder must not stop the other settings.
+  try {
+    const plans = applyManagedJson({
+      file: paths.settingsFile,
+      stateDir: paths.stateDir,
+      set: [[["plansDirectory"], ".claude/plans"]],
+      dryRun,
+    });
+    for (const skip of plans.skipped) {
+      add("settings", "info", `${short(plans.file)}: ${formatKeyPath(skip.path)}: ${skip.reason}`);
+    }
+    for (const change of plans.changes) {
+      add(
+        "settings",
+        "changed",
+        `${short(plans.file)}: ${formatKeyPath(change.path)}: ${shownValue(change.path, change.before)} -> ${shownValue(change.path, change.after)}`,
+      );
+    }
+  } catch (error) {
+    if (!(error instanceof ForeignKeyError)) throw error;
+    add("settings", "info", error.message.replace(paths.settingsFile, short(paths.settingsFile)));
+  }
   // The Tavily key is its MCP server's: its line goes with the servers.
   const keySection = (path: KeyPath): SetupSection =>
     formatKeyPath(path) === formatKeyPath(TAVILY_KEY_PATH) ? "mcp" : "settings";
@@ -995,6 +1019,10 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
       ...claudeSteps.map((step) => reportLine("companions", step.line)),
       ...reportLines("mcp", wouldRegister.wouldRun),
       ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)),
+      ...reportLines(
+        "gateway",
+        claudeDefaults.kind === "done" ? applyFableModelStep(paths, true) : [],
+      ),
       ...planned.lines,
       ...reportLines("mcp", wouldRegister.notes),
     );
@@ -1114,6 +1142,7 @@ export async function runSetup(paths: CliPaths, options: SetupOptions): Promise<
         // it first has written its marker, and this one then does nothing), before the files
         // below: the gateway's address goes to Anthropic's own, then the other settings follow.
         const gateway = applyClaudeDefaultsStep(paths, planClaudeDefaultsStep(paths), false);
+        if (claudeDefaults.kind === "done") gateway.push(...applyFableModelStep(paths, false));
         // Only what was really taken out counts: a `claude mcp remove` that failed leaves the
         // registration, and whatever it names, where it was.
         const files = applySetup(paths, managed, false, mcp.removed, machine.platform);

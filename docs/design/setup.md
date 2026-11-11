@@ -94,6 +94,27 @@ state is per config folder, but the launcher in `~/.local/bin` is shared by all 
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
 
+## The plan folder
+
+Setup writes `plansDirectory: ".claude/plans"` in the user's `settings.json` through
+`applyManagedJson`, in a separate call inside the setup lock. The read-only pass shows it
+for `--dry-run`. It is an owned key, with the same backup and restore path as other settings.
+Plan files themselves belong to the project, are committed, and are never removed by restore.
+A dirty worktree holding an uncommitted plan remains protected by the worktree cleanup check.
+
+A `ForeignKeyError` for this key becomes an information line, not a failed setup: a personal
+plan folder must not stop the other writes. A personal value equal to the default is also
+left unowned. A second run changes nothing; restore removes only a value setup still owns
+and leaves a changed personal value alone. Doctor names the user-level plan folder, or
+Claude Code's default when no string is set, and says that project settings may override it.
+No second plan-folder resolver is added: verify-gate already reads the user, project and
+project-local settings and excludes both the configured folder and `.claude/plans`.
+
+The exact root Claude Code uses for a relative folder in a worktree session is
+[to prove live](../claude-code-contract.md#relied-on-not-proved-yet), not a tested claim.
+A home-root project or a Windows path with a backslash may fall back to the config folder's
+`plans` directory; include both cases in that live check.
+
 ## The task system (D75)
 
 Setup registers `cc-smart-dev-kit-tasks` at user scope through the stable launcher, with
@@ -112,7 +133,8 @@ After updating, run setup and restart Claude Code. Run `task import claude-mem` 
 move open lists; the import is not an automatic setup step. Doctor checks the server,
 allow and deny entries, claude-mem's switch, work-store schema and integrity, and in a
 project the task-file findings from `task check`. [Task design](tasks.md) owns the stores,
-commands and guards. The status line adds `#12 Subject · 2/5` for current work.
+commands and guards. The status line adds a separate `2/5 · Subject` row for current work: closed tasks out of
+all tasks in the current plan, or the title alone for a loose task.
 
 ### Who changes what, and when
 

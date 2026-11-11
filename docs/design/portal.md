@@ -568,7 +568,12 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
 - **Health**: what holds the router's port, in doctor's own words: `portHolderCheck`
   (`src/gateway/doctor.ts`) for systemd's socket unit or the Windows task; null where the machine
   runs neither. The router-down card names the unit from that socket, so the page never types it.
-- **Overview**: the plan's 5-hour window as the status line recorded it
+- **Overview**: Gateway and **Auto-mode judge** sit in separate rows, gateway first. The
+  judge says "Claude judges" or "Your judge chain judges". With the gateway off it is disabled
+  and says "Works only with the gateway on", from the existing `switches.gateway` fact.
+  It runs only `gateway slot judge custom|claude`, never `gateway on|off`: changing the judge
+  leaves `ANTHROPIC_BASE_URL` and the gateway state alone. The combined opus/fable switch is
+  gone; each model slot keeps its own switch on Slots. The plan's 5-hour window as the status line recorded it
   (`src/cli/usage-window.ts`, null for a window that is over). The file holds the 7-day window
   too since 2.2.0, but no page shows it yet, so the page says there is none. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
@@ -641,29 +646,53 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   `/api/slots`', read when an editor opens) and `SavedSwitch`, whose question says the change
   reaches every project whose address names that profile. A project that is no git project
   shows its state and no form.
-- **Tasks** (D76, `/tasks`, `portal/src/views/tasks.tsx`; the answer is `tasks`, built in
-  `src/portal/api/project-tasks.ts`): read-only, the one home of the kit's task list on the
-  portal, in the sidebar under Now after Work. `tasks` is every project of `projects`, in its
-  order, each with the same answer `projects/<id>/tasks` gives (one reading, `tasksOf`, read
-  `PROJECT_GIT_AT_ONCE` projects at a time). The tab opens with four counts over the projects in
-  view (open work with how much is in progress, blocked, non-blocking, task files owed with how
-  many block the release), then the filters, then a key to the tree, then a card per project.
-  - *The filters* live in the address, so a link opens the tab as it was: `project=<id>` (a
-    picker when there is more than one project, each with its open count), `show=recent` (open
-    only is the default; recent adds what closed in the last seven days,
-    `TASKS_CARD_RECENT_DAYS`), `blocked=1` and `type=non-blocking`. The rules are
-    `portal/src/lib/tasks.ts`: a filter keeps each task it asks for and the tasks above it as its
-    place (drawn in the muted colour), never a task cut from its parent. An id no project has
-    says so and shows every project.
-  - *Work on this machine* is the project's tree (`tree.ts` › `projectTaskTree`, at most
-    `TREE_TASK_LIMIT` tasks with the rest counted) as Plan › Phase › Task › Subtask: the layer
-    reads from the indent and the subject's weight, a plan and a phase carry a badge, and a screen
-    reader hears the layer and the status before the subject. Each row (`task-tree.tsx`, the one
-    row) shows its status as a glyph and its word (never colour alone), a dashed `non-blocking`
-    mark (blocking is the default and says nothing), `left open` for an open task under a closed
-    parent, `blocked by` with each blocker's number and its state's glyph while it is blocked
-    (closed blockers too, the subject on hover and for screen readers), and its subtree's
-    progress as a meter drawn by an SVG `<rect>` with a native `<meter>` for screen readers.
+- **Tasks** (D76, 4.0 redesign; `/tasks`, `portal/src/views/tasks.tsx`; the answer is `tasks`,
+  built in `src/portal/api/project-tasks.ts`): the one home of the kit's task list on the portal,
+  in the sidebar under Now after Work. `tasks` is every project of `projects`, in its order, each
+  with the same answer `projects/<id>/tasks` gives (one reading, `tasksOf`, read
+  `PROJECT_GIT_AT_ONCE` projects at a time). The page reads; its one change is the take-over
+  below. From top to bottom: four counts over the projects in view (open work with how much is
+  in progress, blocked, non-blocking, task files owed with how many block the release), two tabs
+  (*Work on this machine* and *Owed by the project*, each with its count), one filter bar, a key
+  to the levels, then a card per project. Each part has one home: the rules in
+  `portal/src/lib/tasks.ts` (filters, the address, counts) and `task-groups.ts` (sessions,
+  folds, paging), the bar in `task-filters.tsx`, the tree in `task-work.tsx` and
+  `task-tree.tsx`, the panel in `task-panel.tsx`, the move in `task-move.tsx`, the files in
+  `tasks-card.tsx`.
+  - *Sessions.* The ready work answer carries `sessions` (`taskSessionsOf`): every session that
+    made a task in the tree, and every session running now with its folder in the project
+    (Claude Code's records, `liveSessions`, each folder placed by `taskContextAsync`), each with
+    its name and `live`. A running session is named by its own record only (none when the
+    record has none): a take-over finds it by that name, so an older one would offer a session
+    `task.take` then refuses. A session that runs no more is named by the last name its task
+    history wrote (`sessionNames`, one row per session). When a running session's record cannot
+    be read, `sessionsWhy` says why, no session is called running, and the card says which
+    sessions run is unknown. `tasks` reads the records once, beside the project list; one
+    project's own answer skips each session whose folder is not inside the project's folder
+    before it asks git, so a session in a worktree outside it is not named there (only the
+    Tasks tab, which reads `tasks`, offers sessions).
+  - *The tree* is Project › Session › Plan › Phase › Task. A project's roots are grouped by the
+    session that made them (`sessionGroupsOf`): running sessions first, then the newest change,
+    the work with no session recorded last. A session heading names it (its short id when it
+    has no name), says whether it runs now, and counts its plans, open and blocked tasks. Every
+    level folds — the project card, each session, each plan, phase or task with rows under it —
+    with a real button (`aria-expanded`, `aria-controls`). A done or dropped plan or phase starts
+    folded; a person's choice is kept in this browser's `localStorage`
+    (`cc-smart-dev-kit-portal-task-folds`, `use-folds.ts`, at most `FOLDS_KEPT` choices, every
+    read and write in a `try`; without storage the choices last for the page). "Unfold all" and
+    "Fold all" set every level of a project. While words are searched for, every level that
+    holds a match opens, whatever was folded.
+  - *A row* (`task-tree.tsx`, the one row) is a button that opens the task's panel. It shows the
+    status as a glyph and its word (never colour alone), the `#n`, the subject in its layer's
+    weight, a plan or phase badge, a dashed `non-blocking` mark (blocking says nothing), `left
+    open` for an open task under a closed parent, `blocked by` with each blocker's number and
+    state, the claim (`● running` while a running process holds it, `claim ended` when that
+    process is gone), the notes count, and its progress. A plan's or a phase's progress is the
+    node's `progress`, which the server counts from the project's whole list (`layerProgress` in
+    `src/tasks/work/queries.ts`, the statusline's own rule): its tasks (never a phase), a plan's
+    by its plan column and a phase's by parent, closed long ago too, which the tree leaves out.
+    A counted phase shows its steps instead. A screen reader hears the layer and the status
+    before the subject. The open task's row is marked.
   - *A phase's ledger* (G3, `PhaseLedger` in `task-tree.tsx`) is the phase row's own line under
     its subject. It shows the phase's steps first: its blocking steps done, of its blocking steps
     (`phaseSteps`, `src/portal/api/phase-steps.ts`). A step is a blocking task under the phase,
@@ -671,30 +700,72 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     never a second copy of it. A dropped step is no step any more: it leaves both numbers, so a
     phase whose steps are all done or dropped reads n of n, and a phase with none reads "no steps
     yet". The steps count every task under the phase, closed long ago too, so they are read from
-    the project's whole list, not from the tree the filters cut. A counted phase shows these steps
-    in place of its subtree's meter. Then come the agent, branch, worktree and base the main
-    session set on the phase (`task_update`, or the CLI's `--agent`, `--branch`, `--worktree`,
-    `--base`; [tasks](tasks.md) § The subagent ledger in 2.0), each only when set: the worktree
-    by its folder's name and the base as a short commit, a long value cut to one line with its
-    full text in its title (and, for the worktree, for screen readers). The steps are always
-    there on a counted phase, so a field that arrives joins a line already drawn.
-  - *Owed by the project* lists the open task files of the main checkout by kind (production,
-    database, teammates, follow-ups), what blocks a release first, each with its weight, its
-    when, its flags in words and a mark when it is open past `tasks.staleDays`; a file that does
-    not read as a task is counted, with `task check` to name it.
+    the project's whole list, not from the tree the filters cut. Then come the agent, branch,
+    worktree and base the main session set on the phase (`task_update`, or the CLI's `--agent`,
+    `--branch`, `--worktree`, `--base`; [tasks](tasks.md) § The subagent ledger in 2.0), each
+    only when set: the worktree by its folder's name and the base as a short commit, a long value
+    cut to one line with its full text in its title (and, for the worktree, for screen readers).
+  - *The filter bar* lives in the address, so a link opens the tab as it was: `project=<id>` (a
+    picker when there is more than one project, each with its open count), `q=` (words in a
+    subject, or a task's number, `#12` or `12`; on the files tab, a title or id; it narrows once
+    typing pauses, `SEARCH_WAIT_MS`), and on the work tab `status=` (open is the default;
+    `in_progress`, `blocked`, `closed` — done or dropped in the last seven days,
+    `TASKS_CARD_RECENT_DAYS` — and `all`), `session=<id>` (or `none`), `plan=<slug>` (or
+    `none`: in no plan), `live=1` (running sessions only: the portal is no session, so "mine"
+    has no owner here) and `type=non-blocking`. `tab=files` picks the files tab and
+    `task=<id>` the open panel. An address from before 4.0 still opens what it showed
+    (`show=recent` reads as all, `blocked=1` as blocked); the next change writes the new words.
+    A row filter keeps each task it asks for and the tasks above it as its place (muted), never a
+    task cut from its parent; the session, plan and running filters pick whole groups and roots.
+    An id no project has says so and shows every project.
+  - *A page of rows.* A project draws `PAGE_ROWS` rows at most (`pageRows`: depth first across
+    its sessions, a folded level counting its own row only), then says how many rows wait, with
+    "Show more" and "Show all". A new filter starts at the first page again.
+  - *The side panel* (`task-panel.tsx`) is `GET /api/tasks/<id>` in a native `<dialog>` opened
+    with `showModal()`, drawn as a drawer on the right and the whole width on a phone: the
+    browser traps the focus, Escape and the Close button close it and give the focus back to
+    the task's row (`closePanel`; to what had the focus before when no row is drawn), and no
+    `style` attribute or `<style>` is written
+    (a Radix dialog injects one, which the policy blocks). It shows the layer, number, status,
+    project and subject, then "Move to session…", the facts (status, type, plan, phase, session
+    and whether it runs, the claim, what it waits for, agent, branch, worktree, base, when made,
+    changed and closed), the description and the notes as Markdown (`markdown.tsx`), and the
+    history folded under a `<details>`, each change in the words `task_get` prints: the
+    answer's `lines` per entry, from `historyChanges` (`src/tasks/work/history.ts`), so a
+    description shows by its length, never its text. It reads again on
+    the `tasks` event; a task no longer in the store says so.
+  - *Move to session…* (`task-move.tsx`, on a plan or a task) offers the sessions running in
+    the project with a name, other than its own (`moveTargets`; `task.take` refuses any other).
+    It asks first (`ConfirmDialog`): what moves, from which session, to the one picked, and
+    whether a running process still holds any of it. A live claim makes the verb "Take it over
+    anyway" and the action carries `force` and `confirm`; an ended claim needs neither. The
+    action runs the CLI's own take-over (`createTaskOps` › `take`), and its result shows in
+    place; the panel and the tree read again. With no session to move to, the button is off and
+    says why.
+  - *Owed by the project* (the files tab) lists the open task files of the main checkout by
+    kind (production, database, teammates, follow-ups), what blocks a release first, each with
+    its weight, its when, its flags in words and a mark when it is open past `tasks.staleDays`;
+    a file that does not read as a task is counted, with `task check` to name it. Its filter bar
+    keeps the project and the search only: a session, a plan or a work status means nothing for
+    a task file.
+  - *Narrow screens.* The filter bar wraps; the status choice is a toggle group from the
+    `@4xl/main` width and a select below it; the search takes the whole row on a phone. Rows
+    wrap their marks under the subject, a phase's ledger takes its own line, and the panel is
+    the full width.
   - Every state has its words: loading is the page skeleton; no project at all points at
     Settings; a store with nothing yet, nothing open, nothing matching the filters (with a way to
-    clear them or show recent) and no task file each say what makes tasks appear (a session's
+    clear them or show all) and no task file each say what makes tasks appear (a session's
     `task_create`, or `cc-smart-dev-kit task add`); a store or a folder that cannot be read says
-    why. With every project in view, one with nothing to show (or, under a filter, nothing that
-    matches) is named in one line at the end instead of an empty card. The tab reads again on the
-    `tasks` event and on a `workflow.*` or `project.*` result (`TASKS_REFRESH`).
+    why. With every project in view, one with nothing to show (or, under a filter or a search,
+    nothing that matches) is named in one line at the end instead of an empty card. The tab
+    reads again on the `tasks` event and on a `workflow.*` or `project.*` result
+    (`TASKS_REFRESH`).
 - **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`): one line on every
   project's page that counts its open, in-progress and blocked work and the task files it owes
   (from `projects/<id>/tasks`), and opens the Tasks tab on that project (`/tasks?project=<id>`).
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes
-something, its result in place: the Overview's three switches (`SavedSwitch`, shared with the
+something, its result in place: the Overview's two switches (`SavedSwitch`, shared with the
 Slots page's fallback and breaker), the Slots page's effort pin (`slot.effort`: asked first, it
 runs `gateway effort <slot> <target> <level>|off`, shows the test request and a refusal in
 place, and is offered only while the slot is Custom), the router restart, `doctor`, a companion's enable, the

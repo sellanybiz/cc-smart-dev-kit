@@ -328,7 +328,7 @@ list.
 
 | Command | What it does |
 |---|---|
-| `cc-smart-dev-kit setup` | Offers the latest Herdr GUI and installs and refreshes everything it owns — the launcher, the instructions, the companions, the MCP servers, claude-mem's keys and the auto-mode entries — and prints a section per part, then the next steps in order. Every question comes first. Full text: [below](#cc-smart-dev-kit-setup). |
+| `cc-smart-dev-kit setup` | Offers the latest Herdr GUI and installs and refreshes everything it owns — the launcher, the instructions, the companions, the MCP servers, claude-mem's keys and the auto-mode entries — and prints a section per part, then the next steps in order. An already-on gateway with our still-owned router address gains the owned Fable pin; a foreign value stays, and an off gateway stays off. Every question comes first. Full text: [below](#cc-smart-dev-kit-setup). |
 | `cc-smart-dev-kit setup --no-instructions` | Takes the instructions' block and copy out and **keeps them out**: setup stores the choice (`~/.claude/cc-smart-dev-kit/no-instructions`), so a later plain `cc-smart-dev-kit setup` leaves them out too. `--instructions` clears that choice and installs them again. `restore` clears it as well. |
 | `cc-smart-dev-kit setup --yes` | On a terminal: the same, and writes the auto-mode entries without asking (they are still shown). With no terminal, trust rules are left out, also with `--yes`. Herdr installation may proceed with `--yes` after its disclosure. |
 | `cc-smart-dev-kit setup --project <dir>` | Reads the auto-mode entries from the project in `<dir>`, not from the folder you are in. |
@@ -358,6 +358,14 @@ entry out. It adds managed deny entries for `TaskCreate`, `TaskUpdate`, `TaskLis
 `TaskGet`, `TodoWrite` — never `TaskStop` or `TaskOutput`. It withdraws its D68 task-tool
 opt-in and turns off claude-mem work state; a `"true"` you set after that stays. Restore undoes
 these managed changes. [Setup design](docs/design/setup.md).
+
+Setup also sets `plansDirectory: ".claude/plans"` in `~/.claude/settings.json`, so plan
+mode uses the project's plan folder. It owns only that key, not the plan files; commit plans
+with the project. A value you set or changed stays yours: setup prints a note and continues
+its other changes. `setup --dry-run` shows the planned write; restore removes the key only
+while it still holds setup's value. Doctor names the user-level folder and notes that project
+settings may override it. The exact root used in a worktree session is still
+[to prove live](docs/claude-code-contract.md#relied-on-not-proved-yet).
 
 #### Subagent concurrency
 
@@ -431,8 +439,8 @@ The kit owns one task system. Live work stays local across worktrees; project ob
 are Markdown files reviewed with their branch. [Task design](docs/design/tasks.md).
 Every command below starts with `cc-smart-dev-kit`.
 
-**Work tasks have three layers: phase › task › subtask**, under a plan. A subtask holds no
-subtasks of its own. Each task is **blocking** (the default: its parent cannot be done while it
+**Work lives in Session › Plan › Phase › Task**. A task holds no tasks of its own.
+A top-level task may belong to a plan; a task with no plan is loose. Each task is **blocking** (the default: its parent cannot be done while it
 is open, and a builder is told so before it hands back) or **non-blocking** (noted work that
 holds nothing; it stays open when its parent is done). A task can be **blocked by** other
 tasks: it cannot start or be done while one of them is open. Lists mark both:
@@ -441,12 +449,13 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | Command | What it does |
 |---|---|
 | `task add <subject> [--description <text> \| --file <path\|->] [--kind work\|production\|database\|teammate\|follow-up] [--parent <ref>] [--start] [--type blocking\|non-blocking] [--blocked-by <ref>]... [--phase <id>] [--plan <slug>] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--when now\|next-release\|any] [--weight blocks-release\|after-deploy\|owner] [--flag <flag>]... [--ref <path>]...` | Create work (the default) or a project obligation. Description and file input are alternatives; `-` reads stdin. `--plan` alone makes the plan's own task (subject: its title); `--phase` lays out a phase of the plan (the plan of your latest task when `--plan` is left out). `--agent`, `--branch`, `--worktree` and `--base` record on a phase who builds it and where: the main session sets them when it starts the phase's builder. |
-| `task set <ref> [--type blocking\|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too). A move that would put a task below a subtask is refused, and so is a blocker that sits above the task. |
+| `task set <ref> [--type blocking\|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too). A move that would put a task under another task is refused, and so is a blocker that sits above the task. |
+| `task take <plan-slug\|#n> [--from <session>] [--force]` | Take a plan and its members, or one task, into this session. Live claims need `--force`; a refusal changes nothing. Dead claims need no force. A session id without a process gets ownership but no claim. |
 | `task start <ref>` | Claim work and mark it in progress. Refused while a task it is blocked by is open. |
-| `task done <ref> [--evidence <text>] [--note <text>] [--for-everyone]` | Finish work after its blocking subtasks; archive a project task. A teammate task is done here unless `--for-everyone` closes it for everyone. |
+| `task done <ref> [--evidence <text>] [--note <text>] [--for-everyone]` | Finish work after its blocking tasks; archive a project task. A teammate task is done here unless `--for-everyone` closes it for everyone. |
 | `task drop <ref> [--note <text>]` | Drop work no longer needed, with its reason. |
 | `task note <ref> [<text> \| --file <path\|->]` | Add a work-log note. |
-| `task list [--scope mine\|plan\|project\|all] [--json]` | List tasks in the selected scope. |
+| `task list [--scope mine\|plan\|project\|all] [--plan <slug>] [--json]` | List tasks in the selected scope. |
 | `task list --branch [--base <branch>]` | Project task changes for the pull request body. |
 | `task list --branches` | Open project tasks on local unmerged branches. |
 | `task show <ref> [--offset <n>] [--history]` | Read a task with its notes and its history: each change with its time, the values before and after, and the session (name and id) and process that made it, or the kit's reason (an import, for example). A deleted task shows its history, its last version included. A project task's history is its file's git log. `--history` also prints every earlier description in full. Output is capped; `--offset` reads more. |
@@ -454,14 +463,19 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task check [--json]` | Find stale tasks, missed releases, broken refs or files, duplicate titles and new legacy notes. Exit 1 on findings. |
 | `task release [--json]` | List release obligations by weight, including missed ones. |
 | `task import notes <folder> --kind <kind> [--since YYYY-MM-DD] [--dry-run]` | Import old notes, keeping their Markdown body. |
-| `task import claude-mem [--project <name>] [--dry-run]` | Move open claude-mem lists once, from the claude-mem project named for this folder. claude-mem's own lists (`my-focus`, `my-rules`, `agent-lifecycle`, `owner-goals` and its month lists) stay out, and a later run drops what an earlier import took from them; one a session added to or changed stays open, and the line names its tasks. Works without claude-mem installed, for that repair. |
-| `task delete <ref>` | Delete a mistake, not completed work. Work with notes or subtasks cannot be deleted. The number is not given to another task. |
+| `task import claude-mem [--project <name>] [--dry-run]` | Move open claude-mem lists once, each into a plan with one phase and its items as tasks, from the claude-mem project named for this folder. claude-mem's own lists (`my-focus`, `my-rules`, `agent-lifecycle`, `owner-goals` and its month lists) stay out, and a later run drops what an earlier import took from them; one a session added to or changed stays open, and the line names its tasks. Works without claude-mem installed, for that repair. |
+| `task delete <ref>` | Delete a mistake, not completed work. Work with notes or tasks under it cannot be deleted. The number is not given to another task. |
 | `task mcp` | Run the stdio server; setup registers it. |
 
-The server exposes eight tools: `task_create`, `task_update`, `task_done`, `task_note`,
-`task_list`, `task_get`, `task_search`, `task_delete`. The CLI is the fallback when they
+The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
+`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; project ids use `T-` plus six
-base32 characters. The status line adds `#12 Subject · 2/5` for current work.
+base32 characters. The status line adds a separate `2/5 · Subject` row for current work: closed tasks out of
+all tasks in the current plan, or the title alone for a loose task.
+
+**Schema v4:** old nested tasks lift automatically on every write open. A SQLite snapshot
+(`work.db.v4.bak`) keeps the pre-move data, including the write-ahead log. Notes and history
+stay. Open blocking children remain explicit blockers of their former parents.
 
 **After updating:** run `cc-smart-dev-kit setup`, then restart Claude Code. Run
 `cc-smart-dev-kit task import claude-mem` once, in the folder whose lists you want, to move
@@ -906,8 +920,8 @@ How it works: [docs/gateway.md](docs/gateway.md).
 | `cc-smart-dev-kit gateway fallback <slot> on\|off` | May the next target answer when the one before it fails or rests? Off by default for every slot but the judge (D66): you turn it on, slot by slot. Off: only the first answers, the rest stay saved. The judge's is **on by default** (2026-10-27): the worker's tested targets (and only those) judge auto mode's checks while Claude is limited or down; `fallback judge off`: Claude alone judges. |
 | `cc-smart-dev-kit gateway effort <slot> <target> <level>\|off` | Pin a backend target's reasoning effort in its slot: `none`, `low`, `medium`, `high`, `xhigh`, `max`. One test request before saving; a refusal saves nothing. `off` follows Claude Code again. Live, with no restart. No pin for a `claude-…` target. |
 | `cc-smart-dev-kit gateway breaker <slot> on\|off` | When every target of a slot is limited or down, may the router hold the request for a while and then ask Claude Code to retry (up to 240 s, `timeouts.breakerHoldMs`; 0 holds none)? Off: the last answer goes back at once. On by default for every slot but the judge, which never holds, so it has no switch. |
-| `cc-smart-dev-kit gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-smart-dev-kit owns. A gateway key someone else set stops it; nothing is overwritten. Every running session switches on save. Remote Control is off while the gateway is on (Claude Code allows it only with `api.anthropic.com` as the address); `gateway off` brings it back, and `gateway on` says so in one line. Whether a session connects by itself at its start is `remoteControlAtStartup`, which `setup` turns on only while you have not set it ([Remote Control](#remote-control)). |
-| `cc-smart-dev-kit gateway off` | Points Claude Code back at Anthropic: the owned `ANTHROPIC_BASE_URL` is **set to Anthropic's own address instead of removed**, so every running session switches by itself within about a second — nothing to restart. The key stays owned (its value is the one `off` wrote), so `restore` takes it back later. `ENABLE_TOOL_SEARCH` is removed, which routes nothing and waits for each session's next restart. A key you set or changed since is yours and stays. A project that set its own `on` keeps pointing at the router, so `off` names each one with the command that turns it off too (`gateway project off --folder <dir>`). If you set `ANTHROPIC_BASE_URL` in your shell, the settings file's explicit address wins until `restore` removes it. |
+| `cc-smart-dev-kit gateway on` | Points Claude Code at the router: sets its env keys in your `settings.json` as keys cc-smart-dev-kit owns. It also owns `ANTHROPIC_DEFAULT_FABLE_MODEL` for the kit's current Fable (`claude-fable-5-2`): Claude Code maps `fable` to an older model behind a gateway, and discovery skips subscription logins. Your own pin always wins and is reported as information; the other families stay unpinned. A routing key someone else set stops it; a personal Fable pin stays. Nothing is overwritten. Every running session switches on save. Remote Control is off while the gateway is on (Claude Code allows it only with `api.anthropic.com` as the address); `gateway off` brings it back, and `gateway on` says so in one line. Whether a session connects by itself at its start is `remoteControlAtStartup`, which `setup` turns on only while you have not set it ([Remote Control](#remote-control)). |
+| `cc-smart-dev-kit gateway off` | Points Claude Code back at Anthropic: the owned `ANTHROPIC_BASE_URL` is **set to Anthropic's own address instead of removed**, so every running session switches by itself within about a second — nothing to restart. The key stays owned (its value is the one `off` wrote), so `restore` takes it back later. `ENABLE_TOOL_SEARCH` and the owned `ANTHROPIC_DEFAULT_FABLE_MODEL` pin are removed; a new session picks up the model pin change, and tool search waits for each session's next restart. A key you set or changed since is yours and stays. A project that set its own `on` keeps pointing at the router, so `off` names each one with the command that turns it off too (`gateway project off --folder <dir>`). If you set `ANTHROPIC_BASE_URL` in your shell, the settings file's explicit address wins until `restore` removes it. |
 | `cc-smart-dev-kit gateway project status [--folder <dir>]` | This project's gateway state and where it comes from: its own personal file, its team file, or the machine's settings — plus what a file it cannot read would mean (nothing is guessed). Says that a `--settings` launch is not visible here. |
 | `cc-smart-dev-kit gateway project on\|off\|default [--team] [--profile <name>] [--folder <dir>]` | This project's own state: `on` (this machine's router, or the profile's URL with `--profile`), `off` (Anthropic's own address: your own login, never a logout), or `default` (no key: the machine's settings decide). The personal file `.claude/settings.local.json` by default, kept out of git and taken back by `restore`; `--team` writes `.claude/settings.json` and takes `off` or `default` only. A changed value reaches a running session; a removed key falls to the next file that sets it, and only with none does the session keep its value. Refused, with the fix: another gateway's URL in the file, a personal file git already tracks, a login key or `apiKeyHelper` at any level of the chain (with `on` or `off`), `--team` with `on`, a profile the config does not have, `--profile` while the running router does not know profiles (an older copy still runs: `gateway setup` replaces it; the portal's Gateway card runs this same command). |
 | `cc-smart-dev-kit gateway projects [--folder <dir>]` | Every project the portal's Projects page lists — the same list — with its own state and the file it comes from. |
@@ -1125,7 +1139,13 @@ cc-smart-dev-kit omniroute rollback   # put back what the last update replaced
 
 ### The usage limit: the alert, the status line, and `usage`
 The kit sends no usage-limit or breaker notification. The status line and `usage` keep
-the usage and reset information below.
+the usage and reset information below. Plan limits follow the login: an answer from another
+model clears a shared window only when its headers prove room. After a login or window
+change, the status line hides a saved shared limit and its fallback when the session's own
+matching window has a different reset. A matching reset keeps a real limit visible;
+per-family limits and sessions with no usage input keep their existing display.
+Two logins through one router: one login's answer that proves room ends a record the other login
+still hits; that login's next 429 writes it again.
 
 - **The status line.** `cc-smart-dev-kit setup --statusline` sets Claude Code's status line to
   `cc-smart-dev-kit statusline`. It shows the session's context use and reasoning effort
@@ -1138,6 +1158,10 @@ the usage and reset information below.
   targets, `gateway fallback judge on` turns a stand-in you switched off back on, or you wait
   until the reset). `gateway status` and `doctor` print the same words with a `Fix:` line, and the
   session is told once to stop and wait instead of retrying.
+  - **The task row**, below the model, context, usage and cache-miss row: `2/5 · Subject`
+    counts closed tasks in the current plan, not plans or phases. An empty plan shows `0/0`.
+    A loose task shows its title alone; with no current work there is no second row. The
+    command keeps the full title, with no 60-character cut; the terminal limits what fits.
   - **The context segment**, always there once Claude Code reports any use, for example
     `ctx 312k · 78% of 400k · xhigh`: the tokens in the context, the share of the window they
     fill, and the reasoning effort. Claude Code itself shows its gauge only near auto-compact and
@@ -1310,10 +1334,10 @@ The pages, each following the design the owner approved (2026-10-16):
 
 | Screen | What it shows |
 |---|---|
-| **Overview** | The traffic now: requests a minute, fallbacks, open breakers, and the plan's **5-hour window** as Claude Code's status line last recorded it (its share and when it resets; the 7-day windows are written nowhere, so none is shown). Requests and the estimated cost over time, the heavy-job queue at a glance, and the three **switches** — the gateway, your own judge, the opus and fable slots — each asked first and saved at once. The fallbacks and the plan limits the router saw are tabs of the requests table. |
+| **Overview** | The traffic now: requests a minute, fallbacks, open breakers, and the plan's **5-hour window** as Claude Code's status line last recorded it (its share and when it resets; the 7-day windows are written nowhere, so none is shown). Requests and the estimated cost over time, the heavy-job queue at a glance, and two **switches** in separate rows — Gateway, then Auto-mode judge — each asked first and saved at once. The judge says "Claude judges" or "Your judge chain judges" and is disabled while the gateway is off ("Works only with the gateway on"). Each model slot keeps its own switch on Slots. The fallbacks and the plan limits the router saw are tabs of the requests table. |
 | **Usage** | Tokens and the estimated cost over time, by slot, target, model and session, with each session's own totals under them. |
 | **Work** | Your Claude Code sessions of the project the portal runs in, from the last two days — a portal starts in your home folder, which is no project, so this list is empty unless you started it in a project, and the page says so — with the model of their last reply and their state — working, waiting for your answer, idle, or ended — and a **Copy** of `claude --resume` for one that is idle or ended. |
-| **Tasks** | Every project's tasks (`/api/tasks`), read-only: four counts (open work and how much is in progress, blocked, non-blocking, and task files owed with how many block a release), then one card per project with its work on this machine as plan › phase › task › subtask (each row with its status, a **non-blocking** mark, what it is blocked by with each blocker's state, and its progress) and the task files its main checkout keeps, by kind and weight, stale ones marked. **Each phase row is the ledger of its build**: its steps done of its blocking steps (a dropped step leaves both numbers, so a phase whose steps are all done or dropped reads n of n), then the agent, branch, worktree (by its folder's name) and base commit (short) the main session set on it. Filters: one project, open or what closed in the last seven days, **Blocked only**, **Non-blocking only**; a match keeps the tasks above it, muted. It updates by itself when any session changes a task. |
+| **Tasks** | Every project's tasks (`/api/tasks`): four counts (open work and how much is in progress, blocked, non-blocking, and task files owed with how many block a release), then two tabs. **Work on this machine** shows each project as session › plan › phase › task: each session named (its short id when it has none), running now or not, running ones first. **Every level folds**, and the page remembers your folds in this browser; done plans and phases start folded. Each row shows its status, a **non-blocking** mark, what it is blocked by, whether a running process holds it (**running**) or its process ended (**claim ended**), its notes and its progress (a plan or a phase counts all its tasks, closed long ago too). **Each phase row is the ledger of its build**: its steps done of its blocking steps, then the agent, branch, worktree (by its folder's name) and base commit (short) the main session set on it. **Click a row** to open the task in a side panel: its facts, description, notes and history. On a plan or a task, **Move to session…** moves it to another session that runs in the project with a name, after a question that names both sessions and says whether a running process still holds it (then the button says **Take it over anyway**). The filter bar: one project, words or a `#number`, status (open, in progress, blocked, closed, all), session, plan, **Running sessions only**, **Non-blocking only**; a match keeps the tasks above it, muted, and the whole view is in the address. A long list shows a page of rows and says how many more wait. **Owed by the project** lists the task files each main checkout keeps, by kind and weight, stale ones marked, with the same project and search. It updates by itself when any session changes a task. |
 | **Flow** | How the work moved in the last 24 hours or 7 days: agent launches and the time sessions waited for your answers per hour (per six hours over 7 days), parallel work, the guard asks that stopped them most, and the sessions' own totals. |
 | **Slots** | One card per slot. **Who answers**: Claude or Custom, both named (`gateway slot <slot> claude\|custom`); Custom stays unavailable, with its reason, until a chain is saved (the judge: until every backend target passed the force-push test). **The chain**: the one in use, or the one saved while Claude answers ("Saved, not in use"); drag a target or use its arrows, add one from the backends' live model list, or type one, which the server checks with the command line's own rule before it joins (`✗ "omnirout:<model>": backend "omnirout" is not in the config`). Edits stay a draft until **Save**, which asks first and runs `gateway slot <slot> <targets>` (in Claude mode it says that saving puts the chain in use). A save over a chain that changed since the page read it (another tab, the command line) is refused, and the card offers **Load it** or **Keep mine**. **Test each target** marks each one (one tiny chat to an affordable model, the force-push test for a judge). **Fallback** and **Breaker** save at once, after a confirmation (`gateway fallback`, `gateway breaker`; the judge has no breaker). **Effort**: each backend target shows its pin, or "follows Claude Code"; pick a level or "follow Claude Code" and **Set**, which asks first and runs `gateway effort <slot> <target> <level>\|off`. The test request it sends, and a level the backend refuses (nothing is saved), show in place. The pin wins over whatever effort Claude Code sends, and a higher effort is slower and uses more of the subscription's limit. A `claude-…` target has no control: it goes to Anthropic with the effort Claude Code sends. While Claude answers the slot, the saved chain's pins show, and a change waits for Custom. Each target shows its last day from the request history. |
 | **Health** | The router's counters, what holds its port across restarts (the socket unit, or the Windows task) in `doctor`'s own words with its fix, each backend and whether it answers, the targets resting, latency and errors over time, and its journal. When the router does not answer: why, the commands that show its state and its log, and **Restart the router** (`gateway setup --yes`), asked first. |

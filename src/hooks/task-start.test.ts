@@ -6,14 +6,14 @@ import { mcpRecordsFile } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { projectKey } from "../tasks/context";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { startView, statusTask } from "../tasks/work/read";
+import { planProgress, startView } from "../tasks/work/read";
 import { createTask } from "../tasks/work/store";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { addContext } from "./io";
 import { taskStartHook } from "./specs";
 
-test("a 500-task store stays capped and both reads fit the hook budget", async () => {
+test("a 500-task store stays capped and startView and planProgress fit the hook budget", async () => {
   const { repo } = makeClone();
   const env = hookEnv();
   const paths = cliPaths(env);
@@ -39,16 +39,16 @@ test("a 500-task store stays capped and both reads fit the hook budget", async (
   const started = performance.now();
   const view = startView(paths, project, who, { limit: 8 });
   const startMs = performance.now() - started;
-  const statusStarted = performance.now();
-  const status = statusTask(paths, project, who);
-  const statusMs = performance.now() - statusStarted;
+  const progressStarted = performance.now();
+  const progress = planProgress(paths, project, who);
+  const progressMs = performance.now() - progressStarted;
   console.info(
-    `500-task reads: startView ${startMs.toFixed(3)} ms; statusTask ${statusMs.toFixed(3)} ms`,
+    `500-task reads: startView ${startMs.toFixed(3)} ms; planProgress ${progressMs.toFixed(3)} ms`,
   );
   expect(view.state).toBe("ready");
-  expect(status.state).toBe("ready");
+  expect(progress.state).toBe("ready");
   expect(startMs).toBeLessThan(10);
-  expect(statusMs).toBeLessThan(10);
+  expect(progressMs).toBeLessThan(10);
   expect(
     await runHook(
       taskStartHook,

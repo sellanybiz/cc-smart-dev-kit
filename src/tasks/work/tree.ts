@@ -5,7 +5,8 @@
  * reader's mode: it never creates or migrates the store, and a store it cannot read is said,
  * never shown as an empty list.
  */
-import { allTasks, isBlocked, isOpen, layerOf, listTasks } from "./queries";
+import { claimLive } from "./identity";
+import { allTasks, isBlocked, isOpen, layerOf, listTasks, subtreeProgress } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
 import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } from "./types";
 
@@ -13,13 +14,18 @@ import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } fr
 export const TREE_TASK_LIMIT = 300;
 
 export interface TaskTreeNode {
+  session: string | null;
+  parentId: string | null;
+  claim: "live" | "dead" | "none";
+  notes: number;
+  events: number;
   id: string;
   /** `#12`: the project's own number for it. */
   ref: string;
   subject: string;
   status: WorkStatus;
   kind: WorkKind;
-  /** Plan, phase, task or subtask (D76). */
+  /** Plan, phase or task. */
   layer: WorkLayer;
   /** Blocking holds its parent while open; non-blocking holds nothing (D76). */
   type: WorkType;
@@ -86,6 +92,7 @@ function shapeTrees(
   roots: readonly WorkTree[],
   all: readonly WorkTask[],
   keep: (task: WorkTree) => boolean,
+  counts: ReadonlyMap<string, { notes: number; events: number }>,
 ): TaskTree {
   // A blocker may sit outside the shown tree (closed long ago, or in another phase).
   const byId = new Map(all.map((t) => [t.id, t]));
@@ -100,8 +107,13 @@ function shapeTrees(
       return null;
     }
     sent += 1;
-    const count = subtreeCount(task);
+    const count = task.kind === "plan" ? subtreeProgress(all, task.id) : subtreeCount(task);
     return {
+      session: task.createdBy,
+      parentId: task.parentId,
+      claim: task.claim === null ? "none" : claimLive(task.claim) ? "live" : "dead",
+      notes: counts.get(task.id)?.notes ?? 0,
+      events: counts.get(task.id)?.events ?? 0,
       id: task.id,
       ref: `#${task.number}`,
       subject: task.subject,
@@ -146,9 +158,25 @@ export function projectTaskTree(
   options: { now: number; recentMs: number },
 ): ReadState<TaskTree> {
   const since = options.now - options.recentMs;
-  return readWorkStore(paths, (db) =>
-    shapeTrees(listTasks(db, { project, openOnly: false }), allTasks(db, project), (task) =>
-      recent(task, since),
-    ),
-  );
+  return readWorkStore(paths, (db) => {
+    const counts = new Map<string, { notes: number; events: number }>();
+    for (const table of ["task_notes", "task_events"] as const) {
+      const key = table === "task_notes" ? "notes" : "events";
+      for (const row of db.sqlite
+        .query<{ task_id: string; n: number }, [string]>(
+          `SELECT x.task_id,COUNT(*) AS n FROM ${table} x JOIN tasks t ON t.id=x.task_id WHERE t.project=? GROUP BY x.task_id`,
+        )
+        .all(project)) {
+        const count = counts.get(row.task_id) ?? { notes: 0, events: 0 };
+        count[key] = row.n;
+        counts.set(row.task_id, count);
+      }
+    }
+    return shapeTrees(
+      listTasks(db, { project, openOnly: false }),
+      allTasks(db, project),
+      (task) => recent(task, since),
+      counts,
+    );
+  });
 }

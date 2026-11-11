@@ -11,11 +11,12 @@ import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { projectKey } from "../../tasks/context";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../../tasks/work/db";
-import { createTask, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
+import { addNote, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
 import type { Result, Who } from "../../tasks/work/types";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
-import { type ActionContext, portalOmnirouteContext } from "../actions";
+import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { addProjectRoot, forgetProjectsList } from "./projects";
 import { answerApi } from "./routes";
@@ -36,8 +37,18 @@ function value<T>(result: Result<T>): T {
   return result.value;
 }
 
-/** A node with none of the ledger's fields: no agent, branch, worktree or base, and no steps. */
-const NO_LEDGER = { agent: null, base: null, branch: null, steps: null, worktree: null };
+/**
+ * A node with none of the ledger's fields: no agent, branch, worktree or base, no steps, and no
+ * progress (a task has none; a plan or a phase sets its own).
+ */
+const NO_LEDGER = {
+  agent: null,
+  base: null,
+  branch: null,
+  progress: null,
+  steps: null,
+  worktree: null,
+};
 
 /** A plan's phase, made once under its plan task, the way the task tools lay it. */
 function phaseOf(db: WorkDb, input: LaidPhase, now: number) {
@@ -91,6 +102,41 @@ async function answerOf(deps: PageDataDeps, id: string) {
   const url = new URL(`http://127.0.0.1/api/projects/${id}/tasks`);
   return await answerApi(deps, url);
 }
+
+test("task detail returns description, notes and history and refuses an unknown move destination", async () => {
+  const { deps, paths } = await world(repo());
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const task = value(
+    createTask(db, { project: "p", subject: "Detail", description: "Full description" }, who, NOW),
+  );
+  value(addNote(db, task.id, "A note", who, NOW + 1));
+  db.close();
+  const answer = await answerApi(deps, new URL(`http://127.0.0.1/api/tasks/${task.id}`));
+  expect(answer?.status).toBe(200);
+  expect(answer?.body).toMatchObject({
+    task: { id: task.id, description: "Full description" },
+    notes: [{ text: "A note" }],
+    // Each change in the words `task_get` prints: a description by its length, never its text.
+    events: [
+      {
+        action: "created",
+        lines: ["kind task", 'subject "Detail"', "status pending", "description 16 characters"],
+      },
+      { action: "noted", lines: ['note "A note"'] },
+    ],
+  });
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/wabcdefghij")))?.status).toBe(
+    404,
+  );
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/%zz")))?.status).toBe(400);
+  expect(await runAction("task.take", { task: task.id, session: "unknown" }, deps.action)).toEqual({
+    ok: false,
+    lines: ["unknown destination session; nothing changed"],
+  });
+  expect(
+    await runAction("task.take", { task: task.id, session: "unknown", force: true }, deps.action),
+  ).toEqual({ ok: false, lines: ["confirm the forced take-over first"] });
+});
 
 beforeEach(() => {
   forgetProjectsList();
@@ -150,6 +196,9 @@ describe("a project's tasks answer (D75)", () => {
     expect(body.work).toEqual({
       more: 0,
       recentDays: 7,
+      // The one session that made these tasks gave no name and runs no more.
+      sessions: [{ id: "s", live: false, name: null }],
+      sessionsWhy: null,
       state: "ready",
       tasks: [
         {
@@ -162,6 +211,11 @@ describe("a project's tasks answer (D75)", () => {
                   blockedBy: [],
                   children: [],
                   closed: 0,
+                  session: who.sessionId,
+                  notes: 0,
+                  parentId: phase.id,
+                  claim: "dead",
+                  events: 2,
                   id: step.id,
                   kind: "task",
                   layer: "task",
@@ -181,11 +235,18 @@ describe("a project's tasks answer (D75)", () => {
               blocked: false,
               blockedBy: [],
               closed: 0,
+              session: who.sessionId,
+              notes: 0,
+              parentId: phase.parentId,
+              claim: "none",
+              events: 1,
               id: phase.id,
               kind: "phase",
               layer: "phase",
               phase: "api",
               plan: "launch",
+              // Its one task, by parent: open.
+              progress: { closed: 0, total: 1 },
               ref: "#2",
               status: "pending",
               // Its one step is in progress: none of one done.
@@ -200,15 +261,22 @@ describe("a project's tasks answer (D75)", () => {
           blocked: false,
           blockedBy: [],
           closed: 0,
+          session: who.sessionId,
+          parentId: null,
+          claim: "none",
+          notes: 0,
+          events: 1,
           id: phase.parentId as string,
           kind: "plan",
           layer: "plan",
           phase: null,
           plan: "launch",
+          // A plan counts its tasks by their plan column, and the one task here has none.
+          progress: { closed: 0, total: 0 },
           ref: "#1",
           status: "pending",
           subject: "launch",
-          total: 2,
+          total: 0,
           type: "blocking",
           updatedAt: "2026-02-27T00:00:00.000Z",
         },
@@ -310,6 +378,11 @@ describe("a project's tasks answer (D75)", () => {
         ],
         children: [],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "none",
+        events: 1,
         id: ship.id,
         kind: "task",
         layer: "task",
@@ -333,9 +406,14 @@ describe("a project's tasks answer (D75)", () => {
             blockedBy: [],
             children: [],
             closed: 0,
+            session: who.sessionId,
+            notes: 0,
+            parentId: build.id,
+            claim: "none",
+            events: 1,
             id: note.id,
             kind: "task",
-            layer: "subtask",
+            layer: "task",
             phase: null,
             plan: null,
             ref: "#3",
@@ -347,6 +425,11 @@ describe("a project's tasks answer (D75)", () => {
           },
         ],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "dead",
+        events: 2,
         id: build.id,
         kind: "task",
         layer: "task",
@@ -365,6 +448,11 @@ describe("a project's tasks answer (D75)", () => {
         blockedBy: [],
         children: [],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "none",
+        events: 2,
         id: brief.id,
         kind: "task",
         layer: "task",
@@ -458,6 +546,43 @@ describe("a project's tasks answer (D75)", () => {
     expect(work.tasks[0]?.steps).toBe(null);
   });
 
+  test("a plan's and a phase's progress count their tasks from the whole list, closed long ago too", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const old = NOW - 30 * DAY;
+    const api = phaseOf(db, { phase: "api", plan: "launch", project, subject: "The API" }, old);
+    const ui = phaseOf(db, { phase: "ui", plan: "launch", project, subject: "The page" }, old);
+    const made = (subject: string, more: { parentId?: string; plan: string }, at: number) =>
+      value(createTask(db, { project, subject, ...more }, who, at));
+    // Two under the phase closed long ago: the tree leaves both out.
+    const doneLongAgo = made("Old done", { parentId: api.id, plan: "launch" }, old);
+    value(updateTask(db, doneLongAgo.id, { status: "done" }, who, old));
+    const droppedLongAgo = made("Old dropped", { parentId: api.id, plan: "launch" }, old);
+    value(updateTask(db, droppedLongAgo.id, { status: "dropped" }, who, old));
+    const open = made("Still open", { parentId: api.id, plan: "launch" }, NOW - DAY);
+    value(updateTask(db, open.id, { status: "in_progress" }, who, NOW - DAY));
+    // In the plan, under no phase, closed long ago; and one task of another plan.
+    const loose = made("Old loose", { plan: "launch" }, old);
+    value(updateTask(db, loose.id, { status: "done" }, who, old));
+    made("Not this plan", { plan: "other" }, NOW);
+    db.close();
+
+    const work = ((await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer | undefined)?.work;
+    if (work?.state !== "ready") throw new Error(`no tree: ${JSON.stringify(work)}`);
+    const plan = work.tasks.find((one) => one.kind === "plan");
+    // The plan: its four tasks by the plan column, three of them closed. Never its phases.
+    expect(plan?.progress).toEqual({ closed: 3, total: 4 });
+    const phase = (id: string) => plan?.children.find((one) => one.id === id);
+    // The phase: its three tasks by parent, two closed; the tree itself holds only the open one.
+    expect(phase(api.id)?.progress).toEqual({ closed: 2, total: 3 });
+    expect(phase(api.id)?.children.map((one) => one.subject)).toEqual(["Still open"]);
+    expect(phase(ui.id)?.progress).toEqual({ closed: 0, total: 0 });
+    // A task counts none.
+    expect(phase(api.id)?.children[0]?.progress).toBe(null);
+  });
+
   test("the Tasks tab with no project at all: an empty list, not an error", async () => {
     const home = tempDir("tasks-empty-home");
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
@@ -483,6 +608,71 @@ describe("a project's tasks answer (D75)", () => {
     expect(answer?.status).toBe(200);
     const body = answer?.body as TasksAnswer;
     expect(body.projects).toEqual([]);
+  });
+
+  test("the sessions: running ones in the project first, then the history's last name for the rest", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const planner: Who = { sessionId: "s-planner", pid: 2, procStart: "2", name: "planner" };
+    const first = value(createTask(db, { project, subject: "Plan it" }, planner, NOW - DAY));
+    // Renamed later: the newer name wins.
+    value(addNote(db, first.id, "renamed", { ...planner, name: "planner-two" }, NOW));
+    value(createTask(db, { project, subject: "No name" }, { ...who, sessionId: "s-quiet" }, NOW));
+    db.close();
+    // Two running sessions: one in a folder of the project, one outside any project.
+    const sessions = join(paths.claudeConfigDir, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(join(root, "sub"), { recursive: true });
+    writeFileSync(
+      join(sessions, `${process.pid}.json`),
+      JSON.stringify({
+        cwd: join(root, "sub"),
+        name: "builder",
+        pid: process.pid,
+        sessionId: "s-live",
+      }),
+    );
+    const elsewhere = tempDir("tasks-elsewhere");
+    writeFileSync(
+      join(sessions, `${process.ppid}.json`),
+      JSON.stringify({ cwd: elsewhere, name: "other", pid: process.ppid, sessionId: "s-other" }),
+    );
+
+    const answer = await answerOf(deps, idOf(root));
+    const body = answer?.body as ProjectTasksAnswer;
+    if (body.work.state !== "ready") throw new Error(`no tree: ${JSON.stringify(body.work)}`);
+    expect(body.work.sessions).toEqual([
+      { id: "s-live", live: true, name: "builder" },
+      { id: "s-planner", live: false, name: "planner-two" },
+      { id: "s-quiet", live: false, name: null },
+    ]);
+    expect(body.work.sessionsWhy).toBe(null);
+
+    // The planner runs again in the project, with no name of its own: no name, never its old
+    // one from the history (a take-over finds a running session by its own name only).
+    writeFileSync(
+      join(sessions, `${process.ppid}.json`),
+      JSON.stringify({ cwd: root, name: " ", pid: process.ppid, sessionId: "s-planner" }),
+    );
+    const renamed = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (renamed.work.state !== "ready") throw new Error("no tree");
+    expect(renamed.work.sessions).toEqual([
+      { id: "s-live", live: true, name: "builder" },
+      { id: "s-planner", live: true, name: null },
+      { id: "s-quiet", live: false, name: null },
+    ]);
+
+    // A running session's record that cannot be read: none is called live, and the page is told why.
+    writeFileSync(join(sessions, `${process.pid}.json`), "not json");
+    const broken = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (broken.work.state !== "ready") throw new Error("no tree");
+    expect(broken.work.sessions.map((one) => [one.id, one.live])).toEqual([
+      ["s-planner", false],
+      ["s-quiet", false],
+    ]);
+    expect(broken.work.sessionsWhy).toContain(`the record of running session ${process.pid}`);
   });
 
   test("a project the list does not have is a 404 with the list's name", async () => {

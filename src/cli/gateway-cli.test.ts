@@ -1426,14 +1426,14 @@ describe("cc-smart-dev-kit gateway setup: the port", () => {
 });
 
 describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
-  const STAGE_1_KEYS = `~ ~/.claude/settings.json: set env.ANTHROPIC_BASE_URL to ${DEFAULT_ANTHROPIC_BASE_URL}, removed env.ENABLE_TOOL_SEARCH; everything else kept`;
+  const STAGE_1_KEYS = `~ ~/.claude/settings.json: set env.ANTHROPIC_BASE_URL to ${DEFAULT_ANTHROPIC_BASE_URL}, removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL; everything else kept`;
 
   /**
    * `--now` takes both stages in one run, so nothing is written first: every key of ours is
    * removed plainly (`env` goes with its last one, which the kit created).
    */
   const NOW_KEYS =
-    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_BASE_URL, env; everything else kept";
+    "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL, env.ANTHROPIC_BASE_URL, env; everything else kept";
 
   /**
    * What stage 1 says when it removed the launcher: `cc-smart-dev-kit` is off the PATH, so it
@@ -1583,7 +1583,7 @@ describe("cc-smart-dev-kit restore: the gateway in two stages", () => {
     expect(first.stderr).toBe("");
     expect(first.exitCode).toBe(0);
     expect(first.stdout).toContain(
-      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH; everything else kept\n",
+      "~ ~/.claude/settings.json: removed env.ENABLE_TOOL_SEARCH, env.ANTHROPIC_DEFAULT_FABLE_MODEL; everything else kept\n",
     );
     expect(first.stdout).toContain(`${STAGE_1_UNWRITTEN}\n`);
     expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
@@ -1806,6 +1806,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(on.stdout).toBe(
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: (none) -> "claude-fable-5-2"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: (none) -> "http://127.0.0.1:${server.port}"`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
@@ -1821,6 +1822,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
       [
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "http://127.0.0.1:${server.port}" -> "${DEFAULT_ANTHROPIC_BASE_URL}"`,
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: "true" -> (none)',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-2" -> (none)',
         "✓ Done. The gateway is off.",
         "Every running Claude session switches to Anthropic by itself, within about a second: the address is changed, not removed. A session started from now on uses your own Claude login.",
         "Next steps:",
@@ -1844,6 +1846,7 @@ describe("cc-smart-dev-kit gateway on / off", () => {
     expect(again.stdout).toBe(
       [
         '~ ~/.claude/settings.json: env.ENABLE_TOOL_SEARCH: (none) -> "true"',
+        '~ ~/.claude/settings.json: env.ANTHROPIC_DEFAULT_FABLE_MODEL: (none) -> "claude-fable-5-2"',
         `~ ~/.claude/settings.json: env.ANTHROPIC_BASE_URL: "${DEFAULT_ANTHROPIC_BASE_URL}" -> "http://127.0.0.1:${server.port}"`,
         "✓ Done. The changed file has a backup in ~/.claude/cc-smart-dev-kit/backups/.",
         "Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.",
@@ -2253,8 +2256,8 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
     });
     const lines = await checksFor(m, [root]);
     expect(lines.filter((line) => line.warn).map((line) => line.check)).toEqual([
-      "! ~/Code/warny/.claude/settings.local.json sets model to \"cc-smart-dev-kit-worker\": it is Claude Code's own model key, and cc-smart-dev-kit never writes it. It names a slot, so it bypasses the slots: Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
-      "! ~/Code/warny/.claude/settings.local.json sets env.ANTHROPIC_DEFAULT_HAIKU_MODEL to \"omniroute:glm-5.3-flash\": it is Claude Code's own model key, and cc-smart-dev-kit never writes it. It names a backend target, so it bypasses the slots: the request goes to that backend alone, with no fallback. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+      '! ~/Code/warny/.claude/settings.local.json sets model to "cc-smart-dev-kit-worker": it is Claude Code\'s own model key. Except for its owned Fable pin, cc-smart-dev-kit never writes these keys. It names a slot, so it bypasses the slots: Claude Code sends that name instead of a Claude model, and a slot with no chain answers it with an error instead of plain Claude. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
+      '! ~/Code/warny/.claude/settings.local.json sets env.ANTHROPIC_DEFAULT_HAIKU_MODEL to "omniroute:glm-5.3-flash": it is Claude Code\'s own model key. Except for its owned Fable pin, cc-smart-dev-kit never writes these keys. It names a backend target, so it bypasses the slots: the request goes to that backend alone, with no fallback. Remove it by hand to let the slots decide. Fix: remove it by hand from ~/Code/warny/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)',
     ]);
   });
 
@@ -2281,8 +2284,8 @@ describe("cc-smart-dev-kit doctor: every known project's gateway state (GP4a)", 
     });
     const lines = await checksFor(m, [root]);
     expect(lines.filter((line) => line.warn).map((line) => line.check)).toEqual([
-      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL: it is Claude Code's own key, and cc-smart-dev-kit never writes it. An agent launched without a model runs on whatever it names, so a review could leave Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
-      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE: it is Claude Code's own key, and cc-smart-dev-kit never writes it. It overrides the model of every Agent call, so a review cannot stay on Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit never writes Claude Code's model keys)",
+      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL: it is Claude Code's own key, and cc-smart-dev-kit never writes it. An agent launched without a model runs on whatever it names, so a review could leave Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)",
+      "! ~/Code/agents/.claude/settings.local.json sets env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE: it is Claude Code's own key, and cc-smart-dev-kit never writes it. It overrides the model of every Agent call, so a review cannot stay on Claude. Remove it by hand. Fix: remove it by hand from ~/Code/agents/.claude/settings.local.json (cc-smart-dev-kit leaves your model choice alone)",
     ]);
   });
 });

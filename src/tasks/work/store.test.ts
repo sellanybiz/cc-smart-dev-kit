@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { subprocessGuard } from "../../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { NEWER_STORE, openWorkDb, workDbFile } from "./db";
@@ -12,19 +13,11 @@ import {
   getTask,
   listTasks,
   notesOf,
-  openSubtasks,
+  openChildren,
   searchTasks,
 } from "./queries";
 import { hasOwnTask, startView } from "./read";
-import {
-  ack,
-  addNote,
-  createTask,
-  deleteTask,
-  ensurePlanTask,
-  systemClose,
-  updateTask,
-} from "./store";
+import { ack, addNote, deleteTask, ensurePlanTask, systemClose, updateTask } from "./store";
 import type { Result } from "./types";
 
 const who = { sessionId: "session", pid: 12, procStart: "34" };
@@ -48,17 +41,17 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   expect(root.id).toMatch(/^w[a-z2-7]{10}$/);
   expect(updateTask(db, root.id, { status: "done" }, who, 12)).toEqual({
     ok: false,
-    why: "open subtasks: #2 Child",
+    why: "open tasks: #2 Child",
   });
   expect(updateTask(db, root.id, { parentId: child.id }, who, 12).ok).toBe(false);
-  // A subtask blocked by its own parent could never start, and neither could ever be done.
+  // A task blocked by its own parent could never start, and neither could ever be done.
   expect(updateTask(db, child.id, { waitsFor: { add: [root.id] } }, who, 12)).toEqual({
     ok: false,
-    why: '#2 "Child" cannot be blocked by #1 "Root": it sits under it, and a parent waits for its subtasks',
+    why: '#2 "Child" cannot be blocked by #1 "Root": it sits under it, and a parent waits for its tasks',
   });
   expect(updateTask(db, root.id, { waitsFor: { add: [child.id] } }, who, 12).ok).toBe(true);
   expect(listTasks(db, { project: "p", openOnly: true })[0]?.children[0]?.id).toBe(child.id);
-  expect(openSubtasks(db, root.id).map((t) => t.number)).toEqual([2]);
+  expect(openChildren(db, root.id).map((t) => t.number)).toEqual([2]);
   value(updateTask(db, child.id, { status: "in_progress" }, who, 13));
   expect(getTask(db, "p", "#2")?.claim).toEqual({ pid: 12, procStart: "34", sessionId: "session" });
   value(addNote(db, child.id, "literal %_", who, 14));
@@ -129,7 +122,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='4' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='5' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");
@@ -232,7 +225,7 @@ test("claude-mem folding, deletion, skips, dry run, import markers and schema re
   expect(getTask(db, "p", "1")?.updatedAt).toBe(10);
   expect(getTask(db, "p", "1")?.description).toBe("keep: yes");
   expect(getTask(db, "p", "2")?.description).toBe("");
-  expect(getTask(db, "p", "2")?.status).toBe("in_progress");
+  expect(getTask(db, "p", "3")?.status).toBe("in_progress");
   const bad = join(tempDir(), "bad.db");
   const other = new Database(bad);
   other.run("CREATE TABLE work_state_entries(id INTEGER)");

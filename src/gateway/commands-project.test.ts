@@ -866,3 +866,28 @@ describe("what Claude Code really reads (GF1: P6 and P7, re-proved on 2.1.310)",
     expect(help).not.toContain("waits for a restart");
   });
 });
+
+describe("Fable pin command diagnostics", () => {
+  for (const wasOn of [false, true]) {
+    test(`off preserves a personal pin as information, previously on: ${wasOn}`, async () => {
+      const m = machine();
+      if (wasOn) await m.run(["on"]);
+      const value = existsSync(m.paths.settingsFile)
+        ? JSON.parse(readFileSync(m.paths.settingsFile, "utf8"))
+        : {};
+      value.env = { ...value.env, ANTHROPIC_DEFAULT_FABLE_MODEL: "claude-fable-5-1" };
+      writeFileSync(m.paths.settingsFile, JSON.stringify(value));
+      m.reset();
+      expect(await m.run(["off"])).toBe(0);
+      expect(m.output()).toContain("and it routes nothing");
+      expect(m.output()).not.toContain("not all off");
+      expect(m.output()).not.toContain("remove it by hand to turn the gateway off");
+    });
+  }
+  test("plain on never reports absent retired model keys as skipped", async () => {
+    const m = machine();
+    expect(await m.run(["on"])).toBe(0);
+    expect(m.output()).not.toContain("not owned");
+    expect(m.output()).not.toContain("left alone");
+  });
+});

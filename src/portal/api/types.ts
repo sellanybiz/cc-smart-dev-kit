@@ -374,8 +374,8 @@ export interface ProjectGatewayAnswer {
 /** A work task's status in the kit's store (`src/tasks/work/types.ts` › `WorkStatus`). */
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
-/** Where a task sits (D76): Plan › Phase › Task › Subtask (`src/tasks/work/types.ts` › `WorkLayer`). */
-export type WorkTaskLayer = "phase" | "plan" | "subtask" | "task";
+/** Where a task sits (D76): Plan › Phase › Task (`src/tasks/work/types.ts` › `WorkLayer`). */
+export type WorkTaskLayer = "phase" | "plan" | "task";
 
 /** Blocking holds its parent while open; non-blocking holds nothing (D76, `WorkType`). */
 export type WorkTaskType = "blocking" | "non-blocking";
@@ -393,8 +393,22 @@ export interface WorkTaskSteps {
   total: number;
 }
 
+/**
+ * A plan's or a phase's tasks closed (done or dropped), of all of them, from the project's whole
+ * list (`layerProgress`): closed long ago too, which the tree itself leaves out.
+ */
+export interface WorkTaskProgress {
+  closed: number;
+  total: number;
+}
+
 /** One work task in the Tasks tab's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
 export interface WorkTaskNode {
+  session: null | string;
+  parentId: null | string;
+  claim: "live" | "dead" | "none";
+  notes: number;
+  events: number;
   /** The subagent that works on it (its id or name), as the main session set it; null when none. */
   agent: null | string;
   /** The commit its work started from; null when none was set. */
@@ -411,10 +425,12 @@ export interface WorkTaskNode {
   id: string;
 
   kind: "phase" | "plan" | "task";
-  /** Its layer, worked out from its parents: a task under a task is a subtask. */
+  /** Its kind is its layer; legacy nested tasks still read as tasks. */
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
+  /** A plan's or a phase's tasks closed of all; null for a task, and when the list cannot be read. */
+  progress: null | WorkTaskProgress;
   /** `#12`: the project's own number for it. */
   ref: string;
   status: WorkTaskStatus;
@@ -447,6 +463,18 @@ export interface ProjectTaskRow {
   when: "any" | "next-release" | "now" | null;
 }
 
+/**
+ * A session the Tasks tab names: one that made a task in the tree, or one that runs in the
+ * project now (a session work can move to).
+ */
+export interface TaskSession {
+  id: string;
+  /** The running session's own name, else the last name its task history holds; null: none. */
+  name: null | string;
+  /** True when it runs now with its folder in this project. */
+  live: boolean;
+}
+
 /** The kit's work store for one project: its tasks as a tree, or why there are none to show. */
 export type ProjectWorkTasks =
   | {
@@ -454,6 +482,10 @@ export type ProjectWorkTasks =
       more: number;
       /** A closed task stays in the tree this many days after its last change. */
       recentDays: number;
+      /** The running sessions first, then by name. */
+      sessions: TaskSession[];
+      /** Why the running sessions could not be read (then none is live); null when they could. */
+      sessionsWhy: null | string;
       state: "ready";
       tasks: WorkTaskNode[];
     }
@@ -719,3 +751,16 @@ export type LiveEventName = keyof LiveEvents;
 
 /** What publishes to the stream: an event's name and exactly its data. */
 export type LivePublish = <K extends LiveEventName>(event: K, data: LiveEvents[K]) => void;
+
+/** One history entry of a task, and what it changed in words (`historyChanges`, as `task_get`). */
+export type TaskDetailEvent = import("../../tasks/work/types").WorkEvent & {
+  /** A phrase per field it changed, in the fixed order: `status pending → done`. */
+  lines: string[];
+};
+
+/** GET /api/tasks/<id>: the complete stored task and its notes and history. */
+export interface TaskDetailAnswer {
+  task: import("../../tasks/work/types").WorkTask;
+  notes: import("../../tasks/work/types").WorkNote[];
+  events: TaskDetailEvent[];
+}

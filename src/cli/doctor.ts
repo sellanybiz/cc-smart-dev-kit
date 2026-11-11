@@ -958,6 +958,20 @@ export function taskToolsCheck(paths: CliPaths): Check {
       };
 }
 
+/** The user-level plan folder; a project's own settings can choose another. */
+export function plansDirectoryCheck(paths: CliPaths): Check {
+  const configured = readSettings(paths.settingsFile)?.plansDirectory;
+  const folder = typeof configured === "string" && configured.trim() !== "" ? configured : null;
+  return {
+    ok: true,
+    info: true,
+    text:
+      folder === null
+        ? `plan folder: ${tildify(join(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)`
+        : `plan folder: ${folder} (user setting; project settings may override it)`,
+  };
+}
+
 /**
  * D68's opt-in key, still in the settings after setup withdrew its own copy: the person's, so
  * information only. The deny entries hide Claude Code's task tools whatever it says.
@@ -975,8 +989,9 @@ export function oldTodoToolsKeyCheck(paths: CliPaths): Check | null {
 export function taskStoreChecks(paths: CliPaths): Check[] {
   const file = workDbFile(paths);
   if (!existsSync(file)) return [{ ok: true, info: true, text: "task work store: not made yet" }];
-  // No snapshots of the store exist (not in this release), so the one step that always works:
-  // set the file aside, and the next write makes a new, empty store.
+  // The one step that always works: set the file aside, and the next write makes a new, empty
+  // store. The v4 move's backup (`work.db.v4.bak`, beside it) holds the store as it was before
+  // subtasks were lifted, not as it is now, so the fix does not offer it as a restore.
   const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)`;
   try {
     const db = openWorkDb(file, { mode: "hook" });
@@ -1237,6 +1252,7 @@ function doctorGroups(
           taskToolsCheck(paths),
           ...taskStoreChecks(paths),
           oldTodoToolsKeyCheck(paths),
+          plansDirectoryCheck(paths),
           checkNameClash(settings),
           checkReviewAgent(paths),
           await checkOldPlugin(settings, paths, readCommand),

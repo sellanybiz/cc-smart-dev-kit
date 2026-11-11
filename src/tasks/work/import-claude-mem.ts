@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { type WorkDb, writeWork } from "./db";
-import { allTasks, eventsOf, isOpen, openSubtasks } from "./queries";
+import { LEGACY_LIFT_REASON, type WorkDb, writeWork } from "./db";
+import { allTasks, eventsOf, isOpen, openChildren } from "./queries";
 import { applySystemClose, type CreateTask, insertTask } from "./store";
 import { type Result, SUBJECT_LIMIT, type Who, type WorkTask } from "./types";
 
@@ -107,7 +107,9 @@ const IMPORTED = "imported from claude-mem's work state";
 const NOT_WORK = "claude-mem's own list, not work: an earlier import took it by mistake";
 /** True while only the import ever wrote the task: no session made, changed or noted it. */
 function importOnly(db: WorkDb, task: WorkTask): boolean {
-  return eventsOf(db, task).every((event) => event.reason === IMPORTED);
+  return eventsOf(db, task).every(
+    (event) => event.reason === IMPORTED || event.reason === LEGACY_LIFT_REASON,
+  );
 }
 /**
  * The import's tasks from claude-mem's own lists: an open top-level task named for one, whose
@@ -123,7 +125,15 @@ function takenByMistake(db: WorkDb, project: string): MistakenList[] {
         eventsOf(db, task)[0]?.reason === IMPORTED,
     )
     .map((task) => {
-      const open = [task, ...openSubtasks(db, task.id)];
+      const nested = openChildren(db, task.id);
+      const lifted = allTasks(db, project).filter(
+        (t) =>
+          isOpen(t) &&
+          eventsOf(db, t).some(
+            (e) => e.reason === LEGACY_LIFT_REASON && e.changes.parent?.[0] === `#${task.number}`,
+          ),
+      );
+      const open = [task, ...new Map([...nested, ...lifted].map((t) => [t.id, t])).values()];
       return {
         list: task.subject,
         number: task.number,
@@ -216,7 +226,18 @@ export function importClaudeMem(options: ImportOptions): Result<ImportResult> {
     const dropped = mistaken.filter((list) => list.touched.length === 0);
     for (const list of dropped) {
       const task = allTasks(db, options.project).find((t) => t.number === list.number);
-      if (task) applySystemClose(db, task.id, "dropped", NOT_WORK, importer, options.now);
+      if (task) {
+        const lifted = allTasks(db, options.project).filter(
+          (t) =>
+            isOpen(t) &&
+            eventsOf(db, t).some(
+              (e) => e.reason === LEGACY_LIFT_REASON && e.changes.parent?.[0] === `#${task.number}`,
+            ),
+        );
+        for (const child of lifted)
+          applySystemClose(db, child.id, "dropped", NOT_WORK, importer, options.now);
+        applySystemClose(db, task.id, "dropped", NOT_WORK, importer, options.now);
+      }
     }
     const imported: ImportedTask[] = [];
     const skipped: string[] = [];
@@ -241,7 +262,24 @@ export function importClaudeMem(options: ImportOptions): Result<ImportResult> {
         list: name,
         parent: null,
       };
-      const parent = insert({ project: options.project, ...task }, name, list.dates);
+      const slug = `import-${crypto.randomUUID()}`;
+      const plan = insert(
+        { project: options.project, ...task, kind: "plan", plan: slug },
+        name,
+        list.dates,
+      );
+      const parent = insert(
+        {
+          project: options.project,
+          subject: "Imported items",
+          kind: "phase",
+          phase: "A",
+          plan: slug,
+          parentId: plan.id,
+        },
+        name,
+        list.dates,
+      );
       imported.push(task);
       for (const [itemName, { fields, dates }] of list.items) {
         if (CLOSED.has(String(fields.status))) continue;
@@ -251,7 +289,7 @@ export function importClaudeMem(options: ImportOptions): Result<ImportResult> {
           list: name,
           parent: task.subject,
         };
-        insert({ project: options.project, ...item, parentId: parent.id }, name, dates);
+        insert({ project: options.project, ...item, plan: slug, parentId: parent.id }, name, dates);
         imported.push(item);
       }
       db.sqlite.query("INSERT INTO meta VALUES (?,?)").run(marker, String(options.now));

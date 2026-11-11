@@ -1729,8 +1729,9 @@ describe("the actions", () => {
         env: Record<string, string>;
       };
       expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:20199");
-      // No model is pinned: Claude Code sends each model's own id, the router finds its slot.
+      // Only Fable is pinned: the other families keep Claude Code's model ids.
       expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBeUndefined();
+      expect(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBe("claude-fable-5-2");
       // And off points the address back at Anthropic instead of removing the key (GP5): a
       // running session follows a changed value within about a second, where a removed key
       // reach it only if another file sets the key. The tool-search key is removed as before.
@@ -1741,6 +1742,7 @@ describe("the actions", () => {
       };
       expect(after.env?.ANTHROPIC_BASE_URL).toBe(DEFAULT_ANTHROPIC_BASE_URL);
       expect(after.env?.ENABLE_TOOL_SEARCH).toBeUndefined();
+      expect(after.env?.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2151,7 +2153,69 @@ describe("the actions", () => {
     }
   });
 
-  test("the opus and fable switch puts the opus chain back after Off, under the slot key", async () => {
+  test("Overview has only the gateway and auto-mode judge switches, disabled offline", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"], { chat: "<block>yes</block>" });
+    const world = await open({ backendPort: backend.port });
+    try {
+      const page = await world.call("/");
+      expect(page.body).toContain("Auto-mode judge");
+      expect(page.body).toContain("Claude judges");
+      expect(page.body).toContain("Works only with the gateway on");
+      expect(page.body).toMatch(/aria-labelledby="sw-judge"[^>]*disabled/);
+      expect(page.body).not.toContain("sw-models");
+      const facts = JSON.parse((await world.call("/api/overview")).body);
+      expect(facts.switches).not.toHaveProperty("models");
+      const csrf = await world.csrfOf();
+      expect(
+        JSON.parse((await world.post("switch", { name: "gateway", on: true }, csrf)).body).ok,
+      ).toBe(true);
+      const online = await world.call("/");
+      expect(online.body).not.toMatch(/aria-labelledby="sw-judge"[^>]*disabled/);
+      expect(online.body).toContain("Claude judges auto-mode safety checks");
+      expect(
+        JSON.parse(
+          (
+            await world.post(
+              "slot.save",
+              {
+                slot: "judge",
+                targets: ["omniroute:glm-5.3-flash"],
+              },
+              csrf,
+            )
+          ).body,
+        ).ok,
+      ).toBe(true);
+      expect((await world.call("/")).body).toContain("Your judge chain judges");
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the retired combined model switch refuses without changing the config", async () => {
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port });
+    try {
+      const before = readFileSync(world.paths.gatewayConfigFile, "utf8");
+      const response = await world.post(
+        "switch",
+        { name: "models", on: true },
+        await world.csrfOf(),
+      );
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toEqual({
+        lines: ['"models" is not a switch.'],
+        ok: false,
+      });
+      expect(readFileSync(world.paths.gatewayConfigFile, "utf8")).toBe(before);
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the opus slot mode puts its chain back after Claude, under the slot key", async () => {
     // The bug, found by reading the code: `rememberChain` stored the chain under the family
     // ("opus") and the switch read it under the slot key ("cc-smart-dev-kit-opus"), so
     // Off then On turned nothing on — and answered ok: true about it.
@@ -2173,14 +2237,14 @@ describe("the actions", () => {
         "claude-opus-5-5",
         "omniroute:glm-5.3-flash",
       ]);
-      const off = await world.post("switch", { name: "models", on: false }, csrf);
+      const off = await world.post("slot.mode", { mode: "claude", slot: "opus" }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
       const gone = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
         slots: Record<string, string[]>;
       };
       expect(gone.slots["cc-smart-dev-kit-opus"]).toBeUndefined();
       // On puts exactly that chain back.
-      const again = await world.post("switch", { name: "models", on: true }, csrf);
+      const again = await world.post("slot.mode", { mode: "custom", slot: "opus" }, csrf);
       const answer = JSON.parse(again.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(true);
       const back = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
@@ -2190,26 +2254,6 @@ describe("the actions", () => {
         "claude-opus-5-5",
         "omniroute:glm-5.3-flash",
       ]);
-      // The other family has nothing saved, and that is said, not invented.
-      expect(answer.lines.join("\n")).toContain("No saved chain for fable");
-    } finally {
-      world.portal.stop();
-      backend.stop();
-    }
-  });
-
-  test("the opus and fable switch is off, and says so, when nothing was turned on", async () => {
-    const backend = fakeBackend(["glm-5.3-flash"]);
-    const world = await open({ backendPort: backend.port });
-    try {
-      await world.call("/");
-      const csrf = await world.csrfOf();
-      const answer = await world.post("switch", { name: "models", on: true }, csrf);
-      expect(answer.status).toBe(400);
-      const body = JSON.parse(answer.body) as { lines: string[]; ok: boolean };
-      expect(body.ok).toBe(false);
-      expect(body.lines.join("\n")).toContain("Nothing was turned on, so the switch is still off.");
-      expect(body.lines.join("\n")).toContain("No saved chain for fable or opus");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2264,7 +2308,7 @@ describe("the actions", () => {
     }
   });
 
-  test("the opus and fable switch, Off then On, puts back the fallback switch with the chain", async () => {
+  test("the opus slot mode, Claude then Custom, puts back the fallback switch with the chain", async () => {
     const backend = fakeBackend(["glm-5.3-flash", "deepseek-v4.1-flash"]);
     const world = await open({ backendPort: backend.port });
     try {
@@ -2285,10 +2329,10 @@ describe("the actions", () => {
         };
       expect(read().fallback).toEqual({ "cc-smart-dev-kit-opus": true });
       expect(
-        JSON.parse((await world.post("switch", { name: "models", on: false }, csrf)).body).ok,
+        JSON.parse((await world.post("slot.mode", { mode: "claude", slot: "opus" }, csrf)).body).ok,
       ).toBe(true);
       expect(read().fallback).toBeUndefined();
-      const back = await world.post("switch", { name: "models", on: true }, csrf);
+      const back = await world.post("slot.mode", { mode: "custom", slot: "opus" }, csrf);
       const answer = JSON.parse(back.body) as { lines: string[]; ok: boolean };
       expect(answer.ok).toBe(true);
       expect(read().slots["cc-smart-dev-kit-opus"]).toEqual([
@@ -2412,7 +2456,11 @@ describe("the actions", () => {
       expect(slots.body).not.toContain("omniroute:stale-model");
       // An action on another slot leaves it alone, and never writes the old memory.
       const before = readFileSync(oldMemory, "utf8");
-      const switched = await world.post("switch", { name: "models", on: false }, csrf);
+      const switched = await world.post(
+        "slot.save",
+        { slot: "opus", targets: ["omniroute:glm-5.3-flash"] },
+        csrf,
+      );
       expect(JSON.parse(switched.body).ok).toBe(true);
       expect(
         loadConfigFile(world.paths.gatewayConfigFile).slots["cc-smart-dev-kit-worker"],
@@ -2473,6 +2521,10 @@ describe("the actions", () => {
       });
       await world.call("/");
       const csrf = await world.csrfOf();
+      const gatewayBefore = JSON.parse((await world.call("/api/overview")).body).switches;
+      const settingsBefore = existsSync(world.paths.settingsFile)
+        ? readFileSync(world.paths.settingsFile, "utf8")
+        : null;
       const off = await world.post("switch", { name: "judge", on: false }, csrf);
       expect(JSON.parse(off.body).ok).toBe(true);
       const gone = JSON.parse(readFileSync(world.paths.gatewayConfigFile, "utf8")) as {
@@ -2486,6 +2538,14 @@ describe("the actions", () => {
         slots: Record<string, string[]>;
       };
       expect(back.slots["cc-smart-dev-kit-judge"]).toEqual(["omniroute:glm-5.3-flash"]);
+      const gatewayAfter = JSON.parse((await world.call("/api/overview")).body).switches;
+      expect(gatewayAfter.gateway).toBe(gatewayBefore.gateway);
+      expect(gatewayAfter.settingsBaseUrl).toBe(gatewayBefore.settingsBaseUrl);
+      expect(
+        existsSync(world.paths.settingsFile)
+          ? readFileSync(world.paths.settingsFile, "utf8")
+          : null,
+      ).toBe(settingsBefore);
       // `gateway slot judge` ran its own force-push test on the way back.
       expect(answer.lines.join("\n")).toContain("blocked");
     } finally {
@@ -3971,7 +4031,7 @@ describe("the JSON API", () => {
       expect(body.configured).toBe(true);
       expect(body.error).toBe(null);
       expect((body.slots as unknown[]).length).toBe(5);
-      expect(body.switches).toMatchObject({ gateway: false, judge: false, models: false });
+      expect(body.switches).toMatchObject({ gateway: false, judge: false });
       // Slots in use of the slots there are, and who waits: one heavy slot per machine.
       expect(body.jobs).toEqual({ slots: 1, used: 0, waiting: 0 });
       expect((body.router as { up: boolean }).up).toBe(true);
@@ -3991,13 +4051,13 @@ describe("the JSON API", () => {
         chains: Record<string, string[]>;
         effortLevels: string[];
         models: { id: string }[];
-        switches: { models: boolean };
+        switches: { gateway: boolean; judge: boolean };
       };
       expect(body.chains.scout).toEqual(["omniroute:glm-5.3-flash", "claude-sonnet-5-5"]);
       // D64: the levels `gateway effort` takes, from its own list: the page never keeps a copy.
       expect(body.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
       expect(body.models.map((one) => one.id)).toContain("omniroute:glm-5.3-flash");
-      expect(body.switches.models).toBe(false);
+      expect(body.switches).not.toHaveProperty("models");
     } finally {
       world.portal.stop();
       backend.stop();

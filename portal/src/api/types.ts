@@ -30,6 +30,8 @@ import type {
   SlotsAnswer,
   SlotTarget,
   SwitchFacts,
+  TaskDetailAnswer,
+  TaskSession,
   HistoryPoint as WireHistoryPoint,
   WorkTaskBlocker,
   WorkTaskLayer,
@@ -60,6 +62,8 @@ export type {
   SlotRow,
   SlotTarget,
   SwitchFacts,
+  TaskDetailAnswer,
+  TaskSession,
   WorkTaskBlocker,
   WorkTaskLayer,
   WorkTaskNode,
@@ -224,7 +228,7 @@ export interface OverviewData {
   limits: LimitRow[];
   /** Null with no reading, or one from a window that is over. */
   fiveHour: null | PlanWindow;
-  /** The gateway's three switches, as the Slots page reads them too. */
+  /** The gateway and auto-mode judge switches, as the Slots page reads them too. */
   switches: SwitchFacts;
 
   /** The heavy-job queue in one line: this machine's slots in use of its total, and jobs waiting. */

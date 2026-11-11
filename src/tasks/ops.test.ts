@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -6,6 +7,17 @@ import { createTaskOps } from "./ops";
 import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
 import { openPhasesOf } from "./work/phases";
+
+function legacyParent(stateDir: string, number: number, parent: number) {
+  const raw = new Database(workDbFile({ stateDir }));
+  try {
+    raw
+      .query("UPDATE tasks SET parent_id=(SELECT id FROM tasks WHERE number=?) WHERE number=?")
+      .run(parent, number);
+  } finally {
+    raw.close();
+  }
+}
 
 test("a close the store refuses keeps no note, so a retry saves each note once", () => {
   const cwd = tempDir();
@@ -34,10 +46,11 @@ test("a close the store refuses keeps no note, so a retry saves each note once",
   };
   try {
     expect(ops.call("create", { subject: "Parent" }).ok).toBe(true);
-    expect(ops.call("create", { subject: "Child", parent: "#1" }).ok).toBe(true);
+    expect(ops.call("create", { subject: "Child" }).ok).toBe(true);
+    legacyParent(stateDir, 2, 1);
     expect(ops.call("done", { task: "#1", note: "Tried", evidence: "Checked" })).toEqual({
       ok: false,
-      why: "open subtasks: #2 Child",
+      why: "open tasks: #2 Child",
     });
     expect(written()).toEqual({ notes: [], history: ["created", "created"] });
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -66,20 +79,20 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
     expect(
       ops.call("create", {
         subject: "Child",
-        parent: "#1",
         description: "x".repeat(21000),
         status: "in_progress",
       }),
-    ).toEqual({ ok: true, text: '#2 "Child" under #1' });
-    expect(ops.call("done", { task: "#1" })).toEqual({ ok: false, why: "open subtasks: #2 Child" });
+    ).toEqual({ ok: true, text: '#2 "Child"' });
+    legacyParent(stateDir, 2, 1);
+    expect(ops.call("done", { task: "#1" })).toEqual({ ok: false, why: "open tasks: #2 Child" });
     expect(ops.call("update", { task: "#1", parent: "#2" })).toEqual({
       ok: false,
       why: "parent would make a cycle",
     });
-    // A subtask blocked by its own parent could never start (D76); the other way is fine.
+    // A task blocked by its own parent could never start (D76); the other way is fine.
     expect(ops.call("update", { task: "#2", blocked_by_add: ["#1"] })).toEqual({
       ok: false,
-      why: '#2 "Child" cannot be blocked by #1 "Parent": it sits under it, and a parent waits for its subtasks',
+      why: '#2 "Child" cannot be blocked by #1 "Parent": it sits under it, and a parent waits for its tasks',
     });
     expect(ops.call("update", { task: "#1", blocked_by_add: ["#2"] }).ok).toBe(true);
     session = "after-clear";
@@ -195,7 +208,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] upgrade · 1/2\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      text: "#1 [pending · plan] upgrade · 1/1\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
     });
     expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -208,7 +221,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     try {
       expect(resumed.call("list", { scope: "plan" })).toMatchObject({
         ok: true,
-        text: "#1 [done · plan] upgrade · 2/2\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
+        text: "#1 [done · plan] upgrade · 1/1\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
       });
     } finally {
       resumed.close();
@@ -282,7 +295,7 @@ test("another session's plan is never stamped on a session's own task; the plan 
     // Reading the ledger may fall back to the project's newest plan.
     expect(opsY.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Auth · 0/2\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+      text: "#1 [pending · plan] Auth · 0/1\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
     });
   } finally {
     opsX.close();
@@ -301,7 +314,8 @@ test("a caller with no session id owns no task the terminal made", () => {
   });
   try {
     expect(terminal.call("create", { subject: "Solo", plan: "solo" }).ok).toBe(true);
-    expect(terminal.call("create", { subject: "Step", parent: "#1" }).ok).toBe(true);
+    expect(terminal.call("create", { subject: "Step" }).ok).toBe(true);
+    legacyParent(stateDir, 2, 1);
     expect(nameless.call("create", { subject: "Own", status: "in_progress" })).toEqual({
       ok: true,
       text: '#3 "Own"',
@@ -315,7 +329,7 @@ test("a caller with no session id owns no task the terminal made", () => {
     // The terminal owns every task made without a session id, that one too.
     expect(terminal.call("list", {})).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Solo · 0/1\n  #2 [pending] Step\n#3 [in progress] Own",
+      text: "#1 [pending · plan] Solo\n  #2 [pending] Step\n#3 [in progress] Own",
     });
   } finally {
     terminal.close();

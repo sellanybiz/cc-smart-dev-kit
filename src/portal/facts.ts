@@ -724,8 +724,6 @@ export async function backendRows(
 // ── Switches ────────────────────────────────────────────────────────────────────
 
 export interface SwitchFacts {
-  /** The `opus` or `fable` slot has a chain. */
-  models: boolean;
   /** `ANTHROPIC_BASE_URL` is in Claude Code's settings. */
   gateway: boolean;
   /** The judge slot is set, and every target passed the force-push test. */
@@ -736,11 +734,6 @@ export interface SwitchFacts {
   settingsBaseUrl: null | string;
   /** Env keys someone else set that would replace the login or pin every subagent. */
   warnings: string[];
-}
-
-/** Which model slots are on: the ones with a chain. */
-export function modelSlotsOn(config: GatewayConfig): string[] {
-  return Object.keys(MODEL_SLOTS).filter((slot) => Object.hasOwn(config.slots, slot));
 }
 
 export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFacts {
@@ -764,7 +757,6 @@ export function switchFacts(ctx: PortalContext, config: GatewayConfig): SwitchFa
     judge:
       judgeTargets.length > 0 && judgeTargets.every((target) => judgeTargetTested(config, target)),
     judgeUntested: judgeTargets.some((target) => !judgeTargetTested(config, target)),
-    models: modelSlotsOn(config).length > 0,
     settingsBaseUrl: report.baseUrl,
     warnings,
   };

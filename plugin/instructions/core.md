@@ -29,8 +29,8 @@ instructions, the project's text wins.**
   know, what you assumed and what you did not check.
 - **Push back with reasons.** Never rubber-stamp a flawed plan. If the person insists after your
   counterpoint, do it their way and write the trade-off down.
-- **One plan, start to finish.** No side work: a bug, gap or duplicate outside your plan becomes
-  a follow-up project task (the main session links an issue where issues are on), no fix.
+- **One plan at a time, start to finish.** No side work: a bug, gap or duplicate outside your plan
+  becomes a follow-up project task (the main session links an issue where issues are on), no fix.
   Inside the plan is the code it changes and anything that would make its result wrong. A new
   ask outside the plan: say so in one line, then do it here or file it, as the person prefers.
 - **Check only what you changed while you build;** the full check runs once, at the end, never

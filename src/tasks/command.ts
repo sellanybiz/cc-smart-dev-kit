@@ -33,7 +33,8 @@ start <ref>
 done <ref> [--evidence <text>] [--note <text>] [--for-everyone]
 drop <ref> [--note <text>]
 note <ref> [<text> | --file <path|->]
-list [--scope mine|plan|project|all] [--json]
+list [--scope mine|plan|project|all] [--plan <slug>] [--json]
+take <plan-slug|#n> [--from <session>] [--force]
 list --branch [--base <branch>]
 list --branches
 show <ref> [--offset <n>] [--history]
@@ -46,7 +47,7 @@ delete <ref>
 mcp
 
 Work tasks stay on this machine. Project task files travel with your branch: commit them.
-Layers: phase › task › subtask. A blocking task (the default) holds its parent; a non-blocking
+Layers: plan › phase › task. A blocking task (the default) holds its parent; a non-blocking
 one holds nothing. A task blocked by an open task cannot start or be done.`;
 const bindingFlags = ["--agent", "--branch", "--worktree", "--base"];
 const definitions: Record<
@@ -73,6 +74,7 @@ const definitions: Record<
     repeat: ["--flag", "--ref", "--blocked-by"],
     min: 1,
   },
+  take: { values: ["--from"], flags: ["--force"], min: 1, max: 1 },
   set: {
     values: [...bindingFlags, "--type", "--block", "--unblock", "--parent"],
     flags: ["--top"],
@@ -85,7 +87,7 @@ const definitions: Record<
   drop: { values: ["--note"], min: 1, max: 1 },
   note: { values: ["--file"], min: 1 },
   list: {
-    values: ["--scope", "--base"],
+    values: ["--scope", "--base", "--plan"],
     flags: ["--json", "--branch", "--branches"],
     min: 0,
     max: 0,
@@ -135,6 +137,10 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         .map((flag) => [flag.slice(2), options.get(flag)]),
     );
     switch (command) {
+      case "take":
+        operation = "take";
+        input = { task, from: get("from"), force: has("force") };
+        break;
       case "add":
         if (get("file") && get("description")) return bad("Use --description or --file, not both");
         operation = "create";
@@ -208,7 +214,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         if (get("base") && !has("branch")) return bad("--base needs --branch");
         if (!has("branch") && !has("branches")) {
           operation = "list";
-          input = { scope: get("scope") };
+          input = { scope: get("scope"), plan: get("plan") };
           break;
         }
         if (get("scope") || has("json")) return bad("Branch lists do not take --scope or --json");
