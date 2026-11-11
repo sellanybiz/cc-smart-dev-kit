@@ -20,9 +20,9 @@ committed, pushed or merged.
 
 ## 1. Read the design and ledger
 
-Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"` and
-`open_only: false`, then `task_get` for each relevant phase and its notes. If the tree is
-missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
+Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"`,
+`open_only: false` and `plan`: its slug (which calls name it: `/cc-smart-dev-kit:plan-task`
+§ 6), then `task_get` for each relevant phase and its notes. If the tree is missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
 The phase description is its complete brief; never make a second brief or progress file.
 Task fields and the CLI fallback belong to `/cc-smart-dev-kit:memory-routing`.
 
@@ -150,6 +150,8 @@ Commit, push and open the PR only as `cc-smart-dev-kit workflow show` and the pe
 permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include
 phase verdicts, final review and real checks. Close the plan with evidence and archive its
 design as the plan skill describes. Remove only merged, finished worktrees and branches.
+A next plan is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on
+the closed one.
 
 ## Rulings, not stalls
 
@@ -169,6 +171,17 @@ with `/cc-smart-dev-kit:user-unavailable`; never bypass a permission refusal.
 
 ## After compaction
 
-Run `task_list` with `scope: "plan"`, `open_only: false`, and read `git log`. Use task
-fields, `Report:` and `Ruling:` notes to recover the exact branches and review state.
-Read the plan for design, not progress. Never rerun a completed phase from memory.
+Run `task_list` with `scope: "plan"`, `open_only: false` (without `plan` it lists every plan
+this session owns), and read `git log`. Use task fields, `Report:` and `Ruling:` notes to
+recover the exact branches and review state. Read the plan for design, not progress. Never
+rerun a completed phase from memory.
+
+## Take over another session's plan
+
+When a session crashed, or the person hands its plan to you, take it with `task_take`:
+`task` is the plan's slug (its phases and tasks move with it) or one task's `#n`; `from`
+names the old session when you know it. It moves everything or nothing. A dead claim moves
+without more. A live claim refuses and names its session, which may still be working: pass
+`force` only when the person says that session is gone or handed over. Then recover as after
+compaction. The old session's builders cannot be resumed with `SendMessage`: check each open
+phase's recorded branch and worktree, and give it a fresh builder from there.
