@@ -15,7 +15,6 @@ import {
   pullRequestMerges,
   pullRequestOpenings,
   sameRepository,
-  tellSessionsNote,
 } from "./after-merge";
 import { GUARD_BUDGET_ENV } from "./budget";
 import { afterMergeHook } from "./specs";
@@ -313,41 +312,41 @@ describe("mergeOutcome", () => {
     mergedAt: "2026-01-01T11:58:00Z",
   };
   const base = {
-    announced: false,
     base: "dev",
     failed: false,
     now,
     pr,
     sameRepo: true,
+    seen: false,
     target: { ref: null },
     worktree: { branch: "fix/a", path: "/code/app-wt-fix-a" },
   };
 
-  test("merged from this worktree into the base: clear it, and announce", () => {
+  test("merged from this worktree into the base: clear it, and a merge into the base", () => {
     expect(mergeOutcome(base)).toEqual({
-      announce: pr,
       clear: { path: "/code/app-wt-fix-a", branch: "fix/a" },
+      intoBase: pr,
     });
   });
 
-  test("another branch's pull request, by number: announce only", () => {
+  test("another branch's pull request, by number: a merge into the base only", () => {
     const other = { ...pr, head: "fix/b" };
     expect(mergeOutcome({ ...base, pr: other, target: { ref: "9" } })).toEqual({
-      announce: other,
       clear: null,
+      intoBase: other,
     });
   });
 
-  test("into another branch, announced before, or long ago: no announcement", () => {
-    expect(mergeOutcome({ ...base, pr: { ...pr, base: "main" } }).announce).toBeNull();
-    expect(mergeOutcome({ ...base, announced: true }).announce).toBeNull();
+  test("into another branch, seen before, or long ago: no merge into the base", () => {
+    expect(mergeOutcome({ ...base, pr: { ...pr, base: "main" } }).intoBase).toBeNull();
+    expect(mergeOutcome({ ...base, seen: true }).intoBase).toBeNull();
     expect(
-      mergeOutcome({ ...base, pr: { ...pr, mergedAt: "2026-01-01T10:00:00Z" } }).announce,
+      mergeOutcome({ ...base, pr: { ...pr, mergedAt: "2026-01-01T10:00:00Z" } }).intoBase,
     ).toBeNull();
   });
 
   test("not merged, another repo, or a failed command gh cannot vouch for: nothing", () => {
-    const none = { announce: null, clear: null };
+    const none = { clear: null, intoBase: null };
     expect(mergeOutcome({ ...base, pr: { ...pr, state: "OPEN" } })).toEqual(none);
     expect(mergeOutcome({ ...base, sameRepo: false })).toEqual(none);
     expect(mergeOutcome({ ...base, pr: null, failed: true })).toEqual(none);
@@ -417,11 +416,9 @@ describe("the hook", () => {
     mergedAt: new Date().toISOString(),
   };
 
-  test("after merging its own branch from a worktree: both notes, then announced once", async () => {
+  test("after merging its own branch from a worktree: the clear note only, never a message for other sessions", async () => {
     const { worktree } = project();
     const env = fakeGh(merged);
-    const pr = parsePullRequestView(JSON.stringify(merged));
-    if (pr === null) throw new Error("bad view");
     const first = await runHook(
       afterMergeHook,
       ran(join(worktree, "src"), "gh pr merge --squash"),
@@ -431,7 +428,7 @@ describe("the hook", () => {
       stdout: JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PostToolUse",
-          additionalContext: `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+          additionalContext: clearWorktreeNote(worktree, "fix/a"),
         },
       }),
     });
@@ -440,7 +437,8 @@ describe("the hook", () => {
     );
     const again = await runHook(afterMergeHook, ran(worktree, "gh pr merge --squash"), env);
     expect(again.stdout).toContain("Clear the worktree now");
-    expect(again.stdout).not.toContain("Tell the person's other sessions");
+    expect(first.stdout).not.toContain("SendMessage");
+    expect(again.stdout).not.toContain("SendMessage");
   });
 
   test("a merge into the base starts the background clean once: detached, with the repo and the session's folder (D48)", async () => {
@@ -459,7 +457,7 @@ describe("the hook", () => {
     expect(started[0]?.options.cwd).toBe(env.HOME);
     expect(existsSync(worktree)).toBe(true);
 
-    // The same pull request again is announced no more, and starts no second clean.
+    // The same pull request again starts no second clean.
     await runHook(afterMergeHook, input, env, start);
     expect(started).toHaveLength(1);
   });
@@ -489,46 +487,7 @@ describe("the hook", () => {
     expect(started).toHaveLength(0);
   });
 
-  test("the hook's message carries the caution when the project names other bases", async () => {
-    // A branch there goes into `dev`, not into this merge's base (`main`).
-    const { worktree } = project({ "hotfix/": "dev", "release/": "dev" });
-    const env = fakeGh(merged);
-    const result = await runHook(
-      afterMergeHook,
-      ran(join(worktree, "src"), "gh pr merge --squash"),
-      env,
-    );
-    const context = (
-      JSON.parse(result.stdout ?? "{}") as {
-        hookSpecificOutput?: { additionalContext?: string };
-      }
-    ).hookSpecificOutput?.additionalContext;
-    expect(context).toContain(
-      "One exception: a branch whose pull request goes into another base (hotfix/, release/) must NOT merge main in, because that would ship unreleased work. A branch there stays as it is.",
-    );
-  });
-
-  test("with no bases, or bases that all point at the same base: no caution", () => {
-    const pr = parsePullRequestView(JSON.stringify(merged));
-    if (pr === null) throw new Error("bad view");
-    expect(tellSessionsNote(pr, "main")).not.toContain("another base");
-    expect(tellSessionsNote(pr, "main", { "hotfix/": "main" })).not.toContain("another base");
-    expect(tellSessionsNote(pr, "main", { "hotfix/": "dev", "release/": "main" })).toContain(
-      "another base (hotfix/) must NOT merge main in",
-    );
-  });
-
-  test("the notes say exactly this", () => {
-    const pr = parsePullRequestView(JSON.stringify(merged));
-    if (pr === null) throw new Error("bad view");
-    expect(tellSessionsNote(pr, "main")).toBe(
-      [
-        "That merged #7 into main.",
-        "Tell the person's other sessions in this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
-        "\"main now has #7 (Fix 'login'). At your next stop, once your current work is committed: git fetch origin main, then git merge origin/main, and fix any conflict. Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. No reply needed.\"",
-        "Merged several pull requests this turn? Send each session one message, naming every merged number.",
-      ].join("\n"),
-    );
+  test("the note says exactly this", () => {
     expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
       [
         "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
@@ -620,15 +579,13 @@ describe("the hook", () => {
   test("a merge written `gh pr -R <repo> merge`: the same note, and --repo in the lookup", async () => {
     const { worktree } = project();
     const env = fakeGh(merged);
-    const pr = parsePullRequestView(JSON.stringify(merged));
-    if (pr === null) throw new Error("bad view");
     const result = await runHook(
       afterMergeHook,
       ran(join(worktree, "src"), "gh pr -R example-org/app merge --squash"),
       env,
     );
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toBe(
-      `${clearWorktreeNote(worktree, "fix/a")}\n\n${tellSessionsNote(pr, "main")}`,
+      clearWorktreeNote(worktree, "fix/a"),
     );
     expect(readFileSync(env.GH_LOG ?? "", "utf8")).toBe(
       "pr view --repo example-org/app --json number,title,baseRefName,headRefName,state,url,mergedAt\n",

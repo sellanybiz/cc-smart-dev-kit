@@ -3,6 +3,26 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 3.1.0
+
+- **Merges are no longer announced to your other sessions.** After a merge into
+  `worktrees.base`, the `after-merge` hook no longer gives Claude a message to send every other
+  session in the repo, and the worktree instructions and skill no longer ask for one. The hook
+  still gives the steps that clear the merged worktree, and still starts the background clean
+  of finished worktrees once per merge.
+
+## 3.0.1
+
+- **Fix: Claude Fable behind the `opus` slot is the `opus` tier.** When the `opus` slot (or
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`) puts Claude Fable first, an `opus` launch keeps the `opus`
+  tier's rules: it runs at `medium`, `high` or `xhigh` with no question and needs no
+  `Fable reason:` line. A fork from such a session is the `opus` tier too, and the session gets
+  no Fable line and no lead hint, because you chose that mapping. An id mapped behind both
+  premium tiers counts as `opus`. A launch that names a Fable id outright, and a `/model` switch
+  to Fable, are still Fable. The guard's messages and the tier note name Fable as the model that
+  answers. A `sonnet` or `haiku` slot that answers on Claude Opus or Fable still counts as that
+  premium tier, through a chain of overrides too.
+
 ## 3.0.0
 
 - **Breaking: Warp support is removed.** Setup no longer accepts `--warp` or

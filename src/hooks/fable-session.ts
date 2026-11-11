@@ -64,8 +64,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { CLAUDE_FAMILIES, type ClaudeFamily, claudeFamily } from "../gateway/targets";
-import { type LaunchModel, resolveLaunchModel } from "../models/launch-policy";
+import { CLAUDE_FAMILIES } from "../gateway/targets";
+import {
+  answeringFamily,
+  type LaunchModel,
+  resolveSessionModel,
+  type SessionModel,
+} from "../models/launch-policy";
 import { resolveLeadHint } from "../workflow/resolve";
 import { sessionGatewayOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
@@ -106,19 +111,6 @@ export function sessionModelName(real: LaunchModel): string {
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
 }
 
-/**
- * The Claude family of the model that answers: read from its id, or the family name itself when
- * no slot or override stands in (`opus`). Null for a backend and a name no rule reads.
- */
-function answeringFamily(real: LaunchModel): ClaudeFamily | null {
-  if (!real.claude) return null;
-  return (
-    claudeFamily(real.model) ??
-    CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ??
-    null
-  );
-}
-
 /** The marks the hook keeps, per session, beside the session's own name files. */
 export type SessionMarkKind = "fable" | "lead";
 
@@ -134,10 +126,13 @@ export function fableSessionMark(env: Env, sessionId: string): string {
 
 /**
  * The mark that says `model` was judged in this session: nothing new can be said about it. Named
- * by a short hash, since a model text may hold `:`, `/` or `[`.
+ * by a short hash, since a model text may hold `:`, `/` or `[`. An id that answered (`served`)
+ * has its own mark: the same id asked for by a switch is judged again, since a switch to Fable
+ * outright gets the Fable line where the opus slot's own Fable does not.
  */
-export function judgedMark(env: Env, sessionId: string, model: string): string {
-  const hash = createHash("sha256").update(model).digest("hex").slice(0, 16);
+export function judgedMark(env: Env, sessionId: string, model: string, served = false): string {
+  const key = served ? `served:${model}` : model;
+  const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
   return join(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 
@@ -161,22 +156,33 @@ export type LeadVerdict = "fable" | "lead" | "none";
 
 /**
  * The verdict for a session whose model resolves to `real`: the `fable` tier → the Fable line;
- * Claude Opus answering → nothing; anything else — another Claude family, a backend, the `opus`
- * tier a backend answers, a name no rule reads as a family — → the lead hint.
+ * the `opus` tier answered by Claude Opus, or by Claude Fable the person mapped behind it (the
+ * owner, 2026-11-11) → nothing; anything else — another Claude family, a backend, the `opus` tier
+ * a backend answers, a name no rule reads as a family — → the lead hint.
  */
 export function leadVerdict(real: LaunchModel): LeadVerdict {
   if (real.tier === "fable") return "fable";
-  if (real.tier === "opus" && answeringFamily(real) === "opus") return "none";
+  const answered = answeringFamily(real);
+  if (real.tier === "opus" && (answered === "opus" || answered === "fable")) return "none";
   return "lead";
 }
 
 /** The current model per event; null when the event names none. */
-function currentModel(event: string, input: HookInput, env: Env): null | string {
+function currentModel(event: string, input: HookInput, env: Env): null | SessionModel {
   // A start names it, a switch names the model it moved TO (`to_model`), and a stop is judged by
   // the answer that just finished — the only reading that cannot fire for a model the session
-  // has already left.
-  if (event === "SessionStart") return stringField(input.model);
-  if (event === "PostModelSwitch") return stringField(input.to_model);
+  // has already left. A start and a switch name what Claude Code asks for; a stop reads what
+  // answered.
+  const asked = (model: null | string) => (model === null ? null : { model, served: false });
+  if (event === "SessionStart") return asked(stringField(input.model));
+  if (event === "PostModelSwitch") {
+    // The alias the person picked (`requested_model`: `opus`, `fable`, or null) names the tier
+    // they asked for; `to_model` is only the id an override resolved it to. A family alias wins,
+    // so `/model opus` with `ANTHROPIC_DEFAULT_OPUS_MODEL` set to a Fable id is the opus tier.
+    const alias = stringField(input.requested_model);
+    const family = alias === null ? undefined : CLAUDE_FAMILIES.find((one) => one === alias);
+    return asked(family ?? stringField(input.to_model));
+  }
   return sessionModelOf(input, env);
 }
 
@@ -191,13 +197,13 @@ export function fableSession(input: HookInput, env: Env, paths: CliPaths): HookR
   const leadMark = sessionMark(env, sessionId, "lead");
   // Both lines said: nothing left to say, and nothing to read. This hook runs at every stop.
   if (existsSync(fableMark) && existsSync(leadMark)) return SILENT;
-  const model = currentModel(event, input, env);
-  if (model === null) return SILENT;
-  const judged = judgedMark(env, sessionId, model);
+  const session = currentModel(event, input, env);
+  if (session === null) return SILENT;
+  const judged = judgedMark(env, sessionId, session.model, session.served);
   if (existsSync(judged)) return SILENT;
   // The gateway THIS session runs on (its own `ANTHROPIC_BASE_URL`, a profile's chains), never
   // the machine's file: a project set to `off` is on the login, a profile has its own chains.
-  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
+  const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
   let said: HookResult = SILENT;
   if (verdict === "fable" && firstTime(fableMark)) {

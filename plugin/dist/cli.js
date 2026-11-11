@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "3.0.0",
+  version: "3.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -32680,22 +32680,26 @@ function familyFirstTarget(gateway, family) {
     return null;
   return gateway.config.slots[slot]?.[0] ?? null;
 }
-function tierOfMappedId(model, gateway, env) {
-  for (const premium of ["fable", "opus"]) {
+function tierOfMappedId(model, gateway, env, order) {
+  const id = withoutContextSuffix(model.trim());
+  for (const premium of order) {
     const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === model)
+    if (override !== null && withoutContextSuffix(override.trim()) === id)
       return premium;
-    if (familyFirstTarget(gateway, premium) === model)
+    const first = familyFirstTarget(gateway, premium);
+    if (first !== null && withoutContextSuffix(first.trim()) === id)
       return premium;
   }
   return null;
 }
-function tierRank(tier) {
-  return tier === "fable" ? 2 : tier === "opus" ? 1 : 0;
+function answeringFamily(real) {
+  if (!real.claude)
+    return null;
+  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
 }
 function asNamed(answered, family, tier) {
-  const real = premiumTier(answered.family);
-  return tierRank(real) > tierRank(tier) ? { ...answered, tier: real } : { ...answered, family, tier };
+  const real = premiumTier(answeringFamily(answered) ?? answered.family);
+  return tier === null && real !== null ? { ...answered, family: real, tier: real } : { ...answered, family, tier };
 }
 function throughFamilySlot(claude, family, gateway) {
   const tier = tierOfReading(family);
@@ -32733,7 +32737,7 @@ function resolveLaunchModel(name, gateway, env) {
   const text = withoutContextSuffix(name.trim());
   const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
   if (family === undefined) {
-    const mapped = tierOfMappedId(text, gateway, env);
+    const mapped = tierOfMappedId(text, gateway, env, ["fable", "opus"]);
     const resolved = resolveName(text, gateway);
     if (mapped === null || resolved.tier !== null && resolved.family !== null)
       return resolved;
@@ -32745,6 +32749,15 @@ function resolveLaunchModel(name, gateway, env) {
     return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
   }
   return throughFamilySlot(text, family, gateway);
+}
+function resolveSessionModel(session, gateway, env) {
+  if (!session.served)
+    return resolveLaunchModel(session.model, gateway, env);
+  const text = withoutContextSuffix(session.model.trim());
+  const family = claudeFamily(text);
+  const own = family !== null || text.startsWith("claude-") ? { claude: true, family, model: text, tier: tierOfReading(family) } : resolveTarget(text);
+  const mapped = tierOfMappedId(text, gateway, env, ["opus", "fable"]);
+  return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 function switchOn(value) {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
@@ -43584,23 +43597,19 @@ function sameRepository(prUrl, origin) {
   const pr = pullRequestRepository(prUrl);
   return pr !== null && pr === repositoryKey(origin);
 }
-var ANNOUNCE_WINDOW_MS = 15 * 60000;
+var RECENT_MERGE_MS = 15 * 60000;
 function mergeOutcome(params) {
-  const { announced, base, failed, now, pr, sameRepo, target, worktree } = params;
-  const none = { announce: null, clear: null };
+  const { base, failed, now, pr, sameRepo, seen, target, worktree } = params;
+  const none = { clear: null, intoBase: null };
   if (pr === null ? failed : pr.state !== "MERGED" || !sameRepo)
     return none;
   const branch = worktree?.branch ?? null;
   const mergedHere = worktree !== null && branch !== null && (target.ref === null || target.ref === branch || pr?.head === branch);
   const clear = mergedHere && branch !== null ? { path: worktree.path, branch } : null;
   const mergedAt = pr === null || pr.mergedAt === null ? Number.NaN : Date.parse(pr.mergedAt);
-  const recent = now - mergedAt <= ANNOUNCE_WINDOW_MS;
-  const announce = pr !== null && pr.base === base && !announced && recent ? pr : null;
-  return { announce, clear };
-}
-function quotableTitle(title) {
-  const line = title.replace(/["`]/g, "'").replace(/\s+/g, " ").trim();
-  return line.length > 100 ? `${line.slice(0, 99)}\u2026` : line;
+  const recent = now - mergedAt <= RECENT_MERGE_MS;
+  const intoBase = pr !== null && pr.base === base && !seen && recent ? pr : null;
+  return { clear, intoBase };
 }
 function insideClaudeWorktrees(path) {
   return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
@@ -43610,23 +43619,6 @@ function clearWorktreeNote(path, branch) {
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" \u2014 it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`
-  ].join(`
-`);
-}
-function otherBaseCaution(bases, base) {
-  const elsewhere = Object.entries(bases).filter(([, target]) => target !== base).map(([prefix]) => prefix);
-  if (elsewhere.length === 0)
-    return null;
-  return `One exception: a branch whose pull request goes into another base (${elsewhere.join(", ")}) must NOT merge ${base} in, ` + `because that would ship unreleased work. A branch there stays as it is.`;
-}
-function tellSessionsNote(pr, base, bases = {}) {
-  const caution = otherBaseCaution(bases, base);
-  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` + `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` + `${caution === null ? "" : `${caution} `}No reply needed.`;
-  return [
-    `That merged #${pr.number} into ${base}.`,
-    "Tell the person's other sessions in this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
-    `"${message}"`,
-    "Merged several pull requests this turn? Send each session one message, naming every merged number."
   ].join(`
 `);
 }
@@ -43648,7 +43640,7 @@ function viewPullRequest2(ref, repo, folder, env, timeoutMs) {
     return null;
   }
 }
-function announcedFile(repo, number, env) {
+function seenFile(repo, number, env) {
   const key = createHash7("sha256").update(repo).digest("hex").slice(0, 16);
   return join73(env.TMPDIR || tmpdir8(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
@@ -43687,31 +43679,25 @@ async function afterMerge(context) {
   if (originLeft <= 0)
     return SILENT;
   const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
-  const record = pr === null ? null : announcedFile(repo, pr.number, env);
+  const record = pr === null ? null : seenFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync60(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
+    seen: record !== null && existsSync60(record),
     target,
     worktree
   });
-  const notes = [];
-  if (outcome.clear !== null) {
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
-  }
-  if (outcome.announce !== null && record !== null) {
-    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
+  if (outcome.intoBase !== null && record !== null) {
     mkdirSync25(join73(record, ".."), { recursive: true });
     writeFileSync7(record, "");
-  }
-  if (outcome.announce !== null)
     startAutoClean(context, repo, "merge");
-  return notes.length === 0 ? SILENT : addContext(event, notes.join(`
-
-`));
+  }
+  if (outcome.clear === null)
+    return SILENT;
+  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
 }
 
 // src/hooks/agent-guard.ts
@@ -44880,8 +44866,10 @@ function uiDenial(real, effort, declared) {
 `);
 }
 function namedModel(real) {
-  if (real.claude)
+  const answered = answeringFamily(real);
+  if (real.claude && (answered === null || answered === real.tier)) {
     return real.tier === "fable" ? "Claude Fable" : "Claude Opus";
+  }
   return `\`${real.tier ?? real.model}\` (answered by ${real.model})`;
 }
 function atEffort(effort) {
@@ -44962,7 +44950,7 @@ function judgeRan(launch, ran, ctx, env) {
     if (ran.effort === null)
       return judged(deny(null, print ? PRINT_NO_EFFORT : NO_EFFORT));
   }
-  const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
+  const real = ran.modelFrom === "fork" || ran.modelFrom === "force-session" ? sessionLaunchModel(ran.model, ctx.sessionServed === true, ctx, env) : resolveLaunchModel(ran.model ?? "", ctx, env);
   const auto = ran.effortFrom === EFFORT_LEVEL_ENV && ran.effort === EFFORT_AUTO;
   if (ran.effort !== null && !auto && !effortAllowed(ran.effort)) {
     return ran.effortFrom !== EFFORT_LEVEL_ENV ? judged(deny(real, effortDenial(ran.effort, ran.effortFrom === "frontmatter"))) : { namesEffortLevel: true, verdict: deny(real, effortLevelDenial(ran.effort)) };
@@ -45052,10 +45040,10 @@ function judgeModel(launch, real, ctx, env) {
 function nobodyWatches(env) {
   return !isAttended(env);
 }
-function sessionLaunchModel(sessionModel, gateway, env) {
+function sessionLaunchModel(sessionModel, served, gateway, env) {
   if (sessionModel === null)
     return { claude: true, family: "opus", model: "the session's model (unknown)", tier: "opus" };
-  return resolveLaunchModel(sessionModel, gateway, env);
+  return resolveSessionModel({ model: sessionModel, served }, gateway, env);
 }
 function gatewayConfigOf(paths) {
   try {
@@ -45067,7 +45055,10 @@ function gatewayConfigOf(paths) {
 function sessionModelOf(input, env) {
   const transcript = stringField(input.transcript_path);
   const answered = transcript === null ? null : lastClaudeModel(transcript);
-  return answered ?? stringField(env.ANTHROPIC_MODEL);
+  if (answered !== null)
+    return { model: answered, served: true };
+  const started = stringField(env.ANTHROPIC_MODEL);
+  return started === null ? null : { model: started, served: false };
 }
 function sessionGatewayOf(paths, env) {
   const raw = env.ANTHROPIC_BASE_URL;
@@ -45086,6 +45077,7 @@ function sessionGatewayOf(paths, env) {
 }
 function readGuardContext(paths, input, env) {
   const { config, gatewayOn } = sessionGatewayOf(paths, env);
+  const session = sessionModelOf(input, env);
   const cwd = stringField(input.cwd);
   const definitions = new Map;
   const definition = (name) => {
@@ -45105,7 +45097,8 @@ function readGuardContext(paths, input, env) {
     config,
     gatewayOn,
     definition,
-    sessionModel: sessionModelOf(input, env)
+    sessionModel: session?.model ?? null,
+    sessionServed: session?.served ?? false
   };
 }
 function guardFacts(input, context) {
@@ -45565,16 +45558,12 @@ function sessionModelName(real) {
   const tier = real.tier ?? real.family;
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
 }
-function answeringFamily(real) {
-  if (!real.claude)
-    return null;
-  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
-}
 function sessionMark(env, sessionId, kind) {
   return join77(namesDir(env), `${sessionId}.${kind}`);
 }
-function judgedMark(env, sessionId, model) {
-  const hash = createHash8("sha256").update(model).digest("hex").slice(0, 16);
+function judgedMark(env, sessionId, model, served = false) {
+  const key = served ? `served:${model}` : model;
+  const hash = createHash8("sha256").update(key).digest("hex").slice(0, 16);
   return join77(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
@@ -45589,15 +45578,20 @@ function firstTime(mark) {
 function leadVerdict(real) {
   if (real.tier === "fable")
     return "fable";
-  if (real.tier === "opus" && answeringFamily(real) === "opus")
+  const answered = answeringFamily(real);
+  if (real.tier === "opus" && (answered === "opus" || answered === "fable"))
     return "none";
   return "lead";
 }
 function currentModel(event, input, env) {
+  const asked = (model) => model === null ? null : { model, served: false };
   if (event === "SessionStart")
-    return stringField(input.model);
-  if (event === "PostModelSwitch")
-    return stringField(input.to_model);
+    return asked(stringField(input.model));
+  if (event === "PostModelSwitch") {
+    const alias = stringField(input.requested_model);
+    const family = alias === null ? undefined : CLAUDE_FAMILIES.find((one) => one === alias);
+    return asked(family ?? stringField(input.to_model));
+  }
   return sessionModelOf(input, env);
 }
 function fableSession(input, env, paths) {
@@ -45611,13 +45605,13 @@ function fableSession(input, env, paths) {
   const leadMark = sessionMark(env, sessionId, "lead");
   if (existsSync65(fableMark) && existsSync65(leadMark))
     return SILENT;
-  const model = currentModel(event, input, env);
-  if (model === null)
+  const session = currentModel(event, input, env);
+  if (session === null)
     return SILENT;
-  const judged = judgedMark(env, sessionId, model);
+  const judged = judgedMark(env, sessionId, session.model, session.served);
   if (existsSync65(judged))
     return SILENT;
-  const real = resolveLaunchModel(model, sessionGatewayOf(paths, env), env);
+  const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
   let said = SILENT;
   if (verdict === "fable" && firstTime(fableMark)) {
@@ -47821,7 +47815,6 @@ function checkoutRootAt(dir) {
 init_launch_policy();
 
 // src/models/tier-view.ts
-init_targets();
 init_launch_policy();
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
 var TIER_NOTE_HEADER = "Subagent tiers now (the Agent tool's `model`):";
@@ -47831,7 +47824,7 @@ function capitalised(family) {
 function modelName(real) {
   if (!real.claude)
     return `${real.model} (a backend)`;
-  const family = claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+  const family = answeringFamily(real);
   return family === null ? real.model : `Claude ${capitalised(family)}`;
 }
 var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
