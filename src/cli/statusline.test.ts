@@ -34,15 +34,15 @@ const EMPTY: LimitState = { fallbacks: {}, limits: {}, version: 1 };
 
 describe("the session's login windows", () => {
   it("keeps records with no claim or without either reset", () => {
-    const limit: LimitRecord = { claim: null, resetsAt: AT_13, seenAt: NOW };
+    const limit: LimitRecord = { claim: null, resetsAt: AT_13 + 3600, seenAt: NOW };
     const state: LimitState = { ...EMPTY, limits: { "claude-sonnet-5": limit } };
     expect(statuslineText(input(8, 9), state, NOW, "UTC")).toBe(
-      "Opus 5.5 · ⛔ claude-sonnet-5 at its plan limit until 13:00 · 5h 8% · 7d 9%",
+      "Opus 5.5 · ⛔ claude-sonnet-5 at its plan limit until 14:00 · 5h 8% · 7d 9%",
     );
     limit.claim = "five_hour";
     expect(
       statuslineText({ rate_limits: { five_hour: { used_percentage: 8 } } }, state, NOW, "UTC"),
-    ).toBe("⛔ claude-sonnet-5 at its plan limit until 13:00 · 5h 8%");
+    ).toBe("⛔ claude-sonnet-5 at its plan limit until 14:00 · 5h 8%");
     limit.resetsAt = null;
     expect(statuslineText(input(8, 9), state, NOW, "UTC")).toBe(
       "Opus 5.5 · ⛔ claude-sonnet-5 at its plan limit · 5h 8% · 7d 9%",
