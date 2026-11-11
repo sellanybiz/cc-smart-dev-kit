@@ -23096,8 +23096,11 @@ function fieldText(event, key, label) {
     return `${label} ${shown(key, before)}`;
   return `${label} ${shown(key, before)} \u2192 ${shown(key, after)}`;
 }
+function historyChanges(event) {
+  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+}
 function historyLine(event) {
-  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+  const fields = historyChanges(event);
   const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
   return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
 }

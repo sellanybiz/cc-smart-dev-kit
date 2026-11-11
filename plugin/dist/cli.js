@@ -28292,6 +28292,10 @@ function taskById(db, id) {
 function isOpen(task) {
   return task.status === "pending" || task.status === "in_progress";
 }
+function layerProgress(all, layer) {
+  const tasks = all.filter((t) => t.kind === "task" && (layer.kind === "plan" ? layer.plan !== null && t.plan === layer.plan : layer.kind === "phase" && t.parentId === layer.id));
+  return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -28665,8 +28669,11 @@ function fieldText(event, key, label) {
     return `${label} ${shown2(key, before)}`;
   return `${label} ${shown2(key, before)} \u2192 ${shown2(key, after)}`;
 }
+function historyChanges(event) {
+  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+}
 function historyLine(event) {
-  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+  const fields = historyChanges(event);
   const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
   return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
 }
@@ -45516,6 +45523,7 @@ init_words();
 
 // src/tasks/work/read.ts
 init_db();
+init_history2();
 init_identity();
 import { existsSync as existsSync63 } from "fs";
 function readWorkStore(paths, body) {
@@ -45575,8 +45583,8 @@ function planProgress(paths, project, who) {
     if (!task)
       return null;
     const plan = task.plan === null ? null : all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null;
-    const tasks = task.plan === null ? [] : all.filter((t) => t.kind === "task" && t.plan === task.plan);
-    return { task, plan, closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+    const progress = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
+    return { task, plan, ...progress };
   });
 }
 

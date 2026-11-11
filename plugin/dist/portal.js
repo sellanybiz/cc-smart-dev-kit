@@ -30157,6 +30157,10 @@ function taskById(db, id) {
 function isOpen(task) {
   return task.status === "pending" || task.status === "in_progress";
 }
+function layerProgress(all, layer) {
+  const tasks = all.filter((t) => t.kind === "task" && (layer.kind === "plan" ? layer.plan !== null && t.plan === layer.plan : layer.kind === "phase" && t.parentId === layer.id));
+  return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -30260,6 +30264,10 @@ function eventsOf(db, task) {
     pid: row.pid,
     reason: row.reason
   }));
+}
+function sessionNames(db, project) {
+  const rows = db.sqlite.query("SELECT session_id, session_name, MAX(id) AS last FROM task_events WHERE project=? AND session_id IS NOT NULL AND session_name IS NOT NULL AND session_name <> '' GROUP BY session_id").all(project);
+  return new Map(rows.map((row) => [row.session_id, row.session_name]));
 }
 function deletedHistory(db, project, ref) {
   const number = /^#?\d+$/.test(ref) ? Number(ref.replace(/^#/, "")) : null;
@@ -33616,6 +33624,98 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 // src/tasks/work/read.ts
 import { existsSync as existsSync53 } from "fs";
 
+// src/tasks/work/history.ts
+var FIELDS = [
+  ["kind", "kind"],
+  ["plan", "plan"],
+  ["phase", "phase"],
+  ["subject", "subject"],
+  ["status", "status"],
+  ["type", "type"],
+  ["parent", "parent"],
+  ["agent", "agent"],
+  ["branch", "branch"],
+  ["worktree", "worktree"],
+  ["base", "base"],
+  ["claim", "claimed by"],
+  ["waitsFor", "blocked by"],
+  ["description", "description"],
+  ["note", "note"]
+];
+function actor(event) {
+  const parts = [];
+  if (event.sessionId !== null) {
+    const name = event.sessionName ? `"${event.sessionName}" ` : "";
+    parts.push(`session ${name}${event.sessionId}`);
+  }
+  if (event.pid !== null)
+    parts.push(`process ${event.pid}`);
+  if (event.reason !== null)
+    parts.push(`the kit (${event.reason})`);
+  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
+}
+function shown2(key, value) {
+  if (value === null || value === undefined || value === "")
+    return "none";
+  if (Array.isArray(value))
+    return value.length > 0 ? value.join(", ") : "none";
+  if (key === "subject" || key === "note")
+    return JSON.stringify(value);
+  return String(value);
+}
+function descriptionText(event, before, after) {
+  const length = (value) => typeof value === "string" ? value.length : 0;
+  if (event.action === "created")
+    return `description ${length(after)} characters`;
+  if (event.action === "deleted")
+    return `description ${length(before)} characters`;
+  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
+}
+function fieldText(event, key, label) {
+  const change = event.changes[key];
+  if (change === undefined)
+    return null;
+  const [before, after] = change;
+  if (key === "description")
+    return descriptionText(event, before, after);
+  if (event.action === "created" || event.action === "noted")
+    return `${label} ${shown2(key, after)}`;
+  if (event.action === "deleted")
+    return `${label} ${shown2(key, before)}`;
+  return `${label} ${shown2(key, before)} \u2192 ${shown2(key, after)}`;
+}
+function historyChanges(event) {
+  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+}
+function historyLine(event) {
+  const fields = historyChanges(event);
+  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
+  return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
+}
+function historyText(events, options) {
+  if (events.length === 0)
+    return "History: none recorded.";
+  const lines = ["History (oldest first):"];
+  for (const event of events) {
+    lines.push(historyLine(event));
+    const description = event.changes.description;
+    if (!options.full || description === undefined)
+      continue;
+    const [before, after] = description;
+    if (event.action !== "created" && typeof before === "string")
+      lines.push("  description before:", indent(before));
+    if (event.action !== "deleted" && typeof after === "string")
+      lines.push("  description after:", indent(after));
+  }
+  return lines.join(`
+`);
+}
+function indent(text) {
+  return text === "" ? "    (empty)" : text.split(`
+`).map((line) => `    ${line}`).join(`
+`);
+}
+
 // src/worktrees/machine-facts.ts
 import { readdirSync as readdirSync18, readFileSync as readFileSync63, readlinkSync as readlinkSync4 } from "fs";
 import { platform } from "os";
@@ -33844,7 +33944,10 @@ function taskDetail(paths, id) {
     if (!row)
       return null;
     const task = getTask(db, row.project, id);
-    return task === null ? null : { task, notes: notesOf(db, task), events: eventsOf(db, task) };
+    if (task === null)
+      return null;
+    const events = eventsOf(db, task).map((event) => ({ ...event, lines: historyChanges(event) }));
+    return { task, notes: notesOf(db, task), events };
   });
 }
 
@@ -37845,7 +37948,7 @@ var GIT_FIX = `check that git works in this folder (git status), then run: ${COM
 function message(error) {
   return error instanceof Error ? error.message : String(error);
 }
-function shown2(file, projectDir, home) {
+function shown3(file, projectDir, home) {
   return file.startsWith(`${projectDir}/`) ? file.slice(projectDir.length + 1) : tildify(file, home);
 }
 var OLD_REVIEW_AGENT = `${PLUGIN}:reviewer`;
@@ -37922,7 +38025,7 @@ function oldNameLines(projectDir, sources, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: ${shown2(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
+      text: `project: ${shown3(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
     });
   }
   const addons = join73(projectDir, ".claude", OLD_NAME);
@@ -37930,7 +38033,7 @@ function oldNameLines(projectDir, sources, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: ${shown2(addons, projectDir, home)}/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder`
+      text: `project: ${shown3(addons, projectDir, home)}/ is the old name of .claude/cc-smart-dev-kit/, where a skill reads the project's own add-ons: rename the folder`
     });
   }
   for (const file of sources) {
@@ -37940,7 +38043,7 @@ function oldNameLines(projectDir, sources, home) {
       lines.push({
         ok: true,
         warn: true,
-        text: `project: the hook ${handler.command} (${shown2(handler.file, projectDir, home)}) still runs the plugin's old "${OLD_NAME}" launcher: change it to ${renamedCommand(handler.command)}`
+        text: `project: the hook ${handler.command} (${shown3(handler.file, projectDir, home)}) still runs the plugin's old "${OLD_NAME}" launcher: change it to ${renamedCommand(handler.command)}`
       });
     }
   }
@@ -37957,7 +38060,7 @@ function engineLines(sources, projectDir, home) {
     const hooks = names.map((name) => `${COMMAND} hook ${name}`).join(", ");
     lines.push({
       ok: false,
-      text: `project: ${shown2(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
+      text: `project: ${shown3(file, projectDir, home)} still runs ${hooks}, retired with the plugin's worktree engine in ${WORKTREE_ENGINE_RETIRED_IN}, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook)`,
       fix: `${COMMAND} project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`
     });
   }
@@ -38093,7 +38196,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     lines.push({
       ok: true,
       warn: true,
-      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown2(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. ${advice}`
+      text: `project: the plugin's ${hook.name} and the project's ${handler.command} (${shown3(handler.file, projectDir, home)}) both run on ${onEvent(hook.event, subjects)}, so both may answer. ${advice}`
     });
   }
   return lines;
@@ -38114,7 +38217,7 @@ function requiresLines(configFile, projectDir, home) {
     {
       ok: true,
       warn: true,
-      text: `project: ${shown2(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      text: `project: ${shown3(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
       fix: `${COMMAND} project init (or any ${COMMAND} workflow set \u2026 --project) raises it to "${needed.floor}"`
     }
   ];
@@ -38130,7 +38233,7 @@ function jobKindLines(config, configFile, projectDir, home) {
     {
       ok: true,
       info: true,
-      text: `project: ${shown2(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
+      text: `project: ${shown3(configFile, projectDir, home)} sets size fields in jobs.kinds (${where}) that the job queue ignores: it counts jobs now, not gigabytes`,
       fix: "remove them from jobs.kinds: the queue runs one full heavy job per machine at a time, whatever a kind says"
     }
   ];
@@ -38166,7 +38269,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
       ...engine
     ];
   }
-  const retired = configFile === null ? null : retiredReviewAgentCheck(configFile, `project: ${shown2(configFile, projectDir, paths.home)}`);
+  const retired = configFile === null ? null : retiredReviewAgentCheck(configFile, `project: ${shown3(configFile, projectDir, paths.home)}`);
   const lines = [
     ...retired === null ? [] : [retired],
     ...retiredReviewMentions(projectDir),
@@ -40431,95 +40534,6 @@ var taskSchemas = {
   search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
   delete: object({ task: ref }).strict()
 };
-
-// src/tasks/work/history.ts
-var FIELDS = [
-  ["kind", "kind"],
-  ["plan", "plan"],
-  ["phase", "phase"],
-  ["subject", "subject"],
-  ["status", "status"],
-  ["type", "type"],
-  ["parent", "parent"],
-  ["agent", "agent"],
-  ["branch", "branch"],
-  ["worktree", "worktree"],
-  ["base", "base"],
-  ["claim", "claimed by"],
-  ["waitsFor", "blocked by"],
-  ["description", "description"],
-  ["note", "note"]
-];
-function actor(event) {
-  const parts = [];
-  if (event.sessionId !== null) {
-    const name = event.sessionName ? `"${event.sessionName}" ` : "";
-    parts.push(`session ${name}${event.sessionId}`);
-  }
-  if (event.pid !== null)
-    parts.push(`process ${event.pid}`);
-  if (event.reason !== null)
-    parts.push(`the kit (${event.reason})`);
-  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
-}
-function shown3(key, value) {
-  if (value === null || value === undefined || value === "")
-    return "none";
-  if (Array.isArray(value))
-    return value.length > 0 ? value.join(", ") : "none";
-  if (key === "subject" || key === "note")
-    return JSON.stringify(value);
-  return String(value);
-}
-function descriptionText(event, before, after) {
-  const length = (value) => typeof value === "string" ? value.length : 0;
-  if (event.action === "created")
-    return `description ${length(after)} characters`;
-  if (event.action === "deleted")
-    return `description ${length(before)} characters`;
-  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
-}
-function fieldText(event, key, label) {
-  const change = event.changes[key];
-  if (change === undefined)
-    return null;
-  const [before, after] = change;
-  if (key === "description")
-    return descriptionText(event, before, after);
-  if (event.action === "created" || event.action === "noted")
-    return `${label} ${shown3(key, after)}`;
-  if (event.action === "deleted")
-    return `${label} ${shown3(key, before)}`;
-  return `${label} ${shown3(key, before)} \u2192 ${shown3(key, after)}`;
-}
-function historyLine(event) {
-  const fields = FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
-  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
-  return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
-}
-function historyText(events, options) {
-  if (events.length === 0)
-    return "History: none recorded.";
-  const lines = ["History (oldest first):"];
-  for (const event of events) {
-    lines.push(historyLine(event));
-    const description = event.changes.description;
-    if (!options.full || description === undefined)
-      continue;
-    const [before, after] = description;
-    if (event.action !== "created" && typeof before === "string")
-      lines.push("  description before:", indent(before));
-    if (event.action !== "deleted" && typeof after === "string")
-      lines.push("  description after:", indent(after));
-  }
-  return lines.join(`
-`);
-}
-function indent(text) {
-  return text === "" ? "    (empty)" : text.split(`
-`).map((line) => `    ${line}`).join(`
-`);
-}
 
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
@@ -43014,8 +43028,18 @@ var WEIGHT_ORDER = {
   owner: 2
 };
 var WHEN_ORDER = { now: 0, "next-release": 1, any: 2 };
-function workTaskNodeOf(node, steps) {
-  const counted = node.layer === "phase" ? steps.get(node.id) : undefined;
+var NO_COUNTS = { progress: new Map, steps: new Map };
+function listCountsOf(all) {
+  const progress = new Map;
+  for (const layer of all) {
+    if (layer.kind !== "task")
+      progress.set(layer.id, layerProgress(all, layer));
+  }
+  return { progress, steps: phaseSteps(all) };
+}
+function workTaskNodeOf(node, counts) {
+  const counted = node.layer === "phase" ? counts.steps.get(node.id) : undefined;
+  const progress = node.kind === "task" ? undefined : counts.progress.get(node.id);
   return {
     session: node.session,
     parentId: node.parentId,
@@ -43031,13 +43055,14 @@ function workTaskNodeOf(node, steps) {
       subject: one.subject
     })),
     branch: node.branch,
-    children: node.children.map((child) => workTaskNodeOf(child, steps)),
+    children: node.children.map((child) => workTaskNodeOf(child, counts)),
     closed: node.closed,
     id: node.id,
     kind: node.kind,
     layer: node.layer,
     phase: node.phase,
     plan: node.plan,
+    progress: progress === undefined ? null : { closed: progress.closed, total: progress.total },
     ref: node.ref,
     status: node.status,
     steps: counted === undefined ? null : { done: counted.done, total: counted.total },
@@ -43094,17 +43119,66 @@ async function projectTasksAnswerFor(deps, id) {
   if (project === undefined) {
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
-  return await tasksOf(deps, project);
+  return await tasksOf(deps, project, await runningSessions2(deps, project.root));
+}
+async function runningSessions2(deps, within) {
+  const { env, paths } = deps.action.portal;
+  let records;
+  try {
+    records = liveSessions(paths.claudeConfigDir);
+  } catch (error) {
+    return { byProject: new Map, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (within !== undefined)
+    records = records.filter((record) => isInside(record.cwd, within));
+  const keys = await mapLimit(records, PROJECT_GIT_AT_ONCE, async (record) => {
+    try {
+      const context = await taskContextAsync(record.cwd, env);
+      return context.ok ? context.project : null;
+    } catch {
+      return null;
+    }
+  });
+  const byProject = new Map;
+  for (const [index, record] of records.entries()) {
+    const key = keys[index];
+    if (key === null || key === undefined)
+      continue;
+    byProject.set(key, [...byProject.get(key) ?? [], record]);
+  }
+  return { byProject, why: null };
+}
+function treeSessions(nodes, into = new Set) {
+  for (const node of nodes) {
+    if (node.session !== null)
+      into.add(node.session);
+    treeSessions(node.children, into);
+  }
+  return into;
+}
+function taskSessionsOf(roots, running, names) {
+  const live = new Map(running.map((record) => [record.sessionId, record]));
+  const ids = treeSessions(roots, new Set(live.keys()));
+  return [...ids].map((id) => {
+    const record = live.get(id);
+    if (record === undefined)
+      return { id, live: false, name: names.get(id) ?? null };
+    const own = record.name.trim();
+    return { id, live: true, name: own === "" ? null : own };
+  }).sort((a, b) => Number(b.live) - Number(a.live) || Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || a.id.localeCompare(b.id));
 }
 async function tasksAnswer(deps) {
-  const list = await projectsList(projectsWorldOf(deps));
+  const [list, running] = await Promise.all([
+    projectsList(projectsWorldOf(deps)),
+    runningSessions2(deps)
+  ]);
   const projects = await mapLimit(list.projects, PROJECT_GIT_AT_ONCE, async (project) => ({
     project,
-    tasks: await tasksOf(deps, project)
+    tasks: await tasksOf(deps, project, running)
   }));
   return { note: list.note, projects };
 }
-async function tasksOf(deps, project) {
+async function tasksOf(deps, project, running) {
   const { env, now, paths } = deps.action.portal;
   const context = await taskContextAsync(project.root, env);
   if (!context.ok) {
@@ -43120,13 +43194,19 @@ async function tasksOf(deps, project) {
   });
   let work;
   if (tree.state === "ready") {
-    const all = readWorkStore(paths, (db) => phaseSteps(allTasks(db, context.project)));
-    const steps = all.state === "ready" ? all.value : new Map;
+    const all = readWorkStore(paths, (db) => ({
+      counts: listCountsOf(allTasks(db, context.project)),
+      names: sessionNames(db, context.project)
+    }));
+    const counts = all.state === "ready" ? all.value.counts : NO_COUNTS;
+    const names = all.state === "ready" ? all.value.names : new Map;
     work = {
       more: tree.value.more,
       recentDays: TASKS_CARD_RECENT_DAYS,
+      sessions: taskSessionsOf(tree.value.roots, running.byProject.get(context.project) ?? [], names),
+      sessionsWhy: running.why,
       state: "ready",
-      tasks: tree.value.roots.map((root) => workTaskNodeOf(root, steps))
+      tasks: tree.value.roots.map((root) => workTaskNodeOf(root, counts))
     };
   } else {
     work = tree;
