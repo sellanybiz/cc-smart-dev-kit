@@ -38502,6 +38502,15 @@ function taskToolsCheck(paths) {
     text: "task tools: the kit's tools are allowed and the built-in task lists are hidden"
   };
 }
+function plansDirectoryCheck(paths) {
+  const configured = readSettings2(paths.settingsFile)?.plansDirectory;
+  const folder = typeof configured === "string" && configured.trim() !== "" ? configured : null;
+  return {
+    ok: true,
+    info: true,
+    text: folder === null ? `plan folder: ${tildify(join74(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)` : `plan folder: ${folder} (user setting; project settings may override it)`
+  };
+}
 function oldTodoToolsKeyCheck(paths) {
   const path = ["env", TODO_TOOLS_KEY];
   if (!getKey(readSettings2(paths.settingsFile) ?? {}, path).found)
@@ -38650,6 +38659,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, local, mcp, portal, p
         taskToolsCheck(paths),
         ...taskStoreChecks(paths),
         oldTodoToolsKeyCheck(paths),
+        plansDirectoryCheck(paths),
         checkNameClash(settings),
         checkReviewAgent(paths),
         await checkOldPlugin(settings, paths, readCommand)
