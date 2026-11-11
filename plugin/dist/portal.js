@@ -7990,6 +7990,12 @@ var CLAUDE_PRICES = [
   {
     family: "fable",
     major: 5,
+    minor: 2,
+    price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 }
+  },
+  {
+    family: "fable",
+    major: 5,
     minor: 1,
     price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
   },
@@ -9744,6 +9750,15 @@ var CLAUDE_TARGET_RULES = {
         thinkingOff: "left out"
       },
       since: { major: 5, minor: 1 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 2 }
     }
   ],
   haiku: [
@@ -20666,9 +20681,16 @@ import { join as join34, resolve as resolve8 } from "path";
 
 // src/gateway/settings.ts
 import { existsSync as existsSync30, readFileSync as readFileSync36 } from "fs";
+
+// src/gateway/fable-model.ts
+var GATEWAY_FABLE_MODEL = "claude-fable-5-2";
+var GATEWAY_FABLE_ENV = familyEnv("fable");
+
+// src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
+    [GATEWAY_FABLE_ENV]: GATEWAY_FABLE_MODEL,
     ANTHROPIC_BASE_URL: routerBaseUrl(port)
   };
 }
@@ -20774,6 +20796,8 @@ function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const owned = ownedKeys(stateDir, realTarget(settingsFile));
   const owns = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
   for (const key of GATEWAY_ENV_KEYS) {
+    if (key === GATEWAY_FABLE_ENV)
+      continue;
     if (!Object.hasOwn(env, key) || owns(key))
       continue;
     const yourOwn = key === "ENABLE_TOOL_SEARCH" ? ` Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets ${COMMAND} gateway on manage it (it sets "true", and gateway off removes it again).` : "";
@@ -20782,19 +20806,28 @@ function assertNoForeignGatewayKeys(settingsFile, stateDir) {
 }
 function turnOn(options) {
   assertNoForeignGatewayKeys(options.settingsFile, options.stateDir);
-  const set = Object.entries(gatewayEnv(options.port)).map(([key, value]) => [envPath(key), value]);
+  const pin = getKey(readSettings(options.settingsFile), envPath(GATEWAY_FABLE_ENV));
+  const records = ownedRecords(options.stateDir, realTarget(options.settingsFile));
+  const foreignPin = pin.found && ownership(records, envPath(GATEWAY_FABLE_ENV), pin) !== "ours";
+  const set = Object.entries(gatewayEnv(options.port)).filter(([key]) => key !== GATEWAY_FABLE_ENV || !foreignPin).map(([key, value]) => [envPath(key), value]);
   for (const [path] of set) {
     if (FORBIDDEN_ENV_KEYS.some((key) => path[1] === key)) {
       throw new Error(`the gateway never writes ${formatKeyPath(path)}`);
     }
   }
-  return applyManagedJson({
+  const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
     set,
     remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
+  if (foreignPin)
+    result.skipped.push({
+      path: envPath(GATEWAY_FABLE_ENV),
+      reason: "set or changed by you; left alone"
+    });
+  return result;
 }
 function retireOldModelKeys(options) {
   return applyManagedJson({
@@ -20833,7 +20866,7 @@ function foreignRouting(foreign, settingsFile) {
   } catch {
     ownAddressRoutes = true;
   }
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && key !== GATEWAY_FABLE_ENV && !(key === BASE_URL_KEY && !ownAddressRoutes));
   return { routing, ownAddressRoutes };
 }
 function readGatewaySettings(settingsPath) {
@@ -24263,6 +24296,8 @@ async function commandOn(ctx) {
     out.say("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
     out.say(`Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`);
   }
+  for (const skip of result.skipped.filter((skip) => skip.path[1] === GATEWAY_FABLE_ENV))
+    out.line("info", `${skip.path.join(".")}: ${skip.reason}`, { indent: 2 });
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }
@@ -24436,6 +24471,26 @@ async function gatewayChecks(options) {
     checks.push(...await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config));
     return checks;
   }
+  try {
+    const settings = readJsonObject(paths.settingsFile).data;
+    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
+      const path = ["env", GATEWAY_FABLE_ENV];
+      const pin = getKey(settings, path);
+      const ours = ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) === "ours";
+      checks.push({
+        ok: true,
+        info: true,
+        text: pin.found ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})` : "Gateway Fable: missing: run setup"
+      });
+    }
+  } catch (error) {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`
+    });
+  }
   if (options.service === "none") {
     checks.push({
       ok: false,
@@ -24603,8 +24658,8 @@ function modelKeyWarnings(file, home, backends) {
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`
     });
   }
   for (const key of file.subagentOverrides) {
@@ -24613,7 +24668,7 @@ function modelKeyWarnings(file, home, backends) {
       ok: true,
       warn: true,
       text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`
     });
   }
   return checks;

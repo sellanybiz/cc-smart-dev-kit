@@ -8806,6 +8806,12 @@ var init_prices = __esm(() => {
     {
       family: "fable",
       major: 5,
+      minor: 2,
+      price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 }
+    },
+    {
+      family: "fable",
+      major: 5,
       minor: 1,
       price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
     },
@@ -9124,11 +9130,19 @@ var init_commands_chains = __esm(() => {
   };
 });
 
+// src/gateway/fable-model.ts
+var GATEWAY_FABLE_MODEL = "claude-fable-5-2", GATEWAY_FABLE_ENV;
+var init_fable_model = __esm(() => {
+  init_targets();
+  GATEWAY_FABLE_ENV = familyEnv("fable");
+});
+
 // src/gateway/settings.ts
 import { existsSync as existsSync9, readFileSync as readFileSync11 } from "fs";
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
+    [GATEWAY_FABLE_ENV]: GATEWAY_FABLE_MODEL,
     ANTHROPIC_BASE_URL: routerBaseUrl(port)
   };
 }
@@ -9230,6 +9244,8 @@ function assertNoForeignGatewayKeys(settingsFile, stateDir) {
   const owned = ownedKeys(stateDir, realTarget(settingsFile));
   const owns = (key) => owned.some((path) => path.length === 2 && path[0] === "env" && path[1] === key);
   for (const key of GATEWAY_ENV_KEYS) {
+    if (key === GATEWAY_FABLE_ENV)
+      continue;
     if (!Object.hasOwn(env, key) || owns(key))
       continue;
     const yourOwn = key === "ENABLE_TOOL_SEARCH" ? ` Many people set ENABLE_TOOL_SEARCH themselves; removing it by hand lets ${COMMAND} gateway on manage it (it sets "true", and gateway off removes it again).` : "";
@@ -9238,19 +9254,28 @@ function assertNoForeignGatewayKeys(settingsFile, stateDir) {
 }
 function turnOn(options) {
   assertNoForeignGatewayKeys(options.settingsFile, options.stateDir);
-  const set = Object.entries(gatewayEnv(options.port)).map(([key, value]) => [envPath(key), value]);
+  const pin = getKey(readSettings(options.settingsFile), envPath(GATEWAY_FABLE_ENV));
+  const records = ownedRecords(options.stateDir, realTarget(options.settingsFile));
+  const foreignPin = pin.found && ownership(records, envPath(GATEWAY_FABLE_ENV), pin) !== "ours";
+  const set = Object.entries(gatewayEnv(options.port)).filter(([key]) => key !== GATEWAY_FABLE_ENV || !foreignPin).map(([key, value]) => [envPath(key), value]);
   for (const [path] of set) {
     if (FORBIDDEN_ENV_KEYS.some((key) => path[1] === key)) {
       throw new Error(`the gateway never writes ${formatKeyPath(path)}`);
     }
   }
-  return applyManagedJson({
+  const result = applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
     set,
     remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
+  if (foreignPin)
+    result.skipped.push({
+      path: envPath(GATEWAY_FABLE_ENV),
+      reason: "set or changed by you; left alone"
+    });
+  return result;
 }
 function retireOldModelKeys(options) {
   return applyManagedJson({
@@ -9289,7 +9314,7 @@ function foreignRouting(foreign, settingsFile) {
   } catch {
     ownAddressRoutes = true;
   }
-  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && !(key === BASE_URL_KEY && !ownAddressRoutes));
+  const routing = foreign.filter((key) => key !== "ENABLE_TOOL_SEARCH" && key !== GATEWAY_FABLE_ENV && !(key === BASE_URL_KEY && !ownAddressRoutes));
   return { routing, ownAddressRoutes };
 }
 function readGatewaySettings(settingsPath) {
@@ -9350,6 +9375,7 @@ var init_settings = __esm(() => {
   init_user_json();
   init_write();
   init_config();
+  init_fable_model();
   init_targets();
   REMOTE_CONTROL_HOST = new URL(DEFAULT_ANTHROPIC_BASE_URL).host;
   RETIRED_GATEWAY_ENV_KEYS = [
@@ -14194,6 +14220,15 @@ var init_router = __esm(() => {
           thinkingOff: "left out"
         },
         since: { major: 5, minor: 1 }
+      },
+      {
+        rules: {
+          budgetToAdaptive: true,
+          forcedToolChoice: true,
+          sampling: true,
+          thinkingOff: "left out"
+        },
+        since: { major: 5, minor: 2 }
       }
     ],
     haiku: [
@@ -18423,6 +18458,8 @@ async function commandOn(ctx) {
     out.say("Every Claude Code session on this machine, in every folder, uses the gateway from now on: each Claude model's work (background titles and summaries too) goes to the slot of its family when that slot has a chain, and to Anthropic unchanged when it has none.");
     out.say(`Remote Control is off while the gateway is on: Claude Code allows it only with ${REMOTE_CONTROL_HOST} as the address.`);
   }
+  for (const skip of result.skipped.filter((skip) => skip.path[1] === GATEWAY_FABLE_ENV))
+    out.line("info", `${skip.path.join(".")}: ${skip.reason}`, { indent: 2 });
   printOverrides(settingsReport(paths.settingsFile), out);
   return 0;
 }
@@ -18560,6 +18597,7 @@ var init_commands = __esm(() => {
   init_commands_profile();
   init_commands_project();
   init_config();
+  init_fable_model();
   init_health();
   init_history();
   init_history_read();
@@ -36344,7 +36382,7 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync78, statSync as statSync28 } from "fs";
+import { existsSync as existsSync79, statSync as statSync28 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join93, resolve as resolve25 } from "path";
 
@@ -38666,6 +38704,8 @@ import { dirname as dirname33, join as join84 } from "path";
 // src/gateway/doctor.ts
 init_build_info();
 init_paths2();
+init_managed_json();
+init_write();
 init_backends();
 init_checks_down();
 import { existsSync as existsSync47, readFileSync as readFileSync59 } from "fs";
@@ -38856,6 +38896,7 @@ function applyClaudeDefaultsStep(paths, step, dryRun) {
 init_commands();
 init_commands_project();
 init_config();
+init_fable_model();
 init_health();
 init_history();
 init_history_read();
@@ -38908,6 +38949,26 @@ async function gatewayChecks(options) {
     });
     checks.push(...await projectChecks(options, readGatewayConfig(paths.gatewayConfigFile).config));
     return checks;
+  }
+  try {
+    const settings = readJsonObject(paths.settingsFile).data;
+    const address = getKey(settings, ["env", "ANTHROPIC_BASE_URL"]);
+    if (baseUrlPointsAtGateway(address.found ? String(address.value) : null)) {
+      const path = ["env", GATEWAY_FABLE_ENV];
+      const pin = getKey(settings, path);
+      const ours = ownership(ownedRecords(paths.stateDir, realTarget(paths.settingsFile)), path, pin) === "ours";
+      checks.push({
+        ok: true,
+        info: true,
+        text: pin.found ? `Gateway Fable: ${shownValue(String(pin.value))} (${ours ? "kit pin" : "your value"})` : "Gateway Fable: missing: run setup"
+      });
+    }
+  } catch (error) {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `Gateway Fable: cannot read settings: ${messageOf(error)}`
+    });
   }
   if (options.service === "none") {
     checks.push({
@@ -39076,8 +39137,8 @@ function modelKeyWarnings(file, home, backends) {
     checks.push({
       ok: true,
       warn: true,
-      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key, and ${COMMAND} never writes it. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+      text: `${where} sets ${fact.key} to ${quoted}: it is Claude Code's own model key. Except for its owned Fable pin, ${COMMAND} never writes these keys. It names ${slot ? "a slot" : "a backend target"}, so it bypasses the slots: ${why}. Remove it by hand to let the slots decide.`,
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`
     });
   }
   for (const key of file.subagentOverrides) {
@@ -39086,7 +39147,7 @@ function modelKeyWarnings(file, home, backends) {
       ok: true,
       warn: true,
       text: `${where} sets env.${key}: it is Claude Code's own key, and ${COMMAND} never writes it. ${why} Remove it by hand.`,
-      fix: `remove it by hand from ${where} (${COMMAND} never writes Claude Code's model keys)`
+      fix: `remove it by hand from ${where} (${COMMAND} leaves your model choice alone)`
     });
   }
   return checks;
@@ -51172,10 +51233,54 @@ async function runRestore(paths, options) {
 init_secret_line();
 
 // src/cli/setup.ts
-import { existsSync as existsSync75, mkdirSync as mkdirSync29, rmSync as rmSync24 } from "fs";
+import { existsSync as existsSync76, mkdirSync as mkdirSync29, rmSync as rmSync24 } from "fs";
 import { basename as basename18, delimiter, dirname as dirname36, isAbsolute as isAbsolute14, join as join90, relative as relative14 } from "path";
 init_build_info();
 init_config();
+
+// src/gateway/fable-model-step.ts
+init_managed_json();
+init_write();
+init_config();
+init_fable_model();
+init_settings();
+import { existsSync as existsSync73 } from "fs";
+function applyFableModelStep(paths, dryRun) {
+  if (!existsSync73(paths.gatewayConfigFile))
+    return [];
+  let settings;
+  try {
+    settings = readJsonObject(paths.settingsFile).data;
+  } catch (error) {
+    return [`! gateway Fable pin was not refreshed: ${messageOf(error)}`];
+  }
+  const records = ownedRecords(paths.stateDir, realTarget(paths.settingsFile));
+  const address = getKey(settings, BASE_URL_PATH);
+  if (!address.found || ownership(records, BASE_URL_PATH, address) !== "ours")
+    return [];
+  let port;
+  try {
+    port = loadConfigFile(paths.gatewayConfigFile).port;
+  } catch (error) {
+    return [`! gateway Fable pin was not refreshed: ${messageOf(error)}`];
+  }
+  if (normalizedBaseUrl(String(address.value)) !== routerBaseUrl(port))
+    return [];
+  const path = ["env", GATEWAY_FABLE_ENV];
+  const current = getKey(settings, path);
+  if (current.found && ownership(records, path, current) !== "ours") {
+    return [`  env.${GATEWAY_FABLE_ENV} stays: set or changed by you`];
+  }
+  const result = applyManagedJson({
+    file: paths.settingsFile,
+    stateDir: paths.stateDir,
+    set: [[path, GATEWAY_FABLE_MODEL]],
+    dryRun
+  });
+  return result.changes.map(() => `~ env.${GATEWAY_FABLE_ENV}: refresh Fable model for the gateway already on`);
+}
+
+// src/cli/setup.ts
 init_companions();
 init_herdr();
 
@@ -51291,7 +51396,7 @@ init_max_subagents();
 // src/setup/remote-control.ts
 init_managed_json();
 init_write();
-import { existsSync as existsSync73 } from "fs";
+import { existsSync as existsSync74 } from "fs";
 import { join as join89 } from "path";
 var REMOTE_CONTROL_SETTING = "remoteControlAtStartup";
 var REMOTE_CONTROL_KEY = [REMOTE_CONTROL_SETTING];
@@ -51308,7 +51413,7 @@ function planRemoteControl(paths) {
   if (whose === "ours")
     return "set";
   if (!current.found)
-    return existsSync73(remoteControlReleasedFile(paths.stateDir)) ? "leave" : "set";
+    return existsSync74(remoteControlReleasedFile(paths.stateDir)) ? "leave" : "set";
   return "leave";
 }
 
@@ -51320,7 +51425,7 @@ init_user_json();
 // src/setup/user-notify-hook.ts
 init_names();
 init_launcher();
-import { existsSync as existsSync74, readFileSync as readFileSync84 } from "fs";
+import { existsSync as existsSync75, readFileSync as readFileSync84 } from "fs";
 init_managed_json();
 init_managed_line();
 init_write();
@@ -51368,12 +51473,12 @@ function retireNotifications(paths, dryRun) {
       });
       if (result.removed.length > 0)
         changes.push(`${paths.tmuxConfFile}: removed the retired notification passthrough line; the running tmux server was not changed`);
-      else if (existsSync74(paths.tmuxConfFile)) {
+      else if (existsSync75(paths.tmuxConfFile)) {
         info.push(`${paths.tmuxConfFile}: the recorded notification passthrough line was edited or removed; the file stays unchanged; check it by hand if passthrough is no longer needed`);
       }
       if (!dryRun)
         forgetManagedLines(paths.stateDir, paths.tmuxConfFile, [TMUX_LINE]);
-    } else if (existsSync74(paths.tmuxConfFile) && readFileSync84(paths.tmuxConfFile, "utf8").split(`
+    } else if (existsSync75(paths.tmuxConfFile) && readFileSync84(paths.tmuxConfFile, "utf8").split(`
 `).includes(TMUX_LINE)) {
       info.push(`${paths.tmuxConfFile}: the unowned notification passthrough line stays; remove it by hand if no other tool needs it`);
     }
@@ -51399,7 +51504,7 @@ function shownValue2(path, value) {
   return value === undefined ? "(none)" : "(a secret)";
 }
 function marketplaceKnown(settingsFile) {
-  if (!existsSync75(settingsFile))
+  if (!existsSync76(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -51413,7 +51518,7 @@ function statuslineDeclinedFile(stateDir) {
   return join90(stateDir, "statusline-declined");
 }
 function hasStatusline(settingsFile) {
-  if (!existsSync75(settingsFile))
+  if (!existsSync76(settingsFile))
     return false;
   try {
     const settings = readUserJson(settingsFile);
@@ -51470,7 +51575,7 @@ function applySetup(paths, managed, dryRun, takenBack, platform) {
     }
   }
   if (managed.tavilyKeyFile !== null) {
-    const mark = existsSync75(paths.tavilyKeyFile) ? "changed" : "created";
+    const mark = existsSync76(paths.tavilyKeyFile) ? "changed" : "created";
     if (!dryRun) {
       mkdirSync29(dirname36(paths.tavilyKeyFile), { mode: 448, recursive: true });
       atomicWrite(paths.tavilyKeyFile, `${managed.tavilyKeyFile}
@@ -51665,7 +51770,7 @@ function askAutoMode(paths, options, planned, out, screen, report) {
   return wanted;
 }
 function askStatusline(paths, machine, managed, yes) {
-  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync75(statuslineDeclinedFile(paths.stateDir))) {
+  if (managed.statusline || yes || machine.confirm === null || hasStatusline(paths.settingsFile) || existsSync76(statuslineDeclinedFile(paths.stateDir))) {
     return false;
   }
   managed.statusline = machine.confirm("Show cc-smart-dev-kit's status line in Claude Code (plan usage, a warning from 85 %, and any gateway fallback)?");
@@ -51862,7 +51967,7 @@ async function runSetup(paths, options) {
       });
     }
     const wouldRegister = applyMcpServers(mcpPlan, claudeRun, machine.which, true, () => {});
-    report.push(...claudeSteps.map((step) => reportLine("companions", step.line)), ...reportLines("mcp", wouldRegister.wouldRun), ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)), ...planned.lines, ...reportLines("mcp", wouldRegister.notes));
+    report.push(...claudeSteps.map((step) => reportLine("companions", step.line)), ...reportLines("mcp", wouldRegister.wouldRun), ...reportLines("gateway", applyClaudeDefaultsStep(paths, claudeDefaults, true)), ...reportLines("gateway", claudeDefaults.kind === "done" ? applyFableModelStep(paths, true) : []), ...planned.lines, ...reportLines("mcp", wouldRegister.notes));
     if (autoMode !== null) {
       const asking = autoModeAsking(machine, autoMode);
       if (!asking.ask && asking.note !== null)
@@ -51933,6 +52038,8 @@ async function runSetup(paths, options) {
       markMcpServerAdding(paths.stateDir, name, json, now);
     });
     const gateway = applyClaudeDefaultsStep(paths, planClaudeDefaultsStep(paths), false);
+    if (claudeDefaults.kind === "done")
+      gateway.push(...applyFableModelStep(paths, false));
     const files = applySetup(paths, managed, false, mcp.removed, machine.platform);
     recordApplied(paths.stateDir, mcp, now);
     if (declined)
@@ -52420,7 +52527,7 @@ init_commands2();
 init_herdr();
 
 // src/machine/machine.ts
-import { existsSync as existsSync76, readFileSync as readFileSync86 } from "fs";
+import { existsSync as existsSync77, readFileSync as readFileSync86 } from "fs";
 var RUN_TIMEOUT_MS2 = 300000;
 function nativeAppleSilicon(env) {
   if (process.platform !== "darwin")
@@ -52446,10 +52553,10 @@ function hostFacts(env) {
   const real = {
     nativeAppleSilicon: false,
     userId: process.getuid?.(),
-    exists: (path) => existsSync76(path),
+    exists: (path) => existsSync77(path),
     platform: hostPlatform(env),
     arch: process.arch,
-    osRelease: () => existsSync76("/etc/os-release") ? readFileSync86("/etc/os-release", "utf8") : null
+    osRelease: () => existsSync77("/etc/os-release") ? readFileSync86("/etc/os-release", "utf8") : null
   };
   const text = env[TEST_HOST_VAR];
   if (!text)
@@ -52547,7 +52654,7 @@ init_propose();
 init_resolve2();
 init_schema();
 import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync77, mkdirSync as mkdirSync30, readFileSync as readFileSync87 } from "fs";
+import { existsSync as existsSync78, mkdirSync as mkdirSync30, readFileSync as readFileSync87 } from "fs";
 import { basename as basename20, dirname as dirname37, join as join92, relative as relative15 } from "path";
 
 // src/portal/facts.ts
@@ -52751,7 +52858,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync77(files.config);
+  const set = existsSync78(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -53197,7 +53304,7 @@ init_commands4();
 init_command4();
 function distBundle(name) {
   const beside = join93(import.meta.dir, name);
-  return existsSync78(beside) ? beside : join93(import.meta.dir, "..", "..", "plugin", "dist", name);
+  return existsSync79(beside) ? beside : join93(import.meta.dir, "..", "..", "plugin", "dist", name);
 }
 function routerBundle() {
   return distBundle("router.js");
@@ -53363,7 +53470,7 @@ async function main(argv) {
         console.error(usageError(`Use ${RETRY_WATCHDOG_FLAG} or ${NO_RETRY_WATCHDOG_FLAG}, not both.`, "setup"));
         return 2;
       }
-      if (!existsSync78(project) || !statSync28(project).isDirectory()) {
+      if (!existsSync79(project) || !statSync28(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
@@ -53782,7 +53889,7 @@ ${String(result.failed)} of ${String(result.total)} checks failed.`);
           return 2;
         }
         const built = join93(import.meta.dir, "tasks-mcp.js");
-        const entry = existsSync78(built) ? built : join93(import.meta.dir, "tasks-mcp.ts");
+        const entry = existsSync79(built) ? built : join93(import.meta.dir, "tasks-mcp.ts");
         await import(entry);
         return 0;
       }

@@ -18301,10 +18301,15 @@ function readJsonObject(file) {
   return { data: parsed, indent: detectIndent(text), text };
 }
 
+// src/gateway/fable-model.ts
+var GATEWAY_FABLE_MODEL = "claude-fable-5-2";
+var GATEWAY_FABLE_ENV = familyEnv("fable");
+
 // src/gateway/settings.ts
 function gatewayEnv(port) {
   return {
     ENABLE_TOOL_SEARCH: "true",
+    [GATEWAY_FABLE_ENV]: GATEWAY_FABLE_MODEL,
     ANTHROPIC_BASE_URL: routerBaseUrl(port)
   };
 }
@@ -19621,6 +19626,12 @@ import { join as join20 } from "path";
 
 // src/gateway/prices.ts
 var CLAUDE_PRICES = [
+  {
+    family: "fable",
+    major: 5,
+    minor: 2,
+    price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 }
+  },
   {
     family: "fable",
     major: 5,

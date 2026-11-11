@@ -6942,6 +6942,12 @@ var CLAUDE_PRICES = [
   {
     family: "fable",
     major: 5,
+    minor: 2,
+    price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 }
+  },
+  {
+    family: "fable",
+    major: 5,
     minor: 1,
     price: { cacheRead: 0.25, cacheWrite: 12.5, input: 10, output: 50 }
   },
@@ -8512,6 +8518,15 @@ var CLAUDE_TARGET_RULES = {
         thinkingOff: "left out"
       },
       since: { major: 5, minor: 1 }
+    },
+    {
+      rules: {
+        budgetToAdaptive: true,
+        forcedToolChoice: true,
+        sampling: true,
+        thinkingOff: "left out"
+      },
+      since: { major: 5, minor: 2 }
     }
   ],
   haiku: [
