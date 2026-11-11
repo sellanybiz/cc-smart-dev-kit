@@ -83,11 +83,6 @@ worktree looks finished, give these steps, and let the person decide.
 - **Not finished:** stop and ask. A worktree with uncommitted work, local files or commits
   that are not merged is someone's work.
 
-Then tell the other sessions about the merge into `base` — once, after your last merge of the
-turn: `ListAgents`, then one `SendMessage` to each session of this repo (not your own, not a
-subagent, not another project). The message says what to do: merge `origin/<base>` at the
-next stop, and anything that needs a person (new migrations, new settings).
-
 ## Finding a session again
 
 A session's history follows its folder: while it works in a worktree, Claude Code lists it

@@ -3,6 +3,14 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 3.1.0
+
+- **Merges are no longer announced to your other sessions.** After a merge into
+  `worktrees.base`, the `after-merge` hook no longer gives Claude a message to send every other
+  session in the repo, and the worktree instructions and skill no longer ask for one. The hook
+  still gives the steps that clear the merged worktree, and still starts the background clean
+  of finished worktrees once per merge.
+
 ## 3.0.1
 
 - **Fix: Claude Fable behind the `opus` slot is the `opus` tier.** When the `opus` slot (or

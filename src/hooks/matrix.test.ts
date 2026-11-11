@@ -426,6 +426,10 @@ const CASES: Case[] = [
     setup: (config) => {
       const repo = project(config);
       git(repo, "remote", "set-url", "origin", "git@github.com:example-org/app.git");
+      // The hook speaks when a session merges its own worktree's branch: the note that clears
+      // it. (A merge into the base is never announced to the other sessions.)
+      const worktree = join(tempDir("matrix-wt"), "fix-a");
+      git(repo, "worktree", "add", "-q", "-b", "fix/a", worktree);
       const env = hookEnv();
       const bin = tempDir("fake-gh");
       const view = {
@@ -443,7 +447,7 @@ const CASES: Case[] = [
         input: {
           hook_event_name: "PostToolUse",
           session_id: SESSION,
-          cwd: repo,
+          cwd: worktree,
           tool_name: "Bash",
           tool_input: { command: "gh pr merge 7" },
         },

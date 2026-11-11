@@ -5991,7 +5991,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "3.0.1",
+  version: "3.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -17760,23 +17760,19 @@ function sameRepository(prUrl, origin) {
   const pr = pullRequestRepository(prUrl);
   return pr !== null && pr === repositoryKey(origin);
 }
-var ANNOUNCE_WINDOW_MS = 15 * 60000;
+var RECENT_MERGE_MS = 15 * 60000;
 function mergeOutcome(params) {
-  const { announced, base, failed, now, pr, sameRepo, target, worktree } = params;
-  const none = { announce: null, clear: null };
+  const { base, failed, now, pr, sameRepo, seen, target, worktree } = params;
+  const none = { clear: null, intoBase: null };
   if (pr === null ? failed : pr.state !== "MERGED" || !sameRepo)
     return none;
   const branch = worktree?.branch ?? null;
   const mergedHere = worktree !== null && branch !== null && (target.ref === null || target.ref === branch || pr?.head === branch);
   const clear = mergedHere && branch !== null ? { path: worktree.path, branch } : null;
   const mergedAt = pr === null || pr.mergedAt === null ? Number.NaN : Date.parse(pr.mergedAt);
-  const recent = now - mergedAt <= ANNOUNCE_WINDOW_MS;
-  const announce = pr !== null && pr.base === base && !announced && recent ? pr : null;
-  return { announce, clear };
-}
-function quotableTitle(title) {
-  const line = title.replace(/["`]/g, "'").replace(/\s+/g, " ").trim();
-  return line.length > 100 ? `${line.slice(0, 99)}\u2026` : line;
+  const recent = now - mergedAt <= RECENT_MERGE_MS;
+  const intoBase = pr !== null && pr.base === base && !seen && recent ? pr : null;
+  return { clear, intoBase };
 }
 function insideClaudeWorktrees(path) {
   return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
@@ -17786,23 +17782,6 @@ function clearWorktreeNote(path, branch) {
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
     insideClaudeWorktrees(path) ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.' : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" \u2014 it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`
-  ].join(`
-`);
-}
-function otherBaseCaution(bases, base) {
-  const elsewhere = Object.entries(bases).filter(([, target]) => target !== base).map(([prefix]) => prefix);
-  if (elsewhere.length === 0)
-    return null;
-  return `One exception: a branch whose pull request goes into another base (${elsewhere.join(", ")}) must NOT merge ${base} in, ` + `because that would ship unreleased work. A branch there stays as it is.`;
-}
-function tellSessionsNote(pr, base, bases = {}) {
-  const caution = otherBaseCaution(bases, base);
-  const message = `${base} now has #${pr.number} (${quotableTitle(pr.title)}). At your next stop, once your current work is committed: ` + `git fetch origin ${base}, then git merge origin/${base}, and fix any conflict. ` + `Never commit unfinished work just to take the merge. After the merge, run the install your project uses if the merge changed a lock file. Run the tests the merge touched. ` + `${caution === null ? "" : `${caution} `}No reply needed.`;
-  return [
-    `That merged #${pr.number} into ${base}.`,
-    "Tell the person's other sessions in this repo, once, after your last merge this turn: ListAgents, then one SendMessage to each session working in this repo that is not this session and not a subagent, with exactly this text:",
-    `"${message}"`,
-    "Merged several pull requests this turn? Send each session one message, naming every merged number."
   ].join(`
 `);
 }
@@ -17824,7 +17803,7 @@ function viewPullRequest(ref, repo, folder, env, timeoutMs) {
     return null;
   }
 }
-function announcedFile(repo, number, env) {
+function seenFile(repo, number, env) {
   const key = createHash3("sha256").update(repo).digest("hex").slice(0, 16);
   return join17(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
@@ -17863,31 +17842,25 @@ async function afterMerge(context) {
   if (originLeft <= 0)
     return SILENT;
   const origin = runGit(repo, ["remote", "get-url", "origin"], env, originLeft);
-  const record = pr === null ? null : announcedFile(repo, pr.number, env);
+  const record = pr === null ? null : seenFile(repo, pr.number, env);
   const outcome = mergeOutcome({
-    announced: record !== null && existsSync9(record),
     base,
     failed: event === "PostToolUseFailure",
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
+    seen: record !== null && existsSync9(record),
     target,
     worktree
   });
-  const notes = [];
-  if (outcome.clear !== null) {
-    notes.push(clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
-  }
-  if (outcome.announce !== null && record !== null) {
-    notes.push(tellSessionsNote(outcome.announce, base, project.config?.worktrees?.bases ?? {}));
+  if (outcome.intoBase !== null && record !== null) {
     mkdirSync8(join17(record, ".."), { recursive: true });
     writeFileSync3(record, "");
-  }
-  if (outcome.announce !== null)
     startAutoClean(context, repo, "merge");
-  return notes.length === 0 ? SILENT : addContext(event, notes.join(`
-
-`));
+  }
+  if (outcome.clear === null)
+    return SILENT;
+  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
 }
 
 // src/gateway/config.ts
