@@ -7717,6 +7717,11 @@ function openDatabase(file) {
   if (!columns.some((column) => column.name === "profile")) {
     db.run("ALTER TABLE requests ADD COLUMN profile TEXT");
   }
+  for (const name of ["agent", "outcome"]) {
+    if (!columns.some((column) => column.name === name)) {
+      db.run(`ALTER TABLE requests ADD COLUMN ${name} TEXT`);
+    }
+  }
   if ((version?.user_version ?? 0) < HISTORY_SCHEMA_VERSION) {
     db.run(`PRAGMA user_version = ${String(HISTORY_SCHEMA_VERSION)}`);
   }
@@ -7761,7 +7766,9 @@ function insertValues(row) {
     row.tokens?.cacheRead ?? null,
     row.tokens?.cacheWrite ?? null,
     row.cost?.usd ?? null,
-    row.cost?.estimated === true ? 1 : 0
+    row.cost?.estimated === true ? 1 : 0,
+    row.agent ?? null,
+    row.outcome ?? null
   ];
 }
 function createHistoryWriter(options) {
@@ -7862,6 +7869,8 @@ var HISTORY_RETENTION_DAYS = 90, HISTORY_MAX_RETENTION_DAYS = 3650, HISTORY_FLUS
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at INTEGER NOT NULL,
     session TEXT,
+    agent TEXT,
+    outcome TEXT,
     model TEXT NOT NULL,
     slot TEXT,
     profile TEXT,
@@ -7881,8 +7890,8 @@ var HISTORY_RETENTION_DAYS = 90, HISTORY_MAX_RETENTION_DAYS = 3650, HISTORY_FLUS
   CREATE INDEX IF NOT EXISTS requests_session_at ON requests(session, at);
 `, INSERT_ROW = `INSERT INTO requests
   (at, session, model, slot, profile, target, status, ms, next_target, breaker,
-   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, HISTORY_COLUMNS = "id, at, session, model, slot, profile, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
+   input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated, agent, outcome)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, HISTORY_COLUMNS = "id, at, session, model, slot, profile, target, status, ms, next_target, breaker, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, cost_estimated";
 var init_history = __esm(() => {
   init_file_mode();
   HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
@@ -9134,10 +9143,28 @@ var init_commands_chains = __esm(() => {
 });
 
 // src/gateway/target-label.ts
+function serverToolTarget(tool, routerStatus) {
+  return routerStatus === undefined ? `${SERVER_TOOL_TARGET_PREFIXES[0]}${tool})` : `${SERVER_TOOL_TARGET_PREFIXES[1]}${tool}; anthropic ${routerStatus ?? "did not answer"})`;
+}
+function answerTargetName(target) {
+  if ("error" in parseTarget(target))
+    return null;
+  const family = claudeFamily(target);
+  const version = claudeVersion(target);
+  return family === null || version === null ? shortTargetName(target) : `${familyLabel(family)} ${version.major}.${version.minor}`;
+}
 function shortTargetName(target) {
   const model = target.slice(target.indexOf(":") + 1);
   return model.slice(model.lastIndexOf("/") + 1);
 }
+var SERVER_TOOL_TARGET_PREFIXES;
+var init_target_label = __esm(() => {
+  init_targets();
+  SERVER_TOOL_TARGET_PREFIXES = [
+    "anthropic (server tool ",
+    "router (server tool "
+  ];
+});
 
 // src/gateway/model-picker.ts
 function pickerFor(config, profile) {
@@ -9176,6 +9203,7 @@ var init_model_picker = __esm(() => {
   init_write();
   init_commands_chains();
   init_config();
+  init_target_label();
   init_targets();
   PICKER_PATH = ["modelPicker"];
 });
@@ -12034,6 +12062,21 @@ class AnswerUsageReader {
   body = "";
   tooBig = false;
   start = null;
+  failure = null;
+  stopped = false;
+  outcome() {
+    return this.failure ?? (this.streaming && !this.stopped ? "stream_error" : null);
+  }
+  noteOutcome(value) {
+    if (!isJsonObject5(value))
+      return;
+    if (value.type === "message_stop")
+      this.stopped = true;
+    if (value.type === "error")
+      this.failure = "stream_error";
+    else if (this.failure === null && (value.stop_reason === "refusal" || isJsonObject5(value.delta) && value.delta.stop_reason === "refusal" || isJsonObject5(value.message) && value.message.stop_reason === "refusal"))
+      this.failure = "refused";
+  }
   delta = {};
   constructor(streaming) {
     this.streaming = streaming;
@@ -12063,6 +12106,7 @@ class AnswerUsageReader {
       } catch {
         return null;
       }
+      this.noteOutcome(parsed);
       return tokensOf(isJsonObject5(parsed) ? parsed.usage : undefined);
     }
     this.partial += this.decoder.decode();
@@ -12120,6 +12164,7 @@ class AnswerUsageReader {
     }
     if (!isJsonObject5(event))
       return;
+    this.noteOutcome(event);
     if (event.type === "message_start" && isJsonObject5(event.message)) {
       this.start = tokensOf(event.message.usage) ?? this.start;
     }
@@ -12260,8 +12305,8 @@ var THREAD_UNSUPPORTED_CODE = "thread_unsupported_request", THREAD_REFUSAL_MESSA
 // src/gateway/router.ts
 import { mkdirSync as mkdirSync8, readFileSync as readFileSync18 } from "fs";
 import { dirname as dirname5 } from "path";
-function sessionIdOf(headers) {
-  const value = (headers.get("x-claude-code-session-id") ?? "").trim();
+function sessionIdOf(headers, header = "x-claude-code-session-id") {
+  const value = (headers.get(header) ?? "").trim();
   return SESSION_ID.test(value) ? value : null;
 }
 function anthropicError(status, type, message) {
@@ -13737,7 +13782,7 @@ function createRouter(deps) {
   function observedAnswer(response, note) {
     const body = response.body;
     if (body === null) {
-      note(null);
+      note(null, null);
       return response;
     }
     const streaming = (response.headers.get("content-type") ?? "").includes("text/event-stream");
@@ -13745,6 +13790,7 @@ function createRouter(deps) {
     const format = encoding === "" || encoding === "identity" ? null : decompressionFormat(encoding);
     const undecodable = encoding !== "" && encoding !== "identity" && format === null;
     const usage = new AnswerUsageReader(streaming);
+    let broken = false;
     let decode = null;
     if (format !== null) {
       const decompressor = new DecompressionStream(format);
@@ -13757,7 +13803,9 @@ function createRouter(deps) {
             return;
           usage.push(step.value);
         }
-      })().catch(() => {});
+      })().catch(() => {
+        broken = true;
+      });
       decode = { done, writer };
     }
     const reader = body.getReader();
@@ -13768,7 +13816,7 @@ function createRouter(deps) {
       ended = true;
       const task = (async () => {
         if (undecodable) {
-          note(null);
+          note(null, null);
           return;
         }
         if (decode !== null) {
@@ -13777,12 +13825,14 @@ function createRouter(deps) {
           } catch {}
           await decode.done;
         }
-        note(usage.tokens());
+        const tokens = usage.tokens();
+        note(tokens, !streaming && broken ? "stream_error" : usage.outcome());
       })();
       deps.background?.(task);
     };
     const observed = new ReadableStream({
       cancel(reason) {
+        broken = true;
         finish();
         return reader.cancel(reason);
       },
@@ -13792,6 +13842,7 @@ function createRouter(deps) {
           step = await reader.read();
         } catch (error) {
           controller.error(error);
+          broken = true;
           finish();
           return;
         }
@@ -13887,14 +13938,13 @@ function createRouter(deps) {
       noteChecksDown(profile, why, claudeModel, outcome);
     });
     async function serverToolRoute(tool) {
-      const why = `server tool ${tool}`;
       const named = typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
       const result = await send(req, anthropicUpstream(req, url, config, sent), null);
       if (req.signal.aborted)
-        return closed(result, `anthropic (${why})`);
+        return closed(result, serverToolTarget(tool));
       const status = "response" in result ? result.response.status : null;
       if (url.pathname !== MESSAGES_PATH || status !== null && !capacityFailureStatus(status)) {
-        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+        return { ...answerDirect(result, named), target: serverToolTarget(tool) };
       }
       let limit = null;
       if ("response" in result) {
@@ -13919,7 +13969,7 @@ function createRouter(deps) {
           status: 200
         }),
         skipped: 0,
-        target: `router (${why}; anthropic ${status ?? "did not answer"})`
+        target: serverToolTarget(tool, status)
       };
     }
     function claudeFirstJudge() {
@@ -14088,6 +14138,7 @@ function createRouter(deps) {
     if (req.method === "POST" && url.pathname === MESSAGES_PATH && !model.guard && deps.history?.enabled() === true) {
       const answered = outcome;
       const row = {
+        agent: sessionIdOf(req.headers, "x-claude-code-agent-id"),
         at: startMs,
         breaker: answered.breaker === undefined ? null : answered.breaker.held ? "held" : "not-held",
         model: model.name,
@@ -14101,9 +14152,10 @@ function createRouter(deps) {
       };
       outcome = {
         ...answered,
-        response: observedAnswer(answered.response, (tokens) => {
+        response: observedAnswer(answered.response, (tokens, ended) => {
           deps.history?.record({
             ...row,
+            outcome: answered.response.ok ? ended : null,
             cost: costOf(answered.target, model.name, tokens),
             tokens
           });
@@ -14222,6 +14274,7 @@ var init_router = __esm(() => {
   init_refusal();
   init_safety_checks();
   init_server_tools();
+  init_target_label();
   init_targets();
   TOO_LONG = /context|too long|too large|too many tokens|token limit|payload/i;
   UNSUPPORTED = /unsupported|not supported|unknown (?:content|block|type)|invalid (?:content|block) type|image|document|server_tool|web_search|web_fetch|tool_reference/i;
@@ -16029,6 +16082,41 @@ var init_commands_project = __esm(() => {
 
 // src/gateway/history-read.ts
 import { Database as Database2 } from "bun:sqlite";
+function lastAnswer(file, session, agent, profile, model) {
+  return lastAnswers(file, session, profile, [{ agent, model }]).get(agent) ?? null;
+}
+function lastAnswers(file, session, profile, requests) {
+  const answers = new Map;
+  if (!historyDbExists(file))
+    return answers;
+  let db = null;
+  try {
+    db = new Database2(file, { readonly: true });
+    db.run("PRAGMA busy_timeout = 10");
+    const columns = db.query("PRAGMA table_info(requests)").all();
+    if (!columns.some((column) => column.name === "agent"))
+      return answers;
+    const outcome = columns.some((column) => column.name === "outcome") ? "AND outcome IS NULL" : "";
+    const query = db.query(`
+      SELECT at, model, slot, target FROM requests INDEXED BY requests_session_at
+      WHERE session = ? AND agent IS ? AND profile IS ? AND status >= 200 AND status < 300
+      ${outcome} AND (? IS NULL OR replace(model, '[1m]', '') = ?)
+      AND target NOT GLOB ? AND target NOT GLOB ?
+      ORDER BY id DESC LIMIT 1
+    `);
+    for (const { agent, model } of requests) {
+      const requested = model === undefined ? null : withoutContextSuffix(model);
+      const row = query.get(session, agent, profile, requested, requested, ...SERVER_TOOL_TARGET_PREFIXES.map((prefix) => `${prefix}*`));
+      if (row !== null)
+        answers.set(agent, row);
+    }
+    return answers;
+  } catch {
+    return new Map;
+  } finally {
+    db?.close();
+  }
+}
 function groupExpression(by) {
   switch (by) {
     case "slot":
@@ -16221,6 +16309,8 @@ function historyWords(options) {
 var HISTORY_RANGES, RANGE_MS, BUCKET_MS, HISTORY_BY, DEFAULT_HISTORY_RANGE = "1d", DEFAULT_HISTORY_BY = "target", NO_SLOT_KEY = "(no slot)", NO_SESSION_KEY = "(no session)", SCHEMA_ONE_COLUMNS;
 var init_history_read = __esm(() => {
   init_history();
+  init_target_label();
+  init_targets();
   HISTORY_RANGES = ["1h", "4h", "1d", "7d", "14d", "30d", "90d"];
   RANGE_MS = {
     "1h": 60 * 60 * 1000,
@@ -52475,7 +52565,9 @@ function setupVerdict(counts, run) {
 init_names();
 init_breaker();
 init_checks_down();
+init_history_read();
 init_limit_state();
+init_target_label();
 init_targets();
 import { readFileSync as readFileSync85 } from "fs";
 init_context();
@@ -52581,7 +52673,7 @@ function isJsonObject19(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var NO_CONTEXT_FACTS = { compactWindow: null, pinnedEffort: null };
-function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent, session = null, context = NO_CONTEXT_FACTS) {
+function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDefaults.alerts.usagePercent, session = null, context = NO_CONTEXT_FACTS, answer = null) {
   const parts = [];
   const data = isJsonObject19(input) ? input : {};
   const model = isJsonObject19(data.model) ? data.model.display_name : undefined;
@@ -52593,6 +52685,7 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
   const until = (resetsAt) => resetsAt === null ? "" : ` until ${formatClock(resetsAt, nowMs, timeZone)}`;
   const aboutThisSession = (key) => session === null || session.gatewayOn && scopeOfStateKey(key).profile === session.profile;
   const covered = new Set;
+  const bannerTargets = new Set;
   if (state !== null) {
     const hidden = new Set(Object.entries(state.limits).filter(([, record]) => {
       if (record.claim !== "five_hour" && record.claim !== "seven_day")
@@ -52606,6 +52699,7 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
       if (scopeOfStateKey(key).slot === JUDGE_SLOT || !aboutThisSession(key))
         continue;
       covered.add(record.model);
+      bannerTargets.add(record.target);
       parts.push(`\u26A0 ${record.model} at its limit \u2192 ${record.target}${until(record.resetsAt)}`);
     }
     for (const [limited, record] of currentLimits(state, nowMs)) {
@@ -52636,12 +52730,11 @@ function statuslineText(input, state, nowMs, timeZone, warnPercent = workflowDef
     const percent = Math.round(numbers.percent);
     parts.push(percent >= warnPercent ? `\u26A0 ${label} ${percent}%${numbers.resetsAt === null ? "" : ` (resets ${formatClock(numbers.resetsAt, nowMs, timeZone)})`}` : `${label} ${percent}%`);
   }
+  const id = isJsonObject19(data.model) && typeof data.model.id === "string" ? withoutContextSuffix(data.model.id) : null;
+  if (answer !== null && session?.gatewayOn && id !== null && withoutContextSuffix(answer.model) === id && answerTargetName(answer.target) !== null && answerTargetName(answer.target) !== model && withoutContextSuffix(answer.target) !== id && !bannerTargets.has(answer.target) && typeof model === "string" && parts[0] === model) {
+    parts[0] = `${model} \u2192 ${answerTargetName(answer.target)}`;
+  }
   return parts.join(" \xB7 ");
-}
-function sessionOf(paths, env) {
-  if (env.ANTHROPIC_BASE_URL === undefined)
-    return { config: null, gatewayOn: true, profile: null };
-  return sessionGatewayOf(paths, env);
 }
 function contextFactsOf(paths, input, env, state, session, nowMs) {
   if (!isJsonObject19(input))
@@ -52684,10 +52777,11 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
   } catch {
     state = null;
   }
-  const session = isJsonObject19(input) ? sessionOf(paths, env) : null;
+  const gateway = sessionGatewayOf(paths, env);
+  const session = isJsonObject19(input) ? env.ANTHROPIC_BASE_URL === undefined ? { ...gateway, config: null, gatewayOn: true } : gateway : null;
   const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
   const task = currentTask(paths, input, env);
-  const text = statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value, session, contextFactsOf(paths, input, env, state, session, nowMs));
+  const text = statuslineText(input, state, nowMs, undefined, alerts.alerts.usagePercent.value, session, contextFactsOf(paths, input, env, state, session, nowMs), session?.gatewayOn && isJsonObject19(input) && typeof input.session_id === "string" && isJsonObject19(input.model) && typeof input.model.id === "string" && gateway.gatewayOn ? lastAnswer(paths.historyDbFile, input.session_id, null, session.profile, input.model.id) : null);
   const firstRow = [text, cacheMiss].filter((part) => part !== null && part !== "").join(" \xB7 ");
   console.log([firstRow, task].filter((part) => part !== null && part !== "").join(`
 `));
@@ -52696,7 +52790,9 @@ async function runStatusline(paths, readStdin, nowMs, alerts = { alerts: default
 
 // src/cli/subagent-statusline.ts
 init_build_info();
+init_history_read();
 init_plain_text();
+init_target_label();
 init_targets();
 var DEFAULT_COLUMNS = 80;
 var MIN_COLUMNS = 20;
@@ -52751,9 +52847,9 @@ function contextPart(task) {
   const percent = Math.round(tokens / window * 100);
   return `~${formatTokens(tokens)}/${formatTokens(window)} ctx (${percent}%)`;
 }
-function rowContent(task, columns = DEFAULT_COLUMNS) {
+function rowContent(task, columns = DEFAULT_COLUMNS, answer = null) {
   const slot = slotOf2(task.model) ?? "?";
-  const model = task.model ?? "model not resolved yet";
+  const model = (answer === null ? null : answerTargetName(answer.target)) ?? task.model ?? "model not resolved yet";
   const effort = task.effort ?? "default effort";
   const route = `${slot} \u2192 ${model} \u2192 ${effort}`;
   const context = contextPart(task);
@@ -52776,11 +52872,14 @@ function rowContent(task, columns = DEFAULT_COLUMNS) {
   }
   return tail.length <= room ? cut(tail) : cut(`${context}${SEPARATOR}${route}`);
 }
-function subagentRows(input) {
+function subagentRows(input, answers = new Map) {
   const columns = typeof input === "object" && input !== null && !Array.isArray(input) && typeof input.columns === "number" ? input.columns : DEFAULT_COLUMNS;
-  return statusTasks(input).map((task) => ({ content: rowContent(task, columns), id: task.id }));
+  return statusTasks(input).map((task) => ({
+    content: rowContent(task, columns, answers.get(task.id) ?? null),
+    id: task.id
+  }));
 }
-async function runSubagentStatusline(read = () => Bun.stdin.text()) {
+async function runSubagentStatusline(read = () => Bun.stdin.text(), paths, env = {}) {
   let input = null;
   try {
     const raw = await read();
@@ -52788,7 +52887,18 @@ async function runSubagentStatusline(read = () => Bun.stdin.text()) {
   } catch {
     return 0;
   }
-  for (const row of subagentRows(input))
+  const answers = new Map;
+  if (paths !== undefined && typeof input === "object" && input !== null && "session_id" in input && typeof input.session_id === "string") {
+    const session = sessionGatewayOf(paths, env);
+    if (session.gatewayOn) {
+      const tasks = statusTasks(input).filter((task) => task.model !== null);
+      const found = lastAnswers(paths.historyDbFile, input.session_id, session.profile, tasks.map((task) => ({ agent: task.id, model: task.model ?? undefined })));
+      for (const [agent, answer] of found)
+        if (agent !== null)
+          answers.set(agent, answer);
+    }
+  }
+  for (const row of subagentRows(input, answers))
     console.log(JSON.stringify(row));
   return 0;
 }
@@ -53819,7 +53929,7 @@ Fix: give the folder of a project, or leave --project out to use the folder you 
     case "usage":
       return runUsage(paths, rest, Date.now());
     case "subagent-statusline":
-      return runSubagentStatusline();
+      return runSubagentStatusline(() => Bun.stdin.text(), paths, process.env);
     case "report":
       return runReport(paths, rest, Date.now());
     case "doctor": {
