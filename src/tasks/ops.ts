@@ -30,6 +30,7 @@ import {
   layerOf,
   notesOf,
   openBlockers,
+  planIsOpen,
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
@@ -161,10 +162,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // process claims.
       const owns = (t: WorkTask) =>
         (who.sessionId !== null && t.createdBy === who.sessionId) || claimHeldBy(t.claim, who);
-      // The caller's own plan, from its latest own task with a plan: what a new task or phase
-      // takes. Never another session's plan, or that session's phases would count as the
-      // caller's (`openPhasesOf`).
+      // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
+      // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
+      const writePlan = ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null;
       const projectDir = () => {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
@@ -257,7 +258,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             throw new Error(
               "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
             );
-          const slug = input.plan ?? ownPlan;
+          const slug = input.plan ?? writePlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
             const there = allTasks(store, ctx.project).some(
@@ -331,7 +332,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
-                plan: input.plan ?? parent?.plan ?? ownPlan,
+                plan: input.plan ?? parent?.plan ?? writePlan,
                 blockedBy,
               },
               who,
