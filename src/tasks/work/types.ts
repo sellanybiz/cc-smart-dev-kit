@@ -1,10 +1,9 @@
 export type WorkStatus = "pending" | "in_progress" | "done" | "dropped";
 export type WorkKind = "task" | "plan" | "phase";
 /**
- * Where a task sits (D76): a plan holds phases, a phase holds tasks, a task holds subtasks, and a
- * subtask holds nothing. Worked out from the parent chain (`layerOf`), never stored.
+ * The stored kind is the layer: a plan holds phases, a phase holds tasks, a task holds nothing.
  */
-export type WorkLayer = "plan" | "phase" | "task" | "subtask";
+export type WorkLayer = "plan" | "phase" | "task";
 /**
  * Whether an open task holds its parent's done. Non-blocking work holds nothing.
  */

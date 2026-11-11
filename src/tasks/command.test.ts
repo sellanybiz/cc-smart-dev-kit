@@ -110,6 +110,11 @@ test("task command creates, lists, completes and checks as a process", async () 
     (await run("add", "Check a missing path", "--kind", "database", "--ref", "missing.sql")).code,
   ).toBe(0);
   expect((await run("check")).code).toBe(1);
+  expect(await run("take", "#2")).toEqual({
+    code: 1,
+    text: "",
+    error: "take needs a resolvable calling session\n",
+  });
   // A usage mistake: one line on stderr and where the help is, never the whole usage.
   expect(await run("list", "--typo")).toEqual({
     code: 2,

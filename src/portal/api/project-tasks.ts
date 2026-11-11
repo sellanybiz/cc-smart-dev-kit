@@ -3,7 +3,7 @@
  * one project). Both answer each project with the same reading, two lists, read-only:
  *
  * - **Work tasks**: the kit's work store for the project (`src/tasks/work/tree.ts`): Plan ›
- *   Phase › Task › Subtask as one tree, each with its type and what blocks it — the open ones,
+ *   Phase › Task as one tree, each with its type and what blocks it — the open ones,
  *   and those closed in the last `TASKS_CARD_RECENT_DAYS` days. Every worktree of the repo
  *   shares the one list. Each phase carries its ledger (G3): the agent, branch, worktree and
  *   base the main session set on it, and its steps (`phase-steps.ts`).
@@ -60,6 +60,11 @@ export function workTaskNodeOf(
 ): WorkTaskNode {
   const counted = node.layer === "phase" ? steps.get(node.id) : undefined;
   return {
+    session: node.session,
+    parentId: node.parentId,
+    claim: node.claim,
+    notes: node.notes,
+    events: node.events,
     agent: node.agent,
     base: node.base,
     blocked: node.blocked,

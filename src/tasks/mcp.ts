@@ -11,20 +11,21 @@ An obligation for production, the database, a teammate or later is a project tas
 The phase task's description is the builder's brief. Read it with task_get; save the report with task_note, starting Report:.
 The main session saves Ruling: notes and sets agent, branch, worktree and base on the phase.
 After compaction, task_list scope plan and git log are the truth.
-Finish or drop every blocking subtask before marking its parent done.
-Three layers: phase › task › subtask. A non-blocking task holds nothing; a task blocked by an open task waits for it.
+Finish or drop every blocking task before marking its parent done.
+Three layers: plan › phase › task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
+  take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create:
-    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase).",
+    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase). A plan without parent creates the plan itself; to add a task to a named plan, give its phase as parent.",
   update:
     "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
-  done: "Finish or drop a task. Its open blocking subtasks must be finished or dropped first.",
+  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work and project tasks.",
-  delete: "Delete a mistaken task with no notes or subtasks, or an untracked project task file.",
+  delete: "Delete a mistaken task with no notes or tasks, or an untracked project task file.",
 };
 const READ_ONLY: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);
 

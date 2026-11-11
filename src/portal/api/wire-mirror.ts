@@ -131,6 +131,7 @@ export const MIRRORED = {
   SlotTarget: same<Server.SlotTarget, Wire.SlotTarget>(true),
   SlotsAnswer: same<Server.SlotsAnswer, Wire.SlotsAnswer>(true),
   SwitchFacts: same<Server.SwitchFacts, Wire.SwitchFacts>(true),
+  TaskDetailAnswer: same<Server.TaskDetailAnswer, Wire.TaskDetailAnswer>(true),
   TasksAnswer: same<Server.TasksAnswer, Wire.TasksAnswer>(true),
   TasksProject: same<Server.TasksProject, Wire.TasksProject>(true),
   UpdateAnswer: same<Server.UpdateAnswer, Wire.UpdateAnswer>(true),

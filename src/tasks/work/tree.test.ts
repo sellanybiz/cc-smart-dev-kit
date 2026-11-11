@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
-import { createTask, type LaidPhase, layPhase, updateTask } from "./store";
+import { type LaidPhase, layPhase, updateTask } from "./store";
 import type { Who } from "./types";
 
 function createPhase(db: WorkDb, input: LaidPhase, who: Who, now: number) {
@@ -22,7 +23,7 @@ function value<T>(result: Result<T>): T {
   return result.value;
 }
 
-test("plan, phase and subtasks as one tree, with closed/total over each subtree", () => {
+test("plan, phase and tasks as one tree, with membership and subtree counts", () => {
   const paths = { stateDir: tempDir() };
   const db = openWorkDb(workDbFile(paths), { mode: "write" });
   const phase = value(
@@ -63,7 +64,7 @@ test("plan, phase and subtasks as one tree, with closed/total over each subtree"
   // The plan task is open (its phase is open), so it comes first; the old closed task is gone.
   // Each level lists open work first: Two before One, which is done.
   expect(outline(tree.value.roots)).toEqual([
-    "#1 plan [pending] 1/3",
+    "#1 plan [pending] 0/0",
     "  #2 Phase A [pending] 1/2",
     "    #4 Two [pending] 0/0",
     "    #3 One [done] 0/0",

@@ -1,13 +1,17 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { claudeMemDb, mistakenImport } from "../../testing/claude-mem-db";
+import {
+  claudeMemDb,
+  legacyCreateTask as createTask,
+  mistakenImport,
+} from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, workDbFile } from "./db";
 import { type ImportResult, importClaudeMem } from "./import-claude-mem";
 import { allTasks, eventsOf, getTask, notesOf } from "./queries";
 import { startView } from "./read";
-import { addNote, createTask, updateTask } from "./store";
+import { addNote, updateTask } from "./store";
 import type { Result } from "./types";
 
 const DAY = 86_400_000;
@@ -227,6 +231,7 @@ test("claude-mem's lists fold as claude-mem folds them", () => {
   expect(cut).toHaveLength(200);
   expect(allTasks(db, "p").map((task) => [task.subject, task.createdAt, task.updatedAt])).toEqual([
     ["Plan", 5 * DAY, 9 * DAY],
+    ["Imported items", 5 * DAY, 9 * DAY],
     [cut, 7 * DAY, 7 * DAY],
   ]);
   db.close();
@@ -272,10 +277,12 @@ test("an imported task keeps claude-mem's dates, so an old one counts as stale",
     const task = getTask(db, "p", ref);
     return [task?.subject, task?.createdAt, task?.updatedAt];
   };
-  expect(["#1", "#2", "#3", "#4"].map(dates)).toEqual([
+  expect(["#1", "#2", "#3", "#4", "#5", "#6"].map(dates)).toEqual([
     ["old-list", 10 * DAY, 20 * DAY],
+    ["Imported items", 10 * DAY, 20 * DAY],
     ["Old step", 20 * DAY, 20 * DAY],
     ["new-list", NOW - DAY, NOW - DAY],
+    ["Imported items", NOW - DAY, NOW - DAY],
     ["New step", NOW - DAY, NOW - DAY],
   ]);
   // The history still says when the kit imported it.
@@ -286,8 +293,12 @@ test("an imported task keeps claude-mem's dates, so an old one counts as stale",
 
   const view = startView(paths, "p", who, { limit: 8, staleBefore: NOW - 30 * DAY });
   if (view.state !== "ready") throw new Error(view.state);
-  expect(view.value.tasks.map((task) => task.subject)).toEqual(["new-list", "New step"]);
-  expect(view.value.stale).toBe(2);
+  expect(view.value.tasks.map((task) => task.subject)).toEqual([
+    "new-list",
+    "Imported items",
+    "New step",
+  ]);
+  expect(view.value.stale).toBe(3);
 });
 
 test("a list is imported once, whatever the case of the project name claude-mem matched it under", () => {

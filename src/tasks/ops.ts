@@ -41,6 +41,7 @@ import {
   insertTask,
   layPhase,
   planTask,
+  takeTasks,
   updateTask,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
@@ -138,7 +139,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
   const env = options.env ?? process.env;
   const stateDir = options.stateDir ?? cliPaths(env).stateDir;
   let db: WorkDb | undefined;
-  const database = () => (db ??= openWorkDb(workDbFile({ stateDir }), { mode: "write" }));
+  const database = () => {
+    if (db?.writeRefusal !== undefined) {
+      db.close();
+      db = undefined;
+    }
+    if (db === undefined) db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    return db;
+  };
   function call(operation: TaskOperation, raw: unknown): TaskAnswer {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
@@ -176,6 +184,23 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         !!store.sqlite
           .query("SELECT 1 FROM acks WHERE project=? AND task_ref=?")
           .get(ctx.project, id);
+      if (operation === "take") {
+        const input = taskSchemas.take.parse(raw);
+        if (!caller?.sessionId) throw new Error("take needs a resolvable calling session");
+        const target =
+          all.find((t) => t.kind === "plan" && t.plan === input.task) ?? work(input.task);
+        const moved = value(
+          takeTasks(store, ctx.project, target.id, who, now, {
+            ...(input.from === undefined ? {} : { from: input.from }),
+            force: input.force,
+            isLive: claimLive,
+          }),
+        );
+        return {
+          ok: true,
+          text: `${moved.length} task(s) taken by session ${who.sessionId}${input.force ? " (forced)" : ""}${who.pid === null ? "; session only, no process claim" : ""}`,
+        };
+      }
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
@@ -217,7 +242,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         }
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        if (input.phase !== undefined || input.plan !== undefined) {
+        if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
           if (input.status !== undefined)
@@ -230,7 +255,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               input.description !== undefined)
           )
             throw new Error(
-              "A plan's own task takes a subject only: give phase to lay out a phase, with its description, type and blockers",
+              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
             );
           const slug = input.plan ?? ownPlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -291,6 +316,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           };
         }
         const parent = input.parent ? work(input.parent) : undefined;
+        if (input.plan !== undefined && parent?.plan !== input.plan)
+          throw new Error("parent belongs to another plan");
         // The task and its blockers go in one transaction: a refused blocker leaves no task.
         const task = value(
           writeWork(store, () =>
@@ -304,7 +331,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
-                plan: parent?.plan ?? ownPlan,
+                plan: input.plan ?? parent?.plan ?? ownPlan,
                 blockedBy,
               },
               who,
@@ -403,8 +430,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · ${input.outcome}` };
         }
         const task = work(input.task);
-        // One transaction: a close the store refuses (an open subtask) keeps no note either, so
-        // a retry after finishing the subtask saves each note once.
+        // One transaction: a close the store refuses (an open blocking task) keeps no note either, so
+        // a retry after finishing the task saves each note once.
         const changed = value(
           writeWork(store, () => {
             for (const text of [input.note, input.evidence])
@@ -553,13 +580,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           // Only this read may show another session's plan: the project's newest, when the
           // caller has none of its own. Nothing written ever takes it.
           const shown =
+            input.plan ??
             ownPlan ??
             all
               .filter((t) => t.kind === "plan")
               .sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ??
             null;
+          const ownPlans = new Set(
+            all
+              .filter(owns)
+              .map((t) => t.plan)
+              .filter((p) => p !== null),
+          );
           selected = selected.filter(
-            (t) => shown !== null && t.plan === shown && t.kind !== "task",
+            (t) =>
+              t.kind !== "task" &&
+              (input.plan === undefined && ownPlans.size > 1
+                ? t.plan !== null && ownPlans.has(t.plan)
+                : shown !== null && t.plan === shown),
           );
         } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter(

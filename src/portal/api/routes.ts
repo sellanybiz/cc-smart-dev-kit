@@ -1,4 +1,5 @@
 import { historyKeys, RECENT_PAGE_DEFAULT, RECENT_PAGE_MAX } from "../../gateway/history-read";
+import { taskDetail } from "../../tasks/work/read";
 import type { PageDataDeps } from "../page-data";
 import {
   healthAnswer,
@@ -214,6 +215,22 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
   const path = url.pathname;
   const read = Object.hasOwn(API_READS, path) ? API_READS[path] : undefined;
   if (read !== undefined) return await read(deps, url.searchParams);
+  if (path.startsWith("/api/tasks/")) {
+    let id: string;
+    try {
+      id = decodeURIComponent(path.slice("/api/tasks/".length));
+    } catch {
+      return { body: { error: "name a task" }, status: 400 };
+    }
+    if (!/^w[a-z2-7]{10}$/.test(id)) return { body: { error: "name a task id" }, status: 400 };
+    const detail = taskDetail(deps.action.portal.paths, id);
+    return detail.state === "ready" && detail.value !== null
+      ? ok(detail.value)
+      : {
+          body: { error: detail.state === "unreadable" ? detail.why : "task not found" },
+          status: 404,
+        };
+  }
   if (path.startsWith("/api/projects/")) {
     let id: string;
     try {

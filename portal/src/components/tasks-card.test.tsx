@@ -98,12 +98,12 @@ describe("one project's tasks", () => {
     expect(text).toContain("Work on this machine");
     // Every open task counts, at every depth; closed ones are hidden by default.
     expect(text).toContain("6 open · 1 blocked · 2 non-blocking · closed ones hidden");
-    // Plan › Phase › Task › Subtask, and the done parent kept as the place of its open subtask.
-    expect(layers(html)).toEqual(["plan", "phase", "task", "subtask", "task", "task", "subtask"]);
+    // Plan › Phase › Task (legacy nested fixtures), and the done parent kept as the place of its open subtask.
+    expect(layers(html)).toEqual(["plan", "phase", "task", "task", "task", "task", "task"]);
     expect(text).toContain("in progress: plan");
     expect(text).toContain("phase K");
     expect(text).toContain("Task, in progress: Prove two writers");
-    expect(text).toContain("Subtask, pending: Time the lock");
+    expect(text).toContain("Task, pending: Time the lock");
     expect(text).not.toContain("Write the schema ");
     expect(text).not.toContain("Migrate the old rows");
     expect(text).toContain("2 of 6 closed");
@@ -162,7 +162,7 @@ describe("one project's tasks", () => {
     const html = renderToStaticMarkup(
       <TasksBody data={FULL} filter={{ ...DEFAULT_FILTER, nonBlocking: true }} />,
     );
-    expect(layers(html)).toEqual(["plan", "phase", "task", "subtask", "task", "subtask"]);
+    expect(layers(html)).toEqual(["plan", "phase", "task", "task", "task", "task"]);
     const none = words(
       renderToStaticMarkup(
         <TasksBody

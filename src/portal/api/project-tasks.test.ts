@@ -11,11 +11,12 @@ import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { projectKey } from "../../tasks/context";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../../tasks/work/db";
-import { createTask, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
+import { addNote, type LaidPhase, layPhase, updateTask } from "../../tasks/work/store";
 import type { Result, Who } from "../../tasks/work/types";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
-import { type ActionContext, portalOmnirouteContext } from "../actions";
+import { type ActionContext, portalOmnirouteContext, runAction } from "../actions";
 import type { PageDataDeps } from "../page-data";
 import { addProjectRoot, forgetProjectsList } from "./projects";
 import { answerApi } from "./routes";
@@ -92,6 +93,34 @@ async function answerOf(deps: PageDataDeps, id: string) {
   return await answerApi(deps, url);
 }
 
+test("task detail returns description, notes and history and refuses an unknown move destination", async () => {
+  const { deps, paths } = await world(repo());
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  const task = value(
+    createTask(db, { project: "p", subject: "Detail", description: "Full description" }, who, NOW),
+  );
+  value(addNote(db, task.id, "A note", who, NOW + 1));
+  db.close();
+  const answer = await answerApi(deps, new URL(`http://127.0.0.1/api/tasks/${task.id}`));
+  expect(answer?.status).toBe(200);
+  expect(answer?.body).toMatchObject({
+    task: { id: task.id, description: "Full description" },
+    notes: [{ text: "A note" }],
+    events: [{ action: "created" }, { action: "noted" }],
+  });
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/wabcdefghij")))?.status).toBe(
+    404,
+  );
+  expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/%zz")))?.status).toBe(400);
+  expect(await runAction("task.take", { task: task.id, session: "unknown" }, deps.action)).toEqual({
+    ok: false,
+    lines: ["unknown destination session; nothing changed"],
+  });
+  expect(
+    await runAction("task.take", { task: task.id, session: "unknown", force: true }, deps.action),
+  ).toEqual({ ok: false, lines: ["confirm the forced take-over first"] });
+});
+
 beforeEach(() => {
   forgetProjectsList();
 });
@@ -162,6 +191,11 @@ describe("a project's tasks answer (D75)", () => {
                   blockedBy: [],
                   children: [],
                   closed: 0,
+                  session: who.sessionId,
+                  notes: 0,
+                  parentId: phase.id,
+                  claim: "dead",
+                  events: 2,
                   id: step.id,
                   kind: "task",
                   layer: "task",
@@ -181,6 +215,11 @@ describe("a project's tasks answer (D75)", () => {
               blocked: false,
               blockedBy: [],
               closed: 0,
+              session: who.sessionId,
+              notes: 0,
+              parentId: phase.parentId,
+              claim: "none",
+              events: 1,
               id: phase.id,
               kind: "phase",
               layer: "phase",
@@ -200,6 +239,11 @@ describe("a project's tasks answer (D75)", () => {
           blocked: false,
           blockedBy: [],
           closed: 0,
+          session: who.sessionId,
+          parentId: null,
+          claim: "none",
+          notes: 0,
+          events: 1,
           id: phase.parentId as string,
           kind: "plan",
           layer: "plan",
@@ -208,7 +252,7 @@ describe("a project's tasks answer (D75)", () => {
           ref: "#1",
           status: "pending",
           subject: "launch",
-          total: 2,
+          total: 0,
           type: "blocking",
           updatedAt: "2026-02-27T00:00:00.000Z",
         },
@@ -310,6 +354,11 @@ describe("a project's tasks answer (D75)", () => {
         ],
         children: [],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "none",
+        events: 1,
         id: ship.id,
         kind: "task",
         layer: "task",
@@ -333,9 +382,14 @@ describe("a project's tasks answer (D75)", () => {
             blockedBy: [],
             children: [],
             closed: 0,
+            session: who.sessionId,
+            notes: 0,
+            parentId: build.id,
+            claim: "none",
+            events: 1,
             id: note.id,
             kind: "task",
-            layer: "subtask",
+            layer: "task",
             phase: null,
             plan: null,
             ref: "#3",
@@ -347,6 +401,11 @@ describe("a project's tasks answer (D75)", () => {
           },
         ],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "dead",
+        events: 2,
         id: build.id,
         kind: "task",
         layer: "task",
@@ -365,6 +424,11 @@ describe("a project's tasks answer (D75)", () => {
         blockedBy: [],
         children: [],
         closed: 0,
+        session: who.sessionId,
+        notes: 0,
+        parentId: null,
+        claim: "none",
+        events: 2,
         id: brief.id,
         kind: "task",
         layer: "task",

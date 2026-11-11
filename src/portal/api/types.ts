@@ -374,8 +374,8 @@ export interface ProjectGatewayAnswer {
 /** A work task's status in the kit's store (`src/tasks/work/types.ts` › `WorkStatus`). */
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
-/** Where a task sits (D76): Plan › Phase › Task › Subtask (`src/tasks/work/types.ts` › `WorkLayer`). */
-export type WorkTaskLayer = "phase" | "plan" | "subtask" | "task";
+/** Where a task sits (D76): Plan › Phase › Task (`src/tasks/work/types.ts` › `WorkLayer`). */
+export type WorkTaskLayer = "phase" | "plan" | "task";
 
 /** Blocking holds its parent while open; non-blocking holds nothing (D76, `WorkType`). */
 export type WorkTaskType = "blocking" | "non-blocking";
@@ -395,6 +395,11 @@ export interface WorkTaskSteps {
 
 /** One work task in the Tasks tab's tree (`src/tasks/work/tree.ts` › `TaskTreeNode`). */
 export interface WorkTaskNode {
+  session: null | string;
+  parentId: null | string;
+  claim: "live" | "dead" | "none";
+  notes: number;
+  events: number;
   /** The subagent that works on it (its id or name), as the main session set it; null when none. */
   agent: null | string;
   /** The commit its work started from; null when none was set. */
@@ -411,7 +416,7 @@ export interface WorkTaskNode {
   id: string;
 
   kind: "phase" | "plan" | "task";
-  /** Its layer, worked out from its parents: a task under a task is a subtask. */
+  /** Its kind is its layer; legacy nested tasks still read as tasks. */
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
@@ -719,3 +724,10 @@ export type LiveEventName = keyof LiveEvents;
 
 /** What publishes to the stream: an event's name and exactly its data. */
 export type LivePublish = <K extends LiveEventName>(event: K, data: LiveEvents[K]) => void;
+
+/** GET /api/tasks/<id>: the complete stored task and its notes and history. */
+export interface TaskDetailAnswer {
+  task: import("../../tasks/work/types").WorkTask;
+  notes: import("../../tasks/work/types").WorkNote[];
+  events: import("../../tasks/work/types").WorkEvent[];
+}

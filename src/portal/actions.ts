@@ -37,6 +37,7 @@ import {
   parseTarget,
   slotKeyFromArg,
 } from "../gateway/targets";
+import { liveSessions } from "../hooks/sessions";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
 import {
@@ -58,6 +59,7 @@ import { findUserInstall } from "../setup/installed-plugins";
 import { withLock } from "../setup/lock";
 import type { ManagedEntriesResult } from "../setup/managed-entries";
 import { isObject } from "../setup/managed-json";
+import { createTaskOps } from "../tasks/ops";
 import { CLAUDE_TIMEOUT_MS, commandContext } from "../update/apply";
 import { checkoutFold } from "../update/retired-repos";
 import {
@@ -1798,6 +1800,7 @@ export const ACTION_NAMES = [
   "slot.save",
   "slot.test",
   "switch",
+  "task.take",
   "update.check",
   "update.install",
   "workflow.set",
@@ -1834,6 +1837,37 @@ async function runActionByName(
   action: ActionContext,
 ): Promise<ActionResult> {
   switch (name) {
+    case "task.take": {
+      if (typeof body.session !== "string" || typeof body.task !== "string")
+        return { ok: false, lines: ["name a task and destination session"] };
+      if (body.force === true && body.confirm !== true)
+        return { ok: false, lines: ["confirm the forced take-over first"] };
+      const session = liveSessions(action.portal.paths.claudeConfigDir).find(
+        (s) => s.sessionId === body.session && s.name.trim() !== "",
+      );
+      if (!session) return { ok: false, lines: ["unknown destination session; nothing changed"] };
+      const ops = createTaskOps({
+        env: action.portal.env,
+        stateDir: action.portal.paths.stateDir,
+        caller: () => ({
+          sessionId: session.sessionId,
+          pid: session.pid,
+          procStart: session.procStart ?? null,
+          cwd: session.cwd,
+          name: session.name,
+        }),
+      });
+      try {
+        const result = ops.call("take", {
+          task: body.task,
+          force: body.force === true,
+          ...(typeof body.from === "string" ? { from: body.from } : {}),
+        });
+        return { ok: result.ok, lines: [result.ok ? result.text : result.why] };
+      } finally {
+        ops.close();
+      }
+    }
     case "slot.test":
       return testTargets(action, body);
     case "slot.check":

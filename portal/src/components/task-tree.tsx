@@ -22,7 +22,6 @@ export const LAYER: Record<WorkTaskNode["layer"], { words: string; text: string 
   plan: { words: "Plan", text: "text-base font-semibold" },
   phase: { words: "Phase", text: "text-sm font-semibold" },
   task: { words: "Task", text: "text-sm" },
-  subtask: { words: "Subtask", text: "text-[0.8125rem]" },
 };
 
 /**
