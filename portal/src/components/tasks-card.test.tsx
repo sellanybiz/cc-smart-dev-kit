@@ -204,7 +204,7 @@ describe("one project's tasks", () => {
         <TasksBody
           data={{
             files: { state: "unavailable", why: "the project file is broken" },
-            work: { more: 0, recentDays: 7, state: "ready", tasks: [] },
+            work: { more: 0, recentDays: 7, sessions: [], sessionsWhy: null, state: "ready", tasks: [] },
           }}
         />,
       ),
@@ -218,7 +218,7 @@ describe("one project's tasks", () => {
         <TasksBody
           data={{
             ...FULL,
-            work: { more: 0, recentDays: 7, state: "ready", tasks: [PHASE.children[0] ?? PHASE] },
+            work: { more: 0, recentDays: 7, sessions: [], sessionsWhy: null, state: "ready", tasks: [PHASE.children[0] ?? PHASE] },
           }}
           onFilter={() => {}}
         />,

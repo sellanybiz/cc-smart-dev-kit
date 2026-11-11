@@ -179,6 +179,9 @@ describe("a project's tasks answer (D75)", () => {
     expect(body.work).toEqual({
       more: 0,
       recentDays: 7,
+      // The one session that made these tasks gave no name and runs no more.
+      sessions: [{ id: "s", live: false, name: null }],
+      sessionsWhy: null,
       state: "ready",
       tasks: [
         {
@@ -547,6 +550,57 @@ describe("a project's tasks answer (D75)", () => {
     expect(answer?.status).toBe(200);
     const body = answer?.body as TasksAnswer;
     expect(body.projects).toEqual([]);
+  });
+
+  test("the sessions: running ones in the project first, then the history's last name for the rest", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const planner: Who = { sessionId: "s-planner", pid: 2, procStart: "2", name: "planner" };
+    const first = value(createTask(db, { project, subject: "Plan it" }, planner, NOW - DAY));
+    // Renamed later: the newer name wins.
+    value(addNote(db, first.id, "renamed", { ...planner, name: "planner-two" }, NOW));
+    value(createTask(db, { project, subject: "No name" }, { ...who, sessionId: "s-quiet" }, NOW));
+    db.close();
+    // Two running sessions: one in a folder of the project, one outside any project.
+    const sessions = join(paths.claudeConfigDir, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    mkdirSync(join(root, "sub"), { recursive: true });
+    writeFileSync(
+      join(sessions, `${process.pid}.json`),
+      JSON.stringify({
+        cwd: join(root, "sub"),
+        name: "builder",
+        pid: process.pid,
+        sessionId: "s-live",
+      }),
+    );
+    const elsewhere = tempDir("tasks-elsewhere");
+    writeFileSync(
+      join(sessions, `${process.ppid}.json`),
+      JSON.stringify({ cwd: elsewhere, name: "other", pid: process.ppid, sessionId: "s-other" }),
+    );
+
+    const answer = await answerOf(deps, idOf(root));
+    const body = answer?.body as ProjectTasksAnswer;
+    if (body.work.state !== "ready") throw new Error(`no tree: ${JSON.stringify(body.work)}`);
+    expect(body.work.sessions).toEqual([
+      { id: "s-live", live: true, name: "builder" },
+      { id: "s-planner", live: false, name: "planner-two" },
+      { id: "s-quiet", live: false, name: null },
+    ]);
+    expect(body.work.sessionsWhy).toBe(null);
+
+    // A running session's record that cannot be read: none is called live, and the page is told why.
+    writeFileSync(join(sessions, `${process.pid}.json`), "not json");
+    const broken = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (broken.work.state !== "ready") throw new Error("no tree");
+    expect(broken.work.sessions.map((one) => [one.id, one.live])).toEqual([
+      ["s-planner", false],
+      ["s-quiet", false],
+    ]);
+    expect(broken.work.sessionsWhy).toContain(`the record of running session ${process.pid}`);
   });
 
   test("a project the list does not have is a 404 with the list's name", async () => {

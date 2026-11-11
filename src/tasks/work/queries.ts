@@ -270,6 +270,19 @@ export function eventsOf(db: WorkDb, task: string | WorkTask): WorkEvent[] {
     }));
 }
 /**
+ * The name each session last wrote into the project's history, by session id: what the portal
+ * calls a session that runs no more. A session that never gave a name is left out.
+ */
+export function sessionNames(db: WorkDb, project: string): Map<string, string> {
+  const rows = db.sqlite
+    .query<{ session_id: string; session_name: string }, [string]>(
+      "SELECT session_id, session_name FROM task_events WHERE project=? AND session_id IS NOT NULL AND session_name IS NOT NULL AND session_name <> '' ORDER BY id",
+    )
+    .all(project);
+  // Oldest first: a later name (a rename) wins.
+  return new Map(rows.map((row) => [row.session_id, row.session_name]));
+}
+/**
  * The history of a task no longer in the store, by its `#n` or id: a deleted task keeps its
  * entries, the last one its last version. Empty when no task ever had it, or the task is there.
  */

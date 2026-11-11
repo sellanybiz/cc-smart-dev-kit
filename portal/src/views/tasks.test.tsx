@@ -45,6 +45,8 @@ const DATA: TasksData = {
         work: {
           more: 0,
           recentDays: 7,
+          sessions: [],
+          sessionsWhy: null,
           state: "ready",
           tasks: [task(1, "Fix the home page link", "in_progress")],
         },

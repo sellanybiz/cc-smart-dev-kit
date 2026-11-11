@@ -12,16 +12,22 @@
  *   (`checkProjectTasks`), never a second copy of it. A task on a branch not merged yet is not in
  *   the main checkout: `task list --branches` shows those.
  *
+ * - **Sessions**: every session that made a task in the tree, and every session that runs now
+ *   with its folder in the project (Claude Code's own records, `liveSessions`), each with its
+ *   name: the running session's own, else the last one its task history holds. The page names
+ *   sessions with it, and offers the running ones as where a take-over (`task.take`) can move work.
+ *
  * The project is found the way `src/tasks/context.ts` finds it for every other reader, with git
  * read through `Bun.spawn` (`taskContextAsync`), so the server never blocks. A change is a task
- * tool or `cc-smart-dev-kit task`, never this page.
+ * tool, `cc-smart-dev-kit task` or the take-over action, never a read.
  */
 import { relative } from "node:path";
+import { liveSessions, type SessionRecord } from "../../hooks/sessions";
 import { taskContextAsync } from "../../tasks/context";
 import { checkProjectTasks, DAY_MS } from "../../tasks/project/check";
 import { scanProjectTasks } from "../../tasks/project/files";
 import type { ProjectTask } from "../../tasks/project/format";
-import { allTasks } from "../../tasks/work/queries";
+import { allTasks, sessionNames } from "../../tasks/work/queries";
 import { readWorkStore } from "../../tasks/work/read";
 import { projectTaskTree, type TaskTreeNode } from "../../tasks/work/tree";
 import type { PageDataDeps } from "../page-data";
@@ -33,6 +39,7 @@ import type {
   ProjectTaskRow,
   ProjectTasksAnswer,
   ProjectWorkTasks,
+  TaskSession,
   TasksAnswer,
   WorkTaskNode,
 } from "./types";
@@ -162,7 +169,76 @@ export async function projectTasksAnswerFor(
   if (project === undefined) {
     return { error: `no project has the id "${id}"; the list on /api/projects names them` };
   }
-  return await tasksOf(deps, project);
+  return await tasksOf(deps, project, await runningSessions(deps));
+}
+
+/** The sessions running now, by the project key of each one's folder, or why none could be read. */
+interface Running {
+  byProject: ReadonlyMap<string, readonly SessionRecord[]>;
+  why: null | string;
+}
+
+/**
+ * Claude Code's records of the running sessions, read once for an answer, each put under its
+ * folder's project (found the way every task reader finds it). A folder git cannot place, or
+ * that is gone, belongs to no project here.
+ */
+async function runningSessions(deps: PageDataDeps): Promise<Running> {
+  const { env, paths } = deps.action.portal;
+  let records: SessionRecord[];
+  try {
+    records = liveSessions(paths.claudeConfigDir);
+  } catch (error) {
+    return { byProject: new Map(), why: error instanceof Error ? error.message : String(error) };
+  }
+  const keys = await mapLimit(records, PROJECT_GIT_AT_ONCE, async (record) => {
+    try {
+      const context = await taskContextAsync(record.cwd, env);
+      return context.ok ? context.project : null;
+    } catch {
+      // The folder is gone (its real path cannot be read): it is in no project now.
+      return null;
+    }
+  });
+  const byProject = new Map<string, SessionRecord[]>();
+  for (const [index, record] of records.entries()) {
+    const key = keys[index];
+    if (key === null || key === undefined) continue;
+    byProject.set(key, [...(byProject.get(key) ?? []), record]);
+  }
+  return { byProject, why: null };
+}
+
+/** Every session id the tree names, each once. */
+function treeSessions(nodes: readonly TaskTreeNode[], into = new Set<string>()): Set<string> {
+  for (const node of nodes) {
+    if (node.session !== null) into.add(node.session);
+    treeSessions(node.children, into);
+  }
+  return into;
+}
+
+/** The sessions one project's tree names, and those running in it: running first, then by name. */
+export function taskSessionsOf(
+  roots: readonly TaskTreeNode[],
+  running: readonly SessionRecord[],
+  names: ReadonlyMap<string, string>,
+): TaskSession[] {
+  const live = new Map(running.map((record) => [record.sessionId, record]));
+  const ids = treeSessions(roots, new Set(live.keys()));
+  return [...ids]
+    .map((id) => {
+      const own = live.get(id)?.name.trim() ?? "";
+      return { id, live: live.has(id), name: own !== "" ? own : (names.get(id) ?? null) };
+    })
+    .sort(
+      (a, b) =>
+        Number(b.live) - Number(a.live) ||
+        // A named session before one with no name.
+        Number(a.name === null) - Number(b.name === null) ||
+        (a.name ?? "").localeCompare(b.name ?? "") ||
+        a.id.localeCompare(b.id),
+    );
 }
 
 /**
@@ -171,15 +247,20 @@ export async function projectTasksAnswerFor(
  */
 export async function tasksAnswer(deps: PageDataDeps): Promise<TasksAnswer> {
   const list = await projectsList(projectsWorldOf(deps));
+  const running = await runningSessions(deps);
   const projects = await mapLimit(list.projects, PROJECT_GIT_AT_ONCE, async (project) => ({
     project,
-    tasks: await tasksOf(deps, project),
+    tasks: await tasksOf(deps, project, running),
   }));
   return { note: list.note, projects };
 }
 
 /** One project's work tree and its open task files: the one reading both answers use. */
-async function tasksOf(deps: PageDataDeps, project: ProjectSummary): Promise<ProjectTasksAnswer> {
+async function tasksOf(
+  deps: PageDataDeps,
+  project: ProjectSummary,
+  running: Running,
+): Promise<ProjectTasksAnswer> {
   const { env, now, paths } = deps.action.portal;
   const context = await taskContextAsync(project.root, env);
   if (!context.ok) {
@@ -199,11 +280,21 @@ async function tasksOf(deps: PageDataDeps, project: ProjectSummary): Promise<Pro
     // The steps count every task under a phase, closed long ago too: the tree leaves those out,
     // so they are read from the project's whole list. A list that cannot be read now shows no
     // steps, and the next `tasks` event reads both again.
-    const all = readWorkStore(paths, (db) => phaseSteps(allTasks(db, context.project)));
-    const steps = all.state === "ready" ? all.value : new Map<string, PhaseSteps>();
+    const all = readWorkStore(paths, (db) => ({
+      names: sessionNames(db, context.project),
+      steps: phaseSteps(allTasks(db, context.project)),
+    }));
+    const steps = all.state === "ready" ? all.value.steps : new Map<string, PhaseSteps>();
+    const names = all.state === "ready" ? all.value.names : new Map<string, string>();
     work = {
       more: tree.value.more,
       recentDays: TASKS_CARD_RECENT_DAYS,
+      sessions: taskSessionsOf(
+        tree.value.roots,
+        running.byProject.get(context.project) ?? [],
+        names,
+      ),
+      sessionsWhy: running.why,
       state: "ready",
       tasks: tree.value.roots.map((root) => workTaskNodeOf(root, steps)),
     };

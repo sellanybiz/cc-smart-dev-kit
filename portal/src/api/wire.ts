@@ -699,9 +699,23 @@ export interface ProjectTaskRow {
   when: "any" | "next-release" | "now" | null;
 }
 
+/** A session the Tasks tab names: in the tree, or running in the project now. */
+export interface TaskSession {
+  id: string;
+  name: null | string;
+  live: boolean;
+}
+
 /** The kit's work store for one project. */
 export type ProjectWorkTasks =
-  | { more: number; recentDays: number; state: "ready"; tasks: WorkTaskNode[] }
+  | {
+      more: number;
+      recentDays: number;
+      sessions: TaskSession[];
+      sessionsWhy: null | string;
+      state: "ready";
+      tasks: WorkTaskNode[];
+    }
   | { state: "none" }
   | { state: "unreadable"; why: string };
 

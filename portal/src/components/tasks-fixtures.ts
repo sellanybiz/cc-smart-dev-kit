@@ -137,6 +137,8 @@ export const FULL: ProjectTasksData = {
   work: {
     more: 2,
     recentDays: 7,
+    sessions: [],
+    sessionsWhy: null,
     state: "ready",
     tasks: [
       task(1, "plan", "in_progress", [PHASE], {

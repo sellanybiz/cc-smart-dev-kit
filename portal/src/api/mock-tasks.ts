@@ -238,7 +238,7 @@ export function tasksPagesFor(
           state: "ready",
           tasks: FULL_FILES,
         },
-        work: { more: 0, recentDays: 7, state: "ready", tasks: fullTree(now) },
+        work: { more: 0, recentDays: 7, sessions: [], sessionsWhy: null, state: "ready", tasks: fullTree(now) },
       };
     } else if (row.worktrees === null) {
       // A folder git cannot read: neither the store's key nor the files can be found.
@@ -260,6 +260,8 @@ export function tasksPagesFor(
         work: {
           more: 0,
           recentDays: 7,
+          sessions: [],
+          sessionsWhy: null,
           state: "ready",
           tasks: [node(1, "Fix the broken link on the home page", "done", now - DAY)],
         },

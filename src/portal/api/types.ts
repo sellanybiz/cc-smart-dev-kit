@@ -452,6 +452,18 @@ export interface ProjectTaskRow {
   when: "any" | "next-release" | "now" | null;
 }
 
+/**
+ * A session the Tasks tab names: one that made a task in the tree, or one that runs in the
+ * project now (a session work can move to).
+ */
+export interface TaskSession {
+  id: string;
+  /** The running session's own name, else the last name its task history holds; null: none. */
+  name: null | string;
+  /** True when it runs now with its folder in this project. */
+  live: boolean;
+}
+
 /** The kit's work store for one project: its tasks as a tree, or why there are none to show. */
 export type ProjectWorkTasks =
   | {
@@ -459,6 +471,10 @@ export type ProjectWorkTasks =
       more: number;
       /** A closed task stays in the tree this many days after its last change. */
       recentDays: number;
+      /** The running sessions first, then by name. */
+      sessions: TaskSession[];
+      /** Why the running sessions could not be read (then none is live); null when they could. */
+      sessionsWhy: null | string;
       state: "ready";
       tasks: WorkTaskNode[];
     }
