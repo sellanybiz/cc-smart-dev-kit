@@ -402,6 +402,10 @@ say so" is not proof: a docs page can be ahead of, or behind, the release. Prove
 one before the phase that needs it ("now": at the first real release), then move it
 into a table above.
 
+| Behaviour | Status | Live proof still owed |
+|---|---|---|
+| Plan mode writes into `plansDirectory`; a relative path is documented as relative to the project root. Setup writes `.claude/plans` at user scope. | **To prove live**: which root a worktree session uses (its checkout or the main checkout). | With the tested Claude Code version, start a fresh session in a temporary git worktree with this user setting and no project override. Enter plan mode and save a plan. Record the actual file path, checking both checkouts and the config folder's `plans` directory. Repeat in the main checkout, with a project override, in a home-root project, and on Windows with a backslash path. Confirm the fallback location in the last two cases. |
+
 - **An exec-form hook on Windows** runs with `bun.exe`: the old row here said the plugin's
   `sh` shim could not start there, and it was right. The hooks are shell form now, through
   `plugin/bin/cc-smart-dev-kit-bun.sh`, so this is no longer the question — what is still

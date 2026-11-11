@@ -19,9 +19,23 @@ import {
   doctorVerdict,
   groupSummary,
   oldTodoToolsKeyCheck,
+  plansDirectoryCheck,
   taskToolsCheck,
 } from "./doctor";
 import { type CliPaths, cliPaths } from "./paths";
+
+describe("doctor: plan folder", () => {
+  test.each([
+    [undefined, "· plan folder: ~/.claude/plans (Claude Code default)"],
+    [".claude/plans", "· plan folder: .claude/plans (user setting; project settings may override it)"],
+    ["C:\\plans", "· plan folder: C:\\plans (user setting; project settings may override it)"],
+  ])("names the configured folder %p", (value, line) => {
+    const paths = cliPaths(hookEnv());
+    mkdirSync(dirname(paths.settingsFile), { recursive: true });
+    writeFileSync(paths.settingsFile, JSON.stringify({ plansDirectory: value }));
+    expect(checkLine(plansDirectoryCheck(paths))).toBe(line);
+  });
+});
 
 describe("doctor: personal review agent migration", () => {
   test("missing and current lists need no migration", () => {

@@ -958,6 +958,20 @@ export function taskToolsCheck(paths: CliPaths): Check {
       };
 }
 
+/** The user-level plan folder; a project's own settings can choose another. */
+export function plansDirectoryCheck(paths: CliPaths): Check {
+  const configured = readSettings(paths.settingsFile)?.plansDirectory;
+  const folder = typeof configured === "string" && configured.trim() !== "" ? configured : null;
+  return {
+    ok: true,
+    info: true,
+    text:
+      folder === null
+        ? `plan folder: ${tildify(join(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)`
+        : `plan folder: ${folder} (user setting; project settings may override it)`,
+  };
+}
+
 /**
  * D68's opt-in key, still in the settings after setup withdrew its own copy: the person's, so
  * information only. The deny entries hide Claude Code's task tools whatever it says.
@@ -1237,6 +1251,7 @@ function doctorGroups(
           taskToolsCheck(paths),
           ...taskStoreChecks(paths),
           oldTodoToolsKeyCheck(paths),
+          plansDirectoryCheck(paths),
           checkNameClash(settings),
           checkReviewAgent(paths),
           await checkOldPlugin(settings, paths, readCommand),
