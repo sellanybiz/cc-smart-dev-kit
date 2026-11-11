@@ -315,8 +315,10 @@ project instead of `~/.claude/plans`. `plan-task` commits it with its branch aft
 worktree, on that worktree's branch) and moves it to `archive/` when the plan finishes. A
 session may run several plans one after another: `core.md`'s "One plan at a time" forbids side
 work, not a second plan. `plan-task` gives each plan its own plan task, and the session names
-the slug with `plan` on `task_create` and `task_list`, since a tool without it picks the
-caller's latest plan. `build` also takes over a crashed or handed-over session's plan with
+the slug with `plan` on `task_list` and on each work-task `task_create`, never on a project
+task, which refuses it. Without `plan`, the two tools fall back differently: `task_create`
+takes the plan of the caller's latest own task that has one, and `task_list` with `scope: "plan"` shows every plan the
+session owns when it owns more than one. `build` also takes over a crashed or handed-over session's plan with
 `task_take` ([tasks](tasks.md)): a dead claim moves at once, a live one only with `force` after
 the person confirms that session is gone, and each open phase gets a fresh builder on its
 recorded branch, because the old session's builders cannot be resumed.

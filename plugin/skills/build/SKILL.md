@@ -21,9 +21,8 @@ committed, pushed or merged.
 ## 1. Read the design and ledger
 
 Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"`,
-`open_only: false` and `plan`: its slug, then `task_get` for each relevant phase and its notes.
-Name that slug on every `task_create` too: a session may own several plans. If the tree is
-missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
+`open_only: false` and `plan`: its slug (which calls name it: `/cc-smart-dev-kit:plan-task`
+§ 6), then `task_get` for each relevant phase and its notes. If the tree is missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
 The phase description is its complete brief; never make a second brief or progress file.
 Task fields and the CLI fallback belong to `/cc-smart-dev-kit:memory-routing`.
 

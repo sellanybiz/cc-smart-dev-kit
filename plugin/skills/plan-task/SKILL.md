@@ -157,8 +157,9 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   when a ruling changes the design.
 - Track a new ask before acting; scope still follows the core instructions' "one plan" rule.
 - **One plan at a time, several per session.** Finish the current plan (§ 8) or park it
-  before you plan the next. Each plan gets its own plan task; name it with `plan` on
-  `task_create` and `task_list`, since the tools otherwise pick your latest plan.
+  before you plan the next. Each plan gets its own plan task. Name the intended plan with
+  `plan` on `task_list` and on every work-task `task_create` for it; never on a project task,
+  which refuses it.
 - After compaction, read the task tree for progress and the file for design.
 
 ## 7. Execute without check-ins between phases
