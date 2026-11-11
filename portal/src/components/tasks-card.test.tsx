@@ -88,20 +88,18 @@ describe("a phase's ledger (G3)", () => {
   });
 
   test("the steps take the place of the count on a phase row, never both", () => {
-    const children = [
-      task(3, "One", "done"),
-      task(4, "Two", "dropped"),
-      task(5, "Three", "pending"),
-      task(6, "Four", "pending"),
-      task(7, "Five", "in_progress"),
-    ];
-    const html = phaseRow({ children, steps: { done: 1, total: 3 } });
+    // The server's count of the phase's tasks, closed long ago too: the row holds no children.
+    const progress = { closed: 7, total: 9 };
+    const html = phaseRow({ progress, steps: { done: 1, total: 3 } });
     expect(words(html)).toContain("1 of 3 steps done");
-    expect(words(html)).not.toContain("2 of 5 closed");
-    // A phase the store could not count shows its tasks' count and draws no ledger.
-    const uncounted = phaseRow({ children, steps: null });
-    expect(words(uncounted)).toContain("2 of 5 closed");
+    expect(words(html)).not.toContain("7 of 9 closed");
+    // A phase the store could not count shows the server's count of its tasks, and no ledger.
+    const uncounted = phaseRow({ progress, steps: null });
+    expect(words(uncounted)).toContain("7 of 9 closed");
     expect(uncounted).not.toContain("<dl");
+    // No count from the server: no meter, never one made up from the rows in view.
+    const none = phaseRow({ children: [task(3, "One", "done")], progress: null, steps: null });
+    expect(none).not.toContain("<meter");
   });
 
   test("a plan and a task draw no ledger, whatever they hold", () => {
@@ -167,8 +165,9 @@ describe("one project's work", () => {
     expect(text).toContain("Task, pending: Time the lock");
     expect(text).not.toContain("Write the schema ");
     expect(text).not.toContain("Migrate the old rows");
-    // The plan's progress counts its tasks: 2 of the 5 under its phase are closed.
-    expect(text).toContain("2 of 5 closed");
+    // The plan's progress is the server's count from the whole list, not the rows in view.
+    expect(text).toContain("12 of 20 closed");
+    expect(text).not.toContain("2 of 5 closed");
     expect(text).toContain("2 more not sent by the server: cc-smart-dev-kit task list --scope all");
   });
 

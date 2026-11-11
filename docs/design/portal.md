@@ -662,9 +662,15 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   - *Sessions.* The ready work answer carries `sessions` (`taskSessionsOf`): every session that
     made a task in the tree, and every session running now with its folder in the project
     (Claude Code's records, `liveSessions`, each folder placed by `taskContextAsync`), each with
-    its name (the running session's own, else the last name its task history wrote,
-    `sessionNames`) and `live`. When a running session's record cannot be read, `sessionsWhy`
-    says why, no session is called running, and the card says which sessions run is unknown.
+    its name and `live`. A running session is named by its own record only (none when the
+    record has none): a take-over finds it by that name, so an older one would offer a session
+    `task.take` then refuses. A session that runs no more is named by the last name its task
+    history wrote (`sessionNames`, one row per session). When a running session's record cannot
+    be read, `sessionsWhy` says why, no session is called running, and the card says which
+    sessions run is unknown. `tasks` reads the records once, beside the project list; one
+    project's own answer skips each session whose folder is not inside the project's folder
+    before it asks git, so a session in a worktree outside it is not named there (only the
+    Tasks tab, which reads `tasks`, offers sessions).
   - *The tree* is Project › Session › Plan › Phase › Task. A project's roots are grouped by the
     session that made them (`sessionGroupsOf`): running sessions first, then the newest change,
     the work with no session recorded last. A session heading names it (its short id when it
@@ -681,9 +687,12 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     weight, a plan or phase badge, a dashed `non-blocking` mark (blocking says nothing), `left
     open` for an open task under a closed parent, `blocked by` with each blocker's number and
     state, the claim (`● running` while a running process holds it, `claim ended` when that
-    process is gone), the notes count, and its progress: a plan's or phase's tasks closed of all
-    (phases not counted), a counted phase's steps instead. A screen reader hears the layer and
-    the status before the subject. The open task's row is marked.
+    process is gone), the notes count, and its progress. A plan's or a phase's progress is the
+    node's `progress`, which the server counts from the project's whole list (`layerProgress` in
+    `src/tasks/work/queries.ts`, the statusline's own rule): its tasks (never a phase), a plan's
+    by its plan column and a phase's by parent, closed long ago too, which the tree leaves out.
+    A counted phase shows its steps instead. A screen reader hears the layer and the status
+    before the subject. The open task's row is marked.
   - *A phase's ledger* (G3, `PhaseLedger` in `task-tree.tsx`) is the phase row's own line under
     its subject. It shows the phase's steps first: its blocking steps done, of its blocking steps
     (`phaseSteps`, `src/portal/api/phase-steps.ts`). A step is a blocking task under the phase,
@@ -714,12 +723,16 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     "Show more" and "Show all". A new filter starts at the first page again.
   - *The side panel* (`task-panel.tsx`) is `GET /api/tasks/<id>` in a native `<dialog>` opened
     with `showModal()`, drawn as a drawer on the right and the whole width on a phone: the
-    browser traps the focus, Escape closes it, and no `style` attribute or `<style>` is written
+    browser traps the focus, Escape and the Close button close it and give the focus back to
+    the task's row (`closePanel`; to what had the focus before when no row is drawn), and no
+    `style` attribute or `<style>` is written
     (a Radix dialog injects one, which the policy blocks). It shows the layer, number, status,
     project and subject, then "Move to session…", the facts (status, type, plan, phase, session
     and whether it runs, the claim, what it waits for, agent, branch, worktree, base, when made,
     changed and closed), the description and the notes as Markdown (`markdown.tsx`), and the
-    history folded under a `<details>`, each change in words (`changeWords`). It reads again on
+    history folded under a `<details>`, each change in the words `task_get` prints: the
+    answer's `lines` per entry, from `historyChanges` (`src/tasks/work/history.ts`), so a
+    description shows by its length, never its text. It reads again on
     the `tasks` event; a task no longer in the store says so.
   - *Move to session…* (`task-move.tsx`, on a plan or a task) offers the sessions running in
     the project with a name, other than its own (`moveTargets`; `task.take` refuses any other).
@@ -732,7 +745,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   - *Owed by the project* (the files tab) lists the open task files of the main checkout by
     kind (production, database, teammates, follow-ups), what blocks a release first, each with
     its weight, its when, its flags in words and a mark when it is open past `tasks.staleDays`;
-    a file that does not read as a task is counted, with `task check` to name it.
+    a file that does not read as a task is counted, with `task check` to name it. Its filter bar
+    keeps the project and the search only: a session, a plan or a work status means nothing for
+    a task file.
   - *Narrow screens.* The filter bar wraps; the status choice is a toggle group from the
     `@4xl/main` width and a select below it; the search takes the whole row on a phone. Rows
     wrap their marks under the subject, a phase's ledger takes its own line, and the panel is

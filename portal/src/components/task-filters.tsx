@@ -1,7 +1,7 @@
 "use client";
 
 import { FilterXIcon, SearchIcon } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { TaskSession, TasksData } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -137,12 +137,26 @@ function Search({
 }) {
   const id = useId();
   const [text, setText] = useState(value);
-  useEffect(() => setText(value), [value]);
+  // The last words this box sent (or took in): the address coming back with them is our own
+  // echo, and must not put older words over what was typed since.
+  const sent = useRef(value);
+  // The latest handler, so a new one from each draw of the page does not restart the wait.
+  const send = useRef(onChange);
+  send.current = onChange;
   useEffect(() => {
-    if (text === value) return;
-    const timer = window.setTimeout(() => onChange(text), SEARCH_WAIT_MS);
+    // Only a change from outside (Clear filters, the browser's back) replaces the box's text.
+    if (value === sent.current) return;
+    sent.current = value;
+    setText(value);
+  }, [value]);
+  useEffect(() => {
+    if (text === sent.current) return;
+    const timer = window.setTimeout(() => {
+      sent.current = text;
+      send.current(text);
+    }, SEARCH_WAIT_MS);
     return () => window.clearTimeout(timer);
-  }, [text, value, onChange]);
+  }, [text]);
   return (
     <div className="relative w-full @xl/main:w-64">
       <label htmlFor={id} className="sr-only">

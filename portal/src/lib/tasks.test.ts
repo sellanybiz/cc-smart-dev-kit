@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { FULL, PHASE, task } from "@/components/tasks-fixtures";
 import {
-  changeWords,
   countTasks,
   DEFAULT_FILTER,
   DEFAULT_VIEW,
@@ -142,25 +141,7 @@ describe("what a filter shows", () => {
   });
 });
 
-describe("the history and the files", () => {
-  test("a change in words: a new value alone, an old one with its arrow, lists and none", () => {
-    expect(
-      changeWords({
-        status: ["pending", "done"],
-        subject: [null, "Write it"],
-        waitsFor: [["#1", "#2"], []],
-        agent: ["a", null],
-        steps: [{ done: 1 }, 2],
-      }),
-    ).toEqual([
-      "status: pending → done",
-      "subject: Write it",
-      "waitsFor: #1, #2 → none",
-      "agent: a → none",
-      'steps: {"done":1} → 2',
-    ]);
-  });
-
+describe("the files", () => {
   test("the files' search takes a title or an id, any case", () => {
     const files = [
       { id: "T-aaaaaa", title: "Set the live key" },

@@ -12,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ago } from "@/lib/format";
 import { sessionLabel } from "@/lib/task-groups";
-import { changeWords } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 
 /** A session id as a person reads it: its name, else its short id, else "no session". */
@@ -158,11 +157,15 @@ function History({ detail }: { detail: TaskDetailAnswer }) {
               {event.sessionName !== null && ` · ${event.sessionName}`}
               {event.reason !== null && ` · ${event.reason}`}
             </p>
-            {changeWords(event.changes).map((line) => (
-              <p key={line} className="font-mono wrap-any">
-                {line}
-              </p>
-            ))}
+            {/* The server's words for each change (`historyChanges`), as `task_get` prints them. */}
+            <ul className="flex flex-col gap-0.5">
+              {event.lines.map((line) => (
+                // Each line starts with its own field's label, so no two lines of one entry match.
+                <li key={line} className="wrap-any">
+                  {line}
+                </li>
+              ))}
+            </ul>
           </li>
         ))}
       </ol>
@@ -214,11 +217,36 @@ export function TaskDetailBody({
   );
 }
 
+/** Something the focus can go back to. */
+export interface FocusTarget {
+  focus(): void;
+}
+
+/**
+ * Closes the panel and gives the focus back, before the page drops the panel: to the row of the
+ * task it showed, else (a row folded away, or a deep link with no row) to what had the focus
+ * before the panel opened. A dialog removed while still open would leave the focus nowhere.
+ */
+export function closePanel(
+  dialog: null | { open: boolean; close(): void },
+  row: FocusTarget | null,
+  opener: FocusTarget | null,
+): void {
+  if (dialog?.open === true) dialog.close();
+  (row ?? opener)?.focus();
+}
+
+/** The row button of a task in the tree (`TaskRow` marks it), or null when it is not drawn. */
+function rowOf(id: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-task-row="${CSS.escape(id)}"]`);
+}
+
 /**
  * The side panel a row opens: one task from `GET /api/tasks/<id>`. A native `<dialog>` opened
- * with `showModal()` (the browser traps the focus, closes it on Escape and hands the focus back),
- * drawn as a drawer on the right, the whole width on a phone. It writes no `style` attribute and
- * injects no `<style>`, so the strict content policy holds.
+ * with `showModal()` (the browser traps the focus and closes it on Escape), drawn as a drawer on
+ * the right, the whole width on a phone. Closing gives the focus back to the task's row
+ * (`closePanel`). It writes no `style` attribute and injects no `<style>`, so the strict content
+ * policy holds.
  */
 export function TaskPanel({
   id,
@@ -233,13 +261,21 @@ export function TaskPanel({
   onChanged: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const detail = useResource((client) => client.taskDetail(id), id, TASKS_REFRESH);
   useEffect(() => {
     const dialog = ref.current;
+    // What had the focus before `showModal` moves it: where it goes back if the row is gone.
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (dialog !== null && !dialog.open) dialog.showModal();
+    // Leaving the page another way (a link, the browser's back) still closes it.
     return () => dialog?.close();
   }, []);
+  const close = () => {
+    closePanel(ref.current, rowOf(id), opener.current);
+    onClose();
+  };
   const node = found?.node ?? null;
   const work = found?.project.tasks.work;
   const sessions = work?.state === "ready" ? work.sessions : [];
@@ -253,8 +289,9 @@ export function TaskPanel({
       ref={ref}
       aria-labelledby={titleId}
       onCancel={(event) => {
+        // Escape: the page closes it, so the focus goes back the same way as the Close button's.
         event.preventDefault();
-        onClose();
+        close();
       }}
       className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-dvh w-full max-w-full border-l bg-background p-0 text-foreground shadow-xl backdrop:bg-black/40 sm:w-[min(36rem,100vw)]"
     >
@@ -276,7 +313,7 @@ export function TaskPanel({
               {subject}
             </h2>
           </div>
-          <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close the task">
+          <Button variant="ghost" size="icon-sm" onClick={close} aria-label="Close the task">
             <XIcon aria-hidden="true" />
           </Button>
         </header>

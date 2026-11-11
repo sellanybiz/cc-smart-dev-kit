@@ -384,7 +384,7 @@ export function TasksPage({
         className="gap-4"
       >
         <div className="px-4 lg:px-6">
-          <TabsList aria-label="Which tasks">
+          <TabsList aria-label="Work or files">
             <TabsTrigger value="work" className="px-3">
               Work on this machine · {work.open} open
             </TabsTrigger>

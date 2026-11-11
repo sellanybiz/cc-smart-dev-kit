@@ -15,7 +15,7 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-type NodeExtra = Partial<
+type NodeExtra = { oldClosed?: number } & Partial<
   Pick<
     WorkTaskNode,
     | "agent"
@@ -55,6 +55,10 @@ function node(
     one.type === "blocking" ? [one, ...one.children.flatMap(blocking)] : [];
   const steps = children.flatMap(blocking).filter((one) => one.status !== "dropped");
   const notes = extra.notes ?? 0;
+  // A plan's or a phase's tasks (never a phase), as the server counts them from its whole list;
+  // `oldClosed` adds tasks closed long ago, which the server counts and its tree leaves out.
+  const tasks = all.filter((one) => one.kind === "task");
+  const old = extra.oldClosed ?? 0;
   return {
     session: extra.session ?? null,
     parentId: null,
@@ -74,6 +78,14 @@ function node(
     layer: kind,
     phase: extra.phase ?? null,
     plan: extra.plan ?? null,
+    progress:
+      kind === "task"
+        ? null
+        : {
+            closed:
+              old + tasks.filter((one) => one.status === "done" || one.status === "dropped").length,
+            total: old + tasks.length,
+          },
     ref: `#${number}`,
     status,
     steps:
@@ -267,6 +279,8 @@ interface PlanShape {
   age: number;
   /** The phase (by index) whose in-progress task a process still claims, and whether it runs. */
   claimed?: { phase: number; claim: WorkTaskNode["claim"] };
+  /** Its tasks closed long ago: the plan counts them, the tree does not hold them. */
+  oldClosed?: number;
 }
 
 /** The status of a phase's task `index` of `count`, from its phase's status. */
@@ -333,7 +347,11 @@ function plan(shape: PlanShape, now: number): WorkTaskNode {
       : "pending";
   return ownedBy(
     shape.session,
-    node(shape.first - 1, shape.title, status, updated, phases, { kind: "plan", plan: shape.slug }),
+    node(shape.first - 1, shape.title, status, updated, phases, {
+      kind: "plan",
+      oldClosed: shape.oldClosed ?? 0,
+      plan: shape.slug,
+    }),
   );
 }
 
@@ -391,6 +409,8 @@ function generatedPlans(now: number): WorkTaskNode[] {
         age: 9,
         // The session that worked on it ended: its claim is left behind.
         claimed: { phase: 1, claim: "dead" },
+        // Work closed weeks ago still counts in the plan's progress.
+        oldClosed: 25,
       },
       now,
     ),
@@ -445,14 +465,17 @@ export function mockTaskDetail(
           ? "Report: the first half is built; the tests for **the store** pass.\n\n- `bun test` green\n- one open question"
           : "Ruling: keep the old name for one release — the docs still use it — cost if wrong: one rename later.",
     }));
+    // Each entry's words the way the server's `historyChanges` gives them.
     const event = (
       offset: number,
       action: "changed" | "created" | "noted",
       changes: Record<string, [unknown, unknown]>,
+      lines: string[],
     ) => ({
       action,
       at: createdAt + offset,
       changes,
+      lines,
       id: number * 100 + offset,
       number,
       pid: 4242,
@@ -462,13 +485,23 @@ export function mockTaskDetail(
       taskId: one.id,
     });
     const events = [
-      event(0, "created", { subject: [null, one.subject], status: [null, "pending"] }),
+      event(0, "created", { subject: [null, one.subject], status: [null, "pending"] }, [
+        `kind ${one.kind}`,
+        `subject ${JSON.stringify(one.subject)}`,
+        "status pending",
+      ]),
       ...notes.map((note, index) =>
-        event(index + 1, "noted", { note: [null, note.text.slice(0, 40)] }),
+        event(index + 1, "noted", { note: [null, note.text] }, [
+          `note ${JSON.stringify(note.text)}`,
+        ]),
       ),
       ...(one.status === "pending"
         ? []
-        : [event(notes.length + 1, "changed", { status: ["pending", one.status] })]),
+        : [
+            event(notes.length + 1, "changed", { status: ["pending", one.status] }, [
+              `status pending → ${one.status}`,
+            ]),
+          ]),
     ];
     const closed = one.status === "done" || one.status === "dropped";
     const waitsFor = one.blockedBy.flatMap((blocking) => {

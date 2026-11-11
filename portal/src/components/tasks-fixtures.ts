@@ -41,6 +41,7 @@ export function task(
     layer: "task",
     phase: null,
     plan: null,
+    progress: null,
     ref: `#${ref}`,
     status,
     steps: null,
@@ -146,6 +147,8 @@ export const FULL: ProjectTasksData = {
         kind: "plan",
         layer: "plan",
         plan: "plan",
+        // The server's count from the whole list: more than the tree holds, old tasks too.
+        progress: { closed: 12, total: 20 },
         total: 6,
       }),
       task(

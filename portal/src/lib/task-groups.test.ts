@@ -15,7 +15,6 @@ import {
   sessionLabel,
   sessionsOf,
   taskOpen,
-  taskProgress,
 } from "@/lib/task-groups";
 import { DEFAULT_FILTER, NO_PLAN, NO_SESSION, SHOW_ALL, type ShownTask } from "@/lib/tasks";
 
@@ -233,11 +232,6 @@ describe("a page of rows", () => {
 });
 
 describe("what a row says of its subtree", () => {
-  test("a plan's progress counts its tasks, never its phases", () => {
-    expect(taskProgress(PLAN)).toEqual({ closed: 2, total: 5 });
-    expect(taskProgress(PLAN.children[1] as WorkTaskNode)).toEqual({ closed: 0, total: 3 });
-  });
-
   test("the claims in a subtree, running and ended", () => {
     expect(claimCount(PLAN, "live")).toBe(1);
     expect(claimCount(PLAN, "dead")).toBe(1);

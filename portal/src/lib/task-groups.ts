@@ -231,23 +231,6 @@ export function pageRows(
 
 // ── What a row says of its subtree ─────────────────────────────────────────────────────
 
-/** The tasks under a plan or phase (phases and plans not counted): closed of all. */
-export function taskProgress(node: WorkTaskNode): { closed: number; total: number } {
-  let closed = 0;
-  let total = 0;
-  const walk = (nodes: readonly WorkTaskNode[]) => {
-    for (const one of nodes) {
-      if (one.kind === "task") {
-        total += 1;
-        if (isClosed(one.status)) closed += 1;
-      }
-      walk(one.children);
-    }
-  };
-  walk(node.children);
-  return { closed, total };
-}
-
 /**
  * How many tasks in a subtree, the task itself too, carry this claim: `live`, a running process
  * holds it; `dead`, the process that held it has ended.

@@ -37,8 +37,18 @@ function value<T>(result: Result<T>): T {
   return result.value;
 }
 
-/** A node with none of the ledger's fields: no agent, branch, worktree or base, and no steps. */
-const NO_LEDGER = { agent: null, base: null, branch: null, steps: null, worktree: null };
+/**
+ * A node with none of the ledger's fields: no agent, branch, worktree or base, no steps, and no
+ * progress (a task has none; a plan or a phase sets its own).
+ */
+const NO_LEDGER = {
+  agent: null,
+  base: null,
+  branch: null,
+  progress: null,
+  steps: null,
+  worktree: null,
+};
 
 /** A plan's phase, made once under its plan task, the way the task tools lay it. */
 function phaseOf(db: WorkDb, input: LaidPhase, now: number) {
@@ -106,7 +116,14 @@ test("task detail returns description, notes and history and refuses an unknown 
   expect(answer?.body).toMatchObject({
     task: { id: task.id, description: "Full description" },
     notes: [{ text: "A note" }],
-    events: [{ action: "created" }, { action: "noted" }],
+    // Each change in the words `task_get` prints: a description by its length, never its text.
+    events: [
+      {
+        action: "created",
+        lines: ["kind task", 'subject "Detail"', "status pending", "description 16 characters"],
+      },
+      { action: "noted", lines: ['note "A note"'] },
+    ],
   });
   expect((await answerApi(deps, new URL("http://127.0.0.1/api/tasks/wabcdefghij")))?.status).toBe(
     404,
@@ -228,6 +245,8 @@ describe("a project's tasks answer (D75)", () => {
               layer: "phase",
               phase: "api",
               plan: "launch",
+              // Its one task, by parent: open.
+              progress: { closed: 0, total: 1 },
               ref: "#2",
               status: "pending",
               // Its one step is in progress: none of one done.
@@ -252,6 +271,8 @@ describe("a project's tasks answer (D75)", () => {
           layer: "plan",
           phase: null,
           plan: "launch",
+          // A plan counts its tasks by their plan column, and the one task here has none.
+          progress: { closed: 0, total: 0 },
           ref: "#1",
           status: "pending",
           subject: "launch",
@@ -525,6 +546,43 @@ describe("a project's tasks answer (D75)", () => {
     expect(work.tasks[0]?.steps).toBe(null);
   });
 
+  test("a plan's and a phase's progress count their tasks from the whole list, closed long ago too", async () => {
+    const root = repo();
+    const { deps, paths } = await world(root);
+    const project = projectKey(root);
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    const old = NOW - 30 * DAY;
+    const api = phaseOf(db, { phase: "api", plan: "launch", project, subject: "The API" }, old);
+    const ui = phaseOf(db, { phase: "ui", plan: "launch", project, subject: "The page" }, old);
+    const made = (subject: string, more: { parentId?: string; plan: string }, at: number) =>
+      value(createTask(db, { project, subject, ...more }, who, at));
+    // Two under the phase closed long ago: the tree leaves both out.
+    const doneLongAgo = made("Old done", { parentId: api.id, plan: "launch" }, old);
+    value(updateTask(db, doneLongAgo.id, { status: "done" }, who, old));
+    const droppedLongAgo = made("Old dropped", { parentId: api.id, plan: "launch" }, old);
+    value(updateTask(db, droppedLongAgo.id, { status: "dropped" }, who, old));
+    const open = made("Still open", { parentId: api.id, plan: "launch" }, NOW - DAY);
+    value(updateTask(db, open.id, { status: "in_progress" }, who, NOW - DAY));
+    // In the plan, under no phase, closed long ago; and one task of another plan.
+    const loose = made("Old loose", { plan: "launch" }, old);
+    value(updateTask(db, loose.id, { status: "done" }, who, old));
+    made("Not this plan", { plan: "other" }, NOW);
+    db.close();
+
+    const work = ((await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer | undefined)?.work;
+    if (work?.state !== "ready") throw new Error(`no tree: ${JSON.stringify(work)}`);
+    const plan = work.tasks.find((one) => one.kind === "plan");
+    // The plan: its four tasks by the plan column, three of them closed. Never its phases.
+    expect(plan?.progress).toEqual({ closed: 3, total: 4 });
+    const phase = (id: string) => plan?.children.find((one) => one.id === id);
+    // The phase: its three tasks by parent, two closed; the tree itself holds only the open one.
+    expect(phase(api.id)?.progress).toEqual({ closed: 2, total: 3 });
+    expect(phase(api.id)?.children.map((one) => one.subject)).toEqual(["Still open"]);
+    expect(phase(ui.id)?.progress).toEqual({ closed: 0, total: 0 });
+    // A task counts none.
+    expect(phase(api.id)?.children[0]?.progress).toBe(null);
+  });
+
   test("the Tasks tab with no project at all: an empty list, not an error", async () => {
     const home = tempDir("tasks-empty-home");
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
@@ -591,6 +649,20 @@ describe("a project's tasks answer (D75)", () => {
       { id: "s-quiet", live: false, name: null },
     ]);
     expect(body.work.sessionsWhy).toBe(null);
+
+    // The planner runs again in the project, with no name of its own: no name, never its old
+    // one from the history (a take-over finds a running session by its own name only).
+    writeFileSync(
+      join(sessions, `${process.ppid}.json`),
+      JSON.stringify({ cwd: root, name: " ", pid: process.ppid, sessionId: "s-planner" }),
+    );
+    const renamed = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (renamed.work.state !== "ready") throw new Error("no tree");
+    expect(renamed.work.sessions).toEqual([
+      { id: "s-live", live: true, name: "builder" },
+      { id: "s-planner", live: true, name: null },
+      { id: "s-quiet", live: false, name: null },
+    ]);
 
     // A running session's record that cannot be read: none is called live, and the page is told why.
     writeFileSync(join(sessions, `${process.pid}.json`), "not json");

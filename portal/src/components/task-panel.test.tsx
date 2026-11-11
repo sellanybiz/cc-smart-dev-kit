@@ -7,8 +7,10 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TaskDetailAnswer, TaskSession, WorkTaskNode } from "@/api/types";
 import { MoveToSession, moveTargets } from "@/components/task-move";
-import { TaskDetailBody } from "@/components/task-panel";
+import { closePanel, TaskDetailBody } from "@/components/task-panel";
+import { TaskList } from "@/components/task-tree";
 import { task, words } from "@/components/tasks-fixtures";
+import { filterTasks, SHOW_ALL } from "@/lib/tasks";
 
 const AT = Date.UTC(2026, 10, 3, 10, 0);
 
@@ -59,7 +61,12 @@ const DETAIL: TaskDetailAnswer = {
     {
       action: "created",
       at: AT,
-      changes: { subject: [null, "Write the docs page"] },
+      changes: {
+        subject: [null, "Write the docs page"],
+        description: [null, "An earlier draft of the page"],
+      },
+      // The server's words for it (`historyChanges`): the panel shows these, never `changes`.
+      lines: ['subject "Write the docs page"', "description 28 characters"],
       id: 1,
       number: 6,
       pid: 4242,
@@ -72,6 +79,7 @@ const DETAIL: TaskDetailAnswer = {
       action: "changed",
       at: AT + 60_000,
       changes: { status: ["pending", "in_progress"] },
+      lines: ["status pending → in_progress"],
       id: 2,
       number: 6,
       pid: 4242,
@@ -110,8 +118,12 @@ describe("the side panel", () => {
     expect(text).toContain("Notes · 1");
     expect(html).toContain("<em>done</em>");
     expect(text).toContain("History · 2 changes");
-    expect(text).toContain("subject: Write the docs page");
-    expect(text).toContain("status: pending → in_progress");
+    // Each entry in the server's own words, in its order; the stored values never shown raw.
+    expect(text).toContain(
+      'created · builder subject "Write the docs page" description 28 characters',
+    );
+    expect(text).toContain("changed · builder status pending → in_progress");
+    expect(text).not.toContain("An earlier draft");
   });
 
   test("without the tree's row (closed and gone from it), the store's facts still show", () => {
@@ -119,6 +131,49 @@ describe("the side panel", () => {
     expect(text).toContain("Claim process 4242");
     expect(text).not.toContain("Move to session");
     expect(text).not.toContain("Waits for");
+  });
+});
+
+describe("closing the panel", () => {
+  /** A recorder in place of the dialog and the elements: what was closed and focused, in order. */
+  function world(open: boolean) {
+    const log: string[] = [];
+    const dialog = {
+      open,
+      close() {
+        log.push("close");
+        this.open = false;
+      },
+    };
+    const target = (name: string) => ({ focus: () => log.push(`focus ${name}`) });
+    return { dialog, log, target };
+  }
+
+  test("it closes the dialog first, then gives the focus to the task's row", () => {
+    const { dialog, log, target } = world(true);
+    closePanel(dialog, target("row"), target("opener"));
+    expect(log).toEqual(["close", "focus row"]);
+    expect(dialog.open).toBe(false);
+  });
+
+  test("with no row drawn (folded away, or a deep link), the focus goes to what had it before", () => {
+    const { dialog, log, target } = world(true);
+    closePanel(dialog, null, target("opener"));
+    expect(log).toEqual(["close", "focus opener"]);
+  });
+
+  test("a dialog already closed is not closed again, and with nothing to focus nothing fails", () => {
+    const { dialog, log } = world(false);
+    closePanel(dialog, null, null);
+    closePanel(null, null, null);
+    expect(log).toEqual([]);
+  });
+
+  test("each row carries its task's id, so the panel can find it again", () => {
+    const html = renderToStaticMarkup(
+      <TaskList tasks={filterTasks([task(6, "Write the docs page", "pending")], SHOW_ALL)} />,
+    );
+    expect(html).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*data-task-row="w6"/);
   });
 });
 

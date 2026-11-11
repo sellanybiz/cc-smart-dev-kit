@@ -305,26 +305,6 @@ export function fileCountsOf(files: ProjectTaskFiles): { open: number; blocksRel
   };
 }
 
-/** A value a history entry recorded, in words: none, a word, a list, or its JSON. */
-function valueWords(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "none";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return value.length === 0 ? "none" : value.map(valueWords).join(", ");
-  return JSON.stringify(value);
-}
-
-/** What one history entry changed, a line per field: `status: pending → done`, `note added`. */
-export function changeWords(
-  changes: Readonly<Record<string, readonly [unknown, unknown]>>,
-): string[] {
-  return Object.entries(changes).map(([field, [before, after]]) =>
-    before === null || before === undefined
-      ? `${field}: ${valueWords(after)}`
-      : `${field}: ${valueWords(before)} → ${valueWords(after)}`,
-  );
-}
-
 /** The open project files whose title or id holds the words, any case. */
 export function filesMatching<T extends { id: string; title: string }>(
   tasks: readonly T[],

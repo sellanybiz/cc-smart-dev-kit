@@ -5,7 +5,6 @@ import { createContext, useContext, useId } from "react";
 import type { WorkTaskNode } from "@/api/types";
 import { TonePill } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
-import { taskProgress } from "@/lib/task-groups";
 import { isClosed, ledgerOf, type ShownTask } from "@/lib/tasks";
 import { cn } from "@/lib/utils";
 
@@ -181,12 +180,15 @@ export function ClaimMark({ claim }: { claim: WorkTaskNode["claim"] }) {
   return null;
 }
 
-/** The progress a row shows: a plan's or phase's tasks, a task's own subtree; none when empty. */
+/**
+ * The progress a row shows: a plan's or a phase's tasks as the server counts them from the whole
+ * list (closed long ago too), a task's own subtree; none when empty. A counted phase shows its
+ * steps instead.
+ */
 function progressOf(task: WorkTaskNode): null | { closed: number; total: number } {
   if (task.steps !== null) return null;
-  const count =
-    task.kind === "task" ? { closed: task.closed, total: task.total } : taskProgress(task);
-  return count.total > 0 ? count : null;
+  const count = task.kind === "task" ? { closed: task.closed, total: task.total } : task.progress;
+  return count !== null && count.total > 0 ? count : null;
 }
 
 /**
@@ -275,6 +277,8 @@ function TaskRow({ shown, parentClosed }: { shown: ShownTask; parentClosed: bool
         <button
           type="button"
           aria-haspopup="dialog"
+          // The panel gives the focus back to this button when it closes (`closePanel`).
+          data-task-row={task.id}
           onClick={() => onOpen(task)}
           className="flex min-w-0 flex-1 items-start gap-2 rounded-md py-1.5 pr-2 text-left focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
         >
