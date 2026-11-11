@@ -12,10 +12,10 @@ const DEFAULT_BUDGET = 12
 const MAX_BUDGET = 40
 const FIELDS = ['question', 'angles', 'budget', 'context']
 
+const USAGE =
+  'research-sweep needs an object { question: string, angles: string[], budget?: number, context?: string }'
 function refuse(why) {
-  throw new Error(
-    'research-sweep needs an object { question, angles: [..], budget?, context? }: ' + why,
-  )
+  throw new Error(USAGE + ': ' + why)
 }
 const isText = (value) => typeof value === 'string' && value.trim() !== ''
 

@@ -50,6 +50,37 @@ const NEEDS_ARGS: Record<string, unknown> = {
   "research-sweep": { angles: ["the current docs"], question: "what does it do?" },
 };
 
+/** Read the checked-in declarations only, stopping before validation or any agent launch. */
+function argumentContract(script: string) {
+  const prefix = script.slice(0, script.indexOf("if (args"));
+  return new Function(`${prefix.replace(/^export /, "")}\nreturn {
+    description: meta.description, usage: USAGE,
+    keys: typeof CHECKS === 'undefined' ? FIELDS : Object.keys(CHECKS)
+  }`)();
+}
+
+/** Parse the whole typed object, including requiredness; reject a partial or untyped shape. */
+function argumentShape(text: string) {
+  const object = text.match(/\{([^}]+)\}/);
+  if (!object?.[1]) throw new Error("argument object missing");
+  return object[1]
+    .split(",")
+    .map((field) => {
+      const match = field.trim().match(/^(\w+)(\?)?: (string\[\]|string|number|boolean)$/);
+      if (!match?.[1] || !match[3]) throw new Error(`untyped argument: ${field}`);
+      return { key: match[1], optional: match[2] === "?", type: match[3] };
+    })
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function checkArgumentContract(script: string) {
+  const contract = argumentContract(script);
+  const shape = argumentShape(contract.description);
+  expect(shape).toEqual(argumentShape(contract.usage));
+  expect(shape.map((field) => field.key)).toEqual([...contract.keys].sort());
+  return shape;
+}
+
 /** A PreToolUse `Workflow` input, as Claude Code builds one for an inline script. */
 function workflowInput(script: string, cwd: string): string {
   return JSON.stringify({
@@ -107,9 +138,31 @@ describe("every shipped workflow script", () => {
       expect(input.name).toBe(`cc-smart-dev-kit:${name}`);
       expect(meta.description).toContain(`args: {`);
       expect(meta.description).toContain(`/cc-smart-dev-kit:${skill}`);
-      const shape = meta.description.match(/args: (\{[^}]+\})/);
-      expect(shape).not.toBeNull();
-      const fields = [...shape[1].matchAll(/(\w+)\??:/g)].map((one) => one[1]);
+      const shape = checkArgumentContract(script);
+      const fields = shape.map((field) => field.key);
+      for (const field of shape) {
+        const without = { ...input.args };
+        delete without[field.key];
+        if (field.optional) {
+          expect((await runScript(file, { args: without })).calls.length).toBeGreaterThan(0);
+        } else {
+          await expect(runScript(file, { args: without })).rejects.toThrow(field.key);
+        }
+      }
+      // Mutate strings in memory only: the comparison must catch discovery and validator drift.
+      const descriptionEnd = script.indexOf("\n}") + 2;
+      for (const changed of [
+        script.slice(0, descriptionEnd).replace("budget?: number", "budget?: string"),
+        script.slice(0, descriptionEnd).replace("budget?: number", "budget: number"),
+      ]) {
+        expect(changed).not.toBe(script.slice(0, descriptionEnd));
+        expect(() => checkArgumentContract(changed + script.slice(descriptionEnd))).toThrow();
+      }
+      const extraKey = script.includes("const CHECKS = {")
+        ? script.replace("const CHECKS = {", "const CHECKS = { extra: [isText, 'a string'],")
+        : script.replace("const FIELDS = [", "const FIELDS = ['extra', ");
+      expect(extraKey).not.toBe(script);
+      expect(() => checkArgumentContract(extraKey)).toThrow();
       expect(fields.sort()).toEqual(Object.keys(input.args).sort());
       const run = await runScript(file, { args: input.args });
       expect(run.calls.length).toBeGreaterThan(0);
