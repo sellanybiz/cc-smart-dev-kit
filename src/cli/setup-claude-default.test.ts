@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
+import { loadConfigFile } from "../gateway/config";
 import { turnOn } from "../gateway/settings";
 import { applyClaudeMem, claudeMemPlan } from "../machine/claude-mem";
 import { chooseRoute, readClaudeMemFacts } from "../machine/claude-mem-choices";
@@ -148,7 +149,13 @@ describe("D66: setup moves a machine set up before it to Claude defaults, once",
     config.slots = { [WORKER]: ["omniroute:later"] };
     config.fallback = { [WORKER]: true };
     writeGateway(w, config);
-    turnOn({ settingsFile: w.paths.settingsFile, stateDir: w.paths.stateDir, port: PORT });
+    // As `gateway on` does: the menu it writes names the slots the config holds.
+    turnOn({
+      settingsFile: w.paths.settingsFile,
+      stateDir: w.paths.stateDir,
+      port: PORT,
+      config: loadConfigFile(w.paths.gatewayConfigFile),
+    });
     const before = readFileSync(w.paths.gatewayConfigFile, "utf8");
 
     printed.length = 0;
