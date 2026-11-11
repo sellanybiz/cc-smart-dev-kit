@@ -104,6 +104,35 @@ describe("the Tasks tab", () => {
     expect(html).toContain('href="/settings/project?id=p1"');
   });
 
+  test("on a phone the two tabs share the full width, with short words", () => {
+    const html = page();
+    // The list fills the width below the container's xl size and fits its tabs from there up.
+    const list = html.match(/<div[^>]*role="tablist"[^>]*>/)?.[0] ?? "";
+    expect(list).toContain('aria-label="Work or files"');
+    expect(list).toMatch(/class="[^"]*\bw-full @xl\/main:w-fit\b/);
+    // The shared list's own bare `w-fit` is gone, so it cannot shrink the list back on a phone.
+    expect(list).not.toMatch(/class="(?:[^"]*\s)?w-fit[\s"]/);
+    // Each tab: the short words show on a phone, the full words from xl up and to a screen reader.
+    const tabs = [...html.matchAll(/<button[^>]*role="tab"[^>]*>.*?<\/button>/g)].map((m) => m[0]);
+    expect(tabs).toHaveLength(2);
+    expect(tabs.every((tab) => /class="[^"]*\bmin-w-0\b/.test(tab))).toBe(true);
+    const shown = (tab: string) =>
+      [...tab.matchAll(/<span class="([^"]*)"[^>]*>(.*?)<\/span>/g)].map((m) => [
+        m[1],
+        words(m[2] ?? ""),
+      ]);
+    expect(tabs.map(shown)).toEqual([
+      [
+        ["@xl/main:hidden", "Work · 7 open"],
+        ["sr-only @xl/main:not-sr-only", "Work on this machine · 7 open"],
+      ],
+      [
+        ["@xl/main:hidden", "Owed · 2"],
+        ["sr-only @xl/main:not-sr-only", "Owed by the projects · 2"],
+      ],
+    ]);
+  });
+
   test("the project picker lists every project with its open count, the picked one alone", () => {
     const all = page();
     expect(words(all)).toContain(

@@ -384,12 +384,25 @@ export function TasksPage({
         className="gap-4"
       >
         <div className="px-4 lg:px-6">
-          <TabsList aria-label="Work or files">
-            <TabsTrigger value="work" className="px-3">
-              Work on this machine · {work.open} open
+          {/* On a phone the full words do not fit side by side, so the list takes the whole
+              width and each tab shows short words; the full words show from the container's
+              xl size up, and a screen reader always hears them. */}
+          <TabsList aria-label="Work or files" className="w-full @xl/main:w-fit">
+            <TabsTrigger value="work" className="min-w-0 px-3">
+              <span className="@xl/main:hidden" aria-hidden="true">
+                Work · {work.open} open
+              </span>
+              <span className="sr-only @xl/main:not-sr-only">
+                Work on this machine · {work.open} open
+              </span>
             </TabsTrigger>
-            <TabsTrigger value="files" className="px-3">
-              Owed by {scope.length === 1 ? "the project" : "the projects"} · {owed}
+            <TabsTrigger value="files" className="min-w-0 px-3">
+              <span className="@xl/main:hidden" aria-hidden="true">
+                Owed · {owed}
+              </span>
+              <span className="sr-only @xl/main:not-sr-only">
+                Owed by {scope.length === 1 ? "the project" : "the projects"} · {owed}
+              </span>
             </TabsTrigger>
           </TabsList>
         </div>
