@@ -195,6 +195,7 @@ import {
   searchMessageAnswer,
   searchStreamAnswer,
 } from "./server-tools";
+import { serverToolTarget } from "./target-label";
 import {
   type ClaudeFamily,
   type ClaudeVersion,
@@ -3158,7 +3159,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           await decode.done;
         }
         const tokens = usage.tokens();
-        note(tokens, broken ? "stream_error" : usage.outcome());
+        note(tokens, !streaming && broken ? "stream_error" : usage.outcome());
       })();
       deps.background?.(task);
     };
@@ -3362,14 +3363,13 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
      * once.
      */
     async function serverToolRoute(tool: string): Promise<Outcome> {
-      const why = `server tool ${tool}`;
       const named =
         typeof body.model === "string" && body.model.startsWith("claude-") ? body.model : null;
       const result = await send(req, anthropicUpstream(req, url, config, sent), null);
-      if (req.signal.aborted) return closed(result, `anthropic (${why})`);
+      if (req.signal.aborted) return closed(result, serverToolTarget(tool));
       const status = "response" in result ? result.response.status : null;
       if (url.pathname !== MESSAGES_PATH || (status !== null && !capacityFailureStatus(status))) {
-        return { ...answerDirect(result, named), target: `anthropic (${why})` };
+        return { ...answerDirect(result, named), target: serverToolTarget(tool) };
       }
       let limit: null | PlanLimit = null;
       if ("response" in result) {
@@ -3402,7 +3402,7 @@ export function createRouter(deps: RouterDeps): (req: Request) => Promise<Respon
           },
         ),
         skipped: 0,
-        target: `router (${why}; anthropic ${status ?? "did not answer"})`,
+        target: serverToolTarget(tool, status),
       };
     }
 

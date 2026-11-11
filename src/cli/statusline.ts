@@ -233,6 +233,7 @@ export function statuslineText(
     id !== null &&
     withoutContextSuffix(answer.model) === id &&
     answerTargetName(answer.target) !== null &&
+    answerTargetName(answer.target) !== model &&
     withoutContextSuffix(answer.target) !== id &&
     !bannerTargets.has(answer.target) &&
     typeof model === "string" &&
@@ -324,7 +325,7 @@ export async function runStatusline(
   const gateway = sessionGatewayOf(paths, env);
   const session = isJsonObject(input)
     ? env.ANTHROPIC_BASE_URL === undefined
-      ? { ...gateway, gatewayOn: true }
+      ? { ...gateway, config: null, gatewayOn: true }
       : gateway
     : null;
   const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);

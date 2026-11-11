@@ -25,7 +25,7 @@
 
 import { Database } from "bun:sqlite";
 import { HISTORY_COLUMNS, historyDbExists, retentionWords, type StoredRow } from "./history";
-import { answerTargetName } from "./target-label";
+import { SERVER_TOOL_TARGET_PREFIXES } from "./target-label";
 import { withoutContextSuffix } from "./targets";
 
 /** A whole answer for a status row, not a failed attempt. */
@@ -69,15 +69,20 @@ export function lastAnswers(
       SELECT at, model, slot, target FROM requests INDEXED BY requests_session_at
       WHERE session = ? AND agent IS ? AND profile IS ? AND status >= 200 AND status < 300
       ${outcome} AND (? IS NULL OR replace(model, '[1m]', '') = ?)
-      ORDER BY id DESC
+      AND target NOT GLOB ? AND target NOT GLOB ?
+      ORDER BY id DESC LIMIT 1
     `);
     for (const { agent, model } of requests) {
       const requested = model === undefined ? null : withoutContextSuffix(model);
-      for (const row of query.iterate(session, agent, profile, requested, requested)) {
-        if (answerTargetName(row.target) === null) continue;
-        answers.set(agent, row);
-        break;
-      }
+      const row = query.get(
+        session,
+        agent,
+        profile,
+        requested,
+        requested,
+        ...SERVER_TOOL_TARGET_PREFIXES.map((prefix) => `${prefix}*`),
+      );
+      if (row !== null) answers.set(agent, row);
     }
     return answers;
   } catch {

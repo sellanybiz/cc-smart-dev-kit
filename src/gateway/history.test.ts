@@ -533,7 +533,7 @@ describe("the router's request history", () => {
     expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([[529, null]]);
   });
 
-  it("a client cancel mid-stream records a failed 200 answer", async () => {
+  it.each([false, true])("cancel only fails a stream before message_stop (%s)", async (stopped) => {
     const history = collector();
     const { handle, settled } = routerWithHistory(
       [
@@ -541,7 +541,13 @@ describe("the router's request history", () => {
           new Response(
             new ReadableStream({
               start(controller) {
-                controller.enqueue(new TextEncoder().encode('data: {"type":"message_start"}\n\n'));
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    stopped
+                      ? 'data: {"type":"message_stop"}\n\n'
+                      : 'data: {"type":"message_start"}\n\n',
+                  ),
+                );
               },
             }),
             { headers: { "content-type": "text/event-stream" } },
@@ -556,7 +562,7 @@ describe("the router's request history", () => {
     await reader.cancel();
     await settled();
     expect(history.rows.map(({ status, outcome }) => [status, outcome])).toEqual([
-      [200, "stream_error"],
+      [200, stopped ? null : "stream_error"],
     ]);
   });
 

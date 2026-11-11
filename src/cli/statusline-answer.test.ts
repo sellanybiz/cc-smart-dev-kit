@@ -1,4 +1,6 @@
 import { expect, it } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createHistoryWriter } from "../gateway/history";
 import type { LastAnswer } from "../gateway/history-read";
 import { tempDir } from "../testing/temp";
@@ -94,6 +96,111 @@ it("both commands read their own history identity only on the gateway", async ()
     "Sonnet 5.5",
   ]);
 });
+it("plain Claude supersedes a backend in both command rows", async () => {
+  const home = tempDir("plain-answer");
+  const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: home });
+  const writer = createHistoryWriter({
+    file: paths.historyDbFile,
+    flushAfterMs: 60_000,
+    log: () => {},
+    retentionDays: () => 90,
+  });
+  for (const target of ["omniroute:glm", "anthropic"])
+    for (const agent of [null, "a-1"])
+      writer.record({
+        agent,
+        at: Date.now(),
+        breaker: null,
+        cost: null,
+        model: answer.model,
+        ms: 1,
+        nextTarget: null,
+        profile: null,
+        session: "s-1",
+        slot: answer.slot,
+        status: 200,
+        target,
+        tokens: null,
+      });
+  writer.close();
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => {
+    lines.push(line);
+  };
+  const env = { ANTHROPIC_BASE_URL: "http://127.0.0.1:47812" };
+  try {
+    await runStatusline(
+      paths,
+      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      Date.now(),
+      undefined,
+      env,
+    );
+    await runSubagentStatusline(
+      async () =>
+        JSON.stringify({
+          session_id: "s-1",
+          tasks: [{ id: "a-1", model: answer.model, effort: "high" }],
+        }),
+      paths,
+      env,
+    );
+  } finally {
+    console.log = log;
+  }
+  expect(lines).toEqual([
+    "Sonnet 5.5",
+    '{"content":"worker → claude-sonnet-5-5 → high","id":"a-1"}',
+  ]);
+});
+it("an unset gateway URL never pins backend effort in a direct session", async () => {
+  const home = tempDir("direct-effort");
+  const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: home });
+  mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
+  writeFileSync(
+    paths.gatewayConfigFile,
+    JSON.stringify({
+      version: 1,
+      aliases: {},
+      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:47813" } },
+      slots: { "cc-smart-dev-kit-worker": ["omniroute:glm"] },
+      effort: { "cc-smart-dev-kit-worker": { "omniroute:glm": "xhigh" } },
+    }),
+    { mode: 0o600 },
+  );
+  const lines: string[] = [];
+  const log = console.log;
+  console.log = (line: string) => {
+    lines.push(line);
+  };
+  try {
+    const read = async () =>
+      JSON.stringify({
+        ...input,
+        effort: { level: "low" },
+        context_window: {
+          context_window_size: 200000,
+          used_percentage: 10,
+          current_usage: {
+            input_tokens: 20000,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      });
+    await runStatusline(paths, read, Date.now(), undefined, {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:47812",
+    });
+    await runStatusline(paths, read, Date.now(), undefined, {});
+  } finally {
+    console.log = log;
+  }
+  expect(lines).toEqual([
+    "Sonnet 5.5 · ctx 20k · 10% of 200k · xhigh",
+    "Sonnet 5.5 · ctx 20k · 10% of 200k · low",
+  ]);
+});
 it("names a backend or fallback, but not the same Claude or a stale model", () => {
   const text = (value: LastAnswer | null) =>
     statuslineText(
@@ -109,6 +216,7 @@ it("names a backend or fallback, but not the same Claude or a stale model", () =
   expect(text(answer)).toBe("Sonnet 5.5 → gpt-6.1-sol");
   expect(text({ ...answer, target: "claude-opus-5-5" })).toBe("Sonnet 5.5 → Opus 5.5");
   expect(text({ ...answer, target: "claude-sonnet-5-5" })).toBe("Sonnet 5.5");
+  expect(text({ ...answer, target: "claude-sonnet-5-5-20261001" })).toBe("Sonnet 5.5");
   expect(text({ ...answer, model: "claude-opus-5-5" })).toBe("Sonnet 5.5");
   expect(text(null)).toBe("Sonnet 5.5");
   expect(

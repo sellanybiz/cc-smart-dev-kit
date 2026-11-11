@@ -1292,18 +1292,22 @@ routes come with the portal's pages).
 - **Agent identity and answer outcome.** Nullable `agent` stores the validated
   `x-claude-code-agent-id` header (the same letters, digits, dots, underscores, hyphens and
   128-character bound as the session id). Null means a main request, or an older router.
-  On 2xx rows only, nullable `outcome` marks `stream_error` (an in-band error, a broken,
-  undecodable or cancelled body, or a stream ending without `message_stop`) or `refused`
+  On 2xx rows only, nullable `outcome` marks `stream_error` (an in-band error, a broken
+  non-streaming body or decode, or a stream ending or cancelled before `message_stop`) or `refused`
   (a refusal stop reason). Non-2xx rows keep outcome null: their HTTP status already says
-  they failed. Null on a 2xx row means no such failure was observed. The HTTP
+  they failed. An encoding the reader cannot decode records null; a broken decode is a
+  failure unless a stream already reached `message_stop`. Null on a 2xx row means no such
+  failure was observed. The HTTP
   status stays what the client got, even for a stream that opened with 200 and then failed.
   Both columns are added by name without raising the schema version: an older schema-2
   router can still insert its named columns, leaving these null. The status reader needs
   `agent`; if only `outcome` is absent, it treats that field as null. It selects the newest
   2xx whole answer by id on the session index, with a 10 ms busy timeout and no new index.
+  SQL excludes only the shared server-tool target prefixes before `ORDER BY id DESC LIMIT 1`;
+  a plain `anthropic` row ends the lookup and removes an older backend arrow.
   Each visible subagent gets its own lookup filtered by its resolved model; one connection
   and prepared statement serve the whole agent-panel tick. The main row gets one lookup.
-  Router words for server tools are not model targets and never replace the last model answer.
+  Only server-tool words are skipped, never a plain Claude answer or any other target.
 - **Not a safety check, not `count_tokens`, not another path.** Auto mode's checks are
   counted by day in `safety-checks.json` (§ The safety-check counts); the history is the
   model calls.

@@ -65,6 +65,38 @@ describe("the status row's last answer", () => {
     expect(lastAnswer(path, "session-1", null, null, "claude-opus-5-5")).toBeNull();
     expect(lastAnswer(path, "session-1", "not-yet", null)).toBeNull();
   });
+  it("plain Anthropic ends the walk for main and agent after a backend answer", () => {
+    const path = seed([
+      row({ target: "omniroute:glm" }),
+      row({ agent: "a-1", target: "omniroute:glm" }),
+      row({ target: "anthropic" }),
+      row({ agent: "a-1", target: "anthropic" }),
+    ]);
+    expect(lastAnswer(path, "session-1", null, null, "claude-sonnet-5-5")?.target).toBe(
+      "anthropic",
+    );
+    expect(lastAnswer(path, "session-1", "a-1", null, "claude-sonnet-5-5")?.target).toBe(
+      "anthropic",
+    );
+  });
+  it("skips 10k newest server-tool rows above an older match", () => {
+    const path = seed([
+      row({ target: "omniroute:glm" }),
+      ...Array.from({ length: 10_000 }, (_, i) =>
+        row({
+          target:
+            i % 2 === 0
+              ? "anthropic (server tool web_search)"
+              : "router (server tool web_search; anthropic 529)",
+        }),
+      ),
+    ]);
+    const start = performance.now();
+    expect(lastAnswer(path, "session-1", null, null, "claude-sonnet-5-5")?.target).toBe(
+      "omniroute:glm",
+    );
+    console.log(`10k skipped server-tool rows: ${(performance.now() - start).toFixed(3)} ms`);
+  });
   it("returns null for missing files and files without agent, and reads files without outcome", () => {
     expect(lastAnswer(file(), "s", null, null, "m")).toBeNull();
     const path = seed([row()]);
