@@ -4,6 +4,7 @@
  * and the portal all meet the same one.
  */
 import { expect, test } from "bun:test";
+import { legacyCreateTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
@@ -24,7 +25,7 @@ function setup() {
   return { paths, db: openWorkDb(workDbFile(paths), { mode: "write" }) };
 }
 function add(db: WorkDb, subject: string, more: Partial<Parameters<typeof createTask>[1]> = {}) {
-  return ok(createTask(db, { project: "p", subject, ...more }, who, 1));
+  return ok(legacyCreateTask(db, { project: "p", subject, ...more }, who, 1));
 }
 function byIdOf(db: WorkDb): Map<string, WorkTask> {
   return new Map(allTasks(db, "p").map((t) => [t.id, t]));
@@ -50,7 +51,7 @@ test("each task's layer comes from its parent: plan, phase, task, subtask", () =
     [plan, phase, top, underPlan, inPhase, sub, deeper].map((t) =>
       layerOf(taskById(db, t.id), byId),
     ),
-  ).toEqual(["plan", "phase", "task", "task", "task", "subtask", "subtask"]);
+  ).toEqual(["plan", "phase", "task", "task", "task", "task", "task"]);
   db.close();
 });
 
@@ -64,27 +65,21 @@ test("a subtask holds no subtasks, a task with subtasks never becomes one, plans
   ).task;
   const task = add(db, "Task");
   const sub = add(db, "Sub", { parentId: task.id });
-  const refusal =
-    '#4 "Sub" is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under #3 "Task", or make it a task of its own';
+  const refusal = "a task belongs under a phase or at the top; a task holds no tasks";
   expect(createTask(db, { project: "p", subject: "Too deep", parentId: sub.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
   });
   const loose = add(db, "Loose");
-  expect(updateTask(db, loose.id, { parentId: sub.id }, who, 2)).toEqual({
+  expect(updateTask(db, loose.id, { parentId: task.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
   });
-  // A task with no subtasks may become one; one with subtasks may not.
-  ok(updateTask(db, loose.id, { parentId: task.id }, who, 2));
-  const other = add(db, "Other");
-  expect(updateTask(db, task.id, { parentId: other.id }, who, 3)).toEqual({
-    ok: false,
-    why: '#3 "Task" has subtasks, so it stays a task: under #6 "Other" they would be a fourth layer. Move them first, or put it at the top or under a phase',
-  });
-  // Under a phase or a plan it stays a task, with its subtasks under it.
   ok(updateTask(db, task.id, { parentId: phase.id }, who, 3));
-  ok(updateTask(db, task.id, { parentId: plan.id }, who, 3));
+  expect(updateTask(db, task.id, { parentId: plan.id }, who, 3)).toEqual({
+    ok: false,
+    why: refusal,
+  });
   expect(updateTask(db, phase.id, { parentId: task.id }, who, 4)).toEqual({
     ok: false,
     why: '#2 "Phase A" is a phase: a phase stays under its plan',
@@ -115,7 +110,7 @@ test("a task an older kit nested past three layers still changes and closes wher
   // A move is held to the layers: under a subtask is refused.
   expect(updateTask(db, add(db, "Loose").id, { parentId: deep.id }, who, 6)).toEqual({
     ok: false,
-    why: '#3 "Deep" is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under #2 "Middle", or make it a task of its own',
+    why: "a task belongs under a phase or at the top; a task holds no tasks",
   });
   db.close();
 });
@@ -129,7 +124,7 @@ test("only blocking work holds its parent: a non-blocking task and what is under
   const step = add(db, "Step", { parentId: noted.id });
   expect(updateTask(db, parent.id, { status: "done" }, who, 2)).toEqual({
     ok: false,
-    why: "open subtasks: #2 Blocking",
+    why: "open tasks: #2 Blocking",
   });
   ok(updateTask(db, blocking.id, { status: "done" }, who, 3));
   ok(updateTask(db, parent.id, { status: "done" }, who, 4));
@@ -137,7 +132,7 @@ test("only blocking work holds its parent: a non-blocking task and what is under
   expect(getTask(db, "p", noted.id)?.status).toBe("pending");
   expect(updateTask(db, noted.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
-    why: "open subtasks: #4 Step",
+    why: "open tasks: #4 Step",
   });
   // A task that becomes non-blocking stops holding; back to blocking, it holds again.
   const second = add(db, "Second");
@@ -254,7 +249,7 @@ test("a done task's other fields still change while a task under it is open; don
   ok(updateTask(db, done.id, { status: "in_progress" }, who, 4));
   expect(updateTask(db, done.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
-    why: "open subtasks: #2 Late",
+    why: "open tasks: #2 Late",
   });
   db.close();
 });
@@ -272,7 +267,7 @@ test("a schema 1 store reads as all blocking, takes the column on its first writ
     readWorkStore(paths, (hook) => allTasks(hook, "p").map((t) => [t.subject, t.type])),
   ).toEqual({ state: "ready", value: [["Before", "blocking"]] });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
-  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
   // Code from an older version folder inserts without the column: the task is blocking.
   moved.sqlite
     .query(
@@ -367,7 +362,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
           children: [
             {
               ref: "#3",
-              layer: "subtask",
+              layer: "task",
               type: "blocking",
               blockedBy: [],
               blocked: false,
@@ -375,7 +370,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
             },
             {
               ref: "#4",
-              layer: "subtask",
+              layer: "task",
               type: "non-blocking",
               blockedBy: [{ ref: "#3", subject: "First", status: "pending" }],
               blocked: true,
@@ -383,7 +378,7 @@ test("the portal's tree says each task's layer, type and blockers", () => {
             },
             {
               ref: "#5",
-              layer: "subtask",
+              layer: "task",
               type: "blocking",
               blockedBy: [{ ref: "#3", subject: "First", status: "pending" }],
               blocked: false,

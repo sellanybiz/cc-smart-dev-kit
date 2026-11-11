@@ -6,8 +6,9 @@
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { type WorkDb, writeWork } from "../tasks/work/db";
-import { insertTask } from "../tasks/work/store";
-import type { WorkTask } from "../tasks/work/types";
+import { taskById } from "../tasks/work/queries";
+import { type CreateTask, insertTask } from "../tasks/work/store";
+import type { Who, WorkTask } from "../tasks/work/types";
 import { tempDir } from "./temp";
 
 /**
@@ -43,15 +44,39 @@ export function mistakenImport(
   const reason = "imported from claude-mem's work state";
   const made = writeWork(db, () => {
     const task = insertTask(db, { project, subject: list }, kit, at, reason);
-    const item = insertTask(
-      db,
-      { project, subject: `${list}: an item`, parentId: task.id },
-      kit,
-      at,
-      reason,
-    );
-    return { list: task, item };
+    const item = insertTask(db, { project, subject: `${list}: an item` }, kit, at, reason);
+    db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(task.id, item.id);
+    db.sqlite
+      .query(
+        "UPDATE task_events SET changes=json_set(changes, '$.parent', json(?)) WHERE task_id=? AND action='created'",
+      )
+      .run(JSON.stringify([null, `#${task.number}`]), item.id);
+    return { list: task, item: taskById(db, item.id) };
   });
   if (!made.ok) throw new Error(made.why);
   return made.value;
+}
+
+/** Explicit old-writer fixture: new writers never make this graph, read-only guards must tolerate it. */
+export function legacyCreateTask(db: WorkDb, input: CreateTask, who: Who, now: number) {
+  return writeWork(db, () => {
+    const task = insertTask(
+      db,
+      { ...input, parentId: null, kind: input.kind === "phase" ? "task" : (input.kind ?? "task") },
+      who,
+      now,
+    );
+    db.sqlite
+      .query("UPDATE tasks SET parent_id=?,kind=? WHERE id=?")
+      .run(input.parentId ?? null, input.kind ?? "task", task.id);
+    if (input.parentId) {
+      const parent = taskById(db, input.parentId);
+      db.sqlite
+        .query(
+          "UPDATE task_events SET changes=json_set(changes, '$.parent', json(?)) WHERE task_id=? AND action='created'",
+        )
+        .run(JSON.stringify([null, `#${parent.number}`]), task.id);
+    }
+    return taskById(db, task.id);
+  });
 }

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readProcStat } from "../../jobs/ancestry";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
 import { callerOf } from "./identity";
@@ -18,7 +19,6 @@ import {
 import { hasOwnTask, startView, statusTask } from "./read";
 import {
   addNote,
-  createTask,
   deleteTask,
   ensurePlanTask,
   type LaidPhase,
@@ -115,7 +115,7 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   expect(openSubtasks(db, phase.id).map((t) => t.subject)).toEqual(["Beta", "Alpha"]);
   expect(updateTask(db, plan.id, { status: "done" }, who, 5)).toEqual({
     ok: false,
-    why: "open subtasks: #4 Beta, #2 Phase, #3 Alpha",
+    why: "open tasks: #4 Beta, #2 Phase, #3 Alpha",
   });
   expect(searchTasks(db, "p", "ALPHA").map((t) => t.subject)).toEqual(["Alpha"]);
   expect(listTasks(db, { project: "p", root: a.id, openOnly: true })[0]?.children[0]?.id).toBe(
@@ -273,7 +273,7 @@ test("hook failures return unreadable, query-only blocks writes, schema versions
   writeFileSync(workDbFile(paths), "garbage");
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("unreadable");
   const fresh = setup();
-  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
   expect(fresh.db.sqlite.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
   fresh.db.close();
   const hook = openWorkDb(workDbFile(fresh.paths), { mode: "hook" });

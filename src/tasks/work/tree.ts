@@ -5,7 +5,8 @@
  * reader's mode: it never creates or migrates the store, and a store it cannot read is said,
  * never shown as an empty list.
  */
-import { allTasks, isBlocked, isOpen, layerOf, listTasks } from "./queries";
+import { claimLive } from "./identity";
+import { allTasks, eventsOf, isBlocked, isOpen, layerOf, listTasks, notesOf } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
 import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } from "./types";
 
@@ -13,6 +14,11 @@ import type { WorkKind, WorkLayer, WorkStatus, WorkTask, WorkTree, WorkType } fr
 export const TREE_TASK_LIMIT = 300;
 
 export interface TaskTreeNode {
+  session: string | null;
+  parentId: string | null;
+  claim: "live" | "dead" | "none";
+  notes: number;
+  events: number;
   id: string;
   /** `#12`: the project's own number for it. */
   ref: string;
@@ -86,6 +92,7 @@ function shapeTrees(
   roots: readonly WorkTree[],
   all: readonly WorkTask[],
   keep: (task: WorkTree) => boolean,
+  counts: ReadonlyMap<string, { notes: number; events: number }>,
 ): TaskTree {
   // A blocker may sit outside the shown tree (closed long ago, or in another phase).
   const byId = new Map(all.map((t) => [t.id, t]));
@@ -102,6 +109,11 @@ function shapeTrees(
     sent += 1;
     const count = subtreeCount(task);
     return {
+      session: task.createdBy,
+      parentId: task.parentId,
+      claim: task.claim === null ? "none" : claimLive(task.claim) ? "live" : "dead",
+      notes: counts.get(task.id)?.notes ?? 0,
+      events: counts.get(task.id)?.events ?? 0,
       id: task.id,
       ref: `#${task.number}`,
       subject: task.subject,
@@ -147,8 +159,16 @@ export function projectTaskTree(
 ): ReadState<TaskTree> {
   const since = options.now - options.recentMs;
   return readWorkStore(paths, (db) =>
-    shapeTrees(listTasks(db, { project, openOnly: false }), allTasks(db, project), (task) =>
-      recent(task, since),
+    shapeTrees(
+      listTasks(db, { project, openOnly: false }),
+      allTasks(db, project),
+      (task) => recent(task, since),
+      new Map(
+        allTasks(db, project).map((t) => [
+          t.id,
+          { notes: notesOf(db, t).length, events: eventsOf(db, t).length },
+        ]),
+      ),
     ),
   );
 }

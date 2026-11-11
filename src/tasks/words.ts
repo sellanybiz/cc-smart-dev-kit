@@ -11,6 +11,7 @@ import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
  */
 export const TASK_TOOL = {
   create: "task_create",
+  take: "task_take",
   update: "task_update",
   done: "task_done",
   note: "task_note",

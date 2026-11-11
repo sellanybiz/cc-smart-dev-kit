@@ -60,6 +60,11 @@ export function workTaskNodeOf(
 ): WorkTaskNode {
   const counted = node.layer === "phase" ? steps.get(node.id) : undefined;
   return {
+    session: node.session,
+    parentId: node.parentId,
+    claim: node.claim,
+    notes: node.notes,
+    events: node.events,
     agent: node.agent,
     base: node.base,
     blocked: node.blocked,

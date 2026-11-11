@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
-import { createTask, type LaidPhase, layPhase, updateTask } from "./store";
+import { type LaidPhase, layPhase, updateTask } from "./store";
 import type { Who } from "./types";
 
 function createPhase(db: WorkDb, input: LaidPhase, who: Who, now: number) {

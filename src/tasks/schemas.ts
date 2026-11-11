@@ -43,7 +43,7 @@ export const taskSchemas = {
       parent: ref
         .optional()
         .describe(
-          "The task (#n) it goes under. Three layers: phase › task › subtask; a subtask holds no subtasks.",
+          "The task (#n) it goes under. Layers: plan › phase › task; a task holds nothing.",
         ),
       status: z.enum(["pending", "in_progress"]).optional(),
       type: type.optional(),
@@ -58,6 +58,13 @@ export const taskSchemas = {
           "The plan's slug; the caller's latest plan when left out. With no phase, it makes the plan task.",
         ),
       ...projectFields,
+    })
+    .strict(),
+  take: z
+    .object({
+      task: ref.describe("A plan slug or task reference (#n)."),
+      from: z.string().min(1).optional(),
+      force: z.boolean().default(false),
     })
     .strict(),
   update: z
@@ -87,6 +94,7 @@ export const taskSchemas = {
   list: z
     .object({
       scope: z.enum(["mine", "plan", "project", "all"]).default("mine"),
+      plan: z.string().trim().min(1).optional(),
       open_only: z.boolean().default(true),
     })
     .strict(),

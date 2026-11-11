@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, workDbFile } from "./db";
 import { holdingSteps } from "./read";
-import { createTask, updateTask } from "./store";
+import { updateTask } from "./store";
 import type { Result } from "./types";
 
 const who = { sessionId: "session", pid: 12, procStart: "34" };

@@ -5,9 +5,12 @@ import {
   allTasks,
   claimHeldBy,
   claimState,
+  eventsOf,
+  getTask,
   holdingUnder,
   isBlocked,
   isOpen,
+  notesOf,
   subtreeProgress,
 } from "./queries";
 import type { Who } from "./types";
@@ -115,5 +118,45 @@ export function holdingSteps(paths: Paths, project: string, number: number) {
       number: task.number,
       open: holdingUnder(all, task.id).map((t) => ({ number: t.number, subject: t.subject })),
     };
+  });
+}
+
+/** Current claimed work and task-only progress, by plan membership rather than nesting. */
+export function planProgress(paths: Paths, project: string, who: Who) {
+  return readWorkStore(paths, (db) => {
+    const all = allTasks(db, project);
+    const started = (id: string) =>
+      eventsOf(db, id)
+        .filter((e) => e.changes.status?.[1] === "in_progress")
+        .at(-1)?.at ??
+      all.find((t) => t.id === id)?.createdAt ??
+      0;
+    const task = all
+      .filter(
+        (t) =>
+          t.status === "in_progress" &&
+          (claimHeldBy(t.claim, who) ||
+            (who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)),
+      )
+      .sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];
+    if (!task) return null;
+    const plan =
+      task.plan === null
+        ? null
+        : (all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null);
+    const tasks =
+      task.plan === null ? [] : all.filter((t) => t.kind === "task" && t.plan === task.plan);
+    return { task, plan, closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
+  });
+}
+/** Task detail from the same read-only store as the tree. Ids are unique across projects. */
+export function taskDetail(paths: Paths, id: string) {
+  return readWorkStore(paths, (db) => {
+    const row = db.sqlite
+      .query<{ project: string }, [string]>("SELECT project FROM tasks WHERE id=?")
+      .get(id);
+    if (!row) return null;
+    const task = getTask(db, row.project, id);
+    return task === null ? null : { task, notes: notesOf(db, task), events: eventsOf(db, task) };
   });
 }

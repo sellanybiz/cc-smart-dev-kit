@@ -629,7 +629,7 @@ export interface ProjectGatewayAnswer {
 export type WorkTaskStatus = "done" | "dropped" | "in_progress" | "pending";
 
 /** Plan › Phase › Task › Subtask (D76). */
-export type WorkTaskLayer = "phase" | "plan" | "subtask" | "task";
+export type WorkTaskLayer = "phase" | "plan" | "task";
 
 /** Blocking holds its parent while open; non-blocking holds nothing (D76). */
 export type WorkTaskType = "blocking" | "non-blocking";
@@ -649,6 +649,11 @@ export interface WorkTaskSteps {
 
 /** One work task in the Tasks tab's tree. */
 export interface WorkTaskNode {
+  session: null | string;
+  parentId: null | string;
+  claim: "live" | "dead" | "none";
+  notes: number;
+  events: number;
   /** The subagent working on it (id or name); null when none was set. */
   agent: null | string;
   /** The commit its work started from. */
@@ -1050,6 +1055,7 @@ export const ACTION_NAMES = [
   "slot.save",
   "slot.test",
   "switch",
+  "task.take",
   "update.check",
   "update.install",
   "workflow.set",

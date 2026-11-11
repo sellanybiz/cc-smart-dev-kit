@@ -1,9 +1,9 @@
 import { type WorkDb, writeWork } from "./db";
 import {
   allTasks,
+  claimHeldBy,
   descendants,
   holdingUnder,
-  layerOf,
   openBlockers,
   openSubtasks,
   taskById,
@@ -185,31 +185,25 @@ function placeValid(
     throw new Error(
       `${label(moving)} is a ${moving.kind}: ${moving.kind === "plan" ? "a plan stays at the top" : "a phase stays under its plan"}`,
     );
-  if (!parent) return;
+  if (!parent) {
+    if (kind === "phase") throw new Error("a phase belongs under its plan");
+    return;
+  }
   if (parent === moving?.id) throw new Error("a task cannot be its own parent");
   const target = taskById(db, parent);
   if (target.project !== project) throw new Error("parent belongs to another project");
   if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
-  if (kind !== "task" || target.kind !== "task") return;
-  const tasks = allTasks(db, project);
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  if (layerOf(target, byId) === "subtask") {
-    const above = target.parentId === null ? undefined : byId.get(target.parentId);
-    throw new Error(
-      `${label(target)} is a subtask, and a subtask holds no subtasks (the layers are phase › task › subtask): put it under ${above ? label(above) : "a task"}, or make it a task of its own`,
-    );
-  }
-  if (moving !== null && tasks.some((t) => t.parentId === moving.id))
-    throw new Error(
-      `${label(moving)} has subtasks, so it stays a task: under ${label(target)} they would be a fourth layer. Move them first, or put it at the top or under a phase`,
-    );
+  if (kind === "task" && target.kind !== "phase")
+    throw new Error("a task belongs under a phase or at the top; a task holds no tasks");
+  if (kind === "phase" && target.kind !== "plan") throw new Error("a phase belongs under its plan");
+  if (kind === "plan") throw new Error("a plan belongs at the top");
 }
 /** Done needs every task that holds it closed (`holdingUnder`): a non-blocking one holds nothing. */
 function doneValid(db: WorkDb, task: WorkTask): void {
   const open = holdingUnder(allTasks(db, task.project), task.id);
   if (open.length)
-    throw new Error(`open subtasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
+    throw new Error(`open tasks: ${open.map((t) => `#${t.number} ${t.subject}`).join(", ")}`);
 }
 /** A task blocked by an open task neither starts nor is done (D76); a closed blocker lets it go. */
 function unblockedValid(db: WorkDb, task: WorkTask): void {
@@ -569,5 +563,77 @@ export function ack(db: WorkDb, project: string, taskRef: string, now: number) {
       )
       .run(project, taskRef, now);
     return true;
+  });
+}
+
+/** One transaction checks and transfers the complete selection, including detached plan tasks. */
+export function takeTasks(
+  db: WorkDb,
+  project: string,
+  id: string,
+  who: Who,
+  now: number,
+  options: {
+    from?: string;
+    force?: boolean;
+    isLive: (claim: import("./types").WorkClaim) => boolean;
+  },
+) {
+  return writeWork(db, () => {
+    if (!who.sessionId) throw new Error("take needs a resolvable calling session");
+    const target = taskById(db, id);
+    if (target.project !== project) throw new Error("task belongs to another project");
+    if (target.kind === "phase") throw new Error("take a plan or one task, not a phase");
+    const rows =
+      target.kind === "plan"
+        ? allTasks(db, project).filter((t) => t.plan === target.plan)
+        : [target];
+    for (const task of rows) {
+      if (options.from !== undefined && task.createdBy !== options.from)
+        throw new Error(
+          `${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`,
+        );
+      if (
+        task.claim &&
+        options.isLive(task.claim) &&
+        !options.force &&
+        !claimHeldBy(task.claim, who)
+      )
+        throw new Error(
+          `${label(task)} is live in session ${task.claim.sessionId ?? task.createdBy ?? "unknown"}; use force to take it`,
+        );
+    }
+    for (const task of rows) {
+      db.sqlite
+        .query(
+          "UPDATE tasks SET created_by=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?",
+        )
+        .run(
+          who.sessionId,
+          who.pid,
+          who.pid === null ? null : who.procStart,
+          who.pid === null ? null : who.sessionId,
+          now,
+          task.id,
+        );
+      recordEvent(
+        db,
+        task,
+        "changed",
+        {
+          createdBy: [task.createdBy, who.sessionId],
+          claim: [
+            task.claim,
+            who.pid === null
+              ? null
+              : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId },
+          ],
+        },
+        who,
+        now,
+        options.force ? "forced take-over" : "take-over",
+      );
+    }
+    return rows.map((t) => taskById(db, t.id));
   });
 }

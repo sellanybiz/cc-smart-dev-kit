@@ -41,6 +41,7 @@ import {
   insertTask,
   layPhase,
   planTask,
+  takeTasks,
   updateTask,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
@@ -176,6 +177,23 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         !!store.sqlite
           .query("SELECT 1 FROM acks WHERE project=? AND task_ref=?")
           .get(ctx.project, id);
+      if (operation === "take") {
+        const input = taskSchemas.take.parse(raw);
+        if (!caller?.sessionId) throw new Error("take needs a resolvable calling session");
+        const target =
+          all.find((t) => t.kind === "plan" && t.plan === input.task) ?? work(input.task);
+        const moved = value(
+          takeTasks(store, ctx.project, target.id, who, now, {
+            ...(input.from === undefined ? {} : { from: input.from }),
+            force: input.force,
+            isLive: claimLive,
+          }),
+        );
+        return {
+          ok: true,
+          text: `${moved.length} task(s) taken by session ${who.sessionId}${input.force ? " (forced)" : ""}${who.pid === null ? "; session only, no process claim" : ""}`,
+        };
+      }
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
@@ -553,13 +571,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           // Only this read may show another session's plan: the project's newest, when the
           // caller has none of its own. Nothing written ever takes it.
           const shown =
+            input.plan ??
             ownPlan ??
             all
               .filter((t) => t.kind === "plan")
               .sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ??
             null;
+          const ownPlans = new Set(
+            all
+              .filter(owns)
+              .map((t) => t.plan)
+              .filter((p) => p !== null),
+          );
           selected = selected.filter(
-            (t) => shown !== null && t.plan === shown && t.kind !== "task",
+            (t) =>
+              t.kind !== "task" &&
+              (input.plan === undefined && ownPlans.size > 1
+                ? t.plan !== null && ownPlans.has(t.plan)
+                : shown !== null && t.plan === shown),
           );
         } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter(

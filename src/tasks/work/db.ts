@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import type { Result } from "./types";
@@ -8,7 +8,7 @@ import type { Result } from "./types";
  * code from an older version folder still reads and writes the store, and a column it does not
  * know takes its default.
  */
-export const WORK_SCHEMA_VERSION = 3;
+export const WORK_SCHEMA_VERSION = 4;
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
 export const NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
@@ -46,13 +46,81 @@ CREATE INDEX task_event_number ON task_events(project,number);
  * The steps after schema 1, in order: step n moves a store at n to n + 1. Never edit a step that
  * shipped; add one. Schema 2 (D76): a task's type, blocking unless set.
  */
-const MIGRATIONS = [
+const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
   `ALTER TABLE tasks ADD COLUMN agent TEXT;
    ALTER TABLE tasks ADD COLUMN branch TEXT;
    ALTER TABLE tasks ADD COLUMN worktree TEXT;
    ALTER TABLE tasks ADD COLUMN base TEXT;`,
+  repairTaskLayers,
 ];
+/** Lift legacy nested tasks while the write lock protects both the snapshot and the move. */
+function repairTaskLayers(sqlite: Database, file: string): void {
+  type Nested = {
+    id: string;
+    project: string;
+    number: number;
+    parent_id: string;
+    parent_number: number;
+    above: string | null;
+    blocking: number;
+    parent_blocking: number;
+    status: string;
+  };
+  let backed = false;
+  for (;;) {
+    const rows = sqlite
+      .query<Nested, []>(
+        `SELECT t.id,t.project,t.number,t.parent_id,p.number AS parent_number,p.parent_id AS above,t.blocking,p.blocking AS parent_blocking,t.status FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task'`,
+      )
+      .all();
+    if (!rows.length) return;
+    if (!backed) {
+      if (!existsSync(`${file}.v4.bak`))
+        writeFileSync(`${file}.v4.bak`, sqlite.serialize(), { mode: 0o600 });
+      backed = true;
+    }
+    for (const row of rows) {
+      // Re-read after each move: an ancestor may have moved earlier in this pass.
+      const parent = sqlite
+        .query<{ parent_id: string | null; blocking: number }, [string]>(
+          "SELECT parent_id,blocking FROM tasks WHERE id=?",
+        )
+        .get(row.parent_id);
+      if (!parent) throw new Error("missing legacy task parent");
+      const above =
+        parent.parent_id === null
+          ? null
+          : sqlite
+              .query<{ number: number }, [string]>("SELECT number FROM tasks WHERE id=?")
+              .get(parent.parent_id)?.number;
+      sqlite
+        .query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?")
+        .run(parent.parent_id, parent.blocking === 0 ? 0 : row.blocking, row.id);
+      if (row.blocking !== 0 && (row.status === "pending" || row.status === "in_progress"))
+        sqlite
+          .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
+          .run(row.parent_id, row.id);
+      sqlite
+        .query(
+          "INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)",
+        )
+        .run(
+          row.id,
+          row.project,
+          row.number,
+          Date.now(),
+          JSON.stringify({
+            parent: [`#${row.parent_number}`, above == null ? null : `#${above}`],
+            ...(parent.blocking === 0 && row.blocking !== 0
+              ? { type: ["blocking", "non-blocking"] }
+              : {}),
+          }),
+          "lift legacy nested task",
+        );
+    }
+  }
+}
 // `task_events` has no foreign key on purpose: a task's history outlives the task.
 export function openWorkDb(file: string, options: { mode: "write" | "hook" }): WorkDb {
   const hook = options.mode === "hook";
@@ -79,9 +147,11 @@ export function openWorkDb(file: string, options: { mode: "write" | "hook" }): W
         for (let at = Math.max(version, 1); at < WORK_SCHEMA_VERSION; at += 1) {
           const step = MIGRATIONS[at - 1];
           if (step === undefined) throw new Error(`no migration from task schema ${at}`);
-          sqlite.run(step);
+          if (typeof step === "string") sqlite.run(step);
+          else step(sqlite, file);
           sqlite.run(`PRAGMA user_version = ${at + 1}`);
         }
+        repairTaskLayers(sqlite, file);
         sqlite.run("COMMIT");
       } catch (error) {
         sqlite.run("ROLLBACK");

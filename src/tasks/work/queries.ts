@@ -144,9 +144,7 @@ export function openSubtasks(db: WorkDb, id: string): WorkTask[] {
  * under a plan or under a phase is a task. A task an older kit nested deeper reads as a subtask.
  */
 export function layerOf(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkLayer {
-  if (task.kind !== "task") return task.kind;
-  const parent = task.parentId === null ? undefined : byId.get(task.parentId);
-  return parent?.kind === "task" ? "subtask" : "task";
+  return task.kind;
 }
 /** The open tasks a task is blocked by, in number order: it cannot start or be done while one is. */
 export function openBlockers(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): WorkTask[] {
