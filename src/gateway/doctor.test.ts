@@ -103,6 +103,13 @@ async function linesFor(
 }
 
 describe("doctor: a project on a profile, and the router that runs", () => {
+  test("gives a manual model choice without pinning an alias", async () => {
+    const lines = await linesFor(machine(), [], "current");
+    expect(lines).toContain(
+      "· If /model fable still selects an older model, use /model claude-fable-5-2; the kit never pins the alias",
+    );
+  });
+
   test("✗ an older router: the project's profile address fails every request", async () => {
     const m = machine();
     const root = project(m.home, "app", `http://127.0.0.1:${PORT}/p/team`);

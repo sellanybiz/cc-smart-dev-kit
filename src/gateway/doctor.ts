@@ -165,6 +165,12 @@ export async function gatewayChecks(options: {
     return checks;
   }
 
+  checks.push({
+    ok: true,
+    info: true,
+    text: "If /model fable still selects an older model, use /model claude-fable-5-2; the kit never pins the alias",
+  });
+
   if (options.service === "none") {
     checks.push({
       ok: false,

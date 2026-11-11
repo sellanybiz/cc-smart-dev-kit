@@ -63,6 +63,13 @@ interface ClaudePriceRow {
  * family's published share of its input rate").
  */
 export const CLAUDE_PRICES: readonly ClaudePriceRow[] = [
+  // https://platform.claude.com/docs/en/about-claude/pricing, read 2026-11-11.
+  {
+    family: "fable",
+    major: 5,
+    minor: 2,
+    price: { cacheRead: 0.2, cacheWrite: 10, input: 8, output: 40 },
+  },
   {
     family: "fable",
     major: 5,

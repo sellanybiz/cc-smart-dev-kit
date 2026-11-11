@@ -2620,6 +2620,30 @@ describe("a slot's Claude target: only the fields it refuses change", () => {
     expect(changes(budget, "claude-opus-latest")).toEqual([]);
   });
 
+  it("Fable 5.2 drops only its refused fields on a fallback", () => {
+    const body = {
+      model: "w",
+      thinking: { type: "disabled" },
+      temperature: 0.2,
+      top_p: 0.9,
+      top_k: 5,
+      tool_choice: { type: "any", disable_parallel_tool_use: true },
+      messages: [{ role: "user", content: "unchanged" }],
+    };
+    expect(requestForClaudeFallback(body, "claude-fable-5-2").body).toEqual({
+      model: "w",
+      output_config: { effort: "low" },
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
+      messages: [{ role: "user", content: "unchanged" }],
+    });
+    expect(
+      requestForClaudeFallback(
+        { model: "w", thinking: { type: "enabled", budget_tokens: 4000 } },
+        "claude-fable-5-2",
+      ).body,
+    ).toEqual({ model: "w", thinking: { type: "adaptive" } });
+  });
+
   it("the rules go by the target's family: a newer Sonnet or Opus gets its family's", () => {
     const off = { model: "cc-smart-dev-kit-worker", thinking: { type: "disabled" } };
     expect(requestForClaudeFallback(off, "claude-sonnet-6-0").body).toEqual({
@@ -7642,6 +7666,24 @@ describe("profiles: the /p/<profile> path (D29)", () => {
       type: "error",
     });
     expect(calls).toHaveLength(0);
+  });
+
+  it("discovery reaches Anthropic directly with query and both credentials under every prefix", async () => {
+    for (const prefix of ["", "/p/proj", "/p/typo"]) {
+      const bytes = '{"data":[{"id":"claude-fable-5-2","display_name":"Fable 5.2"}]}';
+      const { calls, handle } = router([() => new Response(bytes)], { config: profiled() });
+      const response = await handle(
+        clientRequest({ method: "GET", path: `${prefix}/v1/models?limit=1000` }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("location")).toBeNull();
+      expect(await response.text()).toBe(bytes);
+      expect(calls.map((call) => [call.method, call.url, call.body])).toEqual([
+        ["GET", "https://anthropic.test/v1/models?limit=1000", null],
+      ]);
+      expect(calls[0]?.headers).toContainEqual(["authorization", `Bearer ${TOKEN}`]);
+      expect(calls[0]?.headers).toContainEqual(["x-api-key", TOKEN]);
+    }
   });
 
   it("HEAD /api/hello reaches Anthropic without the prefix", async () => {

@@ -153,6 +153,7 @@ function config(): GatewayConfig {
 const ON_ENV = {
   ANTHROPIC_BASE_URL: "http://127.0.0.1:20100",
   ENABLE_TOOL_SEARCH: "true",
+  CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "1",
 };
 
 /** The model keys `on` wrote up to 0.4.3, with the values it wrote, by hand. */
@@ -205,7 +206,7 @@ describe("Claude Code settings: on / off", () => {
         permissions: { allow: ["Bash(ls:*)"] },
       });
       expect(result.written).toBe(true);
-      expect(result.changes).toHaveLength(2);
+      expect(result.changes).toHaveLength(3);
       const backups = listBackups(stateDir, file);
       expect(backups).toHaveLength(1);
       expect(readFileSync(backups[0]?.path ?? "", "utf8")).toBe(before);
@@ -216,7 +217,11 @@ describe("Claude Code settings: on / off", () => {
         ownedKeys(stateDir, file)
           .map((path) => path.join("."))
           .sort(),
-      ).toEqual(["env.ANTHROPIC_BASE_URL", "env.ENABLE_TOOL_SEARCH"]);
+      ).toEqual([
+        "env.ANTHROPIC_BASE_URL",
+        "env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+        "env.ENABLE_TOOL_SEARCH",
+      ]);
     },
   );
 
@@ -316,9 +321,10 @@ describe("Claude Code settings: on / off", () => {
     const { file, stateDir } = seed();
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     const { result, foreign, switched } = turnOff({ settingsFile: file, stateDir });
-    // Two changes: the address is set (GP5), the tool-search key is removed.
+    // The address is set (GP5); tool search and discovery are removed.
     expect(result.changes.map((change) => change.path[1]).sort()).toEqual([
       "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
       "ENABLE_TOOL_SEARCH",
     ]);
     expect(switched).toBe(true);
@@ -336,7 +342,11 @@ describe("Claude Code settings: on / off", () => {
     const twice = turnOff({ settingsFile: file, stateDir });
     expect(twice.result.changes).toEqual([]);
     expect(twice.switched).toBe(false);
-    expect([...GATEWAY_ENV_KEYS].sort()).toEqual(["ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH"]);
+    expect([...GATEWAY_ENV_KEYS].sort()).toEqual([
+      "ANTHROPIC_BASE_URL",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+      "ENABLE_TOOL_SEARCH",
+    ]);
   });
 
   it("off takes out the model keys an older version wrote too, and keeps the address key", () => {
@@ -350,6 +360,7 @@ describe("Claude Code settings: on / off", () => {
     });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
       "ANTHROPIC_BASE_URL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL",
       "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
@@ -428,6 +439,7 @@ describe("Claude Code settings: on / off", () => {
     turnOn({ settingsFile: file, stateDir, port: 20100 });
     expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
       "ENABLE_TOOL_SEARCH",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
       "ANTHROPIC_BASE_URL",
     ]);
     // The person points Claude Code at their own gateway: that key is their choice now, and
@@ -435,7 +447,10 @@ describe("Claude Code settings: on / off", () => {
     const changed = JSON.parse(readFileSync(file, "utf8")) as { env: Record<string, string> };
     changed.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:19999";
     writeFileSync(file, `${JSON.stringify(changed, null, 2)}\n`);
-    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual(["ENABLE_TOOL_SEARCH"]);
+    expect(ownedGatewayEnvKeys(file, stateDir)).toEqual([
+      "ENABLE_TOOL_SEARCH",
+      "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY",
+    ]);
     // Restore leaves it (theirs), takes ours out, and gives up the ownership of it.
     expect(restore(stateDir).map((result) => result.action)).toEqual(["cleaned"]);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({

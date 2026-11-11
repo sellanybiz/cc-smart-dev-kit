@@ -170,6 +170,21 @@ describe("Remote Control", () => {
     expect(new URL(envOf(read()).ANTHROPIC_BASE_URL as string).host).toBe("127.0.0.1:20123");
   });
 
+  test("discovery is owned while on, removed when off, and a changed value stays", () => {
+    const { file, stateDir, read } = machine({ model: "fable" });
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    expect(envOf(read()).CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("1");
+    turnOff({ settingsFile: file, stateDir });
+    expect(envOf(read())).not.toHaveProperty("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY");
+    turnOn({ settingsFile: file, stateDir, port: 20123 });
+    const changed = read();
+    changed.env = { ...envOf(changed), CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "0" };
+    writeFileSync(file, JSON.stringify(changed));
+    turnOff({ settingsFile: file, stateDir });
+    expect(envOf(read()).CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY).toBe("0");
+    expect(read().model).toBe("fable");
+  });
+
   test("off leaves api.anthropic.com as the address, and sets no other switch", () => {
     const { file, stateDir, read } = machine({});
     turnOn({ settingsFile: file, stateDir, port: 20123 });

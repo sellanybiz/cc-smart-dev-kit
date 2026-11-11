@@ -326,6 +326,10 @@ block whose signature it did not issue. So, in `fallback-answer.ts`:
 
 ## Settings and secrets
 
+- `gateway on` owns `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`, so Claude Code can
+  list Anthropic's live models through the router. `off` removes it only while still owned.
+  Never pin a model or write an `ANTHROPIC_DEFAULT_*_MODEL` key to update the picker.
+
 - `gateway on` / `off`, `gateway project …` (a project's own `ANTHROPIC_BASE_URL`, in its
   `settings.local.json` or its team `.claude/settings.json`), and `gateway setup`'s removal of
   0.4.3's retired model keys (`retireOldModelKeys`), change Claude Code's settings only through

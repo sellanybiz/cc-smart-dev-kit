@@ -45,9 +45,15 @@ import { CLAUDE_FAMILIES, familyEnv } from "./targets";
  * itself, and the router expands them for an affordable backend (`toolSearchForBackend` in
  * router.ts). https://code.claude.com/docs/en/env-vars
  */
+export const MODEL_DISCOVERY_ENV = "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY";
+export const MODEL_DISCOVERY_VALUE = "1";
+
 export function gatewayEnv(port: number): Record<string, string> {
   return {
     ENABLE_TOOL_SEARCH: "true",
+    // Startup discovery: GET /v1/models?limit=1000, 3 seconds, no redirects.
+    // https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery (2026-11-11).
+    [MODEL_DISCOVERY_ENV]: MODEL_DISCOVERY_VALUE,
     ANTHROPIC_BASE_URL: routerBaseUrl(port),
   };
 }

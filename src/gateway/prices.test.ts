@@ -33,6 +33,13 @@ describe("Claude's list price", () => {
       input: 2,
       output: 10,
     });
+    expect(claudePrice("claude-fable-5-2")).toEqual({
+      cacheRead: 0.2,
+      cacheWrite: 10,
+      input: 8,
+      output: 40,
+    });
+    expect(claudeCost("claude-fable-5-2", TOKENS)).toEqual({ estimated: true, usd: 0.0294 });
     expect(claudePrice("claude-fable-5-1")).toEqual({
       cacheRead: 0.25,
       cacheWrite: 12.5,
@@ -101,6 +108,7 @@ describe("Claude's list price", () => {
   const CACHE_READ_SHARE: Readonly<Record<string, number>> = {
     "fable 5.0": 0.1,
     "fable 5.1": 0.025,
+    "fable 5.2": 0.025,
     "haiku 3.5": 0.1,
     "haiku 4.5": 0.1,
     "haiku 5.5": 0.1,

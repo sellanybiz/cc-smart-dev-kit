@@ -1508,7 +1508,7 @@ with no version, and a family with no row get the body with only `model` changed
 come from Anthropic's docs, read 2026-10-17: the per-model table in
 platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting, the extended
 thinking page ("Claude 4.7 and later models … reject" a budget; 4.5 and earlier refuse
-`adaptive`), and the migration guides of Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1. A
+`adaptive`), and the migration guides of Sonnet 5.5, Opus 5.5, Haiku 5.5 and Fable 5.1. Fable 5.2's [migration guide](https://platform.claude.com/docs/en/models/fable-5-2/migration-guide), read 2026-11-11, adds its sampling row. A
 newer version that changes a rule shows in the WARN line with Anthropic's reason, and its
 row changes then.
 
@@ -1518,6 +1518,7 @@ row changes then.
 | | Opus 5.5 and later, Fable 5 and later | no `thinking` field (they always think); with no effort named, `output_config.effort: "low"`, the nearest to no thinking (the Opus guide's own before / after); a named effort is kept |
 | | Opus 5, Haiku 5.5 and later | kept; an effort of `xhigh` or `max` becomes `high` (they take thinking off only up to `high`) |
 | `thinking: {type: "enabled", budget_tokens}` | every family, 4.7 and later | `{type: "adaptive"}`, `display` kept |
+| `temperature` other than 1, `top_p`, `top_k` | Fable 5.2 and later | left out, using the defaults (Fable 5.2 migration guide) |
 | `tool_choice` `any` or `tool` | Sonnet 5.5, Opus 5.5, Fable 5.1, and later | `{type: "auto"}`, `disable_parallel_tool_use` kept |
 | `temperature` other than 1, any `top_p`, any `top_k` | Sonnet 5.5, Opus 5.5, Haiku 5.5, and later | left out (the default) |
 
@@ -1968,6 +1969,32 @@ removed):
    tool definition on every turn (184K tokens of context on a first turn, against 70K). It
    stays: it is the one value that forces the deferred tools on every version.
 2. `ANTHROPIC_BASE_URL` = `http://127.0.0.1:<port>`
+3. `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` = `1`: at startup Claude Code can add
+   Anthropic's live models to `/model`, without a kit update or a pinned model. `off` removes
+   this owned key too.
+
+Normal `setup` also upgrades an already-on gateway: only while the user settings hold our
+still-owned address for this router, it adds or refreshes the owned discovery key. A foreign
+discovery value stays with an information line; an off gateway stays off. This is a separate
+idempotent step under setup's lock through `applyManagedJson`, also shown by `--dry-run`.
+
+Discovery sends `GET /v1/models?limit=1000`, with a 3-second default timeout and no redirects.
+The router forwards the query and login headers unchanged, including under `/p/<profile>`;
+it does not invent a model list. Claude Code sends both `Authorization` and `x-api-key` when
+those credentials resolve, and skips discovery when neither resolves. In particular, the
+current docs do not promise discovery with only a saved subscription login. The kit never
+writes credentials to enable it. If discovery fails, Claude Code uses its cached list
+(`~/.claude/cache/gateway-models.json`), then its built-in list.
+
+Discovery adds picker rows; it does not promise to change an alias. The current model docs
+say `ANTHROPIC_BASE_URL` changes the destination, not the model, and `fable` resolves to
+Fable 5.2 outside Claude apps gateway on Claude Code 2.1.321 or later. If `/model fable`
+still selects an older model, use `/model claude-fable-5-2`; `doctor` gives this hint as
+information, and the kit never pins the alias. The picker and subscription-login discovery
+remain owed live checks, not a claim proved by the router's unit tests.
+
+Sources, read 2026-11-11: [gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol#model-discovery)
+and [model configuration](https://code.claude.com/docs/en/model-config#fable-alias-resolution).
 
 **No model is pinned** (since 0.5.0): Claude Code sends each Claude model's own id, and the
 router takes it to its family's slot. Up to 0.4.3, `on` also wrote
