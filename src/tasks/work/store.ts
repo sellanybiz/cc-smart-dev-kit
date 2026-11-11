@@ -6,6 +6,7 @@ import {
   holdingUnder,
   openBlockers,
   openChildren,
+  planIsOpen,
   taskById,
   waitsForTask,
 } from "./queries";
@@ -243,6 +244,12 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
   }
 }
+function openPlanValid(tasks: readonly WorkTask[], plan: string): void {
+  if (!planIsOpen(tasks, plan))
+    throw new Error(
+      `Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`,
+    );
+}
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
  * says why the kit made the task itself (an import), for its history.
@@ -257,6 +264,11 @@ export function insertTask(
   const subject = subjectOf(input.subject);
   const description = descriptionOf(input.description ?? "");
   placeValid(db, input.project, null, input.parentId ?? null, input.kind ?? "task");
+  const parentPlan = input.parentId ? taskById(db, input.parentId).plan : null;
+  const plan = input.plan ?? parentPlan;
+  if ((input.kind ?? "task") !== "plan" && plan !== null)
+    openPlanValid(allTasks(db, input.project), plan);
+  if (parentPlan !== null && parentPlan !== plan) throw new Error("parent belongs to another plan");
   const id = newId();
   // Never a deleted task's number: its history still answers to it (`task_get #n`).
   const number =
@@ -280,7 +292,7 @@ export function insertTask(
       subject,
       description,
       status,
-      input.plan ?? null,
+      plan,
       input.phase ?? null,
       input.agent ?? null,
       input.branch ?? null,
@@ -506,7 +518,10 @@ export function layPhase(
   who: Who,
   now: number,
 ): { task: WorkTask; made: boolean } {
-  const there = allTasks(db, input.project).find(
+  const tasks = allTasks(db, input.project);
+  // A new slug can start a plan; an existing closed plan must be reopened first.
+  if (tasks.some((task) => task.plan === input.plan)) openPlanValid(tasks, input.plan);
+  const there = tasks.find(
     (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
   );
   if (there) return { task: there, made: false };

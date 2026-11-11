@@ -19,6 +19,103 @@ function legacyParent(stateDir: string, number: number, parent: number) {
   }
 }
 
+for (const status of ["done", "dropped"] as const) {
+  test(`a ${status} latest plan leaves new work loose`, () => {
+    const cwd = tempDir();
+    const stateDir = tempDir();
+    const ops = createTaskOps({
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
+    });
+    try {
+      expect(ops.call("create", { subject: "Older", plan: "older" }).ok).toBe(true);
+      expect(ops.call("create", { subject: "Latest", plan: "latest" }).ok).toBe(true);
+      expect(ops.call("update", { task: "#2", status }).ok).toBe(true);
+      expect(ops.call("create", { subject: "Loose" }).ok).toBe(true);
+      const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
+      try {
+        expect(db.sqlite.query("SELECT plan FROM tasks WHERE number=3").get()).toEqual({
+          plan: null,
+        });
+      } finally {
+        db.close();
+      }
+      expect(ops.call("create", { subject: "Phase", phase: "A" })).toEqual({
+        ok: false,
+        why: "A phase belongs to a plan: give plan (its slug)",
+      });
+      const ledger = ops.call("list", { scope: "plan", open_only: false });
+      if (!ledger.ok) throw new Error(ledger.why);
+      expect(ledger.text).toContain("Latest");
+    } finally {
+      ops.close();
+    }
+  });
+}
+
+for (const blocking of [true, false]) {
+  test(`a missing plan row with blocking=${blocking} sets the write default`, () => {
+    const cwd = tempDir();
+    const stateDir = tempDir();
+    const ops = createTaskOps({
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
+    });
+    try {
+      expect(ops.call("create", { subject: "Plan", plan: "legacy" }).ok).toBe(true);
+      expect(
+        ops.call("create", { subject: "Existing", type: blocking ? "blocking" : "non-blocking" })
+          .ok,
+      ).toBe(true);
+      const raw = new Database(workDbFile({ stateDir }));
+      try {
+        raw.query("DELETE FROM tasks WHERE kind='plan'").run();
+      } finally {
+        raw.close();
+      }
+      expect(ops.call("create", { subject: "New" }).ok).toBe(true);
+      const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
+      try {
+        expect(db.sqlite.query("SELECT plan FROM tasks WHERE number=3").get()).toEqual({
+          plan: blocking ? "legacy" : null,
+        });
+      } finally {
+        db.close();
+      }
+    } finally {
+      ops.close();
+    }
+  });
+}
+
+test("named phases and explicit parents refuse a closed plan", () => {
+  const cwd = tempDir();
+  const ops = createTaskOps({
+    stateDir: tempDir(),
+    cwd: () => cwd,
+    caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
+  });
+  try {
+    expect(ops.call("create", { subject: "Phase", plan: "closed", phase: "A" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#2" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#1" }).ok).toBe(true);
+    const refusal = {
+      ok: false as const,
+      why: 'Plan "closed" is closed: reopen it with task_update, or create a loose task (no plan).',
+    };
+    expect(ops.call("create", { subject: "New", parent: "#2" })).toEqual(refusal);
+    expect(ops.call("create", { subject: "New", parent: "#2", plan: "closed" })).toEqual(refusal);
+    expect(ops.call("create", { subject: "Phase B", phase: "B", plan: "closed" })).toEqual(refusal);
+    expect(ops.call("create", { subject: "Phase A", phase: "A", plan: "closed" })).toEqual(refusal);
+    expect(ops.call("update", { task: "#1", status: "pending" }).ok).toBe(true);
+    expect(ops.call("create", { subject: "Allowed", parent: "#2" }).ok).toBe(true);
+  } finally {
+    ops.close();
+  }
+});
+
 test("a close the store refuses keeps no note, so a retry saves each note once", () => {
   const cwd = tempDir();
   const stateDir = tempDir();

@@ -110,11 +110,17 @@ still change.
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
 under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
-out, it is the plan of the caller's latest own task that has one (made or claimed by it), never
-another session's plan. Only `task_list` with `scope: "plan"` falls back to the project's
-newest plan, to show it. `task_list` also takes `plan` (CLI: `--plan`) to select a slug.
-When the session owns several plans, `scope: "plan"` without a slug lists them all with their
-counts. The write default remains the latest own task with a plan. `plan` alone, with no `parent`, makes the plan task and takes a subject only. To add a task
+out, writes use the plan of the caller's latest own task that has one (made or claimed by it)
+only while that plan is open. Never another session's plan or an older open plan. A plan is
+open when its plan row is pending or in progress; without that row, it needs an open blocking
+task. A closed latest plan leaves new tasks loose; a phase still needs a named plan.
+The store checks under the write lock too, for a named plan or parent as well as the default.
+To add work to a closed plan, reopen its plan row with `task_update`; otherwise create a loose
+task with no plan or parent. Reads keep the latest own plan even after it closes. Only
+`task_list` with `scope: "plan"` falls back to the project's newest plan, to show it.
+`task_list` also takes `plan` (CLI: `--plan`) to select a slug. When the session owns several
+plans, `scope: "plan"` without a slug lists them all with their counts.
+`plan` alone, with no `parent`, makes the plan task and takes a subject only. To add a task
 to a named plan, give its phase as `parent`; `plan` may also be given to check that membership.
 Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
 each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
