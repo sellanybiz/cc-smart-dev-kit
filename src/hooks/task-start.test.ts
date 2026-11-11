@@ -40,12 +40,13 @@ test("a 500-task store stays capped and startView and planProgress fit the hook 
   const view = startView(paths, project, who, { limit: 8 });
   const startMs = performance.now() - started;
   const progressStarted = performance.now();
-  planProgress(paths, project, who);
+  const progress = planProgress(paths, project, who);
   const progressMs = performance.now() - progressStarted;
   console.info(
     `500-task reads: startView ${startMs.toFixed(3)} ms; planProgress ${progressMs.toFixed(3)} ms`,
   );
   expect(view.state).toBe("ready");
+  expect(progress.state).toBe("ready");
   expect(startMs).toBeLessThan(10);
   expect(progressMs).toBeLessThan(10);
   expect(
