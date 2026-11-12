@@ -62,9 +62,11 @@ of such a hook's result.
 starts cannot use it. After launch the command records agent, branch and worktree through
 the task API. A failed binding warns that the child did start; it is not a launch rollback.
 
-Briefs live under `<stateDir>/herdr/briefs/` (`cliPaths().stateDir`). The folder is 700 and
-files are 600, written atomically without the kit-wide lock. The child receives only a
-path in its first message. Linked briefs add a reporting command and forbid grandchildren
+Each child gets `<stateDir>/herdr/briefs/<core>-<name>/brief.md` (`cliPaths().stateDir`).
+Its folder is 700 and files are 600, written atomically without the kit-wide lock.
+Claude starts with `--add-dir <that folder>` so even a default-mode child can read its
+brief without a permission prompt. Its first message points to the file inside a lead
+report wrapper; remote starts use the remote absolute folder in both places. Linked briefs add a reporting command and forbid grandchildren
 unless the brief allows them. A task brief adds `Your task: #n` and a Report-note instruction;
 the child does not take, update or close the task.
 
@@ -72,11 +74,12 @@ the child does not take, update or close the task.
 `hc send --if`; done uses a plain send. Blocked, unknown or missing status is refused;
 `--force` is never used. `send` wraps text in `<kit-report from="lead">`; reports escape
 embedded hc/report tags and identify their source. These wrappers, and `<hc `, are excluded
-from the person's turns by `prompt-source.ts`.
+from the person's turns by `prompt-source.ts`, after trimming leading whitespace.
 
 A report is sent only to a live Claude Code lead on the same core. If that lead cannot
 receive it, including a race to blocked status, a unique timestamp-and-UUID report file
-is saved beside the briefs. Remote reports always use that machine's file fallback.
+is saved as `report-<UTC>-<uuid>.md` in that child’s brief folder for local children. Remote reports use the file fallback on
+their own machine, in a folder keyed by their own core, not the lead core used by the brief.
 Reports are child evidence, never the person's approval.
 
 ## Remote machines
@@ -95,8 +98,8 @@ It makes the remote brief directory private, sends the file on stdin through
 mode 600 before launch. It does not use `hc put`, which would need a terminal already started.
 
 The remote brief states where reports stay. Start and wait print the actual report folder
-and the retrieval lines `hc exec --on <machine> ls -1 <folder>` and
-`hc file read --on <machine> <folder>/<file>`. The exec line is for the person's shell:
+and the retrieval lines `hc exec --on <machine> find <folder> -type f` and
+`hc file read --on <machine> <folder>/<child>/<file>`. The exec line is for the person's shell:
 raw hc exec remains denied to Claude by the judge. A different remote config override does
 not alter the absolute brief path already handed to the child; report retrieval with such
 an override still needs live verification.
@@ -108,14 +111,17 @@ child with kind question or permission. The exact status message and turn must s
 The screen reader takes the bottom contiguous numbered option block, requires entries
 1..n and one cursor, and checks the selected label. It refuses multi-question, multi-select,
 authentication, plan approval and remembered permissions; only a one-time yes/no permission
-can be relayed. `--text` is parsed but refused: use the pane.
+can be relayed. A permission msg of 200 or more characters may be cut short and needs the
+pane. `--text` is parsed but refused: use the pane.
 
 Immediately before keys, the command reads status and screen again, requiring the same
 message, turn, options and cursor. It moves up/down from that cursor to k, then Enter.
 It never assumes number-key selection or a Home key. There is still a get-to-keys race:
 hc has no atomic expected-turn keys operation. Live acceptance of this boundary is owed.
 
-The skill asks the person with mirrored options, then runs the guarded answer line.
+The skill asks the person with mirrored options and quotes the full permission action from
+`hc read`, not just its status msg. Then it runs the guarded answer line. The judge includes
+a safely quoted, length-limited `--expect` excerpt in its reason.
 The judge always asks again for that line; it cannot inspect a prompt kind without an hc
 call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
 While away, the existing frame denies and parks questions instead of guessing answers.
@@ -148,8 +154,14 @@ starts. The judge still asks for every such launch, even with that flag: the app
 is the line that runs. It also asks for every answer and machine-rule change, denies raw hc
 writes and identity assignments, and caps mode from PreToolUse's `permission_mode`.
 
-The command cannot know its lead's hook mode. A script calling it directly therefore
-bypasses that mode comparison, but not the command's other checks. Likewise, a shell judge
+The mode cap, premium/remote approval prompts and machine-rule approval prompts live only
+in the judge, as does the refusal of unattended starts (`claude -p`): nobody watches their
+children or receives their reports. A script calling the command directly meets only the
+command's identity, ownership, name, task-locality, version, privacy and relay checks, its
+explicit model/effort/mode requirements, its bypassPermissions ban and its `--asked` flag
+requirements. The flag alone is not a recorded approval outside the judge. Raw remote hc
+reads also meet the judge's machine rule: production and unknown machines ask; free ones
+pass silently; unreadable rules ask. Likewise, a shell judge
 cannot inspect arbitrary script bodies or identify commands assembled from unrelated string
 fragments. These are policy checks, not a sandbox; keep that limit explicit.
 

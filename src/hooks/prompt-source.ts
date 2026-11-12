@@ -34,5 +34,6 @@ export const NOT_PERSON_PREFIXES = [
 
 /** True when `prompt` starts with one of the wrappers: a turn that is not the person's words. */
 export function hasNotPersonWrapper(prompt: string): boolean {
-  return NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix));
+  const text = prompt.trimStart();
+  return NOT_PERSON_PREFIXES.some((prefix) => text.startsWith(prefix));
 }

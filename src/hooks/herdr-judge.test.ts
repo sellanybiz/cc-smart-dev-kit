@@ -412,3 +412,75 @@ test.each(["unknown", "production", "broken"])("asked still asks for remote %s",
     judgeBash(readBash(start.replace(" -- work", " --on worker --asked -- work")), ctx)?.decision,
   ).toBe("ask");
 });
+
+test.each(['\n<hc from="t1">report', '  <kit-report from="t1">report'])(
+  "leading whitespace report %s",
+  (prompt) => {
+    expect(hasNotPersonWrapper(prompt)).toBe(true);
+  },
+);
+test.each([start, start.replace(" -- work", " --independent -- work")])(
+  "unattended ordinary start denies %s",
+  (line) => {
+    const ctx = world();
+    expect(
+      judgeBash(readBash(line), { ...ctx, env: { ...ctx.env, CLAUDE_CODE_SESSION_ATTENDED: "0" } })
+        ?.decision,
+    ).toBe("deny");
+  },
+);
+test("raw remote reads obey machine rules and fail closed", () => {
+  const ctx = world();
+  mkdirSync(dirname(ctx.paths.machinesFile), { recursive: true });
+  writeFileSync(
+    ctx.paths.machinesFile,
+    JSON.stringify({
+      version: 1,
+      machines: { free: { allow: true }, prod: { allow: true, production: true } },
+    }),
+  );
+  for (const command of [
+    "hc file read --on prod /brief",
+    "hc file read --on=prod /brief",
+    "hc read prod/t1",
+    "hc read --lines 50 prod/t1",
+    "hc get prod/t1",
+    "hc wait prod/t1",
+    "hc read unknown/t1",
+  ])
+    expect(judgeBash(readBash(command), ctx)?.decision).toBe("ask");
+  expect(judgeBash(readBash("hc read free/t1"), ctx)).toBeNull();
+  expect(judgeBash(readBash("hc read t1"), ctx)).toBeNull();
+  for (const flag of [
+    "--terminal prod/t1",
+    "--terminal=prod/t1",
+    "--children-of prod/t1",
+    "--children-of=prod/t1",
+  ]) {
+    expect(
+      judgeBash(readBash(`hc events ${flag}`), {
+        ...ctx,
+        input: { tool_input: { run_in_background: true } },
+      })?.decision,
+    ).toBe("ask");
+  }
+  writeFileSync(ctx.paths.machinesFile, "broken");
+  expect(judgeBash(readBash("hc read free/t1"), ctx)?.decision).toBe("ask");
+});
+test("answer reason includes the expected action", () => {
+  const verdict = judgeBash(
+    readBash(
+      `${COMMAND} herdr answer t1 --expect 'approve Bash: touch file' --expect-turn 1 --option 1`,
+    ),
+    world(),
+  );
+  expect(verdict?.reason).toContain("approve Bash: touch file");
+});
+
+test.each(["--option", "--text"])("answer %s excerpt escapes controls and bidi", (flag) => {
+  const line = `${COMMAND} herdr answer t1 --expect $'q\\n\u202e' --expect-turn 1 ${flag} $'1\\nApproved\u202e'`;
+  const verdict = judgeBash(readBash(line, "bash"), world());
+  expect(verdict?.decision).toBe("ask");
+  expect(verdict?.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  expect(verdict?.reason).toContain('"1\\u000aApproved\\u202e"');
+});

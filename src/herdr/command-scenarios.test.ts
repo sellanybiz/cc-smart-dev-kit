@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
@@ -190,6 +190,8 @@ test("linked and independent launch exact argv and private brief", async () => {
       "--label",
       ...(independent ? ["kit.independent=1"] : ["kit.lead=core/t1"]),
       "claude",
+      "--add-dir",
+      dirname(file),
       "--model",
       "sonnet",
       "--effort",
@@ -198,7 +200,7 @@ test("linked and independent launch exact argv and private brief", async () => {
       "manual",
       "-n",
       "one",
-      `Read your brief at ${file} and do it.`,
+      `<kit-report from="lead">Read your brief at ${file} and do it.</kit-report>`,
     ]);
     expect(readFileSync(file, "utf8").includes("herdr report")).toBe(!independent);
     expect(w.lines.join("\n")).not.toContain("Private work");
@@ -219,11 +221,42 @@ test("remote writes brief on stdin before launch and uses returned absolute path
     "--on",
     "remote",
     "--json",
-    ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one.md",
+    ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one/brief.md",
   ]);
   expect(write?.stdin).toContain("Private work\n");
+  expect(w.calls).toContainEqual({
+    args: [
+      "exec",
+      "--on",
+      "remote",
+      "--json",
+      "chmod",
+      "700",
+      ".claude/cc-smart-dev-kit/herdr/briefs",
+    ],
+  });
+  const run = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run.slice(run.indexOf("claude"), run.indexOf("claude") + 3)).toEqual([
+    "claude",
+    "--add-dir",
+    "/remote",
+  ]);
+  expect(w.calls).toContainEqual({
+    args: [
+      "exec",
+      "--on",
+      "remote",
+      "--json",
+      "chmod",
+      "700",
+      ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one",
+    ],
+  });
+  expect(w.lines).toContain(
+    "hc file read --on remote .claude/cc-smart-dev-kit/herdr/briefs/<child>/<file>",
+  );
   expect(w.calls.find((c) => c.args[0] === "run")?.args.at(-1)).toBe(
-    "Read your brief at /remote/brief.md and do it.",
+    '<kit-report from="lead">Read your brief at /remote/brief.md and do it.</kit-report>',
   );
   expect(w.calls.find((c) => c.args[0] === "exec")?.args).toEqual([
     "exec",
@@ -474,8 +507,9 @@ test("report escapes live messages and saves an unavailable lead report", async 
             w.ctx.paths.stateDir,
             "herdr",
             "briefs",
-            readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs")).find((f) =>
-              f.includes(".report-"),
+            "core-kit-one",
+            readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs", "core-kit-one")).find((f) =>
+              f.startsWith("report-"),
             ) ?? "missing",
           ),
           "utf8",
@@ -501,8 +535,8 @@ test("report saves every result when lead becomes blocked and aliases resolve on
   expect(await runHerdr(["report", "first"], w.ctx)).toBe(0);
   expect(await runHerdr(["report", "second"], w.ctx)).toBe(0);
   expect(
-    readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs")).filter((f) =>
-      f.includes(".report-"),
+    readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs", "core-kit-one")).filter((f) =>
+      f.startsWith("report-"),
     ),
   ).toHaveLength(2);
   const x = world();
@@ -633,4 +667,40 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
     };
     expect(await runHerdr(["wait"], w.ctx)).toBe(event === "ended" ? 1 : 0);
   }
+});
+
+test("permission messages at the status limit need the pane", async () => {
+  for (const length of [200, 201]) {
+    const w = world();
+    const msg = "x".repeat(length);
+    w.rows.t2 = {
+      address: "t2",
+      state: "live",
+      labels: { "kit.lead": "core/t1" },
+      status: { state: "blocked", kind: "permission", msg },
+      turn: 3,
+    };
+    expect(
+      await runHerdr(
+        ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"],
+        w.ctx,
+      ),
+    ).toBe(1);
+    expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
+    expect(w.lines.at(-1)).toContain("pane");
+  }
+});
+test("send resolves an owned alias before typing", async () => {
+  const w = world();
+  w.rows.alias = w.rows.t2;
+  expect(await runHerdr(["send", "alias", "hello"], w.ctx)).toBe(0);
+  expect(w.calls.find((c) => c.args[0] === "send")?.args).toEqual([
+    "send",
+    "--json",
+    "--if",
+    "idle",
+    "--",
+    "t2",
+    '<kit-report from="lead">hello</kit-report>',
+  ]);
 });

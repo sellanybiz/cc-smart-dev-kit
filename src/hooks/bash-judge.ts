@@ -46,7 +46,13 @@ import { isAbsolute, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { machineRule, readMachines } from "../herdr/machines";
-import { childModeAllowed, HERDR_VERBS, normalizeMode, parseHerdrArgs } from "../herdr/words";
+import {
+  childModeAllowed,
+  HERDR_VERBS,
+  normalizeMode,
+  parseHerdrArgs,
+  STATUS_MESSAGE_LIMIT,
+} from "../herdr/words";
 import {
   checkoutFailure,
   loadProjectConfig,
@@ -648,6 +654,23 @@ function herdrDomain(reading: BashReading): boolean {
   );
 }
 
+/** Quote short prompt excerpts without terminal controls or invisible direction changes. */
+function herdrExcerpt(text: string): string {
+  const points = Array.from(text);
+  const quoted = points
+    .slice(0, STATUS_MESSAGE_LIMIT)
+    .map((char) =>
+      /[\p{Cc}\p{Cf}]/u.test(char)
+        ? Array.from(
+            { length: char.length },
+            (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`,
+          ).join("")
+        : JSON.stringify(char).slice(1, -1),
+    )
+    .join("");
+  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "…" : ""}`;
+}
+
 /** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
 function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | null {
   if (!herdrDomain(reading)) return null;
@@ -666,6 +689,19 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
           "deny",
           `${reason}\nNobody answers a question in \`claude -p\`; run this in an interactive session.`,
         );
+  };
+  const remoteRead = (machine: string) => {
+    try {
+      const rule = machineRule(readMachines(context.paths.machinesFile), machine);
+      if (rule !== "free")
+        remember(
+          `Approve Herdr read on ${machine}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`,
+        );
+    } catch (error) {
+      remember(
+        `Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote read only if you meant it.`,
+      );
+    }
   };
   for (const one of reading.invocations) {
     if (one.computed && reading.namesHerdr) {
@@ -699,6 +735,24 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
         (verb === "machine" && sub === "ls") ||
         (verb === "file" && sub === "read") ||
         (verb === "server" && sub === "status");
+      const machine = optionValue(
+        raw.slice(0, raw.indexOf("--") < 0 ? undefined : raw.indexOf("--")),
+        "--on",
+      );
+      if (verb === "file" && sub === "read" && machine) remoteRead(machine);
+      const terminalArgs = raw.slice(1);
+      const addresses = ["read", "get", "wait"].includes(verb ?? "")
+        ? positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(
+            0,
+            1,
+          )
+        : verb === "events"
+          ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")]
+          : [];
+      for (const address of addresses) {
+        const slash = address?.indexOf("/") ?? -1;
+        if (address && slash > 0) remoteRead(address.slice(0, slash));
+      }
       if (verb === "events") {
         const input = context.input.tool_input;
         if (
@@ -737,8 +791,8 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       const parsed = parseHerdrArgs(herdr);
       const detail =
         !("error" in parsed) && parsed.verb === "answer"
-          ? `${parsed.target}: ${parsed.option !== undefined ? `option ${parsed.option}` : parsed.text}`
-          : herdr.slice(1).join(" ");
+          ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}`
+          : herdrExcerpt(herdr.slice(1).join(" "));
       remember(
         `Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`,
       );
@@ -751,6 +805,11 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       continue;
     }
     if (herdr[0] !== "start") continue;
+    if (!isAttended(context.env))
+      return verdict(
+        "deny",
+        "Nobody answers or watches a Herdr session started by `claude -p`; its reports would reach nobody. Start it from an interactive session.",
+      );
     const flags = herdr.slice(1, herdr.indexOf("--") < 0 ? undefined : herdr.indexOf("--"));
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");

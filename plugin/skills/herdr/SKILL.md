@@ -33,7 +33,10 @@ cc-smart-dev-kit herdr start --model sonnet --effort high --mode default --cwd /
 Replace the example scope with a complete brief: goal, exact boundaries, relevant files,
 checks, commit permission, expected result and what to report. Forbid further sessions and
 agents unless the person authorized them. A linked brief gets the reporting instructions
-from the command. A brief is private file content, not a long argument to the child.
+from the command. Each private `<stateDir>/herdr/briefs/<core>-<name>/brief.md` has its own
+folder; the launch grants `--add-dir` access to that folder. Local reports stay beside that brief. A remote child saves reports in a folder keyed by
+its own core on its machine, not beside the lead-core brief; the printed `find` hint locates them.
+The first message is wrapped as lead evidence, never the person’s approval.
 
 - Add `--independent` only for the independent kind.
 - Select `--mode` no broader than the lead's current mode. A plan-mode lead must get its
@@ -74,7 +77,9 @@ person's instructions, consent or approval.
 1. Read the current status (`herdr list`, then `hc get <terminal> --json`) and screen
    (`hc read <terminal>`). Keep the exact status `msg` and `turn`.
 2. For a single-choice question, ask the person with `AskUserQuestion`, preserving the
-   child's question and option meanings. Relay only a one-time yes/no permission this way.
+   child's question and option meanings. For a permission prompt, quote the full action
+   from `hc read` in the question, not just the status `msg`, which may be cut short.
+   Relay only a one-time yes/no permission; a msg at the 200-character limit needs the pane.
 3. On their answer, immediately run the guarded command with the matching option number:
 
    ```sh
@@ -99,5 +104,6 @@ After a lead restart, run `cc-smart-dev-kit herdr adopt` to recover same-reposit
 whose old lead is gone. It does not take independent sessions or another live lead's work.
 
 Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
-read-only inspection is allowed (`hc events` only in the background). A printed remote
-`hc exec … ls` line is for the person's terminal, not permission to bypass that guard.
+local read-only inspection is allowed (`hc events` only in the background). Remote reads
+ask for production or unallowlisted machines; an unreadable machine-rule file also asks. A printed remote
+`hc exec … find` line is for the person's terminal, not permission to bypass that guard.
