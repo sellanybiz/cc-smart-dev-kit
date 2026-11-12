@@ -24,7 +24,6 @@ import {
   jobRouteHook,
   mainFolderGuardHook,
   mergeGuardHook,
-  messageGuardHook,
   sessionEscapeGuardHook,
   sessionNameHook,
 } from "./specs";
@@ -49,11 +48,7 @@ const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown
     what: "whether this edit belongs in a worktree",
     input: { tool_name: "Edit", tool_input: { file_path: "/code/app/README.md" } },
   },
-  {
-    spec: messageGuardHook,
-    what: "whether this message may go to that session",
-    input: { tool_name: "SendMessage", tool_input: { to: "other", message: "hi" } },
-  },
+
   {
     spec: jobRouteHook,
     what: "whether this launch or heavy command may run",

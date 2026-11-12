@@ -47,10 +47,9 @@ import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
-import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
+import { AGENT_TOOLS, SEND_MESSAGE_TOOL, WORKFLOW_TOOLS } from "./agent-guard";
 import { cappedHookList, HOOK_LIST_LIMIT } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
-import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
 import { lastAssistantText, stopFeedbackGiven } from "./transcript";
 

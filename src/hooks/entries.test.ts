@@ -317,7 +317,6 @@ esac
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
     expect(timeout("git-guard")).toBe(10);
     expect(timeout("main-folder-guard")).toBe(10);
-    expect(timeout("message-guard")).toBe(10);
     expect(timeout("agent-guard")).toBe(10);
     expect(timeout("session-escape-guard")).toBe(10);
     expect(timeout("job-route")).toBe(10);
@@ -336,7 +335,7 @@ esac
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
     // The merge guard: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
     expect(GH_TIMEOUT_MS).toBeLessThan(30_000 / 2);
-    expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard, message-guard
+    expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard
     expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook
   });
 });
@@ -387,7 +386,6 @@ describe("the entries, run as Claude Code runs them", () => {
     "job-route": "whether this launch or heavy command may run",
     "main-folder-guard": "whether this edit belongs in a worktree",
     "merge-guard": "whether this merge may happen by itself",
-    "message-guard": "whether this message may go to that session",
     "session-escape-guard": "whether this call goes around the limits set for the session",
     "user-away": "whether the person is available",
   };

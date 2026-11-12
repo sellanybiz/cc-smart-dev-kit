@@ -22062,7 +22062,6 @@ var PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "message-guard",
   "agent-guard",
   "fable-session",
   "tier-view",
@@ -22080,7 +22079,8 @@ var PLUGIN_HOOK_NAMES = [
 var RETIRED_HOOK_NAMES = [
   "serena-root",
   "crew-role",
-  "lead-notes"
+  "lead-notes",
+  "message-guard"
 ];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];

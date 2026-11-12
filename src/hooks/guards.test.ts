@@ -1,21 +1,11 @@
-/** The main-folder guard and the message guard. */
+/** The main-folder guard. */
 import { describe, expect, test } from "bun:test";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { cliPaths } from "../cli/paths";
-import {
-  hookEnv,
-  makeRepo,
-  runHook,
-  wireProjectHook,
-  writeClaudeFile,
-  writeSessionRecord,
-} from "../testing/hooks";
+import { hookEnv, makeRepo, runHook, wireProjectHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { readAway, setUnavailable } from "../user-away/state";
 import { editsMainFolder, mainFolderRefusal } from "./main-folder-guard";
-import { messageLeavesRepo } from "./message-guard";
-import { mainFolderGuardHook, messageGuardHook } from "./specs";
+import { mainFolderGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
@@ -33,10 +23,6 @@ function decide(decision: "ask" | "deny", reason: string) {
 
 function deny(reason: string) {
   return decide("deny", reason);
-}
-
-function ask(reason: string) {
-  return decide("ask", reason);
 }
 
 describe("editsMainFolder", () => {
@@ -174,159 +160,5 @@ describe("the main-folder guard", () => {
     expect(
       await runHook(mainFolderGuardHook, edit(worktree, join(wtLink, "a.ts")), hookEnv()),
     ).toEqual({});
-  });
-});
-
-describe("the message guard", () => {
-  const send = (cwd: string, to: string) => ({
-    hook_event_name: "PreToolUse",
-    session_id: SESSION,
-    cwd,
-    tool_name: "SendMessage",
-    tool_input: { to, message: "hi" },
-  });
-
-  test("messageLeavesRepo: only when every session of that name works outside", () => {
-    const sessions = [
-      { pid: 1, sessionId: "a", cwd: "/code/app-wt-x", name: "ours" },
-      { pid: 2, sessionId: "b", cwd: "/elsewhere/other", name: "theirs" },
-      { pid: 3, sessionId: "c", cwd: "/elsewhere/two", name: "twice" },
-      { pid: 4, sessionId: "d", cwd: "/code/app", name: "twice" },
-    ];
-    const folders = ["/code/app", "/code/app-wt-x"];
-    expect(messageLeavesRepo("ours", sessions, folders)).toBeNull();
-    expect(messageLeavesRepo("theirs [ab12]", sessions, folders)).toBe("/elsewhere/other");
-    expect(messageLeavesRepo("twice", sessions, folders)).toBeNull();
-    expect(messageLeavesRepo("unknown", sessions, folders)).toBeNull();
-  });
-
-  /** The question before a message to another repo, in the guard's own words. */
-  const question = (to: string, folder: string) =>
-    [
-      `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
-      "ListAgents lists every Claude session on the machine, other projects too.",
-    ].join("\n");
-
-  test("a message to a session of another project asks the person, naming its folder", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const elsewhere = tempDir("elsewhere");
-    writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
-    expect(await runHook(messageGuardHook, send(repo, "other project"), env)).toEqual(
-      ask(question("other project", elsewhere)),
-    );
-  });
-
-  test("two sessions of one name, one of them in this repo: through, no question", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    writeSessionRecord(env, { sessionId: "x", cwd: tempDir("elsewhere"), name: "twice" });
-    writeSessionRecord(env, {
-      sessionId: "y",
-      cwd: join(repo, "src"),
-      name: "twice",
-      pid: process.ppid,
-    });
-    expect(await runHook(messageGuardHook, send(repo, "twice"), env)).toEqual({});
-  });
-
-  test.each([
-    [
-      "needs a newer plugin",
-      { requires: ">=99", fieldFromTheFuture: true },
-      "needs cc-smart-dev-kit >=99",
-    ],
-    ["is broken", { worktree: {} }, "worktree: unknown field"],
-  ])("a file that %s: the same judgement, not a blanket question", async (_why, config, said) => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
-    const env = hookEnv();
-    const elsewhere = tempDir("elsewhere");
-    writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
-    writeSessionRecord(env, {
-      sessionId: "y",
-      cwd: join(repo, "src"),
-      name: "ours",
-      pid: process.ppid,
-    });
-    // Leaving the repo: the real question, and the file's problem on the last line.
-    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
-    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-    expect(output.permissionDecision).toBe("ask");
-    const lines = String(output.permissionDecisionReason).split("\n");
-    expect(lines.slice(0, 2).join("\n")).toBe(question("other project", elsewhere));
-    expect(lines[2]).toStartWith(
-      "The project's settings file cannot be used, and this rule reads nothing from it: ",
-    );
-    expect(lines[2]).toContain(said);
-    expect(lines).toHaveLength(3);
-    // Staying in the repo, or a name with no record: silent, as with a good file.
-    expect(await runHook(messageGuardHook, send(repo, "ours"), env)).toEqual({});
-    expect(await runHook(messageGuardHook, send(repo, "nobody"), env)).toEqual({});
-  });
-
-  test("while the person is away, the question becomes a deny and the message is parked", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const elsewhere = tempDir("elsewhere");
-    writeSessionRecord(env, { sessionId: "x", cwd: elsewhere, name: "other project" });
-    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
-    const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-    expect(output.permissionDecision).toBe("deny");
-    expect(output.permissionDecisionReason).toStartWith(question("other project", elsewhere));
-    expect(output.permissionDecisionReason).toContain("parked as #1");
-    expect(readAway(cliPaths(env).stateDir).items.map((item) => [item.kind, item.tool])).toEqual([
-      ["action", "SendMessage"],
-    ]);
-  });
-
-  test("a session of this repo, an unknown name, or no cc-smart-dev-kit.json: through", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    writeSessionRecord(env, { sessionId: "x", cwd: join(repo, "src"), name: "ours" });
-    expect(await runHook(messageGuardHook, send(repo, "ours"), env)).toEqual({});
-    expect(await runHook(messageGuardHook, send(repo, "nobody"), env)).toEqual({});
-    const plain = makeRepo("plain");
-    const env2 = hookEnv();
-    writeSessionRecord(env2, { sessionId: "x", cwd: tempDir("e"), name: "other" });
-    expect(await runHook(messageGuardHook, send(plain, "other"), env2)).toEqual({});
-  });
-
-  test("a running session's record that cannot be read: through (fails open)", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const dir = join(env.CLAUDE_CONFIG_DIR ?? "", "sessions");
-    Bun.spawnSync(["mkdir", "-p", dir]);
-    await Bun.write(join(dir, `${process.pid}.json`), "{ broken");
-    expect(await runHook(messageGuardHook, send(repo, "anyone"), env)).toEqual({});
-  });
-
-  test("a session reached through a symlink is still in this repo (no refusal)", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const link = join(tempDir("link"), "app");
-    symlinkSync(repo, link);
-    writeSessionRecord(env, { sessionId: "x", cwd: join(link, "src"), name: "through-a-link" });
-    expect(await runHook(messageGuardHook, send(repo, "through-a-link"), env)).toEqual({});
-  });
-
-  test("another project reached through a symlink is still asked about", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const elsewhere = tempDir("elsewhere");
-    const link = join(tempDir("link-elsewhere"), "other");
-    symlinkSync(elsewhere, link);
-    writeSessionRecord(env, { sessionId: "x", cwd: join(link, "src"), name: "other project" });
-    const result = await runHook(messageGuardHook, send(repo, "other project"), env);
-    // The question names the folder as the session record has it (what ListAgents shows).
-    expect(result).toEqual(ask(question("other project", join(link, "src"))));
   });
 });

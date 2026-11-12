@@ -187,6 +187,8 @@ import {
 /** The tools this guard reads: the Agent tool, the older name, and Workflow. */
 export const AGENT_TOOLS = ["Agent", "Task"] as const;
 export const WORKFLOW_TOOLS = ["Workflow"] as const;
+/** The tool that messages another agent or session. */
+export const SEND_MESSAGE_TOOL = "SendMessage";
 
 /**
  * The `tool` of a launch the Bash judge reads from a `claude -p` command (`bash-judge.ts`): a
