@@ -539,19 +539,47 @@ test("round 2 empty waits and stale screen cursors", async () => {
   expect(w.lines.at(-1)).toBe("✗ The prompt changed; read it again (hc get t2).");
   expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
 });
+test("cursor includes only printed facts, preserving unprinted child and missing turn", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  let closed = false;
+  w.setResponse(() => {
+    if (closed) throw new Error("hc after stream closed");
+    return undefined;
+  });
+  w.ctx.events = async () => {
+    closed = true;
+    return {
+      news: [{ terminal: "t2", state: "blocked", turn: null, status_ms: 9 }],
+      pending: [],
+      timeout: false,
+    };
+  };
+  expect(await runHerdr(["wait", "--seen", "t3:1:done"], w.ctx)).toBe(0);
+  expect(w.lines.at(-1)).toBe(`${COMMAND} herdr wait --seen t3:1:done,t2:?:blocked`);
+});
+test("empty all barrier has no continuation", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  w.ctx.events = async () => ({ news: [], pending: [], timeout: false, nothing: true });
+  expect(await runHerdr(["wait", "--all"], w.ctx)).toBe(0);
+  expect(w.lines).toEqual(["Nothing to wait for: every child has settled and was reported."]);
+});
 test("wait prints every news timestamp and exact continuation", async () => {
   const w = world();
   w.setList(["t2"]);
   w.ctx.events = async () => ({
-    news: [{ terminal: "t2", state: "blocked", status_ms: 9 }],
+    news: [{ terminal: "t2", state: "blocked", status_ms: 9, turn: 3 }],
     pending: ["t3"],
     timeout: true,
   });
-  expect(await runHerdr(["wait", "--all", "--timeout", "9", "--seen", "t2:2"], w.ctx)).toBe(0);
+  expect(await runHerdr(["wait", "--all", "--timeout", "9", "--seen", "t2:2:blocked"], w.ctx)).toBe(
+    0,
+  );
   expect(w.lines).toEqual([
     "t2: blocked; status_ms=9",
     "· Still working: t3",
-    `${COMMAND} herdr wait --all --timeout 9 --seen t2:3`,
+    `${COMMAND} herdr wait --all --timeout 9 --seen t2:3:blocked`,
   ]);
 });
 test("adopt skips independent/live leads and stop retains worktree", async () => {

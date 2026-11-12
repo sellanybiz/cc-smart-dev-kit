@@ -60,8 +60,6 @@ export type UpdateStatus =
       remote: null | { head: string; ref: string; url: string };
     };
 
-export { isOlder } from "../build-info/semver";
-
 import { isOlder } from "../build-info/semver";
 
 /** The commit a local git folder is on, or null when it is not a git checkout. */

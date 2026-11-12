@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { realBrowserDoctorDeps } from "../browser/doctor";
 import { legacyBrowserLeftovers, processCommandLinesAsync } from "../browser/legacy";
 import { VERSION } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import type { DoctorOptions } from "../cli/doctor";
 import { cliPaths, tildify } from "../cli/paths";
 import { loopbackFetch, realProbe } from "../gateway/health";
@@ -52,7 +53,6 @@ import { startPortal } from "../portal/server";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { pluginFolderBeside } from "../setup/bun-config";
 import { instructionsFolder } from "../setup/instructions";
-import { isOlder } from "../update/check";
 
 /** How long a command may take; `claude plugin` alone may clone for a while. */
 const RUN_TIMEOUT_MS = 300_000;

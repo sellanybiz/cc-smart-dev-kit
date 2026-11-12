@@ -19,6 +19,7 @@ import {
   PLUGIN_ID,
   PLUGIN_INSTALL_COMMAND,
 } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import { withLock } from "../setup/lock";
 import { redactUrl } from "../setup/marketplace-access";
 import {
@@ -30,7 +31,7 @@ import {
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "../update/apply";
-import { checkForUpdate, isOlder, remotePluginVersion, type UpdateStatus } from "../update/check";
+import { checkForUpdate, remotePluginVersion, type UpdateStatus } from "../update/check";
 import {
   isNewMajor,
   majorHeldDetail,

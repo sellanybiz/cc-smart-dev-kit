@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { isOlder } from "../build-info/semver";
 import type { CliPaths } from "../cli/paths";
 import { IGNORE_CASE, isStrictlyInside } from "../path-compare";
-import { isOlder } from "../update/check";
 import { findUserInstall } from "./installed-plugins";
 import { withLock } from "./lock";
 import {

@@ -47,7 +47,7 @@ const USAGE_LINES = {
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn>[,<addr>:<turn>…]]",
+  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<blocked|error|done|end>[,…]]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -76,7 +76,12 @@ export type HerdrArgs =
       | { option: string; text?: never }
       | { text: string; option?: never }
     ))
-  | { verb: "wait"; mode: "any" | "all"; timeoutMs?: number; seen?: Record<string, number | "end"> }
+  | {
+      verb: "wait";
+      mode: "any" | "all";
+      timeoutMs?: number;
+      seen?: Record<string, { turn: number | null; state: "blocked" | "error" | "done" | "end" }>;
+    }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
@@ -149,18 +154,31 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     case "wait": {
       const timeout = o.get("--timeout");
       const cursor = o.get("--seen");
-      const seen: Record<string, number | "end"> = {};
+      const seen: Record<
+        string,
+        { turn: number | null; state: "blocked" | "error" | "done" | "end" }
+      > = {};
       if (cursor !== undefined)
         for (const pair of cursor.split(",")) {
-          const match = /^([a-z0-9_-]+(?:\/[a-z0-9_-]+)?):(end|\d+)$/.exec(pair);
+          const match = /^([^:]+):(\d+|\?):(blocked|error|done|end)$/.exec(pair);
+          if (!match?.[1] || !match[2] || !match[3])
+            return fail("--seen needs address:turn:state entries.");
+          let address: string;
+          try {
+            address = decodeURIComponent(match[1]);
+          } catch {
+            return fail("--seen has an invalid encoded address.");
+          }
           if (
-            !match?.[1] ||
-            !match[2] ||
-            Object.hasOwn(seen, match[1]) ||
-            (match[2] !== "end" && !Number.isSafeInteger(Number(match[2])))
+            !address ||
+            Object.hasOwn(seen, address) ||
+            (match[2] !== "?" && !Number.isSafeInteger(Number(match[2])))
           )
-            return fail("--seen needs unique address:turn entries (or address:end).");
-          seen[match[1]] = match[2] === "end" ? "end" : Number(match[2]);
+            return fail("--seen needs unique addresses and safe turn numbers.");
+          const state = match[3];
+          if (state !== "blocked" && state !== "error" && state !== "done" && state !== "end")
+            return fail("Unknown cursor state.");
+          seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
         }
       if (
         timeout !== undefined &&

@@ -76,15 +76,21 @@ function snapshot(value: unknown): unknown[] | null {
   }
   return null;
 }
-export type Seen = Record<string, number | "end">;
+export type Seen = Record<
+  string,
+  { turn: number | null; state: "blocked" | "error" | "done" | "end" }
+>;
 function settled(state: string): boolean {
   return ["blocked", "error", "done", "finished"].includes(state);
 }
 function unseen(fact: WaitFact, seen: Seen): boolean {
   const old = seen[fact.terminal];
-  return fact.state === "finished"
-    ? old !== "end"
-    : old === undefined || (typeof old === "number" && (fact.turn === null || fact.turn > old));
+  if (!old) return true;
+  const state = fact.state === "finished" ? "end" : fact.state;
+  return (
+    state !== old.state ||
+    (state !== "end" && (fact.turn === null || old.turn === null || fact.turn !== old.turn))
+  );
 }
 export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
   const rows = snapshot(value);
@@ -104,7 +110,8 @@ export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
   const v = object(value),
     p = object(v?.params),
     d = object(p?.data);
-  if (v?.method !== "event" || !p || typeof p.terminal !== "string") return [];
+  if (v?.method !== "event" || !p || p.type !== "status" || typeof p.terminal !== "string")
+    return [];
   const st = object(d?.status);
   const fact = {
     terminal: p.terminal,
@@ -162,7 +169,12 @@ export class WaitBarrier {
         this.initial?.delete(p.terminal);
     }
     for (const fact of waitFacts(value, this.seen))
-      if (!this.news.some((n) => n.terminal === fact.terminal)) this.news.push(fact);
+      if (
+        !this.news.some(
+          (n) => n.terminal === fact.terminal && n.turn === fact.turn && n.state === fact.state,
+        )
+      )
+        this.news.push(fact);
     return this.mode === "any"
       ? this.news.length > 0
       : this.initial !== null && this.pending().length === 0;
@@ -175,6 +187,7 @@ export interface WaitResult {
   news: WaitFact[];
   pending: string[];
   timeout: boolean;
+  nothing?: boolean;
 }
 export async function followEvents(
   labels: Record<string, string>,
@@ -198,6 +211,7 @@ export async function followEvents(
       const chunk = await reader.read();
       if (chunk.done) return "ended" as const;
       pending += decoder.decode(chunk.value, { stream: true });
+      let complete = false;
       let end = pending.indexOf("\n");
       while (end >= 0) {
         const line = pending.slice(0, end);
@@ -209,6 +223,27 @@ export async function followEvents(
           } catch {
             throw new HcError("invalid_response", "hc events returned invalid JSON.");
           }
+          const rows = snapshot(value);
+          if (rows) {
+            const hydrated = rows.map((row) => {
+              const t = object(row);
+              if (
+                !t ||
+                typeof t.address !== "string" ||
+                typeof t.turn === "number" ||
+                !settled(String(object(t.status)?.state ?? t.state))
+              )
+                return row;
+              try {
+                return hcGet(defaultHcRunner, t.address);
+              } catch (error) {
+                if (!(error instanceof HcError) || !["not_found", "finished"].includes(error.kind))
+                  throw error;
+                return { ...t, state: "finished", status: { state: "finished" } };
+              }
+            });
+            value = { terminals: hydrated };
+          }
           const p = object(object(value)?.params),
             d = object(p?.data);
           if (
@@ -217,13 +252,23 @@ export async function followEvents(
             typeof d?.turn !== "number" &&
             typeof p.turn !== "number"
           ) {
-            const terminal = hcGet(defaultHcRunner, p.terminal);
-            value = { method: "event", params: { ...p, data: terminal } };
+            try {
+              const terminal = hcGet(defaultHcRunner, p.terminal);
+              value = { method: "event", params: { ...p, data: terminal } };
+            } catch (error) {
+              if (!(error instanceof HcError) || !["not_found", "finished"].includes(error.kind))
+                throw error;
+              value = {
+                method: "event",
+                params: { ...p, data: { state: "finished", status: { state: "finished" } } },
+              };
+            }
           }
-          if (barrier.consume(value)) return "news" as const;
+          if (barrier.consume(value)) complete = true;
         }
         end = pending.indexOf("\n");
       }
+      if (complete) return "news" as const;
     }
   })();
   let result: "timeout" | "ended" | "news";
@@ -240,7 +285,17 @@ export async function followEvents(
     if (error.trim()) invoke(() => ({ exitCode: 1, stdout: "", stderr: error }), args);
     return "ended";
   }
-  return { news: barrier.news, pending: barrier.pending(), timeout: result === "timeout" };
+  return {
+    news: barrier.news,
+    pending: barrier.pending(),
+    timeout: result === "timeout",
+    ...(options.mode === "all" &&
+    barrier.news.length === 0 &&
+    barrier.pending().length === 0 &&
+    result === "news"
+      ? { nothing: true }
+      : {}),
+  };
 }
 export interface HerdrContext {
   paths: CliPaths;
@@ -834,6 +889,10 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         );
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");
+        if (typeof news !== "string" && news.nothing === true) {
+          ctx.out.say("Nothing to wait for: every child has settled and was reported.");
+          return 0;
+        }
         if (news === "timeout") ctx.out.line("info", "Still working.");
         else if ("news" in news && Array.isArray(news.news)) {
           for (const fact of news.news) {
@@ -849,12 +908,16 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
               `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
             );
         } else ctx.out.json(news);
-        const current = terminals(r, { [KIT_LEAD]: me.leadId }, true);
-        const seen = current.map(
-          (t) => `${t.address}:${t.state === "finished" ? "end" : (t.turn ?? "unknown")}`,
+        const cursor: Seen = { ...(parsed.seen ?? {}) };
+        if (typeof news !== "string" && "news" in news && Array.isArray(news.news))
+          for (const fact of news.news) {
+            const state = fact.state === "finished" ? "end" : fact.state;
+            if (state === "blocked" || state === "error" || state === "done" || state === "end")
+              cursor[fact.terminal] = { turn: fact.turn ?? null, state };
+          }
+        const seen = Object.entries(cursor).map(
+          ([address, c]) => `${encodeURIComponent(address)}:${c.turn ?? "?"}:${c.state}`,
         );
-        if (current.some((t) => t.state !== "finished" && t.turn === undefined))
-          return refuse(ctx, "A child has no turn cursor; read its pane before waiting again.");
         const mode = args.includes("--all") ? " --all" : args.includes("--any") ? " --any" : "";
         ctx.out.say(
           `${COMMAND} herdr wait${mode}${parsed.timeoutMs === undefined ? "" : ` --timeout ${parsed.timeoutMs / 1000}`}${seen.length ? ` --seen ${seen.join(",")}` : ""}`,

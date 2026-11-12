@@ -29,14 +29,14 @@ test("2/6 snapshots, since and all barrier", () => {
       { address: "t2", state: "live", status: { state: "done" }, status_ms: 4, turn: 4 },
     ],
   };
-  expect(waitFacts(snapshot, { t2: 4 })).toEqual([
+  expect(waitFacts(snapshot, { t2: { turn: 4, state: "done" } })).toEqual([
     { terminal: "t1", state: "blocked", status_ms: 8, turn: 6 },
   ]);
-  expect(waitFacts({ method: "missed", params: snapshot }, { t2: 4 })).toEqual([
-    { terminal: "t1", state: "blocked", status_ms: 8, turn: 6 },
-  ]);
+  expect(
+    waitFacts({ method: "missed", params: snapshot }, { t2: { turn: 4, state: "done" } }),
+  ).toEqual([{ terminal: "t1", state: "blocked", status_ms: 8, turn: 6 }]);
   expect(waitFacts(snapshot)).toHaveLength(2);
-  const barrier = new WaitBarrier("all", { t2: 4 });
+  const barrier = new WaitBarrier("all", { t2: { turn: 4, state: "done" } });
   expect(barrier.consume(snapshot)).toBe(true);
   expect(
     barrier.consume({
@@ -131,6 +131,51 @@ test("8 event stream ignores blank lines and carries stderr errors", async () =>
     else process.env.PATH = old;
   }
 });
+test("buffered status news is drained and enrich disappearance reports finished", async () => {
+  const dir = tempDir(),
+    file = join(dir, "hc"),
+    old = process.env.PATH;
+  try {
+    process.env.PATH = dir;
+    const lines = [
+      {
+        terminals: [
+          { address: "a", state: "live", status: { state: "working" }, turn: 1 },
+          { address: "b", state: "live", status: { state: "working" }, turn: 1 },
+        ],
+      },
+      {
+        method: "event",
+        params: { terminal: "a", type: "status", data: { state: "done", turn: 2 } },
+      },
+      {
+        method: "event",
+        params: { terminal: "b", type: "status", data: { state: "done", turn: 2 } },
+      },
+    ]
+      .map((v) => JSON.stringify(v))
+      .join("\n");
+    writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' '${lines}'\n`);
+    chmodSync(file, 0o755);
+    const result = await followEvents({}, 1000);
+    expect(result).toMatchObject({
+      news: [
+        { terminal: "a", state: "done", turn: 2 },
+        { terminal: "b", state: "done", turn: 2 },
+      ],
+    });
+    writeFileSync(
+      file,
+      `#!/bin/sh\nif [ "$1" = get ]; then printf '%s' '{"error":{"kind":"not_found","message":"gone"}}' >&2; exit 3; fi\nprintf '%s\\n' '{"method":"event","params":{"terminal":"a","type":"status","data":{"state":"done"}}}'\n`,
+    );
+    expect(await followEvents({}, 1000)).toMatchObject({
+      news: [{ terminal: "a", state: "finished", turn: null }],
+    });
+  } finally {
+    if (old === undefined) delete process.env.PATH;
+    else process.env.PATH = old;
+  }
+});
 test("10 process list shares bounded ancestry walk and 11 since parses", () => {
   expect(
     processAncestors(30, "darwin", () => [
@@ -139,9 +184,9 @@ test("10 process list shares bounded ancestry walk and 11 since parses", () => {
       { pid: 10, parentPid: 20, path: null },
     ]),
   ).toEqual([20, 10]);
-  expect(parseHerdrArgs(["wait", "--seen", "t1:123"])).toEqual({
+  expect(parseHerdrArgs(["wait", "--seen", "t1:123:done"])).toEqual({
     verb: "wait",
     mode: "any",
-    seen: { t1: 123 },
+    seen: { t1: { turn: 123, state: "done" } },
   });
 });

@@ -13,6 +13,7 @@ import {
   PLUGIN_UPDATE_COMMAND,
   VERSION,
 } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import type { KnownProjects } from "../gateway/commands-project";
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
@@ -75,7 +76,6 @@ import { readUserJson } from "../setup/user-json";
 import { RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { openWorkDb, WORK_SCHEMA_VERSION, workDbFile } from "../tasks/work/db";
 import type { CommandRunner } from "../update/apply";
-import { isOlder } from "../update/check";
 import { isNewMajor, majorHeldDetail, readMajorNotes } from "../update/major";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
