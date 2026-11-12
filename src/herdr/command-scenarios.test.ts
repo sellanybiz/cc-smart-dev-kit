@@ -770,6 +770,31 @@ function bashDialog(command: string[], description = "Run the command"): string 
     " Esc to cancel · Tab to amend",
   ].join("\n");
 }
+/** The borderless layout captured live on 2026-11-12: a plain "no rule matched" Bash prompt. */
+function plainBashDialog(
+  command: string[],
+  description = "Report linked child status to lead",
+): string {
+  const dashed = "╌".repeat(40);
+  return [
+    "─".repeat(40),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    ` ${description}`,
+    dashed,
+    ...command.map((line) => ` ${line}`),
+    dashed,
+    " This command requires approval",
+    "",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    `   2. Yes, and don’t ask again for: ${COMMAND} herdr *`,
+    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+    "   4. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+}
 test("long Bash action matches whole dialog lines, not transcript or substrings", async () => {
   const action = `printf '%s' ${"a".repeat(297)}`;
   expect(`approve Bash: ${action}`.length).toBe(323);
@@ -794,6 +819,25 @@ test("long Bash action matches whole dialog lines, not transcript or substrings"
       1,
     ],
     ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "│ echo ok"), 1],
+    // The borderless layout: the whole box must still equal the action.
+    [
+      `approve Bash: ${COMMAND} herdr report "remote linked child kit-r8 is up"`,
+      plainBashDialog([`${COMMAND} herdr report "remote linked child kit-r8 is up"`]),
+      0,
+    ],
+    [`approve Bash: ${action}`, plainBashDialog([action.slice(0, 50), action.slice(50)]), 0],
+    ["approve Bash: echo ok", plainBashDialog(["echo ok", "rm -rf ~/x"]), 1],
+    ["approve Bash: echo ok", plainBashDialog(["rm -rf ~/x"], "echo ok"), 1],
+    // A box that mixes bordered and plain lines refuses, even when its text matches.
+    ["approve Bash: echo ok", bashDialog(["echo"]).replace(" │ echo", " │ echo\n ok"), 1],
+    // Rule-like lines inside the command never count as the frame, even when the msg names
+    // only the tail of the command (the mismatch the box check exists to catch).
+    ["approve Bash: echo ok", plainBashDialog(["rm -rf ~/x", "╌".repeat(40), "echo ok"]), 1],
+    [
+      "approve Bash: echo ok",
+      plainBashDialog(["rm -rf ~/x", "─".repeat(40), "╌".repeat(40), "echo ok"]),
+      1,
+    ],
     // The command without its box border (the 4.3.1 assumption) does not match.
     ["approve Bash: echo ok", "───\nBash command\n  echo ok\n❯ 1. Yes\n  2. No", 1],
     ["approve Write: /repo/PROOF.md", "Write PROOF.md\n❯ 1. Yes\n  2. No", 0],

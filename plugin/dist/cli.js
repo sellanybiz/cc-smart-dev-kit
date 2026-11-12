@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.4.0",
+  version: "4.4.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -54313,16 +54313,18 @@ function dialog(screen) {
   let start = result.start;
   while (start > 0 && !ruleLine(lines[start - 1] ?? ""))
     start--;
+  const frame = (line, rule) => rule.test(line?.trimEnd() ?? "");
   let top = result.start - 1;
-  while (top >= 0 && !/^\u2500+$/u.test(lines[top]?.trim() ?? ""))
+  while (top >= 0 && !frame(lines[top], /^\u2500+$/u))
     top--;
   const dashed = [];
   for (let i = top + 1;top >= 0 && i < result.start; i++)
-    if (/^\u254C+$/u.test(lines[i]?.trim() ?? ""))
+    if (frame(lines[i], /^\u254C+$/u))
       dashed.push(i);
-  const [open, close] = dashed.slice(-2);
-  const inside = open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
-  const box = inside.length && inside.every((line) => line.trimStart().startsWith("\u2502")) ? inside.map((line) => line.trimStart().slice(1)) : null;
+  const [open, close] = dashed;
+  const inside = dashed.length === 2 && open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
+  const bordered = inside.filter((line) => line.trimStart().startsWith("\u2502")).length;
+  const box = !inside.length ? null : bordered === inside.length ? inside.map((line) => line.trimStart().slice(1)) : bordered === 0 ? inside : null;
   return {
     options: result.options,
     box,
