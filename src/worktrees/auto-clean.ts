@@ -7,10 +7,10 @@
  *   ones only when someone runs it. So after a merge into the base, and when a session
  *   starts, the hooks start THIS in a detached process (`auto-start.ts`), and it runs the
  *   same safe clean: the scan's verdict (`scan.ts`, `verdict.ts`) is the only judge, and
- *   `cleanWithStrays` (`clean.ts`, over `cleanFinished`) is the only remover. Nothing here judges, and nothing here
- *   forces: a worktree a Claude session works in, a running program or container, uncommitted
- *   changes, local files, a commit not on the base, or a replay that could not answer all
- *   stay.
+ *   `cleanWithStrays` (`clean.ts`, over `cleanFinished`) is the only remover. Nothing here
+ *   judges, and nothing here forces: a worktree a Claude session works in, a running program
+ *   or container, uncommitted changes, local files, a commit not on the base, or a replay that
+ *   could not answer all stay.
  *
  * WHAT IT DOES
  *   1. Reads the project's `worktrees.autoClean` again (false: stop).
