@@ -23,6 +23,7 @@ import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
+import { ancestorsBy } from "../jobs/ancestry";
 import { processIsGone } from "../jobs/windows";
 import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
@@ -34,6 +35,8 @@ import {
   dockerMounts,
   mountKeptWhy,
   mountPoints,
+  type OwnerSession,
+  programName,
   programsInside,
   type RunningProgram,
   runningPrograms,
@@ -484,6 +487,29 @@ function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolea
 }
 
 /**
+ * The session that is removing its own worktree, or undefined: `--remove` only, on the machines
+ * the lock proofs cover. Its own MCP servers do not hold the folder (`programsUsing`).
+ *
+ * The Claude process is the one whose lock the owner proof matched. After ExitWorktree `keep`
+ * Claude Code has usually released a session's lock, so with no lock to prove, it is the nearest
+ * process above this command that the listing names `claude`. That claims nothing about the
+ * worktree: only the children of THIS command's own session are skipped, and the verdict still
+ * holds the folder for any other session, shell or program.
+ */
+function ownerSession(listed: ListedWorktree, look: MachineLook): OwnerSession | undefined {
+  if (!look.ownerMode || !lockPlatform(look) || look.programs === "unknown") return undefined;
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (lock !== null && ownsClaudeLock(lock, process.pid, look.parentOf, look.processStartTime)) {
+    return { claudePid: lock.pid };
+  }
+  for (const pid of ancestorsBy(process.pid, look.parentOf)) {
+    const program = look.programs.find((one) => one.pid === pid);
+    if (program !== undefined && programName(program) === "claude") return { claudePid: pid };
+  }
+  return undefined;
+}
+
+/**
  * The branch of ANOTHER worktree that holds the work of `listed`, or null. Only ancestry counts
  * (never a replay onto a branch that is still being worked on), and the holder must be a worktree
  * whose folder is there and that stands on a branch: a detached or vanished one holds nothing
@@ -570,7 +596,16 @@ function judgeOne(
     // commits of its own.
     mergedBy,
     parked,
-    programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
+    programs:
+      look.programs === "unknown"
+        ? "unknown"
+        : programsInside(
+            look.programs,
+            listed.path,
+            undefined,
+            undefined,
+            ownerSession(listed, look),
+          ),
     sessionName: session?.name ?? null,
   };
   return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);

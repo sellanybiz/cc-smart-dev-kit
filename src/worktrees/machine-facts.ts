@@ -245,9 +245,62 @@ export function programName(program: RunningProgram): string {
 }
 
 /**
+ * The session that removes its own worktree (`--remove`, Linux): the pid of its Claude Code
+ * process. Its own MCP servers keep working in the folder after ExitWorktree `keep`, and they
+ * would hold it until the session ends (`programsUsing`).
+ */
+export interface OwnerSession {
+  claudePid: number;
+}
+
+/** Program names that run commands for a person or a tool: a job under one is never an MCP server. */
+const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+
+/** A shell by program name; a login shell prints as `-zsh`, and Windows adds `.exe`. */
+function isShell(program: RunningProgram): boolean {
+  const name = programName(program)
+    .replace(/^-/, "")
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  return SHELL_NAMES.has(name);
+}
+
+/**
+ * Is `program` a non-shell descendant of the owner's Claude Code process, with no shell in the
+ * chain between them? That is how Claude Code starts an MCP server: a direct child, and the
+ * server's own helpers below it. Claude Code runs every Bash-tool command as a shell child, so a
+ * dev server, a Monitor or a background job always has a shell in its chain and is never
+ * skipped. A chain the listing cannot follow to the owner's pid is not an owner's child.
+ * The Claude process itself is not one.
+ */
+function ownerChild(
+  program: RunningProgram,
+  byPid: ReadonlyMap<number, RunningProgram>,
+  owner: OwnerSession,
+): boolean {
+  if (program.pid === owner.claudePid) return false;
+  const seen = new Set<number>();
+  let at = program;
+  for (;;) {
+    if (isShell(at)) return false;
+    seen.add(at.pid);
+    const parent = at.parentPid;
+    if (parent === undefined) return false;
+    if (parent === owner.claudePid) return true;
+    const next = byPid.get(parent);
+    if (next === undefined || seen.has(next.pid)) return false;
+    at = next;
+  }
+}
+
+/**
  * The programs of the listing that use `worktree`: one started from a file inside it (its
  * command line names it), or one whose working folder is inside it (Linux). The tools this scan
  * runs itself are left out.
+ *
+ * With `owner` (a session removing its own worktree), a program that is the owner's non-shell
+ * child (`ownerChild`) and ties to the worktree by its working folder alone does not count. A
+ * program that was STARTED FROM a file inside still does.
  *
  * So is `ownPid` — the process asking, this one by default — and every process that started
  * it: the command line of `cc-smart-dev-kit worktrees --remove <path>` names the worktree, and
@@ -267,8 +320,10 @@ export function programsUsing(
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
+  owner?: OwnerSession,
 ): RunningProgram[] {
   const asking = lineage(programs, ownPid);
+  const byPid = new Map(programs.map((program) => [program.pid, program]));
   const real = realPath(worktree);
   const forms = real === worktree ? [worktree] : [worktree, real];
   const found: RunningProgram[] = [];
@@ -280,6 +335,7 @@ export function programsUsing(
     // works in it, and then `working` says so and it counts.
     if (!working && asking.has(program.pid)) continue;
     if (OUR_TOOLS.has(programName(program))) continue;
+    if (owner !== undefined && !named && ownerChild(program, byPid, owner)) continue;
     found.push(program);
   }
   return found;
@@ -291,9 +347,10 @@ export function programsInside(
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
+  owner?: OwnerSession,
 ): string[] {
   const names = new Set<string>();
-  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid)) {
+  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid, owner)) {
     names.add(programName(program));
   }
   return [...names].sort();

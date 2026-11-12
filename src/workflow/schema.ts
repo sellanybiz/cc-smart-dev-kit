@@ -253,7 +253,7 @@ export const workflowDefaults = {
     files: 10,
     percent: 20,
   },
-  clearWorktreeAfterMerge: false,
+  clearWorktreeAfterMerge: true,
   // Off by default (D67): an issue is public text in a repository, so each switch is the person's.
   issues: {
     enabled: false,

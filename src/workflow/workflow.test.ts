@@ -169,7 +169,7 @@ describe("resolveWorkflow: the order", () => {
     expect(resolved.mergeMethod).toEqual({ value: "merge", source: "default" });
     expect(resolved.deleteBranch).toEqual({ value: false, source: "default" });
     expect(resolved.reviewBeforePush).toEqual({ value: true, source: "default" });
-    expect(resolved.clearWorktreeAfterMerge).toEqual({ value: false, source: "default" });
+    expect(resolved.clearWorktreeAfterMerge).toEqual({ value: true, source: "default" });
     expect(Object.keys(resolved.alerts)).toEqual(["usagePercent"]);
     expect(resolved.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
@@ -249,6 +249,26 @@ describe("resolveWorkflow: the order", () => {
     const resolved = resolveWorkflow(pathsFor(env), null);
     expect(resolved.autoCommit).toEqual({ value: true, source: "personal" });
     expect(resolved.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
+  });
+
+  test("clearWorktreeAfterMerge is on by default; a personal or project false wins", () => {
+    const env = hookEnv();
+    expect(resolveWorkflow(pathsFor(env), null).clearWorktreeAfterMerge).toEqual({
+      source: "default",
+      value: true,
+    });
+    writePersonal(env, { clearWorktreeAfterMerge: false });
+    expect(resolveWorkflow(pathsFor(env), null).clearWorktreeAfterMerge).toEqual({
+      source: "personal",
+      value: false,
+    });
+    const config = ccSmartDevKitConfigSchema.parse({
+      workflow: { clearWorktreeAfterMerge: false },
+    });
+    expect(resolveWorkflow(pathsFor(hookEnv()), config).clearWorktreeAfterMerge).toEqual({
+      source: "project",
+      value: false,
+    });
   });
 
   test("the project wins field by field, and only where it says something", () => {
