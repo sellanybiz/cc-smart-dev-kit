@@ -21073,7 +21073,10 @@ function retireOldModelKeys(options) {
   return applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: [...RETIRED_GATEWAY_ENV_KEYS, ...RETIRED_MODEL_PIN_KEYS].map(envPath),
+    remove: [
+      ...RETIRED_GATEWAY_ENV_KEYS,
+      ...options.retirePin === false ? [] : RETIRED_MODEL_PIN_KEYS
+    ].map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
@@ -24412,7 +24415,13 @@ async function commandSetup(ctx, args) {
     dryRun: true
   });
   upgradeConfig(configPath, { dryRun: true });
-  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
+  retireOldModelKeys({
+    dryRun: true,
+    settingsFile: paths.settingsFile,
+    stateDir: paths.stateDir,
+    retirePin: false
+  });
+  applyModelPickerStep(paths, true);
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
   if (password !== null) {
@@ -24462,7 +24471,8 @@ async function commandSetup(ctx, args) {
       }));
       const retired = retireOldModelKeys({
         settingsFile: paths.settingsFile,
-        stateDir: paths.stateDir
+        stateDir: paths.stateDir,
+        retirePin: false
       });
       if (retired.changes.length > 0) {
         ctx.print(changeLines(retired, paths.home).join(`
@@ -24470,6 +24480,8 @@ async function commandSetup(ctx, args) {
         if (retired.changes.some((change) => RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1] ?? "")))
           ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
+      for (const line of applyModelPickerStep(paths, false))
+        ctx.print(line);
       if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
         ctx.print(`The gateway is off: Claude Code sends its requests to Anthropic itself. ${COMMAND} gateway on routes them through the router.`);
       }
