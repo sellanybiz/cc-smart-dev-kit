@@ -76,6 +76,12 @@ function snapshot(value: unknown): unknown[] | null {
   }
   return null;
 }
+export function encodeCursorAddress(address: string): string {
+  return encodeURIComponent(address).replace(
+    /[!'()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
 export type Seen = Record<
   string,
   { turn: number | null; state: "blocked" | "error" | "done" | "end" }
@@ -87,10 +93,7 @@ function unseen(fact: WaitFact, seen: Seen): boolean {
   const old = seen[fact.terminal];
   if (!old) return true;
   const state = fact.state === "finished" ? "end" : fact.state;
-  return (
-    state !== old.state ||
-    (state !== "end" && (fact.turn === null || old.turn === null || fact.turn !== old.turn))
-  );
+  return state !== old.state || (state !== "end" && fact.turn !== old.turn);
 }
 export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
   const rows = snapshot(value);
@@ -110,7 +113,12 @@ export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
   const v = object(value),
     p = object(v?.params),
     d = object(p?.data);
-  if (v?.method !== "event" || !p || p.type !== "status" || typeof p.terminal !== "string")
+  if (
+    v?.method !== "event" ||
+    !p ||
+    !["status", "finished", "lost", "removed"].includes(String(p.type)) ||
+    typeof p.terminal !== "string"
+  )
     return [];
   const st = object(d?.status);
   const fact = {
@@ -126,6 +134,7 @@ export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
 export class WaitBarrier {
   news: WaitFact[] = [];
   private initial: Set<string> | null = null;
+  addresses: string[] | null = null;
   constructor(
     private mode: "any" | "all",
     private seen: Seen = {},
@@ -134,6 +143,11 @@ export class WaitBarrier {
   consume(value: unknown): boolean {
     const rows = snapshot(value);
     if (rows) {
+      if (this.addresses === null)
+        this.addresses = rows.flatMap((row) => {
+          const t = object(row);
+          return typeof t?.address === "string" ? [t.address] : [];
+        });
       const live = new Set<string>();
       for (const row of rows) {
         const t = object(row);
@@ -163,7 +177,7 @@ export class WaitBarrier {
     if (typeof p?.terminal === "string") {
       const labels = object(d?.labels) ?? d;
       if (
-        p.type === "removed" ||
+        ["removed", "finished", "lost"].includes(String(p.type)) ||
         (p.type === "labels" && this.lead && labels?.[KIT_LEAD] !== this.lead)
       )
         this.initial?.delete(p.terminal);
@@ -188,6 +202,7 @@ export interface WaitResult {
   pending: string[];
   timeout: boolean;
   nothing?: boolean;
+  addresses?: string[];
 }
 export async function followEvents(
   labels: Record<string, string>,
@@ -286,6 +301,7 @@ export async function followEvents(
     return "ended";
   }
   return {
+    addresses: barrier.addresses ?? [],
     news: barrier.news,
     pending: barrier.pending(),
     timeout: result === "timeout",
@@ -908,7 +924,14 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
               `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
             );
         } else ctx.out.json(news);
-        const cursor: Seen = { ...(parsed.seen ?? {}) };
+        const cursor: Seen = Object.fromEntries(
+          Object.entries(parsed.seen ?? {}).filter(
+            ([address]) =>
+              typeof news === "string" ||
+              !Array.isArray(news.addresses) ||
+              news.addresses.includes(address),
+          ),
+        );
         if (typeof news !== "string" && "news" in news && Array.isArray(news.news))
           for (const fact of news.news) {
             const state = fact.state === "finished" ? "end" : fact.state;
@@ -916,7 +939,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
               cursor[fact.terminal] = { turn: fact.turn ?? null, state };
           }
         const seen = Object.entries(cursor).map(
-          ([address, c]) => `${encodeURIComponent(address)}:${c.turn ?? "?"}:${c.state}`,
+          ([address, c]) => `${encodeCursorAddress(address)}:${c.turn ?? "?"}:${c.state}`,
         );
         const mode = args.includes("--all") ? " --all" : args.includes("--any") ? " --any" : "";
         ctx.out.say(

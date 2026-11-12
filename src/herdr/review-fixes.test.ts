@@ -114,6 +114,7 @@ test("8 event stream ignores blank lines and carries stderr errors", async () =>
     );
     chmodSync(file, 0o755);
     expect(await followEvents({}, 1000)).toEqual({
+      addresses: ["t1"],
       news: [{ terminal: "t1", state: "blocked", status_ms: 8, turn: 6 }],
       pending: [],
       timeout: false,

@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MARKETPLACE, PLUGIN } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import type { CliPaths } from "../cli/paths";
 import { gitEnv } from "../project/git-env";
 import { findUserInstall } from "../setup/installed-plugins";
@@ -59,8 +60,6 @@ export type UpdateStatus =
        */
       remote: null | { head: string; ref: string; url: string };
     };
-
-import { isOlder } from "../build-info/semver";
 
 /** The commit a local git folder is on, or null when it is not a git checkout. */
 function localHead(folder: string, env: Env): null | string {

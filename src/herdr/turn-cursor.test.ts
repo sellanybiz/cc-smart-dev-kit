@@ -1,7 +1,33 @@
 import { expect, test } from "bun:test";
-import { WaitBarrier, waitFacts } from "./command";
+import { encodeCursorAddress, WaitBarrier, waitFacts } from "./command";
 import { parseHerdrArgs } from "./words";
 
+test("F1 finished event is any news; F2 lost leaves all barrier", () => {
+  const a = new WaitBarrier("any");
+  a.consume({
+    terminals: [{ address: "t1", state: "live", status: { state: "working" }, turn: 1 }],
+  });
+  expect(
+    a.consume({ method: "event", params: { type: "finished", terminal: "t1", data: {} } }),
+  ).toBe(true);
+  expect(a.news).toEqual([{ terminal: "t1", state: "finished", turn: null, status_ms: null }]);
+  const b = new WaitBarrier("all");
+  b.consume({
+    terminals: [{ address: "t1", state: "live", status: { state: "working" }, turn: 1 }],
+  });
+  expect(b.consume({ method: "event", params: { type: "lost", terminal: "t1", data: {} } })).toBe(
+    true,
+  );
+  expect(b.pending()).toEqual([]);
+});
+test("same null turn and state is already seen", () => {
+  expect(
+    waitFacts(
+      { terminals: [{ address: "t1", state: "live", status: { state: "blocked" } }] },
+      { t1: { turn: null, state: "blocked" } },
+    ),
+  ).toEqual([]);
+});
 const child = (address: string, state: string, turn: number) => ({
   address,
   state: "live",
@@ -62,8 +88,8 @@ test("state changes and stale higher cursor produce news, other event types do n
 });
 
 test("encoded addresses and missing turns round trip", () => {
-  for (const address of ["CAPS.Box/t1", "[2001:db8::1]/t2", "box,west/t3"]) {
-    const parsed = parseHerdrArgs(["wait", "--seen", `${encodeURIComponent(address)}:?:blocked`]);
+  for (const address of ["CAPS.Box/t1", "[2001:db8::1]/t2", "box,west/t3", "box!'()*/t4"]) {
+    const parsed = parseHerdrArgs(["wait", "--seen", `${encodeCursorAddress(address)}:?:blocked`]);
     expect(parsed).toEqual({
       verb: "wait",
       mode: "any",
