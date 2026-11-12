@@ -3,6 +3,30 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.4.0
+
+- **The `extract-or-duplicate` skill is now `code-structure`, and its old project add-on is
+  no longer read.** A project's `.claude/cc-smart-dev-kit/extract-or-duplicate.md` is ignored
+  from this version on; rename it (see **What to run**). There is no fallback and no `doctor`
+  check for the old name.
+- **One rule for clean, organized code.** "Simple" means clean and organized, never simplistic.
+  The renamed skill is the one home for how code is shaped: split by responsibility, not by
+  line count; when a helper, a service or a module earns its place; naming for functions,
+  variables, types and booleans; one concept per file; and what counts as a cleanup versus a
+  structural change that needs a yes. Everything the old skill said is still there. The general
+  instructions carry the principle in one line, at no extra size.
+- **Builders load the rule at start.** The `builder` agent preloads `code-structure`, so the rule
+  is in its context before the first edit (about 2.6k more tokens per builder launch).
+- **Design findings meet the evidence bar.** The review axes now say how a structure or naming
+  finding fills the four fields, and what refutes it (the project's convention, the sibling
+  files). The split review and the audit workflows use the same rule.
+
+**What to run**, in this order, in each project that has the old add-on: update the plugin and
+restart open sessions; then rename `.claude/cc-smart-dev-kit/extract-or-duplicate.md` to
+`code-structure.md`, and change any `/cc-smart-dev-kit:extract-or-duplicate` mention in the
+project's `CLAUDE.md`, rules or add-ons to `/cc-smart-dev-kit:code-structure`. Until both steps
+are done, the project's add-on is not read.
+
 ## 4.3.0
 
 - **Messages to another repo's session no longer ask.** The `message-guard` hook is retired,
