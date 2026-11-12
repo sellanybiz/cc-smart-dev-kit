@@ -136,9 +136,9 @@ the issue: the release's pull request does (`/cc-smart-dev-kit:pull-request`).
 
 After the branch is merged and its work is preserved, run
 `cc-smart-dev-kit worktrees --remove <builder worktree>` with `run_in_background` (a removal
-can take minutes). It proves you own the builder, that Claude Code marked it finished, that its
-work is held, that nothing is uncommitted and no program uses it; otherwise it keeps the
-folder and says why. The branch goes only when the base holds its work. Never remove another
+can take minutes). It releases the builder's lock only for its lead, needs Claude Code's
+finished mark, and needs the work on the base or held by your plan branch, nothing
+uncommitted and no program using it; otherwise it keeps the folder and says why. The branch goes only when the base holds its work. Never remove another
 task's checkout or an unmerged branch. Repeat until all phases close.
 
 ## 6. Finish the whole branch once

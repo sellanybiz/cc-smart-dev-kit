@@ -57,7 +57,7 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
-import { resolveWorkflow } from "../workflow/resolve";
+import { resolveWorkflow, WorkflowConfigError } from "../workflow/resolve";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
@@ -1560,9 +1560,11 @@ export function clearWorktreeNote(path: string, branch: string, clear: boolean):
 function clearsAfterMerge(context: HookContext): boolean {
   try {
     return resolveWorkflow(context.paths, context.project.config).clearWorktreeAfterMerge.value;
-  } catch {
-    // The person's own workflow file is broken (`WorkflowConfigError`): nothing is cleared unasked.
-    return false;
+  } catch (error) {
+    // The person's own workflow file is broken: nothing is cleared unasked. Any other error
+    // is a defect, and the hook frame reports it.
+    if (error instanceof WorkflowConfigError) return false;
+    throw error;
   }
 }
 
