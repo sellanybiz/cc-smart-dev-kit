@@ -27,6 +27,7 @@ import { processIsGone } from "../jobs/windows";
 import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
+import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
 import {
   type ContainerMounts,
   containersUsing,
@@ -184,12 +185,16 @@ export interface ScanOptions {
   /** The Claude config folder, for the running sessions' records. */
   claudeConfigDir: string;
   now?: number;
+  /** Only the explicit --remove command may prove the caller owns a lock. */
+  ownerMode?: boolean;
   /** A test hands in fakes; the default reads this machine. */
   facts?: {
     containers?: "unknown" | ContainerMounts[];
     mounts?: "unknown" | string[];
     programs?: "unknown" | RunningProgram[];
     sessions?: SessionRecord[];
+    parentOf?: typeof parentOf;
+    agentFinished?: typeof agentFinished;
     processStartTime?: typeof processStartTime;
     processIsGone?: typeof processIsGone;
     platform?: NodeJS.Platform;
@@ -420,6 +425,9 @@ interface MachineLook {
   /** Reads the start time of a process named by a Claude Code worktree lock. */
   processStartTime: typeof processStartTime;
   processIsGone: typeof processIsGone;
+  parentOf: typeof parentOf;
+  agentFinished: typeof agentFinished;
+  ownerMode: boolean;
   platform: NodeJS.Platform;
   pidNamespace: string | null;
   /** The ref commits are judged against: `origin/<base>`, or `against.ref`. */
@@ -437,20 +445,42 @@ interface MachineLook {
 const INITIAL_PID_NAMESPACE = `pid:[${0xeffffffc}]`;
 
 function staleClaudeLock(listed: ListedWorktree, look: MachineLook): boolean {
-  if (!listed.locked || listed.lockReason === undefined) return false;
-  const match = /^claude session .+ \(pid (\d+) start (\d+)\)$/.exec(listed.lockReason);
-  // The measured Linux format stores /proc ticks without our reader's `proc:` prefix.
-  // Other formats and platforms have not been proved, so their locks stay.
-  // PID numbers from a parent namespace are invisible inside a sandbox: ESRCH there is no
-  // proof. Linux's PID_NS_INIT_INO is fixed in include/uapi/linux/nsfs.h (0xEFFFFFFC).
-  if (match === null || look.platform !== "linux" || look.pidNamespace !== INITIAL_PID_NAMESPACE)
-    return false;
-  const pid = Number(match[1]);
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  if (look.processIsGone(pid)) return true;
-  const expected = `proc:${match[2]}`;
-  const actual = look.processStartTime(pid, expected);
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (!listed.locked || lock === null || !lockPlatform(look)) return false;
+  return (
+    lockerGone(listed.lockReason ?? "", look) &&
+    (lock.kind === "session" || finishedAgent(lock.name, listed.path, look))
+  );
+}
+
+/** A numeric identity is required for sessions; agents also allow a dead pid alone. */
+function lockerGone(reason: string, look: MachineLook): boolean {
+  const lock = parseClaudeLock(reason);
+  if (lock === null || !lockPlatform(look)) return false;
+  const expected = lock.start !== null && /^\d+$/.test(lock.start) ? `proc:${lock.start}` : null;
+  if (lock.kind === "session" && expected === null) return false;
+  if (look.processIsGone(lock.pid)) return true;
+  const actual = expected === null ? null : look.processStartTime(lock.pid, expected);
   return actual !== null && actual !== expected;
+}
+
+function lockPlatform(look: MachineLook): boolean {
+  return look.platform === "linux" && look.pidNamespace === INITIAL_PID_NAMESPACE;
+}
+
+function finishedAgent(name: string, path: string, look: MachineLook): boolean {
+  return /^agent-[A-Za-z0-9_-]+$/.test(name) && look.agentFinished(name.slice(6), path);
+}
+
+function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolean {
+  if (staleClaudeLock(listed, look)) return true;
+  if (!look.ownerMode || !lockPlatform(look)) return false;
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  return (
+    lock !== null &&
+    ownsClaudeLock(lock, process.pid, look.parentOf, look.processStartTime) &&
+    (lock.kind === "session" || finishedAgent(lock.name, listed.path, look))
+  );
 }
 
 function judgeOne(
@@ -488,7 +518,7 @@ function judgeOne(
     // The hook's own rule: unknown counts as just now, which keeps it.
     idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
-    locked: listed.locked && !staleClaudeLock(listed, look),
+    locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
     // commits of its own.
     mergedBy:
@@ -537,6 +567,12 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
     ...machineFactsOf(options),
+    parentOf: options.facts?.parentOf ?? parentOf,
+    agentFinished:
+      options.facts?.agentFinished ??
+      ((agentId: string, worktreePath: string) =>
+        agentFinished(agentId, worktreePath, options.claudeConfigDir)),
+    ownerMode: options.ownerMode === true,
     env: options.env,
     idleLimit: options.idleLimit,
     label: options.against?.label ?? options.base,
@@ -552,13 +588,18 @@ function lookAt(repo: string, options: ScanOptions): MachineLook {
  *
  * Throws when that ref is not known here: nothing can be judged against it.
  */
-function lockLine(listed: ListedWorktree, onBase = false): string {
+function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): string {
   const reason = listed.lockReason;
   if (reason === undefined) return "locked with `git worktree lock` (locker cannot be proved gone)";
-  const match = /^claude session (.+) \(pid (\d+) start (\S+)\)$/.exec(reason);
-  if (match === null) return `locked: ${reason} (locker cannot be proved gone)`;
-  const session = match[1];
-  return `locked by live or unprovable Claude session ${session}${onBase ? "; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session" : "; its locker is not proved gone"}`;
+  const lock = parseClaudeLock(reason);
+  if (lock === null) return `locked: ${reason} (locker cannot be proved gone)`;
+  if (lock.kind === "agent") {
+    const gone = lockerGone(reason, look);
+    if (gone)
+      return `the session that locked it has ended, but Claude Code never marked builder ${lock.name} finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
+    return `locked by live or unprovable Claude session's builder ${lock.name}; its lead removes it after the merge, or it goes when that session ends and it is proved finished`;
+  }
+  return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session" : "; its locker is not proved gone"}`;
 }
 
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
@@ -579,7 +620,7 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
     main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
 
   for (const listed of others) {
-    if (listed.locked && (!existsSync(listed.path) || !staleClaudeLock(listed, look))) {
+    if (listed.locked && (!existsSync(listed.path) || !releasableClaudeLock(listed, look))) {
       // Before "gone": a locked worktree may sit on a drive that is not connected.
       const onBase =
         (listed.lockReason ?? "").startsWith("claude session ") &&
@@ -587,7 +628,7 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
-        state: { finished: false, held: false, why: lockLine(listed, onBase) },
+        state: { finished: false, held: false, why: lockLine(listed, look, onBase) },
       });
       continue;
     }
@@ -652,8 +693,8 @@ export function removeWorktree(
     };
   }
   const look = lookAt(repo, options);
-  if (current.locked && !staleClaudeLock(current, look)) {
-    return { said: [`kept ${current.path}: ${lockLine(current)}`], status: "kept" };
+  if (current.locked && !releasableClaudeLock(current, look)) {
+    return { said: [`kept ${current.path}: ${lockLine(current, look)}`], status: "kept" };
   }
   // Judge contents, mounts and programs before releasing even a stale lock.
   const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
@@ -693,7 +734,7 @@ export function removeWorktree(
       check.head !== current.head ||
       check.branch !== current.branch ||
       check.lockReason !== current.lockReason ||
-      !staleClaudeLock(check, look)
+      !releasableClaudeLock(check, look)
     ) {
       return { said: [`kept ${listed.path}: lock state changed during removal`], status: "kept" };
     }

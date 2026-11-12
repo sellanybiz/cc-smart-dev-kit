@@ -6,7 +6,6 @@
  * `verdict.ts`) decides, and `removeWorktree` judges the folder again right before it moves
  * it, so a removal never acts on a stale scan.
  */
-import type { Server } from "node:net";
 import { basename } from "node:path";
 import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
@@ -26,10 +25,21 @@ export interface CleanLock {
   close(): unknown;
 }
 
-/** The machine-wide lock of a clean, or null when another clean holds it. */
-export async function holdCleanLock(): Promise<null | Server> {
+/** One deadline for explicit removal, including waiting for another clean. */
+export const REMOVAL_TIMEOUT_MS = 10 * 60_000;
+
+export type CleanLockResult = { lock: CleanLock } | { taken: true } | { error: string };
+
+/** Keep contention separate from a port failure for explicit removal. */
+export async function takeCleanLock(): Promise<CleanLockResult> {
   const hold = await holdPort(LOCK_PORTS.worktreesClean);
-  return "held" in hold ? hold.held : null;
+  return "held" in hold ? { lock: hold.held } : hold;
+}
+
+/** The machine-wide lock of a clean, or null when it cannot be taken. */
+export async function holdCleanLock(): Promise<null | CleanLock> {
+  const hold = await takeCleanLock();
+  return "lock" in hold ? hold.lock : null;
 }
 
 /** Can the clean take this worktree: finished, or its folder is gone (so git forgets it). */
