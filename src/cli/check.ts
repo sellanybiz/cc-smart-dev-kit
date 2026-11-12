@@ -66,6 +66,7 @@ export const CHECK_GROUPS = [
   { id: "alerts", title: "Alerts and limits" },
   { id: "project", title: "This project" },
   { id: "gateway", title: "Gateway" },
+  { id: "herdr", title: "Herdr sessions" },
   { id: "live", title: "Live check" },
 ] as const;
 

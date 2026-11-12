@@ -69,6 +69,7 @@ the first time you use it.
 | `src/update/` | The self-update: the SessionStart hook's part, the detached background check, `cc-smart-dev-kit update`'s steps, and their state files. |
 | `src/browser/` | The browser: finding the person's Chrome and its `claude-code` profile, the token file, the Playwright MCP launcher (`browser mcp`, extension mode), `browser setup`/`token`/`check`, and `doctor`'s browser lines (`.claude/rules/browser.md`). |
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`; the servers' names alone in `names.ts`, which the router bundle reads), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
+| `src/herdr/` | Herdr session orchestration: the checked identity, shared hc contract and grammar, labels, private briefs and reports, remote machine rules, command and doctor group (`docs/design/herdr.md`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/issues/` | Opt-in GitHub Issues: filing, fixed marks and the release list (`docs/design/issues.md`). |
 | `src/models/` | Subagent launch policy, UI policy and premium-model judgment. |
@@ -134,6 +135,8 @@ Each rule loads itself when you touch a file it covers.
 | `testing.md` | `*.test.ts`, `src/testing/` | Temp folders only; the time zone; every test can fail. |
 
 ## Skills
+
+Repo skills are below; shipped skills, including `herdr`, are indexed in `README.md` § Instructions, skills and agents.
 
 | Skill | When |
 |---|---|

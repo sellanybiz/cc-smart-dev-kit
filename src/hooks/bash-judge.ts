@@ -10,7 +10,7 @@
  * project's file says. A session must not be able to switch off the limits on its own launches
  * by editing a file it owns (the same reason `session-escape-guard` is always on).
  *
- * Three things a line does are judged, and nothing else:
+ * The judge covers Herdr commands and these launch and proposal cases:
  *   - **a raw background session** — `claude --bg` / `--background` — asks the person in an
  *     attended session, and is refused where nobody answers (`claude -p`). Such a session runs
  *     beside this one, nobody watches it and it reports to nobody: the kit's work runs in
@@ -45,6 +45,14 @@
 import { isAbsolute, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { machineRule, readMachines } from "../herdr/machines";
+import {
+  childModeAllowed,
+  HERDR_VERBS,
+  normalizeMode,
+  parseHerdrArgs,
+  STATUS_MESSAGE_LIMIT,
+} from "../herdr/words";
 import {
   checkoutFailure,
   loadProjectConfig,
@@ -55,16 +63,18 @@ import {
   CHANGE_DIR,
   type Dialect,
   invocationOf,
+  invocationsOf,
   isComputedWord,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
+  type RunInvocation,
   shellSteps,
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
 import { resolveGate, sourceLabel } from "../workflow/resolve";
-import { judgeLaunch, PRINT_RUN, readGuardContext } from "./agent-guard";
+import { HERDR_START, judgeLaunch, PRINT_RUN, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
@@ -93,6 +103,12 @@ export interface ClaudeLaunch {
 
 /** What one Bash line does, as the judge reads it. */
 export interface BashReading {
+  /** Commands used by the Herdr rules, including commands behind wrappers. */
+  invocations: RunInvocation[];
+  /** The line names hc/herdr-app, or names herdr alongside the kit command. */
+  namesHerdr: boolean;
+  /** A shell assignment targets the Herdr terminal identity anywhere on this line. */
+  identityAssigned: boolean;
   /** The `claude` launches it starts, in order. */
   launches: ClaudeLaunch[];
   /** Every command the line runs, its inner shell text included (three levels). */
@@ -372,7 +388,27 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
     const launch = claudeLaunch(step) ?? computedLaunch(step);
     if (launch !== null) launches.push(launch);
   }
-  return { launches, proposals, steps, workflowPropose };
+  const invocations = invocationsOf(command, dialect);
+  const namesHerdr =
+    shellSteps(command, { dialect, blindWhenOpen: true, joinLines: true }).some((step) =>
+      wordsOf(step.text, dialect).some((word) =>
+        word
+          .split(/[=\s()]+/)
+          .some(
+            (token) =>
+              ["hc", "herdr-app"].includes(token) || (token === "herdr" && namesKit(command)),
+          ),
+      ),
+    ) || invocations.some((one) => one.program === "hc" || one.program === "herdr-app");
+  return {
+    launches,
+    proposals,
+    steps,
+    workflowPropose,
+    invocations,
+    namesHerdr,
+    identityAssigned: assignsHerdrIdentity(command, dialect),
+  };
 }
 
 /** What the judge answers about one command line: an ask, a denial, or nothing. */
@@ -543,6 +579,296 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
   return { decision: verdict.decision, reason: `${PRINT_FORM}\n${verdict.reason}`, why: "print" };
 }
 
+/** PowerShell splits method calls and braced assignments across shell steps.
+ * Whole-line patterns lean to the safe side: matching text in a string literal can deny too.
+ */
+function powershellIdentity(command: string): boolean {
+  return [
+    /\$\{?env:hc_terminal_id\}?\s*\+?=(?!=)/i,
+    /\b(?:set-item|si|new-item|ni|set-content|add-content|copy-item|rename-item|move-item)\b[^\n;|]*\benv:[\\/]?hc_terminal_id\b/i,
+    /\bSetEnvironmentVariable\s*\(\s*['"]HC_TERMINAL_ID['"]/i,
+    /\brename-item\b[^\n;|]*\benv:[^\n;|]*\s+['"]?HC_TERMINAL_ID\b/i,
+  ].some((pattern) => pattern.test(command));
+}
+
+/** Assignment-only steps have no invocation, so keep their shell words too. */
+function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boolean {
+  if (dialect === "powershell" && powershellIdentity(command)) return true;
+  const assigned = (word: string) => /^HC_TERMINAL_ID(?:\+?=|$)/.test(word);
+  return shellSteps(command, { dialect, blindWhenOpen: true, joinLines: true }).some((step) => {
+    const words = wordsOf(step.text, dialect);
+    if (["for", "select"].includes(words[0] ?? "") && assigned(words[1] ?? "")) return true;
+    const invocation = invocationOf(words);
+    if (words[0] === "HC_TERMINAL_ID" && words[1] === "=") return true;
+    if (invocation === undefined) return words.some(assigned);
+    const { program, args, prefix } = invocation;
+    if (
+      prefix.some((word) => /^HC_TERMINAL_ID\+?=/.test(word)) ||
+      (["export", "declare", "typeset", "local", "readonly"].includes(program) &&
+        args.some(assigned)) ||
+      (program === "printf" &&
+        args.some(
+          (word, at) =>
+            (word === "-v" && assigned(args[at + 1] ?? "")) ||
+            (word.startsWith("-v") && assigned(word.slice(2))),
+        )) ||
+      (program === "let" && args.some((word) => /^HC_TERMINAL_ID\s*(?:\+?=|$)/.test(word))) ||
+      (program === "getopts" && args.some(assigned)) ||
+      (["declare", "typeset", "local"].includes(program) &&
+        args.some((word) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(word)) &&
+        args.some((word) => word.split("=")[1] === "HC_TERMINAL_ID")) ||
+      (["read", "mapfile", "readarray"].includes(program) && args.some(assigned))
+    )
+      return true;
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    return (
+      inner !== undefined &&
+      depth < MAX_NESTING &&
+      assignsHerdrIdentity(inner, nestedDialect(program), depth + 1)
+    );
+  });
+}
+
+/** The kit's Herdr arguments, including computed kit programs in a domain-naming line. */
+function herdrArguments(one: RunInvocation, reading: BashReading): string[] | null {
+  const args = kitArguments(one.program, withoutRedirections(one.args));
+  if (args?.[0] === "herdr") return args.slice(1);
+  if (one.computed) {
+    const at = one.args.indexOf("herdr");
+    if (
+      at >= 0 &&
+      (reading.namesHerdr || (HERDR_VERBS as readonly string[]).includes(one.args[at + 1] ?? ""))
+    )
+      return one.args.slice(at + 1);
+  }
+  return null;
+}
+
+function herdrDomain(reading: BashReading): boolean {
+  return reading.invocations.some(
+    (one) =>
+      one.program === "hc" ||
+      one.program === "herdr-app" ||
+      (one.computed && reading.namesHerdr) ||
+      herdrArguments(one, reading) !== null,
+  );
+}
+
+/** Quote short prompt excerpts without terminal controls or invisible direction changes. */
+function herdrExcerpt(text: string): string {
+  const points = Array.from(text);
+  const quoted = points
+    .slice(0, STATUS_MESSAGE_LIMIT)
+    .map((char) =>
+      /[\p{Cc}\p{Cf}]/u.test(char)
+        ? Array.from(
+            { length: char.length },
+            (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`,
+          ).join("")
+        : JSON.stringify(char).slice(1, -1),
+    )
+    .join("");
+  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "…" : ""}`;
+}
+
+/** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
+function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | null {
+  if (!herdrDomain(reading)) return null;
+  const verdict = (decision: "ask" | "deny", reason: string): BashVerdict => ({
+    decision,
+    reason,
+    why: "herdr",
+  });
+  if (reading.identityAssigned)
+    return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
+  let ask: BashVerdict | null = null;
+  const remember = (reason: string) => {
+    ask ??= isAttended(context.env)
+      ? verdict("ask", reason)
+      : verdict(
+          "deny",
+          `${reason}\nNobody answers a question in \`claude -p\`; run this in an interactive session.`,
+        );
+  };
+  const remoteRead = (machine: string) => {
+    try {
+      const rule = machineRule(readMachines(context.paths.machinesFile), machine);
+      if (rule !== "free")
+        remember(
+          `Approve Herdr read on ${machine}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`,
+        );
+    } catch (error) {
+      remember(
+        `Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote read only if you meant it.`,
+      );
+    }
+  };
+  for (const one of reading.invocations) {
+    if (one.computed && reading.namesHerdr) {
+      remember("This line computes a Herdr program at run time. Approve it only if you meant it.");
+      continue;
+    }
+    const args = withoutRedirections(one.args);
+    if (
+      ["export", "declare", "typeset", "local", "readonly"].includes(one.program) &&
+      args.some(isComputedWord)
+    )
+      remember(
+        "This line computes an environment assignment on a Herdr line. Approve only if it does not change HC_TERMINAL_ID.",
+      );
+    if (one.program === "herdr-app" && args[0] === "do") {
+      return verdict(
+        "deny",
+        `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send, answer or stop instead.`,
+      );
+    }
+    if (one.program === "hc") {
+      const raw = [...args];
+      while (raw[0] === "--json") raw.shift();
+      const [verb, sub] = raw;
+      if (raw.length === 1 && ["--version", "-V", "--skill", "--help", "-h"].includes(verb ?? ""))
+        continue;
+      if (raw.length === 2 && !verb?.startsWith("-") && ["--help", "-h"].includes(sub ?? ""))
+        continue;
+      const read =
+        ["ls", "get", "read", "wait", "templates", "schema"].includes(verb ?? "") ||
+        (verb === "machine" && sub === "ls") ||
+        (verb === "file" && sub === "read") ||
+        (verb === "server" && sub === "status");
+      const machine = optionValue(
+        raw.slice(0, raw.indexOf("--") < 0 ? undefined : raw.indexOf("--")),
+        "--on",
+      );
+      if (verb === "file" && sub === "read" && machine) remoteRead(machine);
+      const terminalArgs = raw.slice(1);
+      // Each verb takes one TERMINAL (`hc <verb> --help`); `wait --children` names one too.
+      const addresses = ["read", "get", "wait"].includes(verb ?? "")
+        ? [
+            ...positionalsOf(terminalArgs, [
+              "--lines",
+              "--children",
+              "--output",
+              "--timeout",
+            ]).slice(0, 1),
+            ...(verb === "wait" ? [optionValue(terminalArgs, "--children")] : []),
+          ]
+        : verb === "events"
+          ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")]
+          : [];
+      for (const address of addresses) {
+        const slash = address?.indexOf("/") ?? -1;
+        if (address && slash > 0) remoteRead(address.slice(0, slash));
+      }
+      if (verb === "events") {
+        const input = context.input.tool_input;
+        if (
+          typeof input === "object" &&
+          input !== null &&
+          "run_in_background" in input &&
+          input.run_in_background === true
+        )
+          continue;
+        return verdict(
+          "deny",
+          `hc events never ends: run it in the background or use ${COMMAND} herdr wait.`,
+        );
+      }
+      if (read) continue;
+      const fix =
+        verb === "run"
+          ? "herdr start"
+          : verb === "send" || verb === "keys"
+            ? "herdr send or herdr answer"
+            : verb === "kill" || verb === "rm"
+              ? "herdr stop"
+              : verb === "label"
+                ? "herdr adopt"
+                : verb === "attach"
+                  ? "herdr send or herdr answer"
+                  : "job run for a background program (or a guarded herdr verb)";
+      return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
+    }
+    const herdr = herdrArguments(one, reading);
+    if (herdr === null || (herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? "")))
+      continue;
+    // These always ask, even when malformed or carrying --asked: no hook-side hc read
+    // can tell a question from a permission prompt.
+    if (herdr[0] === "answer") {
+      const parsed = parseHerdrArgs(herdr);
+      const detail =
+        !("error" in parsed) && parsed.verb === "answer"
+          ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}`
+          : herdrExcerpt(herdr.slice(1).join(" "));
+      remember(
+        `Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`,
+      );
+      continue;
+    }
+    if (herdr[0] === "machines") {
+      const parsed = parseHerdrArgs(herdr);
+      if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list") continue;
+      remember(`Approve this Herdr machine rule change: ${herdr.slice(1).join(" ")}.`);
+      continue;
+    }
+    if (herdr[0] !== "start") continue;
+    if (!isAttended(context.env))
+      return verdict(
+        "deny",
+        "Nobody answers or watches a Herdr session started by `claude -p`; its reports would reach nobody. Start it from an interactive session.",
+      );
+    const flags = herdr.slice(1, herdr.indexOf("--") < 0 ? undefined : herdr.indexOf("--"));
+    if (optionValue(flags, "--mode") === "bypassPermissions")
+      return verdict("deny", "bypassPermissions is never allowed.");
+    const parsed = parseHerdrArgs(herdr);
+    if ("error" in parsed)
+      return verdict(
+        "deny",
+        `Pass both --model and --effort, plus --mode, to herdr start.\n${parsed.error}`,
+      );
+    if (parsed.verb !== "start") continue;
+    const lead = stringField(context.input.permission_mode) ?? "";
+    if (lead === "bypassPermissions")
+      return verdict(
+        "deny",
+        "The lead's own mode is bypassPermissions, which is never allowed. Change the lead mode before starting a child.",
+      );
+    const mode = childModeAllowed(lead, parsed.mode);
+    if (!mode.ok) {
+      const reason = `${mode.why} Lead mode: ${lead || "unknown"}; child mode: ${parsed.mode}.`;
+      if (!normalizeMode(lead) && lead !== "bypassPermissions") remember(reason);
+      else return verdict("deny", reason);
+    }
+    const launch = judgeLaunch(
+      {
+        tool: HERDR_START,
+        fork: false,
+        model: parsed.model,
+        effort: parsed.effort,
+        prompt: parsed.brief,
+        subagentType: null,
+      },
+      readGuardContext(context.paths, context.input, context.env),
+      context.env,
+    );
+    if (launch.decision === "deny") return verdict("deny", launch.reason);
+    if (launch.decision === "ask") remember(launch.reason);
+    if (parsed.on) {
+      try {
+        const rule = machineRule(readMachines(context.paths.machinesFile), parsed.on);
+        if (rule !== "free")
+          remember(
+            `Approve Herdr start on ${parsed.on}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`,
+          );
+      } catch (error) {
+        remember(
+          `Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote launch only if you meant it.`,
+        );
+      }
+    }
+  }
+  return ask;
+}
+
 /**
  * The judge's answer about one command line: a denial, an ask, or null when it judges nothing.
  * A denial wins over an ask, and the first launch that asks is the one named.
@@ -550,11 +876,12 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
 export function judgeBash(reading: BashReading, context: JudgeContext): BashVerdict | null {
   // A proposal crosses the gate the git and merge guards read, in children they never see: the
   // person approves it where that gate says the push or the pull request is theirs.
-  let ask: BashVerdict | null = null;
+  let ask = judgeHerdr(reading, context);
+  if (ask?.decision === "deny") return ask;
   if (reading.proposals.length > 0) {
     const proposed = judgeProposals(reading.proposals, context);
     if (proposed?.decision === "deny") return proposed;
-    ask = proposed;
+    ask ??= proposed;
   }
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
@@ -578,8 +905,8 @@ export function commandOf(input: HookInput): null | string {
 }
 
 /**
- * True when the judge judges this line: a launch or `workflow propose` — its crash domain.
+ * True for launches, workflow proposals and Herdr commands: the crash domain.
  */
 export function judgedDomain(reading: BashReading): boolean {
-  return reading.launches.length > 0 || reading.workflowPropose;
+  return reading.launches.length > 0 || reading.workflowPropose || herdrDomain(reading);
 }

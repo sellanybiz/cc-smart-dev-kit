@@ -60,6 +60,7 @@ export type CheckGroup =
   | "alerts"
   | "project"
   | "gateway"
+  | "herdr"
   | "live";
 
 /** `src/cli/check.ts` › `Check`: a line that passed (or a note), or a failure with its fix. */

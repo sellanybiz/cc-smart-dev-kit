@@ -193,6 +193,8 @@ export const WORKFLOW_TOOLS = ["Workflow"] as const;
  * whole session in print mode, which no agent definition stands behind.
  */
 export const PRINT_RUN = "claude -p";
+/** A Herdr child uses only its explicit command-line launch fields. */
+export const HERDR_START = "herdr start";
 
 /** The subagent type a fork uses: it runs on the session's model and effort. */
 export const FORK = "fork";
@@ -999,6 +1001,31 @@ function effortNote(ran: EffectiveLaunch): null | string {
  * effort overrides, read from `env`), and an ask or a denial names the override that applied.
  */
 export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdict {
+  if (launch.tool === HERDR_START) {
+    const ran: EffectiveLaunch = {
+      model: launch.model,
+      effort: launch.effort,
+      modelFrom: "call",
+      effortFrom: null,
+    };
+    if (launch.model === null || launch.effort === null)
+      return { ...deny(null, "Pass both --model and --effort to herdr start."), ran };
+    if (!effortAllowed(launch.effort))
+      return { ...deny(null, effortDenial(launch.effort, false)), ran };
+    const real = resolveLaunchModel(launch.model, ctx, env);
+    // Herdr has no agent definition or reason-line convention. The Bash judge always
+    // asks for premium launches; a command-line --asked flag cannot silence the hook.
+    const verdict: Judged =
+      real.tier === "fable" || (real.tier === "opus" && launch.effort === OPUS_ASK_EFFORT)
+        ? {
+            decision: "ask",
+            real,
+            reason: `Approve this herdr start on ${launch.model} at effort ${launch.effort}; it spends the person's own plan usage.`,
+            why: "herdr-premium",
+          }
+        : judgeModel(launch, real, ctx, env);
+    return { ...verdict, ran };
+  }
   // A definition is read only when the call names an agent and leaves a field to its
   // definition: a fork and a `claude -p` run never read one.
   const needsDefinition =

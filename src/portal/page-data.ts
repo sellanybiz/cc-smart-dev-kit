@@ -8,13 +8,13 @@
  * remembered defaults) and hands it in: this module reads, and holds nothing.
  */
 
+import { isOlder } from "../build-info/semver";
 import type { Check } from "../cli/doctor";
 import type { GatewayConfig } from "../gateway/config";
 import { historyDbExists } from "../gateway/history";
 import { requestsSince } from "../gateway/history-read";
 import { backendAddress } from "../gateway/settings";
 import { BACKEND_EFFORT_LEVELS } from "../gateway/targets";
-import { isOlder } from "../update/check";
 import type { LastCheck } from "../update/state";
 import { type ActionContext, autoModeChange, jobLines, updateState } from "./actions";
 import type { ProjectDefaultsReader, RouterFacts } from "./facts";

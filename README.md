@@ -427,6 +427,66 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, an
 | `cc-smart-dev-kit sessions --finished [--remove] [--yes] [--id <short-id>…]` | Lists background sessions finished (`done` or `stopped`) for more than one day, with name, folder and age. Unknown kinds, waiting or working sessions, and a session with no proof of when it ended stay out. `--remove` shows the list and asks once, or takes `--yes`; repeat `--id` to limit removal to exact eligible short ids. It checks each candidate again before `claude rm`. A registered or locked worktree must be cleared first through `worktrees --clean` or its session's `ExitWorktree`; removal reports that refusal and continues with later eligible sessions, returning exit 1 if any failed. Nothing is removed automatically. |
 | `cc-smart-dev-kit worktrees [--clean] [--remove <path>] [--no-fetch] [--json]` | Every worktree of this repo: who works in it, and which are finished ([Worktrees](#worktrees)). `--clean` removes the finished ones with their branches; `--remove <path>` removes one now, for the session that has just finished in it, so without the one-hour wait; `--no-fetch` judges against `origin/<base>` as it is. `--json` prints the same facts as one object, changes nothing and fetches nothing (it takes neither `--clean` nor `--remove`): it is the answer the portal's worktrees card on the Machine page reads. `--clean` and `--remove` run in the main checkout only, one at a time. A proved stale Linux Claude lock may be released only in the initial PID namespace (the machine's own process list, not a sandbox's), after the normal finished-worktree checks; a nested sandbox or an unreadable namespace cannot prove a host locker dead. Live and unreadable lockers stay, and a live one whose work reached the base names `ExitWorktree` (remove) or closing its session. |
 
+### Herdr session orchestration
+
+Ask Claude to "start a session in another repo" or "give this repo the task, no need to
+monitor it". `/cc-smart-dev-kit:herdr` chooses a **linked child** (this lead coordinates
+and hears back) or an **independent session** (you watch its pane), and names the kind.
+A phase inside the lead's plan normally uses a subagent instead. This is separate from
+[reopening saved sessions](#sessions) and the [Herdr GUI installer](#herdr-gui).
+
+With Herdr and a compatible hc installed, for example:
+
+```sh
+cc-smart-dev-kit herdr start --model sonnet --effort high --mode default --cwd /path/to/repo --name repair -- "Fix the scoped bug; report the result. Start no sessions or agents."
+```
+
+Model, effort and mode are required. The child's mode cannot exceed the lead's; plan mode
+must be approved first and bypass mode is refused. Fable and Opus at max effort require
+`--asked` and always raise the judge's confirmation. That flag never skips the prompt.
+Linked operations require a live lead inside Herdr, verified through process ancestry.
+Add `--independent` for a session with no lead link; it cannot use `--task`.
+
+The verbs and flags below follow `src/herdr/words.ts` (`HERDR_USAGE`); `herdr --help` is the
+installed command's full usage. A usage mistake exits 2; a refusal or failure exits 1.
+
+| After `cc-smart-dev-kit herdr` | What it does |
+|---|---|
+| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. |
+| `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status. |
+| `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child needs answer or its pane. |
+| `answer <terminal> --expect <msg> --expect-turn <n> (--option <k> \| --text <words>)` | Revalidates the prompt and selects option k with arrows from the current cursor. Always asks you. Text answers are refused; plans, logins, multi-question, multi-select and remembered permissions stay in the pane. |
+| `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<blocked\|error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
+| `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
+| `adopt` | Recovers this repo's same-core linked children after their lead disappears. |
+| `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
+| `machines [list \| allow <name> \| forget <name> \| production <name>]` | Lists or changes remote approval rules. Changes ask you first. |
+
+Remote starts require `--on <machine>` and `--cwd <dir>` on that machine. They check its
+kit version, copy the brief with `hc file write --on`, then launch with `--add-dir` for
+the private per-child brief/report folder. A remote child saves
+reports on its own machine; start and wait print `hc exec … find` and `hc file read` lines
+for retrieval. The exec line is for your own terminal: Claude cannot run raw hc writes
+or exec through the Bash judge. Local reads are allowed; remote reads ask for production
+or unallowlisted machines, and unreadable machine rules ask too. `hc events` must run in
+the background.
+Use `hc attach <terminal>` yourself for dialogs that cannot be relayed.
+
+Remote approval rules live in `~/.config/cc-smart-dev-kit/machines.json` (not the project's
+config, and not moved by `CLAUDE_CONFIG_DIR`):
+
+```json
+{ "version": 1, "machines": { "worker": { "allow": true } } }
+```
+
+`allow` permits starts without a remote-machine question; an unknown or unallowed machine
+asks and requires `--asked`. `production` always asks, even with an allow entry. `forget`
+removes the entry. A missing file means no approvals; a broken file is an error, not a free
+pass. These rules do not register machines with Herdr or grant network access.
+
+The [design page](docs/design/herdr.md) explains ownership, report files, the relay's remaining
+race boundary and live proofs still owed. See [doctor](#doctor) for its current diagnostic limits.
+
 ### Tasks (1.10.0)
 
 Work tasks live locally; project obligations travel with the branch. `task_create`,
@@ -621,6 +681,11 @@ gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun 
 [Install](#install)).
 
 ## doctor
+
+The Herdr group treats missing hc as optional, warns when hc is too old, and checks its
+version when installed. It then reports `Herdr: core not checked`: a no-start core-status
+read has not been proved, so real doctor does not yet enumerate live or blocked children.
+Use `herdr list --all` to inspect them from a Herdr session.
 
 Task checks cover the server registration, allow entry, five built-in deny entries,
 claude-mem's work-state switch, and the local work store's schema version and integrity.
@@ -1560,6 +1625,7 @@ names such a missing import.
 | `verify-change` | The affordable loop after edits; the checks the push will run; testing with the person. |
 | `research-first` | Research before you build; reuse before you write your own. |
 | `subagent-decision` | Which agent for which job, and how to brief it. |
+| `herdr` | Separate linked or independent sessions, child reports, remote starts and relaying a question. |
 | `impact-analysis` | Every consumer of a shared thing, before and after a change. |
 | `extract-or-duplicate` | Extract now or wait; where a shared piece lives. |
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |

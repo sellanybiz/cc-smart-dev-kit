@@ -15,6 +15,8 @@ starts with none of your cache, so it pays only for work that would flood your c
 a self-contained brief can carry. The core instructions hold the short form (§ Subagents); this
 is the full policy.
 
+For a separate Claude session in another repo, or work the person watches, use `/cc-smart-dev-kit:herdr`.
+
 ## The lead's judgment
 
 Model and effort come from your judgment of the job, not from a lookup table. For each launch,

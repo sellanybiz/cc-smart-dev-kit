@@ -21,6 +21,7 @@
  */
 import { COMMAND, VERSION } from "../build-info";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
+import { HERDR_USAGE } from "../herdr/words";
 import { ISSUE_USAGE } from "../issues/command";
 import { USAGE as JOB_USAGE } from "../jobs/commands";
 import { NO_HERDR_FLAG } from "../machine/herdr";
@@ -343,6 +344,7 @@ export const COMMAND_HELP: readonly CommandHelp[] = [
   { name: "claude-mem", help: CLAUDE_MEM_HELP },
   { name: "job", listed: "more", help: JOB_USAGE },
   { name: "user", listed: "more", help: USER_USAGE },
+  { name: "herdr", listed: "more", help: HERDR_USAGE },
   { name: "hook", listed: "more", help: HOOK_HELP },
   { name: "statusline", listed: "more", help: STATUSLINE_HELP },
   { name: "version", listed: "more", help: VERSION_HELP },

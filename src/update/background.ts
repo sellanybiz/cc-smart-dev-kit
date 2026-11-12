@@ -18,6 +18,7 @@
  */
 
 import { COMMAND, PLUGIN, PLUGIN_ID } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import { type CliPaths, tildify } from "../cli/paths";
 import { isAttended } from "../hooks/attended";
 import { detachedArgv } from "../hooks/detached";
@@ -43,7 +44,7 @@ import {
   ROUTER_SETUP_HINT,
   routerNeedsSetup,
 } from "./apply";
-import { checkForUpdate, isOlder } from "./check";
+import { checkForUpdate } from "./check";
 import { majorHeldDetail, majorReadyLine } from "./major";
 import { blockingVar } from "./opt-out";
 import {

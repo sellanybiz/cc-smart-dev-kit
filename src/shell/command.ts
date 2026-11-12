@@ -845,7 +845,7 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
 
 /** Text that is data, not a command: skipped over when a segment is read for its program. */
 const KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-const ASSIGNMENT = /^[A-Za-z_]\w*=/;
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 
 /**
  * True when every word is a `VAR=value` assignment: the step sets variables and runs nothing

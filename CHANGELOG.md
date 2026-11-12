@@ -3,6 +3,37 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.2.0
+
+- **Give work to another Herdr session.** `/cc-smart-dev-kit:herdr` starts a linked child
+  that reports back, or an independent session for you to watch. The `herdr` command
+  starts, lists, messages, waits for, adopts and stops linked children. Briefs stay in
+  private per-child folders granted through `--add-dir`; an optional same-project task
+  records the child's identity and worktree.
+- **Relay a child's single-choice question.** The lead shows you the question, then asks
+  permission to send your answer. The command checks the prompt, turn, options and cursor
+  again before arrow-key selection. Plans, logins, text answers and remembered permissions
+  stay in the child's pane. Child reports never count as your approval.
+- **Launch checks cover model, mode and remote machines.** Fable, Opus at max effort,
+  unknown remote machines and production machines always ask, even with `--asked`.
+  Child modes cannot exceed the lead's mode through the Bash judge. Raw hc writes are
+  refused. `herdr machines` manages `machines.json` for remote approval rules;
+  production wins over an allow entry. Remote starts need their own working directory,
+  and remote reports stay as files on that machine.
+- **Wait for news without polling.** `herdr wait --all` is a real barrier. The command prints
+  an exact continuation with a per-child turn/state cursor, not a machine-clock timestamp.
+  Doctor checks hc's version but says core not checked until a no-start status read is
+  proved live. The remaining live relay and remote proofs are listed in the design page.
+- **Every shell guard sees commands after append assignments.** A `NAME+=value` prefix
+  now counts as an assignment in the shared shell reader, so it no longer hides the command.
+- **Cross-repo messages still ask.** `message-guard` still asks before a SendMessage to
+  another repo; its planned retirement waits for approval.
+
+**What to run:** start a new Claude session after updating so it loads the skill and hooks.
+Herdr orchestration is optional; it needs hc 0.1.20 or newer on PATH
+(the command’s `MIN_HC_VERSION`). Update the
+remote kit before a remote start if it is older. No router change is needed.
+
 ## 4.1.0
 
 - **The model menu follows Claude's newest models by itself.** While the gateway is on, the kit

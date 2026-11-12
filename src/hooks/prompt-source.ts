@@ -5,6 +5,7 @@
  * second reader imports it, never a copy.
  */
 
+import { REPORT_TAG } from "../herdr/labels";
 import { STOP_FEEDBACK } from "./transcript";
 
 /**
@@ -26,10 +27,13 @@ export const NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
+  "<hc ",
+  `<${REPORT_TAG}`,
   STOP_FEEDBACK,
 ] as const;
 
 /** True when `prompt` starts with one of the wrappers: a turn that is not the person's words. */
 export function hasNotPersonWrapper(prompt: string): boolean {
-  return NOT_PERSON_PREFIXES.some((prefix) => prompt.startsWith(prefix));
+  const text = prompt.trimStart();
+  return NOT_PERSON_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
