@@ -359,7 +359,7 @@ test("answer text -h asks", () => {
 });
 test.each([
   ["$K herdr start --model sonnet --effort high --mode dontAsk -- w", "deny"],
-  ["$K herdr answer t1 --expect q --expect-turn 1 --option A", "ask"],
+  ["$K herdr answer t1 --expect q --expect-turn 1 --option A", "deny"],
   ["$K herdr machines allow live", "ask"],
   ["HC_TERMINAL_ID=x $K herdr send t1 hi", "deny"],
 ] as const)("computed kit verb %s", (line, expected) => {
@@ -485,4 +485,56 @@ test.each(["--option", "--text"])("answer %s excerpt escapes controls and bidi",
   expect(verdict?.decision).toBe("ask");
   expect(verdict?.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   expect(verdict?.reason).toContain('"1\\u000aApproved\\u202e"');
+});
+
+test("answer quotes a 700-unit prompt in full and cannot share an ask", () => {
+  const msg = `approve Bash: ${"a".repeat(686)}`;
+  const answer = `${COMMAND} herdr answer t1 --expect '${msg}' --expect-turn 1 --option 1`;
+  expect(judgeBash(readBash(answer), world())?.reason).toContain(msg);
+  for (const line of [`${answer}; ${answer}`, `${answer}; ${start}`, `${start}; ${answer}`])
+    expect(judgeBash(readBash(line), world())?.decision).toBe("deny");
+});
+
+test("answer requires literal words and a standalone step", () => {
+  const answer = `${COMMAND} herdr answer t1 --expect 'approve Bash: echo ok' --expect-turn 1 --option 1`;
+  for (const value of [
+    '"$(hc get t1 --json | jq -r .status.msg)"',
+    '"approve Bash: $(cat /tmp/x)"',
+  ]) {
+    const verdict = judgeBash(
+      readBash(`${COMMAND} herdr answer t1 --expect ${value} --expect-turn 1 --option 1`),
+      world(),
+    );
+    expect(verdict?.decision).toBe("deny");
+    expect(verdict?.reason).toContain("single quotes");
+  }
+  for (const line of [
+    `for m in a b; do ${COMMAND} herdr answer t1 --expect "$m" --expect-turn 1 --option 1; done`,
+    `for m in a b; do ${answer}; done`,
+    `while true; do ${answer}; done`,
+    `f() { ${answer}; }; f; f`,
+    `printf '1\\n2' | xargs -I{} ${answer}`,
+  ])
+    expect(judgeBash(readBash(line), world())?.decision).toBe("deny");
+});
+
+test("answer runs directly, never through a wrapper", () => {
+  const answer = `${COMMAND} herdr answer t1 --expect 'question' --expect-turn 1 --option 1`;
+  for (const prefix of [
+    "xargs -a /tmp/list -I{}",
+    "xargs -L1",
+    "env",
+    "command",
+    "exec",
+    "nohup",
+    "time",
+    "timeout 10",
+  ]) {
+    const line = `${prefix} ${answer}${prefix === "xargs -L1" ? " < file" : ""}`;
+    const verdict = judgeBash(readBash(line), world());
+    expect(verdict?.decision).toBe("deny");
+    expect(verdict?.reason).toContain("no wrapper");
+  }
+  expect(judgeBash(readBash(answer), world())?.decision).toBe("ask");
+  expect(judgeBash(readBash(`/bin/${answer}`), world())?.decision).toBe("ask");
 });

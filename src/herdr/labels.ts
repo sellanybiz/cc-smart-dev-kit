@@ -52,3 +52,12 @@ export function childWorktreeName(n: number | string): string {
 }
 
 export const CLAUDE_CODE_APP = "claude-code";
+
+export const HERDR_SPACE = "herdr.space";
+export const HERDR_TAB = "herdr.tab";
+export function newHerdrSpace(): { space: string; tab: string } {
+  return {
+    space: `sp${crypto.randomUUID().replaceAll("-", "")}`,
+    tab: `tb${crypto.randomUUID().replaceAll("-", "")}`,
+  };
+}

@@ -42,6 +42,8 @@ function setup(overrides: Partial<HerdrContext> = {}) {
     cwd: dir,
     env: { HOME: dir },
     nowMs: 123,
+    now: () => 123,
+    sleep: async () => {},
     out,
     runner,
     identity: () => ({ core: "core", address: "t1", leadId: "core/t1" }),

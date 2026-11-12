@@ -853,6 +853,10 @@ async function main(argv: string[]): Promise<number> {
       );
     case "herdr":
       return await runHerdr(rest, {
+        now: Date.now,
+        sleep: async (ms) => {
+          await Bun.sleep(ms);
+        },
         cwd: process.cwd(),
         env: process.env,
         nowMs: Date.now(),
