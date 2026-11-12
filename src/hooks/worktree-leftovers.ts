@@ -131,7 +131,10 @@ export type Verdict = "finished" | "gone" | "kept";
  * The command's own judgment is `verdict()` (`src/worktrees/verdict.ts`), which also weighs
  * the machine's facts (Docker containers, running programs). This one deliberately does not:
  * a SessionStart hook must stay quick, and the note it builds removes nothing (the header
- * above has the whole reason, and `verdict.ts` names this file back).
+ * above has the whole reason, and `verdict.ts` names this file back). For the same reason it
+ * counts any uncommitted file, where the command also accepts one whose exact bytes the base's
+ * history holds (`hasUnsavedChanges`): this side is only stricter, so it never names one the
+ * command would keep.
  */
 export function judgeWorktree(
   repo: string,

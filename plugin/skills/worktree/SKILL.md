@@ -71,8 +71,9 @@ once its work is merged.
 unless the person wants more work on that branch. When a project or the person turned it off,
 say in one line that the worktree looks finished, give these steps, and let the person decide.
 
-- **Finished** means: every commit is on `origin/<base>`, nothing is uncommitted, no local
-  file that cannot be rebuilt, no other session, server or process uses it.
+- **Finished** means: every commit is on `origin/<base>`, nothing uncommitted that the base's
+  history does not already hold byte for byte, no local file that cannot be rebuilt, no other
+  session, server or process uses it.
 - **The steps:** stop your dev servers and `Monitor`s working in it (`TaskStop`); call
   `ExitWorktree` with `action: "keep"` (it moves the session back to where it started and
   releases the session's lock); then, from the main checkout or any other checkout of the

@@ -2422,10 +2422,24 @@ when removing it can lose nothing and disturb no one:
   the reason names the git that cannot answer;
 - git has not touched it for an hour (a worktree made a minute ago is not finished: its
   session has not moved into it yet);
-- nothing in it is changed or untracked, and it holds no ignored file that cannot come back
-  (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches,
-  logs (an ignored `logs/` folder or `.log` file, at any depth) and a file the main checkout
-  still holds byte for byte do not block, nor does an ignored folder that holds only those.
+- nothing in it is changed or untracked that the base does not already hold (below), and it
+  holds no ignored file that cannot come back (an edited `.env.local`, a notes file, a key).
+  Dependency folders, build output, caches, logs (an ignored `logs/` folder or `.log` file, at
+  any depth) and a file the main checkout still holds byte for byte do not block, nor does an
+  ignored folder that holds only those.
+
+**Uncommitted files the base already holds.** A builder that never committed in its own folder,
+while its lead committed the same files, leaves only copies of work that is merged. A changed,
+staged or untracked file counts as held when its exact bytes and file mode are a version that
+same path had in a commit of the base's history after the worktree's own HEAD (the base is
+`origin/<base>`, or the local `<base>` branch in a repo with no `origin`); a deleted file counts
+when the base lost it too. A file put back to a version from before its HEAD keeps the worktree
+(a revert someone chose), and so does a symlink, a submodule or a conflict. A file with a filter
+driver or `ident` in `.gitattributes` (a notebook output stripper, Git LFS) is compared as it is
+on disk, so a filter that drops bytes cannot hide them. The removal takes the same proof again
+right before it removes the folder, and reads the folder once more after that: a file written
+meanwhile keeps it. The session-start note counts any uncommitted file, so it may not name
+such a worktree; `--clean` and the background clean do remove it.
 
 **The verdict is taken again right before anything is removed**, on the folder as it is then:
 a worktree that was finished when the list was printed and has a new commit a minute later is

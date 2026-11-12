@@ -5992,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.5.0",
+  version: "4.5.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9131,6 +9131,9 @@ function sameFolderOnDisk(a, b, ignoreCase = IGNORE_CASE) {
 // src/hooks/git.ts
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
@@ -9143,7 +9146,8 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+    const out = result.stdout.toString();
+    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
