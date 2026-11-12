@@ -1157,7 +1157,7 @@ can exist: on Windows, where Git Bash is found), because left raw it would not w
 a light or print-only line is left as it was written.
 
 **The judge** (`src/hooks/bash-judge.ts`, the rules; `job-route.ts`, the answer) reads the line
-with the one shell reader and answers three things, and nothing else:
+with the one shell reader. Alongside the Herdr rules below, it answers these launch and proposal cases:
 
 - **a raw background session**, `claude --bg` / `--background`: an **ask** in an attended
   session, a **denial** in `claude -p` (nobody answers there). Such a session runs beside this
@@ -1262,6 +1262,35 @@ removes a worktree after the session lets go of it — the plugin removes one wh
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
 folder before it deletes it, so a program still using it makes the removal fail and touch
 nothing (`docs/windows-setup.md`). Custom notification behaviour is retired (§ The notifier).
+
+#### Herdr commands in the Bash judge
+
+The judge adds Herdr rules; the Agent and `claude -p` rules above do not change. It reads
+invocations through `invocationsOf`, including wrappers and nested shells, and never runs `hc`.
+Raw `hc` writes and `herdr-app do` are refused with the guarded kit command to use instead.
+Named reads (`ls`, `get`, `read`, `wait`, `templates`, `schema`, `machine ls`, `file read`,
+`server status`, help and version) stay silent. `hc events` must run in the Bash tool's
+background mode; otherwise use `herdr wait`. A computed Herdr program asks.
+
+`cc-smart-dev-kit herdr start` must name its model, effort and mode. Its new launch kind reads
+only these explicit fields, never an agent definition or a launch environment override.
+Fable and Opus at `max` ask. The child's mode cannot exceed the hook input's `permission_mode`
+(Manual arrives as `default`); a lead in `plan` must approve the plan first, and
+`bypassPermissions` is always refused. A missing or unknown lead mode asks, for linked and
+independent children alike. A remote machine asks unless its machine rule allows it;
+production always asks. A machine-file read error asks too. `--asked` records prior approval
+only for premium-model and remote-machine asks, never a mode failure.
+
+`herdr answer` always asks, naming the child and its option or text: the judge cannot tell a
+question from a permission prompt without an `hc` call. Machine rule changes (`allow`,
+`forget`, `production`) ask too. Assigning `HC_TERMINAL_ID` on a line that invokes Herdr or
+`hc` is refused; Herdr supplies that identity. The shared frame turns asks into denied,
+parked actions while the person is away.
+
+Turns starting with `<hc ` or the kit report tag are not the person's words
+(`prompt-source.ts`). A phase whose agent is `herdr:<core>/<address>` gets a keep-going
+reminder to run `cc-smart-dev-kit herdr wait` in the background or use `herdr send`, never
+`SendMessage`.
 
 ### `doctor --live`
 
