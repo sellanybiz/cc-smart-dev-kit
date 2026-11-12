@@ -50,3 +50,5 @@ export function childTerminalName(n: number | string): string {
 export function childWorktreeName(n: number | string): string {
   return childTerminalName(n);
 }
+
+export const CLAUDE_CODE_APP = "claude-code";

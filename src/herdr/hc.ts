@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isOlder } from "../update/check";
 export const HC_TIMEOUT_MS = 15_000;
 export const MIN_HC_VERSION = "0.1.20";
 export type HcRunner = (
@@ -175,14 +176,7 @@ export function hcVersion(runner: HcRunner): string {
 }
 export function hcNewEnough(version: string): boolean {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
-  const given = version.split(".").map(Number),
-    minimum = MIN_HC_VERSION.split(".").map(Number);
-  for (let i = 0; i < minimum.length; i++) {
-    const a = given[i] ?? 0,
-      b = minimum[i] ?? 0;
-    if (a !== b) return a > b;
-  }
-  return true;
+  return !isOlder(version, MIN_HC_VERSION);
 }
 export function coreId(runner: HcRunner): string {
   return json(runner, ["server", "status", "--json"], ServerStatusSchema).core.id;

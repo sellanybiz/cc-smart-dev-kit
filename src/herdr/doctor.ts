@@ -8,6 +8,7 @@ import {
   hcNewEnough,
   hcVersion,
   MIN_HC_VERSION,
+  type Terminal,
 } from "./hc";
 import { KIT_INDEPENDENT, KIT_LEAD } from "./labels";
 export function herdrChecks(r: HcRunner = defaultHcRunner): Check[] {
@@ -33,11 +34,33 @@ export function herdrChecks(r: HcRunner = defaultHcRunner): Check[] {
       },
     ];
   const result: Check[] = [{ ok: true, text: `Herdr: hc ${version} is new enough.` }];
+  // Owed live proof: with Herdr closed, verify whether hc server status starts a core.
+  if (r === defaultHcRunner) {
+    result.push({
+      ok: true,
+      info: true,
+      text: "Herdr: core not checked (hc does not document a no-start status read).",
+    });
+    return result;
+  }
   try {
+    // server.status is an identity read (no start parameter or lifecycle action in its schema).
     const core = coreId(r);
     result.push({ ok: true, text: `Herdr: core ${core} answers.` });
     const rows = hcList(r)
-      .terminals.map((t) => hcGet(r, t.address))
+      .terminals.flatMap((t): Terminal[] => {
+        try {
+          return [hcGet(r, t.address)];
+        } catch (error) {
+          result.push({
+            ok: true,
+            warn: true,
+            text: `Herdr: skipped ${t.address}: ${error instanceof Error ? error.message : String(error)}`,
+            fix: `Read its pane: hc attach ${t.address}`,
+          });
+          return [];
+        }
+      })
       .filter((t) => t.state === "live" && (t.labels[KIT_LEAD] || t.labels[KIT_INDEPENDENT]));
     const children = rows.filter((t) => !t.labels[KIT_INDEPENDENT]),
       independent = rows.filter((t) => t.labels[KIT_INDEPENDENT]);
@@ -55,7 +78,8 @@ export function herdrChecks(r: HcRunner = defaultHcRunner): Check[] {
       });
   } catch (error) {
     result.push({
-      ok: false,
+      ok: true,
+      warn: true,
       text: `Herdr: ${error instanceof Error ? error.message : String(error)}`,
       fix: "Start Herdr, then run doctor again.",
     });

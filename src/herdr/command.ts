@@ -2,13 +2,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
+import { parseOptions } from "../cli/args";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
 import { runGit } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
-import { briefPath, writeBrief, writePrivate } from "./brief";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { getTask, isOpen } from "../tasks/work/queries";
+import { isOlder } from "../update/check";
+import { reportPath, writeBrief, writePrivate } from "./brief";
 import {
   coreId,
   defaultHcRunner,
@@ -31,6 +35,7 @@ import {
 } from "./hc";
 import { checkedIdentity, type Identity } from "./identity";
 import {
+  CLAUDE_CODE_APP,
   childTerminalName,
   childWorktreeName,
   escapeReport,
@@ -48,39 +53,114 @@ import { cliModeFlag, type HerdrArgs, parseHerdrArgs } from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
 export const SCREEN_LINES = 120;
-/** Only a fact-change notification counts as news; a snapshot or heartbeat does not. */
-export function eventNews(value: unknown): Record<string, unknown> | null {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    !("method" in value) ||
-    value.method !== "event" ||
-    !("params" in value)
-  )
-    return null;
-  const p = value.params;
-  if (!p || typeof p !== "object" || !("type" in p) || !("data" in p)) return null;
-  const data = p.data;
-  const state = data && typeof data === "object" && "status" in data ? data.status : data;
-  const status = state && typeof state === "object" && "state" in state ? state.state : null;
-  if (
-    ["finished", "lost", "removed"].includes(String(p.type)) ||
-    (p.type === "status" && ["done", "blocked", "error"].includes(String(status)))
-  )
-    return { ...p };
+export interface WaitFact {
+  terminal: string;
+  state: string;
+  status_ms: number | null;
+}
+function object(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? Object.fromEntries(Object.entries(value))
+    : null;
+}
+function snapshot(value: unknown): unknown[] | null {
+  const v = object(value);
+  if (!v) return null;
+  if (Array.isArray(v.terminals)) return v.terminals;
+  if (v.method === "missed" || v.method === "snapshot") {
+    const p = object(v.params);
+    if (Array.isArray(p?.terminals)) return p.terminals;
+    const d = object(p?.data);
+    if (Array.isArray(d?.terminals)) return d.terminals;
+  }
   return null;
+}
+export function waitFacts(value: unknown, since?: number): WaitFact[] {
+  const rows = snapshot(value);
+  if (rows)
+    return rows.flatMap((row) => {
+      const t = object(row);
+      if (!t || typeof t.address !== "string") return [];
+      const status = object(t.status);
+      const state = t.state === "finished" ? "finished" : String(status?.state ?? "");
+      const ms = typeof t.status_ms === "number" ? t.status_ms : null;
+      return ["blocked", "error", "finished"].includes(state) ||
+        (state === "done" && (since === undefined || (ms !== null && ms > since)))
+        ? [{ terminal: t.address, state, status_ms: ms }]
+        : [];
+    });
+  const v = object(value);
+  if (v?.method !== "event") return [];
+  const p = object(v.params),
+    d = object(p?.data);
+  if (!p || typeof p.terminal !== "string") return [];
+  const st = object(d?.status);
+  const state = ["finished", "lost", "removed"].includes(String(p.type))
+    ? "finished"
+    : String(st?.state ?? d?.state ?? "");
+  const ms =
+    typeof d?.status_ms === "number"
+      ? d.status_ms
+      : typeof p.status_ms === "number"
+        ? p.status_ms
+        : null;
+  if (
+    ["blocked", "error", "finished"].includes(state) ||
+    (state === "done" && (since === undefined || (ms !== null && ms > since)))
+  )
+    return [{ terminal: p.terminal, state, status_ms: ms }];
+  return [];
+}
+export function eventNews(value: unknown): Record<string, unknown> | null {
+  const v = object(value),
+    p = object(v?.params);
+  return waitFacts(value).length && p ? p : null;
+}
+export class WaitBarrier {
+  news: WaitFact[] = [];
+  private initial: Set<string> | null = null;
+  constructor(
+    private mode: "any" | "all",
+    private since?: number,
+  ) {}
+  consume(value: unknown): boolean {
+    const rows = snapshot(value);
+    if (rows && this.initial === null)
+      this.initial = new Set(
+        rows.flatMap((row) => {
+          const t = object(row);
+          return t?.state === "live" && typeof t.address === "string" ? [t.address] : [];
+        }),
+      );
+    for (const fact of waitFacts(value, this.since))
+      if (!this.news.some((n) => n.terminal === fact.terminal)) this.news.push(fact);
+    return this.mode === "any"
+      ? this.news.length > 0
+      : this.initial !== null && this.pending().length === 0;
+  }
+  pending(): string[] {
+    return [...(this.initial ?? [])].filter((t) => !this.news.some((n) => n.terminal === t));
+  }
+}
+export interface WaitResult {
+  news: WaitFact[];
+  pending: string[];
+  timeout: boolean;
 }
 export async function followEvents(
   labels: Record<string, string>,
   timeoutMs: number,
-): Promise<"timeout" | "ended" | Record<string, unknown>> {
+  options: { mode: "any" | "all"; since?: number } = { mode: "any" },
+): Promise<WaitResult | "ended"> {
   const args = ["hc", "events", "--json"];
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
-  const child = Bun.spawn(args, { stdout: "pipe", stderr: "ignore" });
+  const child = Bun.spawn(args, { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
+  const barrier = new WaitBarrier(options.mode, options.since);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<"timeout">((done) => {
-    timer = setTimeout(() => done("timeout"), timeoutMs);
+  const timeout = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs);
   });
   const stream = (async () => {
     let pending = "";
@@ -93,24 +173,34 @@ export async function followEvents(
       while (end >= 0) {
         const line = pending.slice(0, end);
         pending = pending.slice(end + 1);
-        try {
-          const news = eventNews(JSON.parse(line));
-          if (news) return news;
-        } catch {
-          return "ended" as const;
+        if (line.trim()) {
+          let value: unknown;
+          try {
+            value = JSON.parse(line);
+          } catch {
+            throw new HcError("invalid_response", "hc events returned invalid JSON.");
+          }
+          if (barrier.consume(value)) return "news" as const;
         }
         end = pending.indexOf("\n");
       }
     }
   })();
+  let result: "timeout" | "ended" | "news";
   try {
-    return await Promise.race([stream, timeout]);
+    result = await Promise.race([stream, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
     await reader.cancel();
     child.kill();
     await child.exited;
   }
+  const error = await stderr;
+  if (result === "ended") {
+    if (error.trim()) invoke(() => ({ exitCode: 1, stdout: "", stderr: error }), args);
+    return "ended";
+  }
+  return { news: barrier.news, pending: barrier.pending(), timeout: result === "timeout" };
 }
 export interface HerdrContext {
   paths: CliPaths;
@@ -124,7 +214,8 @@ export interface HerdrContext {
   events?: (
     labels: Record<string, string>,
     timeoutMs: number,
-  ) => Promise<"timeout" | "ended" | Record<string, unknown>>;
+    options?: { mode: "any" | "all"; since?: number },
+  ) => Promise<"timeout" | "ended" | Record<string, unknown> | WaitResult>;
 }
 type Start = Extract<HerdrArgs, { verb: "start" }>;
 function refuse(ctx: HerdrContext, why: string, fix?: string): number {
@@ -176,7 +267,8 @@ function send(r: HcRunner, target: string, text: string): void {
   const t = hcGet(r, target);
   const state = t.status?.state;
   if (t.state !== "live" || !state || !["idle", "working", "done"].includes(state))
-    throw new Error(
+    throw new HcError(
+      "blocked",
       `This terminal cannot receive a message; answer it in its pane: hc attach ${target}`,
     );
   // hc refuses blocked programs unless --force is set. For done, --if has no matching value;
@@ -187,13 +279,6 @@ function send(r: HcRunner, target: string, text: string): void {
     text,
     state === "done" ? {} : { ifStatus: state === "idle" ? "idle" : "working" },
   );
-}
-function versionAtLeast(actual: string, minimum: string): boolean {
-  if (!/^\d+\.\d+\.\d+$/.test(actual)) return false;
-  const a = actual.split(".").map(Number),
-    b = minimum.split(".").map(Number);
-  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return (a[i] ?? 0) > (b[i] ?? 0);
-  return true;
 }
 /** Remote exec's byte streams are base64, unlike hc's ordinary CLI stdout. */
 function remoteResult(
@@ -254,6 +339,15 @@ function remoteCollision(
   if (ref.code !== 1) throw new Error("The remote branch could not be checked.");
   return false;
 }
+function remoteReportFolder(ctx: HerdrContext): string {
+  const defaults = cliPaths({ HOME: ctx.paths.home });
+  return join(relative(defaults.home, defaults.stateDir), "herdr", "briefs");
+}
+function remoteReportHint(ctx: HerdrContext, machine: string): void {
+  const folder = remoteReportFolder(ctx);
+  ctx.out.say(`Remote reports stay in ${machine}:${folder}`);
+  ctx.out.say(`hc file read --on ${machine} ${folder}`);
+}
 async function remoteBrief(
   r: HcRunner,
   ctx: HerdrContext,
@@ -286,6 +380,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   const me = a.independent ? (ctx.env.HC_TERMINAL_ID ? identity(ctx, r) : null) : identity(ctx, r);
   if (!a.asked && (a.model === "fable" || (a.model === "opus" && a.effort === "max")))
     return refuse(ctx, "This model and effort need the person's approval (--asked).");
+  if (a.on && !a.cwd) return refuse(ctx, "A remote start needs --cwd on that machine.");
   const cwd = a.on ? (a.cwd ?? ctx.cwd) : resolve(ctx.cwd, a.cwd ?? ".");
   if (a.task && a.on)
     return refuse(
@@ -300,11 +395,23 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
       ctx,
       "A task cannot cross projects or machines. Put its text in the brief instead.",
     );
+  if (a.task) {
+    if (!existsSync(workDbFile(ctx.paths)))
+      return refuse(ctx, `Task ${a.task} must exist and be open in this project before launch.`);
+    const db = openWorkDb(workDbFile(ctx.paths), { mode: "hook" });
+    try {
+      const task = getTask(db, project.project, a.task);
+      if (!task || !isOpen(task))
+        return refuse(ctx, `Task ${a.task} must exist and be open in this project before launch.`);
+    } finally {
+      db.close();
+    }
+  }
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
       return refuse(ctx, "This remote machine needs the person's approval (--asked).");
     const version = execRemote(r, a.on, [COMMAND, "--version"]).trim().split(/\s+/).at(-1) ?? "";
-    if (!versionAtLeast(version, VERSION))
+    if (!/^\d+\.\d+\.\d+$/.test(version) || isOlder(version, VERSION))
       return refuse(
         ctx,
         `The remote kit is older than ${VERSION}.`,
@@ -340,7 +447,9 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     ctx.paths.stateDir,
     core,
     terminalName,
-    a.brief,
+    a.on && !a.independent
+      ? `${a.brief}\nYour lead is on another core. Reports stay on this machine in ${remoteReportFolder(ctx)}. Run ${COMMAND} herdr report to save each report there.`
+      : a.brief,
     !a.independent,
     a.task,
   );
@@ -412,8 +521,37 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
         : "The brief line is not visible yet; read the child's pane.",
     );
   }
+  if (a.on) remoteReportHint(ctx, a.on);
   count(ctx, terminals(r).filter(kit));
   return 0;
+}
+export function dialogOptions(
+  screen: string,
+): { number: number; label: string; cursor: boolean }[] | null {
+  const lines = screen.split(/\r?\n/);
+  const blocks: { number: number; label: string; cursor: boolean }[][] = [];
+  let block: { number: number; label: string; cursor: boolean }[] = [];
+  for (const line of lines) {
+    const match = /^\s*(❯)?\s*(\d+)\.\s+(.+)$/.exec(line);
+    if (match) {
+      block.push({ number: Number(match[2]), label: match[3] ?? "", cursor: !!match[1] });
+      continue;
+    }
+    if (block.length && /^\s{3,}\S/.test(line) && line.trim()) {
+      const last = block.at(-1);
+      if (last) last.label += ` ${line.trim()}`;
+      continue;
+    }
+    if (block.length) {
+      blocks.push(block);
+      block = [];
+    }
+  }
+  if (block.length) blocks.push(block);
+  const result = blocks.at(-1);
+  if (result?.filter((o) => o.cursor).length !== 1 || result.some((o, i) => o.number !== i + 1))
+    return null;
+  return result;
 }
 function answer(
   a: Extract<HerdrArgs, { verb: "answer" }>,
@@ -422,7 +560,10 @@ function answer(
   me: Identity,
 ): number {
   const child = own(r, a.target, me);
+  const target = child.address;
   const s = child.status;
+  if (s?.kind === "auth")
+    return refuse(ctx, `Answer authentication in its pane: hc attach ${target}`);
   const changed = () => refuse(ctx, `The prompt changed; read it again (hc get ${a.target}).`);
   if (
     s?.state !== "blocked" ||
@@ -433,7 +574,7 @@ function answer(
     return changed();
   if (/^approve plan/i.test(s.msg ?? ""))
     return refuse(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
-  const screen = hcRead(r, a.target, SCREEN_LINES).text;
+  const screen = hcRead(r, target, SCREEN_LINES).text;
   if (a.text !== undefined) return refuse(ctx, `Text answers need its pane: hc attach ${a.target}`);
   if (
     /multi.?select|select all|space to (?:select|toggle)|\[ \]|☐/i.test(screen) ||
@@ -441,22 +582,30 @@ function answer(
     /\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(screen)
   )
     return refuse(ctx, `Several questions or a multi-select need its pane: hc attach ${a.target}`);
-  const options = [...screen.matchAll(/^\s*[❯>]?\s*(\d+)\.\s+(.+)$/gm)];
-  const selected = options.find((m) => m[1] === a.option);
-  if (!selected || !/^[1-9]\d*$/.test(a.option ?? ""))
+  const options = dialogOptions(screen);
+  const option = Number(a.option);
+  if (
+    !options ||
+    !/^[1-9]\d*$/.test(a.option ?? "") ||
+    !Number.isSafeInteger(option) ||
+    option > options.length
+  )
     return refuse(ctx, "The option is not visible; read the pane again.");
-  if (/don[’']t ask again|do not ask again|always|for this session/i.test(selected[2] ?? ""))
+  const selected = options[option - 1];
+  if (!selected) return refuse(ctx, "The option is not visible; read the pane again.");
+  if (/don[’']t ask again|do not ask again|always|for this session/i.test(selected.label))
     return refuse(ctx, "A remembered permission must be answered in the pane.");
   if (
     s.kind === "permission" &&
-    !/^(?:yes(?:,? (?:once|allow once))?|no|deny|allow once)(?:[.! ]|$)/i.test(selected[2] ?? "")
+    !/^(?:no(?:,.*)?|yes(?:,? (?:once|allow once))?|deny|allow once)(?:[.! ]|$)/i.test(
+      selected.label,
+    )
   )
     return refuse(
       ctx,
       "Only a one-time yes or no permission can be relayed; answer this in the pane.",
     );
-  const option = Number(a.option);
-  const last = own(r, a.target, me);
+  const last = own(r, target, me);
   if (
     last.status?.state !== "blocked" ||
     last.status.kind !== s.kind ||
@@ -464,10 +613,9 @@ function answer(
     last.turn !== a.expectTurn
   )
     return changed();
-  // Up at the top stays at the top; use the visible option count instead of an unproved number shortcut.
-  hcKeys(r, a.target, [
-    ...options.map(() => "up"),
-    ...Array.from({ length: option - 1 }, () => "down"),
+  const difference = option - (options.findIndex((o) => o.cursor) + 1);
+  hcKeys(r, target, [
+    ...Array.from({ length: Math.abs(difference) }, () => (difference < 0 ? "up" : "down")),
     "enter",
   ]);
   ctx.out.line("ok", "Answer sent.");
@@ -491,7 +639,7 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
   }
   if (
     destination?.state === "live" &&
-    destination.status?.app === "claude-code" &&
+    destination.status?.app === CLAUDE_CODE_APP &&
     ["idle", "working", "done"].includes(destination.status.state)
   ) {
     try {
@@ -506,26 +654,27 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
         throw error;
     }
   }
-  const file = briefPath(ctx.paths.stateDir, me.core, self.name ?? self.address).replace(
-    /\.md$/,
-    ".report.md",
-  );
+  const file = reportPath(ctx.paths.stateDir, me.core, self.name ?? self.address);
   await writePrivate(ctx.paths.stateDir, file, `${text}\n`);
   ctx.out.line("warn", `The lead cannot receive a report. Saved it at ${file}`);
   return 0;
 }
 export async function runHerdr(args: string[], ctx: HerdrContext): Promise<number> {
-  // These are launch-policy refusals, not malformed-command errors, even though the
-  // shared parser also rejects them for hook callers.
   if (args[0] === "start") {
     const split = args.indexOf("--");
-    const flags = args.slice(1, split < 0 ? args.length : split);
-    if (["--model", "--effort", "--mode"].some((flag) => !flags.includes(flag)))
-      return refuse(ctx, "A start needs --model, --effort and --mode.");
-    if (flags.some((v, i) => v === "--mode" && flags[i + 1] === "bypassPermissions"))
-      return refuse(ctx, "bypassPermissions is never allowed.");
-    if (flags.includes("--independent") && flags.includes("--task"))
-      return refuse(ctx, "An independent session cannot have a task.");
+    const options = parseOptions(
+      args.slice(1, split < 0 ? args.length : split),
+      ["--model", "--effort", "--mode", "--cwd", "--on", "--name", "--task"],
+      ["--independent", "--asked"],
+    );
+    if (!("error" in options)) {
+      if (["--model", "--effort", "--mode"].some((key) => !options.options.has(key)))
+        return refuse(ctx, "A start needs --model, --effort and --mode.");
+      if (options.options.get("--mode") === "bypassPermissions")
+        return refuse(ctx, "bypassPermissions is never allowed.");
+      if (options.flags.has("--independent") && options.options.has("--task"))
+        return refuse(ctx, "An independent session cannot have a task.");
+    }
   }
   const parsed = parseHerdrArgs(args);
   if ("error" in parsed) {
@@ -582,15 +731,16 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
       }
       case "answer":
         return answer(parsed, ctx, r, me);
-      case "stop":
-        own(r, parsed.target, me);
-        hcKill(r, parsed.target);
-        hcRm(r, parsed.target);
+      case "stop": {
+        const child = own(r, parsed.target, me);
+        hcKill(r, child.address);
+        hcRm(r, child.address);
         ctx.out.line(
           "removed",
           `Stopped ${parsed.target}; its worktree stays for ${COMMAND} worktrees --clean.`,
         );
         return 0;
+      }
       case "adopt": {
         const project = taskContext(ctx.cwd, ctx.env);
         if (!project.ok) return refuse(ctx, project.why);
@@ -609,11 +759,19 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           try {
             live = hcGet(r, old.address).state === "live";
           } catch (error) {
-            if (!(error instanceof HcError) || error.kind !== "not_found") throw error;
+            if (!(error instanceof HcError) || !["not_found", "finished"].includes(error.kind))
+              throw error;
           }
           if (live) continue;
-          hcLabel(r, child.address, { [KIT_LEAD]: me.leadId });
-          adopted.push(child);
+          try {
+            hcLabel(r, child.address, { [KIT_LEAD]: me.leadId });
+            adopted.push(child);
+          } catch (error) {
+            ctx.out.line(
+              "warn",
+              `Could not adopt ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
         }
         show(ctx, adopted);
         return 0;
@@ -622,11 +780,33 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         const news = await (ctx.events ?? followEvents)(
           { [KIT_LEAD]: me.leadId },
           parsed.timeoutMs ?? WAIT_TIMEOUT_MS,
+          { mode: parsed.mode, ...(parsed.since === undefined ? {} : { since: parsed.since }) },
         );
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");
-        if (news === "timeout") ctx.out.line("info", "Still working.");
-        else ctx.out.json(news);
+        if (news === "timeout") {
+          ctx.out.line("info", "Still working.");
+          return 0;
+        }
+        if ("news" in news && Array.isArray(news.news)) {
+          let since = parsed.since ?? 0;
+          for (const fact of news.news) {
+            ctx.out.say(
+              `${fact.terminal}: ${fact.state}; status_ms=${fact.status_ms ?? "unknown"}`,
+            );
+            since = Math.max(since, fact.status_ms ?? 0);
+            if (fact.terminal.includes("/")) {
+              const machine = fact.terminal.split("/")[0] ?? "";
+              remoteReportHint(ctx, machine);
+            }
+          }
+          if (news.timeout)
+            ctx.out.line(
+              "info",
+              `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
+            );
+          ctx.out.say(`${COMMAND} herdr wait --since ${since}`);
+        } else ctx.out.json(news);
         return 0;
       }
     }

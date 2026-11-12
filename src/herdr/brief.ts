@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
 /** Encode core ids too: neither an address nor a name may escape the private folder. */
 export function briefPath(stateDir: string, core: string, name: string): string {
@@ -29,10 +29,15 @@ export async function writeBrief(
   return file;
 }
 export async function writePrivate(stateDir: string, file: string, text: string): Promise<void> {
-  await withLock(stateDir, () => {
-    const folder = join(stateDir, "herdr", "briefs");
-    mkdirSync(folder, { recursive: true, mode: 0o700 });
-    chmodSync(folder, 0o700);
-    atomicWrite(file, text, 0o600);
-  });
+  const folder = join(stateDir, "herdr", "briefs");
+  mkdirSync(folder, { recursive: true, mode: 0o700 });
+  chmodSync(folder, 0o700);
+  atomicWrite(file, text, 0o600);
+}
+
+export function reportPath(stateDir: string, core: string, name: string): string {
+  return briefPath(stateDir, core, name).replace(
+    /\.md$/,
+    `.report-${new Date().toISOString().replaceAll(":", "-")}-${randomUUID()}.md`,
+  );
 }

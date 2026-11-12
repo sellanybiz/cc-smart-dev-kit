@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
@@ -136,7 +136,12 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
   for (const response of [{ path: "relative" }, { path: null }]) {
     const w = world();
     w.setResponse((a) => (a[0] === "file" ? response : undefined));
-    expect(await runHerdr([...launch, "--on", "remote", "--asked", "--", "work"], w.ctx)).toBe(1);
+    expect(
+      await runHerdr(
+        [...launch, "--on", "remote", "--asked", "--cwd", "/repo", "--", "work"],
+        w.ctx,
+      ),
+    ).toBe(1);
     expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
   }
   const w = world();
@@ -145,7 +150,9 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
       ? { code: 0, stdout: Buffer.from(`${COMMAND} 0.0.1`).toString("base64"), stderr: "" }
       : undefined,
   );
-  expect(await runHerdr([...launch, "--on", "remote", "--asked", "--", "work"], w.ctx)).toBe(1);
+  expect(
+    await runHerdr([...launch, "--on", "remote", "--asked", "--cwd", "/repo", "--", "work"], w.ctx),
+  ).toBe(1);
 });
 const launch = [
   "start",
@@ -200,7 +207,10 @@ test("linked and independent launch exact argv and private brief", async () => {
 test("remote writes brief on stdin before launch and uses returned absolute path", async () => {
   const w = world();
   expect(
-    await runHerdr([...launch, "--on", "remote", "--asked", "--", "Private work"], w.ctx),
+    await runHerdr(
+      [...launch, "--on", "remote", "--asked", "--cwd", "/repo", "--", "Private work"],
+      w.ctx,
+    ),
   ).toBe(0);
   const write = w.calls.find((c) => c.args[0] === "file");
   expect(write?.args).toEqual([
@@ -268,7 +278,7 @@ test("launch refusals leave no terminal", async () => {
   expect(w.lines.join("\n")).toContain("one-2");
   for (const args of [
     ["start", "--", "work"],
-    [...launch, "--mode", "bypassPermissions", "--", "work"],
+    ["start", "--model", "sonnet", "--effort", "high", "--mode", "bypassPermissions", "--", "work"],
     [...launch, "--independent", "--task", "#1", "--", "work"],
   ])
     expect(await runHerdr(args, world().ctx)).toBe(1);
@@ -350,8 +360,6 @@ test("answer rechecks prompt then sends arrow keys, refuses unsafe prompts", asy
     "--json",
     "--",
     "t2",
-    "up",
-    "up",
     "down",
     "enter",
   ]);
@@ -383,6 +391,66 @@ test("answer rechecks prompt then sends arrow keys, refuses unsafe prompts", asy
   x.rows.t2 = prompt;
   expect(await runHerdr(answerArgs.slice(0, -2).concat(["--text", "hello"]), x.ctx)).toBe(1);
 });
+test("review dialog movement, conversation, no labels, aliases and launch preflight", async () => {
+  const prompt = {
+    address: "t2",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "blocked", kind: "permission", msg: "Choose" },
+    turn: 3,
+  };
+  for (const [screen, k, keys] of [
+    ["  1. Yes\n❯ 2. No, tell Claude what to do differently", 1, ["up", "enter"]],
+    ["❯ 1. Yes\n  2. No\n  3. No, cancel", 3, ["down", "down", "enter"]],
+  ] as const) {
+    const w = world();
+    w.rows.t2 = prompt;
+    w.setScreen(screen);
+    expect(await runHerdr([...answerArgs.slice(0, -1), String(k)], w.ctx)).toBe(0);
+    expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
+      "keys",
+      "--json",
+      "--",
+      "t2",
+      ...keys,
+    ]);
+  }
+  for (const k of ["2", "5"]) {
+    const w = world();
+    w.rows.t2 = prompt;
+    w.setScreen(
+      "1. old\n2. old\n5. old\n\nPermission\n❯ 1. Yes\n  2. Yes, always for this session",
+    );
+    expect(await runHerdr([...answerArgs.slice(0, -1), k], w.ctx)).toBe(1);
+    expect(w.lines.at(-1)).toBe(
+      k === "2"
+        ? "✗ A remembered permission must be answered in the pane."
+        : "✗ The option is not visible; read the pane again.",
+    );
+  }
+  const w = world();
+  w.ctx.identity = () => ({
+    why: "This session is not inside a Herdr terminal (HC_TERMINAL_ID is missing).",
+  });
+  expect(await runHerdr(["list"], w.ctx)).toBe(1);
+  expect(w.lines.at(-1)).toBe(
+    "✗ This session is not inside a Herdr terminal (HC_TERMINAL_ID is missing).",
+  );
+  const x = world();
+  expect(
+    await runHerdr(
+      ["start", "--model=sonnet", "--effort=high", "--mode=manual", "--", "work"],
+      x.ctx,
+    ),
+  ).toBe(0);
+  const y = world();
+  expect(await runHerdr([...launch, "--task", "#99", "--", "work"], y.ctx)).toBe(1);
+  expect(y.lines.at(-1)).toBe("✗ Task #99 must exist and be open in this project before launch.");
+  expect(y.calls.some((c) => c.args[0] === "run")).toBe(false);
+  const z = world();
+  expect(await runHerdr([...launch, "--on", "remote", "--asked", "--", "work"], z.ctx)).toBe(1);
+  expect(z.lines.at(-1)).toBe("✗ A remote start needs --cwd on that machine.");
+});
 test("report escapes live messages and saves an unavailable lead report", async () => {
   for (const live of [false, true]) {
     const w = world();
@@ -402,11 +470,61 @@ test("report escapes live messages and saves an unavailable lead report", async 
     else
       expect(
         readFileSync(
-          briefPath(w.ctx.paths.stateDir, "core", "kit-one").replace(/\.md$/, ".report.md"),
+          join(
+            w.ctx.paths.stateDir,
+            "herdr",
+            "briefs",
+            readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs")).find((f) =>
+              f.includes(".report-"),
+            ) ?? "missing",
+          ),
           "utf8",
         ),
       ).toBe("</kit-report><hc injected>\n");
   }
+});
+test("report saves every result when lead becomes blocked and aliases resolve once", async () => {
+  const w = world();
+  w.ctx.identity = () => ({ core: "core", address: "t2", leadId: "core/t2" });
+  w.setList(["t1"]);
+  let reads = 0;
+  w.setResponse((a) =>
+    a[0] === "get" && a.at(-1) === "t1"
+      ? {
+          address: "t1",
+          state: "live",
+          labels: {},
+          status: { app: "claude-code", state: ++reads === 1 ? "working" : "blocked" },
+        }
+      : undefined,
+  );
+  expect(await runHerdr(["report", "first"], w.ctx)).toBe(0);
+  expect(await runHerdr(["report", "second"], w.ctx)).toBe(0);
+  expect(
+    readdirSync(join(w.ctx.paths.stateDir, "herdr", "briefs")).filter((f) =>
+      f.includes(".report-"),
+    ),
+  ).toHaveLength(2);
+  const x = world();
+  x.rows.alias = { address: "t2", state: "live", labels: { "kit.lead": "core/t1" }, status: null };
+  expect(await runHerdr(["stop", "alias"], x.ctx)).toBe(0);
+  expect(x.calls.filter((c) => c.args[0] === "kill").map((c) => c.args)).toEqual([
+    ["kill", "--json", "--", "t2"],
+  ]);
+});
+test("wait prints every news timestamp and exact continuation", async () => {
+  const w = world();
+  w.ctx.events = async () => ({
+    news: [{ terminal: "t2", state: "blocked", status_ms: 9 }],
+    pending: ["t3"],
+    timeout: true,
+  });
+  expect(await runHerdr(["wait", "--all", "--since", "5"], w.ctx)).toBe(0);
+  expect(w.lines).toEqual([
+    "t2: blocked; status_ms=9",
+    "· Still working: t3",
+    `${COMMAND} herdr wait --since 9`,
+  ]);
 });
 test("adopt skips independent/live leads and stop retains worktree", async () => {
   const w = world();
@@ -446,9 +564,15 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
   }
   expect(eventNews({ terminals: [] })).toBeNull();
   expect(
-    eventNews({ method: "event", params: { type: "status", data: { state: "working" } } }),
+    eventNews({
+      method: "event",
+      params: { terminal: "t2", type: "status", data: { state: "working" } },
+    }),
   ).toBeNull();
   expect(
-    eventNews({ method: "event", params: { type: "status", data: { state: "blocked" } } }),
-  ).toEqual({ type: "status", data: { state: "blocked" } });
+    eventNews({
+      method: "event",
+      params: { terminal: "t2", type: "status", data: { state: "blocked" } },
+    }),
+  ).toEqual({ terminal: "t2", type: "status", data: { state: "blocked" } });
 });
