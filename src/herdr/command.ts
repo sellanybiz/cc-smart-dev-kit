@@ -669,17 +669,26 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     try {
       state = hcGet(r, child.address);
     } catch (error) {
-      if (!terminalEnded(error)) throw error;
+      if (!terminalEnded(error)) {
+        // The child started; a failed read must not hide it or skip its task binding.
+        ctx.out.line(
+          "warn",
+          `The child ${child.address} started, but its state could not be read (${error instanceof Error ? error.message : String(error)}); check it in its pane: hc attach ${child.address}`,
+        );
+        break;
+      }
       state = { address: child.address, state: "finished", status: null, labels: {} };
     }
+    if (state.status?.app === CLAUDE_CODE_APP && state.state !== "finished") break;
     if (state.state === "finished" || ctx.now() >= deadline || poll === LAUNCH_POLL_LIMIT - 1) {
       try {
         const screen = hcRead(r, child.address, SCREEN_LINES);
+        ctx.out.say(`The child's screen (${child.address}):`);
         for (const line of screen.text
           .split(/\r?\n/)
           .filter((line) => line.trim())
           .slice(-LAUNCH_SCREEN_LINES))
-          ctx.out.say(line);
+          ctx.out.say(line, 2);
       } catch (error) {
         if (!terminalEnded(error)) throw error;
         ctx.out.say("The child's screen is no longer readable.");
@@ -692,6 +701,12 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
           if (!terminalEnded(error)) throw error;
           // The terminal already ended or was removed; continue with the launch failure.
         }
+        if (!gitRoot)
+          return refuse(
+            ctx,
+            `The child ${child.address} exited during launch.`,
+            "Resolve the screen error above, then retry.",
+          );
         const folderExists = a.on
           ? remoteResult(r, a.on, ["test", "-d", worktree]).code
           : existsSync(worktree)
@@ -712,15 +727,12 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
           "Resolve the screen error above, then retry with the same name if its worktree and branch are absent.",
         );
       }
-      // A status observed on the deadline is still evidence that Claude came up.
-      if (state.status?.app !== CLAUDE_CODE_APP)
-        ctx.out.line(
-          "warn",
-          `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`,
-        );
+      ctx.out.line(
+        "warn",
+        `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`,
+      );
       break;
     }
-    if (state.status?.app === CLAUDE_CODE_APP) break;
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
   if (a.task) {
@@ -851,7 +863,7 @@ function answer(
     relayMessageLength(s.msg ?? "") > RELAY_MESSAGE_LIMIT
   )
     return refuse(ctx, `The prompt may be cut short; answer it in its pane: hc attach ${target}`);
-  if (/^approve plan/i.test(s.msg ?? ""))
+  if (/(?:^| · )approve plan/i.test(s.msg ?? ""))
     return refuse(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
   const screen = hcRead(r, target, SCREEN_LINES).text;
   if (a.text !== undefined) return refuse(ctx, `Text answers need its pane: hc attach ${a.target}`);

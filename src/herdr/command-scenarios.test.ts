@@ -952,13 +952,16 @@ test("launch polls for first status and warns without failing at its deadline", 
     w.setScreen("Yes, I trust this folder\n");
     expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(0);
     expect(w.lines.join("\n")).toContain("linked child:");
-    if (reports) expect(reads).toBe(3);
-    else {
+    if (reports) {
+      expect(reads).toBe(3);
+      expect(w.lines.join("\n")).not.toContain("The child's screen");
+    } else {
       expect(w.ctx.now()).toBe(20_000);
       expect(w.lines.join("\n")).toContain(
         "has not reported yet; answer it in its pane: hc attach t2",
       );
-      expect(w.lines).toContain("Yes, I trust this folder");
+      expect(w.lines).toContain("The child's screen (t2):");
+      expect(w.lines).toContain("  Yes, I trust this folder");
     }
     expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
   }
@@ -1111,4 +1114,58 @@ test("launch exit races still remove terminal and report folder without binding"
       ops.close();
     }
   }
+});
+test("a non-git launch that exits names no worktree folder", async () => {
+  const w = world();
+  w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+  w.setScreen("Error: something failed\n");
+  expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines).toContain("  Error: something failed");
+  expect(w.lines.join("\n")).toContain("The child t2 exited during launch.");
+  expect(w.lines.join("\n")).not.toContain("Worktree folder");
+  expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+});
+test("a failed state read after launch keeps the started child and its task binding", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    let gets = 0;
+    w.setFailure((a) => (a[0] === "get" && ++gets === 1 ? "unavailable" : null));
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(0);
+    expect(w.lines.join("\n")).toContain("The child t2 started, but its state could not be read");
+    expect(w.lines.join("\n")).toContain("linked child: t2");
+    expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("a plan dialog with a description prefix still goes to the pane", async () => {
+  const w = world();
+  w.rows.t2 = {
+    address: "t2",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "blocked", kind: "permission", msg: "Ship it · approve plan" },
+    turn: 3,
+  };
+  w.setScreen("Ready to code?\n❯ 1. Yes, and use auto mode\n  2. No, keep planning");
+  expect(
+    await runHerdr(
+      ["answer", "t2", "--expect", "Ship it · approve plan", "--expect-turn", "3", "--option", "2"],
+      w.ctx,
+    ),
+  ).toBe(1);
+  expect(w.lines.join("\n")).toContain("Answer the plan in its pane");
+  expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
 });

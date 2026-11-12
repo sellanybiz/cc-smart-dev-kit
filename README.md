@@ -452,18 +452,18 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 
 | After `cc-smart-dev-kit herdr` | What it does |
 |---|---|
-| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. |
+| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent and remote sessions get their own space in Herdr's window. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
 | `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status. |
 | `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child needs answer or its pane. |
-| `answer <terminal> --expect <msg> --expect-turn <n> (--option <k> \| --text <words>)` | Revalidates the prompt and selects option k with arrows from the current cursor. Always asks you. Text answers are refused; plans, logins, multi-question, multi-select and remembered permissions stay in the pane. |
+| `answer <terminal> --expect <msg> --expect-turn <n> (--option <k> \| --text <words>)` | Revalidates the prompt and selects option k with arrows from the current cursor. Always asks you, with the whole prompt quoted; the line must hold only this answer, with literal words. A prompt Claude Code cut short is refused, and a Bash prompt must match the command on screen. Text answers, "Type something" and "Chat about this" are refused; plans, logins, multi-question, multi-select and remembered permissions stay in the pane. |
 | `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<blocked\|error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
 | `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
-| `adopt` | Recovers this repo's same-core linked children after their lead disappears. |
+| `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. |
 | `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
 | `machines [list \| allow <name> \| forget <name> \| production <name>]` | Lists or changes remote approval rules. Changes ask you first. |
 
-Remote starts require `--on <machine>` and `--cwd <dir>` on that machine. They check its
-kit version, copy the brief with `hc file write --on`, then launch with `--add-dir` for
+Remote starts require `--on <machine>` and `--cwd <dir>` on that machine. That machine's
+login shell must find `claude` and the kit. They check both, then its kit version, copy the brief with `hc file write --on`, then launch with `--add-dir` for
 the private per-child brief/report folder. A remote child saves
 reports on its own machine; start and wait print `hc exec … find` and `hc file read` lines
 for retrieval. The exec line is for your own terminal: Claude cannot run raw hc writes

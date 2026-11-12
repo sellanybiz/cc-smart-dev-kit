@@ -168,6 +168,9 @@ must contain only the answer step, with literal words: shell-filled words, loops
 and other steps are refused. Each answer gets its own approval.
 The judge always asks again for that line; it cannot inspect a prompt kind without an hc
 call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
+A plan dialog's first option ("Yes, and use auto mode") switches the child to auto mode, which
+can be wider than a lead in default mode. That is the person's own choice in the pane, so no
+guard stops it (seen live in 4.3.0).
 While away, the existing frame denies and parks questions instead of guessing answers.
 
 ## Waiting without polling
