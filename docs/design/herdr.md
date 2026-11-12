@@ -134,8 +134,9 @@ give news or leave, or until timeout. An empty all-barrier says there is nothing
 any keeps listening for a new turn. With no live owned children either mode returns at once.
 The default timeout is `WAIT_TIMEOUT_MS` in the command; timeout is not completion proof.
 
-The final continuation preserves the supplied cursor plus only news actually printed,
-with the same mode and timeout. It never consumes an unreported later status read. Copy
+The final continuation keeps the supplied cursor entries for the addresses in the wait's
+first snapshot, drops the rest, and then updates entries only from the news actually
+printed, with the same mode and timeout. It never consumes an unreported later status read. Copy
 that exact next command. A lost event stream is a failure with unknown child outcome,
 not a successful completion. Remote news also prints the report retrieval hints.
 
