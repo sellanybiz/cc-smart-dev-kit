@@ -81,7 +81,7 @@ A change is done only when every reference is updated:
 2. Run `/cc-smart-dev-kit:verify-change` (your diff, then the checks for what you changed; the whole type check waits for its § 4).
 3. Re-read each call site from the first trace: still correct?
 4. A database change: check its indexes and the project's access rules.
-5. New files: right folder and name (`/cc-smart-dev-kit:extract-or-duplicate`).
+5. New files: right folder and name (`/cc-smart-dev-kit:code-structure`).
 
 Creating something is changing something: search first, extend what exists, and design for
 the first two or three callers, not for a guessed tenth.

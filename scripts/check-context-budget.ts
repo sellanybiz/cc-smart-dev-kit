@@ -33,16 +33,17 @@ export interface Budget {
 /**
  * Always-on tokens. 3,133 at 0.5.0; about 3,515 at 2.1.1; about 2,626 at 2.2.0, after its
  * description trims and with three more agents. The target is the line where Claude Code's
- * plugin browser highlights a plugin's per-turn cost as heavy: 2,000 tokens.
+ * plugin browser highlights a plugin's per-turn cost as heavy: 2,000 tokens. The code-structure
+ * rename trimmed the always-on figure to 2,690.
  */
-export const ALWAYS_ON: Budget = { max: 2_700, target: 2_000 };
+export const ALWAYS_ON: Budget = { max: 2_690, target: 2_000 };
 
 /**
  * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,300 at 1.1.0, after
  * its trim to 128 lines; about 2,298 at 2.2.0 (126 lines). The target is still roughly
- * 1,900 tokens.
+ * 1,900 tokens. The code-structure wording trimmed it to about 2,345.
  */
-export const CORE: Budget = { max: 2_350, target: 1_900 };
+export const CORE: Budget = { max: 2_345, target: 1_900 };
 
 /**
  * Characters per token for the core.md estimate: about four for English prose. The check

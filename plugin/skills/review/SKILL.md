@@ -61,6 +61,8 @@ Cannot fill all four? It is a hunch: say so separately, or drop it. **Refute bef
 report:** look for the guard that already stops it (a validator upstream, a database
 constraint, a type that makes it impossible). Never invent a line number.
 
+For design findings, use `references/axes.md` § Design findings.
+
 ## Second opinion
 
 You cannot see your own blind spots. So after your own pass, for every change beyond a small

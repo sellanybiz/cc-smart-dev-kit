@@ -4,6 +4,7 @@ description: Builds one phase from its task brief, tests its own files, commits 
 skills:
   - cc-smart-dev-kit:impact-analysis
   - cc-smart-dev-kit:verify-change
+  - cc-smart-dev-kit:code-structure
 disallowedTools:
   - AskUserQuestion
   - Agent
@@ -54,6 +55,7 @@ you started from.
 
 1. Read callers before changing shared code. Use the loaded impact-analysis skill without
    dispatching a helper. Use existing code before adding a second implementation.
+   Shape new and changed code by the loaded code-structure skill.
 2. Keep the phase's steps current in kit tasks. Create missing steps under its task.
    Routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
 3. For a behavior change, write the failing test first where this kind of code has tests.

@@ -1,0 +1,148 @@
+---
+name: code-structure
+description: Use when shaping code - placing a new file, helper, service or component, naming, splitting a long function, duplicate logic. Triggers include "where should this go", "duplicate code", "extract", "naming".
+---
+
+# Code Structure: Clean, Organized, Never Simplistic
+
+**Project add-on:** `.claude/cc-smart-dev-kit/code-structure.md` — read it first when it
+exists. Where it differs, the add-on wins (`core.md`, top). The project's conventions and
+its language's standard style win over this skill's defaults.
+
+## 1. Simple, not simplistic
+
+Simplicity means keep things clean and organized; it does not mean bad and dumb code.
+Code must be complete, robust and readable. Never make it shorter by dropping error
+handling, a case, a type or a test.
+
+## 2. Build only what the task needs
+
+No layer, option, parameter or prop for a guessed future need. An abstraction built for an
+imagined caller locks in the wrong shape, and the real second caller never fits it.
+
+## 3. Search before you write
+
+Before adding a helper, component, constant, type, mapper or hook, look for one already
+there: by name (`Grep` as a whole word), by what it does, and by structure. claude-mem's
+`smart_search` lists matching functions and types; when absent or unhelpful, use `Grep`.
+If it exists, import it.
+
+## 4. Split by responsibility
+
+A unit does one job you can name in a short sentence without "and". Split when it does
+several jobs, or a block needs a comment to say *what* it does: name that block as a
+function in the same file. A long function that reads as one straight sequence of one job
+stays. About 100 lines per function and 500 per file are a reason to look, never on their
+own a reason to split.
+Keep together what changes together; do not split what must be read together.
+
+A private wrapper that adds nothing is a finding, as are tiny functions made for their
+own sake. A public entry point that keeps callers out of a module's private parts is not
+a pass-through.
+
+## 5. Extract now, or wait?
+
+**Same logic** means changing one copy forces changing the other. Give it one home now
+when it exists twice, you are about to paste it into a second place, or copies have
+already drifted and caused a bug. Reuse an existing implementation or extract the shared core.
+
+**Merely similar — wait for the third.** Two things that look alike need not be a repeat;
+a third shows which parts are shared and which are coincidence. Extracting to *name* a
+block stays in its file; extracting for *reuse* needs a real second caller.
+
+A parameter carries data that varies. A flag or branch that picks a code path for one
+caller means the logic was not the same: keep the common core shared and move the
+caller-specific path back to that caller. Decide once and say why; do not flip between
+extracting and inlining across review rounds.
+
+Duplication that meets the bar, in files the task changes: fix it now, point every call
+site at its right home and remove the copies. Elsewhere: the core instructions' one-plan rule.
+
+## 6. Helper, service, module
+
+- A **helper** is a pure function: no state or I/O (reading or writing outside itself).
+  Keep it beside its callers.
+- A **service** coordinates state changes across several things, called from an edge such
+  as a route, handler or command.
+- A **module** puts one concept behind a small public entry point. Make it deep: a simple
+  interface over real work, not a shallow layer that only forwards calls.
+- A function that does one I/O job (a query, a file read, an API call) is neither helper nor
+  service: keep it beside its callers or in the project's data-access layer, and keep the pure
+  logic it uses in a helper.
+
+Each earns its place now: a real second caller, a simple interface over real work, or the
+project's own pattern. Each layer calls only layers the project allows. Validate input
+once, at the edge. Authorization is not input validation: still check it inside the
+function (review axes § Security).
+
+## 7. Where the shared piece lives; reusable components
+
+Scope it as narrowly as its use, widening only when another caller appears:
+
+1. **Both sides**, such as browser and server: the project's shared layer, kept pure —
+   no UI framework or server-only imports.
+2. **One side:** close to its callers, in the feature's folder or the one file.
+3. **Another feature needs it:** through that feature's public entry point, never its
+   private folders.
+
+Use the project's layer names, import aliases and boundaries from its add-on and rules.
+A boundary violation is Critical in review.
+
+Before shipping the same UI twice, extract, then build the second use. A component coupled
+to feature data belongs in that feature's components folder, owned by the feature supplying
+the data. Otherwise use the project's shared UI folder. Import a UI library's primitives
+directly from their library home.
+
+Props serve callers that exist, not hypothetical ones. The component decides presentation;
+callers decide data and callbacks. Caller-specific labels come as props with defaults,
+not baked-in text. Document props so the next caller finds them in 30 seconds.
+
+## 8. Naming
+
+For names the task owns, say the purpose to a new reader; use longer names for wider scopes.
+
+- Avoid repeated context: `user.name`, not `user.userName`.
+- Booleans ask a yes/no question (`isReady`, `hasAccess`), not a negative (`notDisabled`).
+- Functions are verbs that say their effect: `loadInvoice`, not `handleData`. Types are nouns.
+- Put units in names (`timeoutMs`); do not invent abbreviations.
+- No catch-all files named for their kind (`utils.ts`, `misc.ts`), and no empty names
+  (`data2`, `tmp`).
+- Match siblings' case style for components, utilities, hooks and folders: one style per kind.
+
+External contracts — API fields, library paths, generated names — keep their names.
+A name that lies is a bug.
+
+## 9. Files and folders
+
+Follow the project's layout; put new code beside its feature. One concept per file, one
+main export for a major type (a component, service or hook). Split by concept, not line count.
+One helpers folder per layer: never add `utils/` beside `helpers/` beside `lib/`. An existing
+folder stays the home; name the files inside by their job.
+
+## 10. Cleaner vs structural change
+
+**Cleaner**, without asking and only inside files the task changes: fewer jobs per unit,
+truer local and private names, removed dead code and unused imports, a comment that says why.
+
+**Structural change:** moving or renaming files or folders; an exported name or a module's
+public interface; a layer boundary; a new folder or layer pattern; splitting a file other
+code imports from. What the task or approved plan names is already agreed. Ask only for
+structural work beyond it; a subagent reports it to its caller. Unasked cleanup of files the
+task does not change stays out of the diff.
+
+## 11. Comments say why; unused code goes
+
+Explain a reason code cannot show, not what the next line does. Delete unused code and
+imports instead of keeping them for a possible future.
+
+## 12. Before the commit
+
+1. Right folder, layer and name?
+2. Any duplicate to reuse or extract?
+3. Boundaries intact?
+4. Files and functions a sensible size?
+5. Matches the existing pattern?
+6. Would the next developer find it in 30 seconds?
+7. One job per unit?
+8. Names true?
+9. Nothing built for a need that does not exist?
