@@ -24,10 +24,10 @@ import {
   readlinkSync,
   readSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { loadCcSmartDevKitConfig } from "../project/config";
 import { CONFIG_PATH } from "../project/resolve";
-import { runGit } from "./git";
+import { reflogEntryTime, runGit, worktreeAdminDir } from "./git";
 import type { Env } from "./run";
 
 /**
@@ -68,14 +68,8 @@ const FIRST_REFLOG_BYTES = 4096;
 
 /** The earliest setup witness survives reflog expiry and `git worktree move`. */
 function setupTime(worktree: string): number | null {
-  let admin: string;
-  try {
-    const gitfile = readFileSync(join(worktree, ".git"), "utf8").trim();
-    if (!gitfile.startsWith("gitdir: ")) return null;
-    admin = resolve(worktree, gitfile.slice("gitdir: ".length));
-  } catch {
-    return null;
-  }
+  const admin = worktreeAdminDir(worktree);
+  if (admin === null) return null;
   const times: number[] = [];
   try {
     const time = lstatSync(join(admin, "commondir")).mtimeMs;
@@ -92,12 +86,8 @@ function setupTime(worktree: string): number | null {
       const text = buffer.toString("utf8", 0, size);
       const end = text.indexOf("\n");
       if (end !== -1 || size < buffer.length) {
-        const first = (end === -1 ? text : text.slice(0, end)).split("\t", 1)[0] ?? "";
-        const epoch = / (\d+) [+-]\d{4}$/.exec(first)?.[1];
-        if (epoch !== undefined) {
-          const time = Number(epoch) * 1000;
-          if (Number.isFinite(time)) times.push(time);
-        }
+        const time = reflogEntryTime(end === -1 ? text : text.slice(0, end));
+        if (time !== null) times.push(time);
       }
     } finally {
       closeSync(fd);

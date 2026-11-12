@@ -5,16 +5,14 @@
  * time comes from the log's last entry, because `git reflog expire` rewrites the file.
  */
 import { readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { worktreeAdminDir } from "../hooks/git";
 
 /** The worktree's own folder in the main repository's `.git/worktrees/`. */
 export function worktreeAdmin(worktree: string): string {
-  return resolve(
-    worktree,
-    readFileSync(join(worktree, ".git"), "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, ""),
-  );
+  const admin = worktreeAdminDir(worktree);
+  if (admin === null) throw new Error(`${worktree} has no readable .git file`);
+  return admin;
 }
 
 /** Makes git's own activity in `worktree` `minutes` old (an hour and a half by default). */

@@ -16,9 +16,16 @@
  *   nothing runs from it, it is no repository and has no registration of its own, it crosses no
  *   mount, and no file in it is newer than its move. Anything else stays, with the reason.
  */
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, type Stats } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, type Stats } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { isInside, type ListedWorktree, listWorktrees, realPath, samePath } from "../hooks/git";
+import {
+  isInside,
+  type ListedWorktree,
+  listWorktrees,
+  realPath,
+  samePath,
+  worktreeAdminDir,
+} from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
 import {
@@ -246,16 +253,11 @@ function gitEntryWhy(folder: string): null | string {
   }
   if (stat.isDirectory()) return "it holds a git repository of its own";
   if (!stat.isFile()) return "its .git entry is neither a file nor a folder";
-  try {
-    const target = readFileSync(dotGit, "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, "");
-    return target !== "" && existsSync(target)
-      ? `git still has an administrative folder for it: ${target}`
-      : null;
-  } catch {
-    return "its .git file cannot be read";
-  }
+  // A `.git` file that names no administrative folder cannot be told from one that is broken:
+  // keep the folder, the safe side.
+  const admin = worktreeAdminDir(folder);
+  if (admin === null) return "its .git file cannot be read";
+  return existsSync(admin) ? `git still has an administrative folder for it: ${admin}` : null;
 }
 
 /**

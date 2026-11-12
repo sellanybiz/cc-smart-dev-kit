@@ -3,7 +3,10 @@
  * the reason of a lock included.
  */
 import { describe, expect, test } from "bun:test";
-import { parseWorktreeList } from "./git";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tempDir } from "../testing/temp";
+import { parseWorktreeList, reflogEntryTime, worktreeAdminDir } from "./git";
 
 describe("parseWorktreeList", () => {
   test("a lock keeps its reason: Claude Code's own lock can be told from a person's", () => {
@@ -42,5 +45,49 @@ describe("parseWorktreeList", () => {
     expect(bare?.lockReason).toBeUndefined();
     expect(plain?.locked).toBe(false);
     expect(plain?.lockReason).toBeUndefined();
+  });
+});
+
+describe("worktreeAdminDir", () => {
+  test("an absolute gitdir, a relative one and a missing or broken .git entry", () => {
+    const root = tempDir("admin-dir");
+    const absolute = join(root, "absolute");
+    const relative = join(root, "relative");
+    const folder = join(root, "folder");
+    const broken = join(root, "broken");
+    for (const dir of [absolute, relative, folder, broken]) mkdirSync(dir);
+    writeFileSync(join(absolute, ".git"), "gitdir: /work/app/.git/worktrees/absolute\n");
+    writeFileSync(join(relative, ".git"), "gitdir:   ../app/.git/worktrees/relative\n");
+    mkdirSync(join(folder, ".git"));
+    writeFileSync(join(broken, ".git"), "not a gitfile\n");
+    expect(worktreeAdminDir(absolute)).toBe("/work/app/.git/worktrees/absolute");
+    expect(worktreeAdminDir(relative)).toBe(join(root, "app", ".git", "worktrees", "relative"));
+    // A main checkout's `.git` is a folder; a gone folder has none; a broken file names nothing.
+    expect(worktreeAdminDir(folder)).toBeNull();
+    expect(worktreeAdminDir(join(root, "gone"))).toBeNull();
+    expect(worktreeAdminDir(broken)).toBeNull();
+  });
+});
+
+describe("reflogEntryTime", () => {
+  const ids = `${"a".repeat(40)} ${"b".repeat(40)}`;
+
+  test("the epoch of a well-formed entry, in milliseconds", () => {
+    expect(reflogEntryTime(`${ids} A B <a@example.com> 1761300000 +0200\tcommit: work`)).toBe(
+      1761300000000,
+    );
+  });
+
+  test("an entry with no message has no tab, and still reads", () => {
+    expect(reflogEntryTime(`${ids} A B <a@example.com> 1761300000 +0200`)).toBe(1761300000000);
+  });
+
+  test.each([
+    ["no email", `${ids} A B 1761300000 +0200\tcommit: work`],
+    ["no zone", `${ids} A B <a@example.com> 1761300000\tcommit: work`],
+    ["no ids", "A B <a@example.com> 1761300000 +0200\tcommit: work"],
+    ["empty", ""],
+  ])("a malformed entry (%s) gives null", (_name, line) => {
+    expect(reflogEntryTime(line)).toBeNull();
   });
 });

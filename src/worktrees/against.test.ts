@@ -18,16 +18,37 @@ import {
 
 const env = cleanGitEnv();
 const quiet = { containers: [], programs: [], sessions: [] };
-const scanOptions = () => ({
+const scanOptions = (claudeConfigDir = tempDir("against-config")) => ({
   base: "main",
-  claudeConfigDir: tempDir("against-config"),
+  claudeConfigDir,
   env,
   facts: { ...quiet, mounts: [] },
   idleLimit: 0,
 });
 
+/**
+ * What Claude Code writes when a builder finishes: the marker `agentFinished` reads. The
+ * builder's folder is named `agent-<id>`, and it carries no lock.
+ */
+function markFinished(claudeConfigDir: string, worktree: string, id = "x"): void {
+  const subagents = join(claudeConfigDir, "projects", "-repo", "session-1", "subagents");
+  mkdirSync(subagents, { recursive: true });
+  writeFileSync(
+    join(subagents, `agent-${id}.meta.json`),
+    JSON.stringify({ finished: true, worktreePath: worktree }),
+  );
+}
+
+/** `withWork`, with the worktree a finished builder: no lock, folder `agent-x`, marker written. */
+function withBuilder(): { main: string; worktree: string; claudeConfigDir: string } {
+  const fixture = withWork("agent-x");
+  const claudeConfigDir = tempDir("against-config");
+  markFinished(claudeConfigDir, fixture.worktree);
+  return { ...fixture, claudeConfigDir };
+}
+
 function withHolder(squash = false) {
-  const fixture = withWork();
+  const fixture = withBuilder();
   const holder = join(tempDir("holding-worktree"), "plan");
   git(fixture.main, "worktree", "add", "-b", "plan", holder, "main");
   git(holder, "merge", squash ? "--squash" : "--no-ff", "fix/login", "-m", "merge work");
@@ -37,8 +58,8 @@ function withHolder(squash = false) {
 
 describe("work held by a branch in another present worktree", () => {
   test("a merge commit lets the folder go but keeps its branch off the base", () => {
-    const { main, worktree } = withHolder();
-    const options = scanOptions();
+    const { main, worktree, claudeConfigDir } = withHolder();
+    const options = scanOptions(claudeConfigDir);
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(found?.state).toEqual({
       finished: true,
@@ -58,11 +79,11 @@ describe("work held by a branch in another present worktree", () => {
   });
 
   test.each(["squash", "gone", "prunable", "detached"])("%s is not a holder", (kind) => {
-    const { main, worktree, holder } = withHolder(kind === "squash");
+    const { main, worktree, holder, claudeConfigDir } = withHolder(kind === "squash");
     if (kind === "gone") git(main, "worktree", "lock", holder);
     if (kind === "gone" || kind === "prunable") rmSync(holder, { recursive: true });
     if (kind === "detached") git(holder, "checkout", "--detach");
-    const options = scanOptions();
+    const options = scanOptions(claudeConfigDir);
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(found?.state).toEqual({ finished: false, held: false, why: "1 commit not on main" });
     if (found === undefined) throw new Error("missing builder worktree");
@@ -71,8 +92,8 @@ describe("work held by a branch in another present worktree", () => {
   });
 
   test("removal rechecks the holder after a scan", () => {
-    const { main, worktree, holder } = withHolder();
-    const options = scanOptions();
+    const { main, worktree, holder, claudeConfigDir } = withHolder();
+    const options = scanOptions(claudeConfigDir);
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(found?.state).toMatchObject({ finished: true });
     git(holder, "reset", "--hard", "main");
@@ -81,12 +102,120 @@ describe("work held by a branch in another present worktree", () => {
   });
 });
 
+/** Only a builder proved finished may be judged by the branch that holds its work. */
+describe("the held rule counts only for a finished builder", () => {
+  // The lead's plan worktree, one commit that is not on main, and a builder cut from its head.
+  function planWithBuilder(planFolder: string) {
+    const { main, worktree: plan } = withWork(planFolder);
+    const builder = join(tempDir("builder-root"), "agent-x");
+    git(main, "worktree", "add", "-b", "builder", builder, "fix/login");
+    const claudeConfigDir = tempDir("against-config");
+    markFinished(claudeConfigDir, builder);
+    return { main, plan, builder, claudeConfigDir };
+  }
+
+  test.each(["app-wt-plan", "agent-plan"])(
+    "a plan worktree (%s) with unmerged commits is kept although a builder holds its head",
+    (folder) => {
+      const { main, plan, builder, claudeConfigDir } = planWithBuilder(folder);
+      const options = scanOptions(claudeConfigDir);
+      const scanned = scanWorktrees(main, options);
+      const planScan = scanned.find((one) => one.listed.path === plan);
+      expect(planScan?.state).toEqual({
+        finished: false,
+        held: false,
+        why: "1 commit not on main",
+      });
+      // The builder, finished and with its work in the plan's branch, may go.
+      expect(scanned.find((one) => one.listed.path === builder)?.state).toEqual({
+        finished: true,
+        note: "its work is held by fix/login",
+        heldBy: "fix/login",
+      });
+      if (planScan === undefined) throw new Error("missing plan worktree");
+      expect(removeWorktree(main, planScan.listed, options).status).toBe("kept");
+      expect(existsSync(plan)).toBe(true);
+    },
+  );
+
+  test("the mutual zero-commit pair: the finished builder goes, the plan stays", () => {
+    const { main, plan, builder, claudeConfigDir } = planWithBuilder("app-wt-plan");
+    const options = scanOptions(claudeConfigDir);
+    const builderScan = scanWorktrees(main, options).find((one) => one.listed.path === builder);
+    if (builderScan === undefined) throw new Error("missing builder worktree");
+    expect(removeWorktree(main, builderScan.listed, options).status).toBe("removed");
+    expect(existsSync(builder)).toBe(false);
+    expect(existsSync(plan)).toBe(true);
+    // The plan's branch still holds the commit, and the builder's branch stays with it.
+    expect(git(main, "branch", "--list", "builder").trim()).toBe("builder");
+  });
+
+  test("a builder folder without the finished marker is judged by the base", () => {
+    const { main, builder } = planWithBuilder("app-wt-plan");
+    const found = scanWorktrees(main, scanOptions()).find((one) => one.listed.path === builder);
+    expect(found?.state).toEqual({ finished: false, held: false, why: "1 commit not on main" });
+  });
+
+  const lockedFacts = {
+    ...quiet,
+    mounts: [],
+    platform: "linux" as const,
+    pidNamespace: "pid:[4026531836]",
+    processIsGone: () => true,
+    processStartTime: () => "proc:123",
+    agentFinished: () => true,
+  };
+
+  test("a locked builder whose session ended, finished, with its work in a plan branch, goes", () => {
+    const { main, worktree } = withWork("app-wt-fix-login");
+    const holder = join(tempDir("holding-worktree"), "plan");
+    git(main, "worktree", "add", "-b", "plan", holder, "main");
+    git(holder, "merge", "--no-ff", "fix/login", "-m", "merge work");
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude agent agent-x (pid 424242 start 123)",
+      worktree,
+    );
+    const options = { ...scanOptions(), facts: lockedFacts };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    expect(found?.state).toEqual({
+      finished: true,
+      note: "its work is held by plan",
+      heldBy: "plan",
+    });
+  });
+
+  test("a session lock that is stale does not count the held rule", () => {
+    const { main, worktree } = withWork("app-wt-fix-login");
+    const holder = join(tempDir("holding-worktree"), "plan");
+    git(main, "worktree", "add", "-b", "plan", holder, "main");
+    git(holder, "merge", "--no-ff", "fix/login", "-m", "merge work");
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude session lead (pid 424242 start 123)",
+      worktree,
+    );
+    const options = { ...scanOptions(), facts: lockedFacts };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    expect(found?.state).toEqual({ finished: false, held: false, why: "1 commit not on main" });
+    if (found === undefined) throw new Error("missing worktree");
+    expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+    expect(existsSync(worktree)).toBe(true);
+  });
+});
+
 test.each([false, true])("removal uses the long deadline (already parked: %s)", (parked) => {
-  const { main, worktree } = withWork();
+  const { main, worktree, claudeConfigDir } = withBuilder();
   git(main, "merge", "--ff-only", "fix/login");
   const path = parked ? `${worktree}-removing-1761300000000` : worktree;
   if (parked) git(main, "worktree", "move", worktree, path);
-  const options = scanOptions();
+  const options = scanOptions(claudeConfigDir);
   const found = scanWorktrees(main, options).find((one) => one.listed.path === path);
   if (found === undefined) throw new Error("missing worktree");
   const realRun = gitTools.runGit;
@@ -104,7 +233,7 @@ test.each([false, true])("removal uses the long deadline (already parked: %s)", 
 });
 
 test("--clean finishes new strays in the same run and retains the before-list", async () => {
-  const { main, worktree } = withWork();
+  const { main, worktree, claudeConfigDir } = withBuilder();
   const paths = cliPaths({
     HOME: tempDir("clean-home"),
     CLAUDE_CONFIG_DIR: tempDir("clean-config"),
@@ -116,11 +245,11 @@ test("--clean finishes new strays in the same run and retains the before-list", 
   const parked: string[] = [];
   const originalScan = scan.scanWorktrees;
   const scanSpy = spyOn(scan, "scanWorktrees").mockImplementation((cwd, options) =>
-    originalScan(cwd, { ...options, ...scanOptions() }),
+    originalScan(cwd, { ...options, ...scanOptions(claudeConfigDir) }),
   );
   const originalRemove = scan.removeWorktree;
   const removeSpy = spyOn(scan, "removeWorktree").mockImplementation((cwd, listed, options) =>
-    originalRemove(cwd, listed, { ...options, ...scanOptions() }),
+    originalRemove(cwd, listed, { ...options, ...scanOptions(claudeConfigDir) }),
   );
   const realRun = gitTools.runGit;
   const gitSpy = spyOn(gitTools, "runGit").mockImplementation(
@@ -166,7 +295,7 @@ test("--clean finishes new strays in the same run and retains the before-list", 
 });
 
 /** A repo with a bare origin, one commit, and one worktree on `fix/login` with one commit of its own. */
-function withWork(): { main: string; worktree: string } {
+function withWork(folder = "app-wt-fix-login"): { main: string; worktree: string } {
   const root = tempDir("against");
   const origin = join(root, "origin.git");
   const main = join(root, "app");
@@ -179,7 +308,7 @@ function withWork(): { main: string; worktree: string } {
   git(main, "commit", "-m", "first");
   git(main, "remote", "add", "origin", origin);
   git(main, "push", "-u", "origin", "main");
-  const worktree = join(root, "app-wt-fix-login");
+  const worktree = join(root, folder);
   git(main, "worktree", "add", "-b", "fix/login", worktree);
   writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
   git(worktree, "add", ".");
@@ -189,7 +318,7 @@ function withWork(): { main: string; worktree: string } {
 
 describe("scanWorktrees against a ref of the caller's", () => {
   test("every commit must be on the given ref; a local merge counts although nothing was pushed", () => {
-    const { main, worktree } = withWork();
+    const { main, worktree, claudeConfigDir } = withBuilder();
     const local = () => ({
       label: "main, the local branch",
       ref: git(main, "rev-parse", "HEAD").trim(),
@@ -197,7 +326,7 @@ describe("scanWorktrees against a ref of the caller's", () => {
     const options = (against: { label: string; ref: string }) => ({
       against,
       base: "main",
-      claudeConfigDir: tempDir("against-config"),
+      claudeConfigDir,
       env,
       facts: quiet,
       idleLimit: 0,
@@ -218,7 +347,7 @@ describe("scanWorktrees against a ref of the caller's", () => {
     expect(
       scanWorktrees(main, {
         base: "main",
-        claudeConfigDir: tempDir("against-config"),
+        claudeConfigDir,
         env,
         facts: quiet,
         idleLimit: 0,
@@ -228,9 +357,9 @@ describe("scanWorktrees against a ref of the caller's", () => {
   });
 
   test("the holder named like the base says which ref lacks the work", () => {
-    const { main, worktree } = withWork();
+    const { main, worktree, claudeConfigDir } = withBuilder();
     git(main, "merge", "--ff-only", "fix/login");
-    const options = scanOptions();
+    const options = scanOptions(claudeConfigDir);
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     if (found === undefined) throw new Error("missing builder worktree");
     expect(removeWorktree(main, found.listed, options).said).toEqual([

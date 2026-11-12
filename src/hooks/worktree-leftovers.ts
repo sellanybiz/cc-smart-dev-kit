@@ -37,16 +37,8 @@
  *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
  */
-import {
-  closeSync,
-  existsSync,
-  fstatSync,
-  openSync,
-  readFileSync,
-  readSync,
-  statSync,
-} from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
@@ -57,7 +49,9 @@ import {
   isInside,
   type ListedWorktree,
   listWorktrees,
+  reflogEntryTime,
   runGit,
+  worktreeAdminDir,
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
@@ -89,14 +83,8 @@ function lastReflogTime(file: string, now: number): number | null {
       if (end < 0) return null;
       const previous = tail.lastIndexOf("\n", end - 1);
       if (start > 0 && previous < 0) return null;
-      const line = tail.slice(previous + 1, end);
-      const tab = line.indexOf("\t");
-      if (tab < 0) return null;
-      const header = line.slice(0, tab);
-      if (!/^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> \d+ [+-]\d{4}$/.test(header)) return null;
-      const fields = header.split(" ");
-      const epoch = Number(fields.at(-2)) * 1000;
-      return Number.isFinite(epoch) && epoch <= now ? epoch : null;
+      const time = reflogEntryTime(tail.slice(previous + 1, end));
+      return time !== null && time <= now ? time : null;
     } finally {
       closeSync(fd);
     }
@@ -113,15 +101,8 @@ function lastReflogTime(file: string, now: number): number | null {
  * unknown as just now (`0`), which keeps the worktree, and the worktrees page says null.
  */
 export function idleMinutesOrNull(worktree: string, now: number): null | number {
-  let admin: string;
-  try {
-    admin = readFileSync(join(worktree, ".git"), "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, "");
-  } catch {
-    return null;
-  }
-  if (!isAbsolute(admin)) admin = resolve(worktree, admin);
+  const admin = worktreeAdminDir(worktree);
+  if (admin === null) return null;
   let last = lastReflogTime(join(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
