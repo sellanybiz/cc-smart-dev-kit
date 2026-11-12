@@ -483,6 +483,47 @@ function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolea
   );
 }
 
+/**
+ * The branch of ANOTHER worktree that holds the work of `listed`, or null. Only ancestry counts
+ * (never a replay onto a branch that is still being worked on), and the holder must be a worktree
+ * whose folder is there and that stands on a branch: a detached or vanished one holds nothing
+ * for long. One git call names every branch that contains the head.
+ */
+function holdingBranch(
+  repo: string,
+  listed: ListedWorktree,
+  all: ListedWorktree[],
+  env: Env,
+): string | null {
+  const containing = runGit(
+    repo,
+    ["for-each-ref", "--contains", listed.head, "--format=%(refname)", "refs/heads/"],
+    env,
+  );
+  if (!containing.ok) return null;
+  // The full ref name, cut by hand: `%(refname:short)` may print `heads/x` when a tag shares the name.
+  const prefix = "refs/heads/";
+  const holders = new Set(
+    containing.out
+      .split("\n")
+      .filter((ref) => ref.startsWith(prefix))
+      .map((ref) => ref.slice(prefix.length)),
+  );
+  for (const other of all) {
+    if (
+      other.branch !== null &&
+      other.branch !== listed.branch &&
+      holders.has(other.branch) &&
+      !other.prunable &&
+      !samePath(other.path, listed.path) &&
+      existsSync(other.path)
+    ) {
+      return other.branch;
+    }
+  }
+  return null;
+}
+
 function judgeOne(
   repo: string,
   listed: ListedWorktree,
@@ -509,8 +550,14 @@ function judgeOne(
     const mountWhy = mountKeptWhy(listed.path, look.mounts);
     if (mountWhy !== null) return { finished: false, held: false, why: mountWhy };
   }
+  const mergedBy =
+    aheadOfBase > 0
+      ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
+      : null;
   const facts: WorktreeFacts = {
     aheadOfBase,
+    heldByBranch:
+      aheadOfBase > 0 && mergedBy === null ? holdingBranch(repo, listed, all, look.env) : null,
     base: look.label,
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
@@ -521,10 +568,7 @@ function judgeOne(
     locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
     // commits of its own.
-    mergedBy:
-      aheadOfBase > 0
-        ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
-        : null,
+    mergedBy,
     parked,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
@@ -642,6 +686,9 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
   }
   return scanned;
 }
+
+/** One deadline for removing a worktree, and for an explicit removal waiting on another clean. */
+export const REMOVAL_TIMEOUT_MS = 10 * 60_000;
 
 export interface Removal {
   /** What happened, one line each. */
@@ -783,6 +830,7 @@ export function removeWorktree(
     repo,
     alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
     options.env,
+    REMOVAL_TIMEOUT_MS,
   );
   if (!removed.ok) {
     return keptAfterUnlock(
@@ -797,22 +845,25 @@ export function removeWorktree(
       parked,
     );
   }
-  const deleteBranch =
-    options.deleteBranch ??
-    ((repo_: string, branch: string) =>
-      deleteBranchOnRef(
-        repo_,
-        options.against?.ref ?? `refs/remotes/origin/${options.base}`,
-        options.against?.label ?? options.base,
-        branch,
-        options.env,
-      ));
   const said = [
     current.locked
       ? `unlocked stale Claude lock and removed ${listed.path}`
       : `removed ${listed.path}`,
   ];
-  if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
+  if (listed.branch !== null) {
+    if (options.deleteBranch !== undefined) {
+      said.push(options.deleteBranch(repo, listed.branch));
+    } else {
+      const outcome = tryDeleteBranch(repo, look.ref, look.label, listed.branch, options.env);
+      // The held wording is for one case only: the ref lacks the branch's work, and a live
+      // branch (named by the fresh verdict above) has it. git's own refusal keeps its words.
+      said.push(
+        outcome.kind === "not-on-ref" && fresh.heldBy !== undefined
+          ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}`
+          : branchOutcomeLine(listed.branch, look.label, outcome),
+      );
+    }
+  }
   return { said, status: "removed" };
 }
 
@@ -830,9 +881,44 @@ export function deleteBranchOnRef(
   branch: string,
   env: Env,
 ): string {
+  return branchOutcomeLine(branch, label, tryDeleteBranch(repo, ref, label, branch, env));
+}
+
+/** What `tryDeleteBranch` did: deleted it, found commits `ref` lacks, or met git's own refusal. */
+export type BranchOutcome =
+  | { kind: "deleted" }
+  | { kind: "not-on-ref" }
+  | { kind: "git-error"; text: string };
+
+/** The line a person reads for a branch's outcome. */
+export function branchOutcomeLine(branch: string, label: string, outcome: BranchOutcome): string {
+  if (outcome.kind === "deleted") return `deleted branch ${branch}`;
+  if (outcome.kind === "not-on-ref") {
+    return `kept branch ${branch}: it has commits that are not on ${label}`;
+  }
+  return `kept branch ${branch}: ${outcome.text}`;
+}
+
+/**
+ * How a kept branch's line names the ref its work is not on. The default ref is `origin/<base>`,
+ * whose label is the bare base name: when the holder carries that same name, say `origin/` so the
+ * line does not read "held by main, not yet on main".
+ */
+function refName(holder: string, label: string, customRef: boolean): string {
+  return !customRef && holder === label ? `origin/${label}` : label;
+}
+
+/** `deleteBranchOnRef`'s decision, as data. */
+export function tryDeleteBranch(
+  repo: string,
+  ref: string,
+  label: string,
+  branch: string,
+  env: Env,
+): BranchOutcome {
   const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
   if (!ahead.ok) {
-    return `kept branch ${branch}: ${ahead.err || `git could not compare it with ${label}`}`;
+    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
   }
   if (ahead.out !== "0") {
     const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
@@ -842,10 +928,10 @@ export function deleteBranchOnRef(
     const elsewhere =
       COMMIT_SHA.test(sha) &&
       workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere) return `kept branch ${branch}: it has commits that are not on ${label}`;
+    if (!elsewhere) return { kind: "not-on-ref" };
   }
   const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? `deleted branch ${branch}` : `kept branch ${branch}: ${deleted.err}`;
+  return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
 }
 
 /** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */

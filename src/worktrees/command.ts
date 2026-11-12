@@ -40,21 +40,21 @@ import {
   type CleanLock,
   type CleanLockResult,
   canGo,
-  cleanFinished,
+  cleanWithStrays,
   forgottenLine,
   holdCleanLock,
-  REMOVAL_TIMEOUT_MS,
   takeCleanLock,
 } from "./clean";
 import {
   deleteMergedBranch,
   fetchBase,
   pruneWorktrees,
+  REMOVAL_TIMEOUT_MS,
   removeWorktree,
   type ScannedWorktree,
   scanWorktrees,
 } from "./scan";
-import { finishStrays, type StrayFolder, strayParkedFolders } from "./scan-parked";
+import { type StrayFolder, strayParkedFolders } from "./scan-parked";
 
 /** The default base when nothing else says: the remote's default branch, else this. */
 export const DEFAULT_BASE = "main";
@@ -425,9 +425,9 @@ export async function runWorktrees(
       return 0;
     }
 
-    cleanFinished(repo, scanned, judged, print);
-    // The leftover folders git no longer lists: removed when the folder itself proves it is safe.
-    const finished = finishStrays(repo, judged, (line) => print(line), strays);
+    // The removals, then the leftover folders git no longer lists: the ones shown above and the
+    // ones this clean left behind (`cleanWithStrays`).
+    const { strays: finished } = cleanWithStrays(repo, scanned, judged, print, strays);
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
     if (nothing) print("Nothing finished to clear.");
     return 0;

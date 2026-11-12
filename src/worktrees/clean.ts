@@ -7,6 +7,7 @@
  * it, so a removal never acts on a stale scan.
  */
 import { basename } from "node:path";
+import { realPath } from "../hooks/git";
 import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
 import {
@@ -17,6 +18,7 @@ import {
   type ScannedWorktree,
   type ScanOptions,
 } from "./scan";
+import { finishStrays, type StrayFolder, type StrayPass, strayParkedFolders } from "./scan-parked";
 
 export { forgottenLine } from "./scan";
 
@@ -24,9 +26,6 @@ export { forgottenLine } from "./scan";
 export interface CleanLock {
   close(): unknown;
 }
-
-/** One deadline for explicit removal, including waiting for another clean. */
-export const REMOVAL_TIMEOUT_MS = 10 * 60_000;
 
 export type CleanLockResult = { lock: CleanLock } | { taken: true } | { error: string };
 
@@ -154,4 +153,44 @@ export function cleanFinished(
     }
   }
   return { failed, forgotten, kept, removed };
+}
+
+/** What `cleanWithStrays` did: the clean's report, and the leftover folders it finished or kept. */
+export interface CleanWithStraysReport {
+  report: CleanReport;
+  strays: StrayPass;
+}
+
+/**
+ * The whole clean, one home for both callers (`worktrees --clean` and the background clean):
+ * read the leftover folders a removal moved aside that git no longer lists, remove the finished
+ * worktrees, read the leftovers again, and finish the union of both lists.
+ *
+ * Both reads are needed. Strays are looked for next to the worktrees git lists, so a folder
+ * beside a worktree this clean removes is found only by the read BEFORE (while it is listed), and
+ * a folder a removal parks and then fails to delete during this clean exists only for the read
+ * AFTER. The second read also searches the folders the scan's worktrees stood in, because the
+ * removed worktree is no longer listed to point there. A caller that already read the first list
+ * (to show it) hands it in as `before`.
+ */
+export function cleanWithStrays(
+  repo: string,
+  scanned: ScannedWorktree[],
+  judged: ScanOptions,
+  say: (line: string) => void,
+  before: readonly StrayFolder[] = strayParkedFolders(
+    repo,
+    judged.env,
+    scanned.map((worktree) => worktree.listed),
+  ),
+): CleanWithStraysReport {
+  const report = cleanFinished(repo, scanned, judged, say);
+  const after = strayParkedFolders(
+    repo,
+    judged.env,
+    scanned.map((worktree) => worktree.listed),
+  );
+  const union = new Map<string, StrayFolder>();
+  for (const stray of [...before, ...after]) union.set(realPath(stray.path), stray);
+  return { report, strays: finishStrays(repo, judged, say, [...union.values()]) };
 }

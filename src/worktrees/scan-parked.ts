@@ -116,8 +116,16 @@ function parkedAtOf(path: string): null | number {
  * list, and in the repository's own `.claude/worktrees/` where Claude Code makes them. A folder
  * git lists is the scan's to judge, and a name without the mark is nobody's but its owner's.
  * Empty when git cannot say what it lists — nothing is a stray then.
+ *
+ * `earlier` is a listing from before a clean (the scan's, main first as git lists it): a worktree a removal took out of git's
+ * list may have left its parked folder beside it, so the folders those worktrees stood in are
+ * searched too. Whether a folder is a stray still follows what git lists now.
  */
-export function strayParkedFolders(repo: string, env: Env): StrayFolder[] {
+export function strayParkedFolders(
+  repo: string,
+  env: Env,
+  earlier: readonly ListedWorktree[] = [],
+): StrayFolder[] {
   let all: ListedWorktree[];
   try {
     all = listWorktrees(repo, env);
@@ -125,7 +133,7 @@ export function strayParkedFolders(repo: string, env: Env): StrayFolder[] {
     return [];
   }
   const folders = new Set<string>([join(repo, ".claude", "worktrees")]);
-  for (const listed of all.slice(1)) folders.add(dirname(listed.path));
+  for (const listed of [...all.slice(1), ...earlier.slice(1)]) folders.add(dirname(listed.path));
   const found: StrayFolder[] = [];
   for (const folder of folders) {
     let names: string[];
@@ -308,8 +316,8 @@ export interface StrayPass {
  * midway (a file this user cannot delete) leaves what is left and says why; the next pass tries
  * again. Nothing outside the folder is touched: a link inside it is removed as a link.
  *
- * `strays` is the list to work on: a caller that removes worktrees first reads it before, because
- * the folders are looked for next to the worktrees git lists, and a clean may have removed them.
+ * `strays` is the list to work on. A caller that removes worktrees first does not read it here:
+ * `cleanWithStrays` (`clean.ts`) owns that sequence.
  */
 export function finishStrays(
   repo: string,
