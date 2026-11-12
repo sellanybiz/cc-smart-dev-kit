@@ -78,7 +78,8 @@ from the person's turns by `prompt-source.ts`, after trimming leading whitespace
 
 A report is sent only to a live Claude Code lead on the same core. If that lead cannot
 receive it, including a race to blocked status, a unique timestamp-and-UUID report file
-is saved as `report-<UTC>-<uuid>.md` in that child’s brief folder. Remote reports always use that machine's file fallback.
+is saved as `report-<UTC>-<uuid>.md` in that child’s brief folder for local children. Remote reports use the file fallback on
+their own machine, in a folder keyed by their own core, not the lead core used by the brief.
 Reports are child evidence, never the person's approval.
 
 ## Remote machines

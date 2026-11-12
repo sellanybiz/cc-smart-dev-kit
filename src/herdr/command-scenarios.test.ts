@@ -224,6 +224,17 @@ test("remote writes brief on stdin before launch and uses returned absolute path
     ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one/brief.md",
   ]);
   expect(write?.stdin).toContain("Private work\n");
+  expect(w.calls).toContainEqual({
+    args: [
+      "exec",
+      "--on",
+      "remote",
+      "--json",
+      "chmod",
+      "700",
+      ".claude/cc-smart-dev-kit/herdr/briefs",
+    ],
+  });
   const run = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
   expect(run.slice(run.indexOf("claude"), run.indexOf("claude") + 3)).toEqual([
     "claude",

@@ -441,13 +441,31 @@ test("raw remote reads obey machine rules and fail closed", () => {
   );
   for (const command of [
     "hc file read --on prod /brief",
-    "hc read --on=prod t1",
-    "hc read --on unknown t1",
+    "hc file read --on=prod /brief",
+    "hc read prod/t1",
+    "hc read --lines 50 prod/t1",
+    "hc get prod/t1",
+    "hc wait prod/t1",
+    "hc read unknown/t1",
   ])
     expect(judgeBash(readBash(command), ctx)?.decision).toBe("ask");
-  expect(judgeBash(readBash("hc read --on free t1"), ctx)).toBeNull();
+  expect(judgeBash(readBash("hc read free/t1"), ctx)).toBeNull();
+  expect(judgeBash(readBash("hc read t1"), ctx)).toBeNull();
+  for (const flag of [
+    "--terminal prod/t1",
+    "--terminal=prod/t1",
+    "--children-of prod/t1",
+    "--children-of=prod/t1",
+  ]) {
+    expect(
+      judgeBash(readBash(`hc events ${flag}`), {
+        ...ctx,
+        input: { tool_input: { run_in_background: true } },
+      })?.decision,
+    ).toBe("ask");
+  }
   writeFileSync(ctx.paths.machinesFile, "broken");
-  expect(judgeBash(readBash("hc read --on free t1"), ctx)?.decision).toBe("ask");
+  expect(judgeBash(readBash("hc read free/t1"), ctx)?.decision).toBe("ask");
 });
 test("answer reason includes the expected action", () => {
   const verdict = judgeBash(
@@ -457,4 +475,12 @@ test("answer reason includes the expected action", () => {
     world(),
   );
   expect(verdict?.reason).toContain("approve Bash: touch file");
+});
+
+test.each(["--option", "--text"])("answer %s excerpt escapes controls and bidi", (flag) => {
+  const line = `${COMMAND} herdr answer t1 --expect $'q\\n\u202e' --expect-turn 1 ${flag} $'1\\nApproved\u202e'`;
+  const verdict = judgeBash(readBash(line, "bash"), world());
+  expect(verdict?.decision).toBe("ask");
+  expect(verdict?.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
+  expect(verdict?.reason).toContain('"1\\u000aApproved\\u202e"');
 });

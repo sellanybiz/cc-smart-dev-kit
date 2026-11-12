@@ -654,6 +654,23 @@ function herdrDomain(reading: BashReading): boolean {
   );
 }
 
+/** Quote short prompt excerpts without terminal controls or invisible direction changes. */
+function herdrExcerpt(text: string): string {
+  const points = Array.from(text);
+  const quoted = points
+    .slice(0, STATUS_MESSAGE_LIMIT)
+    .map((char) =>
+      /[\p{Cc}\p{Cf}]/u.test(char)
+        ? Array.from(
+            { length: char.length },
+            (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`,
+          ).join("")
+        : JSON.stringify(char).slice(1, -1),
+    )
+    .join("");
+  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "…" : ""}`;
+}
+
 /** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
 function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | null {
   if (!herdrDomain(reading)) return null;
@@ -722,7 +739,20 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
         raw.slice(0, raw.indexOf("--") < 0 ? undefined : raw.indexOf("--")),
         "--on",
       );
-      if ((read || verb === "events") && machine) remoteRead(machine);
+      if (verb === "file" && sub === "read" && machine) remoteRead(machine);
+      const terminalArgs = raw.slice(1);
+      const addresses = ["read", "get", "wait"].includes(verb ?? "")
+        ? positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(
+            0,
+            1,
+          )
+        : verb === "events"
+          ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")]
+          : [];
+      for (const address of addresses) {
+        const slash = address?.indexOf("/") ?? -1;
+        if (address && slash > 0) remoteRead(address.slice(0, slash));
+      }
       if (verb === "events") {
         const input = context.input.tool_input;
         if (
@@ -761,8 +791,8 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       const parsed = parseHerdrArgs(herdr);
       const detail =
         !("error" in parsed) && parsed.verb === "answer"
-          ? `${parsed.target}: ${parsed.option !== undefined ? `option ${parsed.option}` : parsed.text}; expected prompt ${JSON.stringify(Array.from(parsed.expect).slice(0, STATUS_MESSAGE_LIMIT).join(""))}${Array.from(parsed.expect).length > STATUS_MESSAGE_LIMIT ? "…" : ""}`
-          : herdr.slice(1).join(" ");
+          ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}`
+          : herdrExcerpt(herdr.slice(1).join(" "));
       remember(
         `Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`,
       );

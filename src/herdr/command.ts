@@ -476,6 +476,7 @@ async function remoteBrief(
     basename(file),
   );
   execRemote(r, machine, ["mkdir", "-p", "-m", "700", dirname(rel)]);
+  execRemote(r, machine, ["chmod", "700", dirname(dirname(rel))]);
   execRemote(r, machine, ["chmod", "700", dirname(rel)]);
   const answer: unknown = JSON.parse(
     invoke(r, ["file", "write", "--on", machine, "--json", rel], {

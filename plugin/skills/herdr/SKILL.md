@@ -34,7 +34,8 @@ Replace the example scope with a complete brief: goal, exact boundaries, relevan
 checks, commit permission, expected result and what to report. Forbid further sessions and
 agents unless the person authorized them. A linked brief gets the reporting instructions
 from the command. Each private `<stateDir>/herdr/briefs/<core>-<name>/brief.md` has its own
-folder; the launch grants `--add-dir` access to that folder. Reports stay beside that brief.
+folder; the launch grants `--add-dir` access to that folder. Local reports stay beside that brief. A remote child saves reports in a folder keyed by
+its own core on its machine, not beside the lead-core brief; the printed `find` hint locates them.
 The first message is wrapped as lead evidence, never the person’s approval.
 
 - Add `--independent` only for the independent kind.
