@@ -30,6 +30,7 @@ import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
 import {
+  CLAUDE_NAME,
   type ContainerMounts,
   containersUsing,
   dockerMounts,
@@ -506,7 +507,7 @@ function ownerSession(listed: ListedWorktree, look: MachineLook): OwnerSession |
   }
   for (const pid of ancestorsBy(process.pid, look.parentOf)) {
     const program = look.programs.find((one) => one.pid === pid);
-    if (program !== undefined && programName(program) === "claude") return { claudePid: pid };
+    if (program !== undefined && programName(program) === CLAUDE_NAME) return { claudePid: pid };
   }
   return undefined;
 }

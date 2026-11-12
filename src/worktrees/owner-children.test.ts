@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { programsInside, type RunningProgram } from "./machine-facts";
+import { programsInside, type RunningProgram, runningPrograms } from "./machine-facts";
 import { scanWorktrees } from "./scan";
 
 /** pid:[4026531836], the initial pid namespace the lock proofs need. */
@@ -162,6 +162,17 @@ describe("worktrees --remove: the session's own MCP servers", () => {
     });
   });
 
+  test("another claude below an MCP server holds it, its helpers too", () => {
+    const nested: RunningProgram = { cwd: "/elsewhere", parentPid: 501, path: "claude", pid: 950 };
+    const theirs: RunningProgram = { cwd: "IN", parentPid: 950, path: "bun mcp", pid: 951 };
+    expect(judge([claude, mcp, nested, theirs], { ownerMode: true })).toMatchObject({
+      finished: false,
+    });
+    expect(judge([claude, mcp, { ...nested, cwd: "IN" }], { ownerMode: true })).toMatchObject({
+      finished: false,
+    });
+  });
+
   test("a child whose chain the listing cannot follow holds it", () => {
     const orphan: RunningProgram = { cwd: "IN", parentPid: 999, path: "bun mcp", pid: 901 };
     expect(judge([claude, orphan], { ownerMode: true })).toMatchObject({ finished: false });
@@ -224,5 +235,29 @@ describe("programsInside with an owner", () => {
 
   test("without an owner nothing is skipped", () => {
     expect(programsInside(tree, worktree, false, 1)).toEqual(["bash", "bun"]);
+  });
+});
+
+describe("runningPrograms", () => {
+  test("asks ps for every process, not only the caller's terminal, and reads the shape it prints", () => {
+    const asked: string[][] = [];
+    const listed = runningPrograms("darwin", (argv) => {
+      asked.push([...argv]);
+      return {
+        exitCode: 0,
+        stdout:
+          "    1     0 /sbin/launchd\n  500     1 claude\n  501   500 /home/u/.bun/bin/bun mcp\n",
+      };
+    });
+    expect(asked).toEqual([["ps", "-ww", "-axo", "pid=,ppid=,args="]]);
+    expect(listed).toEqual([
+      { parentPid: 0, path: "/sbin/launchd", pid: 1 },
+      { parentPid: 1, path: "claude", pid: 500 },
+      { parentPid: 500, path: "/home/u/.bun/bin/bun mcp", pid: 501 },
+    ]);
+  });
+
+  test("a failing ps is an unknown listing", () => {
+    expect(runningPrograms("darwin", () => ({ exitCode: 1, stdout: "" }))).toBe("unknown");
   });
 });
