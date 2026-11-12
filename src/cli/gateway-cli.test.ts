@@ -1977,10 +1977,14 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
         "· slot cc-smart-dev-kit-fable: Claude (fable goes to Anthropic as Claude Code sent it)",
         "· slot cc-smart-dev-kit-opus: Claude (opus goes to Anthropic as Claude Code sent it)",
         "· slot cc-smart-dev-kit-judge: Claude judges every check, alone (the worker chain has no affordable target to stand in)",
-        "",
-        "",
       ]
-        .map((line) => (line === "" ? "" : `  ${line}`))
+        .map((line) => `  ${line}`)
+        .concat([
+          "· Herdr sessions     1 note",
+          "  · Herdr: hc is not installed; session orchestration is optional.",
+          "",
+          "",
+        ])
         .join("\n"),
     );
   });

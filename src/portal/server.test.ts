@@ -30,6 +30,7 @@ import {
   processCommandLinesAsync,
 } from "../browser/legacy";
 import { VERSION } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import { cliPaths } from "../cli/paths";
 import { DEFAULT_ANTHROPIC_BASE_URL, loadConfigFile, saveConfig } from "../gateway/config";
 import { createHistoryWriter, type HistoryRow } from "../gateway/history";
@@ -45,7 +46,6 @@ import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import { isOlder } from "../update/check";
 import { autoCleanFiles } from "../worktrees/auto-state";
 import { ACTION_NAMES, type DoctorSource, portalOmnirouteContext } from "./actions";
 import { NO_SESSION_RECORDS, projectId } from "./api/projects";

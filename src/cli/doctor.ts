@@ -13,11 +13,14 @@ import {
   PLUGIN_UPDATE_COMMAND,
   VERSION,
 } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import type { KnownProjects } from "../gateway/commands-project";
 import { messageOf } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
+import { herdrChecks } from "../herdr/doctor";
+import type { HcRunner } from "../herdr/hc";
 import { heavyJobChecks } from "../jobs/doctor";
 import {
   MEMORY_USE_KEY,
@@ -73,7 +76,6 @@ import { readUserJson } from "../setup/user-json";
 import { RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE } from "../tasks/words";
 import { openWorkDb, WORK_SCHEMA_VERSION, workDbFile } from "../tasks/work/db";
 import type { CommandRunner } from "../update/apply";
-import { isOlder } from "../update/check";
 import { isNewMajor, majorHeldDetail, readMajorNotes } from "../update/major";
 import { FORCE_PLUGIN_UPDATES_VAR, updateOptOuts } from "../update/opt-out";
 import {
@@ -1189,6 +1191,8 @@ export interface DoctorOptions {
    */
   browser?: BrowserDoctorDeps | null;
   gateway: DoctorGateway;
+  /** Optional orchestration checks: the command injects its runner; absent means not checked. */
+  herdr?: HcRunner;
   /** Where the plugin's instructions are, and the folder doctor was started in. */
   local: DoctorLocal;
   /** Check the MCP servers setup registers (`mcp/doctor.ts`); null or left out: no MCP checks. */
@@ -1228,7 +1232,7 @@ interface GroupRun {
 function doctorGroups(
   paths: CliPaths,
   env: Env,
-  { browser, bun, gateway, local, mcp, portal, project, read, live }: DoctorOptions,
+  { browser, bun, gateway, herdr, local, mcp, portal, project, read, live }: DoctorOptions,
 ): GroupRun[] {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -1308,6 +1312,10 @@ function doctorGroups(
             ]),
         ...(await omnirouteCheck(paths, env, gateway)),
       ],
+    },
+    {
+      group: "herdr",
+      run: async () => (herdr ? herdrChecks(herdr) : []),
     },
     {
       group: "live",

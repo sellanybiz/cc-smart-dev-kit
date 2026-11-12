@@ -42,6 +42,8 @@ import { gatewayContext as buildGatewayContext } from "../gateway/context";
 import { loopbackFetch, realProbe } from "../gateway/health";
 import { type Runner, routerServiceKind } from "../gateway/service";
 import { windowsAccount } from "../gateway/service-windows";
+import { runHerdr } from "../herdr/command";
+import { defaultHcRunner } from "../herdr/hc";
 import { recordSessionName } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { runIssue } from "../issues/command";
@@ -371,6 +373,7 @@ async function main(argv: string[]): Promise<number> {
         {
           browser: realBrowserDoctorDeps(realMachine(process.env, null), paths.home),
           bun: { path: process.execPath, version: Bun.version },
+          herdr: defaultHcRunner,
           gateway: {
             bundle: routerBundle(),
             runner,
@@ -848,6 +851,14 @@ async function main(argv: string[]): Promise<number> {
         },
         rest,
       );
+    case "herdr":
+      return await runHerdr(rest, {
+        cwd: process.cwd(),
+        env: process.env,
+        nowMs: Date.now(),
+        out: createOut(currentTerminal(process.env)),
+        paths,
+      });
     case "user":
       return await runUser(rest, {
         cwd: process.cwd(),

@@ -1165,6 +1165,8 @@ describe("cc-smart-dev-kit doctor", () => {
         // The gateway is optional: never set up is information, not a failure.
         "· Gateway            1 note",
         "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
+        "· Herdr sessions     1 note",
+        "  · Herdr: hc is not installed; session orchestration is optional.",
         "",
         "✓ Everything works: 22 checks passed.",
         "To see the 22 lines that passed too: cc-smart-dev-kit doctor --verbose",
@@ -1239,6 +1241,7 @@ describe("cc-smart-dev-kit doctor", () => {
       "browser",
       "alerts",
       "gateway",
+      "herdr",
     ]);
     const plugin = report.groups[0];
     expect(plugin?.title).toBe("The plugin");

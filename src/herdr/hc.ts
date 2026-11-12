@@ -1,9 +1,10 @@
 import { z } from "zod";
+import { isOlder } from "../build-info/semver";
 export const HC_TIMEOUT_MS = 15_000;
 export const MIN_HC_VERSION = "0.1.20";
 export type HcRunner = (
   args: string[],
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; stdin?: string },
 ) => { exitCode: number | null; stdout: string; stderr: string };
 export class HcError extends Error {
   override name = "HcError";
@@ -20,6 +21,7 @@ export const defaultHcRunner: HcRunner = (args, opts) => {
   try {
     const result = Bun.spawnSync(["hc", ...args], {
       env: process.env,
+      ...(opts?.stdin === undefined ? {} : { stdin: Buffer.from(opts.stdin) }),
       stdout: "pipe",
       stderr: "pipe",
       timeout: opts?.timeoutMs ?? HC_TIMEOUT_MS,
@@ -109,8 +111,12 @@ export const ReadSchema = z
   })
   .passthrough();
 export const PutSchema = z.object({ path: z.string(), bytes: z.number() }).passthrough();
-function invoke(runner: HcRunner, args: string[]): string {
-  const result = runner(args);
+export function invoke(
+  runner: HcRunner,
+  args: string[],
+  opts?: { timeoutMs?: number; stdin?: string },
+): string {
+  const result = runner(args, opts);
   if (result.exitCode === 0) return result.stdout;
   let parsed: unknown;
   try {
@@ -170,14 +176,7 @@ export function hcVersion(runner: HcRunner): string {
 }
 export function hcNewEnough(version: string): boolean {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return false;
-  const given = version.split(".").map(Number),
-    minimum = MIN_HC_VERSION.split(".").map(Number);
-  for (let i = 0; i < minimum.length; i++) {
-    const a = given[i] ?? 0,
-      b = minimum[i] ?? 0;
-    if (a !== b) return a > b;
-  }
-  return true;
+  return !isOlder(version, MIN_HC_VERSION);
 }
 export function coreId(runner: HcRunner): string {
   return json(runner, ["server", "status", "--json"], ServerStatusSchema).core.id;
@@ -201,9 +200,13 @@ export function hcSend(
   runner: HcRunner,
   target: string,
   text: string,
-  opts: { ifStatus: "idle" | "working" },
+  opts: { ifStatus?: "idle" | "working" },
 ) {
-  return json(runner, ["send", "--json", "--if", opts.ifStatus, "--", target, text], ObjectSchema);
+  return json(
+    runner,
+    ["send", "--json", ...(opts.ifStatus ? ["--if", opts.ifStatus] : []), "--", target, text],
+    ObjectSchema,
+  );
 }
 export function hcKeys(runner: HcRunner, target: string, keys: string[]) {
   return json(runner, ["keys", "--json", "--", target, ...keys], ObjectSchema);

@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, DEPENDENCIES, MARKETPLACE, PLUGIN, PLUGIN_ID } from "../build-info";
 import { type Dependency, readManifestDependencies } from "../build-info/manifest";
+import { isOlder } from "../build-info/semver";
 import type { CheckFailed } from "../cli/check";
 import type { CliPaths } from "../cli/paths";
 import {
@@ -26,7 +27,6 @@ import {
   marketplaceInstallLocation,
   redactUrlsIn,
 } from "../setup/marketplace-access";
-import { isOlder } from "./check";
 import { isNewMajor, readMajorNotes } from "./major";
 
 type Env = Record<string, string | undefined>;

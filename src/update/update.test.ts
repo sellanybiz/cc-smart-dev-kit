@@ -8,6 +8,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isOlder } from "../build-info/semver";
 import { cliPaths } from "../cli/paths";
 import { AUTO_UPDATE_KEY } from "../setup/auto-update";
 import {
@@ -30,7 +31,7 @@ import {
   sessionSourceOf,
   sessionStart,
 } from "./background";
-import { checkForUpdate, isOlder } from "./check";
+import { checkForUpdate } from "./check";
 import {
   CHECK_INTERVAL_MS,
   isDue,

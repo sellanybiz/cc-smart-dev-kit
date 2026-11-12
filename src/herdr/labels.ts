@@ -44,9 +44,11 @@ export const CHILD_NAME_PATTERN = /^[a-z0-9_-]{1,32}$/;
 export function validChildName(name: string): boolean {
   return CHILD_NAME_PATTERN.test(name);
 }
-export function childTerminalName(n: number): string {
+export function childTerminalName(n: number | string): string {
   return `kit-${n}`;
 }
-export function childWorktreeName(n: number): string {
+export function childWorktreeName(n: number | string): string {
   return childTerminalName(n);
 }
+
+export const CLAUDE_CODE_APP = "claude-code";

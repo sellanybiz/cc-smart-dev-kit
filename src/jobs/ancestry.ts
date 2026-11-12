@@ -24,7 +24,7 @@ import { readFileSync } from "node:fs";
 export type StatReader = (pid: number) => string | null;
 
 /** A parent chain longer than this is a loop in bad data, not a real process tree. */
-const MAX_DEPTH = 128;
+export const MAX_DEPTH = 128;
 
 /**
  * The parent pid in a `/proc/<pid>/stat` line: `pid (comm) state ppid …`. The command name
@@ -49,7 +49,7 @@ export type ParentReader = (pid: number) => number | null;
  * walk, whatever reads the parents (`ancestorPids` reads them from `/proc`). A chain that
  * comes back to a pid it holds, or runs past `MAX_DEPTH`, ends there.
  */
-function ancestorsBy(pid: number, parentOf: ParentReader): number[] {
+export function ancestorsBy(pid: number, parentOf: ParentReader): number[] {
   const ancestors: number[] = [];
   const seen = new Set<number>([pid]);
   let current = pid;

@@ -23,13 +23,13 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info";
+import { isOlder } from "../build-info/semver";
 import type { CliPaths } from "../cli/paths";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { bunConfigArg } from "../setup/bun-config";
 import { LockBusyError, withLock } from "../setup/lock";
 import { removeManagedFolder, writeManagedFolder } from "../setup/managed-folder";
 import { atomicWrite, writeManagedFile } from "../setup/write";
-import { isOlder } from "../update/check";
 import { appendLogLine, isoSeconds } from "../update/state";
 import {
   PORTAL_START_WAIT_MS,

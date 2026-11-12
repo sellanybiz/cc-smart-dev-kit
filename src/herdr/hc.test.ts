@@ -129,6 +129,10 @@ test("default runner uses fake hc on PATH and timeout", () => {
     process.env.HC_TEST_LOG = log;
     expect(defaultHcRunner(["a;b", "two words"]).stdout).toBe('{"ok":true}');
     expect(readFileSync(log, "utf8")).toBe("a;b\ntwo words\n");
+    writeFileSync(file, '#!/bin/sh\nIFS= read -r line\nprintf "%s" "$line"\n');
+    expect(defaultHcRunner(["file", "write"], { stdin: "private brief\n" }).stdout).toBe(
+      "private brief",
+    );
     writeFileSync(file, "#!/bin/sh\nwhile :; do :; done\n");
     expect(() => hcGet((args) => defaultHcRunner(args, { timeoutMs: 10 }), "t7")).toThrow(HcError);
   } finally {
