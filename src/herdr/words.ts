@@ -47,7 +47,7 @@ const USAGE_LINES = {
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-  wait: "wait [--any | --all]",
+  wait: "wait [--any | --all] [--timeout <seconds>]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -76,7 +76,7 @@ export type HerdrArgs =
       | { option: string; text?: never }
       | { text: string; option?: never }
     ))
-  | { verb: "wait"; mode: "any" | "all" }
+  | { verb: "wait"; mode: "any" | "all"; timeoutMs?: number }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
@@ -129,7 +129,12 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(task ? { task } : {}),
     };
   }
-  const known = verb === "answer" ? ["--expect", "--expect-turn", "--option", "--text"] : [];
+  const known =
+    verb === "answer"
+      ? ["--expect", "--expect-turn", "--option", "--text"]
+      : verb === "wait"
+        ? ["--timeout"]
+        : [];
   const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
   const parsed = parseOptions(rest, known, flags);
   if ("error" in parsed) return fail(parsed.error);
@@ -141,10 +146,23 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       return p.length
         ? fail("list takes no arguments.")
         : { verb, all: f.has("--all"), json: f.has("--json") };
-    case "wait":
+    case "wait": {
+      const timeout = o.get("--timeout");
+      if (
+        timeout !== undefined &&
+        (!/^\d+$/.test(timeout) ||
+          !Number.isSafeInteger(Number(timeout) * 1000) ||
+          Number(timeout) <= 0)
+      )
+        return fail("A timeout needs a positive whole number of seconds.");
       return p.length || (f.has("--all") && f.has("--any"))
         ? fail("Choose either --any or --all.")
-        : { verb, mode: f.has("--all") ? "all" : "any" };
+        : {
+            verb,
+            mode: f.has("--all") ? "all" : "any",
+            ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
+          };
+    }
     case "adopt":
       return p.length ? fail("adopt takes no arguments.") : { verb };
     case "stop":
