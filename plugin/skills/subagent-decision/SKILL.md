@@ -190,6 +190,8 @@ builder to implement, never a build of its own.
 
 ## While agents run
 
+- **Name the launch in the reply that starts it**, in this form: "the senior engineer (`sonnet`
+  → Claude Sonnet, effort high)". The person sees whose usage each agent spends.
 - **Never switch or remove the folder an agent was launched from while it runs.** An agent's
   shell stays in the session's folder: move the session into another worktree, or remove the
   worktree, and the agent's every command fails ("working directory no longer exists", or a

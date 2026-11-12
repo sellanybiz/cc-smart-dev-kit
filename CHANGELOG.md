@@ -3,6 +3,18 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.5.2
+
+- **A request for a Claude session now gets one, not subagents.** Asked to "run multiple Claude
+  child sessions", a session started subagents (helpers inside itself) instead, because no
+  trigger word sent it to the herdr skill. The skill now names separate Claude sessions, "child
+  session" and "parallel sessions", and says never subagents. The general instructions say a
+  "session" means the herdr skill, never a subagent. The example of naming an agent at launch
+  moved from the general instructions into the subagent-decision skill, to stay within the
+  always-loaded budget.
+
+**What to run:** nothing.
+
 ## 4.5.1
 
 - **Old builder folders whose work is already on the base now go.** A builder that never

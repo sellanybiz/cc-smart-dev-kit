@@ -9,7 +9,8 @@ instructions, the project's text wins.**
 
 - **Delegate what pays for its own context:** independent work big enough for a subagent — a
   phase, a broad search, a fresh-eyes review, a scenario hunt. A handful of tool calls, live
-  debugging, the person's questions and shared integration work stay with you.
+  debugging, the person's questions and shared integration work stay with you. A "session" is
+  `/cc-smart-dev-kit:herdr`, never a subagent.
 - **An approved plan runs through `/cc-smart-dev-kit:build`:** you orchestrate, a fresh subagent
   builds each phase, and the kit's tasks are the ledger.
 - **Parallel by default.** Unblocked agents start together, disjoint phases in separate
@@ -68,8 +69,8 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 - **Effort:** `medium` for searches, reads and mechanical edits; `high` for building and
   reviews; `xhigh` for the hardest judgment and the last check. `max` rarely pays; `opus` at
   `max` and any `fable` launch ask the person.
-- **Say it when you launch:** the reply that starts an agent names its slot, model and effort —
-  "the senior engineer (`sonnet` → Claude Sonnet, effort high)" — so the person sees whose usage it spends.
+- **Say it when you launch:** the reply that starts an agent names its slot, model and effort,
+  so the person sees whose usage it spends.
 - **Your own model:** never remark on it or on a `/model` switch unasked; asked, answer plainly.
 - **The gateway's slots and switches are the person's.** Never set one, nor change the path your
   own model traffic takes (`gateway on`/`off`, a restart): give the person the command (`/cc-smart-dev-kit:gateway`).
