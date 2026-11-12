@@ -82,6 +82,7 @@ function cliPaths(env = process.env) {
     claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
     routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
+    machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
     tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
     managedAgentsDir: managedAgentsDir()
@@ -5991,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.1.0",
+  version: "4.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7918,7 +7919,7 @@ function wordsWithFill(segment, dialect = "bash") {
   return words;
 }
 var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-var ASSIGNMENT = /^[A-Za-z_]\w*=/;
+var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 function isAssignmentOnly(words) {
   return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
 }
@@ -9588,6 +9589,21 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
 
+// src/herdr/labels.ts
+function parseLeadId(value) {
+  const parts = value.split("/");
+  return parts.length === 2 && parts[0] && parts[1] ? { core: parts[0], address: parts[1] } : null;
+}
+var HERDR_AGENT_PREFIX = "herdr:";
+function isHerdrAgent(value) {
+  return value.startsWith(HERDR_AGENT_PREFIX) && parseLeadId(value.slice(HERDR_AGENT_PREFIX.length)) !== null;
+}
+var REPORT_TAG = "kit-report";
+var CHILD_NAME_PATTERN = /^[a-z0-9_-]{1,32}$/;
+function validChildName(name) {
+  return CHILD_NAME_PATTERN.test(name);
+}
+
 // src/hooks/transcript.ts
 import { closeSync as closeSync3, fstatSync, openSync as openSync3, readSync } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
@@ -9832,6 +9848,8 @@ var NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
+  "<hc ",
+  `<${REPORT_TAG}`,
   STOP_FEEDBACK
 ];
 function hasNotPersonWrapper(prompt) {
@@ -18879,6 +18897,7 @@ function parseAgentLaunch(line) {
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
 var PRINT_RUN = "claude -p";
+var HERDR_START = "herdr start";
 var FORK = "fork";
 var BUILDER_WORDS = [FABLE_BUILD_REASON];
 var READ_ONLY_AGENTS = [
@@ -19321,6 +19340,26 @@ function effortNote(ran) {
   return `It runs at effort \`${ran.effort}\` because \`${ran.effortFrom}\` is set: Claude Code ignores the launch's own \`effort\`, and only the person can change the variable, ${WHERE_SET}.`;
 }
 function judgeLaunch(launch, ctx, env) {
+  if (launch.tool === HERDR_START) {
+    const ran = {
+      model: launch.model,
+      effort: launch.effort,
+      modelFrom: "call",
+      effortFrom: null
+    };
+    if (launch.model === null || launch.effort === null)
+      return { ...deny(null, "Pass both --model and --effort to herdr start."), ran };
+    if (!effortAllowed(launch.effort))
+      return { ...deny(null, effortDenial(launch.effort, false)), ran };
+    const real = resolveLaunchModel(launch.model, ctx, env);
+    const verdict = real.tier === "fable" || real.tier === "opus" && launch.effort === OPUS_ASK_EFFORT ? {
+      decision: "ask",
+      real,
+      reason: `Approve this herdr start on ${launch.model} at effort ${launch.effort}; it spends the person's own plan usage.`,
+      why: "herdr-premium"
+    } : judgeModel(launch, real, ctx, env);
+    return { ...verdict, ran };
+  }
   const needsDefinition = !launch.fork && launch.tool !== PRINT_RUN && launch.subagentType !== null && (launch.model === null || launch.effort === null);
   const ran = effectiveLaunch({
     effort: launch.effort,
@@ -21812,6 +21851,251 @@ function packageScripts(folder) {
 // src/hooks/bash-judge.ts
 import { isAbsolute as isAbsolute6, resolve as resolve8 } from "path";
 
+// src/herdr/machines.ts
+import { readFileSync as readFileSync24 } from "fs";
+var MachinesSchema = object({
+  version: literal(1),
+  machines: record(string2(), object({ allow: literal(true).optional(), production: literal(true).optional() }).strict())
+}).strict();
+
+class MachinesFileError extends Error {
+}
+function readMachines(file) {
+  let text;
+  try {
+    text = readFileSync24(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return { version: 1, machines: {} };
+    throw new MachinesFileError(`${file} cannot be read: ${error.message}`);
+  }
+  try {
+    return MachinesSchema.parse(JSON.parse(text));
+  } catch (error) {
+    throw new MachinesFileError(`${file} is not a machine list (${error.message.split(`
+`)[0]}). Fix it or remove it.`);
+  }
+}
+function machineRule(list, name) {
+  const entry = Object.hasOwn(list.machines, name) ? list.machines[name] : undefined;
+  return entry?.production ? "production" : entry?.allow ? "free" : "ask";
+}
+
+// src/cli/args.ts
+function parseOptions(argv, known, flagNames = [], repeatable = []) {
+  const options = new Map;
+  const lists = new Map;
+  const flags = new Set;
+  const positionals = [];
+  let index = 0;
+  while (index < argv.length) {
+    const arg = argv[index] ?? "";
+    index += 1;
+    if (arg === "--") {
+      positionals.push(...argv.slice(index));
+      break;
+    }
+    if (!arg.startsWith("--")) {
+      positionals.push(arg);
+      continue;
+    }
+    const equals = arg.indexOf("=");
+    const name = equals === -1 ? arg : arg.slice(0, equals);
+    if (flagNames.includes(name)) {
+      if (equals !== -1)
+        return { error: `${name} takes no value` };
+      if (flags.has(name))
+        return { error: `${name} is given twice` };
+      flags.add(name);
+      continue;
+    }
+    if (!known.includes(name))
+      return { error: `Unknown option: ${arg}` };
+    let value;
+    if (equals === -1) {
+      value = argv[index];
+      index += 1;
+    } else {
+      value = arg.slice(equals + 1);
+    }
+    if (value === undefined || value === "" || equals === -1 && value.startsWith("--")) {
+      return { error: `${name} needs a value` };
+    }
+    if (repeatable.includes(name)) {
+      const values = lists.get(name) ?? [];
+      values.push(value);
+      lists.set(name, values);
+      continue;
+    }
+    if (options.has(name))
+      return { error: `${name} is given twice` };
+    options.set(name, value);
+  }
+  return { flags, lists, options, positionals };
+}
+
+// src/herdr/words.ts
+var MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
+function normalizeMode(mode) {
+  const value = mode === "manual" ? "default" : mode;
+  return MODE_ORDER.find((one) => one === value) ?? null;
+}
+function modeWiderThan(a, b) {
+  return MODE_ORDER.indexOf(a) > MODE_ORDER.indexOf(b);
+}
+function childModeAllowed(lead, child) {
+  if (lead === "bypassPermissions" || child === "bypassPermissions")
+    return { ok: false, why: "bypassPermissions is never allowed." };
+  const parent = normalizeMode(lead), next = normalizeMode(child);
+  if (!parent)
+    return { ok: false, why: "Unknown lead mode: ask the person." };
+  if (parent === "plan")
+    return { ok: false, why: "Approve the plan first." };
+  if (!next)
+    return { ok: false, why: "Unknown child mode: ask the person." };
+  if (modeWiderThan(next, parent))
+    return { ok: false, why: "The child mode is wider than the lead mode." };
+  return { ok: true };
+}
+var HERDR_VERBS = [
+  "start",
+  "list",
+  "send",
+  "answer",
+  "wait",
+  "report",
+  "adopt",
+  "stop",
+  "machines"
+];
+var USAGE_LINES = {
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>`,
+  list: "list [--all] [--json]",
+  send: "send <terminal> <text>",
+  answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
+  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<blocked|error|done|end>[,\u2026]]",
+  report: "report <text>",
+  adopt: "adopt",
+  stop: "stop <terminal>",
+  machines: "machines [list | allow <name> | forget <name> | production <name>]"
+};
+var HERDR_USAGE = HERDR_VERBS.map((verb) => `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}`).join(`
+`);
+function parseHerdrArgs(args) {
+  const verb = HERDR_VERBS.find((v) => v === args[0]);
+  const fail = (why) => ({
+    error: `${why}
+${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
+  });
+  if (!verb)
+    return fail("Choose a herdr verb.");
+  const rest = args.slice(1);
+  if (verb === "start") {
+    const split = rest.indexOf("--");
+    if (split < 0)
+      return fail("Put -- before the brief.");
+    const parsed = parseOptions(rest.slice(0, split), ["--model", "--effort", "--mode", "--cwd", "--on", "--name", "--task"], ["--independent", "--asked"]);
+    if ("error" in parsed)
+      return fail(parsed.error);
+    const { options: o, flags: f, positionals: p } = parsed;
+    const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")), effort = ALLOWED_EFFORTS.find((v) => v === o.get("--effort")), mode = normalizeMode(o.get("--mode") ?? "");
+    const brief = rest.slice(split + 1).join(" ");
+    if (!model || !effort || !mode || p.length || !brief.trim())
+      return fail("Give a valid model, effort, mode and brief.");
+    const independent = f.has("--independent"), task = o.get("--task"), name = o.get("--name");
+    if (task && independent)
+      return fail("An independent session cannot have a task.");
+    if (task && !/^#[1-9]\d*$/.test(task))
+      return fail("Use a task reference such as #7.");
+    if (name && !validChildName(name))
+      return fail("A name needs 1\u201332 lower-case letters, digits, - or _.");
+    for (const [key, value] of o)
+      if (!value.trim())
+        return fail(`${key} needs a value.`);
+    const cwd = o.get("--cwd"), on = o.get("--on");
+    return {
+      verb,
+      model,
+      effort,
+      mode,
+      independent,
+      asked: f.has("--asked"),
+      brief,
+      ...cwd !== undefined ? { cwd } : {},
+      ...on !== undefined ? { on } : {},
+      ...name ? { name } : {},
+      ...task ? { task } : {}
+    };
+  }
+  const known = verb === "answer" ? ["--expect", "--expect-turn", "--option", "--text"] : verb === "wait" ? ["--timeout", "--seen"] : [];
+  const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
+  const parsed = parseOptions(rest, known, flags);
+  if ("error" in parsed)
+    return fail(parsed.error);
+  const { options: o, flags: f, positionals: p } = parsed;
+  if (p.some((s) => !s.trim()))
+    return fail("Arguments must not be empty.");
+  const target = p[0] ?? "";
+  switch (verb) {
+    case "list":
+      return p.length ? fail("list takes no arguments.") : { verb, all: f.has("--all"), json: f.has("--json") };
+    case "wait": {
+      const timeout = o.get("--timeout");
+      const cursor = o.get("--seen");
+      const seen = {};
+      if (cursor !== undefined)
+        for (const pair of cursor.split(",")) {
+          const match = /^([^:]+):(\d+|\?):(blocked|error|done|end)$/.exec(pair);
+          if (!match?.[1] || !match[2] || !match[3])
+            return fail("--seen needs address:turn:state entries.");
+          let address;
+          try {
+            address = decodeURIComponent(match[1]);
+          } catch {
+            return fail("--seen has an invalid encoded address.");
+          }
+          if (!address || Object.hasOwn(seen, address) || match[2] !== "?" && !Number.isSafeInteger(Number(match[2])))
+            return fail("--seen needs unique addresses and safe turn numbers.");
+          const state = match[3];
+          if (state !== "blocked" && state !== "error" && state !== "done" && state !== "end")
+            return fail("Unknown cursor state.");
+          seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
+        }
+      if (timeout !== undefined && (!/^\d+$/.test(timeout) || !Number.isSafeInteger(Number(timeout) * 1000) || Number(timeout) <= 0))
+        return fail("A timeout needs a positive whole number of seconds.");
+      return p.length || f.has("--all") && f.has("--any") ? fail("Choose either --any or --all.") : {
+        verb,
+        ...cursor === undefined ? {} : { seen },
+        mode: f.has("--all") ? "all" : "any",
+        ...timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }
+      };
+    }
+    case "adopt":
+      return p.length ? fail("adopt takes no arguments.") : { verb };
+    case "stop":
+      return p.length === 1 ? { verb, target } : fail("Give one terminal.");
+    case "send":
+      return p.length === 2 ? { verb, target, text: p[1] ?? "" } : fail("Give a terminal and text.");
+    case "report":
+      return p.length === 1 ? { verb, text: target } : fail("Give the report text.");
+    case "answer": {
+      const expect = o.get("--expect"), turn = o.get("--expect-turn"), option = o.get("--option"), text = o.get("--text");
+      if (p.length !== 1 || !expect || !turn || !/^\d+$/.test(turn) || !Number.isSafeInteger(Number(turn)) || o.has("--option") === o.has("--text") || !(option ?? text)?.trim())
+        return fail("Give the terminal, expected message and turn, and one answer.");
+      const common = { verb, target, expect, expectTurn: Number(turn) };
+      return option !== undefined ? { ...common, option } : { ...common, text: text ?? "" };
+    }
+    case "machines": {
+      const action = p[0] ?? "list";
+      if (action === "list")
+        return p.length <= 1 ? { verb, action } : fail("machines list takes no name.");
+      if ((action === "allow" || action === "forget" || action === "production") && p.length === 2)
+        return { verb, action, name: p[1] ?? "" };
+      return fail("Choose a machines action and its name.");
+    }
+  }
+}
+
 // src/hooks/kit-invocation.ts
 var INERT = new Set([
   "[",
@@ -22057,7 +22341,17 @@ function readBash(command, dialect = "bash") {
     if (launch !== null)
       launches.push(launch);
   }
-  return { launches, proposals, steps, workflowPropose };
+  const invocations = invocationsOf(command, dialect);
+  const namesHerdr = shellSteps(command, { dialect, blindWhenOpen: true, joinLines: true }).some((step) => wordsOf(step.text, dialect).some((word) => word.split(/[=\s()]+/).some((token) => ["hc", "herdr-app"].includes(token) || token === "herdr" && namesKit(command)))) || invocations.some((one) => one.program === "hc" || one.program === "herdr-app");
+  return {
+    launches,
+    proposals,
+    steps,
+    workflowPropose,
+    invocations,
+    namesHerdr,
+    identityAssigned: assignsHerdrIdentity(command, dialect)
+  };
 }
 var BACKGROUND_LAUNCH_REASON = [
   "This starts a raw background session (`claude --bg`): it runs beside this session, nobody watches it, and it reports to nobody.",
@@ -22166,13 +22460,166 @@ Nobody answers a question in \`claude -p\`, so the raw launch is refused.`,
   return { decision: verdict.decision, reason: `${PRINT_FORM}
 ${verdict.reason}`, why: "print" };
 }
-function judgeBash(reading, context) {
+function powershellIdentity(command) {
+  return [
+    /\$\{?env:hc_terminal_id\}?\s*\+?=(?!=)/i,
+    /\b(?:set-item|si|new-item|ni|set-content|add-content|copy-item|rename-item|move-item)\b[^\n;|]*\benv:[\\/]?hc_terminal_id\b/i,
+    /\bSetEnvironmentVariable\s*\(\s*['"]HC_TERMINAL_ID['"]/i,
+    /\brename-item\b[^\n;|]*\benv:[^\n;|]*\s+['"]?HC_TERMINAL_ID\b/i
+  ].some((pattern) => pattern.test(command));
+}
+function assignsHerdrIdentity(command, dialect, depth = 0) {
+  if (dialect === "powershell" && powershellIdentity(command))
+    return true;
+  const assigned = (word) => /^HC_TERMINAL_ID(?:\+?=|$)/.test(word);
+  return shellSteps(command, { dialect, blindWhenOpen: true, joinLines: true }).some((step) => {
+    const words = wordsOf(step.text, dialect);
+    if (["for", "select"].includes(words[0] ?? "") && assigned(words[1] ?? ""))
+      return true;
+    const invocation = invocationOf(words);
+    if (words[0] === "HC_TERMINAL_ID" && words[1] === "=")
+      return true;
+    if (invocation === undefined)
+      return words.some(assigned);
+    const { program, args, prefix } = invocation;
+    if (prefix.some((word) => /^HC_TERMINAL_ID\+?=/.test(word)) || ["export", "declare", "typeset", "local", "readonly"].includes(program) && args.some(assigned) || program === "printf" && args.some((word, at) => word === "-v" && assigned(args[at + 1] ?? "") || word.startsWith("-v") && assigned(word.slice(2))) || program === "let" && args.some((word) => /^HC_TERMINAL_ID\s*(?:\+?=|$)/.test(word)) || program === "getopts" && args.some(assigned) || ["declare", "typeset", "local"].includes(program) && args.some((word) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(word)) && args.some((word) => word.split("=")[1] === "HC_TERMINAL_ID") || ["read", "mapfile", "readarray"].includes(program) && args.some(assigned))
+      return true;
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    return inner !== undefined && depth < MAX_NESTING && assignsHerdrIdentity(inner, nestedDialect(program), depth + 1);
+  });
+}
+function herdrArguments(one, reading) {
+  const args = kitArguments(one.program, withoutRedirections(one.args));
+  if (args?.[0] === "herdr")
+    return args.slice(1);
+  if (one.computed) {
+    const at = one.args.indexOf("herdr");
+    if (at >= 0 && (reading.namesHerdr || HERDR_VERBS.includes(one.args[at + 1] ?? "")))
+      return one.args.slice(at + 1);
+  }
+  return null;
+}
+function herdrDomain(reading) {
+  return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
+}
+function judgeHerdr(reading, context) {
+  if (!herdrDomain(reading))
+    return null;
+  const verdict = (decision, reason) => ({
+    decision,
+    reason,
+    why: "herdr"
+  });
+  if (reading.identityAssigned)
+    return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask = null;
+  const remember = (reason) => {
+    ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
+Nobody answers a question in \`claude -p\`; run this in an interactive session.`);
+  };
+  for (const one of reading.invocations) {
+    if (one.computed && reading.namesHerdr) {
+      remember("This line computes a Herdr program at run time. Approve it only if you meant it.");
+      continue;
+    }
+    const args = withoutRedirections(one.args);
+    if (["export", "declare", "typeset", "local", "readonly"].includes(one.program) && args.some(isComputedWord))
+      remember("This line computes an environment assignment on a Herdr line. Approve only if it does not change HC_TERMINAL_ID.");
+    if (one.program === "herdr-app" && args[0] === "do") {
+      return verdict("deny", `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send, answer or stop instead.`);
+    }
+    if (one.program === "hc") {
+      const raw = [...args];
+      while (raw[0] === "--json")
+        raw.shift();
+      const [verb, sub] = raw;
+      if (raw.length === 1 && ["--version", "-V", "--skill", "--help", "-h"].includes(verb ?? ""))
+        continue;
+      if (raw.length === 2 && !verb?.startsWith("-") && ["--help", "-h"].includes(sub ?? ""))
+        continue;
+      const read = ["ls", "get", "read", "wait", "templates", "schema"].includes(verb ?? "") || verb === "machine" && sub === "ls" || verb === "file" && sub === "read" || verb === "server" && sub === "status";
+      if (verb === "events") {
+        const input = context.input.tool_input;
+        if (typeof input === "object" && input !== null && "run_in_background" in input && input.run_in_background === true)
+          continue;
+        return verdict("deny", `hc events never ends: run it in the background or use ${COMMAND} herdr wait.`);
+      }
+      if (read)
+        continue;
+      const fix = verb === "run" ? "herdr start" : verb === "send" || verb === "keys" ? "herdr send or herdr answer" : verb === "kill" || verb === "rm" ? "herdr stop" : verb === "label" ? "herdr adopt" : verb === "attach" ? "herdr send or herdr answer" : "job run for a background program (or a guarded herdr verb)";
+      return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
+    }
+    const herdr = herdrArguments(one, reading);
+    if (herdr === null || herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? ""))
+      continue;
+    if (herdr[0] === "answer") {
+      const parsed = parseHerdrArgs(herdr);
+      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${parsed.target}: ${parsed.option !== undefined ? `option ${parsed.option}` : parsed.text}` : herdr.slice(1).join(" ");
+      remember(`Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`);
+      continue;
+    }
+    if (herdr[0] === "machines") {
+      const parsed = parseHerdrArgs(herdr);
+      if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list")
+        continue;
+      remember(`Approve this Herdr machine rule change: ${herdr.slice(1).join(" ")}.`);
+      continue;
+    }
+    if (herdr[0] !== "start")
+      continue;
+    const flags = herdr.slice(1, herdr.indexOf("--") < 0 ? undefined : herdr.indexOf("--"));
+    if (optionValue(flags, "--mode") === "bypassPermissions")
+      return verdict("deny", "bypassPermissions is never allowed.");
+    const parsed = parseHerdrArgs(herdr);
+    if ("error" in parsed)
+      return verdict("deny", `Pass both --model and --effort, plus --mode, to herdr start.
+${parsed.error}`);
+    if (parsed.verb !== "start")
+      continue;
+    const lead = stringField(context.input.permission_mode) ?? "";
+    if (lead === "bypassPermissions")
+      return verdict("deny", "The lead's own mode is bypassPermissions, which is never allowed. Change the lead mode before starting a child.");
+    const mode = childModeAllowed(lead, parsed.mode);
+    if (!mode.ok) {
+      const reason = `${mode.why} Lead mode: ${lead || "unknown"}; child mode: ${parsed.mode}.`;
+      if (!normalizeMode(lead) && lead !== "bypassPermissions")
+        remember(reason);
+      else
+        return verdict("deny", reason);
+    }
+    const launch = judgeLaunch({
+      tool: HERDR_START,
+      fork: false,
+      model: parsed.model,
+      effort: parsed.effort,
+      prompt: parsed.brief,
+      subagentType: null
+    }, readGuardContext(context.paths, context.input, context.env), context.env);
+    if (launch.decision === "deny")
+      return verdict("deny", launch.reason);
+    if (launch.decision === "ask")
+      remember(launch.reason);
+    if (parsed.on) {
+      try {
+        const rule = machineRule(readMachines(context.paths.machinesFile), parsed.on);
+        if (rule !== "free")
+          remember(`Approve Herdr start on ${parsed.on}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`);
+      } catch (error) {
+        remember(`Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote launch only if you meant it.`);
+      }
+    }
+  }
+  return ask;
+}
+function judgeBash(reading, context) {
+  let ask = judgeHerdr(reading, context);
+  if (ask?.decision === "deny")
+    return ask;
   if (reading.proposals.length > 0) {
     const proposed = judgeProposals(reading.proposals, context);
     if (proposed?.decision === "deny")
       return proposed;
-    ask = proposed;
+    ask ??= proposed;
   }
   for (const launch of reading.launches) {
     const verdict = judgeClaudeLaunch(launch, context);
@@ -22194,7 +22641,7 @@ function commandOf(input) {
   return stringField(fields.command);
 }
 function judgedDomain(reading) {
-  return reading.launches.length > 0 || reading.workflowPropose;
+  return reading.launches.length > 0 || reading.workflowPropose || herdrDomain(reading);
 }
 
 // src/hooks/job-route.ts
@@ -22508,6 +22955,10 @@ function keepGoingReason(inProgress, ready) {
   const options = [];
   for (const phase of shown) {
     if (phase.agent !== null) {
+      if (isHerdrAgent(phase.agent)) {
+        options.push(`wait for Herdr child \`${phase.agent}\` with \`${COMMAND} herdr wait\` in the background, or use \`${COMMAND} herdr send\` to continue it`);
+        continue;
+      }
       options.push(`resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`);
     }
   }
@@ -23945,7 +24396,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync24 } from "fs";
+import { readFileSync as readFileSync25 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -24043,7 +24494,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync24(transcript, "utf8");
+    text = readFileSync25(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -24051,7 +24502,7 @@ function subagentBackground(context) {
 }
 
 // src/mcp/records.ts
-import { existsSync as existsSync19, readFileSync as readFileSync25 } from "fs";
+import { existsSync as existsSync19, readFileSync as readFileSync26 } from "fs";
 import { join as join28 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
@@ -24066,7 +24517,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync19(file))
     return {};
-  const parsed = JSON.parse(readFileSync25(file, "utf8"));
+  const parsed = JSON.parse(readFileSync26(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -24122,11 +24573,11 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync14, readFileSync as readFileSync29, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync14, readFileSync as readFileSync30, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname16, join as join31 } from "path";
 
 // src/cli/usage-window.ts
-import { existsSync as existsSync20, readFileSync as readFileSync26 } from "fs";
+import { existsSync as existsSync20, readFileSync as readFileSync27 } from "fs";
 import { join as join29 } from "path";
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
 var SEVEN_DAY_SPAN_MS = 7 * 24 * 60 * 60000;
@@ -24143,7 +24594,7 @@ function readStored(file) {
   if (!existsSync20(file))
     return null;
   try {
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync26(file, "utf8")));
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync27(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -24170,10 +24621,10 @@ function readUsageWindows(paths, nowMs) {
 }
 
 // src/gateway/checks-down.ts
-import { readFileSync as readFileSync27 } from "fs";
+import { readFileSync as readFileSync28 } from "fs";
 function checksDownNow(statePath, nowMs) {
   try {
-    const state = parseLimitState(readFileSync27(statePath, "utf8"));
+    const state = parseLimitState(readFileSync28(statePath, "utf8"));
     return state === null ? [] : currentChecksDown(state, nowMs);
   } catch {
     return [];
@@ -24228,7 +24679,7 @@ function checksDownNote(record, profile, nowMs, timeZone) {
 }
 
 // src/machine/claude-settings.ts
-import { readFileSync as readFileSync28, statSync as statSync11 } from "fs";
+import { readFileSync as readFileSync29, statSync as statSync11 } from "fs";
 import { basename as basename6, dirname as dirname15, join as join30, resolve as resolve11 } from "path";
 function settingsPathsOf(sources) {
   const mainLocal = join30(sources.mainCheckout, ".claude", "settings.local.json");
@@ -24254,7 +24705,7 @@ function checkoutRootAt(dir) {
   try {
     if (statSync11(entry).isDirectory())
       return dir;
-    const line = readFileSync28(entry, "utf8").split(`
+    const line = readFileSync29(entry, "utf8").split(`
 `, 1)[0] ?? "";
     if (!line.startsWith("gitdir:"))
       return dir;
@@ -24313,7 +24764,7 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync29(mark, "utf8");
+    return readFileSync30(mark, "utf8");
   } catch {
     return null;
   }
@@ -24642,11 +25093,11 @@ function verifyGate(context) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { existsSync as existsSync22, readFileSync as readFileSync31, statSync as statSync12 } from "fs";
+import { existsSync as existsSync22, readFileSync as readFileSync32, statSync as statSync12 } from "fs";
 import { basename as basename7, isAbsolute as isAbsolute10, join as join34, resolve as resolve13 } from "path";
 
 // src/hooks/local-files.ts
-import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync30, readlinkSync as readlinkSync4 } from "fs";
+import { lstatSync as lstatSync2, readdirSync as readdirSync7, readFileSync as readFileSync31, readlinkSync as readlinkSync4 } from "fs";
 import { join as join33 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
@@ -24680,7 +25131,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync7(here).every((entry) => same(join33(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync30(here).equals(readFileSync30(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync31(here).equals(readFileSync31(there));
     } catch {
       return false;
     }
@@ -24750,7 +25201,7 @@ var IDLE_MINUTES = 60;
 function idleMinutesOrNull(worktree, now) {
   let admin;
   try {
-    admin = readFileSync31(join34(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
+    admin = readFileSync32(join34(worktree, ".git"), "utf8").trim().replace(/^gitdir:\s*/, "");
   } catch {
     return null;
   }
