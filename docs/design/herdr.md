@@ -71,8 +71,11 @@ They show as new spaces in Herdr; a local linked child stays under its lead's Ag
 After a core crash, `--keep` leaves a shell in the pane; it does not restart Claude.
 
 After launch, start polls `hc get` for a Claude status or terminal exit for up to 20 seconds.
+A finite poll budget derived from that window and the interval also bounds a stationary clock.
 A finished child prints its last non-empty screen lines, is removed from hc, and reports
-whether its worktree folder exists. Start exits 1 without a created line or task binding.
+whether its worktree folder exists. An hc finished/not-found result follows the same exit path;
+an unreadable ended screen prints a note, and an already-removed terminal needs no cleanup.
+Other hc errors still fail normally. Start exits 1 without a created line or task binding.
 It does not inspect Claude's private trust settings: Claude's own launch error gives the fix.
 A child with no status at the deadline prints its screen and an `hc attach` warning, then
 continues successfully, including task binding. A slow first status is not a failed launch.

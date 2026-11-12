@@ -64,6 +64,10 @@ import {
 export const WAIT_TIMEOUT_MS = 180_000;
 export const LAUNCH_CHECK_MS = 20_000;
 export const LAUNCH_POLL_MS = 250;
+export const LAUNCH_POLL_LIMIT = Math.ceil(LAUNCH_CHECK_MS / LAUNCH_POLL_MS) + 1;
+function terminalEnded(error: unknown): boolean {
+  return error instanceof HcError && ["finished", "not_found"].includes(error.kind);
+}
 export const LAUNCH_SCREEN_LINES = 12;
 export const LOGIN_SHELL_SCRIPT = `case "\${SHELL##*/}" in sh|bash|zsh|dash|ksh) exec "$SHELL" -lic 'exec "$0" "$@"' "$@";; *) exec sh -lc 'exec "$0" "$@"' "$@";; esac`;
 export function loginShellArgv(program: string, ...args: string[]): string[] {
@@ -660,17 +664,34 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   args.push("--", ...loginShellArgv("claude", ...programArgs));
   const child = hcRun(r, args);
   const deadline = ctx.now() + LAUNCH_CHECK_MS;
-  while (true) {
-    const state = hcGet(r, child.address);
-    if (state.state === "finished" || ctx.now() >= deadline) {
-      const screen = hcRead(r, child.address, SCREEN_LINES);
-      for (const line of screen.text
-        .split(/\r?\n/)
-        .filter((line) => line.trim())
-        .slice(-LAUNCH_SCREEN_LINES))
-        ctx.out.say(line);
+  for (let poll = 0; poll < LAUNCH_POLL_LIMIT; poll++) {
+    let state: Terminal;
+    try {
+      state = hcGet(r, child.address);
+    } catch (error) {
+      if (!terminalEnded(error)) throw error;
+      state = { address: child.address, state: "finished", status: null, labels: {} };
+    }
+    if (state.state === "finished" || ctx.now() >= deadline || poll === LAUNCH_POLL_LIMIT - 1) {
+      try {
+        const screen = hcRead(r, child.address, SCREEN_LINES);
+        for (const line of screen.text
+          .split(/\r?\n/)
+          .filter((line) => line.trim())
+          .slice(-LAUNCH_SCREEN_LINES))
+          ctx.out.say(line);
+      } catch (error) {
+        if (!terminalEnded(error)) throw error;
+        ctx.out.say("The child's screen is no longer readable.");
+        state = { ...state, state: "finished" };
+      }
       if (state.state === "finished") {
-        hcRm(r, child.address);
+        try {
+          hcRm(r, child.address);
+        } catch (error) {
+          if (!terminalEnded(error)) throw error;
+          // The terminal already ended or was removed; continue with the launch failure.
+        }
         const folderExists = a.on
           ? remoteResult(r, a.on, ["test", "-d", worktree]).code
           : existsSync(worktree)

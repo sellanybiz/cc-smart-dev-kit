@@ -1044,3 +1044,71 @@ test("login shell preserves quoted and dollar arguments as positional argv", () 
   expect(result.exitCode).toBe(0);
   expect(result.stdout.toString()).toBe(arg);
 });
+
+test("stationary launch clock exhausts its finite poll budget and still binds task", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    w.rows.t2 = { address: "t2", state: "live", labels: {}, status: null };
+    w.ctx.now = () => 0;
+    let sleeps = 0;
+    w.ctx.sleep = async () => {
+      if (++sleeps > 80) throw new Error("launch exceeded its finite poll budget");
+    };
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(0);
+    expect(sleeps).toBe(80);
+    expect(w.lines.join("\n")).toContain(
+      "has not reported yet; answer it in its pane: hc attach t2",
+    );
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("launch exit races still remove terminal and report folder without binding", async () => {
+  for (const failure of [
+    "get-finished",
+    "get-not_found",
+    "read-not_found",
+    "rm-not_found",
+    "rm-finished",
+  ]) {
+    const w = world();
+    git(w.ctx.cwd, "init");
+    git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+    const ops = createTaskOps({
+      stateDir: w.ctx.paths.stateDir,
+      env: w.ctx.env,
+      cwd: () => w.ctx.cwd,
+      caller: () => null,
+    });
+    try {
+      expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+      w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+      const [verb, kind] = failure.split("-");
+      w.setFailure((a) => (a[0] === verb ? (kind ?? null) : null));
+      expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(1);
+      expect(w.lines.join("\n")).toContain("Worktree folder does not exist");
+      expect(w.lines.join("\n")).toContain("The child t2 exited during launch.");
+      expect(w.lines.join("\n")).not.toContain("linked child:");
+      if (verb === "read")
+        expect(w.lines.join("\n")).toContain("The child's screen is no longer readable.");
+      expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+      const task = ops.call("get", { task: "#1" });
+      expect(task.ok).toBe(true);
+      if (task.ok) expect(task.text).not.toContain("herdr:core/t2");
+    } finally {
+      ops.close();
+    }
+  }
+});
