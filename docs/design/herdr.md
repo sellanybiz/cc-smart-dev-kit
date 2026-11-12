@@ -215,5 +215,5 @@ and cross-repository coordination. No closed-core or remote live claim follows f
 ## Not in this plan
 
 A Herdr mod panel, hc templates for kit roles, job-queue integration with `hc wait --output`,
-and guarded arbitrary remote `hc exec` are deferred. Existing message-guard behavior is
-unchanged in this release; its proposed retirement is a separate owner decision.
+and guarded arbitrary remote `hc exec` are deferred. The cross-repo message guard is retired:
+messages to another repo’s session no longer ask for approval, following the owner’s decision.

@@ -17,7 +17,6 @@ export const PLUGIN_HOOK_NAMES = [
   "git-guard",
   "merge-guard",
   "main-folder-guard",
-  "message-guard",
   "agent-guard",
   "fable-session",
   "tier-view",
@@ -49,6 +48,8 @@ export const RETIRED_HOOK_NAMES = [
   // 2.0.0: crew sessions and leads went, with their two hooks.
   "crew-role",
   "lead-notes",
+  // 4.3.0: messages to sessions in other repos no longer ask.
+  "message-guard",
 ] as const;
 
 /**

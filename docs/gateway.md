@@ -1876,7 +1876,13 @@ as `gateway on` does. With them, a session sends `haiku` / `sonnet` work by the 
 and a slot with no chain refuses that with a 400 (the router never picks a Claude model for
 it). It then says to restart every open Claude session: a running session may keep the
 removed keys until it restarts (`docs/claude-code-contract.md`: a removed key was not
-watched). A plugin update alone never swaps the router: the router that runs is the copy in
+watched). Under the same lock, gateway setup also runs normal setup's model-menu step
+(`applyModelPickerStep`): it retires the old Fable pin while it is still ours, and refreshes
+`modelPicker` only while the owned active address names this kit router. Otherwise it writes
+no menu and removes only an unchanged owned stale menu. A menu the person set, changed or
+removed stays theirs. Gateway setup never turns the gateway on.
+
+A plugin update alone never swaps the router: the router that runs is the copy in
 `~/.local/share/cc-smart-dev-kit/`, and only `gateway setup` (or `migrate`) writes it; until then
 the older router answers, and `doctor` says the copy is not this version's and gives the
 `gateway setup` command. The updater records its result without sending a notification.
@@ -2020,7 +2026,7 @@ no chain. Any first target, including a pinned Claude id, gets
 The menu choices are aliases, never model ids. A slot chain can pin a target; its description names that target.
 The description names the first target, not a promise that a fallback will never answer.
 
-`gateway on`, a machine slot change and normal `setup` refresh the owned user menu.
+`gateway on`, a machine slot change, normal `setup` and `gateway setup` refresh the owned user menu.
 Setup refreshes only our still-owned active address for this router; it never turns an off
 gateway on. While the address is not ours or not this router's, setup or a slot change removes an unchanged
 owned menu instead: the kit's menu exists only while its gateway is on, so a menu an older

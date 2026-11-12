@@ -3,6 +3,21 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.3.0
+
+- **Messages to another repo's session no longer ask.** The `message-guard` hook is retired,
+  as the owner decided: a SendMessage to a Claude session working in another repo goes
+  without a question. The worktrees opt-in now says to check a session's folder first, and
+  to message another repo's session only when the work spans both. A project whose
+  `ownHooks` still names `message-guard` keeps parsing; doctor says the name can go.
+- **`gateway setup` keeps Fable on the newest model.** It removed the kit's old Fable pin
+  without writing the kit's model menu, so `/model` fell back to the Fable row Anthropic
+  cached, which named an older Fable. It now retires the pin and refreshes the menu in one
+  step, as `setup` does. A menu you set yourself stays yours.
+
+**What to run:** if `/model`'s Fable row names an older Fable, or `doctor` says
+`Gateway model menu: not set`, run `cc-smart-dev-kit gateway setup` (or `setup`) once.
+
 ## 4.2.0
 
 - **Give work to another Herdr session.** `/cc-smart-dev-kit:herdr` starts a linked child

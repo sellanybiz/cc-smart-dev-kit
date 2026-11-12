@@ -376,10 +376,11 @@ export function retireOldModelKeys(options: {
   stateDir: string;
   dryRun?: boolean;
 }): ManagedJsonResult {
+  // The old Fable pin is retired with the model menu, by `applyModelPickerStep`.
   return applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: [...RETIRED_GATEWAY_ENV_KEYS, ...RETIRED_MODEL_PIN_KEYS].map(envPath),
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });

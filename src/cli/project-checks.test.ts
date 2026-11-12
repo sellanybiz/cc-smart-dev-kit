@@ -511,6 +511,14 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     );
   });
 
+  test("message-guard in ownHooks still parses and doctor names it as retired", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["message-guard"] });
+    expect(await check(repo)).toEqual([
+      '· project: .claude/cc-smart-dev-kit.json lists message-guard in ownHooks, a plugin hook that is retired: it silences nothing. Take "message-guard" out of ownHooks',
+    ]);
+  });
+
   test("a hook no project can switch off any more (job-route): one · line that it silences nothing, and a copy still warns", async () => {
     // A project file written before 1.0.0 may list it: the strict parse still accepts the name,
     // and the plugin's copy answers all the same (the frame skips the ownHooks step), so a

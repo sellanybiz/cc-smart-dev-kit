@@ -2273,6 +2273,8 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
               "Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.",
             );
         }
+        // Retire the owned pin and refresh the menu in the same step as normal setup.
+        for (const line of applyModelPickerStep(paths, false)) ctx.print(line);
         // Setup never turns the gateway on (D66): it says what is, and the one command.
         if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
           ctx.print(

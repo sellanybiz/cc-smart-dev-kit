@@ -8,7 +8,6 @@
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
- * | message-guard | PreToolUse (SendMessage) | judging the same way: its other-repo rule reads nothing from the file (`message-guard.ts`) |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
@@ -65,7 +64,6 @@ import {
 import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
 import { editedFile, mainFolderGuard } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
-import { messageGuard, messageGuardConfigProblem, SEND_MESSAGE_TOOL } from "./message-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
@@ -218,28 +216,6 @@ export const mainFolderGuardHook: HookSpec = {
     ["Edit", "Write", "NotebookEdit"].includes(toolOf(input)),
   ),
   run: mainFolderGuard,
-};
-
-export const messageGuardHook: HookSpec = {
-  name: "message-guard",
-  events: ["PreToolUse"],
-  // The other-repo rule reads nothing from the project's file, so a broken or too new file
-  // gets the same judgement as `run`, with the file's problem on the question's last line.
-  onConfigProblem: (message, input, _event, checkout, { env, paths }) =>
-    messageGuardConfigProblem(
-      message,
-      input,
-      env,
-      checkout.mainCheckout ?? checkout.root,
-      paths.claudeConfigDir,
-    ),
-  // A crash must not let a message through: the guard asks about the message it was asked
-  // to judge.
-  onCrash: guardCrash(
-    "whether this message may go to that session",
-    (input) => toolOf(input) === SEND_MESSAGE_TOOL,
-  ),
-  run: messageGuard,
 };
 
 export const afterMergeHook: HookSpec = {
@@ -574,7 +550,6 @@ export const HOOKS: readonly HookSpec[] = [
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
-  messageGuardHook,
   agentGuardHook,
   sessionEscapeGuardHook,
   fableSessionHook,

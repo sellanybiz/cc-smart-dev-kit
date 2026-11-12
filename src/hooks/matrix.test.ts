@@ -43,7 +43,6 @@ import {
   keepGoingHook,
   mainFolderGuardHook,
   mergeGuardHook,
-  messageGuardHook,
   reviewRecordHook,
   sessionEscapeGuardHook,
   sessionNameHook,
@@ -412,25 +411,7 @@ const CASES: Case[] = [
     },
     failsClosed: askLine,
   },
-  {
-    spec: messageGuardHook,
-    own: { event: "PreToolUse", matcher: "SendMessage" },
-    setup: (config) => {
-      const env = hookEnv();
-      writeSessionRecord(env, { sessionId: "other", cwd: tempDir("elsewhere"), name: "elsewhere" });
-      return {
-        input: {
-          hook_event_name: "PreToolUse",
-          session_id: SESSION,
-          cwd: project(config),
-          tool_name: "SendMessage",
-          tool_input: { to: "elsewhere", message: "hi" },
-        },
-        env,
-      };
-    },
-    failsClosed: askLine,
-  },
+
   {
     spec: afterMergeHook,
     own: { event: "PostToolUse", matcher: "Bash" },
@@ -858,10 +839,15 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     else expect(result).toEqual({});
   });
 
-  test("the retired names in ownHooks (serena-root, crew-role, lead-notes): the file still reads, and this hook still speaks", async () => {
+  test("the retired names in ownHooks (serena-root, crew-role, lead-notes, message-guard): the file still reads, and this hook still speaks", async () => {
     // A project file written for an older plugin may still list one. Refused, the strict parse
     // would fail and every guard would ask about every call; accepted, it silences nothing.
-    expect([...RETIRED_HOOK_NAMES]).toEqual(["serena-root", "crew-role", "lead-notes"]);
+    expect([...RETIRED_HOOK_NAMES]).toEqual([
+      "serena-root",
+      "crew-role",
+      "lead-notes",
+      "message-guard",
+    ]);
     const { input, env } = c.setup({ ...FULL_CONFIG, ownHooks: [...RETIRED_HOOK_NAMES] });
     const result = await runHook(c.spec, input, env);
     expect(speaks(result)).toBe(true);
@@ -920,7 +906,7 @@ describe("no cc-smart-dev-kit.json", () => {
 
 describe("the guard matrix", () => {
   const guards = CASES.filter((c) =>
-    [gitGuardHook, mergeGuardHook, mainFolderGuardHook, messageGuardHook].includes(c.spec),
+    [gitGuardHook, mergeGuardHook, mainFolderGuardHook].includes(c.spec),
   );
 
   // [plugin installed, project wires its own, listed in ownHooks, requires met, guards that answer]

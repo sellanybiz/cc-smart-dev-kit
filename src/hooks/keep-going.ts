@@ -50,9 +50,11 @@ import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
 import { cappedHookList, HOOK_LIST_LIMIT } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
-import { SEND_MESSAGE_TOOL } from "./message-guard";
 import type { Env, HookContext } from "./run";
 import { lastAssistantText, stopFeedbackGiven } from "./transcript";
+
+/** Claude Code's tool that messages another agent or session; it resumes a builder. */
+const SEND_MESSAGE_TOOL = "SendMessage";
 
 /** The calls that start or resume a subagent: after one, a given reminder counts as not given. */
 const SUBAGENT_WORK: readonly string[] = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];

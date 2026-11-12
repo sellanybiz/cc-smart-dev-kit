@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.2.0",
+  version: "4.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9352,7 +9352,7 @@ function retireOldModelKeys(options) {
   return applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: [...RETIRED_GATEWAY_ENV_KEYS, ...RETIRED_MODEL_PIN_KEYS].map(envPath),
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
@@ -15012,7 +15012,6 @@ var init_config2 = __esm(() => {
     "git-guard",
     "merge-guard",
     "main-folder-guard",
-    "message-guard",
     "agent-guard",
     "fable-session",
     "tier-view",
@@ -15030,7 +15029,8 @@ var init_config2 = __esm(() => {
   RETIRED_HOOK_NAMES = [
     "serena-root",
     "crew-role",
-    "lead-notes"
+    "lead-notes",
+    "message-guard"
   ];
   UNSWITCHABLE_HOOK_NAMES = ["job-route"];
   RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
@@ -18542,6 +18542,8 @@ async function commandSetup(ctx, args) {
         if (retired.changes.some((change) => RETIRED_GATEWAY_ENV_KEYS.includes(change.path[1] ?? "")))
           ctx.print("Restart every open Claude session now: until it restarts, a session may still send haiku / sonnet work by the slot's old name.");
       }
+      for (const line of applyModelPickerStep(paths, false))
+        ctx.print(line);
       if (!baseUrlPointsAtGateway(settingsReport(paths.settingsFile).baseUrl)) {
         ctx.print(`The gateway is off: Claude Code sends its requests to Anthropic itself. ${COMMAND} gateway on routes them through the router.`);
       }
@@ -47819,64 +47821,7 @@ function openPhasesOf(paths, project, caller) {
 
 // src/hooks/keep-going.ts
 init_io();
-
-// src/hooks/message-guard.ts
-init_git();
-init_io();
-init_sessions();
 var SEND_MESSAGE_TOOL = "SendMessage";
-function withoutListRef(name) {
-  return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
-}
-function messageLeavesRepo(to, sessions, repoFolders) {
-  const name = withoutListRef(to);
-  const named = sessions.filter((session) => session.name === name);
-  const outside = named.filter((session) => !repoFolders.some((folder) => isInside(realPath(session.cwd), folder)));
-  return named.length > 0 && outside.length === named.length ? outside[0]?.cwd ?? null : null;
-}
-function otherRepoFolder(to, repo, env, claudeConfigDir) {
-  let sessions;
-  try {
-    sessions = liveSessions(claudeConfigDir);
-  } catch {
-    return null;
-  }
-  const name = withoutListRef(to);
-  if (!sessions.some((session) => session.name === name))
-    return null;
-  const folders = listWorktrees(realPath(repo), env, GUARD_GIT_TIMEOUT_MS).map((worktree) => realPath(worktree.path));
-  return messageLeavesRepo(to, sessions, folders);
-}
-function otherRepoQuestion(to, folder) {
-  return [
-    `"${to}" works in ${folder}, outside this repo. Send this message to a session of another repo?`,
-    "ListAgents lists every Claude session on the machine, other projects too."
-  ].join(`
-`);
-}
-function otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem) {
-  const to = stringField(toolInput(input).to);
-  if (to === null)
-    return SILENT;
-  const folder = otherRepoFolder(to, repo, env, claudeConfigDir);
-  if (folder === null)
-    return SILENT;
-  const question = otherRepoQuestion(to, folder);
-  return toolDecision("ask", configProblem === null ? question : `${question}
-The project's settings file cannot be used, and this rule reads nothing from it: ${configProblem}`);
-}
-function messageGuardConfigProblem(configProblem, input, env, repo, claudeConfigDir) {
-  return otherRepoAnswer(input, env, repo, claudeConfigDir, configProblem);
-}
-function messageGuard(context) {
-  const { project, input, env, paths } = context;
-  if (project.config === null)
-    return SILENT;
-  const repo = project.mainCheckout ?? project.root;
-  return otherRepoAnswer(input, env, repo, paths.claudeConfigDir, null);
-}
-
-// src/hooks/keep-going.ts
 var SUBAGENT_WORK = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";
@@ -49607,13 +49552,6 @@ var mainFolderGuardHook = {
   onCrash: guardCrash("whether this edit belongs in a worktree", (input) => ["Edit", "Write", "NotebookEdit"].includes(toolOf2(input))),
   run: mainFolderGuard
 };
-var messageGuardHook = {
-  name: "message-guard",
-  events: ["PreToolUse"],
-  onConfigProblem: (message, input, _event, checkout, { env, paths }) => messageGuardConfigProblem(message, input, env, checkout.mainCheckout ?? checkout.root, paths.claudeConfigDir),
-  onCrash: guardCrash("whether this message may go to that session", (input) => toolOf2(input) === SEND_MESSAGE_TOOL),
-  run: messageGuard
-};
 var afterMergeHook = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
@@ -49743,7 +49681,6 @@ var HOOKS = [
   gitGuardHook,
   mergeGuardHook,
   mainFolderGuardHook,
-  messageGuardHook,
   agentGuardHook,
   sessionEscapeGuardHook,
   fableSessionHook,
