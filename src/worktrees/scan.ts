@@ -28,6 +28,7 @@ import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
+import { REMOVAL_TIMEOUT_MS } from "./clean";
 import {
   type ContainerMounts,
   containersUsing,
@@ -483,6 +484,30 @@ function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolea
   );
 }
 
+/** Only ancestry counts here: never replay work onto a live branch. */
+function holdingBranch(
+  repo: string,
+  listed: ListedWorktree,
+  all: ListedWorktree[],
+  env: Env,
+): string | null {
+  for (const other of all) {
+    if (
+      other.branch === null ||
+      other.prunable ||
+      samePath(other.path, listed.path) ||
+      !existsSync(other.path)
+    )
+      continue;
+    if (
+      runGit(repo, ["merge-base", "--is-ancestor", listed.head, `refs/heads/${other.branch}`], env)
+        .ok
+    )
+      return other.branch;
+  }
+  return null;
+}
+
 function judgeOne(
   repo: string,
   listed: ListedWorktree,
@@ -509,8 +534,14 @@ function judgeOne(
     const mountWhy = mountKeptWhy(listed.path, look.mounts);
     if (mountWhy !== null) return { finished: false, held: false, why: mountWhy };
   }
+  const mergedBy =
+    aheadOfBase > 0
+      ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
+      : null;
   const facts: WorktreeFacts = {
     aheadOfBase,
+    heldByBranch:
+      aheadOfBase > 0 && mergedBy === null ? holdingBranch(repo, listed, all, look.env) : null,
     base: look.label,
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
@@ -521,10 +552,7 @@ function judgeOne(
     locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
     // commits of its own.
-    mergedBy:
-      aheadOfBase > 0
-        ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
-        : null,
+    mergedBy,
     parked,
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
     sessionName: session?.name ?? null,
@@ -783,6 +811,7 @@ export function removeWorktree(
     repo,
     alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
     options.env,
+    REMOVAL_TIMEOUT_MS,
   );
   if (!removed.ok) {
     return keptAfterUnlock(
@@ -812,7 +841,18 @@ export function removeWorktree(
       ? `unlocked stale Claude lock and removed ${listed.path}`
       : `removed ${listed.path}`,
   ];
-  if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
+  if (listed.branch !== null) {
+    const branchLine = deleteBranch(repo, listed.branch);
+    const holder =
+      options.deleteBranch === undefined && branchLine.startsWith("kept branch ")
+        ? holdingBranch(repo, current, all, options.env)
+        : null;
+    said.push(
+      holder === null
+        ? branchLine
+        : `kept branch ${listed.branch}: its work is held by ${holder}, not yet on ${look.label}`,
+    );
+  }
   return { said, status: "removed" };
 }
 

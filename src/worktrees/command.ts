@@ -426,8 +426,11 @@ export async function runWorktrees(
     }
 
     cleanFinished(repo, scanned, judged, print);
-    // The leftover folders git no longer lists: removed when the folder itself proves it is safe.
-    const finished = finishStrays(repo, judged, (line) => print(line), strays);
+    // Keep the before-list's search roots, and include remnants this removal just left behind.
+    const leftovers = new Map(
+      [...strays, ...strayParkedFolders(repo, env)].map((stray) => [realPath(stray.path), stray]),
+    );
+    const finished = finishStrays(repo, judged, (line) => print(line), [...leftovers.values()]);
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
     if (nothing) print("Nothing finished to clear.");
     return 0;
