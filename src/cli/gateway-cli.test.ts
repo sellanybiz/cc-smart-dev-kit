@@ -24,7 +24,6 @@ import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { createHistoryWriter } from "../gateway/history";
-import * as modelPickerStep from "../gateway/model-picker-step";
 import { shellQuote } from "../setup/launcher";
 import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
@@ -581,37 +580,7 @@ describe("cc-smart-dev-kit gateway setup on a machine an older version set up", 
     );
   });
 
-  test("gateway setup preflight reports pin retirement and menu refresh without writing", async () => {
-    const m = pinnedMachine();
-    const before = readFileSync(m.paths.settings, "utf8");
-    const apply = modelPickerStep.applyModelPickerStep;
-    const reports: string[][] = [];
-    const step = spyOn(modelPickerStep, "applyModelPickerStep").mockImplementation(
-      (paths, dryRun, retirePin) => {
-        const lines = apply(paths, dryRun, retirePin);
-        expect(dryRun).toBe(true);
-        expect(readFileSync(m.paths.settings, "utf8")).toBe(before);
-        reports.push(lines);
-        return lines;
-      },
-    );
-    // Refuse at the read-only port check, after settings preflight and before any writes.
-    m.port.other = true;
-    try {
-      expect((await m.runHere(["gateway", "setup", "--yes"])).exitCode).toBe(1);
-      expect(reports).toEqual([
-        [
-          "~ env.ANTHROPIC_DEFAULT_FABLE_MODEL: retired gateway key removed",
-          "~ modelPicker: refresh the gateway model menu",
-        ],
-      ]);
-      expect(readFileSync(m.paths.settings, "utf8")).toBe(before);
-    } finally {
-      step.mockRestore();
-    }
-  });
-
-  test("gateway setup retires its Fable pin without a menu for a foreign gateway address", async () => {
+  test("gateway setup retires its Fable pin without a menu for a gateway address the person set", async () => {
     const m = pinnedMachine(false);
     const before = JSON.parse(readFileSync(m.paths.settings, "utf8"));
     const done = await m.runHere(["gateway", "setup", "--yes"]);

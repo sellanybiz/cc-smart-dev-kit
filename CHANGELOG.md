@@ -3,7 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## 4.2.1
+## 4.3.0
 
 - **Messages to another repo's session no longer ask.** The `message-guard` hook is retired,
   as the owner decided: a SendMessage to a Claude session working in another repo goes
@@ -15,8 +15,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   cached, which named an older Fable. It now retires the pin and refreshes the menu in one
   step, as `setup` does. A menu you set yourself stays yours.
 
-**What to run:** nothing. A machine whose `/model` still shows an older Fable gets the menu
-from its next `cc-smart-dev-kit setup` or `gateway setup`.
+**What to run:** if `/model`'s Fable row names an older Fable, or `doctor` says
+`Gateway model menu: not set`, run `cc-smart-dev-kit gateway setup` (or `setup`) once.
 
 ## 4.2.0
 

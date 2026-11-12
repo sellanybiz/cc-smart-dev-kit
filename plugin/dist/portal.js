@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "4.2.1",
+  version: "4.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21073,10 +21073,7 @@ function retireOldModelKeys(options) {
   return applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: [
-      ...RETIRED_GATEWAY_ENV_KEYS,
-      ...options.retirePin === false ? [] : RETIRED_MODEL_PIN_KEYS
-    ].map(envPath),
+    remove: RETIRED_GATEWAY_ENV_KEYS.map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...options.dryRun !== undefined && { dryRun: options.dryRun }
   });
@@ -24415,13 +24412,7 @@ async function commandSetup(ctx, args) {
     dryRun: true
   });
   upgradeConfig(configPath, { dryRun: true });
-  retireOldModelKeys({
-    dryRun: true,
-    settingsFile: paths.settingsFile,
-    stateDir: paths.stateDir,
-    retirePin: false
-  });
-  applyModelPickerStep(paths, true);
+  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   if (await installRouter(install({ dryRun: true })) === "declined")
     return 1;
   if (password !== null) {
@@ -24471,8 +24462,7 @@ async function commandSetup(ctx, args) {
       }));
       const retired = retireOldModelKeys({
         settingsFile: paths.settingsFile,
-        stateDir: paths.stateDir,
-        retirePin: false
+        stateDir: paths.stateDir
       });
       if (retired.changes.length > 0) {
         ctx.print(changeLines(retired, paths.home).join(`

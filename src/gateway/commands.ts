@@ -2189,13 +2189,7 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
   // The two steps for a machine an older version set up, read-only first: a config or a
   // settings file that cannot be read stops the setup here, before anything is written.
   upgradeConfig(configPath, { dryRun: true });
-  retireOldModelKeys({
-    dryRun: true,
-    settingsFile: paths.settingsFile,
-    stateDir: paths.stateDir,
-    retirePin: false,
-  });
-  applyModelPickerStep(paths, true);
+  retireOldModelKeys({ dryRun: true, settingsFile: paths.settingsFile, stateDir: paths.stateDir });
   // The port question comes before the backend is called at all: a port another program holds
   // refuses the setup, and no key is made or checked for nothing.
   if ((await installRouter(install({ dryRun: true }))) === "declined") return 1;
@@ -2267,7 +2261,6 @@ async function commandSetup(ctx: GatewayContext, args: string[]): Promise<number
         const retired = retireOldModelKeys({
           settingsFile: paths.settingsFile,
           stateDir: paths.stateDir,
-          retirePin: false,
         });
         if (retired.changes.length > 0) {
           ctx.print(changeLines(retired, paths.home).join("\n"));
