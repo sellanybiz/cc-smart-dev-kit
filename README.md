@@ -2435,9 +2435,10 @@ same path had in a commit of the base's history after the worktree's own HEAD (t
 `origin/<base>`, or the local `<base>` branch in a repo with no `origin`); a deleted file counts
 when the base lost it too. A file put back to a version from before its HEAD keeps the worktree
 (a revert someone chose), and so does a symlink, a submodule or a conflict. A file with a filter
-driver in `.gitattributes` (a notebook output stripper, Git LFS) is compared as it is on disk, so
-a filter that drops bytes cannot hide them. The removal takes the same proof again right before
-it removes the folder. The session-start note counts any uncommitted file, so it may not name
+driver or `ident` in `.gitattributes` (a notebook output stripper, Git LFS) is compared as it is
+on disk, so a filter that drops bytes cannot hide them. The removal takes the same proof again
+right before it removes the folder, and reads the folder once more after that: a file written
+meanwhile keeps it. The session-start note counts any uncommitted file, so it may not name
 such a worktree; `--clean` and the background clean do remove it.
 
 **The verdict is taken again right before anything is removed**, on the folder as it is then:

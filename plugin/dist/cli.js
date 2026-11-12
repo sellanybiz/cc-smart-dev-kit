@@ -26846,21 +26846,32 @@ var init_sessions = __esm(() => {
 import { lstatSync as lstatSync3 } from "fs";
 import { join as join35 } from "path";
 function hasUnsavedChanges(folder, ref, env, options = {}) {
+  return savedFingerprint(folder, ref, env, options) === null;
+}
+function savedFingerprint(folder, ref, env, options = {}) {
+  const read = readFolder(folder, env, options);
+  if (read === null)
+    return null;
+  const { wanted, versions, fingerprint } = read;
+  if (!allAbsent(folder, ref, wanted.absent, env))
+    return null;
+  return allInHistory(folder, ref, versions, env) ? fingerprint : null;
+}
+function folderFingerprint(folder, env, options = {}) {
+  return readFolder(folder, env, options)?.fingerprint ?? null;
+}
+function readFolder(folder, env, options) {
   const status = runGitRaw(folder, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], env);
   if (!status.ok)
-    return true;
-  if (status.out === "")
-    return false;
+    return null;
   const wanted = readStatus(status.out, folder, options.ownDeletions === true);
   if (wanted === null)
-    return true;
+    return null;
   const hashed = hashFiles(folder, wanted.toHash, env);
   if (hashed === null)
-    return true;
-  const versions = [...wanted.versions, ...hashed];
-  if (!allAbsent(folder, ref, wanted.absent, env))
-    return true;
-  return !allInHistory(folder, ref, versions, env);
+    return null;
+  const fingerprint = [status.out, ...hashed.map((item) => `${item.path}\x00${item.version}`)].join("\x00\x00");
+  return { wanted, versions: [...wanted.versions, ...hashed], fingerprint };
 }
 function readStatus(out, folder, ownDeletions) {
   const wanted = { versions: [], toHash: [], absent: [] };
@@ -26960,7 +26971,7 @@ function hashFiles(folder, paths, env) {
 function filteredPaths(folder, paths, env) {
   const filtered = new Set;
   for (const chunk of chunks(paths)) {
-    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "--", ...chunk], env);
+    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "ident", "--", ...chunk], env);
     if (!run.ok)
       return null;
     const parts = run.out.split("\x00");
@@ -28166,7 +28177,9 @@ function removeWorktree(repo, listed, options) {
       });
     }
   }
-  const proved = !hasUnsavedChanges(parked, look.ref, options.env, { ownDeletions: alreadyParked });
+  const own = { ownDeletions: alreadyParked };
+  const proof = savedFingerprint(parked, look.ref, options.env, own);
+  const proved = proof !== null && folderFingerprint(parked, options.env, own) === proof;
   const removed = runGit(repo, proved ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked], options.env, REMOVAL_TIMEOUT_MS);
   if (!removed.ok) {
     return keptAfterUnlock({

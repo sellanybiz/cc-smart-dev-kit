@@ -21,7 +21,7 @@ import {
 import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
-import { hasUnsavedChanges } from "../hooks/unsaved-changes";
+import { folderFingerprint, hasUnsavedChanges, savedFingerprint } from "../hooks/unsaved-changes";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
 import { ancestorsBy } from "../jobs/ancestry";
 import { processIsGone } from "../jobs/windows";
@@ -876,8 +876,11 @@ export function removeWorktree(
   // the base's history holds, and, in a folder an earlier removal stopped halfway in, the
   // tracked files that removal deleted. `--force` turns git's own last check off, so the same
   // proof is taken again here, on the moved folder, right before the removal: `--force` only
-  // with it, and git's refusal otherwise.
-  const proved = !hasUnsavedChanges(parked, look.ref, options.env, { ownDeletions: alreadyParked });
+  // with it, and git's refusal otherwise. The history search takes a moment, so the folder is
+  // read once more after it: a file written or rewritten meanwhile drops the force.
+  const own = { ownDeletions: alreadyParked };
+  const proof = savedFingerprint(parked, look.ref, options.env, own);
+  const proved = proof !== null && folderFingerprint(parked, options.env, own) === proof;
   const removed = runGit(
     repo,
     proved ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],

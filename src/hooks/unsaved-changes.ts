@@ -65,20 +65,63 @@ export function hasUnsavedChanges(
   env: Env,
   options: UnsavedOptions = {},
 ): boolean {
+  return savedFingerprint(folder, ref, env, options) === null;
+}
+
+/**
+ * The proof, kept for a second look: what the folder held when every piece of it proved saved
+ * (`folderFingerprint`), or null when something is unsaved. A removal that forces git past its
+ * own check compares it with `folderFingerprint` right before the removal, so a file written
+ * or rewritten while the history was searched keeps the folder.
+ */
+export function savedFingerprint(
+  folder: string,
+  ref: string,
+  env: Env,
+  options: UnsavedOptions = {},
+): null | string {
+  const read = readFolder(folder, env, options);
+  if (read === null) return null;
+  const { wanted, versions, fingerprint } = read;
+  if (!allAbsent(folder, ref, wanted.absent, env)) return null;
+  return allInHistory(folder, ref, versions, env) ? fingerprint : null;
+}
+
+/**
+ * What the folder holds now: `git status`, and the hash of each changed or untracked file in it.
+ * Null when git cannot say or the status holds an entry that never counts as saved.
+ */
+export function folderFingerprint(
+  folder: string,
+  env: Env,
+  options: UnsavedOptions = {},
+): null | string {
+  return readFolder(folder, env, options)?.fingerprint ?? null;
+}
+
+function readFolder(
+  folder: string,
+  env: Env,
+  options: UnsavedOptions,
+): {
+  wanted: Wanted;
+  versions: Array<{ path: string; version: string }>;
+  fingerprint: string;
+} | null {
   const status = runGitRaw(
     folder,
     ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
     env,
   );
-  if (!status.ok) return true;
-  if (status.out === "") return false;
+  if (!status.ok) return null;
   const wanted = readStatus(status.out, folder, options.ownDeletions === true);
-  if (wanted === null) return true;
+  if (wanted === null) return null;
   const hashed = hashFiles(folder, wanted.toHash, env);
-  if (hashed === null) return true;
-  const versions = [...wanted.versions, ...hashed];
-  if (!allAbsent(folder, ref, wanted.absent, env)) return true;
-  return !allInHistory(folder, ref, versions, env);
+  if (hashed === null) return null;
+  const fingerprint = [status.out, ...hashed.map((item) => `${item.path}\0${item.version}`)].join(
+    "\0\0",
+  );
+  return { wanted, versions: [...wanted.versions, ...hashed], fingerprint };
 }
 
 /**
@@ -187,13 +230,16 @@ function hashFiles(
   return versions;
 }
 
-/** The paths `.gitattributes` gives a filter driver. Null when git cannot say. */
+/**
+ * The paths `.gitattributes` gives a filter driver or `ident` (which rewrites `$Id: …$` to
+ * `$Id$`): both drop bytes on the way in. Null when git cannot say.
+ */
 function filteredPaths(folder: string, paths: string[], env: Env): Set<string> | null {
   const filtered = new Set<string>();
   for (const chunk of chunks(paths)) {
-    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "--", ...chunk], env);
+    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "ident", "--", ...chunk], env);
     if (!run.ok) return null;
-    // <path> NUL filter NUL <value> NUL, for each path
+    // <path> NUL <attribute> NUL <value> NUL, for each path and attribute
     const parts = run.out.split("\0");
     for (let at = 0; at + 2 < parts.length; at += 3) {
       const value = parts[at + 2];

@@ -149,9 +149,11 @@ runs by itself (owner's decision D48, 2026-10-22).
   commit the worktree's HEAD does not have, and a deletion the base made too, are not changes
   that can be lost (`hasUnsavedChanges`, `src/hooks/unsaved-changes.ts`): an old builder that
   never committed in its own folder while its lead committed the same files leaves only those.
-  A path with a filter driver is hashed without the filter. `removeWorktree` takes that proof
-  again on the moved folder and passes `--force` to `git worktree remove` only with it, since
-  `--force` turns git's own check off; a folder a removal moved aside counts its missing files
+  A path with a filter driver or `ident` is hashed without them. `removeWorktree` takes that
+  proof again on the moved folder (`savedFingerprint`), reads the folder once more after the
+  history search (`folderFingerprint`: the status and each changed file's hash), and passes
+  `--force` to `git worktree remove` only when both match, since `--force` turns git's own check
+  off; a folder a removal moved aside counts its missing files
   as that removal's own (`ownDeletions`). The session-start note keeps its quick
   `git status` check, which counts any uncommitted file; it removes nothing, so being stricter
   there is safe.

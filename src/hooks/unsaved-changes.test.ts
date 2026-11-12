@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { removeWorktree, scanWorktrees } from "../worktrees/scan";
-import { hasUnsavedChanges } from "./unsaved-changes";
+import { folderFingerprint, hasUnsavedChanges, savedFingerprint } from "./unsaved-changes";
 
 const BASE = "refs/remotes/origin/main";
 
@@ -128,6 +128,29 @@ describe("hasUnsavedChanges", () => {
     writeFileSync(join(main, "..", "attributes"), "a.txt filter=strip\n");
     writeFileSync(join(worktree, "a.txt"), "v3\nOUTPUT: three hours of compute\n");
     expect(unsaved()).toBe(true);
+  });
+
+  test("a file with ident is judged on its bytes on disk: text inside $Id: …$ is the folder's", () => {
+    const { main, worktree, unsaved } = world();
+    writeFileSync(join(main, "a.txt"), "$Id$\n");
+    git(main, "commit", "-qam", "ident marker");
+    git(main, "update-ref", BASE, "HEAD");
+    git(main, "config", "core.attributesFile", join(main, "..", "attributes"));
+    writeFileSync(join(main, "..", "attributes"), "a.txt ident\n");
+    writeFileSync(join(worktree, "a.txt"), "$Id: typed by hand$\n");
+    expect(unsaved()).toBe(true);
+  });
+
+  test("the fingerprint matches the proof until a changed file is rewritten", () => {
+    const { worktree } = world();
+    const env = cleanGitEnv();
+    writeFileSync(join(worktree, "a.txt"), "v3\n");
+    const proof = savedFingerprint(worktree, BASE, env);
+    expect(proof).not.toBeNull();
+    expect(folderFingerprint(worktree, env)).toBe(proof);
+    // Same status line (" M a.txt"), other bytes: the second look must see it.
+    writeFileSync(join(worktree, "a.txt"), "rewritten meanwhile\n");
+    expect(folderFingerprint(worktree, env)).not.toBe(proof);
   });
 
   test("a staged version the base never held is unsaved, even when the folder's copy is saved", () => {

@@ -12,9 +12,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   and file mode are a version that same path had in a commit of `origin/<base>`'s history after
   the folder's own HEAD, and a deleted file when the base deleted it too. Anything that exists
   only in the folder still keeps it, and so does a file put back to an older version, a symlink,
-  a submodule, a conflict or any git call that fails. A file with a filter driver (a notebook
-  output stripper, Git LFS) is compared as it is on disk. The removal proves it again right
-  before it removes the folder, and only then forces git past its own refusal.
+  a submodule, a conflict or any git call that fails. A file with a filter driver or `ident` (a
+  notebook output stripper, Git LFS) is compared as it is on disk. The removal proves it again
+  right before it removes the folder, and only then forces git past its own refusal.
   `worktrees --clean` and the background clean use the rule; the session-start note keeps its
   quick check, so it may not name such a folder.
 
