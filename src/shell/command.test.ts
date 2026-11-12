@@ -366,6 +366,16 @@ describe("bash's `>|` is a redirect, not a pipe", () => {
 });
 
 describe("invocationOf", () => {
+  test("append assignments keep the following program", () => {
+    expect(invocationOf(["A+=1", "git", "push", "--force"])).toEqual({
+      program: "git",
+      args: ["push", "--force"],
+      computed: false,
+      prefix: ["A+=1"],
+    });
+    expect(invocationOf(["_A1+=value"])).toBeUndefined();
+    expect(invocationOf(["1A+=value", "git"])?.program).toBe("1a+=value");
+  });
   test("finds the program behind assignments, keywords, redirections and wrappers", () => {
     expect(invocationOf(["CI=1", "sudo", "/usr/bin/gh.exe", "pr"])).toEqual({
       args: ["pr"],

@@ -1013,8 +1013,8 @@ export function judgeLaunch(launch: Launch, ctx: GuardContext, env: Env): Verdic
     if (!effortAllowed(launch.effort))
       return { ...deny(null, effortDenial(launch.effort, false)), ran };
     const real = resolveLaunchModel(launch.model, ctx, env);
-    // Herdr's --asked records the person's prior approval at the command boundary;
-    // unlike Agent, it has no agent definition or reason-line convention.
+    // Herdr has no agent definition or reason-line convention. The Bash judge always
+    // asks for premium launches; a command-line --asked flag cannot silence the hook.
     const verdict: Judged =
       real.tier === "fable" || (real.tier === "opus" && launch.effort === OPUS_ASK_EFFORT)
         ? {

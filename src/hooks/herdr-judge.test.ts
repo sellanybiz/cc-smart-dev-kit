@@ -83,7 +83,9 @@ test("Herdr launch policy reads only explicit launch fields", () => {
   for (const args of ["--model fable --effort high", "--model opus --effort max"]) {
     const line = start.replace("--model sonnet --effort high", args);
     expect(judgeBash(readBash(line), ctx)?.decision).toBe("ask");
-    expect(judgeBash(readBash(line.replace(" -- work", " --asked -- work")), ctx)).toBeNull();
+    expect(judgeBash(readBash(line.replace(" -- work", " --asked -- work")), ctx)?.decision).toBe(
+      "ask",
+    );
   }
   expect(
     judgeBash(readBash(start), {
@@ -130,7 +132,7 @@ test("Herdr caps each mode pair for linked and independent starts", () => {
   ).toBe("ask");
 });
 
-test("remote machines fail closed and asked only skips premium and remote asks", () => {
+test("remote machines fail closed even with asked", () => {
   const ctx = world();
   mkdirSync(dirname(ctx.paths.machinesFile), { recursive: true });
   writeFileSync(
@@ -147,9 +149,14 @@ test("remote machines fail closed and asked only skips premium and remote asks",
   ] as const) {
     const line = start.replace(" -- work", ` --on ${name} -- work`);
     expect(judgeBash(readBash(line), ctx)?.decision).toBe(expected);
-    expect(judgeBash(readBash(line.replace(" -- work", " --asked -- work")), ctx)).toBeNull();
+    expect(judgeBash(readBash(line.replace(" -- work", " --asked -- work")), ctx)?.decision).toBe(
+      expected,
+    );
   }
   writeFileSync(ctx.paths.machinesFile, "broken");
+  expect(
+    judgeBash(readBash(start.replace(" -- work", " --on worker --asked -- work")), ctx)?.decision,
+  ).toBe("ask");
   expect(
     judgeBash(readBash(start.replace(" -- work", " --on worker -- work")), ctx)?.decision,
   ).toBe("ask");
@@ -230,4 +237,118 @@ test("the hook asks outside git too", async () => {
     env,
   );
   expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("ask");
+});
+
+const identityRows: [string, string][] = [
+  ["bash", "HC_TERMINAL_ID+=x; hc ls"],
+  ["bash", "HC_TERMINAL_ID+=x hc ls"],
+  ...["export", "declare", "typeset", "local", "readonly"].map((cmd): [string, string] => [
+    "bash",
+    `${cmd} HC_TERMINAL_ID=x; hc ls`,
+  ]),
+  ["bash", "printf -v HC_TERMINAL_ID x; hc ls"],
+  ...["read", "mapfile", "readarray"].map((cmd): [string, string] => [
+    "bash",
+    `${cmd} HC_TERMINAL_ID; hc ls`,
+  ]),
+  ["powershell", "$env:hc_terminal_id = 'x'; hc ls"],
+  ...["Set-Item", "si", "New-Item", "ni"].map((cmd): [string, string] => [
+    "powershell",
+    `${cmd} env:hc_terminal_id x; hc ls`,
+  ]),
+  ["powershell", "[Environment]::SetEnvironmentVariable('HC_TERMINAL_ID', 'x'); hc ls"],
+];
+test.each(identityRows)("identity assignment %s %s denies", (dialect, line) => {
+  const verdict = judgeBash(
+    readBash(line, dialect === "powershell" ? "powershell" : "bash"),
+    world(),
+  );
+  expect(verdict?.decision).toBe("deny");
+  expect(verdict?.reason).toContain("HC_TERMINAL_ID");
+});
+test.each(["machines -- allow worker", "machines typo", "machines allow"])("%s asks", (args) => {
+  expect(judgeBash(readBash(`${COMMAND} herdr ${args}`), world())?.decision).toBe("ask");
+});
+test("computed export asks, unset passes, and unrelated computed programs pass", () => {
+  expect(judgeBash(readBash("export $V=x; hc ls"), world())?.decision).toBe("ask");
+  expect(judgeBash(readBash("env -u HC_TERMINAL_ID hc ls"), world())).toBeNull();
+  expect(judgeBash(readBash("$PY -m pytest -k herdr"), world())).toBeNull();
+});
+test("help and raw read flags stay silent", () => {
+  for (const args of [
+    "start --help",
+    "answer --help",
+    "machines --help",
+    "machines",
+    "machines list",
+  ])
+    expect(judgeBash(readBash(`${COMMAND} herdr ${args}`), world())).toBeNull();
+  for (const args of ["--json ls", "-V", "--skill", "send --help", "kill -h"])
+    expect(judgeBash(readBash(`hc ${args}`), world())).toBeNull();
+  expect(judgeBash(readBash("hc attach t1"), world())?.reason).toContain("herdr send");
+});
+test("asked never widens a mode and bypass lead names the lead", () => {
+  expect(
+    judgeBash(
+      readBash(start.replace("manual", "dontAsk").replace(" -- work", " --asked -- work")),
+      world(),
+    )?.decision,
+  ).toBe("deny");
+  const verdict = judgeBash(readBash(start), {
+    ...world(),
+    input: { permission_mode: "bypassPermissions" },
+  });
+  expect(verdict?.decision).toBe("deny");
+  expect(verdict?.reason).toContain("lead's own mode");
+});
+test.each([
+  start.replace("sonnet", "fable"),
+  start.replace(" -- work", " --on unknown --asked -- work"),
+  `${COMMAND} herdr answer t1 --expect q --expect-turn 1 --option A`,
+])("unattended ask denies %s", (line) => {
+  const ctx = world();
+  const verdict = judgeBash(readBash(line), {
+    ...ctx,
+    env: { ...ctx.env, CLAUDE_CODE_SESSION_ATTENDED: "0" },
+  });
+  expect(verdict?.decision).toBe("deny");
+  expect(verdict?.reason).toContain("Nobody answers");
+});
+
+test("PowerShell raw writes deny and premium starts ask even with asked", () => {
+  const ctx = world();
+  expect(judgeBash(readBash("hc send t1 hi", "powershell"), ctx)?.decision).toBe("deny");
+  expect(
+    judgeBash(
+      readBash(
+        start.replace("sonnet", "fable").replace(" -- work", " --asked -- work"),
+        "powershell",
+      ),
+      ctx,
+    )?.decision,
+  ).toBe("ask");
+});
+
+test.each([
+  ["fable", "high"],
+  ["opus", "max"],
+])("asked still asks for %s %s", (model, effort) => {
+  const line = `${COMMAND} herdr start --model ${model} --effort ${effort} --mode manual --asked -- work`;
+  expect(judgeBash(readBash(line), world())?.decision).toBe("ask");
+});
+test.each(["unknown", "production", "broken"])("asked still asks for remote %s", (kind) => {
+  const ctx = world();
+  mkdirSync(dirname(ctx.paths.machinesFile), { recursive: true });
+  writeFileSync(
+    ctx.paths.machinesFile,
+    kind === "broken"
+      ? "broken"
+      : JSON.stringify({
+          version: 1,
+          machines: { worker: kind === "production" ? { allow: true, production: true } : {} },
+        }),
+  );
+  expect(
+    judgeBash(readBash(start.replace(" -- work", " --on worker --asked -- work")), ctx)?.decision,
+  ).toBe("ask");
 });
