@@ -7,6 +7,7 @@ import { writeBrief } from "./brief";
 test("brief is private, carries task and linked reporting only", async () => {
   const state = tempDir();
   const file = await writeBrief(state, "core", "kit-one", "Do the work.", true, "#7");
+  expect(file).toBe(`${state}/herdr/briefs/core-kit-one/brief.md`);
   expect(statSync(file).mode & 0o777).toBe(0o600);
   expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
   expect(readFileSync(file, "utf8")).toContain("Your task: #7\n");

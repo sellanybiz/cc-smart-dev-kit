@@ -463,10 +463,13 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 | `machines [list \| allow <name> \| forget <name> \| production <name>]` | Lists or changes remote approval rules. Changes ask you first. |
 
 Remote starts require `--on <machine>` and `--cwd <dir>` on that machine. They check its
-kit version, copy the brief with `hc file write --on`, then launch. A remote child saves
-reports on its own machine; start and wait print `hc exec … ls` and `hc file read` lines
+kit version, copy the brief with `hc file write --on`, then launch with `--add-dir` for
+the private per-child brief/report folder. A remote child saves
+reports on its own machine; start and wait print `hc exec … find` and `hc file read` lines
 for retrieval. The exec line is for your own terminal: Claude cannot run raw hc writes
-or exec through the Bash judge. Reads are allowed; `hc events` must run in the background.
+or exec through the Bash judge. Local reads are allowed; remote reads ask for production
+or unallowlisted machines, and unreadable machine rules ask too. `hc events` must run in
+the background.
 Use `hc attach <terminal>` yourself for dialogs that cannot be relayed.
 
 Remote approval rules live in `~/.config/cc-smart-dev-kit/machines.json` (not the project's
@@ -482,8 +485,7 @@ removes the entry. A missing file means no approvals; a broken file is an error,
 pass. These rules do not register machines with Herdr or grant network access.
 
 The [design page](docs/design/herdr.md) explains ownership, report files, the relay's remaining
-race boundary and live proofs still owed. Doctor currently says **core not checked** rather
-than risk starting Herdr during a diagnostic read.
+race boundary and live proofs still owed. See [doctor](#doctor) for its current diagnostic limits.
 
 ### Tasks (1.10.0)
 

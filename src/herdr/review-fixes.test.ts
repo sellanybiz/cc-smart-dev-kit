@@ -52,10 +52,10 @@ test("3 report names unique and 4 no global lock for brief writes", async () => 
   const a = reportPath(dir, "core", "kit-one"),
     b = reportPath(dir, "core", "kit-one");
   expect(a).not.toBe(b);
-  expect(a).toMatch(/\.report-\d{4}-.*Z.*\.md$/);
+  expect(a).toMatch(/\/report-\d{4}-.*Z.*\.md$/);
   await withLock(dir, async () => {
     await writeBrief(dir, "core", "kit-one", "brief", true);
-    await writePrivate(dir, a, "report");
+    await writePrivate(a, "report");
   });
   expect(readFileSync(a, "utf8")).toBe("report");
 });

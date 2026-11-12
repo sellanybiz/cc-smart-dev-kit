@@ -49,7 +49,7 @@ import {
   validChildName,
 } from "./labels";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
-import { cliModeFlag, type HerdrArgs, parseHerdrArgs } from "./words";
+import { cliModeFlag, type HerdrArgs, parseHerdrArgs, STATUS_MESSAGE_LIMIT } from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
 export const SCREEN_LINES = 120;
@@ -457,8 +457,8 @@ function remoteReportFolder(ctx: HerdrContext): string {
 function remoteReportHint(ctx: HerdrContext, machine: string): void {
   const folder = remoteReportFolder(ctx);
   ctx.out.say(`Remote reports stay in ${machine}:${folder}`);
-  ctx.out.say(`hc exec --on ${machine} ls -1 ${folder}`);
-  ctx.out.say(`hc file read --on ${machine} ${folder}/<file>`);
+  ctx.out.say(`hc exec --on ${machine} find ${folder} -type f`);
+  ctx.out.say(`hc file read --on ${machine} ${folder}/<child>/<file>`);
 }
 async function remoteBrief(
   r: HcRunner,
@@ -468,7 +468,13 @@ async function remoteBrief(
 ): Promise<string> {
   // Ask cliPaths for the default layout, independent of this machine's config override.
   const defaults = cliPaths({ HOME: ctx.paths.home });
-  const rel = join(relative(defaults.home, defaults.stateDir), "herdr", "briefs", basename(file));
+  const rel = join(
+    relative(defaults.home, defaults.stateDir),
+    "herdr",
+    "briefs",
+    basename(dirname(file)),
+    basename(file),
+  );
   execRemote(r, machine, ["mkdir", "-p", "-m", "700", dirname(rel)]);
   execRemote(r, machine, ["chmod", "700", dirname(rel)]);
   const answer: unknown = JSON.parse(
@@ -566,7 +572,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     a.task,
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
-  const first = `Read your brief at ${path} and do it.`;
+  const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
     ...(a.independent ? ["--no-parent"] : ["--outlive-parent"]),
@@ -586,6 +592,8 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
   args.push(
     "claude",
+    "--add-dir",
+    dirname(path),
     "--model",
     a.model,
     "--effort",
@@ -684,6 +692,11 @@ function answer(
     child.turn !== a.expectTurn
   )
     return changed();
+  if (s.kind === "permission" && (s.msg?.length ?? 0) >= STATUS_MESSAGE_LIMIT)
+    return refuse(
+      ctx,
+      `The permission message may be cut short; answer it in its pane: hc attach ${target}`,
+    );
   if (/^approve plan/i.test(s.msg ?? ""))
     return refuse(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
   const screen = hcRead(r, target, SCREEN_LINES).text;
@@ -771,7 +784,7 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
     }
   }
   const file = reportPath(ctx.paths.stateDir, me.core, self.name ?? self.address);
-  await writePrivate(ctx.paths.stateDir, file, `${text}\n`);
+  await writePrivate(file, `${text}\n`);
   ctx.out.line("warn", `The lead cannot receive a report. Saved it at ${file}`);
   return 0;
 }
@@ -841,7 +854,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         if (child.status?.state === "blocked")
           return refuse(ctx, `Answer it with ${COMMAND} herdr answer.`);
         if (!child.status) return refuse(ctx, `Answer it in its pane: hc attach ${parsed.target}`);
-        send(r, parsed.target, escapeReport(parsed.text, "lead"));
+        send(r, child.address, escapeReport(parsed.text, "lead"));
         ctx.out.line("ok", "Message sent.");
         return 0;
       }

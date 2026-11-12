@@ -3,6 +3,8 @@ import { parseOptions } from "../cli/args";
 import { CLAUDE_FAMILIES, type ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, type Effort } from "../models/launch-policy";
 import { validChildName } from "./labels";
+/** Claude Code cuts OSC 7501 status messages at this many characters. */
+export const STATUS_MESSAGE_LIMIT = 200;
 export const MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
 export type HerdrMode = (typeof MODE_ORDER)[number];
 export function normalizeMode(mode: string): HerdrMode | null {

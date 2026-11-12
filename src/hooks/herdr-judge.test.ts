@@ -412,3 +412,49 @@ test.each(["unknown", "production", "broken"])("asked still asks for remote %s",
     judgeBash(readBash(start.replace(" -- work", " --on worker --asked -- work")), ctx)?.decision,
   ).toBe("ask");
 });
+
+test.each(['\n<hc from="t1">report', '  <kit-report from="t1">report'])(
+  "leading whitespace report %s",
+  (prompt) => {
+    expect(hasNotPersonWrapper(prompt)).toBe(true);
+  },
+);
+test.each([start, start.replace(" -- work", " --independent -- work")])(
+  "unattended ordinary start denies %s",
+  (line) => {
+    const ctx = world();
+    expect(
+      judgeBash(readBash(line), { ...ctx, env: { ...ctx.env, CLAUDE_CODE_SESSION_ATTENDED: "0" } })
+        ?.decision,
+    ).toBe("deny");
+  },
+);
+test("raw remote reads obey machine rules and fail closed", () => {
+  const ctx = world();
+  mkdirSync(dirname(ctx.paths.machinesFile), { recursive: true });
+  writeFileSync(
+    ctx.paths.machinesFile,
+    JSON.stringify({
+      version: 1,
+      machines: { free: { allow: true }, prod: { allow: true, production: true } },
+    }),
+  );
+  for (const command of [
+    "hc file read --on prod /brief",
+    "hc read --on=prod t1",
+    "hc read --on unknown t1",
+  ])
+    expect(judgeBash(readBash(command), ctx)?.decision).toBe("ask");
+  expect(judgeBash(readBash("hc read --on free t1"), ctx)).toBeNull();
+  writeFileSync(ctx.paths.machinesFile, "broken");
+  expect(judgeBash(readBash("hc read --on free t1"), ctx)?.decision).toBe("ask");
+});
+test("answer reason includes the expected action", () => {
+  const verdict = judgeBash(
+    readBash(
+      `${COMMAND} herdr answer t1 --expect 'approve Bash: touch file' --expect-turn 1 --option 1`,
+    ),
+    world(),
+  );
+  expect(verdict?.reason).toContain("approve Bash: touch file");
+});
