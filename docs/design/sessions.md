@@ -67,11 +67,19 @@ lives, so the agent can be resumed.
   pid and the same start time. A lock with no start has no owner. An owner may release its own
   session lock, or a builder's lock once the finished proof holds, with no idle wait.
   Everything else in the verdict still applies. A live lock held by someone else stays, and its
-  line says who removes it.
+  line says who removes it. Owner mode and the skip below work on Linux, in the initial PID
+  namespace only (the lock proofs' own limit); anywhere else nothing is skipped and the folder is
+  kept.
+- **The owner when no lock proves it.** After `ExitWorktree` keep, Claude Code has usually
+  released the session's lock, so there is no lock to match. The owner is then the nearest
+  process above the `worktrees` command whose listed name is `claude` (argv[0] as `ps` prints it).
+  That claims nothing about the worktree: only the children of this command's own session are
+  skipped, and any other session, shell or program in the folder still holds it. A launch as
+  `node …/cli.js` does not match, and the folder is kept: the safe side.
 - **The owner's own children.** In owner mode only, a program is not counted as using the
   folder when its chain up to the owner's `claude` has no shell, its only tie is its working
   folder (its command line does not name the folder), and it is not `claude` itself — these are
-  the session's MCP servers. A Bash job (Claude Code runs Bash under a `zsh -c` child), a dev
+  the session's MCP servers. A Bash job (Claude Code runs Bash under a shell child, `zsh -c` here), a dev
   server, a Monitor or a program started from a file inside still holds it; so does another
   `claude` below the owner. Limit: a Bash command that `exec`s a program replaces its shell and
   reads as a non-shell child. Owner mode also ignores the owner's own session record, whose
@@ -95,9 +103,16 @@ names `ExitWorktree` (keep) with `worktrees --remove`, or closing the session, a
   time. `git gc` runs `git reflog expire --all`, which rewrites every worktree's `logs/HEAD`
   with nothing changed, so that file time would read as fresh activity after each gc. A bad,
   empty or future entry is ignored.
-- **Held by a live branch.** A builder merged into its lead's plan branch has commits that are
-  not on the base. When its head is an ancestor of the branch checked out in another worktree
-  that is present on disk, attached and not prunable, the work is held: the **folder** may go.
+- **Held by a live branch — a finished builder only.** A builder merged into its lead's plan
+  branch has commits that are not on the base. When the builder is proved finished and its head is
+  an ancestor of the branch checked out in another worktree that is present on disk, attached and
+  not prunable, the work is held: the **folder** may go. A finished builder is one whose lock is a
+  builder's (a lock that reaches the verdict already needed the finished proof), or one with no
+  lock (Claude Code released it itself) whose folder is named `agent-<id>` and whose
+  `subagents/agent-<id>.meta.json` says `finished: true` for this folder. Every other worktree — a
+  lead's plan worktree, a session's, any folder with another name — needs the base, because a
+  builder cut from its head would otherwise make the plan read as finished while its commits are
+  nowhere else.
   The **branch** goes only when the base holds it; otherwise the line says "kept branch: its
   work is held by <other>, not yet on <base>". Deleting those kept branches later is an open
   follow-up project task.

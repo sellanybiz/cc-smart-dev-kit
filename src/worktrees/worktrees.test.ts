@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
@@ -1579,7 +1580,7 @@ describe("the worktrees command", () => {
     }
     expect(out).toEqual([
       "No `worktrees.base` in .claude/cc-smart-dev-kit.json: judging against main.\n",
-      "Busy: another `cc-smart-dev-kit worktrees` is still removing worktrees. Nothing removed.",
+      `Busy: another \`${COMMAND} worktrees\` is still removing worktrees. Nothing removed.`,
     ]);
     expect(existsSync(worktree)).toBe(true);
   });
@@ -1979,6 +1980,40 @@ test("unproved finished marker keeps a builder even when its pid is gone", () =>
   );
 });
 
+test("a live builder lock with no start time: no one can prove they own it, and the line says so", () => {
+  const { main, worktree } = repo();
+  git(main, "worktree", "lock", "--reason", "claude agent agent-x (pid 424242)", worktree);
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    ownerMode: true,
+    facts: {
+      containers: [],
+      mounts: [],
+      programs: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => false,
+      processStartTime: () => "proc:123",
+      parentOf: () => 424242,
+      agentFinished: () => true,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toEqual({
+    finished: false,
+    held: false,
+    why: "locked by live or unprovable Claude session's builder agent-x; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished",
+  });
+  expect(removeWorktree(main, found.listed, options).said).toEqual([
+    `kept ${worktree}: locked by live or unprovable Claude session's builder agent-x; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished`,
+  ]);
+});
+
 test("a builder resumed between scan and removal keeps its lock", () => {
   const { main, worktree } = repo();
   git(
@@ -2105,9 +2140,27 @@ test("busy --clean returns without waiting and takes the lock only once", async 
   expect(result).toBe(0);
   expect(calls).toBe(1);
   expect(out.at(-1)).toBe(
-    "Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.",
+    `Another \`${COMMAND} worktrees\` is removing worktrees right now. Nothing done.`,
   );
   expect(existsSync(worktree)).toBe(true);
+});
+
+test("`--remove` of a folder that is no worktree says so, with the command built from its name", async () => {
+  const { main } = repo();
+  const stranger = tempDir("not-a-worktree");
+  const out: string[] = [];
+  const result = await runWorktrees(
+    cliPaths({ HOME: tempDir("home"), CLAUDE_CONFIG_DIR: tempDir("claude") }),
+    { clean: false, json: false, noFetch: true, remove: stranger },
+    cleanGitEnv(),
+    main,
+    { print: (line) => out.push(line), error: (line) => out.push(line) },
+    async () => ({ close() {} }),
+  );
+  expect(result).toBe(1);
+  expect(out.at(-1)).toBe(
+    `${stranger} is not a worktree of this repo. \`${COMMAND} worktrees\` lists them.`,
+  );
 });
 
 test("explicit removal reports a port failure without waiting", async () => {

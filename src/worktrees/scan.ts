@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -513,7 +513,8 @@ function ownerSession(listed: ListedWorktree, look: MachineLook): OwnerSession |
 }
 
 /**
- * The branch of ANOTHER worktree that holds the work of `listed`, or null. Only ancestry counts
+ * The branch of ANOTHER worktree that holds the work of `listed`, or null; asked only for a
+ * builder proved finished (`provedFinishedBuilder`). Only ancestry counts
  * (never a replay onto a branch that is still being worked on), and the holder must be a worktree
  * whose folder is there and that stands on a branch: a detached or vanished one holds nothing
  * for long. One git call names every branch that contains the head.
@@ -551,6 +552,22 @@ function holdingBranch(
     }
   }
   return null;
+}
+
+/**
+ * True when `listed` is a builder proved finished, the only worktree another branch's holding
+ * may stand in for the base (`holdingBranch`). Its lock parses as a builder's: a lock that
+ * reaches the verdict is a stale or owned one, and both already needed the finished proof
+ * (`releasableClaudeLock`). With no lock, Claude Code has released it itself, so the folder is
+ * named `agent-<id>` and the finished marker of that id must name this folder. A lead's plan
+ * worktree, a session's and any other fail both: a builder cut from a plan's head holds the
+ * plan's work only until the plan is merged, and the plan itself needs the base.
+ */
+function provedFinishedBuilder(listed: ListedWorktree, look: MachineLook): boolean {
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (lock !== null) return lock.kind === "agent";
+  if (listed.locked) return false;
+  return finishedAgent(basename(listed.path), listed.path, look);
 }
 
 function judgeOne(
@@ -592,7 +609,9 @@ function judgeOne(
   const facts: WorktreeFacts = {
     aheadOfBase,
     heldByBranch:
-      aheadOfBase > 0 && mergedBy === null ? holdingBranch(repo, listed, all, look.env) : null,
+      aheadOfBase > 0 && mergedBy === null && provedFinishedBuilder(listed, look)
+        ? holdingBranch(repo, listed, all, look.env)
+        : null,
     base: look.label,
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
@@ -679,6 +698,9 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
     const gone = lockerGone(reason, look);
     if (gone)
       return `the session that locked it has ended, but builder ${lock.name} could not be proved finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
+    // Ownership needs the lock's start time (`ownsClaudeLock`); without one no session can claim it.
+    if (lock.start === null || !/^\d+$/.test(lock.start))
+      return `locked by live or unprovable Claude session's builder ${lock.name}; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished`;
     return `locked by live or unprovable Claude session's builder ${lock.name}; its lead removes it after the merge, or it goes when that session ends and it is proved finished`;
   }
   return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends" : "; its locker is not proved gone"}`;
