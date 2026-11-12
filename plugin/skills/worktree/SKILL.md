@@ -77,12 +77,15 @@ say in one line that the worktree looks finished, give these steps, and let the 
   `ExitWorktree` with `action: "keep"` (it moves the session back to where it started and
   releases the session's lock); then, from the main checkout or any other checkout of the
   repo, run `cc-smart-dev-kit worktrees --remove <its worktree>` with `run_in_background`:
-  a removal can take minutes. It removes the folder, and the branch only when the base holds
-  its work. It proves the caller is the session that owns the worktree, so it works without
-  the one-hour idle wait; it refuses the folder you stand in.
+  a removal can take up to ten minutes, and the Bash tool stops waiting after two. It removes
+  the folder, and the branch only when the base holds its work. It skips the one-hour idle wait;
+  it releases a lock only for the session that holds it; it leaves out only your own session's
+  MCP servers and record. Everything else that uses the folder, such as another session, a shell
+  or a program, still keeps it. It refuses the folder you stand in.
 - **Not finished:** say why and stop. A worktree with uncommitted work, local files or commits
   that are not merged is someone's work. `cc-smart-dev-kit worktrees` lists the repo's
-  worktrees and `--clean` removes the finished ones of other sessions.
+  worktrees and `--clean` removes the finished ones of other sessions; when you run `--clean`,
+  run it with `run_in_background` too, for the same reason.
 
 ## Finding a session again
 

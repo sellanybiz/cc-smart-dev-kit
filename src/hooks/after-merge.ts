@@ -57,6 +57,7 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { resolveWorkflow } from "../workflow/resolve";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
@@ -1518,22 +1519,51 @@ export function mergeOutcome(params: {
 }
 
 /**
- * The note that clears the session's own worktree once its pull request merged. ExitWorktree
+ * The note about the session's own worktree once its pull request merged. ExitWorktree
  * `remove` is refused once the branch has merged the base (Claude Code counts the base's
  * commits as work), so the session leaves with `keep` (Claude Code releases its own lock) and
  * removes the folder with the plugin's finished-worktree check (`worktrees --remove`,
- * `src/worktrees/`), which proves the session owns it and removes the folder, and the branch
- * once the base holds it, only when the worktree is finished. A session that did not enter the
- * worktree with EnterWorktree stands in it and cannot remove it: it goes when the session ends.
+ * `src/worktrees/`), which skips the one-hour wait, releases a lock only for the session that
+ * holds it, and removes the folder, and the branch once the base holds it, only when the
+ * worktree is finished. A session that did not enter the worktree with EnterWorktree stands in
+ * it and cannot remove it: it goes when the session ends.
+ *
+ * `clear` is the `clearWorktreeAfterMerge` setting. On: the session clears it now. Off: one line
+ * to the person that it looks finished, the same steps, and the decision is theirs
+ * (`plugin/skills/worktree/SKILL.md` says the same).
  */
-export function clearWorktreeNote(path: string, branch: string): string {
-  return [
-    `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
+export function clearWorktreeNote(path: string, branch: string, clear: boolean): string {
+  const merged = `That merged the pull request of this worktree's branch, ${branch}.`;
+  const steps = [
     "1. Stop the dev servers and Monitors this session started in it (TaskStop).",
-    '2. ExitWorktree with action "keep": the session goes back to the main checkout.',
+    '2. ExitWorktree with action "keep": the session goes back to the folder it started in.',
     `3. Run ${COMMAND} worktrees --remove "${path}" with run_in_background: it removes the worktree only when it is finished, and says why when it keeps it.`,
+  ];
+  if (!clear) {
+    return [
+      `${merged} This worktree looks finished, but the clearWorktreeAfterMerge setting is off: tell the user in one line, give them these steps, and let them decide. Do not clear it yourself.`,
+      ...steps,
+    ].join("\n");
+  }
+  return [
+    `${merged} Clear the worktree now, unless the user wants more work on this branch:`,
+    ...steps,
     `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), the session stands in it and cannot remove it: tell the user it is finished, and that it goes when this session ends. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
   ].join("\n");
+}
+
+/**
+ * Whether the session clears its own worktree after a merge: the resolved
+ * `clearWorktreeAfterMerge`. A workflow file that cannot be read leaves it unknown, and the
+ * folder is kept: the note only asks the person.
+ */
+function clearsAfterMerge(context: HookContext): boolean {
+  try {
+    return resolveWorkflow(context.paths, context.project.config).clearWorktreeAfterMerge.value;
+  } catch {
+    // The person's own workflow file is broken (`WorkflowConfigError`): nothing is cleared unasked.
+    return false;
+  }
 }
 
 /**
@@ -1636,5 +1666,8 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
     startAutoClean(context, repo, "merge");
   }
   if (outcome.clear === null) return SILENT;
-  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch));
+  return addContext(
+    event,
+    clearWorktreeNote(outcome.clear.path, outcome.clear.branch, clearsAfterMerge(context)),
+  );
 }

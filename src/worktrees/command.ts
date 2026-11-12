@@ -346,7 +346,7 @@ export async function runWorktrees(
         );
         return 1;
       }
-      print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
+      print(`Another \`${COMMAND} worktrees\` is removing worktrees right now. Nothing done.`);
       return 0;
     }
   }
@@ -372,9 +372,7 @@ export async function runWorktrees(
         (worktree) => worktree.state !== "main" && samePath(worktree.listed.path, target),
       );
       if (found === undefined) {
-        error(
-          `${target} is not a worktree of this repo. \`cc-smart-dev-kit worktrees\` lists them.`,
-        );
+        error(`${target} is not a worktree of this repo. \`${COMMAND} worktrees\` lists them.`);
         return 1;
       }
       if (found.state === "gone") {

@@ -698,6 +698,9 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
     const gone = lockerGone(reason, look);
     if (gone)
       return `the session that locked it has ended, but builder ${lock.name} could not be proved finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
+    // Ownership needs the lock's start time (`ownsClaudeLock`); without one no session can claim it.
+    if (lock.start === null || !/^\d+$/.test(lock.start))
+      return `locked by live or unprovable Claude session's builder ${lock.name}; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished`;
     return `locked by live or unprovable Claude session's builder ${lock.name}; its lead removes it after the merge, or it goes when that session ends and it is proved finished`;
   }
   return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends" : "; its locker is not proved gone"}`;
