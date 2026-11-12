@@ -75,7 +75,7 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
-| Failure | A guard (git, merge, main-folder, message, job-route, agent, session-escape, user-away) | Any other plugin hook |
+| Failure | A guard (git, merge, main-folder, job-route, agent, session-escape, user-away) | Any other plugin hook |
 |---|---|---|
 | Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 |
 | The input is not JSON | **ask**, in general | one stderr line, exit 0 |

@@ -45516,7 +45516,6 @@ function parseFresh(script) {
 // src/hooks/agent-guard.ts
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
-var SEND_MESSAGE_TOOL = "SendMessage";
 var PRINT_RUN = "claude -p";
 var HERDR_START = "herdr start";
 var FORK = "fork";
@@ -47820,6 +47819,7 @@ function openPhasesOf(paths, project, caller) {
 
 // src/hooks/keep-going.ts
 init_io();
+var SEND_MESSAGE_TOOL = "SendMessage";
 var SUBAGENT_WORK = [...AGENT_TOOLS, ...WORKFLOW_TOOLS, SEND_MESSAGE_TOOL];
 var KEEP_GOING = "keep-going";
 var WAIT_MARK = "Waiting for:";

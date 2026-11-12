@@ -886,7 +886,7 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
     branch instead; the line names the one line to add;
   - as information (`·`), each plugin hook the project's `ownHooks` turns off here, and each
     name it still lists that silences nothing: a retired hook (`serena-root`, `crew-role`,
-    `lead-notes`) or one no project can switch off (`job-route`). Accepted, it can go;
+    `lead-notes`, `message-guard`) or one no project can switch off (`job-route`). Accepted, it can go;
   - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
     answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
     name: both would answer (§ The hooks);
@@ -2849,7 +2849,7 @@ every question it holds.
 | `protectedBranches` | The branches the git guard asks about before a push. Default `["main"]`. |
 | `checks.fast` | The fast check a session runs before it stops: one command, as you would type it (`"bun run typecheck && bun test src/changed"`). The `verify-gate` hook blocks a stop **once per change** when the session changed files and no Bash or PowerShell call ran this command after the last change (§ The hooks). A field of 1.1.0: a project that sets it needs `"requires": ">=1.1"`. |
 | `sessionNames` | `true`: each session names itself after its task. Off when left out. |
-| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root` from 0.6.0; `crew-role` and `lead-notes` from 2.0.0) is still accepted and silences nothing. `session-escape-guard` cannot be listed: no project can switch it off. |
+| `ownHooks` | The plugin hooks this project still runs as its own copy (in its own settings): exactly those stay silent here, so nothing runs twice. `["git-guard"]` while the project still has its own git guard; empty it once that copy is gone (§ The hooks). A retired hook name (`serena-root` from 0.6.0; `crew-role` and `lead-notes` from 2.0.0; `message-guard` from 4.2.1) is still accepted and silences nothing. `session-escape-guard` cannot be listed: no project can switch it off. |
 | `instructions` | Accepted now. Today a project loads the opt-in instructions with its own import line (§ Instructions, skills and agents); the field does not load them yet. |
 | `autoMode` | Used now: `setup` copies it into your settings ([The auto-mode block](#the-auto-mode-block)). |
 | `jobs.kinds` | Used now: the project's own heavy-job kinds over the defaults ([docs/jobs.md](docs/jobs.md) § What is heavy). A kind says which commands are heavy (`match`, `printOnly`, `about`) and has no size. `noSlotForFiles: true` lets a run on named files only (`bun run test:unit src/a.test.ts`), up to 10 files, skip the queue; above that it waits for the heavy slot. A run with no operand, or one that is not a file, still waits for the slot. `skipWords` (a subcommand word such as `run`) and `valuedFlags` (an option whose value is the next word) help it find the operands. `noSlotForFiles` is a field of 1.5.0: a project that sets it needs `"requires": ">=1.5"`. A file written for an older plugin may still set `gb`, `filesGb`, `maxFiles`, `workers` or `light`: it still loads, the queue ignores them, and `doctor` says once that they can go. |

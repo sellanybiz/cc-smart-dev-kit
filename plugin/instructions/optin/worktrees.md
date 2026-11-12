@@ -87,8 +87,8 @@ to do: end the turn with a short status; the notification brings you back.
 
 ## Talking to other sessions — only when it changes their work
 
-- **Only sessions of this repo.** `ListAgents` lists every session on the machine, other
-  projects too.
+- **Check the session's folder first.** `ListAgents` lists every session on the machine, other
+  projects too. Message another repo's session only when the work spans both repos.
 - **Worth a message:** a reset or schema change of a shared service; editing files another
   branch is changing; merging its branch into yours; a decision that spans both areas — agree
   who owns which files; the answer to a question it asked you.

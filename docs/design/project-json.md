@@ -55,7 +55,7 @@ old size fields and `workflow.crew`, raises no floor, and `doctor` says it can g
 `OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background` in 1.0.0, `verify-gate` and
 `agent-usage` in 1.1.0, `tier-view` in 1.3.0, `task-start` in 1.10.0, `keep-going` and
 `builder-finish` in 2.0.0; the retired `crew-role` and `lead-notes` keep their 1.0.0). The
-older retired and unswitchable names (`serena-root`, `job-route`) are older than 0.5.2, so they
+older retired and unswitchable names (`serena-root`, `message-guard`, `job-route`) are older than 0.5.2, so they
 raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
 the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the
 schema or `PLUGIN_HOOK_NAMES` gains one that is in neither, and when a since-table does not
