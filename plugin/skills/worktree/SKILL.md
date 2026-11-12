@@ -62,26 +62,30 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
 
 ## Clear it after the merge
 
-Builder worktrees belong to the build skill's local integration loop. Once their commits
-are preserved on the plan branch and no process uses them, remove those clean checkouts
-and merged branches. The workflow below covers the main session's worktree after its PR.
-
+Builder worktrees belong to the build skill's local integration loop; the lead removes
+them there (`/cc-smart-dev-kit:build` § 5). This section is for the session's own worktree
+once its work is merged.
 
 **The workflow says who clears it.** `cc-smart-dev-kit workflow show` prints
-`clearWorktreeAfterMerge`: with it on, clear the worktree in the same turn as the merge, unless
-the person wants more work on that branch. Left off — the default — say in one line that the
-worktree looks finished, give these steps, and let the person decide.
+`clearWorktreeAfterMerge`, on by default: clear the worktree in the same turn as the merge,
+unless the person wants more work on that branch. When a project or the person turned it off,
+say in one line that the worktree looks finished, give these steps, and let the person decide.
 
 - **Finished** means: every commit is on `origin/<base>`, nothing is uncommitted, no local
-  file that cannot be rebuilt, no running session, server or process uses it. Then leave:
-  Claude Code removes a clean worktree of an unnamed session on exit, and asks first for a
-  named one or one with work left.
-  `ExitWorktree` with `remove` does it now, from inside; from the main checkout,
-  `git worktree remove <path>` and `git branch -d <branch>`. A subagent's worktree is
-  removed when it made no changes. `cc-smart-dev-kit worktrees` lists the repo's finished
-  ones and `--clean` removes them.
-- **Not finished:** stop and ask. A worktree with uncommitted work, local files or commits
-  that are not merged is someone's work.
+  file that cannot be rebuilt, no other session, server or process uses it.
+- **The steps:** stop your dev servers and `Monitor`s working in it (`TaskStop`); call
+  `ExitWorktree` with `action: "keep"` (it moves the session back to where it started and
+  releases the session's lock); then, from the main checkout or any other checkout of the
+  repo, run `cc-smart-dev-kit worktrees --remove <its worktree>` with `run_in_background`:
+  a removal can take up to ten minutes, and the Bash tool stops waiting after two. It removes
+  the folder, and the branch only when the base holds its work. It skips the one-hour idle wait;
+  it releases a lock only for the session that holds it; it leaves out only your own session's
+  MCP servers and record. Everything else that uses the folder, such as another session, a shell
+  or a program, still keeps it. It refuses the folder you stand in.
+- **Not finished:** say why and stop. A worktree with uncommitted work, local files or commits
+  that are not merged is someone's work. `cc-smart-dev-kit worktrees` lists the repo's
+  worktrees and `--clean` removes the finished ones of other sessions; when you run `--clean`,
+  run it with `run_in_background` too, for the same reason.
 
 ## Finding a session again
 

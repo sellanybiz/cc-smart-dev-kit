@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -23,16 +23,21 @@ import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
+import { ancestorsBy } from "../jobs/ancestry";
 import { processIsGone } from "../jobs/windows";
 import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
+import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
 import {
+  CLAUDE_NAME,
   type ContainerMounts,
   containersUsing,
   dockerMounts,
   mountKeptWhy,
   mountPoints,
+  type OwnerSession,
+  programName,
   programsInside,
   type RunningProgram,
   runningPrograms,
@@ -184,12 +189,16 @@ export interface ScanOptions {
   /** The Claude config folder, for the running sessions' records. */
   claudeConfigDir: string;
   now?: number;
+  /** Only the explicit --remove command may prove the caller owns a lock. */
+  ownerMode?: boolean;
   /** A test hands in fakes; the default reads this machine. */
   facts?: {
     containers?: "unknown" | ContainerMounts[];
     mounts?: "unknown" | string[];
     programs?: "unknown" | RunningProgram[];
     sessions?: SessionRecord[];
+    parentOf?: typeof parentOf;
+    agentFinished?: typeof agentFinished;
     processStartTime?: typeof processStartTime;
     processIsGone?: typeof processIsGone;
     platform?: NodeJS.Platform;
@@ -420,6 +429,9 @@ interface MachineLook {
   /** Reads the start time of a process named by a Claude Code worktree lock. */
   processStartTime: typeof processStartTime;
   processIsGone: typeof processIsGone;
+  parentOf: typeof parentOf;
+  agentFinished: typeof agentFinished;
+  ownerMode: boolean;
   platform: NodeJS.Platform;
   pidNamespace: string | null;
   /** The ref commits are judged against: `origin/<base>`, or `against.ref`. */
@@ -437,20 +449,125 @@ interface MachineLook {
 const INITIAL_PID_NAMESPACE = `pid:[${0xeffffffc}]`;
 
 function staleClaudeLock(listed: ListedWorktree, look: MachineLook): boolean {
-  if (!listed.locked || listed.lockReason === undefined) return false;
-  const match = /^claude session .+ \(pid (\d+) start (\d+)\)$/.exec(listed.lockReason);
-  // The measured Linux format stores /proc ticks without our reader's `proc:` prefix.
-  // Other formats and platforms have not been proved, so their locks stay.
-  // PID numbers from a parent namespace are invisible inside a sandbox: ESRCH there is no
-  // proof. Linux's PID_NS_INIT_INO is fixed in include/uapi/linux/nsfs.h (0xEFFFFFFC).
-  if (match === null || look.platform !== "linux" || look.pidNamespace !== INITIAL_PID_NAMESPACE)
-    return false;
-  const pid = Number(match[1]);
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  if (look.processIsGone(pid)) return true;
-  const expected = `proc:${match[2]}`;
-  const actual = look.processStartTime(pid, expected);
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (!listed.locked || lock === null || !lockPlatform(look)) return false;
+  return (
+    lockerGone(listed.lockReason ?? "", look) &&
+    (lock.kind === "session" || finishedAgent(lock.name, listed.path, look))
+  );
+}
+
+/** A numeric identity is required for sessions; agents also allow a dead pid alone. */
+function lockerGone(reason: string, look: MachineLook): boolean {
+  const lock = parseClaudeLock(reason);
+  if (lock === null || !lockPlatform(look)) return false;
+  const expected = lock.start !== null && /^\d+$/.test(lock.start) ? `proc:${lock.start}` : null;
+  if (lock.kind === "session" && expected === null) return false;
+  if (look.processIsGone(lock.pid)) return true;
+  const actual = expected === null ? null : look.processStartTime(lock.pid, expected);
   return actual !== null && actual !== expected;
+}
+
+function lockPlatform(look: MachineLook): boolean {
+  return look.platform === "linux" && look.pidNamespace === INITIAL_PID_NAMESPACE;
+}
+
+function finishedAgent(name: string, path: string, look: MachineLook): boolean {
+  return /^agent-[A-Za-z0-9_-]+$/.test(name) && look.agentFinished(name.slice(6), path);
+}
+
+function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolean {
+  if (staleClaudeLock(listed, look)) return true;
+  if (!look.ownerMode || !lockPlatform(look)) return false;
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  return (
+    lock !== null &&
+    ownsClaudeLock(lock, process.pid, look.parentOf, look.processStartTime) &&
+    (lock.kind === "session" || finishedAgent(lock.name, listed.path, look))
+  );
+}
+
+/**
+ * The session that is removing its own worktree, or undefined: `--remove` only, on the machines
+ * the lock proofs cover. Its own MCP servers do not hold the folder (`programsUsing`).
+ *
+ * The Claude process is the one whose lock the owner proof matched. After ExitWorktree `keep`
+ * Claude Code has usually released a session's lock, so with no lock to prove, it is the nearest
+ * process above this command that the listing names `claude`. That claims nothing about the
+ * worktree: only the children of THIS command's own session are skipped, and the verdict still
+ * holds the folder for any other session, shell or program. The name is argv[0] as `ps` prints
+ * it: `claude` on a normal install. A launch as `node …/cli.js` does not match, and the folder
+ * is kept — the safe side.
+ */
+function ownerSession(listed: ListedWorktree, look: MachineLook): OwnerSession | undefined {
+  if (!look.ownerMode || !lockPlatform(look) || look.programs === "unknown") return undefined;
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (lock !== null && ownsClaudeLock(lock, process.pid, look.parentOf, look.processStartTime)) {
+    return { claudePid: lock.pid };
+  }
+  for (const pid of ancestorsBy(process.pid, look.parentOf)) {
+    const program = look.programs.find((one) => one.pid === pid);
+    if (program !== undefined && programName(program) === CLAUDE_NAME) return { claudePid: pid };
+  }
+  return undefined;
+}
+
+/**
+ * The branch of ANOTHER worktree that holds the work of `listed`, or null; asked only for a
+ * builder proved finished (`provedFinishedBuilder`). Only ancestry counts
+ * (never a replay onto a branch that is still being worked on), and the holder must be a worktree
+ * whose folder is there and that stands on a branch: a detached or vanished one holds nothing
+ * for long. One git call names every branch that contains the head.
+ */
+function holdingBranch(
+  repo: string,
+  listed: ListedWorktree,
+  all: ListedWorktree[],
+  env: Env,
+): string | null {
+  const containing = runGit(
+    repo,
+    ["for-each-ref", "--contains", listed.head, "--format=%(refname)", "refs/heads/"],
+    env,
+  );
+  if (!containing.ok) return null;
+  // The full ref name, cut by hand: `%(refname:short)` may print `heads/x` when a tag shares the name.
+  const prefix = "refs/heads/";
+  const holders = new Set(
+    containing.out
+      .split("\n")
+      .filter((ref) => ref.startsWith(prefix))
+      .map((ref) => ref.slice(prefix.length)),
+  );
+  for (const other of all) {
+    if (
+      other.branch !== null &&
+      other.branch !== listed.branch &&
+      holders.has(other.branch) &&
+      !other.prunable &&
+      !samePath(other.path, listed.path) &&
+      existsSync(other.path)
+    ) {
+      return other.branch;
+    }
+  }
+  return null;
+}
+
+/**
+ * True when `listed` is a builder proved finished, the only worktree another branch's holding
+ * may stand in for the base (`holdingBranch`). Its lock parses as a builder's: a lock that
+ * reaches the verdict is a stale or owned one, and both already needed the finished proof
+ * (`releasableClaudeLock`). With no lock, Claude Code has released it itself, so the folder is
+ * named `agent-<id>` and the finished marker of that id must name this folder. A lead's plan
+ * worktree, a session's and any other fail both: a builder cut from a plan's head holds the
+ * plan's work only until the plan is merged, and the plan itself needs the base.
+ */
+function provedFinishedBuilder(listed: ListedWorktree, look: MachineLook): boolean {
+  const lock = parseClaudeLock(listed.lockReason ?? "");
+  if (lock !== null) return lock.kind === "agent";
+  if (listed.locked) return false;
+  return finishedAgent(basename(listed.path), listed.path, look);
 }
 
 function judgeOne(
@@ -472,15 +589,29 @@ function judgeOne(
   // The session's own folder, and the worktree, as real paths: `git worktree list` prints
   // the path the worktree was made with, while a session record holds the physical one when
   // the repo is reached through a symlink.
-  const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
+  // In owner mode the owner's own record never counts: ExitWorktree keep moves the session out
+  // of the folder, and a record whose cwd lags behind must not keep it. `--remove` already
+  // refuses a target that holds the caller's cwd. Any other session's record still counts.
+  const owner = ownerSession(listed, look);
+  const session = look.sessions.find(
+    (one) => one.pid !== owner?.claudePid && isInside(realPath(one.cwd), realPath(listed.path)),
+  );
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   if (parked) {
     const mountWhy = mountKeptWhy(listed.path, look.mounts);
     if (mountWhy !== null) return { finished: false, held: false, why: mountWhy };
   }
+  const mergedBy =
+    aheadOfBase > 0
+      ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
+      : null;
   const facts: WorktreeFacts = {
     aheadOfBase,
+    heldByBranch:
+      aheadOfBase > 0 && mergedBy === null && provedFinishedBuilder(listed, look)
+        ? holdingBranch(repo, listed, all, look.env)
+        : null,
     base: look.label,
     containers:
       look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
@@ -488,15 +619,15 @@ function judgeOne(
     // The hook's own rule: unknown counts as just now, which keeps it.
     idleMinutes: idle ?? 0,
     innerWorktree: innerWorktreeOf(listed.path, all),
-    locked: listed.locked && !staleClaudeLock(listed, look),
+    locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
     // commits of its own.
-    mergedBy:
-      aheadOfBase > 0
-        ? workOnBase(repo, look.ref, listed.head, listed.branch, look.env, look.replayer)
-        : null,
+    mergedBy,
     parked,
-    programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path),
+    programs:
+      look.programs === "unknown"
+        ? "unknown"
+        : programsInside(look.programs, listed.path, undefined, undefined, owner),
     sessionName: session?.name ?? null,
   };
   return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
@@ -537,6 +668,12 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
     ...machineFactsOf(options),
+    parentOf: options.facts?.parentOf ?? parentOf,
+    agentFinished:
+      options.facts?.agentFinished ??
+      ((agentId: string, worktreePath: string) =>
+        agentFinished(agentId, worktreePath, options.claudeConfigDir)),
+    ownerMode: options.ownerMode === true,
     env: options.env,
     idleLimit: options.idleLimit,
     label: options.against?.label ?? options.base,
@@ -552,13 +689,21 @@ function lookAt(repo: string, options: ScanOptions): MachineLook {
  *
  * Throws when that ref is not known here: nothing can be judged against it.
  */
-function lockLine(listed: ListedWorktree, onBase = false): string {
+function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): string {
   const reason = listed.lockReason;
   if (reason === undefined) return "locked with `git worktree lock` (locker cannot be proved gone)";
-  const match = /^claude session (.+) \(pid (\d+) start (\S+)\)$/.exec(reason);
-  if (match === null) return `locked: ${reason} (locker cannot be proved gone)`;
-  const session = match[1];
-  return `locked by live or unprovable Claude session ${session}${onBase ? "; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session" : "; its locker is not proved gone"}`;
+  const lock = parseClaudeLock(reason);
+  if (lock === null) return `locked: ${reason} (locker cannot be proved gone)`;
+  if (lock.kind === "agent") {
+    const gone = lockerGone(reason, look);
+    if (gone)
+      return `the session that locked it has ended, but builder ${lock.name} could not be proved finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
+    // Ownership needs the lock's start time (`ownsClaudeLock`); without one no session can claim it.
+    if (lock.start === null || !/^\d+$/.test(lock.start))
+      return `locked by live or unprovable Claude session's builder ${lock.name}; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished`;
+    return `locked by live or unprovable Claude session's builder ${lock.name}; its lead removes it after the merge, or it goes when that session ends and it is proved finished`;
+  }
+  return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends" : "; its locker is not proved gone"}`;
 }
 
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
@@ -579,7 +724,7 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
     main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
 
   for (const listed of others) {
-    if (listed.locked && (!existsSync(listed.path) || !staleClaudeLock(listed, look))) {
+    if (listed.locked && (!existsSync(listed.path) || !releasableClaudeLock(listed, look))) {
       // Before "gone": a locked worktree may sit on a drive that is not connected.
       const onBase =
         (listed.lockReason ?? "").startsWith("claude session ") &&
@@ -587,7 +732,7 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
         listed,
-        state: { finished: false, held: false, why: lockLine(listed, onBase) },
+        state: { finished: false, held: false, why: lockLine(listed, look, onBase) },
       });
       continue;
     }
@@ -601,6 +746,9 @@ export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktr
   }
   return scanned;
 }
+
+/** One deadline for removing a worktree, and for an explicit removal waiting on another clean. */
+export const REMOVAL_TIMEOUT_MS = 10 * 60_000;
 
 export interface Removal {
   /** What happened, one line each. */
@@ -652,8 +800,8 @@ export function removeWorktree(
     };
   }
   const look = lookAt(repo, options);
-  if (current.locked && !staleClaudeLock(current, look)) {
-    return { said: [`kept ${current.path}: ${lockLine(current)}`], status: "kept" };
+  if (current.locked && !releasableClaudeLock(current, look)) {
+    return { said: [`kept ${current.path}: ${lockLine(current, look)}`], status: "kept" };
   }
   // Judge contents, mounts and programs before releasing even a stale lock.
   const fresh = judgeOne(repo, current, all, look, idleMinutesOrNull(current.path, look.now));
@@ -693,7 +841,7 @@ export function removeWorktree(
       check.head !== current.head ||
       check.branch !== current.branch ||
       check.lockReason !== current.lockReason ||
-      !staleClaudeLock(check, look)
+      !releasableClaudeLock(check, look)
     ) {
       return { said: [`kept ${listed.path}: lock state changed during removal`], status: "kept" };
     }
@@ -742,6 +890,7 @@ export function removeWorktree(
     repo,
     alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
     options.env,
+    REMOVAL_TIMEOUT_MS,
   );
   if (!removed.ok) {
     return keptAfterUnlock(
@@ -756,22 +905,25 @@ export function removeWorktree(
       parked,
     );
   }
-  const deleteBranch =
-    options.deleteBranch ??
-    ((repo_: string, branch: string) =>
-      deleteBranchOnRef(
-        repo_,
-        options.against?.ref ?? `refs/remotes/origin/${options.base}`,
-        options.against?.label ?? options.base,
-        branch,
-        options.env,
-      ));
   const said = [
     current.locked
       ? `unlocked stale Claude lock and removed ${listed.path}`
       : `removed ${listed.path}`,
   ];
-  if (listed.branch !== null) said.push(deleteBranch(repo, listed.branch));
+  if (listed.branch !== null) {
+    if (options.deleteBranch !== undefined) {
+      said.push(options.deleteBranch(repo, listed.branch));
+    } else {
+      const outcome = tryDeleteBranch(repo, look.ref, look.label, listed.branch, options.env);
+      // The held wording is for one case only: the ref lacks the branch's work, and a live
+      // branch (named by the fresh verdict above) has it. git's own refusal keeps its words.
+      said.push(
+        outcome.kind === "not-on-ref" && fresh.heldBy !== undefined
+          ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}`
+          : branchOutcomeLine(listed.branch, look.label, outcome),
+      );
+    }
+  }
   return { said, status: "removed" };
 }
 
@@ -789,9 +941,44 @@ export function deleteBranchOnRef(
   branch: string,
   env: Env,
 ): string {
+  return branchOutcomeLine(branch, label, tryDeleteBranch(repo, ref, label, branch, env));
+}
+
+/** What `tryDeleteBranch` did: deleted it, found commits `ref` lacks, or met git's own refusal. */
+export type BranchOutcome =
+  | { kind: "deleted" }
+  | { kind: "not-on-ref" }
+  | { kind: "git-error"; text: string };
+
+/** The line a person reads for a branch's outcome. */
+export function branchOutcomeLine(branch: string, label: string, outcome: BranchOutcome): string {
+  if (outcome.kind === "deleted") return `deleted branch ${branch}`;
+  if (outcome.kind === "not-on-ref") {
+    return `kept branch ${branch}: it has commits that are not on ${label}`;
+  }
+  return `kept branch ${branch}: ${outcome.text}`;
+}
+
+/**
+ * How a kept branch's line names the ref its work is not on. The default ref is `origin/<base>`,
+ * whose label is the bare base name: when the holder carries that same name, say `origin/` so the
+ * line does not read "held by main, not yet on main".
+ */
+function refName(holder: string, label: string, customRef: boolean): string {
+  return !customRef && holder === label ? `origin/${label}` : label;
+}
+
+/** `deleteBranchOnRef`'s decision, as data. */
+export function tryDeleteBranch(
+  repo: string,
+  ref: string,
+  label: string,
+  branch: string,
+  env: Env,
+): BranchOutcome {
   const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
   if (!ahead.ok) {
-    return `kept branch ${branch}: ${ahead.err || `git could not compare it with ${label}`}`;
+    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
   }
   if (ahead.out !== "0") {
     const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
@@ -801,10 +988,10 @@ export function deleteBranchOnRef(
     const elsewhere =
       COMMIT_SHA.test(sha) &&
       workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere) return `kept branch ${branch}: it has commits that are not on ${label}`;
+    if (!elsewhere) return { kind: "not-on-ref" };
   }
   const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? `deleted branch ${branch}` : `kept branch ${branch}: ${deleted.err}`;
+  return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
 }
 
 /** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */

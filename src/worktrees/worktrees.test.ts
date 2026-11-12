@@ -18,9 +18,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
+import { runAutoClean } from "./auto-clean";
 import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
 import {
   containersUsing,
@@ -278,7 +280,8 @@ describe("the machine's facts", () => {
   });
 
   test("the programs using a worktree: started from it, or working in it", () => {
-    // `ps -ww -o pid=,ppid=,args=`: the pid, the process that started it, then the command line.
+    // `PS_PROGRAMS_ARGV` (`ps -ww -axo pid=,ppid=,args=`): the pid, the process that started
+    // it, then the command line.
     const lines = [
       `11 9 /usr/bin/bun /work/app-wt-x/server.ts`,
       "12 9 /usr/bin/other --flag /work/app-wt-x/notes.md",
@@ -984,7 +987,7 @@ describe("scanning and removing, against a real repo", () => {
     const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(listed?.state).toMatchObject({
       finished: false,
-      why: "locked by live or unprovable Claude session old-session; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session",
+      why: "locked by live or unprovable Claude session old-session; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends",
     });
     expect(existsSync(worktree)).toBe(true);
 
@@ -1553,7 +1556,7 @@ describe("the worktrees command", () => {
     expect(existsSync(worktree)).toBe(false);
   });
 
-  test("another clean holds the machine-wide lock: nothing is removed, and it says so", async () => {
+  test("explicit removal waits on a busy clean lock, then fails", async () => {
     const { main, worktree } = repo();
     const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(main, ".claude-config"), HOME: main });
     const out: string[] = [];
@@ -1567,16 +1570,17 @@ describe("the worktrees command", () => {
           { clean: false, json: false, noFetch: true, remove: worktree },
           cleanGitEnv(),
           main,
-          undefined,
+          { print: (line) => out.push(line), error: (line) => out.push(line) },
           async () => null,
+          { timeoutMs: 2, intervalMs: 1 },
         ),
-      ).toBe(0);
+      ).toBe(1);
     } finally {
       logged.mockRestore();
     }
     expect(out).toEqual([
       "No `worktrees.base` in .claude/cc-smart-dev-kit.json: judging against main.\n",
-      "Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.",
+      `Busy: another \`${COMMAND} worktrees\` is still removing worktrees. Nothing removed.`,
     ]);
     expect(existsSync(worktree)).toBe(true);
   });
@@ -1710,4 +1714,472 @@ describe("the worktrees command", () => {
       `forgot ${worktree} (its folder was already gone). A worktree on a disk that is not connected reads the same way: lock one there (\`git worktree lock "${worktree}"\`) and prune leaves it alone.`,
     );
   });
+});
+
+describe("Claude builder lock ownership", () => {
+  test.each([
+    [true, false, false, true],
+    [true, false, true, false],
+    [false, false, true, true],
+    [false, true, true, false],
+    [false, true, false, true],
+  ])("gone=%s owner=%s finished=%s kept=%s", (gone, ownerMode, finished, kept) => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude agent agent-x (pid 424242 start 123)",
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("claude"),
+      env: cleanGitEnv(),
+      idleLimit: 0,
+      ownerMode,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+        processIsGone: () => gone,
+        processStartTime: () => "proc:123",
+        parentOf: () => {
+          if (!ownerMode) throw new Error("non-owner walked parents");
+          return 424242;
+        },
+        agentFinished: (id: string, path: string) => {
+          expect(id).toBe("x");
+          expect(path).toBe(worktree);
+          return finished;
+        },
+      },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing worktree");
+    expect(found.state).toMatchObject({ finished: !kept });
+    if (kept && !gone)
+      expect(found.state).toMatchObject({
+        why: "locked by live or unprovable Claude session's builder agent-x; its lead removes it after the merge, or it goes when that session ends and it is proved finished",
+      });
+    if (kept && gone)
+      expect(found.state).toMatchObject({
+        why: `the session that locked it has ended, but builder agent-x could not be proved finished; check its work, then \`git worktree unlock "${worktree}"\` and \`cc-smart-dev-kit worktrees --remove "${worktree}"\``,
+      });
+    expect(removeWorktree(main, found.listed, options).status).toBe(kept ? "kept" : "removed");
+    expect(existsSync(worktree)).toBe(kept);
+  });
+
+  // No `agentFinished` fake: the default reader must look in `claudeConfigDir`.
+  test.each([
+    [true, false],
+    [false, true],
+  ])("the default finished reader reads claudeConfigDir: finished=%s kept=%s", (done, kept) => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      "claude agent agent-x (pid 424242 start 123)",
+      worktree,
+    );
+    const claudeConfigDir = tempDir("claude");
+    const subagents = join(claudeConfigDir, "projects", "-repo", "session-1", "subagents");
+    mkdirSync(subagents, { recursive: true });
+    writeFileSync(
+      join(subagents, "agent-x.meta.json"),
+      JSON.stringify(
+        done ? { finished: true, worktreePath: worktree } : { worktreePath: worktree },
+      ),
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir,
+      env: cleanGitEnv(),
+      idleLimit: 0,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+        processIsGone: () => true,
+        processStartTime: () => "proc:123",
+        parentOf: () => {
+          throw new Error("non-owner walked parents");
+        },
+      },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing worktree");
+    expect(found.state).toMatchObject({ finished: !kept });
+    expect(removeWorktree(main, found.listed, options).status).toBe(kept ? "kept" : "removed");
+    expect(existsSync(worktree)).toBe(kept);
+  });
+
+  test.each(["123", "124", null])("session owner with start %s", (start) => {
+    const { main, worktree } = repo();
+    git(
+      main,
+      "worktree",
+      "lock",
+      "--reason",
+      `claude session lead (pid 424242${start === null ? "" : ` start ${start}`})`,
+      worktree,
+    );
+    const options = {
+      base: "main",
+      claudeConfigDir: tempDir("claude"),
+      env: cleanGitEnv(),
+      idleLimit: 0,
+      ownerMode: true,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        platform: "linux" as const,
+        pidNamespace: "pid:[4026531836]",
+        processIsGone: () => false,
+        processStartTime: () => (start === "124" ? null : "proc:123"),
+        parentOf: () => 424242,
+      },
+    };
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (!found) throw new Error("missing worktree");
+    expect(removeWorktree(main, found.listed, options).status).toBe(
+      start === "123" ? "removed" : "kept",
+    );
+  });
+});
+
+test("explicit removal from another linked worktree never removes its own cwd", async () => {
+  const { main, worktree } = repo();
+  const other = join(dirname(main), "app-wt-other");
+  git(main, "worktree", "add", "-b", "other", other);
+  const paths = cliPaths({ CLAUDE_CONFIG_DIR: tempDir("claude"), HOME: tempDir("home") });
+  const out: string[] = [];
+  const sinks = {
+    print: (line: string) => out.push(line),
+    error: (line: string) => out.push(line),
+  };
+  const options = { clean: false, json: false, noFetch: true, remove: other };
+  expect(await runWorktrees(paths, options, cleanGitEnv(), other, sinks, freeLock)).toBe(1);
+  expect(out.join("\n")).toContain("A session leaves its worktree first");
+  expect(existsSync(other)).toBe(true);
+  expect(
+    await runWorktrees(
+      paths,
+      { ...options, remove: worktree },
+      cleanGitEnv(),
+      other,
+      sinks,
+      freeLock,
+    ),
+  ).toBe(0);
+  expect(existsSync(worktree)).toBe(false);
+});
+
+test("auto-clean never walks the live builder owners parent chain", async () => {
+  const { main, worktree } = repo();
+  const env = { ...cleanGitEnv(), HOME: tempDir("home"), CLAUDE_CONFIG_DIR: tempDir("claude") };
+  git(
+    main,
+    "worktree",
+    "lock",
+    "--reason",
+    "claude agent agent-x (pid 424242 start 123)",
+    worktree,
+  );
+  let walks = 0;
+  expect(
+    await runAutoClean(main, "session", {
+      env,
+      paths: cliPaths(env),
+      now: () => Date.now() + 2 * 60 * 60_000,
+      hold: freeLock,
+      facts: {
+        containers: [],
+        mounts: [],
+        programs: [],
+        sessions: [],
+        platform: "linux",
+        pidNamespace: "pid:[4026531836]",
+        processIsGone: () => false,
+        processStartTime: () => "proc:123",
+        agentFinished: () => true,
+        parentOf: () => {
+          walks++;
+          return 424242;
+        },
+      },
+    }),
+  ).toBe("cleaned");
+  expect(walks).toBe(0);
+  expect(existsSync(worktree)).toBe(true);
+});
+
+test("explicit removal acquires a lock that becomes free while waiting", async () => {
+  const { main, worktree } = repo();
+  const paths = cliPaths({ CLAUDE_CONFIG_DIR: tempDir("claude"), HOME: tempDir("home") });
+  let attempts = 0;
+  let closed = false;
+  expect(
+    await runWorktrees(
+      paths,
+      { clean: false, json: false, noFetch: true, remove: worktree },
+      cleanGitEnv(),
+      main,
+      { print: () => {}, error: () => {} },
+      async () =>
+        ++attempts === 1
+          ? null
+          : {
+              close: () => {
+                closed = true;
+              },
+            },
+      { timeoutMs: 100, intervalMs: 1 },
+    ),
+  ).toBe(0);
+  expect(attempts).toBe(2);
+  expect(closed).toBe(true);
+  expect(existsSync(worktree)).toBe(false);
+});
+
+test("unproved finished marker keeps a builder even when its pid is gone", () => {
+  const { main, worktree } = repo();
+  git(main, "worktree", "lock", "--reason", "claude agent agent-x (pid 424242)", worktree);
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    facts: {
+      containers: [],
+      programs: [],
+      mounts: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => true,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toMatchObject({ finished: false });
+  expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+  expect(git(main, "worktree", "list", "--porcelain")).toContain(
+    "locked claude agent agent-x (pid 424242)",
+  );
+});
+
+test("a live builder lock with no start time: no one can prove they own it, and the line says so", () => {
+  const { main, worktree } = repo();
+  git(main, "worktree", "lock", "--reason", "claude agent agent-x (pid 424242)", worktree);
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    ownerMode: true,
+    facts: {
+      containers: [],
+      mounts: [],
+      programs: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => false,
+      processStartTime: () => "proc:123",
+      parentOf: () => 424242,
+      agentFinished: () => true,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toEqual({
+    finished: false,
+    held: false,
+    why: "locked by live or unprovable Claude session's builder agent-x; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished",
+  });
+  expect(removeWorktree(main, found.listed, options).said).toEqual([
+    `kept ${worktree}: locked by live or unprovable Claude session's builder agent-x; its lock has no start time, so no one can prove they own it — it goes when that session ends and the builder is proved finished`,
+  ]);
+});
+
+test("a builder resumed between scan and removal keeps its lock", () => {
+  const { main, worktree } = repo();
+  git(
+    main,
+    "worktree",
+    "lock",
+    "--reason",
+    "claude agent agent-x (pid 424242 start 123)",
+    worktree,
+  );
+  let finished = true;
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    ownerMode: true,
+    facts: {
+      containers: [],
+      programs: [],
+      mounts: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => false,
+      processStartTime: () => "proc:123",
+      parentOf: () => 424242,
+      agentFinished: () => finished,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toMatchObject({ finished: true });
+  finished = false;
+  expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+  expect(git(main, "worktree", "list", "--porcelain")).toContain(
+    "locked claude agent agent-x (pid 424242 start 123)",
+  );
+});
+
+test.each([null, "not-ticks"])("dead session with unmeasured start %s stays locked", (start) => {
+  const { main, worktree } = repo();
+  git(
+    main,
+    "worktree",
+    "lock",
+    "--reason",
+    `claude session lead (pid 424242${start === null ? "" : ` start ${start}`})`,
+    worktree,
+  );
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    facts: {
+      containers: [],
+      mounts: [],
+      programs: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => true,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toMatchObject({ finished: false });
+  expect(removeWorktree(main, found.listed, options).status).toBe("kept");
+});
+
+test.each([false, true])("reused builder pid requires finished proof %s", (finished) => {
+  const { main, worktree } = repo();
+  git(
+    main,
+    "worktree",
+    "lock",
+    "--reason",
+    "claude agent agent-x (pid 424242 start 123)",
+    worktree,
+  );
+  const options = {
+    base: "main",
+    claudeConfigDir: tempDir("claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    facts: {
+      containers: [],
+      mounts: [],
+      programs: [],
+      sessions: [],
+      platform: "linux" as const,
+      pidNamespace: "pid:[4026531836]",
+      processIsGone: () => false,
+      processStartTime: () => "proc:999",
+      agentFinished: () => finished,
+    },
+  };
+  const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+  if (!found) throw new Error("missing worktree");
+  expect(found.state).toMatchObject({ finished });
+  if (!finished)
+    expect(found.state).toMatchObject({
+      why: `the session that locked it has ended, but builder agent-x could not be proved finished; check its work, then \`git worktree unlock "${worktree}"\` and \`cc-smart-dev-kit worktrees --remove "${worktree}"\``,
+    });
+  expect(removeWorktree(main, found.listed, options).status).toBe(finished ? "removed" : "kept");
+});
+
+test("busy --clean returns without waiting and takes the lock only once", async () => {
+  const { main, worktree } = repo();
+  let calls = 0;
+  const out: string[] = [];
+  const result = await runWorktrees(
+    cliPaths({ HOME: tempDir("home"), CLAUDE_CONFIG_DIR: tempDir("claude") }),
+    { clean: true, json: false, noFetch: true, remove: null },
+    cleanGitEnv(),
+    main,
+    { print: (line) => out.push(line), error: (line) => out.push(line) },
+    async () => {
+      calls++;
+      return null;
+    },
+  );
+  expect(result).toBe(0);
+  expect(calls).toBe(1);
+  expect(out.at(-1)).toBe(
+    `Another \`${COMMAND} worktrees\` is removing worktrees right now. Nothing done.`,
+  );
+  expect(existsSync(worktree)).toBe(true);
+});
+
+test("`--remove` of a folder that is no worktree says so, with the command built from its name", async () => {
+  const { main } = repo();
+  const stranger = tempDir("not-a-worktree");
+  const out: string[] = [];
+  const result = await runWorktrees(
+    cliPaths({ HOME: tempDir("home"), CLAUDE_CONFIG_DIR: tempDir("claude") }),
+    { clean: false, json: false, noFetch: true, remove: stranger },
+    cleanGitEnv(),
+    main,
+    { print: (line) => out.push(line), error: (line) => out.push(line) },
+    async () => ({ close() {} }),
+  );
+  expect(result).toBe(1);
+  expect(out.at(-1)).toBe(
+    `${stranger} is not a worktree of this repo. \`${COMMAND} worktrees\` lists them.`,
+  );
+});
+
+test("explicit removal reports a port failure without waiting", async () => {
+  const { main, worktree } = repo();
+  let calls = 0;
+  const out: string[] = [];
+  const result = await runWorktrees(
+    cliPaths({ HOME: tempDir("home"), CLAUDE_CONFIG_DIR: tempDir("claude") }),
+    { clean: false, json: false, noFetch: true, remove: worktree },
+    cleanGitEnv(),
+    main,
+    { print: (line) => out.push(line), error: (line) => out.push(line) },
+    async () => {
+      calls++;
+      return { error: "EACCES" };
+    },
+  );
+  expect(result).toBe(1);
+  expect(calls).toBe(1);
+  expect(out.at(-1)).toBe("Could not take the worktree clean lock: EACCES. Nothing removed.");
+  expect(existsSync(worktree)).toBe(true);
 });

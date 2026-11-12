@@ -12,8 +12,8 @@
  *   `cc-smart-dev-kit doctor` warns about); none only when neither is installed.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import { projectKey, taskContext } from "../tasks/context";
@@ -29,6 +29,7 @@ import {
 } from "../testing/hooks";
 import { sessionProcessIdentity } from "../testing/session-record";
 import { git, tempDir } from "../testing/temp";
+import { makeWorktreeIdle } from "../testing/worktree-idle";
 import type { HookResult } from "./io";
 import type { HookSpec } from "./run";
 import {
@@ -208,17 +209,7 @@ function mainOf(input: Record<string, unknown>): string {
   return dirname(common.trim());
 }
 
-function makeIdle(worktree: string): void {
-  const admin = resolve(
-    worktree,
-    readFileSync(join(worktree, ".git"), "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, ""),
-  );
-  const old = new Date(Date.now() - 90 * 60_000);
-  for (const file of ["index", "HEAD", join("logs", "HEAD")])
-    utimesSync(join(admin, file), old, old);
-}
+const makeIdle = (worktree: string): void => makeWorktreeIdle(worktree);
 
 const askLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);

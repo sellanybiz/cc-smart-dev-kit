@@ -7,10 +7,10 @@
  *   ones only when someone runs it. So after a merge into the base, and when a session
  *   starts, the hooks start THIS in a detached process (`auto-start.ts`), and it runs the
  *   same safe clean: the scan's verdict (`scan.ts`, `verdict.ts`) is the only judge, and
- *   `cleanFinished` (`clean.ts`) is the only remover. Nothing here judges, and nothing here
- *   forces: a worktree a Claude session works in, a running program or container, uncommitted
- *   changes, local files, a commit not on the base, or a replay that could not answer all
- *   stay.
+ *   `cleanWithStrays` (`clean.ts`, over `cleanFinished`) is the only remover. Nothing here
+ *   judges, and nothing here forces: a worktree a Claude session works in, a running program
+ *   or container, uncommitted changes, local files, a commit not on the base, or a replay that
+ *   could not answer all stay.
  *
  * WHAT IT DOES
  *   1. Reads the project's `worktrees.autoClean` again (false: stop).
@@ -43,10 +43,10 @@ import {
   recordRun,
   recordStart,
 } from "./auto-state";
-import { type CleanLock, cleanFinished, holdCleanLock, type KeptWorktree } from "./clean";
+import { type CleanLock, cleanWithStrays, holdCleanLock, type KeptWorktree } from "./clean";
 import { baseBranch } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
-import { finishStrays, type StrayPass, strayParkedFolders } from "./scan-parked";
+import type { StrayPass } from "./scan-parked";
 
 export interface AutoCleanDeps {
   env: Env;
@@ -230,13 +230,10 @@ export async function runAutoClean(
       facts: { ...deps.facts, sessions: sessionsToKeep(deps, paths.claudeConfigDir) },
     };
     const scanned = scanWorktrees(main, judged);
-    // The leftover folders git no longer lists are read before the clean removes any worktree:
-    // they are looked for next to the worktrees git lists.
-    const strays = strayParkedFolders(main, env);
-    const report = cleanFinished(main, scanned, judged, () => undefined);
+    // The removals, then the folders a removal moved aside that git no longer lists, read
+    // before and after and finished by what they hold (`cleanWithStrays`).
+    const { report, strays: leftovers } = cleanWithStrays(main, scanned, judged, () => undefined);
     recordRun(files, main, { base, kept: report.kept, now, removed: report.removed });
-    // The folders a removal moved aside that git no longer lists: finished by what they hold.
-    const leftovers = finishStrays(main, judged, () => undefined, strays);
     log(
       summary(
         main,

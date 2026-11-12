@@ -2,7 +2,7 @@
  * The git the hooks need: run a command with a timeout, list the worktrees, compare folders,
  * and ask whether anything would be lost.
  */
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
@@ -197,4 +197,40 @@ export function hasChanges(folder: string, env: Env): boolean {
     env,
   );
   return !status.ok || status.out !== "";
+}
+
+/**
+ * The worktree's own folder in the main repository's `.git/worktrees/`, read from the `.git`
+ * file the worktree holds (`gitdir: <path>`, absolute or relative to the worktree). The one
+ * reader for every part that looks at a worktree's bookkeeping. Null when the `.git` entry
+ * cannot be read as a file or does not say `gitdir:` — a main checkout (its `.git` is a
+ * folder), a gone folder, a broken file. Whether the folder it names exists is for the caller.
+ */
+export function worktreeAdminDir(worktree: string): string | null {
+  let text: string;
+  try {
+    text = readFileSync(join(worktree, ".git"), "utf8");
+  } catch {
+    return null;
+  }
+  const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
+  return target === undefined || target === "" ? null : resolve(worktree, target);
+}
+
+/** Git's own header of a reflog entry: both ids, the committer, then epoch seconds and zone. */
+const REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
+
+/**
+ * The time of one reflog line (`<old> <new> <name> <email> <epoch> <zone>`, then a tab and the
+ * message when there is one: git writes an entry with no message for a new worktree) in
+ * milliseconds, or null when the header does not have exactly that form: a half-written
+ * entry, a line from another tool. The one reader of the entry's time, for the last entry
+ * (how long a worktree has been idle) and the first (when it was set up).
+ */
+export function reflogEntryTime(line: string): number | null {
+  const tab = line.indexOf("\t");
+  const epoch = REFLOG_HEADER.exec(tab < 0 ? line : line.slice(0, tab))?.[1];
+  if (epoch === undefined) return null;
+  const time = Number(epoch) * 1000;
+  return Number.isFinite(time) ? time : null;
 }

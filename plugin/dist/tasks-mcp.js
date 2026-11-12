@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.4.1",
+  version: "4.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21961,7 +21961,7 @@ var workflowDefaults = {
     files: 10,
     percent: 20
   },
-  clearWorktreeAfterMerge: false,
+  clearWorktreeAfterMerge: true,
   issues: {
     enabled: false,
     allowPublic: false,
@@ -23256,6 +23256,14 @@ function liveSessions(claudeConfigDir, facts = {}) {
 import { readdirSync as readdirSync4, readFileSync as readFileSync6, readlinkSync as readlinkSync2 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
+var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
+function spawnPrograms(argv) {
+  return Bun.spawnSync([...argv], {
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: PROGRAMS_TIMEOUT_MS
+  });
+}
 function parsePrograms(lines) {
   const programs = [];
   for (const line of lines.split(/\r?\n/)) {
@@ -23300,6 +23308,7 @@ function parseCommandLines(lines) {
   return programs;
 }
 var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
 var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
 function cwdOf(pid) {
   try {
@@ -23315,7 +23324,7 @@ function procPids() {
     return [];
   }
 }
-function runningPrograms(on = platform()) {
+function runningPrograms(on = platform(), spawn = spawnPrograms) {
   if (on === "win32") {
     try {
       const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
@@ -23331,11 +23340,7 @@ function runningPrograms(on = platform()) {
   }
   let lines;
   try {
-    const run = Bun.spawnSync(["ps", "-ww", "-o", "pid=,ppid=,args="], {
-      stderr: "pipe",
-      stdout: "pipe",
-      timeout: PROGRAMS_TIMEOUT_MS
-    });
+    const run = spawn(PS_PROGRAMS_ARGV);
     if (run.exitCode !== 0)
       return "unknown";
     lines = run.stdout.toString();

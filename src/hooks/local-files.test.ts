@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { scanWorktrees } from "../worktrees/scan";
-import { localFiles } from "./local-files";
+import { localFiles, safeIgnoredEntry } from "./local-files";
 
 function world(ignored = "supabase/.temp/\n") {
   const root = tempDir("local-files");
@@ -131,10 +131,103 @@ test("a directory or link named cli-latest is not a disposable version-cache fil
   }
 });
 
+// Fixed historical times keep setup-copy tests independent of the test runner's speed.
+const SETUP_SECONDS = 1_700_000_000;
+
+function setupTime(worktree: string) {
+  const admin = git(worktree, "rev-parse", "--absolute-git-dir").trim();
+  const log = join(admin, "logs", "HEAD");
+  const lines = readFileSync(log, "utf8").split("\n");
+  lines[0] = lines[0]?.replace(/ \d+ ([+-]\d{4})(?=\t|$)/, ` ${SETUP_SECONDS} $1`) ?? "";
+  expect(lines[0]).toContain(` ${SETUP_SECONDS} +0000`);
+  writeFileSync(log, lines.join("\n"));
+  utimesSync(join(admin, "commondir"), SETUP_SECONDS, SETUP_SECONDS);
+  return admin;
+}
+
+function includedCopy() {
+  const files = world(".env.local\n");
+  const admin = setupTime(files.worktree);
+  writeFileSync(join(files.worktree, ".env.local"), "original copy");
+  utimesSync(join(files.worktree, ".env.local"), SETUP_SECONDS + 30, SETUP_SECONDS + 30);
+  writeFileSync(join(files.main, ".env.local"), "main changed later");
+  return { ...files, admin };
+}
+
+test("an untouched ignored copy is safe after the main checkout's copy changes", () => {
+  const { main, worktree } = includedCopy();
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
+  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(true);
+});
+
+test("an ignored copy edited after setup and copy slack stays protected", () => {
+  const { main, worktree } = includedCopy();
+  writeFileSync(join(worktree, ".env.local"), "session edit");
+  utimesSync(join(worktree, ".env.local"), SETUP_SECONDS + 121, SETUP_SECONDS + 121);
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".env.local"]);
+});
+
+test("an old ignored file absent from main stays protected", () => {
+  const { main, worktree } = includedCopy();
+  rmSync(join(main, ".env.local"));
+  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".env.local"]);
+  expect(safeIgnoredEntry(worktree, null, ".env.local")).toBe(false);
+});
+
+test.each(["reflog", "commondir"])("setup time falls back when %s is missing", (missing) => {
+  const { main, worktree, admin } = includedCopy();
+  rmSync(join(admin, missing === "reflog" ? "logs/HEAD" : "commondir"));
+  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(true);
+});
+
+test("no readable setup time grants no extra permission", () => {
+  const { main, worktree, admin } = includedCopy();
+  writeFileSync(join(admin, "logs", "HEAD"), "malformed\n");
+  rmSync(join(admin, "commondir"));
+  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+});
+
+test.each(["reflog", "commondir"])(
+  "the earlier %s time wins over rewritten metadata",
+  (earlier) => {
+    const { main, worktree, admin } = includedCopy();
+    const later = SETUP_SECONDS + 3600;
+    if (earlier === "reflog") utimesSync(join(admin, "commondir"), later, later);
+    else {
+      const log = join(admin, "logs", "HEAD");
+      writeFileSync(
+        log,
+        readFileSync(log, "utf8").replaceAll(String(SETUP_SECONDS), String(later)),
+      );
+    }
+    utimesSync(join(worktree, ".env.local"), SETUP_SECONDS + 121, SETUP_SECONDS + 121);
+    expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+  },
+);
+
+test("folders and symbolic links do not gain timestamp permission", () => {
+  const { main, worktree } = world("private/\n.env.local\n");
+  setupTime(worktree);
+  for (const folder of [main, worktree]) mkdirSync(join(folder, "private"));
+  writeFileSync(join(main, "private", "notes"), "main");
+  writeFileSync(join(worktree, "private", "notes"), "session");
+  utimesSync(join(worktree, "private"), SETUP_SECONDS, SETUP_SECONDS);
+  symlinkSync("private/notes", join(worktree, ".env.local"));
+  writeFileSync(join(main, ".env.local"), "main");
+  expect(safeIgnoredEntry(worktree, main, "private/")).toBe(false);
+  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+});
+
 test("different Supabase link state stays protected; an identical main copy is safe", () => {
   const { main, worktree, put, state } = world();
   put(main, "project-ref", "main-project");
   put(worktree, "project-ref", "other-project");
+  setupTime(worktree);
+  utimesSync(
+    join(worktree, "supabase", ".temp", "project-ref"),
+    SETUP_SECONDS + 121,
+    SETUP_SECONDS + 121,
+  );
   expect(state()).toMatchObject({
     finished: false,
     why: "local files git does not keep: supabase/.temp/",

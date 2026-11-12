@@ -62,6 +62,8 @@ export interface WorktreeFacts {
    * (`scan.ts` replays the branch onto the base, and asks `git cherry` and the pull request).
    */
   mergedBy: MergedBy | null;
+  /** Another present worktree's branch contains this head by ancestry, not replay. */
+  heldByBranch?: string | null;
   /**
    * True for a folder a removal moved aside (`<path>-removing-<time>`, `isParkedWorktree` in
    * `scan.ts`) and could not then remove, that stands on a branch (D62). Its commits are held
@@ -123,7 +125,15 @@ export type Verdict =
       why: string;
     }
   /** `note` says why its commits ahead are on the base anyway, or null when there are none. */
-  | { finished: true; note: string | null };
+  | {
+      finished: true;
+      note: string | null;
+      /**
+       * The branch of another live worktree that holds its work, when that and nothing on the
+       * base is why it is finished. The removal says it again for the branch it keeps.
+       */
+      heldBy?: string;
+    };
 
 /** How long git must have left a worktree alone before it counts as finished. */
 export const IDLE_MINUTES = 60;
@@ -164,7 +174,7 @@ export function verdict(
       why: `another worktree lives inside it: ${facts.innerWorktree}`,
     };
   }
-  if (facts.aheadOfBase > 0 && facts.mergedBy === null && !facts.parked) {
+  if (facts.aheadOfBase > 0 && facts.mergedBy === null && !facts.heldByBranch && !facts.parked) {
     const commits = facts.aheadOfBase === 1 ? "1 commit" : `${String(facts.aheadOfBase)} commits`;
     // A git too old to replay the branch onto the base cannot see a squash merge, so the
     // reason says so: the work may well be on the base, but nothing here can prove it.
@@ -207,7 +217,10 @@ export function verdict(
       why: `local files git does not keep: ${shown}${more}`,
     };
   }
-  return { finished: true, note: mergedNote(facts) };
+  const heldBy = facts.mergedBy === null && facts.aheadOfBase > 0 ? facts.heldByBranch : null;
+  return heldBy
+    ? { finished: true, note: mergedNote(facts), heldBy }
+    : { finished: true, note: mergedNote(facts) };
 }
 
 /**
@@ -216,7 +229,8 @@ export function verdict(
  * line says where.
  */
 function mergedNote(facts: WorktreeFacts): string | null {
-  if (facts.mergedBy === null) return null;
+  if (facts.mergedBy === null)
+    return facts.heldByBranch ? `its work is held by ${facts.heldByBranch}` : null;
   if (facts.mergedBy === "cherry") return `every commit is on ${facts.base} under another sha`;
   if (facts.mergedBy === "replay") return `merging it into ${facts.base} changes nothing`;
   return "its pull request is merged";

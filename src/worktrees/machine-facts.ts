@@ -10,7 +10,7 @@
  *   So the command asks, and keeps the worktree while something uses it.
  *
  *   Two probes, because they see different things:
- *   - the COMMAND LINES of the running processes (`ps -ww -o pid=,ppid=,args=` on macOS and
+ *   - the COMMAND LINES of the running processes (`ps -ww -axo pid=,ppid=,args=` on macOS and
  *     Linux, `Get-CimInstance Win32_Process` on Windows): a program STARTED FROM a file inside
  *     the worktree names that file;
  *   - the WORKING FOLDER of each process (Linux only, `/proc/<pid>/cwd`): a dev server started
@@ -41,6 +41,31 @@ const DOCKER_TIMEOUT_MS = 5000;
 
 /** How long listing the running programs may take. */
 const PROGRAMS_TIMEOUT_MS = 15_000;
+
+/**
+ * What lists the running programs on Linux and macOS. `-ax` is the selection: without one, `ps`
+ * lists only the processes of the caller's own terminal, and a command run from the Bash tool has
+ * none — the session's Claude Code process, its MCP servers and any program started in a terminal
+ * would be missing (measured on Linux: 219 processes without it, 580 with it).
+ */
+export const PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
+
+/** The part of a finished child process this file reads. */
+export interface SpawnedOutput {
+  exitCode: number | null;
+  stdout: { toString(): string };
+}
+
+/** Runs a command and waits; `runningPrograms` takes it as a parameter so a test sees the argv. */
+export type SpawnSync = (argv: readonly string[]) => SpawnedOutput;
+
+function spawnPrograms(argv: readonly string[]): SpawnedOutput {
+  return Bun.spawnSync([...argv], {
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: PROGRAMS_TIMEOUT_MS,
+  });
+}
 
 /** A program running on this machine, and how it is known: its command line, or its folder. */
 export interface RunningProgram {
@@ -164,7 +189,7 @@ export function parsePrograms(lines: string): RunningProgram[] {
 
 /**
  * `<pid><spaces><parent pid><spaces><the whole command line>` lines, the shape
- * `ps -ww -o pid=,ppid=,args=` prints. A process with no arguments left prints its pid and its
+ * `PS_PROGRAMS_ARGV` prints. A process with no arguments left prints its pid and its
  * parent alone, and the parent pid is no file: such a line is skipped, and on Linux its working
  * folder (`/proc/<pid>/cwd`) still says whether it uses a worktree.
  */
@@ -245,9 +270,70 @@ export function programName(program: RunningProgram): string {
 }
 
 /**
+ * The session that removes its own worktree (`--remove`, Linux): the pid of its Claude Code
+ * process. Its own MCP servers keep working in the folder after ExitWorktree `keep`, and they
+ * would hold it until the session ends (`programsUsing`).
+ */
+export interface OwnerSession {
+  claudePid: number;
+}
+
+/** Program names that run commands for a person or a tool: a job under one is never an MCP server. */
+const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+
+/** The name `ps` prints for a Claude Code process: its argv[0]. A `node …/cli.js` launch differs. */
+export const CLAUDE_NAME = "claude";
+
+/** A shell by program name; a login shell prints as `-zsh`, and Windows adds `.exe`. */
+function isShell(program: RunningProgram): boolean {
+  const name = programName(program)
+    .replace(/^-/, "")
+    .replace(/\.exe$/i, "")
+    .toLowerCase();
+  return SHELL_NAMES.has(name);
+}
+
+/**
+ * Is `program` a non-shell descendant of the owner's Claude Code process, with no shell in the
+ * chain between them? That is how Claude Code starts an MCP server: a direct child, and the
+ * server's own helpers below it. Claude Code runs every Bash-tool command as a shell child, so a
+ * dev server, a Monitor or a background job always has a shell in its chain and is never
+ * skipped. A chain the listing cannot follow to the owner's pid is not an owner's child.
+ * The Claude process itself is not one, and neither is any other Claude process in the chain.
+ *
+ * Limit: Claude Code runs a Bash-tool command as a shell child, but an explicit `exec` in that
+ * command replaces the shell, and the job then looks like a direct non-shell child of claude. A
+ * program started that way, with only its working folder in the worktree, is skipped.
+ */
+function ownerChild(
+  program: RunningProgram,
+  byPid: ReadonlyMap<number, RunningProgram>,
+  owner: OwnerSession,
+): boolean {
+  if (program.pid === owner.claudePid) return false;
+  const seen = new Set<number>();
+  let at = program;
+  for (;;) {
+    // Another Claude Code process below an MCP server is another session: it holds the folder.
+    if (isShell(at) || programName(at) === CLAUDE_NAME) return false;
+    seen.add(at.pid);
+    const parent = at.parentPid;
+    if (parent === undefined) return false;
+    if (parent === owner.claudePid) return true;
+    const next = byPid.get(parent);
+    if (next === undefined || seen.has(next.pid)) return false;
+    at = next;
+  }
+}
+
+/**
  * The programs of the listing that use `worktree`: one started from a file inside it (its
  * command line names it), or one whose working folder is inside it (Linux). The tools this scan
  * runs itself are left out.
+ *
+ * With `owner` (a session removing its own worktree), a program that is the owner's non-shell
+ * child (`ownerChild`) and ties to the worktree by its working folder alone does not count. A
+ * program that was STARTED FROM a file inside still does.
  *
  * So is `ownPid` — the process asking, this one by default — and every process that started
  * it: the command line of `cc-smart-dev-kit worktrees --remove <path>` names the worktree, and
@@ -267,8 +353,10 @@ export function programsUsing(
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
+  owner?: OwnerSession,
 ): RunningProgram[] {
   const asking = lineage(programs, ownPid);
+  const byPid = new Map(programs.map((program) => [program.pid, program]));
   const real = realPath(worktree);
   const forms = real === worktree ? [worktree] : [worktree, real];
   const found: RunningProgram[] = [];
@@ -280,6 +368,7 @@ export function programsUsing(
     // works in it, and then `working` says so and it counts.
     if (!working && asking.has(program.pid)) continue;
     if (OUR_TOOLS.has(programName(program))) continue;
+    if (owner !== undefined && !named && ownerChild(program, byPid, owner)) continue;
     found.push(program);
   }
   return found;
@@ -291,9 +380,10 @@ export function programsInside(
   worktree: string,
   ignoreCase = IGNORE_CASE,
   ownPid = process.pid,
+  owner?: OwnerSession,
 ): string[] {
   const names = new Set<string>();
-  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid)) {
+  for (const program of programsUsing(programs, worktree, ignoreCase, ownPid, owner)) {
     names.add(programName(program));
   }
   return [...names].sort();
@@ -380,7 +470,10 @@ function procPids(): number[] {
  * command lines (no `/proc`); Windows reads the executable paths through PowerShell, since a
  * folder a program's file is in cannot be renamed there.
  */
-export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | RunningProgram[] {
+export function runningPrograms(
+  on: NodeJS.Platform = platform(),
+  spawn: SpawnSync = spawnPrograms,
+): "unknown" | RunningProgram[] {
   if (on === "win32") {
     try {
       const run = Bun.spawnSync(
@@ -401,11 +494,7 @@ export function runningPrograms(on: NodeJS.Platform = platform()): "unknown" | R
   }
   let lines: string;
   try {
-    const run = Bun.spawnSync(["ps", "-ww", "-o", "pid=,ppid=,args="], {
-      stderr: "pipe",
-      stdout: "pipe",
-      timeout: PROGRAMS_TIMEOUT_MS,
-    });
+    const run = spawn(PS_PROGRAMS_ARGV);
     if (run.exitCode !== 0) return "unknown";
     lines = run.stdout.toString();
   } catch {

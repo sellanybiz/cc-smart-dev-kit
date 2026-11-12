@@ -6,8 +6,8 @@
  * `verdict.ts`) decides, and `removeWorktree` judges the folder again right before it moves
  * it, so a removal never acts on a stale scan.
  */
-import type { Server } from "node:net";
 import { basename } from "node:path";
+import { realPath } from "../hooks/git";
 import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
 import {
@@ -18,6 +18,7 @@ import {
   type ScannedWorktree,
   type ScanOptions,
 } from "./scan";
+import { finishStrays, type StrayFolder, type StrayPass, strayParkedFolders } from "./scan-parked";
 
 export { forgottenLine } from "./scan";
 
@@ -26,10 +27,18 @@ export interface CleanLock {
   close(): unknown;
 }
 
-/** The machine-wide lock of a clean, or null when another clean holds it. */
-export async function holdCleanLock(): Promise<null | Server> {
+export type CleanLockResult = { lock: CleanLock } | { taken: true } | { error: string };
+
+/** Keep contention separate from a port failure for explicit removal. */
+export async function takeCleanLock(): Promise<CleanLockResult> {
   const hold = await holdPort(LOCK_PORTS.worktreesClean);
-  return "held" in hold ? hold.held : null;
+  return "held" in hold ? { lock: hold.held } : hold;
+}
+
+/** The machine-wide lock of a clean, or null when it cannot be taken. */
+export async function holdCleanLock(): Promise<null | CleanLock> {
+  const hold = await takeCleanLock();
+  return "lock" in hold ? hold.lock : null;
 }
 
 /** Can the clean take this worktree: finished, or its folder is gone (so git forgets it). */
@@ -144,4 +153,44 @@ export function cleanFinished(
     }
   }
   return { failed, forgotten, kept, removed };
+}
+
+/** What `cleanWithStrays` did: the clean's report, and the leftover folders it finished or kept. */
+export interface CleanWithStraysReport {
+  report: CleanReport;
+  strays: StrayPass;
+}
+
+/**
+ * The whole clean, one home for both callers (`worktrees --clean` and the background clean):
+ * read the leftover folders a removal moved aside that git no longer lists, remove the finished
+ * worktrees, read the leftovers again, and finish the union of both lists.
+ *
+ * Both reads are needed. Strays are looked for next to the worktrees git lists, so a folder
+ * beside a worktree this clean removes is found only by the read BEFORE (while it is listed), and
+ * a folder a removal parks and then fails to delete during this clean exists only for the read
+ * AFTER. The second read also searches the folders the scan's worktrees stood in, because the
+ * removed worktree is no longer listed to point there. A caller that already read the first list
+ * (to show it) hands it in as `before`.
+ */
+export function cleanWithStrays(
+  repo: string,
+  scanned: ScannedWorktree[],
+  judged: ScanOptions,
+  say: (line: string) => void,
+  before: readonly StrayFolder[] = strayParkedFolders(
+    repo,
+    judged.env,
+    scanned.map((worktree) => worktree.listed),
+  ),
+): CleanWithStraysReport {
+  const report = cleanFinished(repo, scanned, judged, say);
+  const after = strayParkedFolders(
+    repo,
+    judged.env,
+    scanned.map((worktree) => worktree.listed),
+  );
+  const union = new Map<string, StrayFolder>();
+  for (const stray of [...before, ...after]) union.set(realPath(stray.path), stray);
+  return { report, strays: finishStrays(repo, judged, say, [...union.values()]) };
 }

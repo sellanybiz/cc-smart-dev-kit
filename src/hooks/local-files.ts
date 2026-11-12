@@ -10,15 +10,24 @@
  *   tool or an app writes as it runs: a `logs/` folder, a `.log` file (`REBUILDABLE`);
  * - a file the main checkout holds byte for byte at the same place (a `.worktreeinclude`
  *   copy nobody changed): the main checkout keeps it;
+ * - a regular file still present in main whose time shows an untouched setup copy;
  * - a folder git names as one entry whose every file is one of the above.
  *
  * Everything else counts, because nobody can say whether someone still needs it.
  */
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import {
+  closeSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+} from "node:fs";
 import { join } from "node:path";
 import { loadCcSmartDevKitConfig } from "../project/config";
 import { CONFIG_PATH } from "../project/resolve";
-import { runGit } from "./git";
+import { reflogEntryTime, runGit, worktreeAdminDir } from "./git";
 import type { Env } from "./run";
 
 /**
@@ -51,6 +60,55 @@ export const REBUILDABLE: readonly RegExp[] = [
 
 /** How many files of one ignored folder are compared with the main checkout before giving up. */
 const MAX_COMPARED = 2000;
+
+// Claude Code copies include files after `git worktree add`, using copyFile or a new
+// stream + rename, without restoring mtime (2.1.322). Allow that copy step two minutes.
+const INCLUDE_COPY_SLACK_MS = 120_000;
+const FIRST_REFLOG_BYTES = 4096;
+
+/** The earliest setup witness survives reflog expiry and `git worktree move`. */
+function setupTime(worktree: string): number | null {
+  const admin = worktreeAdminDir(worktree);
+  if (admin === null) return null;
+  const times: number[] = [];
+  try {
+    const time = lstatSync(join(admin, "commondir")).mtimeMs;
+    if (Number.isFinite(time)) times.push(time);
+  } catch {
+    // A missing witness grants nothing; the first reflog entry may still prove setup.
+  }
+  try {
+    const fd = openSync(join(admin, "logs", "HEAD"), "r");
+    try {
+      // Only the first entry matters. A later checkout, reset or reflog rewrite is not setup.
+      const buffer = Buffer.alloc(FIRST_REFLOG_BYTES);
+      const size = readSync(fd, buffer, 0, buffer.length, 0);
+      const text = buffer.toString("utf8", 0, size);
+      const end = text.indexOf("\n");
+      if (end !== -1 || size < buffer.length) {
+        const time = reflogEntryTime(end === -1 ? text : text.slice(0, end));
+        if (time !== null) times.push(time);
+      }
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // An unreadable or malformed log grants nothing; commondir may still prove setup.
+  }
+  return times.length === 0 ? null : Math.min(...times);
+}
+
+/** Only regular files present in main can be untouched setup copies; never links or folders. */
+function untouchedCopy(worktree: string, mainCheckout: string, entry: string): boolean {
+  try {
+    const here = lstatSync(join(worktree, entry));
+    if (!here.isFile() || !lstatSync(join(mainCheckout, entry)).isFile()) return false;
+    const setup = setupTime(worktree);
+    return setup !== null && here.mtimeMs <= setup + INCLUDE_COPY_SLACK_MS;
+  } catch {
+    return false;
+  }
+}
 
 /** The entries `git status --porcelain -z --ignored` marks ignored (`!! path`). */
 export function parseIgnored(porcelain: string): string[] {
@@ -136,7 +194,10 @@ export function safeEntry(
       return false;
     }
   }
-  return mainCheckout !== null && sameAsMain(worktree, mainCheckout, entry);
+  return (
+    mainCheckout !== null &&
+    (sameAsMain(worktree, mainCheckout, entry) || untouchedCopy(worktree, mainCheckout, entry))
+  );
 }
 
 /**

@@ -37,8 +37,8 @@
  *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
  */
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
@@ -49,7 +49,9 @@ import {
   isInside,
   type ListedWorktree,
   listWorktrees,
+  reflogEntryTime,
   runGit,
+  worktreeAdminDir,
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
@@ -59,24 +61,50 @@ import { liveSessions, type SessionRecord } from "./sessions";
 /** How long git must have left a worktree alone before it counts as finished. */
 export const IDLE_MINUTES = 60;
 
+/** Bound each worktree's reflog read, even when the log has years of entries. */
+const REFLOG_TAIL_BYTES = 8 * 1024;
+
 /**
- * Minutes since git last wrote to the worktree's own files (its index, HEAD and HEAD log in
- * `.git/worktrees/<name>/`), or **null when they cannot be read** — a folder that is gone, or
+ * The final complete entry's time, not the log's file time: `git reflog expire --all`
+ * rewrites even unchanged logs. GIT_COMMITTER_DATE can change an entry's time; accept that
+ * rare case. A missing, malformed or future entry leaves index and HEAD as the evidence.
+ */
+function lastReflogTime(file: string, now: number): number | null {
+  try {
+    const fd = openSync(file, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const start = Math.max(0, size - REFLOG_TAIL_BYTES);
+      const buffer = Buffer.alloc(Math.min(size, REFLOG_TAIL_BYTES));
+      const length = readSync(fd, buffer, 0, buffer.length, start);
+      const tail = buffer.toString("utf8", 0, length);
+      // Drop an unfinished trailing write and, when truncated, the first partial line.
+      const end = tail.lastIndexOf("\n");
+      if (end < 0) return null;
+      const previous = tail.lastIndexOf("\n", end - 1);
+      if (start > 0 && previous < 0) return null;
+      const time = reflogEntryTime(tail.slice(previous + 1, end));
+      return time !== null && time <= now ? time : null;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // A log git is replacing, or one we cannot read, supplies no activity time.
+    return null;
+  }
+}
+
+/**
+ * Minutes since the newest index/HEAD file time or final HEAD reflog entry's epoch in
+ * `.git/worktrees/<name>/`, or **null when none can be read** — a folder that is gone, or
  * one that is not a worktree any more. One reader for both callers: `idleMinutes` counts
  * unknown as just now (`0`), which keeps the worktree, and the worktrees page says null.
  */
 export function idleMinutesOrNull(worktree: string, now: number): null | number {
-  let admin: string;
-  try {
-    admin = readFileSync(join(worktree, ".git"), "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, "");
-  } catch {
-    return null;
-  }
-  if (!isAbsolute(admin)) admin = resolve(worktree, admin);
-  let last = 0;
-  for (const file of ["index", "HEAD", join("logs", "HEAD")]) {
+  const admin = worktreeAdminDir(worktree);
+  if (admin === null) return null;
+  let last = lastReflogTime(join(admin, "logs", "HEAD"), now) ?? 0;
+  for (const file of ["index", "HEAD"]) {
     try {
       last = Math.max(last, statSync(join(admin, file)).mtimeMs);
     } catch {
