@@ -10,10 +10,10 @@ import {
   writeClaudeFile,
   writeSessionRecord,
 } from "../testing/hooks";
-import { git } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { autoCleanFiles, recordRun, recordStart } from "../worktrees/auto-state";
 import { worktreeLeftoversHook } from "./specs";
-import { leftoversNote } from "./worktree-leftovers";
+import { idleMinutesOrNull, leftoversNote } from "./worktree-leftovers";
 
 test.each([8, 10])("caps each worktree list at eight (%i total)", (count) => {
   const trees = Array.from({ length: count }, (_, index) => ({
@@ -36,15 +36,27 @@ test.each([8, 10])("caps each worktree list at eight (%i total)", (count) => {
   expect(text).toContain("`git worktree prune`");
 });
 
-/** Makes git's own files of a worktree look an hour and a half old. */
-function makeIdle(worktree: string): void {
-  const admin = resolve(
+function adminOf(worktree: string): string {
+  return resolve(
     worktree,
     readFileSync(join(worktree, ".git"), "utf8")
       .trim()
       .replace(/^gitdir:\s*/, ""),
   );
+}
+
+/** Makes git's own activity in a worktree an hour and a half old. */
+function makeIdle(worktree: string): void {
+  const admin = adminOf(worktree);
   const old = new Date(Date.now() - 90 * 60_000);
+  const log = join(admin, "logs", "HEAD");
+  writeFileSync(
+    log,
+    readFileSync(log, "utf8").replace(
+      / \d+ ([+-]\d{4})\t/g,
+      ` ${Math.floor(old.getTime() / 1000)} $1\t`,
+    ),
+  );
   for (const file of ["index", "HEAD", join("logs", "HEAD")]) {
     try {
       utimesSync(join(admin, file), old, old);
@@ -66,6 +78,99 @@ function project() {
   };
   return { repo, add };
 }
+
+describe("idleMinutesOrNull", () => {
+  const now = Date.parse("2020-01-01T12:00:00Z");
+  const old = new Date("2020-01-01T10:00:00Z");
+
+  function fixture() {
+    const { add } = project();
+    const worktree = add("idle");
+    const admin = adminOf(worktree);
+    for (const file of ["index", "HEAD"]) utimesSync(join(admin, file), old, old);
+    const log = join(admin, "logs", "HEAD");
+    const sha = git(worktree, "rev-parse", "HEAD").trim();
+    const entry = (epoch: string, message = "commit: test") =>
+      `${sha} ${sha} Test With Spaces <test@example.com> ${epoch} +0530\t${message}\n`;
+    return { worktree, admin, log, entry };
+  }
+
+  test("rewriting the reflog file does not make an old real commit recent", () => {
+    const { worktree, admin, log } = fixture();
+    const committed = Bun.spawnSync(["git", "commit", "--allow-empty", "-q", "-m", "old"], {
+      cwd: worktree,
+      env: {
+        ...cleanGitEnv(),
+        GIT_AUTHOR_DATE: "2020-01-01T10:00:00Z",
+        GIT_COMMITTER_DATE: "2020-01-01T10:00:00Z",
+      },
+    });
+    expect(committed.exitCode).toBe(0);
+    for (const file of ["index", "HEAD", "logs/HEAD"]) {
+      utimesSync(join(admin, file), old, old);
+    }
+    expect(idleMinutesOrNull(worktree, now)).toBe(120);
+    // `reflog expire --all` rewrites this file too, even without changing its entries.
+    utimesSync(log, new Date(now), new Date(now));
+    expect(idleMinutesOrNull(worktree, now)).toBe(120);
+  });
+
+  test("uses the last entry, not the newest epoch or the message's fields", () => {
+    const { worktree, log, entry } = fixture();
+    writeFileSync(log, entry("1577879100") + entry("1577878200", "message\t9999999999 +0000"));
+    expect(idleMinutesOrNull(worktree, now)).toBe(30);
+  });
+
+  test.each(["index", "HEAD"])("a newer %s wins over the entry", (file) => {
+    const { worktree, admin, log, entry } = fixture();
+    writeFileSync(log, entry("1577878200"));
+    const recent = new Date("2020-01-01T11:50:00Z");
+    utimesSync(join(admin, file), recent, recent);
+    expect(idleMinutesOrNull(worktree, now)).toBe(10);
+  });
+
+  test.each(["", "broken\n", "partial", "future", "bad epoch", "bad prefix"])(
+    "%s reflog falls back to index and HEAD",
+    (kind) => {
+      const { worktree, log, entry } = fixture();
+      const contents: Record<string, string> = {
+        "": "",
+        "broken\n": `${entry("1577878200")}broken\n`,
+        partial: entry("1577878200").trimEnd(),
+        future: entry("1577880060"),
+        "bad epoch": entry("not-a-number"),
+        "bad prefix": "bad prefix 1577878200 +0000\tmessage\n",
+      };
+      writeFileSync(log, contents[kind] ?? "");
+      expect(idleMinutesOrNull(worktree, now)).toBe(120);
+    },
+  );
+
+  test("missing reflog falls back; no remaining timestamps means unknown", () => {
+    const { worktree, admin, log } = fixture();
+    rmSync(log);
+    expect(idleMinutesOrNull(worktree, now)).toBe(120);
+    for (const file of ["index", "HEAD"]) rmSync(join(admin, file));
+    expect(idleMinutesOrNull(worktree, now)).toBeNull();
+  });
+
+  test("reads the final complete entry in a large log with an unfinished trailing write", () => {
+    const { worktree, log, entry } = fixture();
+    writeFileSync(log, `${entry("1577872800").repeat(100)}${entry("1577878200")}unfinished`);
+    expect(idleMinutesOrNull(worktree, now)).toBe(30);
+  });
+
+  test("a final entry larger than the tail budget is not a complete entry", () => {
+    const { worktree, log, entry } = fixture();
+    writeFileSync(log, entry("1577878200", "x".repeat(9000)));
+    expect(idleMinutesOrNull(worktree, now)).toBe(120);
+  });
+
+  test("not a linked worktree: no .git file or a .git directory", () => {
+    expect(idleMinutesOrNull(tempDir(), now)).toBeNull();
+    expect(idleMinutesOrNull(makeClone().repo, now)).toBeNull();
+  });
+});
 
 const start = (cwd: string) => ({
   hook_event_name: "SessionStart",
