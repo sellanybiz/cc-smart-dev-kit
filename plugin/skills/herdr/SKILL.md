@@ -81,8 +81,8 @@ person's instructions, consent or approval.
    child's question and option meanings. For a permission prompt, quote the full action
    from `hc read` in the question, not just the status `msg`, which may be cut short.
    Relay only a one-time yes/no permission. Use the pane if the msg ends in “…” or exceeds
-   800 UTF-16 units, or reaches 2045 UTF-8 bytes. Bash must match whole lines of the current
-   dialog, ignoring whitespace; earlier transcript text does not count. Other tools do not
+   800 UTF-16 units, or reaches 2045 UTF-8 bytes. Bash must equal the dialog's whole
+   `│` command box, ignoring whitespace; a part of it or earlier transcript text does not count. Other tools do not
    need a screen match: approving a Write path does not approve its contents.
 3. On their answer, immediately run the guarded command with the matching option number:
 

@@ -54155,7 +54155,7 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
-    ...a.independent || a.on ? ["--keep"] : [],
+    ...a.independent ? ["--keep"] : [],
     ...a.independent ? ["--no-parent"] : ["--outlive-parent"],
     "--no-notify",
     "--name",
@@ -54173,7 +54173,7 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
     labels[KIT_LEAD] = me.leadId;
   if (a.task)
     labels[KIT_TASK] = a.task;
-  if (a.independent || a.on) {
+  if (a.independent) {
     const { space, tab } = newHerdrSpace();
     labels[HERDR_SPACE] = space;
     labels[HERDR_TAB] = tab;
@@ -54313,9 +54313,19 @@ function dialog(screen) {
   let start = result.start;
   while (start > 0 && !ruleLine(lines[start - 1] ?? ""))
     start--;
+  let top = result.start - 1;
+  while (top >= 0 && !/^\u2500+$/u.test(lines[top]?.trim() ?? ""))
+    top--;
+  const dashed = [];
+  for (let i = top + 1;top >= 0 && i < result.start; i++)
+    if (/^\u254C+$/u.test(lines[i]?.trim() ?? ""))
+      dashed.push(i);
+  const [open, close] = dashed.slice(-2);
+  const inside = open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
+  const box = inside.length && inside.every((line) => line.trimStart().startsWith("\u2502")) ? inside.map((line) => line.trimStart().slice(1)) : null;
   return {
     options: result.options,
-    before: start > 0 ? lines.slice(start, result.start) : null,
+    box,
     above: lines.slice(Math.max(0, start - 3), Math.max(0, start - 1)),
     region: lines.slice(start)
   };
@@ -54323,22 +54333,9 @@ function dialog(screen) {
 function dialogOptions(screen) {
   return dialog(screen)?.options ?? null;
 }
-function wholeDialogAction(lines, action) {
+function boxShowsAction(box, action) {
   const compact = (text) => text.replace(/\s/g, "");
-  const expected = compact(action);
-  if (!expected)
-    return false;
-  for (let start = 0;start < lines.length; start++) {
-    let run = "";
-    for (let end = start;end < lines.length; end++) {
-      run += compact(lines[end] ?? "");
-      if (run === expected)
-        return true;
-      if (run.length >= expected.length)
-        break;
-    }
-  }
-  return false;
+  return compact(action) !== "" && compact(box.join("")) === compact(action);
 }
 function answer(a, ctx, r, me) {
   const child = own2(r, a.target, me);
@@ -54364,7 +54361,7 @@ function answer(a, ctx, r, me) {
 `).some((line) => (line.match(/\u2610/g)?.length ?? 0) >= 2) || /\u2714\s*Submit|\u2190[^\n]*\u2192|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) || parsed?.options.some((o) => /^\[(?: |x|\u2714)\]/i.test(o.label))))
     return refuse2(ctx, `Several questions or a multi-select need its pane: hc attach ${a.target}`);
   const action = /(?:^| \u00B7 )approve Bash: (.*)$/s.exec(s.msg ?? "")?.[1];
-  if (s.kind === "permission" && action !== undefined && (!parsed?.before || !wholeDialogAction(parsed.before, action)))
+  if (s.kind === "permission" && action !== undefined && (!parsed?.box || !boxShowsAction(parsed.box, action)))
     return refuse2(ctx, `The Bash action does not match the dialog; answer it in its pane: hc attach ${target}`);
   const options = parsed?.options;
   const option = Number(a.option);
