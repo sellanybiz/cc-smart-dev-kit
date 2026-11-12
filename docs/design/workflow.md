@@ -102,7 +102,7 @@ place (`auto-merge.ts`).
 
 | Setting | Followed by |
 |---|---|
-| `autoCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
+| `autoCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): `autoCommit` is off by default, `clearWorktreeAfterMerge` on (the session removes its own finished worktree, `docs/design/sessions.md` § Locks, owners and who may remove what); each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
 | `autoPush` | the **git guard hook** (`src/hooks/git-guard.ts`), PreToolUse on Bash and PowerShell: while it is off (the default) the guard asks before every `git push` (D15), reading the value as committed on the base (`resolveGate`). |
 | `openPr` | the **merge guard hook** (`src/hooks/merge-guard.ts`): `off` asks before `gh pr create` and `gh pr ready`, `draft` asks for a pull request that does not open as a draft and for every `gh pr ready`, `ready` asks for neither (D16); read as committed on the base. |
 | `autoMerge` | the **merge guard hook** (`src/hooks/merge-guard.ts`), PreToolUse on Bash and PowerShell — the one step a hook can stand in front of. `mergeMethod` and `deleteBranch` stay instructions: they say how a merge the guard allowed is made. |

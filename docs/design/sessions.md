@@ -48,15 +48,66 @@ first. One refusal does not block later eligible rows; the final exit is nonzero
 The portal's child runs from the home folder, not from a session folder that may be gone.
 Nothing runs this removal by itself.
 
-### Stale locks and local caches
+### Locks, owners and who may remove what
 
-The clean keeps live and unprovable locks. For the measured Linux Claude Code lock format,
-a dead PID or a reused PID with a different `/proc` start time proves the locker gone only in the
-initial PID namespace. A nested or unreadable namespace cannot prove a host PID dead. Only
-then, and after the normal contents/program/container checks, can the clean unlock and remove
-it. A failed move or removal restores the same lock on the retained path and says when restoration
+Claude Code locks a worktree with a reason in one of two forms (both may lack ` start <n>`;
+`docs/claude-code-contract.md` § Worktrees): `claude session <name> (pid N start S)` for a
+session, and `claude agent agent-<id> (pid N start S)` for a subagent's worktree. One parser,
+`src/worktrees/agent-lock.ts`, reads both. A subagent's lock stays while its parent session
+lives, so the agent can be resumed.
+
+- **Stale** (the clean may release it, in the initial PID namespace only): a session lock whose
+  pid is gone or whose `/proc` start time differs — and it must name a start. A builder lock
+  also needs the **finished proof**: the agent's `subagents/agent-<id>.meta.json` says
+  `finished: true` and its `worktreePath` is this worktree. A dead pid alone is not enough, and
+  a missing or unreadable file keeps the worktree. A nested or unreadable namespace cannot
+  prove a host PID dead. A gone-but-unfinished builder gets a line with the manual way out.
+- **Owner** (`--remove` only, never `--clean`, the after-merge clean or the leftovers note):
+  the caller is the owner of a lock when an ancestor of the `worktrees` process has the lock's
+  pid and the same start time. A lock with no start has no owner. An owner may release its own
+  session lock, or a builder's lock once the finished proof holds, with no idle wait.
+  Everything else in the verdict still applies. A live lock held by someone else stays, and its
+  line says who removes it.
+- **The owner's own children.** In owner mode only, a program is not counted as using the
+  folder when its chain up to the owner's `claude` has no shell, its only tie is its working
+  folder (its command line does not name the folder), and it is not `claude` itself — these are
+  the session's MCP servers. A Bash job (Claude Code runs Bash under a `zsh -c` child), a dev
+  server, a Monitor or a program started from a file inside still holds it; so does another
+  `claude` below the owner. Limit: a Bash command that `exec`s a program replaces its shell and
+  reads as a non-shell child. Owner mode also ignores the owner's own session record, whose
+  `cwd` after `ExitWorktree` keep is not proved. The process list is every process
+  (`ps -ww -axo pid=,ppid=,args=`): without a selection flag `ps` shows only the caller's
+  terminal, which hid the owner's `claude` and its servers.
+- **`--remove`** runs from any checkout of the repo except one that holds the caller's own
+  folder; `--clean` runs in the main checkout only. If another clean holds the lock, `--remove`
+  waits up to `REMOVAL_TIMEOUT_MS` (10 minutes) and then exits 1 with a busy line; a lock port
+  error exits 1 at once. `--clean` still says so and exits 0. Git's own remove runs under the
+  same timeout, because a large `node_modules` takes longer than git's default 15 seconds.
+
+A failed move or removal restores the same lock on the retained path and says when restoration
 fails. Other lock formats and platforms stay protected. A live lock whose work is on the base
 names `ExitWorktree` (remove), or closing the session, as its next step.
+
+### Idle time, held work and untouched copies
+
+- **Idle** is measured from the epoch of the last entry in the worktree's `logs/HEAD` (read
+  from its tail), or the `index` or `HEAD` file time, whichever is newest — never the log's file
+  time. `git gc` runs `git reflog expire --all`, which rewrites every worktree's `logs/HEAD`
+  with nothing changed, so that file time would read as fresh activity after each gc. A bad,
+  empty or future entry is ignored.
+- **Held by a live branch.** A builder merged into its lead's plan branch has commits that are
+  not on the base. When its head is an ancestor of the branch checked out in another worktree
+  that is present on disk, attached and not prunable, the work is held: the **folder** may go.
+  The **branch** goes only when the base holds it; otherwise the line says "kept branch: its
+  work is held by <other>, not yet on <base>". Deleting those kept branches later is an open
+  follow-up project task.
+- **Untouched include copies.** Claude Code copies `.worktreeinclude` files with the copy time
+  as their modified time. An ignored file that also exists at the same path in the main checkout
+  and whose time is not after the worktree's set-up time (the earlier of its first reflog entry
+  and its `commondir` time) plus 120 seconds is an untouched copy and does not keep the
+  worktree, even when the main copy changed. An edit inside that window counts as untouched.
+- **Strays.** A folder a removal parks and git then forgets is found by a second read after the
+  removals and finished in the same run, for `--clean` and the automatic clean alike.
 
 The Supabase CLI's `supabase/.temp/cli-latest` version-check cache is disposable. Its parent
 folder is not: different project-link or pooler state stays protected. An unchanged copy in
