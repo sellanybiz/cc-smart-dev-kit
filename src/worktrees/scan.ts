@@ -494,7 +494,9 @@ function releasableClaudeLock(listed: ListedWorktree, look: MachineLook): boolea
  * Claude Code has usually released a session's lock, so with no lock to prove, it is the nearest
  * process above this command that the listing names `claude`. That claims nothing about the
  * worktree: only the children of THIS command's own session are skipped, and the verdict still
- * holds the folder for any other session, shell or program.
+ * holds the folder for any other session, shell or program. The name is argv[0] as `ps` prints
+ * it: `claude` on a normal install. A launch as `node …/cli.js` does not match, and the folder
+ * is kept — the safe side.
  */
 function ownerSession(listed: ListedWorktree, look: MachineLook): OwnerSession | undefined {
   if (!look.ownerMode || !lockPlatform(look) || look.programs === "unknown") return undefined;
@@ -569,7 +571,13 @@ function judgeOne(
   // The session's own folder, and the worktree, as real paths: `git worktree list` prints
   // the path the worktree was made with, while a session record holds the physical one when
   // the repo is reached through a symlink.
-  const session = look.sessions.find((one) => isInside(realPath(one.cwd), realPath(listed.path)));
+  // In owner mode the owner's own record never counts: ExitWorktree keep moves the session out
+  // of the folder, and a record whose cwd lags behind must not keep it. `--remove` already
+  // refuses a target that holds the caller's cwd. Any other session's record still counts.
+  const owner = ownerSession(listed, look);
+  const session = look.sessions.find(
+    (one) => one.pid !== owner?.claudePid && isInside(realPath(one.cwd), realPath(listed.path)),
+  );
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   if (parked) {
@@ -599,13 +607,7 @@ function judgeOne(
     programs:
       look.programs === "unknown"
         ? "unknown"
-        : programsInside(
-            look.programs,
-            listed.path,
-            undefined,
-            undefined,
-            ownerSession(listed, look),
-          ),
+        : programsInside(look.programs, listed.path, undefined, undefined, owner),
     sessionName: session?.name ?? null,
   };
   return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);

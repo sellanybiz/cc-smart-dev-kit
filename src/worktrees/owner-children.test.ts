@@ -39,7 +39,12 @@ function repo(): { main: string; worktree: string } {
 /** The scan's verdict for the one worktree, with the given processes and mode. */
 function judge(
   programs: RunningProgram[],
-  options: { ownerMode: boolean; platform?: NodeJS.Platform; lock?: string },
+  options: {
+    ownerMode: boolean;
+    platform?: NodeJS.Platform;
+    lock?: string;
+    sessionPids?: number[];
+  },
 ) {
   const { main, worktree } = repo();
   if (options.lock !== undefined) git(main, "worktree", "lock", "--reason", options.lock, worktree);
@@ -57,7 +62,12 @@ function judge(
         ...(program.cwd === "IN" ? { cwd: worktree } : {}),
         ...(program.path?.includes("IN/") ? { path: program.path.replace("IN", worktree) } : {}),
       })),
-      sessions: [],
+      sessions: (options.sessionPids ?? []).map((pid) => ({
+        cwd: worktree,
+        name: `session ${String(pid)}`,
+        pid,
+        sessionId: `id-${String(pid)}`,
+      })),
       platform: options.platform ?? "linux",
       pidNamespace: INITIAL_PIDNS,
       processIsGone: () => false,
@@ -173,6 +183,30 @@ describe("worktrees --remove: the session's own MCP servers", () => {
     ).toMatchObject({ finished: true });
     // The same tree with no lock cannot name it: the program is not called claude.
     expect(judge([renamed, mcp], { ownerMode: true })).toMatchObject({ finished: false });
+  });
+});
+
+describe("worktrees --remove: the session records", () => {
+  test("the owner's own record inside the folder does not keep it in owner mode", () => {
+    expect(judge([claude], { ownerMode: true, sessionPids: [CLAUDE] })).toMatchObject({
+      finished: true,
+    });
+  });
+
+  test("another session's record inside the folder keeps it", () => {
+    expect(judge([claude], { ownerMode: true, sessionPids: [CLAUDE, 800] })).toEqual({
+      finished: false,
+      held: true,
+      why: 'Claude session "session 800" works in it',
+    });
+  });
+
+  test("outside owner mode the same record keeps it", () => {
+    expect(judge([claude], { ownerMode: false, sessionPids: [CLAUDE] })).toEqual({
+      finished: false,
+      held: true,
+      why: 'Claude session "session 500" works in it',
+    });
   });
 });
 
