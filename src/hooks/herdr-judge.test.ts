@@ -336,6 +336,60 @@ test.each([
   const line = `${COMMAND} herdr start --model ${model} --effort ${effort} --mode manual --asked -- work`;
   expect(judgeBash(readBash(line), world())?.decision).toBe("ask");
 });
+test.each([
+  "hc run --bg -- bash -c 'x' -V",
+  "hc exec -- sh -c 'x' --version",
+  "hc run --bg bash -c 'x' -h",
+  "hc file write /tmp/x --version",
+  "hc send t1 -- --version",
+])("read flag is data: %s", (line) => {
+  expect(judgeBash(readBash(line), world())?.decision).toBe("deny");
+});
+test.each(["--version", "--json -V", "--skill", "--help", "-h", "send --help", "--json kill -h"])(
+  "positional hc read: %s",
+  (args) => {
+    expect(judgeBash(readBash(`hc ${args}`), world())).toBeNull();
+  },
+);
+test("answer text -h asks", () => {
+  expect(
+    judgeBash(readBash(`${COMMAND} herdr answer t1 --expect q --expect-turn 1 --text -h`), world())
+      ?.decision,
+  ).toBe("ask");
+});
+test.each([
+  ["$K herdr start --model sonnet --effort high --mode dontAsk -- w", "deny"],
+  ["$K herdr answer t1 --expect q --expect-turn 1 --option A", "ask"],
+  ["$K herdr machines allow live", "ask"],
+  ["HC_TERMINAL_ID=x $K herdr send t1 hi", "deny"],
+] as const)("computed kit verb %s", (line, expected) => {
+  expect(judgeBash(readBash(line), world())?.decision).toBe(expected);
+});
+test.each([
+  "for HC_TERMINAL_ID in x; do hc ls; done",
+  "select HC_TERMINAL_ID in x; do hc ls; done",
+  "printf -vHC_TERMINAL_ID x; hc ls",
+  "let HC_TERMINAL_ID=1; hc ls",
+  "getopts x HC_TERMINAL_ID; hc ls",
+  "declare -n ref=HC_TERMINAL_ID; hc ls",
+  "typeset -n ref=HC_TERMINAL_ID; hc ls",
+])("more Bash identity: %s", (line) => {
+  const v = judgeBash(readBash(line), world());
+  expect(v?.decision).toBe("deny");
+  expect(v?.reason).toContain("HC_TERMINAL_ID");
+});
+test.each([
+  "Set-Item env:/HC_TERMINAL_ID x; hc ls",
+  "Set-Item env:\\HC_TERMINAL_ID x; hc ls",
+  ...["Set-Content", "Add-Content", "Copy-Item", "Rename-Item", "Move-Item"].map(
+    (cmd) => `${cmd} x env:/hc_terminal_id; hc ls`,
+  ),
+])("more PowerShell identity: %s", (line) => {
+  const v = judgeBash(readBash(line, "powershell"), world());
+  expect(v?.decision).toBe("deny");
+  expect(v?.reason).toContain("HC_TERMINAL_ID");
+});
+
 test.each(["unknown", "production", "broken"])("asked still asks for remote %s", (kind) => {
   const ctx = world();
   mkdirSync(dirname(ctx.paths.machinesFile), { recursive: true });

@@ -46,7 +46,7 @@ import { isAbsolute, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { machineRule, readMachines } from "../herdr/machines";
-import { childModeAllowed, normalizeMode, parseHerdrArgs } from "../herdr/words";
+import { childModeAllowed, HERDR_VERBS, normalizeMode, parseHerdrArgs } from "../herdr/words";
 import {
   checkoutFailure,
   loadProjectConfig,
@@ -573,11 +573,13 @@ function judgeClaudeLaunch(launch: ClaudeLaunch, context: JudgeContext): BashVer
   return { decision: verdict.decision, reason: `${PRINT_FORM}\n${verdict.reason}`, why: "print" };
 }
 
-/** PowerShell splits method calls and braced assignments across shell steps. */
+/** PowerShell splits method calls and braced assignments across shell steps.
+ * Whole-line patterns lean to the safe side: matching text in a string literal can deny too.
+ */
 function powershellIdentity(command: string): boolean {
   return [
     /\$\{?env:hc_terminal_id\}?\s*\+?=(?!=)/i,
-    /\b(?:set-item|si|new-item|ni)\b[^\n;|]*\benv:\\?hc_terminal_id\b/i,
+    /\b(?:set-item|si|new-item|ni|set-content|add-content|copy-item|rename-item|move-item)\b[^\n;|]*\benv:[\\/]?hc_terminal_id\b/i,
     /\bSetEnvironmentVariable\s*\(\s*['"]HC_TERMINAL_ID['"]/i,
   ].some((pattern) => pattern.test(command));
 }
@@ -588,6 +590,7 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
   const assigned = (word: string) => /^HC_TERMINAL_ID(?:\+?=|$)/.test(word);
   return shellSteps(command, { dialect, blindWhenOpen: true, joinLines: true }).some((step) => {
     const words = wordsOf(step.text, dialect);
+    if (["for", "select"].includes(words[0] ?? "") && assigned(words[1] ?? "")) return true;
     const invocation = invocationOf(words);
     if (invocation === undefined) return words.some(assigned);
     const { program, args, prefix } = invocation;
@@ -596,7 +599,16 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
       (["export", "declare", "typeset", "local", "readonly"].includes(program) &&
         args.some(assigned)) ||
       (program === "printf" &&
-        args.some((word, at) => word === "-v" && assigned(args[at + 1] ?? ""))) ||
+        args.some(
+          (word, at) =>
+            (word === "-v" && assigned(args[at + 1] ?? "")) ||
+            (word.startsWith("-v") && assigned(word.slice(2))),
+        )) ||
+      (program === "let" && args.some(assigned)) ||
+      (program === "getopts" && args.some(assigned)) ||
+      (["declare", "typeset"].includes(program) &&
+        args.includes("-n") &&
+        args.some((word) => word.split("=")[1] === "HC_TERMINAL_ID")) ||
       (["read", "mapfile", "readarray"].includes(program) && args.some(assigned))
     )
       return true;
@@ -613,9 +625,13 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
 function herdrArguments(one: RunInvocation, reading: BashReading): string[] | null {
   const args = kitArguments(one.program, withoutRedirections(one.args));
   if (args?.[0] === "herdr") return args.slice(1);
-  if (one.computed && reading.namesHerdr) {
+  if (one.computed) {
     const at = one.args.indexOf("herdr");
-    if (at >= 0) return one.args.slice(at + 1);
+    if (
+      at >= 0 &&
+      (reading.namesHerdr || (HERDR_VERBS as readonly string[]).includes(one.args[at + 1] ?? ""))
+    )
+      return one.args.slice(at + 1);
   }
   return null;
 }
@@ -669,13 +685,15 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       );
     }
     if (one.program === "hc") {
-      if (asksHelp(args) || args.some((arg) => ["--version", "-V", "--skill"].includes(arg)))
+      const raw = [...args];
+      while (raw[0] === "--json") raw.shift();
+      const [verb, sub] = raw;
+      if (raw.length === 1 && ["--version", "-V", "--skill", "--help", "-h"].includes(verb ?? ""))
         continue;
-      const [verb, sub] = args.filter((arg) => arg !== "--json");
+      if (raw.length === 2 && !verb?.startsWith("-") && ["--help", "-h"].includes(sub ?? ""))
+        continue;
       const read =
-        ["ls", "get", "read", "wait", "templates", "schema", "--help", "--version"].includes(
-          verb ?? "",
-        ) ||
+        ["ls", "get", "read", "wait", "templates", "schema"].includes(verb ?? "") ||
         (verb === "machine" && sub === "ls") ||
         (verb === "file" && sub === "read") ||
         (verb === "server" && sub === "status");
@@ -709,7 +727,8 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
     }
     const herdr = herdrArguments(one, reading);
-    if (herdr === null || asksHelp(herdr)) continue;
+    if (herdr === null || (herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? "")))
+      continue;
     // These always ask, even when malformed or carrying --asked: no hook-side hc read
     // can tell a question from a permission prompt.
     if (herdr[0] === "answer") {

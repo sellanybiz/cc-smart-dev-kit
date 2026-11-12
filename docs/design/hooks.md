@@ -1269,10 +1269,13 @@ The judge adds Herdr rules; the Agent and `claude -p` rules above do not change.
 invocations through `invocationsOf`, including wrappers and nested shells, and never runs `hc`.
 Raw `hc` writes and `herdr-app do` are refused with the guarded kit command to use instead.
 Named reads (`ls`, `get`, `read`, `wait`, `templates`, `schema`, `machine ls`, `file read`,
-`server status`, help, version and skill output) stay silent; global `--json` is accepted. `hc events` must run in the Bash tool's
-background mode; otherwise use `herdr wait`. Help for kit Herdr verbs is silent too.
-A computed program asks when the line names `hc` or `herdr-app`, or names `herdr` alongside
-the kit command. This is not a sandbox: a program built entirely from unrelated fragments
+`server status`, help, version and skill output) stay silent; leading global `--json` is accepted.
+A global read flag must stand alone after those leading flags. Verb help must be exactly the
+verb followed by `--help` or `-h`; a flag in a payload never grants silence. Kit Herdr verb help
+follows the same exact two-word rule. `hc events` must run in the Bash tool's background mode;
+otherwise use `herdr wait`.
+A computed program asks when the line names `hc` or `herdr-app`. A computed kit program followed
+by `herdr` and a known verb is judged as that command; a bare `herdr` still needs the kit named. This is not a sandbox: a program built entirely from unrelated fragments
 (`$(printf %s h c)`) cannot be identified without executing the line and is not caught.
 
 `cc-smart-dev-kit herdr start` must name its model, effort and mode. Its new launch kind reads
