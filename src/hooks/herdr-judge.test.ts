@@ -373,6 +373,11 @@ test.each([
   "getopts x HC_TERMINAL_ID; hc ls",
   "declare -n ref=HC_TERMINAL_ID; hc ls",
   "typeset -n ref=HC_TERMINAL_ID; hc ls",
+  "(( HC_TERMINAL_ID = 5 )); hc ls",
+  'let "HC_TERMINAL_ID = 1"; hc ls',
+  "declare -gn ref=HC_TERMINAL_ID; hc ls",
+  "typeset -gn ref=HC_TERMINAL_ID; hc ls",
+  "local -n R=HC_TERMINAL_ID; hc ls",
 ])("more Bash identity: %s", (line) => {
   const v = judgeBash(readBash(line), world());
   expect(v?.decision).toBe("deny");
@@ -381,7 +386,8 @@ test.each([
 test.each([
   "Set-Item env:/HC_TERMINAL_ID x; hc ls",
   "Set-Item env:\\HC_TERMINAL_ID x; hc ls",
-  ...["Set-Content", "Add-Content", "Copy-Item", "Rename-Item", "Move-Item"].map(
+  "Rename-Item Env:OTHER HC_TERMINAL_ID; hc ls",
+  ...["Set-Content", "Add-Content", "Copy-Item", "Move-Item"].map(
     (cmd) => `${cmd} x env:/hc_terminal_id; hc ls`,
   ),
 ])("more PowerShell identity: %s", (line) => {

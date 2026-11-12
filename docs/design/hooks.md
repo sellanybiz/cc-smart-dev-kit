@@ -1294,7 +1294,8 @@ question from a permission prompt without an `hc` call. Machine rule changes (`a
 machine commands ask. Assigning `HC_TERMINAL_ID` on a line that invokes Herdr or
 `hc` is refused; Herdr supplies that identity. The shared frame turns asks into denied,
 parked actions while the person is away. In an unattended `claude -p` session, an ask is a
-denial because nobody answers.
+denial because nobody answers. The judge catches common ways to set the identity variable;
+with endless shell spellings, the command's live ancestry check is the guard.
 
 Turns starting with `<hc ` or the kit report tag are not the person's words
 (`prompt-source.ts`). A phase whose agent is `herdr:<core>/<address>` gets a keep-going

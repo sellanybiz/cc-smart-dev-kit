@@ -581,6 +581,7 @@ function powershellIdentity(command: string): boolean {
     /\$\{?env:hc_terminal_id\}?\s*\+?=(?!=)/i,
     /\b(?:set-item|si|new-item|ni|set-content|add-content|copy-item|rename-item|move-item)\b[^\n;|]*\benv:[\\/]?hc_terminal_id\b/i,
     /\bSetEnvironmentVariable\s*\(\s*['"]HC_TERMINAL_ID['"]/i,
+    /\brename-item\b[^\n;|]*\benv:[^\n;|]*\s+['"]?HC_TERMINAL_ID\b/i,
   ].some((pattern) => pattern.test(command));
 }
 
@@ -592,6 +593,7 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
     const words = wordsOf(step.text, dialect);
     if (["for", "select"].includes(words[0] ?? "") && assigned(words[1] ?? "")) return true;
     const invocation = invocationOf(words);
+    if (words[0] === "HC_TERMINAL_ID" && words[1] === "=") return true;
     if (invocation === undefined) return words.some(assigned);
     const { program, args, prefix } = invocation;
     if (
@@ -604,10 +606,10 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
             (word === "-v" && assigned(args[at + 1] ?? "")) ||
             (word.startsWith("-v") && assigned(word.slice(2))),
         )) ||
-      (program === "let" && args.some(assigned)) ||
+      (program === "let" && args.some((word) => /^HC_TERMINAL_ID\s*(?:\+?=|$)/.test(word))) ||
       (program === "getopts" && args.some(assigned)) ||
-      (["declare", "typeset"].includes(program) &&
-        args.includes("-n") &&
+      (["declare", "typeset", "local"].includes(program) &&
+        args.some((word) => /^-[a-zA-Z]*n[a-zA-Z]*$/.test(word)) &&
         args.some((word) => word.split("=")[1] === "HC_TERMINAL_ID")) ||
       (["read", "mapfile", "readarray"].includes(program) && args.some(assigned))
     )
