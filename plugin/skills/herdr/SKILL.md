@@ -1,6 +1,6 @@
 ---
 name: herdr
-description: 'Use to orchestrate separate sessions: "start a session in", "give <repo> this task", "run it in another session", "talk to the other session", "what is the child doing".'
+description: 'Use for separate Claude sessions, never subagents: "child session", "parallel sessions", "start a session in", "give <repo> this task", "what is the child doing".'
 ---
 
 # Separate Sessions With Herdr
