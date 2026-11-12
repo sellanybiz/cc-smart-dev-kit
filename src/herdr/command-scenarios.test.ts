@@ -752,24 +752,50 @@ function blocked(w: ReturnType<typeof world>, msg: string, kind = "permission") 
   };
   return ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"];
 }
+/** A Bash permission dialog as Claude Code 2.1.322 draws it (captured live for 4.3.2). */
+function bashDialog(command: string[], description = "Run the command"): string {
+  const dashed = "╌".repeat(40);
+  return [
+    "─".repeat(40),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    ` ${description}`,
+    dashed,
+    ...command.map((line) => ` │ ${line}`),
+    dashed,
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+}
 test("long Bash action matches whole dialog lines, not transcript or substrings", async () => {
   const action = `printf '%s' ${"a".repeat(297)}`;
   expect(`approve Bash: ${action}`.length).toBe(323);
   for (const [msg, screen, code] of [
-    [
-      `approve Bash: ${action}`,
-      "───\nBash command\n  " +
-        action.slice(0, 50) +
-        "\n  " +
-        action.slice(50) +
-        "\n❯ 1. Yes\n  2. No",
-      0,
-    ],
-    ["Run proof · approve Bash: echo ok", "───\necho ok\n❯ 1. Yes\n  2. No", 0],
-    ["approve Bash: echo ok…", "───\necho ok\n❯ 1. Yes\n  2. No", 1],
+    [`approve Bash: ${action}`, bashDialog([action.slice(0, 50), action.slice(50)]), 0],
+    ["Run proof · approve Bash: echo ok", bashDialog(["echo ok"]), 0],
+    ["approve Bash: echo ok…", bashDialog(["echo ok"]), 1],
     [`approve Write: ${"界".repeat(677)}`, "❯ 1. Yes\n  2. No", 1],
-    ["approve Bash: echo ok", "echo ok\n───\necho other\n❯ 1. Yes\n  2. No", 1],
-    ["approve Bash: echo ok", "───\necho ok && false\n❯ 1. Yes\n  2. No", 1],
+    ["approve Bash: echo ok", `echo ok\n${bashDialog(["echo other"])}`, 1],
+    ["approve Bash: echo ok", bashDialog(["echo ok && false"]), 1],
+    // Only the box lines count: a description equal to the action does not.
+    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "echo ok"), 1],
+    // The whole box must equal the action: a partial match, a second box or a description
+    // drawn like a box line does not count.
+    ["approve Bash: echo ok", bashDialog(["echo ok", "rm -rf ~/x"]), 1],
+    [
+      "approve Bash: echo ok",
+      `${bashDialog(["echo ok"])}`.replace(
+        " Do you want",
+        `${"╌".repeat(40)}\n │ rm -rf ~/x\n${"╌".repeat(40)}\n Do you want`,
+      ),
+      1,
+    ],
+    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "│ echo ok"), 1],
+    // The command without its box border (the 4.3.1 assumption) does not match.
+    ["approve Bash: echo ok", "───\nBash command\n  echo ok\n❯ 1. Yes\n  2. No", 1],
     ["approve Write: /repo/PROOF.md", "Write PROOF.md\n❯ 1. Yes\n  2. No", 0],
   ] as const) {
     const w = world();
@@ -894,7 +920,7 @@ test("question hints in Bash actions are not question dialogs", async () => {
   for (const action of ['grep -rn "multi-select" src', "echo '← a →'"]) {
     const w = world();
     const args = blocked(w, `approve Bash: ${action}`);
-    w.setScreen(`───\nBash command\n  ${action}\n❯ 1. Yes\n  2. No`);
+    w.setScreen(bashDialog([action]));
     expect(await runHerdr(args, w.ctx)).toBe(0);
   }
 });
@@ -966,7 +992,7 @@ test("launch polls for first status and warns without failing at its deadline", 
     expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
   }
 });
-test("independent and every remote launch get fresh machine-local Herdr spaces", async () => {
+test("only independent launches, local or remote, get fresh machine-local Herdr spaces", async () => {
   for (const remote of [false, true])
     for (const independent of [false, true]) {
       const w = world();
@@ -983,12 +1009,14 @@ test("independent and every remote launch get fresh machine-local Herdr spaces",
         ),
       ).toBe(0);
       const args = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
-      expect(args.includes("--keep")).toBe(remote || independent);
+      // Only an independent session gets its own space; a linked child, local or remote,
+      // nests under its lead (proved live in 4.3.1).
+      expect(args.includes("--keep")).toBe(independent);
       expect(args.filter((a) => /^herdr.space=sp[0-9a-f]{32}$/.test(a))).toHaveLength(
-        remote || independent ? 1 : 0,
+        independent ? 1 : 0,
       );
       expect(args.filter((a) => /^herdr.tab=tb[0-9a-f]{32}$/.test(a))).toHaveLength(
-        remote || independent ? 1 : 0,
+        independent ? 1 : 0,
       );
     }
 });
@@ -1168,4 +1196,43 @@ test("a plan dialog with a description prefix still goes to the pane", async () 
   ).toBe(1);
   expect(w.lines.join("\n")).toContain("Answer the plan in its pane");
   expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
+});
+
+test("the live 2.1.322 Bash dialog relays a 440-character command", async () => {
+  const file = "/tmp/claude-1000/project/scratchpad/proof5.txt";
+  const text =
+    "proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen";
+  const msg = `approve Bash: printf '%s\\n' '${text}' > ${file}`;
+  const screen = [
+    "  ⎿  $ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
+    "     quote all of it to the person before it sends a single key to this pane, and it must match the command sh…",
+    "",
+    "─".repeat(200),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    " Write proof text to scratchpad file",
+    "╌".repeat(200),
+    " │ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
+    " │ quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen' >",
+    ` │ ${file}`,
+    "╌".repeat(200),
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and always allow access to /tmp/claude-1000/project/scratchpad from this project",
+    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+    "   4. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+  const w = world();
+  const args = blocked(w, msg);
+  w.setScreen(screen);
+  expect(await runHerdr(args, w.ctx)).toBe(0);
+  expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
+    "keys",
+    "--json",
+    "--",
+    "t2",
+    "enter",
+  ]);
 });

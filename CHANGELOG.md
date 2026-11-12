@@ -3,6 +3,21 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.3.2
+
+Two fixes from the 4.3.1 live proofs.
+
+- **Bash prompts can be relayed.** Claude Code draws a Bash permission as a box of `│`
+  lines between dashed rules. 4.3.1 looked for the command in the wrong place, so `herdr
+  answer` refused every Bash prompt (it failed safe and sent you to the pane). It now requires
+  the whole box to equal the command, never a part of it, the dialog's description or earlier
+  text.
+- **A linked child on another machine stays under its lead.** 4.3.1 opened it as its own space
+  in the main window. Now only an independent session gets its own space, on any machine; a
+  linked child, local or remote, nests under its lead in the Agents panel, as a local one does.
+
+**What to run:** nothing. Update the kit on your other machines to 4.3.2 too.
+
 ## 4.3.1
 
 Fixes from the first live run of Herdr session orchestration.
