@@ -35,9 +35,17 @@ import type { CliPaths } from "../cli/paths";
 import { isInside, realPath, runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
-import { REMOVAL_TIMEOUT_MS } from "./agent-lock";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
-import { type CleanLock, canGo, cleanFinished, forgottenLine, holdCleanLock } from "./clean";
+import {
+  type CleanLock,
+  type CleanLockResult,
+  canGo,
+  cleanFinished,
+  forgottenLine,
+  holdCleanLock,
+  REMOVAL_TIMEOUT_MS,
+  takeCleanLock,
+} from "./clean";
 import {
   deleteMergedBranch,
   fetchBase,
@@ -280,7 +288,7 @@ export async function runWorktrees(
   sinks: WorktreesSinks = CONSOLE_SINKS,
   // The machine-wide lock: a test hands in its own, so it never reaches the real port a running
   // clean may hold (`LOCK_PORTS.worktreesClean`), as `auto-clean.ts` takes `deps.hold`.
-  hold: () => Promise<null | CleanLock> = holdCleanLock,
+  hold?: () => Promise<null | CleanLock | { error: string }>,
   wait: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<number> {
   const { error, print } = sinks;
@@ -316,11 +324,21 @@ export async function runWorktrees(
       return 1;
     }
     const deadline = Date.now() + (wait.timeoutMs ?? REMOVAL_TIMEOUT_MS);
-    lock = await hold();
-    while (lock === null && options.remove !== null && Date.now() < deadline) {
+    const take = async (): Promise<CleanLockResult> => {
+      if (hold === undefined && options.remove !== null) return takeCleanLock();
+      const held = await (hold ?? holdCleanLock)();
+      return held === null ? { taken: true } : "error" in held ? held : { lock: held };
+    };
+    let result = await take();
+    while ("taken" in result && options.remove !== null && Date.now() < deadline) {
       await Bun.sleep(Math.min(wait.intervalMs ?? CLEAN_LOCK_INTERVAL_MS, deadline - Date.now()));
-      lock = await hold();
+      result = await take();
     }
+    if ("error" in result && options.remove !== null) {
+      error(`Could not take the worktree clean lock: ${result.error}. Nothing removed.`);
+      return 1;
+    }
+    lock = "lock" in result ? result.lock : null;
     if (lock === null) {
       if (options.remove !== null) {
         error(

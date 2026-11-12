@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { agentFinished, ownsClaudeLock, parentPidFromStat, parseClaudeLock } from "./agent-lock";
+import { agentFinished, ownsClaudeLock, parseClaudeLock } from "./agent-lock";
 
 test("both Claude lock forms allow a missing start", () => {
   expect(parseClaudeLock("claude agent agent-x (pid 42 start 123)")).toEqual({
@@ -19,11 +19,6 @@ test("both Claude lock forms allow a missing start", () => {
   });
   expect(parseClaudeLock("claude agent x (pid 0)")).toBeNull();
   expect(parseClaudeLock("other lock")).toBeNull();
-});
-
-test("parent stat parser uses the final closing parenthesis", () => {
-  expect(parentPidFromStat("42 (name with ) spaces) S 7 1 2")).toBe(7);
-  expect(parentPidFromStat("broken")).toBeNull();
 });
 
 test("ownership requires an ancestor and the measured numeric start", () => {

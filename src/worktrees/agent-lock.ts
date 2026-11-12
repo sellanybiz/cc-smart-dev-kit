@@ -1,9 +1,7 @@
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { ancestorsBy, type ParentReader, parentPidFromStat, readProcStat } from "../jobs/ancestry";
 import type { processStartTime } from "../setup/lock";
-
-/** One deadline for explicit removal, including waiting for another clean. */
-export const REMOVAL_TIMEOUT_MS = 10 * 60_000;
 
 export interface ClaudeLock {
   kind: "agent" | "session";
@@ -26,48 +24,22 @@ export function parseClaudeLock(reason: string): ClaudeLock | null {
   return { kind, name, pid, start: match[4] ?? null };
 }
 
-/** /proc comm may contain spaces and parentheses; fields resume after its last `)`. */
-export function parentPidFromStat(stat: string): number | null {
-  const end = stat.lastIndexOf(")");
-  if (end < 0) return null;
-  const fields = stat
-    .slice(end + 1)
-    .trim()
-    .split(/\s+/);
-  const raw = fields[1];
-  if (raw === undefined || !/^\d+$/.test(raw)) return null;
-  const pid = Number(raw);
-  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
-}
-
-export function parentOf(pid: number): number | null {
-  try {
-    return parentPidFromStat(readFileSync(`/proc/${pid}/stat`, "utf8"));
-  } catch {
-    // An exited or unreadable process gives no ownership proof.
-    return null;
-  }
-}
+export const parentOf: ParentReader = (pid) => {
+  const stat = readProcStat(pid);
+  return stat === null ? null : parentPidFromStat(stat);
+};
 
 /** Call only in the initial Linux pid namespace, and only for explicit removal. */
 export function ownsClaudeLock(
   lock: ClaudeLock,
   callerPid: number,
-  parent: (pid: number) => number | null,
+  parent: ParentReader,
   startTime: typeof processStartTime,
 ): boolean {
   if (lock.start === null || !/^\d+$/.test(lock.start)) return false;
-  const seen = new Set<number>();
-  let pid: number | null = callerPid;
-  while (pid !== null && !seen.has(pid)) {
-    seen.add(pid);
-    if (pid === lock.pid) {
-      const expected = `proc:${lock.start}`;
-      return startTime(pid, expected) === expected;
-    }
-    pid = parent(pid);
-  }
-  return false;
+  if (![callerPid, ...ancestorsBy(callerPid, parent)].includes(lock.pid)) return false;
+  const expected = `proc:${lock.start}`;
+  return startTime(lock.pid, expected) === expected;
 }
 
 /**
