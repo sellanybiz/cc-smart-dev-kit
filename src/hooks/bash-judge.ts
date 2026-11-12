@@ -741,11 +741,15 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       );
       if (verb === "file" && sub === "read" && machine) remoteRead(machine);
       const terminalArgs = raw.slice(1);
+      // Each verb takes one TERMINAL (`hc <verb> --help`); `wait --children` names one too.
       const addresses = ["read", "get", "wait"].includes(verb ?? "")
-        ? positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(
-            0,
-            1,
-          )
+        ? [
+            ...positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(
+              0,
+              1,
+            ),
+            ...(verb === "wait" ? [optionValue(terminalArgs, "--children")] : []),
+          ]
         : verb === "events"
           ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")]
           : [];

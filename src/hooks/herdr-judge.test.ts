@@ -446,6 +446,8 @@ test("raw remote reads obey machine rules and fail closed", () => {
     "hc read --lines 50 prod/t1",
     "hc get prod/t1",
     "hc wait prod/t1",
+    "hc wait --children prod/t1",
+    "hc wait --children=prod/t1 --timeout 30",
     "hc read unknown/t1",
   ])
     expect(judgeBash(readBash(command), ctx)?.decision).toBe("ask");
