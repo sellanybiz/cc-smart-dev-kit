@@ -127,8 +127,9 @@ longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, 
 after an optional description prefix must equal whole lines in the current dialog with
 whitespace removed. Only lines after the last rule above the options count, not transcript
 history. Without a rule line, Bash matching refuses. Question-tab markers in the two lines
-above that rule also refuse, as do multi-select instructions inside the dialog. Other tools need no screen match: Write can show a relative path. The person
-approves that path, not the file's content.
+above that rule also refuse, as do multi-select instructions inside the dialog. These hints apply
+only to question dialogs, not Bash actions. Other tools need no screen match: Write can show a
+relative path. The person approves that path, not the file's content.
 
 Immediately before keys, the command reads status and screen again, requiring the same
 message, turn, options and cursor. It moves up/down from that cursor to k, then Enter.

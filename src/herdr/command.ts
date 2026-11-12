@@ -384,7 +384,9 @@ function show(ctx: HerdrContext, rows: Terminal[]): void {
 function isLiveClaude(t: Terminal | undefined): t is Terminal {
   return (
     t?.state === "live" &&
-    (t.status?.app === CLAUDE_CODE_APP || basename(t.foreground?.argv?.[0] ?? "") === "claude")
+    (t.status?.app === CLAUDE_CODE_APP ||
+      t.foreground?.name === "claude" ||
+      basename(t.foreground?.argv?.[0] ?? "") === "claude")
   );
 }
 function send(r: HcRunner, target: string, text: string): void {
@@ -755,11 +757,12 @@ function answer(
   const parsed = dialog(screen);
   const region = parsed?.region.join("\n") ?? "";
   if (
-    /multi.?select|select all|space to (?:select|toggle)/i.test(region) ||
-    /✔\s*Submit|←[^\n]*→/.test(parsed?.above.join("\n") ?? "") ||
-    region.split("\n").some((line) => (line.match(/☐/g)?.length ?? 0) >= 2) ||
-    /✔\s*Submit|←[^\n]*→|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) ||
-    parsed?.options.some((o) => /^\[(?: |x|✔)\]/i.test(o.label))
+    s.kind === "question" &&
+    (/multi.?select|select all|space to (?:select|toggle)/i.test(region) ||
+      /✔\s*Submit|←[^\n]*→/.test(parsed?.above.join("\n") ?? "") ||
+      region.split("\n").some((line) => (line.match(/☐/g)?.length ?? 0) >= 2) ||
+      /✔\s*Submit|←[^\n]*→|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) ||
+      parsed?.options.some((o) => /^\[(?: |x|✔)\]/i.test(o.label)))
   )
     return refuse(ctx, `Several questions or a multi-select need its pane: hc attach ${a.target}`);
   const action = /(?:^| · )approve Bash: (.*)$/s.exec(s.msg ?? "")?.[1];

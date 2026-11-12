@@ -697,6 +697,18 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       "deny",
       "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.",
     );
+  if (
+    reading.steps.some(
+      (step) =>
+        herdrArguments(step, reading)?.[0] === "answer" &&
+        step.words[0] !== COMMAND &&
+        !step.words[0]?.endsWith(`/${COMMAND}`),
+    )
+  )
+    return verdict(
+      "deny",
+      "Run herdr answer directly, with no wrapper, so one approval sends one answer.",
+    );
   if (hasAnswer && reading.steps.length > 1)
     return verdict(
       "deny",

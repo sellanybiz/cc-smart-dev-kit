@@ -517,3 +517,24 @@ test("answer requires literal words and a standalone step", () => {
   ])
     expect(judgeBash(readBash(line), world())?.decision).toBe("deny");
 });
+
+test("answer runs directly, never through a wrapper", () => {
+  const answer = `${COMMAND} herdr answer t1 --expect 'question' --expect-turn 1 --option 1`;
+  for (const prefix of [
+    "xargs -a /tmp/list -I{}",
+    "xargs -L1",
+    "env",
+    "command",
+    "exec",
+    "nohup",
+    "time",
+    "timeout 10",
+  ]) {
+    const line = `${prefix} ${answer}${prefix === "xargs -L1" ? " < file" : ""}`;
+    const verdict = judgeBash(readBash(line), world());
+    expect(verdict?.decision).toBe("deny");
+    expect(verdict?.reason).toContain("no wrapper");
+  }
+  expect(judgeBash(readBash(answer), world())?.decision).toBe("ask");
+  expect(judgeBash(readBash(`/bin/${answer}`), world())?.decision).toBe("ask");
+});

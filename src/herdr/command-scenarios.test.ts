@@ -857,3 +857,20 @@ test("adopt leaves a booting Claude lead and reports folder failures separately"
   expect(w.lines.join("\n")).toContain("Could not list saved reports for t2");
   expect(w.lines.join("\n")).not.toContain("Could not adopt");
 });
+
+test("question hints in Bash actions are not question dialogs", async () => {
+  for (const action of ['grep -rn "multi-select" src', "echo '← a →'"]) {
+    const w = world();
+    const args = blocked(w, `approve Bash: ${action}`);
+    w.setScreen(`───\nBash command\n  ${action}\n❯ 1. Yes\n  2. No`);
+    expect(await runHerdr(args, w.ctx)).toBe(0);
+  }
+});
+test("foreground Claude name without argv keeps lead ownership", async () => {
+  const w = world();
+  w.rows.t2 = { address: "t2", state: "live", labels: { "kit.lead": "core/old" }, status: null };
+  w.rows.old = { address: "old", state: "live", status: null, foreground: { name: "claude" } };
+  w.setList(["t2"]);
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(false);
+});
