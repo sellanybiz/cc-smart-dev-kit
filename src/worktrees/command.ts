@@ -21,8 +21,8 @@
  *   nothing uncommitted and no local files (`verdict.ts`). Every other worktree is listed
  *   with the reason it stays.
  *
- *   `--clean` and `--remove` run only in the main checkout: a session working in a worktree
- *   leaves it (ExitWorktree) before it removes one.
+ *   `--clean` runs only in the main checkout. `--remove` may run in another checkout of
+ *   this repo, but never inside the target worktree.
  *
  * THE BASE BRANCH, AND WHERE IT COMES FROM
  *   The project's `.claude/cc-smart-dev-kit.json` `worktrees.base`. Without that file (or
@@ -32,9 +32,10 @@
 import { basename, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { runGit, samePath } from "../hooks/git";
+import { isInside, realPath, runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { REMOVAL_TIMEOUT_MS } from "./agent-lock";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
 import { type CleanLock, canGo, cleanFinished, forgottenLine, holdCleanLock } from "./clean";
 import {
@@ -49,6 +50,9 @@ import { finishStrays, type StrayFolder, strayParkedFolders } from "./scan-parke
 
 /** The default base when nothing else says: the remote's default branch, else this. */
 export const DEFAULT_BASE = "main";
+
+/** Poll only while another clean holds the machine-wide lock. */
+const CLEAN_LOCK_INTERVAL_MS = 250;
 
 export interface WorktreesOptions {
   /** `--clean`: remove every finished worktree, with its branch. */
@@ -277,6 +281,7 @@ export async function runWorktrees(
   // The machine-wide lock: a test hands in its own, so it never reaches the real port a running
   // clean may hold (`LOCK_PORTS.worktreesClean`), as `auto-clean.ts` takes `deps.hold`.
   hold: () => Promise<null | CleanLock> = holdCleanLock,
+  wait: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<number> {
   const { error, print } = sinks;
 
@@ -298,14 +303,31 @@ export async function runWorktrees(
 
   let lock: null | CleanLock = null;
   if (options.clean || options.remove !== null) {
-    if (!samePath(cwd, repo)) {
+    if (options.remove === null && !samePath(cwd, repo)) {
       error(
         `Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`,
       );
       return 1;
     }
+    if (options.remove !== null && isInside(realPath(cwd), realPath(resolve(options.remove)))) {
+      error(
+        'A session leaves its worktree first (ExitWorktree, action "keep") before removing it.',
+      );
+      return 1;
+    }
+    const deadline = Date.now() + (wait.timeoutMs ?? REMOVAL_TIMEOUT_MS);
     lock = await hold();
+    while (lock === null && options.remove !== null && Date.now() < deadline) {
+      await Bun.sleep(Math.min(wait.intervalMs ?? CLEAN_LOCK_INTERVAL_MS, deadline - Date.now()));
+      lock = await hold();
+    }
     if (lock === null) {
+      if (options.remove !== null) {
+        error(
+          `Busy: another \`${COMMAND} worktrees\` is still removing worktrees. Nothing removed.`,
+        );
+        return 1;
+      }
       print("Another `cc-smart-dev-kit worktrees` is removing worktrees right now. Nothing done.");
       return 0;
     }
@@ -325,6 +347,7 @@ export async function runWorktrees(
         claudeConfigDir: paths.claudeConfigDir,
         env,
         idleLimit: 0,
+        ownerMode: true,
       };
       const scanned = scanWorktrees(repo, judged);
       const found = scanned.find(
