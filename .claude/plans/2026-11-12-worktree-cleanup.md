@@ -18,14 +18,14 @@ Reported by seven sessions on two machines (2026-11-12), checked in the code and
 | 1 | Idle time reads the **file time** of `.git/worktrees/<n>/logs/HEAD`. `git gc` runs `git reflog expire --all`, which rewrites every worktree's log with nothing changed: every worktree reads "git used it 7 min ago". | Scratch repo: `logs/HEAD` jumped Nov 8 → now; `index`, `HEAD` unchanged. `src/hooks/worktree-leftovers.ts:68` |
 | 2 | `staleClaudeLock` / `lockLine` (`src/worktrees/scan.ts:439`, `:555`) read only `claude session …`. Claude Code also writes `claude agent agent-<id> (pid N start S)`, and `(pid N)` with no start when reading its start time takes over 1 s. | Binary: `TN=/^claude (?:agent\|session) .{1,255} \(pid (\d{1,10})(?: start (.{1,255}))?\)$/`. Start = `/proc/<pid>/stat` field 22, as `processStartTime` reads (`docs/claude-code-contract.md:62`). |
 | 3 | Claude Code **deliberately** keeps a builder's lock while its task is unfinished or still in the parent's task list, so the agent can be resumed. Every builder stays locked while its lead lives. After a removal Claude Code refuses a resume ("Start a new agent instead"); no work is lost. | Binary (review). Live: on session resume the locks went and the auto-clean removed 4. |
-| 4 | `removeWorktree` runs `git worktree remove` under `runGit`'s 15 s default. A Next.js worktree takes longer: git is killed mid-delete, leaving `<name>-removing-<time>`. | `scan.ts:741`; server: `mcp-tool-trust-removing-…`, 17,715 entries, no `.git`. |
+| 4 | `removeWorktree` runs `git worktree remove` under `runGit`'s 15 s default. A Next.js worktree takes longer: git is killed mid-delete, leaving `<name>-removing-<time>`. | `scan.ts:741`; a server: `my-app-removing-…`, 17,715 entries, no `.git`. |
 | 5 | A builder merged into its session's branch (not yet in the base) is "N commits not on dev". | `judgeOne` compares with `look.ref` only (`scan.ts:456`). |
 | 6 | `worktrees --remove` runs only in the main checkout (`command.ts:301-304`); the lead works in its plan worktree, so the build skill's removal step (`plugin/skills/build/SKILL.md:137`) can never run. | Code. |
 | 7 | An ignored `.env.local` copy keeps a worktree once the main checkout's copy changes, though nobody touched the worktree's copy. | `sameAsMain`, `src/hooks/local-files.ts`. |
 | 8 | **A finished session never clears its own worktree.** `clearWorktreeAfterMerge` defaults to `false` (`src/workflow/schema.ts:256`). Tried anyway: ExitWorktree `remove` is refused once the branch merged the base; after `keep`, the session's own MCP servers work in the folder and `programsUsing` (`src/worktrees/machine-facts.ts:265`) holds it. | Screenshot, second machine: 20 folders, sessions marked done. |
 
-Not in scope: `.archify/` is the project's cache — it adds `"worktrees": {"rebuildable":
-[".archify/"]}` to its `cc-smart-dev-kit.json`. ExitWorktree's refusal is Claude Code's. The git
+Not in scope: a tool's own cache folder (e.g. `.tool-cache/`) is the project's — it adds `"worktrees": {"rebuildable":
+[".tool-cache/"]}` to its `cc-smart-dev-kit.json`. ExitWorktree's refusal is Claude Code's. The git
 guard refusing `git -C ../agent-…` stays: cleanup goes through our command.
 
 ## Decisions
