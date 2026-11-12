@@ -168,9 +168,11 @@ router (a restart cuts answers in flight); it also removes the 4.0.0 Fable pin. 
 
 **What to run:** this is a major version, so update to it on purpose with
 `cc-smart-dev-kit update`, then restart Claude Code. The task store moves by itself the first
-time it is opened, after a backup. Every router restarts once. Run `cc-smart-dev-kit setup` to
-write the plan folder setting and, with the gateway on, the Fable setting. Start a new
-session to see Fable 5.2 in `/model`.
+time it is opened, after a backup. Run `cc-smart-dev-kit setup` to write the plan folder
+setting and, with the gateway on, the Fable setting. With the gateway, also run
+`cc-smart-dev-kit gateway setup`: `update` never restarts the router, so the new router, and
+the limit fix in it, runs only after this step. It asks before the restart; without a terminal
+(a `!` command in Claude Code) add `--yes`. Start a new session to pick up the settings.
 
 ## 3.1.0
 
