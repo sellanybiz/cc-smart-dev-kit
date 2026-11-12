@@ -24,6 +24,7 @@ import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { createHistoryWriter } from "../gateway/history";
+import * as modelPickerStep from "../gateway/model-picker-step";
 import { shellQuote } from "../setup/launcher";
 import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
@@ -538,6 +539,93 @@ function machine(
 }
 
 describe("cc-smart-dev-kit gateway setup on a machine an older version set up", () => {
+  function pinnedMachine(ownedAddress = true) {
+    const m = machine();
+    const server = fakeServer();
+    m.writeConfig(server.port, {}, { slots: {} });
+    const paths = cliPaths({ HOME: m.home, CLAUDE_CONFIG_DIR: m.configDir });
+    const address = `http://127.0.0.1:${server.port}`;
+    writeFileSync(
+      m.paths.settings,
+      JSON.stringify(ownedAddress ? {} : { env: { ANTHROPIC_BASE_URL: address } }),
+    );
+    applyManagedJson({
+      file: m.paths.settings,
+      stateDir: paths.stateDir,
+      set: [
+        ...(ownedAddress ? [[["env", "ANTHROPIC_BASE_URL"], address] as const] : []),
+        [["env", "ANTHROPIC_DEFAULT_FABLE_MODEL"], "claude-fable-5-2"],
+      ],
+    });
+    return m;
+  }
+
+  test("gateway setup retires its Fable pin and writes the menu for its active gateway", async () => {
+    const m = pinnedMachine();
+    const done = await m.runHere(["gateway", "setup", "--yes"]);
+    expect(done.exitCode).toBe(0);
+    expect(done.stderr).toBe("");
+    const settings = JSON.parse(readFileSync(m.paths.settings, "utf8"));
+    expect(settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL).toBeUndefined();
+    expect(settings.modelPicker).toEqual({
+      replaceBuiltInOptions: true,
+      options: [
+        { model: "opus", label: "Opus", description: "Claude's newest Opus" },
+        { model: "sonnet", label: "Sonnet", description: "Claude's newest Sonnet" },
+        { model: "haiku", label: "Haiku", description: "Claude's newest Haiku" },
+        { model: "fable", label: "Fable", description: "Claude's newest Fable" },
+      ],
+    });
+    expect(done.stdout).toContain(
+      "~ env.ANTHROPIC_DEFAULT_FABLE_MODEL: retired gateway key removed\n~ modelPicker: refresh the gateway model menu\n",
+    );
+  });
+
+  test("gateway setup preflight reports pin retirement and menu refresh without writing", async () => {
+    const m = pinnedMachine();
+    const before = readFileSync(m.paths.settings, "utf8");
+    const apply = modelPickerStep.applyModelPickerStep;
+    const reports: string[][] = [];
+    const step = spyOn(modelPickerStep, "applyModelPickerStep").mockImplementation(
+      (paths, dryRun, retirePin) => {
+        const lines = apply(paths, dryRun, retirePin);
+        expect(dryRun).toBe(true);
+        expect(readFileSync(m.paths.settings, "utf8")).toBe(before);
+        reports.push(lines);
+        return lines;
+      },
+    );
+    // Refuse at the read-only port check, after settings preflight and before any writes.
+    m.port.other = true;
+    try {
+      expect((await m.runHere(["gateway", "setup", "--yes"])).exitCode).toBe(1);
+      expect(reports).toEqual([
+        [
+          "~ env.ANTHROPIC_DEFAULT_FABLE_MODEL: retired gateway key removed",
+          "~ modelPicker: refresh the gateway model menu",
+        ],
+      ]);
+      expect(readFileSync(m.paths.settings, "utf8")).toBe(before);
+    } finally {
+      step.mockRestore();
+    }
+  });
+
+  test("gateway setup retires its Fable pin without a menu for a foreign gateway address", async () => {
+    const m = pinnedMachine(false);
+    const before = JSON.parse(readFileSync(m.paths.settings, "utf8"));
+    const done = await m.runHere(["gateway", "setup", "--yes"]);
+    expect(done.exitCode).toBe(0);
+    expect(done.stderr).toBe("");
+    expect(JSON.parse(readFileSync(m.paths.settings, "utf8"))).toEqual({
+      env: { ANTHROPIC_BASE_URL: before.env.ANTHROPIC_BASE_URL },
+    });
+    expect(done.stdout).toContain(
+      "~ env.ANTHROPIC_DEFAULT_FABLE_MODEL: retired gateway key removed\n",
+    );
+    expect(done.stdout).not.toContain("~ modelPicker:");
+  });
+
   test("drops 0.4.x's hidden Claude step from a default chain, takes out 0.4.3's model keys, says to restart", async () => {
     const m = machine();
     const server = fakeServer();

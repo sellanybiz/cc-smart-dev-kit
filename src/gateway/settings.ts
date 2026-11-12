@@ -375,11 +375,16 @@ export function retireOldModelKeys(options: {
   settingsFile: string;
   stateDir: string;
   dryRun?: boolean;
+  /** Gateway setup retires the pin together with its model menu refresh instead. */
+  retirePin?: boolean;
 }): ManagedJsonResult {
   return applyManagedJson({
     file: options.settingsFile,
     stateDir: options.stateDir,
-    remove: [...RETIRED_GATEWAY_ENV_KEYS, ...RETIRED_MODEL_PIN_KEYS].map(envPath),
+    remove: [
+      ...RETIRED_GATEWAY_ENV_KEYS,
+      ...(options.retirePin === false ? [] : RETIRED_MODEL_PIN_KEYS),
+    ].map(envPath),
     createdObject: createdObjects(options.stateDir, options.settingsFile),
     ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
   });
