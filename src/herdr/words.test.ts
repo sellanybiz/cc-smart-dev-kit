@@ -6,6 +6,8 @@ import {
   modeWiderThan,
   normalizeMode,
   parseHerdrArgs,
+  RELAY_MESSAGE_LIMIT,
+  relayMessageLength,
 } from "./words";
 
 test("every mode pair", () => {
@@ -170,4 +172,9 @@ test("errors carry usage", () => {
     expect(r).toHaveProperty("error");
     if ("error" in r) expect(r.error).toContain("Usage:");
   }
+});
+
+test("relay limit counts UTF-16 units, not Unicode points or bytes", () => {
+  expect(RELAY_MESSAGE_LIMIT).toBe(800);
+  expect(relayMessageLength("A😀界")).toBe(4);
 });

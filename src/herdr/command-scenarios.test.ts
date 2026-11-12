@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
@@ -8,7 +8,7 @@ import { createOut } from "../cli/ui/out";
 import { createTaskOps } from "../tasks/ops";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
-import { type HerdrContext, runHerdr } from "./command";
+import { type HerdrContext, LOGIN_SHELL_SCRIPT, loginShellArgv, runHerdr } from "./command";
 import type { HcRunner } from "./hc";
 
 function world() {
@@ -25,6 +25,7 @@ function world() {
       turn: 3,
     },
   };
+  let time = 0;
   let list: string[] = [];
   let screen = "❯ 1. Yes\n  2. No";
   let failure: ((args: string[]) => string | null) | undefined;
@@ -71,6 +72,10 @@ function world() {
     cwd: dir,
     env: { ...cleanGitEnv(), HOME: dir },
     nowMs: 123,
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
     runner,
     identity: () => ({ core: "core", address: "t1", leadId: "core/t1" }),
     out: createOut(
@@ -118,7 +123,17 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
         w.ctx,
       ),
     ).toBe(collision ? 1 : 0);
-    expect(w.calls.some((c) => c.args.includes("sh"))).toBe(false);
+    for (const { args } of w.calls.filter((c) => c.args.includes("sh"))) {
+      expect(["exec", "run"]).toContain(args[0] ?? "");
+      expect(args.slice(args.indexOf("sh") - 1, args.indexOf("sh") + 4)).toEqual([
+        "--",
+        "sh",
+        "-c",
+        LOGIN_SHELL_SCRIPT,
+        "kit",
+      ]);
+      if (args[0] === "exec") expect(args.at(-1)).toBe("--version");
+    }
     expect(w.calls).toContainEqual({
       args: [
         "exec",
@@ -127,6 +142,7 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
         "--json",
         "--cwd",
         "/repo",
+        "--",
         "test",
         "-e",
         "/repo/.claude/worktrees/kit-one",
@@ -175,10 +191,13 @@ test("linked and independent launch exact argv and private brief", async () => {
       ),
     ).toBe(0);
     const file = briefPath(w.ctx.paths.stateDir, "core", "kit-one");
-    expect(w.calls.find((c) => c.args[0] === "run")?.args).toEqual([
+    const actual = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
+    const spaceLabels = actual.filter((a) => /^herdr\.(space|tab)=/.test(a));
+    expect(actual).toEqual([
       "run",
       "--json",
       "--bg",
+      ...(independent ? ["--keep"] : []),
       ...(independent ? ["--no-parent"] : ["--outlive-parent"]),
       "--no-notify",
       "--name",
@@ -189,6 +208,12 @@ test("linked and independent launch exact argv and private brief", async () => {
       `kit.repo=${w.ctx.cwd}`,
       "--label",
       ...(independent ? ["kit.independent=1"] : ["kit.lead=core/t1"]),
+      ...spaceLabels.flatMap((label) => ["--label", label]),
+      "--",
+      "sh",
+      "-c",
+      LOGIN_SHELL_SCRIPT,
+      "kit",
       "claude",
       "--add-dir",
       dirname(file),
@@ -230,6 +255,7 @@ test("remote writes brief on stdin before launch and uses returned absolute path
       "--on",
       "remote",
       "--json",
+      "--",
       "chmod",
       "700",
       ".claude/cc-smart-dev-kit/herdr/briefs",
@@ -247,6 +273,7 @@ test("remote writes brief on stdin before launch and uses returned absolute path
       "--on",
       "remote",
       "--json",
+      "--",
       "chmod",
       "700",
       ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one",
@@ -263,7 +290,12 @@ test("remote writes brief on stdin before launch and uses returned absolute path
     "--on",
     "remote",
     "--json",
-    COMMAND,
+    "--",
+    "sh",
+    "-c",
+    LOGIN_SHELL_SCRIPT,
+    "kit",
+    "claude",
     "--version",
   ]);
   expect(w.calls.some((c) => c.args.includes("--force"))).toBe(false);
@@ -411,7 +443,7 @@ test("answer rechecks prompt then sends arrow keys, refuses unsafe prompts", asy
   for (const screen of [
     "1. Yes\n2. Always allow for this session",
     "1. A\n2. B\nSpace to select",
-    "← Question 1 →\n1. A\n2. B",
+    "← Question 1 →\n❯ 1. A\n2. B",
     "1. Only",
   ]) {
     const x = world();
@@ -641,7 +673,11 @@ test("adopt skips independent/live leads and stop retains worktree", async () =>
   w.rows.t2 = child("t2", "core/old");
   w.rows.t3 = child("t3", "core/live");
   w.rows.t4 = child("t4", "core/old", true);
-  w.rows.live = { address: "live", state: "live", status: null };
+  w.rows.live = {
+    address: "live",
+    state: "live",
+    status: { app: "claude-code", state: "blocked" },
+  };
   w.setList(["t2", "t3", "t4"]);
   expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
   expect(w.calls.filter((c) => c.args[0] === "label").map((c) => c.args)).toEqual([
@@ -670,7 +706,7 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
 });
 
 test("permission messages at the status limit need the pane", async () => {
-  for (const length of [200, 201]) {
+  for (const length of [801, 802]) {
     const w = world();
     const msg = "x".repeat(length);
     w.rows.t2 = {
@@ -702,5 +738,501 @@ test("send resolves an owned alias before typing", async () => {
     "--",
     "t2",
     '<kit-report from="lead">hello</kit-report>',
+  ]);
+});
+
+function blocked(w: ReturnType<typeof world>, msg: string, kind = "permission") {
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { app: "claude-code", state: "blocked", kind, msg },
+    turn: 3,
+  };
+  return ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"];
+}
+/** A Bash permission dialog as Claude Code 2.1.322 draws it (captured live for 4.3.2). */
+function bashDialog(command: string[], description = "Run the command"): string {
+  const dashed = "╌".repeat(40);
+  return [
+    "─".repeat(40),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    ` ${description}`,
+    dashed,
+    ...command.map((line) => ` │ ${line}`),
+    dashed,
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+}
+test("long Bash action matches whole dialog lines, not transcript or substrings", async () => {
+  const action = `printf '%s' ${"a".repeat(297)}`;
+  expect(`approve Bash: ${action}`.length).toBe(323);
+  for (const [msg, screen, code] of [
+    [`approve Bash: ${action}`, bashDialog([action.slice(0, 50), action.slice(50)]), 0],
+    ["Run proof · approve Bash: echo ok", bashDialog(["echo ok"]), 0],
+    ["approve Bash: echo ok…", bashDialog(["echo ok"]), 1],
+    [`approve Write: ${"界".repeat(677)}`, "❯ 1. Yes\n  2. No", 1],
+    ["approve Bash: echo ok", `echo ok\n${bashDialog(["echo other"])}`, 1],
+    ["approve Bash: echo ok", bashDialog(["echo ok && false"]), 1],
+    // Only the box lines count: a description equal to the action does not.
+    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "echo ok"), 1],
+    // The whole box must equal the action: a partial match, a second box or a description
+    // drawn like a box line does not count.
+    ["approve Bash: echo ok", bashDialog(["echo ok", "rm -rf ~/x"]), 1],
+    [
+      "approve Bash: echo ok",
+      `${bashDialog(["echo ok"])}`.replace(
+        " Do you want",
+        `${"╌".repeat(40)}\n │ rm -rf ~/x\n${"╌".repeat(40)}\n Do you want`,
+      ),
+      1,
+    ],
+    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "│ echo ok"), 1],
+    // The command without its box border (the 4.3.1 assumption) does not match.
+    ["approve Bash: echo ok", "───\nBash command\n  echo ok\n❯ 1. Yes\n  2. No", 1],
+    ["approve Write: /repo/PROOF.md", "Write PROOF.md\n❯ 1. Yes\n  2. No", 0],
+  ] as const) {
+    const w = world();
+    const args = blocked(w, msg);
+    w.setScreen(screen);
+    expect(await runHerdr(args, w.ctx)).toBe(code);
+    expect(w.calls.some((c) => c.args[0] === "keys")).toBe(code === 0);
+  }
+});
+const singleQuestion =
+  "───\n ☐ Proof\n Proof: which letter?\n❯ 1. A\n     Choose A.\n  2. B\n     Choose B.\n  3. Type something.\n ───────\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel";
+test("single question relays real options, not text or chat actions", async () => {
+  for (const [option, code] of [
+    [2, 0],
+    [3, 1],
+    [4, 1],
+  ] as const) {
+    const w = world();
+    const args = blocked(w, "answer: Proof: which letter? (A · B)", "question");
+    args[args.length - 1] = String(option);
+    w.setScreen(singleQuestion);
+    expect(await runHerdr(args, w.ctx)).toBe(code);
+    expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual(
+      code === 0 ? ["keys", "--json", "--", "t2", "down", "enter"] : undefined,
+    );
+  }
+  for (const screen of [
+    singleQuestion.replace("☐ Proof", "←  ☐ Colors  ☐ Size  ✔ Submit  →"),
+    singleQuestion.replace("1. A", "1. [ ] A"),
+    singleQuestion.replace("1. A", "1. [x] A"),
+    singleQuestion.replace("1. A", "1. [✔] A"),
+    "❯ 1. Old\n2. Old\n ───\n1. A\n2. B",
+  ]) {
+    const w = world();
+    const args = blocked(w, "question", "question");
+    w.setScreen(screen);
+    expect(await runHerdr(args, w.ctx)).toBe(1);
+  }
+  const w = world();
+  const args = blocked(w, "question", "question");
+  w.setScreen(singleQuestion.replace("1. A", "1. Always use tabs"));
+  expect(await runHerdr(args, w.ctx)).toBe(0);
+});
+test("shell lead is adoptable, saved reports are listed, and shell sends refuse", async () => {
+  const w = world();
+  w.rows.old = { address: "old", state: "live", agent: "zsh", status: null };
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/old" },
+    status: null,
+  };
+  w.setList(["t2"]);
+  const file = join(dirname(briefPath(w.ctx.paths.stateDir, "core", "kit-one")), "report-saved.md");
+  await Bun.write(file, "saved report");
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(true);
+  expect(w.lines.join("\n")).toContain(file);
+  w.rows.t2 = {
+    address: "t2",
+    state: "live",
+    agent: "zsh",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "done" },
+  };
+  expect(await runHerdr(["send", "t2", "hello"], w.ctx)).toBe(1);
+  w.ctx.identity = () => ({ core: "core", address: "t2", leadId: "core/t2" });
+  w.rows.t1 = { address: "t1", state: "live", agent: "zsh", status: null };
+  w.setList(["t1"]);
+  expect(await runHerdr(["report", "saved"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "send")).toBe(false);
+  expect(w.lines.at(-1)).toContain("Saved it at");
+});
+
+test("Bash match needs a rule and question hints include tabs above that rule", async () => {
+  const w = world();
+  const args = blocked(w, "approve Bash: echo ok");
+  w.setScreen("echo ok\nsome output\nBash command\n  rm -rf ~/x\n❯ 1. Yes\n  2. No");
+  expect(await runHerdr(args, w.ctx)).toBe(1);
+  for (const screen of [
+    "← ☐ First ☐ Second ✔ Submit →\n───\nQuestion\n❯ 1. A\n  2. B",
+    "✔ Submit\n\n───\nQuestion\n❯ 1. A\n  2. B",
+    ...["multi-select", "select all", "space to toggle"].map(
+      (hint) => `───\n${hint}\n❯ 1. A\n  2. B`,
+    ),
+  ]) {
+    const x = world();
+    const a = blocked(x, "question", "question");
+    x.setScreen(screen);
+    expect(await runHerdr(a, x.ctx)).toBe(1);
+  }
+});
+test("adopt leaves a booting Claude lead and reports folder failures separately", async () => {
+  const w = world();
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/old" },
+    status: null,
+  };
+  w.rows.old = {
+    address: "old",
+    state: "live",
+    status: null,
+    foreground: { argv: ["/bin/claude"] },
+  };
+  w.setList(["t2"]);
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(false);
+  w.rows.old = { address: "old", state: "finished", status: null };
+  const folder = dirname(briefPath(w.ctx.paths.stateDir, "core", "kit-one"));
+  await Bun.write(folder, "not a directory");
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(true);
+  expect(w.lines.join("\n")).toContain("Could not list saved reports for t2");
+  expect(w.lines.join("\n")).not.toContain("Could not adopt");
+});
+
+test("question hints in Bash actions are not question dialogs", async () => {
+  for (const action of ['grep -rn "multi-select" src', "echo '← a →'"]) {
+    const w = world();
+    const args = blocked(w, `approve Bash: ${action}`);
+    w.setScreen(bashDialog([action]));
+    expect(await runHerdr(args, w.ctx)).toBe(0);
+  }
+});
+test("foreground Claude name without argv keeps lead ownership", async () => {
+  const w = world();
+  w.rows.t2 = { address: "t2", state: "live", labels: { "kit.lead": "core/old" }, status: null };
+  w.rows.old = { address: "old", state: "live", status: null, foreground: { name: "claude" } };
+  w.setList(["t2"]);
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(false);
+});
+
+test("launch detects exit before status and leaves the task unbound", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+    w.setScreen(
+      "\nError creating worktree: Workspace trust not yet accepted.\nRun claude once here and accept the trust dialog.\n",
+    );
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(1);
+    expect(w.lines.join("\n")).toContain("Workspace trust not yet accepted");
+    expect(w.lines.join("\n")).toContain("Worktree folder does not exist");
+    expect(w.lines.join("\n")).not.toContain("linked child:");
+    expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).not.toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("launch polls for first status and warns without failing at its deadline", async () => {
+  for (const reports of [true, false]) {
+    const w = world();
+    let reads = 0;
+    w.setResponse((a) =>
+      a[0] === "get"
+        ? {
+            address: "t2",
+            state: "live",
+            labels: {},
+            status: reports && ++reads === 3 ? { app: "claude-code", state: "working" } : null,
+          }
+        : undefined,
+    );
+    w.setScreen("Yes, I trust this folder\n");
+    expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(0);
+    expect(w.lines.join("\n")).toContain("linked child:");
+    if (reports) {
+      expect(reads).toBe(3);
+      expect(w.lines.join("\n")).not.toContain("The child's screen");
+    } else {
+      expect(w.ctx.now()).toBe(20_000);
+      expect(w.lines.join("\n")).toContain(
+        "has not reported yet; answer it in its pane: hc attach t2",
+      );
+      expect(w.lines).toContain("The child's screen (t2):");
+      expect(w.lines).toContain("  Yes, I trust this folder");
+    }
+    expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
+  }
+});
+test("only independent launches, local or remote, get fresh machine-local Herdr spaces", async () => {
+  for (const remote of [false, true])
+    for (const independent of [false, true]) {
+      const w = world();
+      expect(
+        await runHerdr(
+          [
+            ...launch,
+            ...(remote ? ["--on", "vps", "--asked", "--cwd", "/repo"] : []),
+            ...(independent ? ["--independent"] : []),
+            "--",
+            "work",
+          ],
+          w.ctx,
+        ),
+      ).toBe(0);
+      const args = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
+      // Only an independent session gets its own space; a linked child, local or remote,
+      // nests under its lead (proved live in 4.3.1).
+      expect(args.includes("--keep")).toBe(independent);
+      expect(args.filter((a) => /^herdr.space=sp[0-9a-f]{32}$/.test(a))).toHaveLength(
+        independent ? 1 : 0,
+      );
+      expect(args.filter((a) => /^herdr.tab=tb[0-9a-f]{32}$/.test(a))).toHaveLength(
+        independent ? 1 : 0,
+      );
+    }
+});
+test("missing remote programs refuse with an installation fix; rc noise permits a version", async () => {
+  for (const program of ["claude", COMMAND])
+    for (const code of [127, 0]) {
+      const w = world();
+      w.setResponse((a) =>
+        a[0] === "exec" && a.includes(program) && a.includes("--version")
+          ? { code, stdout: Buffer.from("rc noise only").toString("base64"), stderr: "" }
+          : undefined,
+      );
+      expect(
+        await runHerdr(
+          [...launch, "--on", "vps", "--asked", "--cwd", "/repo", "--", "work"],
+          w.ctx,
+        ),
+      ).toBe(1);
+      expect(w.lines.join("\n")).toContain(
+        `${program} is not installed on vps (not found by its login shell)`,
+      );
+      expect(w.lines.join("\n")).toContain(
+        program === "claude" ? "Install Claude Code" : "install.sh",
+      );
+      expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+    }
+  const w = world();
+  w.setResponse((a) =>
+    a[0] === "exec" && a.includes("--version")
+      ? {
+          code: 0,
+          stdout: Buffer.from(`old rc 0.0.1\n${VERSION}\nrc done`).toString("base64"),
+          stderr: "",
+        }
+      : undefined,
+  );
+  expect(
+    await runHerdr([...launch, "--on", "vps", "--asked", "--cwd", "/repo", "--", "work"], w.ctx),
+  ).toBe(0);
+});
+
+test("login shell preserves quoted and dollar arguments as positional argv", () => {
+  const arg = "a ' quote $(id) and spaces";
+  const argv = loginShellArgv("printf", "%s", arg);
+  expect(argv).toEqual(["sh", "-c", LOGIN_SHELL_SCRIPT, "kit", "printf", "%s", arg]);
+  const shell = join(tempDir(), "bash");
+  // Fake the login shell: exercise positional forwarding without reading host rc files.
+  writeFileSync(shell, '#!/bin/sh\n[ "$1" = "-lic" ] || exit 1\nshift\nexec /bin/sh -c "$@"\n', {
+    mode: 0o700,
+  });
+  const result = Bun.spawnSync(argv, {
+    env: { PATH: "/usr/bin:/bin", HOME: tempDir(), SHELL: shell },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe(arg);
+});
+
+test("stationary launch clock exhausts its finite poll budget and still binds task", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    w.rows.t2 = { address: "t2", state: "live", labels: {}, status: null };
+    w.ctx.now = () => 0;
+    let sleeps = 0;
+    w.ctx.sleep = async () => {
+      if (++sleeps > 80) throw new Error("launch exceeded its finite poll budget");
+    };
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(0);
+    expect(sleeps).toBe(80);
+    expect(w.lines.join("\n")).toContain(
+      "has not reported yet; answer it in its pane: hc attach t2",
+    );
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("launch exit races still remove terminal and report folder without binding", async () => {
+  for (const failure of [
+    "get-finished",
+    "get-not_found",
+    "read-not_found",
+    "rm-not_found",
+    "rm-finished",
+  ]) {
+    const w = world();
+    git(w.ctx.cwd, "init");
+    git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+    const ops = createTaskOps({
+      stateDir: w.ctx.paths.stateDir,
+      env: w.ctx.env,
+      cwd: () => w.ctx.cwd,
+      caller: () => null,
+    });
+    try {
+      expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+      w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+      const [verb, kind] = failure.split("-");
+      w.setFailure((a) => (a[0] === verb ? (kind ?? null) : null));
+      expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(1);
+      expect(w.lines.join("\n")).toContain("Worktree folder does not exist");
+      expect(w.lines.join("\n")).toContain("The child t2 exited during launch.");
+      expect(w.lines.join("\n")).not.toContain("linked child:");
+      if (verb === "read")
+        expect(w.lines.join("\n")).toContain("The child's screen is no longer readable.");
+      expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+      const task = ops.call("get", { task: "#1" });
+      expect(task.ok).toBe(true);
+      if (task.ok) expect(task.text).not.toContain("herdr:core/t2");
+    } finally {
+      ops.close();
+    }
+  }
+});
+test("a non-git launch that exits names no worktree folder", async () => {
+  const w = world();
+  w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+  w.setScreen("Error: something failed\n");
+  expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines).toContain("  Error: something failed");
+  expect(w.lines.join("\n")).toContain("The child t2 exited during launch.");
+  expect(w.lines.join("\n")).not.toContain("Worktree folder");
+  expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+});
+test("a failed state read after launch keeps the started child and its task binding", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    let gets = 0;
+    w.setFailure((a) => (a[0] === "get" && ++gets === 1 ? "unavailable" : null));
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(0);
+    expect(w.lines.join("\n")).toContain("The child t2 started, but its state could not be read");
+    expect(w.lines.join("\n")).toContain("linked child: t2");
+    expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("a plan dialog with a description prefix still goes to the pane", async () => {
+  const w = world();
+  w.rows.t2 = {
+    address: "t2",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "blocked", kind: "permission", msg: "Ship it · approve plan" },
+    turn: 3,
+  };
+  w.setScreen("Ready to code?\n❯ 1. Yes, and use auto mode\n  2. No, keep planning");
+  expect(
+    await runHerdr(
+      ["answer", "t2", "--expect", "Ship it · approve plan", "--expect-turn", "3", "--option", "2"],
+      w.ctx,
+    ),
+  ).toBe(1);
+  expect(w.lines.join("\n")).toContain("Answer the plan in its pane");
+  expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
+});
+
+test("the live 2.1.322 Bash dialog relays a 440-character command", async () => {
+  const file = "/tmp/claude-1000/project/scratchpad/proof5.txt";
+  const text =
+    "proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen";
+  const msg = `approve Bash: printf '%s\\n' '${text}' > ${file}`;
+  const screen = [
+    "  ⎿  $ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
+    "     quote all of it to the person before it sends a single key to this pane, and it must match the command sh…",
+    "",
+    "─".repeat(200),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    " Write proof text to scratchpad file",
+    "╌".repeat(200),
+    " │ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
+    " │ quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen' >",
+    ` │ ${file}`,
+    "╌".repeat(200),
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and always allow access to /tmp/claude-1000/project/scratchpad from this project",
+    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+    "   4. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+  const w = world();
+  const args = blocked(w, msg);
+  w.setScreen(screen);
+  expect(await runHerdr(args, w.ctx)).toBe(0);
+  expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
+    "keys",
+    "--json",
+    "--",
+    "t2",
+    "enter",
   ]);
 });

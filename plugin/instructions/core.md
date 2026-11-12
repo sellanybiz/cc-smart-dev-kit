@@ -95,13 +95,13 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 - **Root-cause fixes only** — never a cast or suppress comment to quiet a checker, a sleep to
   dodge a race (find the race), an empty catch (handle, log, or fail loudly), a
   retry-until-success loop (find why it fails), a skipped or weakened test (fix the cause,
-  re-enable it), or copy-paste from a similar place (extract and parameterize). A workaround needs the person's
+  re-enable it), or copy-paste from a similar place (reuse or extract it). A workaround needs the person's
   explicit yes and a comment saying why; a fix that needs a broader change (a contract, a
   migration, a refactor) is asked with the trade-off.
 - **One home for everything.** Every function, component, constant, type and helper has one
   home, imported everywhere else; search before you add one. The same logic twice is unified
-  now; merely similar code waits for a third case (`/cc-smart-dev-kit:extract-or-duplicate`).
-  Keep the structure as you found it, or cleaner; ask before a structural change.
+  now; merely similar code waits for a third case. Simple means clean and organized, not
+  simplistic; ask before a structural change (`/cc-smart-dev-kit:code-structure`).
 - **Dynamic, not hard-coded.** Names, paths, ports, URLs, versions, model ids, branches and
   lists come from their one source (the config, the environment, the code that owns them); a
   list in a doc is built from its data; facts (the default branch, a tool, the platform) are

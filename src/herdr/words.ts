@@ -3,8 +3,15 @@ import { parseOptions } from "../cli/args";
 import { CLAUDE_FAMILIES, type ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, type Effort } from "../models/launch-policy";
 import { validChildName } from "./labels";
-/** Claude Code cuts OSC 7501 status messages at this many characters. */
-export const STATUS_MESSAGE_LIMIT = 200;
+/** Claude Code collapses whitespace, then caps msg at 800 UTF-16 units with “…”.
+ * OSC transport can silently cut at 2048 UTF-8 bytes (a cut result has at least 2045).
+ */
+export const RELAY_MESSAGE_LIMIT = 800;
+/** A 2048-byte OSC cut can lose up to three bytes at a four-byte character boundary. */
+export const RELAY_TRANSPORT_CUT_MIN_BYTES = 2048 - 4 + 1;
+export function relayMessageLength(text: string): number {
+  return text.length;
+}
 export const MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
 export type HerdrMode = (typeof MODE_ORDER)[number];
 export function normalizeMode(mode: string): HerdrMode | null {

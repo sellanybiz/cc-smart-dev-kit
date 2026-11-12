@@ -5992,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.4.0",
+  version: "4.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -16583,7 +16583,11 @@ function parseOptions(argv, known, flagNames = [], repeatable = []) {
 }
 
 // src/herdr/words.ts
-var STATUS_MESSAGE_LIMIT = 200;
+var RELAY_MESSAGE_LIMIT = 800;
+var RELAY_TRANSPORT_CUT_MIN_BYTES = 2048 - 4 + 1;
+function relayMessageLength(text) {
+  return text.length;
+}
 var MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
 function normalizeMode(mode) {
   const value = mode === "manual" ? "default" : mode;
@@ -17152,9 +17156,10 @@ function herdrDomain(reading) {
   return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
 }
 function herdrExcerpt(text) {
-  const points = Array.from(text);
-  const quoted = points.slice(0, STATUS_MESSAGE_LIMIT).map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
-  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "\u2026" : ""}`;
+  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
+  const points = Array.from(excerpt);
+  const quoted = points.map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
+  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "\u2026" : ""}`;
 }
 function judgeHerdr(reading, context) {
   if (!herdrDomain(reading))
@@ -17167,6 +17172,13 @@ function judgeHerdr(reading, context) {
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask = null;
+  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
+  if (reading.invocations.some((one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0))
+    return verdict("deny", "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.");
+  if (reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer" && step.words[0] !== COMMAND && !step.words[0]?.endsWith(`/${COMMAND}`)))
+    return verdict("deny", "Run herdr answer directly, with no wrapper, so one approval sends one answer.");
+  if (hasAnswer && reading.steps.length > 1)
+    return verdict("deny", "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.");
   const remember = (reason) => {
     ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
 Nobody answers a question in \`claude -p\`; run this in an interactive session.`);

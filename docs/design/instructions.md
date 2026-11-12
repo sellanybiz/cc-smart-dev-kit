@@ -248,7 +248,9 @@ agent but the `researcher` loads `cc-smart-dev-kit:impact-analysis`, the one hom
 symbol's callers and a file's shape (the researcher only reads the project's versions, types and
 docs, and the skill would be about two and a half times its own text on every launch, up to
 eight per research sweep); `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
-loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when. The
+loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when, and
+`cc-smart-dev-kit:code-structure`. Builders write most of the code, so the structure rule is
+in context before their first edit. The
 `senior-engineer` does not load the review skill: half of it is the author's (commit, fix, start
 the second opinion), which contradicts a reviewer that writes its findings before it touches anything.
 It reads the review dimensions, edge-case axes and severity scale from

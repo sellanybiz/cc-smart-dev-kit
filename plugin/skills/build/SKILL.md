@@ -98,7 +98,8 @@ Ask for two verdicts: **spec compliance** and **task quality**. Model and effort
 `/cc-smart-dev-kit:subagent-decision` § The lead's judgment. The builder never dispatches this
 review. Keep the reviewed head unchanged until it returns.
 
-Verify findings against the code. Record both verdicts and evidence on the task. Missing
+Verify findings against the code; a design finding meets the evidence bar as
+`../review/references/axes.md` § Design findings says. Record both verdicts and evidence on the task. Missing
 verdicts or unresolved material findings do not pass the gate.
 
 ## 4. Fix with the same builder, then escalate

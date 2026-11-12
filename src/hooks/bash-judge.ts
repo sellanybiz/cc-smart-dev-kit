@@ -51,7 +51,8 @@ import {
   HERDR_VERBS,
   normalizeMode,
   parseHerdrArgs,
-  STATUS_MESSAGE_LIMIT,
+  RELAY_MESSAGE_LIMIT,
+  relayMessageLength,
 } from "../herdr/words";
 import {
   checkoutFailure,
@@ -630,7 +631,10 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
 }
 
 /** The kit's Herdr arguments, including computed kit programs in a domain-naming line. */
-function herdrArguments(one: RunInvocation, reading: BashReading): string[] | null {
+function herdrArguments(
+  one: Pick<RunInvocation, "program" | "args" | "computed">,
+  reading: BashReading,
+): string[] | null {
   const args = kitArguments(one.program, withoutRedirections(one.args));
   if (args?.[0] === "herdr") return args.slice(1);
   if (one.computed) {
@@ -656,9 +660,9 @@ function herdrDomain(reading: BashReading): boolean {
 
 /** Quote short prompt excerpts without terminal controls or invisible direction changes. */
 function herdrExcerpt(text: string): string {
-  const points = Array.from(text);
+  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
+  const points = Array.from(excerpt);
   const quoted = points
-    .slice(0, STATUS_MESSAGE_LIMIT)
     .map((char) =>
       /[\p{Cc}\p{Cf}]/u.test(char)
         ? Array.from(
@@ -668,7 +672,7 @@ function herdrExcerpt(text: string): string {
         : JSON.stringify(char).slice(1, -1),
     )
     .join("");
-  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "…" : ""}`;
+  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "…" : ""}`;
 }
 
 /** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
@@ -682,6 +686,34 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask: BashVerdict | null = null;
+  // steps preserves repeated executions, unlike the deduplicated invocations.
+  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
+  if (
+    reading.invocations.some(
+      (one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0,
+    )
+  )
+    return verdict(
+      "deny",
+      "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.",
+    );
+  if (
+    reading.steps.some(
+      (step) =>
+        herdrArguments(step, reading)?.[0] === "answer" &&
+        step.words[0] !== COMMAND &&
+        !step.words[0]?.endsWith(`/${COMMAND}`),
+    )
+  )
+    return verdict(
+      "deny",
+      "Run herdr answer directly, with no wrapper, so one approval sends one answer.",
+    );
+  if (hasAnswer && reading.steps.length > 1)
+    return verdict(
+      "deny",
+      "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.",
+    );
   const remember = (reason: string) => {
     ask ??= isAttended(context.env)
       ? verdict("ask", reason)

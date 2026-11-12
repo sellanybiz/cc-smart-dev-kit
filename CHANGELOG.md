@@ -3,7 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## 4.4.0
+## 4.5.0
 
 - **Finished worktrees now go right after their merge.** Before, builder and session
   worktrees piled up for days, because several checks kept every one of them. Fixed:
@@ -38,6 +38,74 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 `"clearWorktreeAfterMerge": false` in its `cc-smart-dev-kit.json` `workflow` block (or with
 `cc-smart-dev-kit workflow`). A tool's own cache folder that keeps worktrees goes in
 `worktrees.rebuildable`.
+
+## 4.4.0
+
+- **The `extract-or-duplicate` skill is now `code-structure`, and its old project add-on is
+  no longer read.** A project's `.claude/cc-smart-dev-kit/extract-or-duplicate.md` is ignored
+  from this version on; rename it (see **What to run**). There is no fallback and no `doctor`
+  check for the old name.
+- **One rule for clean, organized code.** "Simple" means clean and organized, never simplistic.
+  The renamed skill is the one home for how code is shaped: split by responsibility, not by
+  line count; when a helper, a service or a module earns its place; naming for functions,
+  variables, types and booleans; one concept per file; and what counts as a cleanup versus a
+  structural change that needs a yes. Every rule of the old skill is kept, except the line
+  counts: about 100 lines per function and 500 per file are now a reason to look, never on
+  their own a reason to split. The general instructions carry the principle in one line, at
+  no extra size.
+- **Builders load the rule at start.** The `builder` agent preloads `code-structure`, so the rule
+  is in its context before the first edit (about 1.8k more tokens per builder launch).
+- **Design findings meet the evidence bar.** The review axes now say how a structure or naming
+  finding fills the four fields, and what refutes it (the project's convention, the sibling
+  files). The split review and the audit workflows use the same rule.
+
+**What to run:** the update arrives by itself; restart open sessions to use it. Then, in each
+project that has the old add-on, copy `.claude/cc-smart-dev-kit/extract-or-duplicate.md` to
+`code-structure.md` and keep the old file until every machine working in the project runs
+4.4.0 (older versions read only the old name, 4.4.0 only the new one); then delete the old
+file. In every project, change any `/cc-smart-dev-kit:extract-or-duplicate` mention in its
+`CLAUDE.md`, rules or add-ons to `/cc-smart-dev-kit:code-structure`.
+
+## 4.3.2
+
+Two fixes from the 4.3.1 live proofs.
+
+- **Bash prompts can be relayed.** Claude Code draws a Bash permission as a box of `│`
+  lines between dashed rules. 4.3.1 looked for the command in the wrong place, so `herdr
+  answer` refused every Bash prompt (it failed safe and sent you to the pane). It now requires
+  the whole box to equal the command, never a part of it, the dialog's description or earlier
+  text.
+- **A linked child on another machine stays under its lead.** 4.3.1 opened it as its own space
+  in the main window. Now only an independent session gets its own space, on any machine; a
+  linked child, local or remote, nests under its lead in the Agents panel, as a local one does.
+
+**What to run:** nothing. Update the kit on your other machines to 4.3.2 too.
+
+## 4.3.1
+
+Fixes from the first live run of Herdr session orchestration.
+
+- **Sessions start with your own PATH.** Every child, local or on another machine, now starts
+  through your login shell. Before, a child got the Herdr core's bare PATH: on another machine
+  `claude` and the kit were not found, and locally other plugins' hooks could not find `node`.
+- **Independent and remote sessions show in Herdr.** Each one gets its own space in Herdr's
+  window, so you can see it and answer it. Before, they were invisible.
+- **A child that dies at launch is reported.** `herdr start` waits until the child comes up.
+  If it exits (for example, Claude Code has not trusted the folder yet), start shows the
+  child's own error and fails, and the task stays unbound.
+- **Long Bash prompts and single questions can be relayed.** `herdr answer` relays a Bash
+  permission of any length Claude Code shows in full, and only when the command on screen
+  matches it. A single question with "Type something" and "Chat about this" rows now relays;
+  several questions and multi-select still go to the pane.
+- **Your approval covers the whole prompt.** The judge quotes the full prompt in its
+  question. It refuses a `herdr answer` with `$` expansions or command substitution in its
+  words, one inside a loop or wrapper, and one sharing its line with other commands.
+- **`adopt` works while the old terminal is still open.** A terminal with no Claude in it now
+  counts as gone, the same rule `report` uses, and `adopt` lists reports saved while the lead
+  was gone. Messages and reports are never typed into a plain shell.
+
+**What to run:** nothing. On another machine, the kit and `claude` must be found by that
+user's login shell; update the kit there to 4.3.1 too.
 
 ## 4.3.0
 
@@ -178,9 +246,11 @@ router (a restart cuts answers in flight); it also removes the 4.0.0 Fable pin. 
 
 **What to run:** this is a major version, so update to it on purpose with
 `cc-smart-dev-kit update`, then restart Claude Code. The task store moves by itself the first
-time it is opened, after a backup. Every router restarts once. Run `cc-smart-dev-kit setup` to
-write the plan folder setting and, with the gateway on, the Fable setting. Start a new
-session to see Fable 5.2 in `/model`.
+time it is opened, after a backup. Run `cc-smart-dev-kit setup` to write the plan folder
+setting and, with the gateway on, the Fable setting. With the gateway, also run
+`cc-smart-dev-kit gateway setup`: `update` never restarts the router, so the new router, and
+the limit fix in it, runs only after this step. It asks before the restart; without a terminal
+(a `!` command in Claude Code) add `--yes`. Start a new session to pick up the settings.
 
 ## 3.1.0
 
