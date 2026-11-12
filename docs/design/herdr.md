@@ -154,12 +154,16 @@ Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking 
 longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
 after an optional description prefix must equal the dialog's whole command box, with
 whitespace removed. Claude Code 2.1.322 draws a Bash dialog as a solid top rule, its header
-lines, then the command in `│ ` lines between two dashed rules (captured live). The box is
-exactly the lines between the last two dashed rules below the last solid rule above the
-options, and every one of them must start with `│`. Transcript history, the description line
-and a part of the box never count. Without that solid rule, the two dashed rules or the border,
-Bash matching refuses. Question-tab markers in the two lines above the rule nearest the options
-(of any kind) also refuse, as do multi-select instructions inside the dialog. These hints apply
+lines, then the command between two dashed rules. The box is exactly the lines between the last
+two dashed rules below the last solid rule above the options. The frame rules are found at
+column 0 only, because every content line is indented, so a rule-like line inside the command
+never counts; anything but exactly two dashed rules refuses. The box comes in two layouts, both
+captured live in the same version: every line starts with a `│` border, or none does (a plain
+prompt that matched no rule, with "This command requires approval" below the box). A box that
+mixes the two refuses. Transcript history, the description line and a part of the box never
+count. Without that solid rule or the two dashed rules, Bash matching refuses. Question-tab
+markers in the two lines above the rule nearest the options (of any kind) also refuse, as do
+multi-select instructions inside the dialog. These hints apply
 only to question dialogs, not Bash actions. Other tools need no screen match: Write can show a
 relative path. The person approves that path, not the file's content.
 

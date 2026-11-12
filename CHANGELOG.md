@@ -39,6 +39,17 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 `cc-smart-dev-kit workflow`). A tool's own cache folder that keeps worktrees goes in
 `worktrees.rebuildable`.
 
+## 4.4.1
+
+One fix from the 4.3.2 live proofs.
+
+- **Bash prompts without a border can be relayed.** Claude Code 2.1.322 also draws a Bash
+  command box with no `│` border, for example a plain prompt that matched no permission rule
+  ("This command requires approval"). 4.3.2 refused that layout and sent you to the pane. Now
+  `herdr answer` accepts a box where every line has the border or none does; a mix refuses. The
+  whole box must still equal the command.
+
+**What to run:** nothing. Update the kit on your other machines to 4.4.1 too.
 ## 4.4.0
 
 - **The `extract-or-duplicate` skill is now `code-structure`, and its old project add-on is
