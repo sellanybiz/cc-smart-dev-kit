@@ -38,6 +38,8 @@ export interface HookInput {
    * own background task ids from the session's (`src/hooks/subagent-background.ts`).
    */
   agent_transcript_path?: unknown;
+  /** PreToolUse: the lead's current permission mode (Manual is default). */
+  permission_mode?: unknown;
   /** PreToolUse, PostToolUse, PostToolUseFailure. */
   tool_name?: unknown;
   tool_input?: unknown;

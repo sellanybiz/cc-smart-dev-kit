@@ -72,6 +72,7 @@ function guard(
 describe("a force-push asks", () => {
   it.each([
     ["git push --force"],
+    ["A+=1 git push --force"],
     ["git push -f origin fix/x"],
     ["git push origin fix/x --force"],
     ["git push --force-with-lease"],

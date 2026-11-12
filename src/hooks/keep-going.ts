@@ -41,6 +41,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, cliPaths } from "../cli/paths";
+import { isHerdrAgent } from "../herdr/labels";
 import { locateCheckout, ownHooksOf, type Project } from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
@@ -107,6 +108,12 @@ export function keepGoingReason(
   const options: string[] = [];
   for (const phase of shown) {
     if (phase.agent !== null) {
+      if (isHerdrAgent(phase.agent)) {
+        options.push(
+          `wait for Herdr child \`${phase.agent}\` with \`${COMMAND} herdr wait\` in the background, or use \`${COMMAND} herdr send\` to continue it`,
+        );
+        continue;
+      }
       options.push(
         `resume ${one ? "its builder" : `the builder for #${phase.number}`} (\`${phase.agent}\`) with \`${SEND_MESSAGE_TOOL}\` (or start a fresh one)`,
       );

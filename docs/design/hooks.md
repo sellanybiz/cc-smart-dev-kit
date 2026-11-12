@@ -209,7 +209,7 @@ that, so the plugin ships no worktree hook at all.
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read the Agent guard's way through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
-| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`), because such a session runs beside this one and reports to nobody; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); `workflow propose` **asks** while the gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`), under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`), `env -u`, and with redirections dropped. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd` or an assignment, or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The Bash judge and the job route. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. Herdr rules refuse raw terminal writes and identity assignments, cap child permission modes, and ask for premium launches, non-free remote machines, answers and machine-rule changes (§ Herdr commands in the Bash judge). **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`), because such a session runs beside this one and reports to nobody; `claude -p` is judged by the launch policy every Agent launch meets (its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); `workflow propose` **asks** while the gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`), under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`), `env -u`, and with redirections dropped. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd` or an assignment, or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); any other line runs raw, as the person's own rules see it (HK hunch 1). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The Bash judge and the job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree, and, when it went into `worktrees.base`, it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). It never tells the other sessions about the merge: that message is gone (the owner, 2026-11-11). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record the merge guard reads. Commits made during the review count as change after it. A stop records only for a run that was a review from start to end: the brief (the transcript's first user entry) and every prompt given after it each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). Tool results and Claude Code's own skill-load and system-reminder entries (a reminder must end at its closing tag) are no prompt; any other later entry is — a resume, a message from the session that started the agent (a `user` entry, or a `queued_command` attachment with a `prompt` and an `origin`), a task notification, Stop hook feedback. The whole transcript is read, up to 16 MB. A consult, a resumed consult, a review a Stop hook sent back, a review that compacted (the summary is a prompt), and a missing, unreadable or larger transcript record nothing. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
@@ -1157,7 +1157,7 @@ can exist: on Windows, where Git Bash is found), because left raw it would not w
 a light or print-only line is left as it was written.
 
 **The judge** (`src/hooks/bash-judge.ts`, the rules; `job-route.ts`, the answer) reads the line
-with the one shell reader and answers three things, and nothing else:
+with the one shell reader. Alongside the Herdr rules below, it answers these launch and proposal cases:
 
 - **a raw background session**, `claude --bg` / `--background`: an **ask** in an attended
   session, a **denial** in `claude -p` (nobody answers there). Such a session runs beside this
@@ -1262,6 +1262,45 @@ removes a worktree after the session lets go of it — the plugin removes one wh
 asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and it moves the
 folder before it deletes it, so a program still using it makes the removal fail and touch
 nothing (`docs/windows-setup.md`). Custom notification behaviour is retired (§ The notifier).
+
+#### Herdr commands in the Bash judge
+
+The judge adds Herdr rules; the Agent and `claude -p` rules above do not change. It reads
+invocations through `invocationsOf`, including wrappers and nested shells, and never runs `hc`.
+Raw `hc` writes and `herdr-app do` are refused with the guarded kit command to use instead.
+Named reads (`ls`, `get`, `read`, `wait`, `templates`, `schema`, `machine ls`, `file read`,
+`server status`, help, version and skill output) stay silent; leading global `--json` is accepted.
+A global read flag must stand alone after those leading flags. Verb help must be exactly the
+verb followed by `--help` or `-h`; a flag in a payload never grants silence. Kit Herdr verb help
+follows the same exact two-word rule. `hc events` must run in the Bash tool's background mode;
+otherwise use `herdr wait`.
+A computed program asks when the line names `hc` or `herdr-app`. A computed kit program followed
+by `herdr` and a known verb is judged as that command; a bare `herdr` still needs the kit named. This is not a sandbox: a program built entirely from unrelated fragments
+(`$(printf %s h c)`) cannot be identified without executing the line and is not caught.
+
+`cc-smart-dev-kit herdr start` must name its model, effort and mode. Its new launch kind reads
+only these explicit fields, never an agent definition or a launch environment override.
+Fable and Opus at `max` ask. The child's mode cannot exceed the hook input's `permission_mode`
+(Manual arrives as `default`); a lead in `plan` must approve the plan first, and
+`bypassPermissions` is always refused. A missing or unknown lead mode asks, for linked and
+independent children alike. A remote machine asks unless its machine rule allows it;
+production always asks. A machine-file read error asks too. The hook ignores `--asked`: the
+command still requires it, but only the person approving the exact line in Claude Code records
+approval. It never skips a hook question or a mode failure.
+
+`herdr answer` always asks, naming the child and its option or text: the judge cannot tell a
+question from a permission prompt without an `hc` call. Machine rule changes (`allow`,
+`forget`, `production`) ask too; only a parsed machine-list command is silent, and malformed
+machine commands ask. Assigning `HC_TERMINAL_ID` on a line that invokes Herdr or
+`hc` is refused; Herdr supplies that identity. The shared frame turns asks into denied,
+parked actions while the person is away. In an unattended `claude -p` session, an ask is a
+denial because nobody answers. The judge catches common ways to set the identity variable;
+with endless shell spellings, the command's live ancestry check is the guard.
+
+Turns starting with `<hc ` or the kit report tag are not the person's words
+(`prompt-source.ts`). A phase whose agent is `herdr:<core>/<address>` gets a keep-going
+reminder to run `cc-smart-dev-kit herdr wait` in the background or use `herdr send`, never
+`SendMessage`.
 
 ### `doctor --live`
 

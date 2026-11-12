@@ -572,6 +572,8 @@ describe("the note at each prompt", () => {
     for (const text of [
       '<cross-session-message from="uds:1" from-name="lead">go</cross-session-message>',
       '<agent-message from="a1">done</agent-message>',
+      '<hc from="t1">done</hc>',
+      '<kit-report from="t1">done</kit-report>',
       "Stop hook feedback: report first",
     ]) {
       const said = await note(text, state, T0, `s-${text.length}`);

@@ -5,6 +5,7 @@
  * second reader imports it, never a copy.
  */
 
+import { REPORT_TAG } from "../herdr/labels";
 import { STOP_FEEDBACK } from "./transcript";
 
 /**
@@ -26,6 +27,8 @@ export const NOT_PERSON_PREFIXES = [
   "<cross-session-message",
   "<task-notification",
   "<agent-message",
+  "<hc ",
+  `<${REPORT_TAG}`,
   STOP_FEEDBACK,
 ] as const;
 
