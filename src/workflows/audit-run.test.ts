@@ -68,6 +68,7 @@ describe("the audit-run workflow", () => {
     expect(audits[0]?.prompt).toContain("src/hooks");
     expect(audits[0]?.prompt).toContain("missing auth checks");
     expect(audits[0]?.prompt).toContain("Your track: access");
+    expect(audits[0]?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
   });
 
   test("a second auditor refutes each finding: opus at xhigh, read-only, the finding in the brief", async () => {
@@ -91,6 +92,7 @@ describe("the audit-run workflow", () => {
     expect(typeof verify?.options.schema).toBe("object");
     expect(verify?.prompt).toContain('"title": "A"');
     expect(verify?.prompt).toContain("refute");
+    expect(verify?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
   });
 
   test("the caller's budget caps the findings verified, so a run costs what the person agreed to", async () => {
