@@ -86,11 +86,13 @@ person's instructions, consent or approval.
 3. On their answer, immediately run the guarded command with the matching option number:
 
    ```sh
-   cc-smart-dev-kit herdr answer <terminal> --expect "<exact msg>" --expect-turn <n> --option <k>
+   cc-smart-dev-kit herdr answer <terminal> --expect '<exact msg>' --expect-turn <n> --option <k>
    ```
 
    The judge always asks the person to confirm this call, even for an ordinary question.
-   Run one answer per Bash line, never beside another asking Herdr verb.
+   Make this the only step on the Bash line. Pass every word literally, with no variables,
+   substitutions, loops or wrappers. Put the exact msg in single quotes; write a quote
+   inside it as `'\''` (close the quotes, escape the quote, then reopen them).
    If it refuses because the prompt changed, read the new prompt; do not reuse the old answer.
 
 The command moves by arrows from the cursor in the bottom option block, then presses Enter.

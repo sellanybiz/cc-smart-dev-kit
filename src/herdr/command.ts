@@ -54,6 +54,7 @@ import {
   type HerdrArgs,
   parseHerdrArgs,
   RELAY_MESSAGE_LIMIT,
+  RELAY_TRANSPORT_CUT_MIN_BYTES,
   relayMessageLength,
 } from "./words";
 
@@ -381,7 +382,10 @@ function show(ctx: HerdrContext, rows: Terminal[]): void {
   }
 }
 function isLiveClaude(t: Terminal | undefined): t is Terminal {
-  return t?.state === "live" && t.status?.app === CLAUDE_CODE_APP;
+  return (
+    t?.state === "live" &&
+    (t.status?.app === CLAUDE_CODE_APP || basename(t.foreground?.argv?.[0] ?? "") === "claude")
+  );
 }
 function send(r: HcRunner, target: string, text: string): void {
   const t = hcGet(r, target);
@@ -695,7 +699,8 @@ function dialog(screen: string) {
   while (start > 0 && !ruleLine(lines[start - 1] ?? "")) start--;
   return {
     options: result.options,
-    before: lines.slice(start, result.start),
+    before: start > 0 ? lines.slice(start, result.start) : null,
+    above: lines.slice(Math.max(0, start - 3), Math.max(0, start - 1)),
     region: lines.slice(start),
   };
 }
@@ -739,13 +744,10 @@ function answer(
     return changed();
   if (
     s.msg?.endsWith("…") ||
-    Buffer.byteLength(s.msg ?? "", "utf8") >= 2045 ||
+    Buffer.byteLength(s.msg ?? "", "utf8") >= RELAY_TRANSPORT_CUT_MIN_BYTES ||
     relayMessageLength(s.msg ?? "") > RELAY_MESSAGE_LIMIT
   )
-    return refuse(
-      ctx,
-      `The permission message may be cut short; answer it in its pane: hc attach ${target}`,
-    );
+    return refuse(ctx, `The prompt may be cut short; answer it in its pane: hc attach ${target}`);
   if (/^approve plan/i.test(s.msg ?? ""))
     return refuse(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
   const screen = hcRead(r, target, SCREEN_LINES).text;
@@ -753,6 +755,8 @@ function answer(
   const parsed = dialog(screen);
   const region = parsed?.region.join("\n") ?? "";
   if (
+    /multi.?select|select all|space to (?:select|toggle)/i.test(region) ||
+    /✔\s*Submit|←[^\n]*→/.test(parsed?.above.join("\n") ?? "") ||
     region.split("\n").some((line) => (line.match(/☐/g)?.length ?? 0) >= 2) ||
     /✔\s*Submit|←[^\n]*→|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) ||
     parsed?.options.some((o) => /^\[(?: |x|✔)\]/i.test(o.label))
@@ -762,7 +766,7 @@ function answer(
   if (
     s.kind === "permission" &&
     action !== undefined &&
-    (!parsed || !wholeDialogAction(parsed.before, action))
+    (!parsed?.before || !wholeDialogAction(parsed.before, action))
   )
     return refuse(
       ctx,
@@ -960,9 +964,17 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           try {
             hcLabel(r, child.address, { [KIT_LEAD]: me.leadId });
             adopted.push(child);
-            const folder = dirname(
-              briefPath(ctx.paths.stateDir, me.core, child.name ?? child.address),
+          } catch (error) {
+            ctx.out.line(
+              "warn",
+              `Could not adopt ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
             );
+            continue;
+          }
+          const folder = dirname(
+            briefPath(ctx.paths.stateDir, me.core, child.name ?? child.address),
+          );
+          try {
             if (existsSync(folder))
               for (const file of readdirSync(folder)
                 .filter((f) => /^report-.*\.md$/.test(f))
@@ -971,7 +983,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           } catch (error) {
             ctx.out.line(
               "warn",
-              `Could not adopt ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
+              `Could not list saved reports for ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
         }

@@ -686,20 +686,23 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask: BashVerdict | null = null;
-  // invocationsOf deduplicates identical commands; steps preserves each execution.
-  const answerSteps = reading.steps.filter(
-    (step) => herdrArguments(step, reading)?.[0] === "answer",
-  );
-  if (answerSteps.length > 1)
+  // steps preserves repeated executions, unlike the deduplicated invocations.
+  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
+  if (
+    reading.invocations.some(
+      (one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0,
+    )
+  )
     return verdict(
       "deny",
-      "Run each herdr answer alone so the person can approve its full prompt.",
+      "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.",
     );
-  let answers = 0;
-  let otherAskingVerbs = 0;
-  let asks = 0;
+  if (hasAnswer && reading.steps.length > 1)
+    return verdict(
+      "deny",
+      "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.",
+    );
   const remember = (reason: string) => {
-    asks++;
     ask ??= isAttended(context.env)
       ? verdict("ask", reason)
       : verdict(
@@ -811,7 +814,6 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     // These always ask, even when malformed or carrying --asked: no hook-side hc read
     // can tell a question from a permission prompt.
     if (herdr[0] === "answer") {
-      answers++;
       const parsed = parseHerdrArgs(herdr);
       const detail =
         !("error" in parsed) && parsed.verb === "answer"
@@ -825,12 +827,10 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     if (herdr[0] === "machines") {
       const parsed = parseHerdrArgs(herdr);
       if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list") continue;
-      otherAskingVerbs++;
       remember(`Approve this Herdr machine rule change: ${herdr.slice(1).join(" ")}.`);
       continue;
     }
     if (herdr[0] !== "start") continue;
-    otherAskingVerbs++;
     if (!isAttended(context.env))
       return verdict(
         "deny",
@@ -886,11 +886,6 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       }
     }
   }
-  if (answers > 1 || (answers > 0 && (asks > 1 || otherAskingVerbs > 0)))
-    return verdict(
-      "deny",
-      "Run each herdr answer alone so the person can approve its full prompt.",
-    );
   return ask;
 }
 

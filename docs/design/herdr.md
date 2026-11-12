@@ -49,6 +49,7 @@ children; `list --all` includes other kit sessions and independent sessions. `st
 and removes only an owned linked terminal, leaving its worktree. `adopt` takes only
 same-repository, same-core linked children whose previous lead no longer runs a live Claude.
 A live terminal with only a shell counts as gone; a blocked Claude still owns its children.
+A foreground `claude` program also counts as live before its first status arrives.
 Adopt lists each child's saved report files. It skips independent sessions.
 Identity belongs to the terminal: a new Claude in the old lead terminal receives reports
 without adoption. Adopt changes kit labels, not hc's immutable parent, so the child can
@@ -125,7 +126,8 @@ Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking 
 longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
 after an optional description prefix must equal whole lines in the current dialog with
 whitespace removed. Only lines after the last rule above the options count, not transcript
-history. Other tools need no screen match: Write can show a relative path. The person
+history. Without a rule line, Bash matching refuses. Question-tab markers in the two lines
+above that rule also refuse, as do multi-select instructions inside the dialog. Other tools need no screen match: Write can show a relative path. The person
 approves that path, not the file's content.
 
 Immediately before keys, the command reads status and screen again, requiring the same
@@ -136,7 +138,8 @@ hc has no atomic expected-turn keys operation. Live acceptance of this boundary 
 The skill asks the person with mirrored options and quotes the full permission action from
 `hc read`, not just its status msg. Then it runs the guarded answer line. The judge includes
 a safely quoted `--expect` of up to the same 800-unit limit in its reason. A Bash line
-cannot combine two answers or an answer with another asking Herdr verb; each gets its own approval.
+must contain only the answer step, with literal words: shell-filled words, loops, functions
+and other steps are refused. Each answer gets its own approval.
 The judge always asks again for that line; it cannot inspect a prompt kind without an hc
 call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
 While away, the existing frame denies and parks questions instead of guessing answers.

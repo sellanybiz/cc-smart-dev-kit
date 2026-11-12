@@ -812,3 +812,48 @@ test("shell lead is adoptable, saved reports are listed, and shell sends refuse"
   expect(w.calls.some((c) => c.args[0] === "send")).toBe(false);
   expect(w.lines.at(-1)).toContain("Saved it at");
 });
+
+test("Bash match needs a rule and question hints include tabs above that rule", async () => {
+  const w = world();
+  const args = blocked(w, "approve Bash: echo ok");
+  w.setScreen("echo ok\nsome output\nBash command\n  rm -rf ~/x\n❯ 1. Yes\n  2. No");
+  expect(await runHerdr(args, w.ctx)).toBe(1);
+  for (const screen of [
+    "← ☐ First ☐ Second ✔ Submit →\n───\nQuestion\n❯ 1. A\n  2. B",
+    "✔ Submit\n\n───\nQuestion\n❯ 1. A\n  2. B",
+    ...["multi-select", "select all", "space to toggle"].map(
+      (hint) => `───\n${hint}\n❯ 1. A\n  2. B`,
+    ),
+  ]) {
+    const x = world();
+    const a = blocked(x, "question", "question");
+    x.setScreen(screen);
+    expect(await runHerdr(a, x.ctx)).toBe(1);
+  }
+});
+test("adopt leaves a booting Claude lead and reports folder failures separately", async () => {
+  const w = world();
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/old" },
+    status: null,
+  };
+  w.rows.old = {
+    address: "old",
+    state: "live",
+    status: null,
+    foreground: { argv: ["/bin/claude"] },
+  };
+  w.setList(["t2"]);
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(false);
+  w.rows.old = { address: "old", state: "finished", status: null };
+  const folder = dirname(briefPath(w.ctx.paths.stateDir, "core", "kit-one"));
+  await Bun.write(folder, "not a directory");
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(true);
+  expect(w.lines.join("\n")).toContain("Could not list saved reports for t2");
+  expect(w.lines.join("\n")).not.toContain("Could not adopt");
+});
