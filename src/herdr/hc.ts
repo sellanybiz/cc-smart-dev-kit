@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isOlder } from "../update/check";
+import { isOlder } from "../build-info/semver";
 export const HC_TIMEOUT_MS = 15_000;
 export const MIN_HC_VERSION = "0.1.20";
 export type HcRunner = (

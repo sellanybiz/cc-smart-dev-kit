@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
+import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
@@ -11,7 +12,6 @@ import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { getTask, isOpen } from "../tasks/work/queries";
-import { isOlder } from "../update/check";
 import { reportPath, writeBrief, writePrivate } from "./brief";
 import {
   coreId,
@@ -57,6 +57,7 @@ export interface WaitFact {
   terminal: string;
   state: string;
   status_ms: number | null;
+  turn: number | null;
 }
 function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
@@ -75,64 +76,92 @@ function snapshot(value: unknown): unknown[] | null {
   }
   return null;
 }
-export function waitFacts(value: unknown, since?: number): WaitFact[] {
+export type Seen = Record<string, number | "end">;
+function settled(state: string): boolean {
+  return ["blocked", "error", "done", "finished"].includes(state);
+}
+function unseen(fact: WaitFact, seen: Seen): boolean {
+  const old = seen[fact.terminal];
+  return fact.state === "finished"
+    ? old !== "end"
+    : old === undefined || (typeof old === "number" && (fact.turn === null || fact.turn > old));
+}
+export function waitFacts(value: unknown, seen: Seen = {}): WaitFact[] {
   const rows = snapshot(value);
   if (rows)
     return rows.flatMap((row) => {
       const t = object(row);
       if (!t || typeof t.address !== "string") return [];
-      const status = object(t.status);
-      const state = t.state === "finished" ? "finished" : String(status?.state ?? "");
-      const ms = typeof t.status_ms === "number" ? t.status_ms : null;
-      return ["blocked", "error", "finished"].includes(state) ||
-        (state === "done" && (since === undefined || (ms !== null && ms > since)))
-        ? [{ terminal: t.address, state, status_ms: ms }]
-        : [];
+      const st = object(t.status);
+      const fact = {
+        terminal: t.address,
+        state: t.state === "finished" ? "finished" : String(st?.state ?? ""),
+        status_ms: typeof t.status_ms === "number" ? t.status_ms : null,
+        turn: typeof t.turn === "number" ? t.turn : null,
+      };
+      return settled(fact.state) && unseen(fact, seen) ? [fact] : [];
     });
-  const v = object(value);
-  if (v?.method !== "event") return [];
-  const p = object(v.params),
-    d = object(p?.data);
-  if (!p || typeof p.terminal !== "string") return [];
-  const st = object(d?.status);
-  const state = ["finished", "lost", "removed"].includes(String(p.type))
-    ? "finished"
-    : String(st?.state ?? d?.state ?? "");
-  const ms =
-    typeof d?.status_ms === "number"
-      ? d.status_ms
-      : typeof p.status_ms === "number"
-        ? p.status_ms
-        : null;
-  if (
-    ["blocked", "error", "finished"].includes(state) ||
-    (state === "done" && (since === undefined || (ms !== null && ms > since)))
-  )
-    return [{ terminal: p.terminal, state, status_ms: ms }];
-  return [];
-}
-export function eventNews(value: unknown): Record<string, unknown> | null {
   const v = object(value),
-    p = object(v?.params);
-  return waitFacts(value).length && p ? p : null;
+    p = object(v?.params),
+    d = object(p?.data);
+  if (v?.method !== "event" || !p || typeof p.terminal !== "string") return [];
+  const st = object(d?.status);
+  const fact = {
+    terminal: p.terminal,
+    state: ["finished", "lost", "removed"].includes(String(p.type))
+      ? "finished"
+      : String(st?.state ?? d?.state ?? ""),
+    status_ms: typeof d?.status_ms === "number" ? d.status_ms : null,
+    turn: typeof d?.turn === "number" ? d.turn : typeof p.turn === "number" ? p.turn : null,
+  };
+  return settled(fact.state) && unseen(fact, seen) ? [fact] : [];
 }
 export class WaitBarrier {
   news: WaitFact[] = [];
   private initial: Set<string> | null = null;
   constructor(
     private mode: "any" | "all",
-    private since?: number,
+    private seen: Seen = {},
+    private lead?: string,
   ) {}
   consume(value: unknown): boolean {
     const rows = snapshot(value);
-    if (rows && this.initial === null)
-      this.initial = new Set(
-        rows.flatMap((row) => {
-          const t = object(row);
-          return t?.state === "live" && typeof t.address === "string" ? [t.address] : [];
-        }),
-      );
-    for (const fact of waitFacts(value, this.since))
+    if (rows) {
+      const live = new Set<string>();
+      for (const row of rows) {
+        const t = object(row);
+        if (!t || typeof t.address !== "string" || t.state !== "live") continue;
+        live.add(t.address);
+      }
+      if (this.initial === null)
+        this.initial = new Set(
+          rows.flatMap((row) => {
+            const t = object(row);
+            if (!t || typeof t.address !== "string" || t.state !== "live") return [];
+            const state = String(object(t.status)?.state ?? "");
+            const fact = {
+              terminal: t.address,
+              state,
+              status_ms: null,
+              turn: typeof t.turn === "number" ? t.turn : null,
+            };
+            return settled(state) && !unseen(fact, this.seen) ? [] : [t.address];
+          }),
+        );
+      else for (const addr of this.initial) if (!live.has(addr)) this.initial.delete(addr);
+    }
+    const v = object(value),
+      p = object(v?.params),
+      d = object(p?.data);
+    if (typeof p?.terminal === "string") {
+      const labels = object(d?.labels) ?? d;
+      if (
+        p.type === "removed" ||
+        (p.type === "labels" && this.lead && labels?.[KIT_LEAD] !== this.lead)
+      )
+        this.initial?.delete(p.terminal);
+    }
+    for (const fact of waitFacts(value, this.seen))
       if (!this.news.some((n) => n.terminal === fact.terminal)) this.news.push(fact);
     return this.mode === "any"
       ? this.news.length > 0
@@ -150,14 +179,14 @@ export interface WaitResult {
 export async function followEvents(
   labels: Record<string, string>,
   timeoutMs: number,
-  options: { mode: "any" | "all"; since?: number } = { mode: "any" },
+  options: { mode: "any" | "all"; seen?: Seen } = { mode: "any" },
 ): Promise<WaitResult | "ended"> {
   const args = ["hc", "events", "--json"];
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
   const child = Bun.spawn(args, { env: process.env, stdout: "pipe", stderr: "pipe" });
   const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
-  const barrier = new WaitBarrier(options.mode, options.since);
+  const barrier = new WaitBarrier(options.mode, options.seen, labels[KIT_LEAD]);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -179,6 +208,17 @@ export async function followEvents(
             value = JSON.parse(line);
           } catch {
             throw new HcError("invalid_response", "hc events returned invalid JSON.");
+          }
+          const p = object(object(value)?.params),
+            d = object(p?.data);
+          if (
+            p?.type === "status" &&
+            typeof p.terminal === "string" &&
+            typeof d?.turn !== "number" &&
+            typeof p.turn !== "number"
+          ) {
+            const terminal = hcGet(defaultHcRunner, p.terminal);
+            value = { method: "event", params: { ...p, data: terminal } };
           }
           if (barrier.consume(value)) return "news" as const;
         }
@@ -214,7 +254,7 @@ export interface HerdrContext {
   events?: (
     labels: Record<string, string>,
     timeoutMs: number,
-    options?: { mode: "any" | "all"; since?: number },
+    options?: { mode: "any" | "all"; seen?: Seen },
   ) => Promise<"timeout" | "ended" | Record<string, unknown> | WaitResult>;
 }
 type Start = Extract<HerdrArgs, { verb: "start" }>;
@@ -346,7 +386,8 @@ function remoteReportFolder(ctx: HerdrContext): string {
 function remoteReportHint(ctx: HerdrContext, machine: string): void {
   const folder = remoteReportFolder(ctx);
   ctx.out.say(`Remote reports stay in ${machine}:${folder}`);
-  ctx.out.say(`hc file read --on ${machine} ${folder}`);
+  ctx.out.say(`hc exec --on ${machine} ls -1 ${folder}`);
+  ctx.out.say(`hc file read --on ${machine} ${folder}/<file>`);
 }
 async function remoteBrief(
   r: HcRunner,
@@ -521,7 +562,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
         : "The brief line is not visible yet; read the child's pane.",
     );
   }
-  if (a.on) remoteReportHint(ctx, a.on);
+  if (a.on && !a.independent) remoteReportHint(ctx, a.on);
   count(ctx, terminals(r).filter(kit));
   return 0;
 }
@@ -611,6 +652,10 @@ function answer(
     last.status.kind !== s.kind ||
     last.status.msg !== a.expect ||
     last.turn !== a.expectTurn
+  )
+    return changed();
+  if (
+    JSON.stringify(dialogOptions(hcRead(r, target, SCREEN_LINES).text)) !== JSON.stringify(options)
   )
     return changed();
   const difference = option - (options.findIndex((o) => o.cursor) + 1);
@@ -777,36 +822,43 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return 0;
       }
       case "wait": {
+        const before = terminals(r, { [KIT_LEAD]: me.leadId }, true);
+        if (!before.some((t) => t.state === "live")) {
+          ctx.out.say("No live kit children.");
+          return 0;
+        }
         const news = await (ctx.events ?? followEvents)(
           { [KIT_LEAD]: me.leadId },
           parsed.timeoutMs ?? WAIT_TIMEOUT_MS,
-          { mode: parsed.mode, ...(parsed.since === undefined ? {} : { since: parsed.since }) },
+          { mode: parsed.mode, ...(parsed.seen ? { seen: parsed.seen } : {}) },
         );
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");
-        if (news === "timeout") {
-          ctx.out.line("info", "Still working.");
-          return 0;
-        }
-        if ("news" in news && Array.isArray(news.news)) {
-          let since = parsed.since ?? 0;
+        if (news === "timeout") ctx.out.line("info", "Still working.");
+        else if ("news" in news && Array.isArray(news.news)) {
           for (const fact of news.news) {
             ctx.out.say(
               `${fact.terminal}: ${fact.state}; status_ms=${fact.status_ms ?? "unknown"}`,
             );
-            since = Math.max(since, fact.status_ms ?? 0);
-            if (fact.terminal.includes("/")) {
-              const machine = fact.terminal.split("/")[0] ?? "";
-              remoteReportHint(ctx, machine);
-            }
+            if (fact.terminal.includes("/"))
+              remoteReportHint(ctx, fact.terminal.split("/")[0] ?? "");
           }
           if (news.timeout)
             ctx.out.line(
               "info",
               `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
             );
-          ctx.out.say(`${COMMAND} herdr wait --since ${since}`);
         } else ctx.out.json(news);
+        const current = terminals(r, { [KIT_LEAD]: me.leadId }, true);
+        const seen = current.map(
+          (t) => `${t.address}:${t.state === "finished" ? "end" : (t.turn ?? "unknown")}`,
+        );
+        if (current.some((t) => t.state !== "finished" && t.turn === undefined))
+          return refuse(ctx, "A child has no turn cursor; read its pane before waiting again.");
+        const mode = args.includes("--all") ? " --all" : args.includes("--any") ? " --any" : "";
+        ctx.out.say(
+          `${COMMAND} herdr wait${mode}${parsed.timeoutMs === undefined ? "" : ` --timeout ${parsed.timeoutMs / 1000}`}${seen.length ? ` --seen ${seen.join(",")}` : ""}`,
+        );
         return 0;
       }
     }

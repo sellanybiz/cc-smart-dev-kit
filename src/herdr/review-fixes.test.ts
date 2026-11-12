@@ -25,21 +25,23 @@ test("1 dialog ignores conversation and requires contiguous numbers and one curs
 test("2/6 snapshots, since and all barrier", () => {
   const snapshot = {
     terminals: [
-      { address: "t1", state: "live", status: { state: "blocked" }, status_ms: 8 },
-      { address: "t2", state: "live", status: { state: "done" }, status_ms: 4 },
+      { address: "t1", state: "live", status: { state: "blocked" }, status_ms: 8, turn: 6 },
+      { address: "t2", state: "live", status: { state: "done" }, status_ms: 4, turn: 4 },
     ],
   };
-  expect(waitFacts(snapshot, 5)).toEqual([{ terminal: "t1", state: "blocked", status_ms: 8 }]);
-  expect(waitFacts({ method: "missed", params: snapshot }, 5)).toEqual([
-    { terminal: "t1", state: "blocked", status_ms: 8 },
+  expect(waitFacts(snapshot, { t2: 4 })).toEqual([
+    { terminal: "t1", state: "blocked", status_ms: 8, turn: 6 },
+  ]);
+  expect(waitFacts({ method: "missed", params: snapshot }, { t2: 4 })).toEqual([
+    { terminal: "t1", state: "blocked", status_ms: 8, turn: 6 },
   ]);
   expect(waitFacts(snapshot)).toHaveLength(2);
-  const barrier = new WaitBarrier("all", 5);
-  expect(barrier.consume(snapshot)).toBe(false);
+  const barrier = new WaitBarrier("all", { t2: 4 });
+  expect(barrier.consume(snapshot)).toBe(true);
   expect(
     barrier.consume({
       method: "event",
-      params: { terminal: "t2", type: "status", data: { state: "done", status_ms: 9 } },
+      params: { terminal: "t2", type: "status", data: { state: "done", status_ms: 9, turn: 5 } },
     }),
   ).toBe(true);
   expect(barrier.pending()).toEqual([]);
@@ -108,11 +110,11 @@ test("8 event stream ignores blank lines and carries stderr errors", async () =>
     process.env.PATH = dir;
     writeFileSync(
       file,
-      `#!/bin/sh\nprintf '\\n%s\\n' '{"terminals":[{"address":"t1","state":"live","status":{"state":"blocked"},"status_ms":8}]}'\n`,
+      `#!/bin/sh\nprintf '\\n%s\\n' '{"terminals":[{"address":"t1","state":"live","status":{"state":"blocked"},"status_ms":8,"turn":6}]}'\n`,
     );
     chmodSync(file, 0o755);
     expect(await followEvents({}, 1000)).toEqual({
-      news: [{ terminal: "t1", state: "blocked", status_ms: 8 }],
+      news: [{ terminal: "t1", state: "blocked", status_ms: 8, turn: 6 }],
       pending: [],
       timeout: false,
     });
@@ -137,9 +139,9 @@ test("10 process list shares bounded ancestry walk and 11 since parses", () => {
       { pid: 10, parentPid: 20, path: null },
     ]),
   ).toEqual([20, 10]);
-  expect(parseHerdrArgs(["wait", "--since", "123"])).toEqual({
+  expect(parseHerdrArgs(["wait", "--seen", "t1:123"])).toEqual({
     verb: "wait",
     mode: "any",
-    since: 123,
+    seen: { t1: 123 },
   });
 });

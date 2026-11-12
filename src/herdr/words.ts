@@ -47,7 +47,7 @@ const USAGE_LINES = {
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-  wait: "wait [--any | --all] [--timeout <seconds>] [--since <ms>]",
+  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn>[,<addr>:<turn>…]]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -76,7 +76,7 @@ export type HerdrArgs =
       | { option: string; text?: never }
       | { text: string; option?: never }
     ))
-  | { verb: "wait"; mode: "any" | "all"; timeoutMs?: number; since?: number }
+  | { verb: "wait"; mode: "any" | "all"; timeoutMs?: number; seen?: Record<string, number | "end"> }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
@@ -133,7 +133,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     verb === "answer"
       ? ["--expect", "--expect-turn", "--option", "--text"]
       : verb === "wait"
-        ? ["--timeout", "--since"]
+        ? ["--timeout", "--seen"]
         : [];
   const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
   const parsed = parseOptions(rest, known, flags);
@@ -148,9 +148,20 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
         : { verb, all: f.has("--all"), json: f.has("--json") };
     case "wait": {
       const timeout = o.get("--timeout");
-      const since = o.get("--since");
-      if (since !== undefined && (!/^\d+$/.test(since) || !Number.isSafeInteger(Number(since))))
-        return fail("--since needs a non-negative timestamp in milliseconds.");
+      const cursor = o.get("--seen");
+      const seen: Record<string, number | "end"> = {};
+      if (cursor !== undefined)
+        for (const pair of cursor.split(",")) {
+          const match = /^([a-z0-9_-]+(?:\/[a-z0-9_-]+)?):(end|\d+)$/.exec(pair);
+          if (
+            !match?.[1] ||
+            !match[2] ||
+            Object.hasOwn(seen, match[1]) ||
+            (match[2] !== "end" && !Number.isSafeInteger(Number(match[2])))
+          )
+            return fail("--seen needs unique address:turn entries (or address:end).");
+          seen[match[1]] = match[2] === "end" ? "end" : Number(match[2]);
+        }
       if (
         timeout !== undefined &&
         (!/^\d+$/.test(timeout) ||
@@ -162,7 +173,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
         ? fail("Choose either --any or --all.")
         : {
             verb,
-            ...(since === undefined ? {} : { since: Number(since) }),
+            ...(cursor === undefined ? {} : { seen }),
             mode: f.has("--all") ? "all" : "any",
             ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
           };

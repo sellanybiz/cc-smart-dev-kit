@@ -8,7 +8,7 @@ import { createOut } from "../cli/ui/out";
 import { createTaskOps } from "../tasks/ops";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
-import { eventNews, type HerdrContext, runHerdr } from "./command";
+import { type HerdrContext, runHerdr } from "./command";
 import type { HcRunner } from "./hc";
 
 function world() {
@@ -512,18 +512,46 @@ test("report saves every result when lead becomes blocked and aliases resolve on
     ["kill", "--json", "--", "t2"],
   ]);
 });
+test("round 2 empty waits and stale screen cursors", async () => {
+  for (const mode of ["--all", "--any"]) {
+    const w = world();
+    w.ctx.events = async () => {
+      throw new Error("must not wait");
+    };
+    expect(await runHerdr(["wait", mode], w.ctx)).toBe(0);
+    expect(w.lines).toEqual(["No live kit children."]);
+  }
+  const w = world();
+  w.rows.t2 = {
+    address: "t2",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "blocked", kind: "question", msg: "Choose" },
+    turn: 3,
+  };
+  let reads = 0;
+  w.setResponse((a) =>
+    a[0] === "read"
+      ? { text: ++reads === 1 ? "❯ 1. A\n  2. B" : "  1. A\n❯ 2. B", complete: true, how: "screen" }
+      : undefined,
+  );
+  expect(await runHerdr(answerArgs, w.ctx)).toBe(1);
+  expect(w.lines.at(-1)).toBe("✗ The prompt changed; read it again (hc get t2).");
+  expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
+});
 test("wait prints every news timestamp and exact continuation", async () => {
   const w = world();
+  w.setList(["t2"]);
   w.ctx.events = async () => ({
     news: [{ terminal: "t2", state: "blocked", status_ms: 9 }],
     pending: ["t3"],
     timeout: true,
   });
-  expect(await runHerdr(["wait", "--all", "--since", "5"], w.ctx)).toBe(0);
+  expect(await runHerdr(["wait", "--all", "--timeout", "9", "--seen", "t2:2"], w.ctx)).toBe(0);
   expect(w.lines).toEqual([
     "t2: blocked; status_ms=9",
     "· Still working: t3",
-    `${COMMAND} herdr wait --since 9`,
+    `${COMMAND} herdr wait --all --timeout 9 --seen t2:3`,
   ]);
 });
 test("adopt skips independent/live leads and stop retains worktree", async () => {
@@ -555,6 +583,7 @@ test("adopt skips independent/live leads and stop retains worktree", async () =>
 test("wait reports stream loss, timeout and meaningful event news", async () => {
   for (const event of ["ended", "timeout", { type: "finished", terminal: "t2" }] as const) {
     const w = world();
+    w.setList(["t2"]);
     w.ctx.events = async (labels, timeout) => {
       expect(labels).toEqual({ "kit.lead": "core/t1" });
       expect(timeout).toBe(180000);
@@ -562,17 +591,4 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
     };
     expect(await runHerdr(["wait"], w.ctx)).toBe(event === "ended" ? 1 : 0);
   }
-  expect(eventNews({ terminals: [] })).toBeNull();
-  expect(
-    eventNews({
-      method: "event",
-      params: { terminal: "t2", type: "status", data: { state: "working" } },
-    }),
-  ).toBeNull();
-  expect(
-    eventNews({
-      method: "event",
-      params: { terminal: "t2", type: "status", data: { state: "blocked" } },
-    }),
-  ).toEqual({ terminal: "t2", type: "status", data: { state: "blocked" } });
 });
