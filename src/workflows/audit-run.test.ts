@@ -93,6 +93,9 @@ describe("the audit-run workflow", () => {
     expect(verify?.prompt).toContain('"title": "A"');
     expect(verify?.prompt).toContain("refute");
     expect(verify?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
+    expect(verify?.prompt).toContain(
+      "A project convention or sibling files with that shape refute it.",
+    );
   });
 
   test("the caller's budget caps the findings verified, so a run costs what the person agreed to", async () => {

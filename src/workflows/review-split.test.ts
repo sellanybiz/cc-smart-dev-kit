@@ -129,6 +129,9 @@ describe("the review-split workflow", () => {
     expect(refute?.prompt).toContain("Refute one finding");
     expect(refute?.prompt).toContain("missing guard");
     expect(refute?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
+    expect(refute?.prompt).toContain(
+      "A project convention or sibling files with that shape refute it.",
+    );
   });
 
   test("two tracks that prove the same finding get one refuter, not two", async () => {

@@ -31,7 +31,7 @@ DRY-at-any-cost dogma.
 |---|---|
 | Rule's home | **Rename** `extract-or-duplicate` → `code-structure` |
 | Old name | **Clean break, no doctor check.** The skill reads only `code-structure.md`; the release notes say what to rename, and in which order |
-| Builder | **Preload** the skill (`skills:`), about 2.6k tokens per builder launch |
+| Builder | **Preload** the skill (`skills:`), about 1.8k tokens per builder launch (7.1 kB ÷ 4, measured after the build) |
 | Review spend (usage at 84%) | Plan-review `opus` `xhigh` (done); edge-case hunter `sonnet` `high` (done); final review `opus` `xhigh` |
 | Version | **Minor, 4.4.0** (owner's call, against the release skill's "breaks a project → major"): installs within the hour; the rename goes first in the release notes and PR body |
 
@@ -41,13 +41,13 @@ DRY-at-any-cost dogma.
   between `extract-or-duplicate/SKILL.md:31` ("a long function used once stays") and `:72`
   ("split past about 100 lines"); naming; "cleaner" and "structural change" (`core.md:104`)
   undefined; the builder has no simplicity line and no preload; the evidence bar fits bugs only.
-- Sources confirmed by the plan review: Sandi Metz, "The Wrong Abstraction"
-  (https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction): "If you find yourself passing
-  parameters and adding conditional paths through shared code, the abstraction is incorrect."
-  GitLab, "Guidelines for reusing abstractions" (https://docs.gitlab.com/development/reusing_abstractions/):
-  a service coordinates changes between models; "When an object makes no changes to the state of
-  the application, then it's not a service." The archived plan names Ousterhout (deep modules),
-  PEP 8, Google and Angular style guides without links; the skill text names no author.
+- Two sources confirmed by the plan review (names left out under the repo's neutrality rule):
+  a well-known essay on the wrong abstraction — "If you find yourself passing parameters and
+  adding conditional paths through shared code, the abstraction is incorrect" — and a large
+  open-source project's development guide on reusing abstractions — a service coordinates
+  changes between models; "When an object makes no changes to the state of the application,
+  then it's not a service." The archived research also leans on the deep-modules idea and on
+  language and framework style guides; the skill text names no author.
 - Leave out: tiny functions as a goal, DRY at any cost, layers "for flexibility", hard line limits.
 
 ## Code exploration

@@ -32,7 +32,8 @@ If it exists, import it.
 A unit does one job you can name in a short sentence without "and". Split when it does
 several jobs, or a block needs a comment to say *what* it does: name that block as a
 function in the same file. A long function that reads as one straight sequence of one job
-stays. About 100 lines per function and 500 per file prompt a look, never a split alone.
+stays. About 100 lines per function and 500 per file are a reason to look, never on their
+own a reason to split.
 Keep together what changes together; do not split what must be read together.
 
 A private wrapper that adds nothing is a finding, as are tiny functions made for their
@@ -65,6 +66,9 @@ site at its right home and remove the copies. Elsewhere: the core instructions' 
   as a route, handler or command.
 - A **module** puts one concept behind a small public entry point. Make it deep: a simple
   interface over real work, not a shallow layer that only forwards calls.
+- A function that does one I/O job (a query, a file read, an API call) is neither helper nor
+  service: keep it beside its callers or in the project's data-access layer, and keep the pure
+  logic it uses in a helper.
 
 Each earns its place now: a real second caller, a simple interface over real work, or the
 project's own pattern. Each layer calls only layers the project allows. Validate input
@@ -101,7 +105,8 @@ For names the task owns, say the purpose to a new reader; use longer names for w
 - Booleans ask a yes/no question (`isReady`, `hasAccess`), not a negative (`notDisabled`).
 - Functions are verbs that say their effect: `loadInvoice`, not `handleData`. Types are nouns.
 - Put units in names (`timeoutMs`); do not invent abbreviations.
-- No grab-bag files or functions named for their kind: `utils.ts`, `misc.ts`, `data2`, `tmp`.
+- No catch-all files named for their kind (`utils.ts`, `misc.ts`), and no empty names
+  (`data2`, `tmp`).
 - Match siblings' case style for components, utilities, hooks and folders: one style per kind.
 
 External contracts — API fields, library paths, generated names — keep their names.
@@ -122,8 +127,8 @@ truer local and private names, removed dead code and unused imports, a comment t
 **Structural change:** moving or renaming files or folders; an exported name or a module's
 public interface; a layer boundary; a new folder or layer pattern; splitting a file other
 code imports from. What the task or approved plan names is already agreed. Ask only for
-structural work beyond it; a subagent reports it to its caller. Unasked cleanup of untouched
-code stays out of the diff.
+structural work beyond it; a subagent reports it to its caller. Unasked cleanup of files the
+task does not change stays out of the diff.
 
 ## 11. Comments say why; unused code goes
 

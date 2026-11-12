@@ -126,7 +126,7 @@ log(
 // reported: the evidence bar is the review's (`plugin/instructions/core.md` § Review).
 const verdicts = await pipeline(checked, (finding) =>
   agent(
-    `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
+    `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. A project convention or sibling files with that shape refute it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
     {
       label: 'verify',
       model: 'opus',
