@@ -19951,7 +19951,8 @@ var NOT_PERSON_PREFIXES = [
   STOP_FEEDBACK
 ];
 function hasNotPersonWrapper(prompt2) {
-  return NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix));
+  const text = prompt2.trimStart();
+  return NOT_PERSON_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
 // src/hooks/user-away-stop.ts
@@ -35529,6 +35530,7 @@ function parseOptions(argv, known, flagNames = [], repeatable = []) {
 }
 
 // src/herdr/words.ts
+var STATUS_MESSAGE_LIMIT = 200;
 var MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
 function normalizeMode(mode) {
   const value = mode === "manual" ? "default" : mode;
@@ -36096,6 +36098,11 @@ function herdrArguments(one, reading) {
 function herdrDomain(reading) {
   return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
 }
+function herdrExcerpt(text) {
+  const points = Array.from(text);
+  const quoted = points.slice(0, STATUS_MESSAGE_LIMIT).map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
+  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "\u2026" : ""}`;
+}
 function judgeHerdr(reading, context) {
   if (!herdrDomain(reading))
     return null;
@@ -36110,6 +36117,15 @@ function judgeHerdr(reading, context) {
   const remember = (reason) => {
     ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
 Nobody answers a question in \`claude -p\`; run this in an interactive session.`);
+  };
+  const remoteRead = (machine) => {
+    try {
+      const rule = machineRule(readMachines(context.paths.machinesFile), machine);
+      if (rule !== "free")
+        remember(`Approve Herdr read on ${machine}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`);
+    } catch (error) {
+      remember(`Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote read only if you meant it.`);
+    }
   };
   for (const one of reading.invocations) {
     if (one.computed && reading.namesHerdr) {
@@ -36132,6 +36148,19 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       if (raw.length === 2 && !verb?.startsWith("-") && ["--help", "-h"].includes(sub ?? ""))
         continue;
       const read = ["ls", "get", "read", "wait", "templates", "schema"].includes(verb ?? "") || verb === "machine" && sub === "ls" || verb === "file" && sub === "read" || verb === "server" && sub === "status";
+      const machine = optionValue(raw.slice(0, raw.indexOf("--") < 0 ? undefined : raw.indexOf("--")), "--on");
+      if (verb === "file" && sub === "read" && machine)
+        remoteRead(machine);
+      const terminalArgs = raw.slice(1);
+      const addresses = ["read", "get", "wait"].includes(verb ?? "") ? [
+        ...positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(0, 1),
+        ...verb === "wait" ? [optionValue(terminalArgs, "--children")] : []
+      ] : verb === "events" ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")] : [];
+      for (const address of addresses) {
+        const slash = address?.indexOf("/") ?? -1;
+        if (address && slash > 0)
+          remoteRead(address.slice(0, slash));
+      }
       if (verb === "events") {
         const input = context.input.tool_input;
         if (typeof input === "object" && input !== null && "run_in_background" in input && input.run_in_background === true)
@@ -36148,7 +36177,7 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       continue;
     if (herdr[0] === "answer") {
       const parsed = parseHerdrArgs(herdr);
-      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${parsed.target}: ${parsed.option !== undefined ? `option ${parsed.option}` : parsed.text}` : herdr.slice(1).join(" ");
+      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}` : herdrExcerpt(herdr.slice(1).join(" "));
       remember(`Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`);
       continue;
     }
@@ -36161,6 +36190,8 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     }
     if (herdr[0] !== "start")
       continue;
+    if (!isAttended(context.env))
+      return verdict("deny", "Nobody answers or watches a Herdr session started by `claude -p`; its reports would reach nobody. Start it from an interactive session.");
     const flags = herdr.slice(1, herdr.indexOf("--") < 0 ? undefined : herdr.indexOf("--"));
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");

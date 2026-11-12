@@ -19309,7 +19309,7 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     }
   }
 }
-var MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE;
+var STATUS_MESSAGE_LIMIT = 200, MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE;
 var init_words = __esm(() => {
   init_names();
   init_targets();
@@ -42849,7 +42849,8 @@ var NOT_PERSON_PREFIXES = [
   STOP_FEEDBACK
 ];
 function hasNotPersonWrapper(prompt2) {
-  return NOT_PERSON_PREFIXES.some((prefix) => prompt2.startsWith(prefix));
+  const text = prompt2.trimStart();
+  return NOT_PERSON_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
 // src/hooks/user-away-stop.ts
@@ -47402,6 +47403,11 @@ function herdrArguments(one, reading) {
 function herdrDomain(reading) {
   return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
 }
+function herdrExcerpt(text) {
+  const points = Array.from(text);
+  const quoted = points.slice(0, STATUS_MESSAGE_LIMIT).map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
+  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "\u2026" : ""}`;
+}
 function judgeHerdr(reading, context) {
   if (!herdrDomain(reading))
     return null;
@@ -47416,6 +47422,15 @@ function judgeHerdr(reading, context) {
   const remember = (reason) => {
     ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
 Nobody answers a question in \`claude -p\`; run this in an interactive session.`);
+  };
+  const remoteRead = (machine) => {
+    try {
+      const rule = machineRule(readMachines(context.paths.machinesFile), machine);
+      if (rule !== "free")
+        remember(`Approve Herdr read on ${machine}: ${rule === "production" ? "this is a production machine" : "this machine is not allowlisted"}.`);
+    } catch (error) {
+      remember(`Cannot read the Herdr machine rules: ${error instanceof Error ? error.message : String(error)} Approve this remote read only if you meant it.`);
+    }
   };
   for (const one of reading.invocations) {
     if (one.computed && reading.namesHerdr) {
@@ -47438,6 +47453,19 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       if (raw.length === 2 && !verb?.startsWith("-") && ["--help", "-h"].includes(sub ?? ""))
         continue;
       const read = ["ls", "get", "read", "wait", "templates", "schema"].includes(verb ?? "") || verb === "machine" && sub === "ls" || verb === "file" && sub === "read" || verb === "server" && sub === "status";
+      const machine = optionValue(raw.slice(0, raw.indexOf("--") < 0 ? undefined : raw.indexOf("--")), "--on");
+      if (verb === "file" && sub === "read" && machine)
+        remoteRead(machine);
+      const terminalArgs = raw.slice(1);
+      const addresses = ["read", "get", "wait"].includes(verb ?? "") ? [
+        ...positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(0, 1),
+        ...verb === "wait" ? [optionValue(terminalArgs, "--children")] : []
+      ] : verb === "events" ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")] : [];
+      for (const address of addresses) {
+        const slash = address?.indexOf("/") ?? -1;
+        if (address && slash > 0)
+          remoteRead(address.slice(0, slash));
+      }
       if (verb === "events") {
         const input = context.input.tool_input;
         if (typeof input === "object" && input !== null && "run_in_background" in input && input.run_in_background === true)
@@ -47454,7 +47482,7 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       continue;
     if (herdr[0] === "answer") {
       const parsed = parseHerdrArgs(herdr);
-      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${parsed.target}: ${parsed.option !== undefined ? `option ${parsed.option}` : parsed.text}` : herdr.slice(1).join(" ");
+      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}` : herdrExcerpt(herdr.slice(1).join(" "));
       remember(`Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`);
       continue;
     }
@@ -47467,6 +47495,8 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     }
     if (herdr[0] !== "start")
       continue;
+    if (!isAttended(context.env))
+      return verdict("deny", "Nobody answers or watches a Herdr session started by `claude -p`; its reports would reach nobody. Start it from an interactive session.");
     const flags = herdr.slice(1, herdr.indexOf("--") < 0 ? undefined : herdr.indexOf("--"));
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");
@@ -53697,20 +53727,20 @@ init_context();
 init_ops();
 init_db();
 import { existsSync as existsSync77, readFileSync as readFileSync87 } from "fs";
-import { basename as basename19, dirname as dirname37, isAbsolute as isAbsolute15, join as join92, relative as relative15, resolve as resolve25 } from "path";
+import { basename as basename19, dirname as dirname38, isAbsolute as isAbsolute15, join as join92, relative as relative15, resolve as resolve25 } from "path";
 
 // src/herdr/brief.ts
 init_names();
 init_write();
 import { randomUUID as randomUUID4 } from "crypto";
 import { chmodSync as chmodSync4, mkdirSync as mkdirSync30 } from "fs";
-import { join as join91 } from "path";
+import { dirname as dirname37, join as join91 } from "path";
 function briefPath(stateDir, core, name) {
-  return join91(stateDir, "herdr", "briefs", `${encodeURIComponent(core)}-${encodeURIComponent(name)}.md`);
+  return join91(stateDir, "herdr", "briefs", `${encodeURIComponent(core)}-${encodeURIComponent(name)}`, "brief.md");
 }
 async function writeBrief(stateDir, core, name, text, linked, task) {
   const file = briefPath(stateDir, core, name);
-  await writePrivate(stateDir, file, `${text}
+  await writePrivate(file, `${text}
 ${task ? `
 Your task: ${task}
 save a \`Report:\` note with task_note; never take, update or close the task.
@@ -53719,14 +53749,14 @@ When done or stuck, report with: \`${COMMAND} herdr report "<one paragraph>"\`; 
 ` : ""}`);
   return file;
 }
-async function writePrivate(stateDir, file, text) {
-  const folder = join91(stateDir, "herdr", "briefs");
+async function writePrivate(file, text) {
+  const folder = dirname37(file);
   mkdirSync30(folder, { recursive: true, mode: 448 });
   chmodSync4(folder, 448);
   atomicWrite(file, text, 384);
 }
 function reportPath(stateDir, core, name) {
-  return briefPath(stateDir, core, name).replace(/\.md$/, `.report-${new Date().toISOString().replaceAll(":", "-")}-${randomUUID4()}.md`);
+  return join91(dirname37(briefPath(stateDir, core, name)), `report-${new Date().toISOString().replaceAll(":", "-")}-${randomUUID4()}.md`);
 }
 
 // src/herdr/identity.ts
@@ -54072,14 +54102,15 @@ function remoteReportFolder(ctx) {
 function remoteReportHint(ctx, machine) {
   const folder = remoteReportFolder(ctx);
   ctx.out.say(`Remote reports stay in ${machine}:${folder}`);
-  ctx.out.say(`hc exec --on ${machine} ls -1 ${folder}`);
-  ctx.out.say(`hc file read --on ${machine} ${folder}/<file>`);
+  ctx.out.say(`hc exec --on ${machine} find ${folder} -type f`);
+  ctx.out.say(`hc file read --on ${machine} ${folder}/<child>/<file>`);
 }
 async function remoteBrief(r, ctx, machine, file) {
   const defaults = cliPaths({ HOME: ctx.paths.home });
-  const rel = join92(relative15(defaults.home, defaults.stateDir), "herdr", "briefs", basename19(file));
-  execRemote(r, machine, ["mkdir", "-p", "-m", "700", dirname37(rel)]);
-  execRemote(r, machine, ["chmod", "700", dirname37(rel)]);
+  const rel = join92(relative15(defaults.home, defaults.stateDir), "herdr", "briefs", basename19(dirname38(file)), basename19(file));
+  execRemote(r, machine, ["mkdir", "-p", "-m", "700", dirname38(rel)]);
+  execRemote(r, machine, ["chmod", "700", dirname38(dirname38(rel))]);
+  execRemote(r, machine, ["chmod", "700", dirname38(rel)]);
   const answer = JSON.parse(invoke(r, ["file", "write", "--on", machine, "--json", rel], {
     stdin: readFileSync87(file, "utf8")
   }));
@@ -54137,7 +54168,7 @@ async function start(a, ctx, r) {
   const file = await writeBrief(ctx.paths.stateDir, core, terminalName, a.on && !a.independent ? `${a.brief}
 Your lead is on another core. Reports stay on this machine in ${remoteReportFolder(ctx)}. Run ${COMMAND} herdr report to save each report there.` : a.brief, !a.independent, a.task);
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
-  const first = `Read your brief at ${path} and do it.`;
+  const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
     ...a.independent ? ["--no-parent"] : ["--outlive-parent"],
@@ -54159,7 +54190,7 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
     labels[KIT_TASK] = a.task;
   for (const [k, v] of Object.entries(labels))
     args.push("--label", `${k}=${v}`);
-  args.push("claude", "--model", a.model, "--effort", a.effort, "--permission-mode", cliModeFlag(a.mode), "-n", name);
+  args.push("claude", "--add-dir", dirname38(path), "--model", a.model, "--effort", a.effort, "--permission-mode", cliModeFlag(a.mode), "-n", name);
   if (gitRoot)
     args.push("-w", worktreeName);
   args.push(first);
@@ -54233,6 +54264,8 @@ function answer(a, ctx, r, me) {
   const changed = () => refuse2(ctx, `The prompt changed; read it again (hc get ${a.target}).`);
   if (s?.state !== "blocked" || !["question", "permission"].includes(s.kind ?? "") || s.msg !== a.expect || child.turn !== a.expectTurn)
     return changed();
+  if (s.kind === "permission" && (s.msg?.length ?? 0) >= STATUS_MESSAGE_LIMIT)
+    return refuse2(ctx, `The permission message may be cut short; answer it in its pane: hc attach ${target}`);
   if (/^approve plan/i.test(s.msg ?? ""))
     return refuse2(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
   const screen = hcRead(r, target, SCREEN_LINES).text;
@@ -54289,7 +54322,7 @@ async function report(text, ctx, r) {
     }
   }
   const file = reportPath(ctx.paths.stateDir, me.core, self.name ?? self.address);
-  await writePrivate(ctx.paths.stateDir, file, `${text}
+  await writePrivate(file, `${text}
 `);
   ctx.out.line("warn", `The lead cannot receive a report. Saved it at ${file}`);
   return 0;
@@ -54352,7 +54385,7 @@ async function runHerdr(args, ctx) {
           return refuse2(ctx, `Answer it with ${COMMAND} herdr answer.`);
         if (!child.status)
           return refuse2(ctx, `Answer it in its pane: hc attach ${parsed.target}`);
-        send(r, parsed.target, escapeReport(parsed.text, "lead"));
+        send(r, child.address, escapeReport(parsed.text, "lead"));
         ctx.out.line("ok", "Message sent.");
         return 0;
       }
@@ -54578,7 +54611,7 @@ init_resolve2();
 init_schema();
 import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync79, mkdirSync as mkdirSync31, readFileSync as readFileSync89 } from "fs";
-import { basename as basename21, dirname as dirname38, join as join94, relative as relative16 } from "path";
+import { basename as basename21, dirname as dirname39, join as join94, relative as relative16 } from "path";
 
 // src/portal/facts.ts
 init_legacy();
