@@ -815,19 +815,30 @@ function dialog(screen: string) {
   let start = result.start;
   while (start > 0 && !ruleLine(lines[start - 1] ?? "")) start--;
   // A Bash dialog (Claude Code 2.1.322): a solid top rule, its header lines, then the command
-  // as `│ ` lines between two dashed rules. The box is exactly the lines between the last two
-  // dashed rules below that solid rule, and every one of them must carry the border.
+  // between two dashed rules. The box is exactly the lines between the last two dashed rules
+  // below that solid rule. Claude Code draws it in two layouts (both captured live): every line
+  // starts with a `│` border, or none does (a plain "no rule matched" prompt). A mix refuses.
+  // The frame rules start at column 0 and every content line is indented, so a rule-like line
+  // inside the command never counts as the frame; anything but exactly two dashed rules refuses.
+  const frame = (line: string | undefined, rule: RegExp) => rule.test(line?.trimEnd() ?? "");
   let top = result.start - 1;
-  while (top >= 0 && !/^─+$/u.test(lines[top]?.trim() ?? "")) top--;
+  while (top >= 0 && !frame(lines[top], /^─+$/u)) top--;
   const dashed: number[] = [];
   for (let i = top + 1; top >= 0 && i < result.start; i++)
-    if (/^╌+$/u.test(lines[i]?.trim() ?? "")) dashed.push(i);
-  const [open, close] = dashed.slice(-2);
-  const inside = open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
-  const box =
-    inside.length && inside.every((line) => line.trimStart().startsWith("│"))
+    if (frame(lines[i], /^╌+$/u)) dashed.push(i);
+  const [open, close] = dashed;
+  const inside =
+    dashed.length === 2 && open !== undefined && close !== undefined
+      ? lines.slice(open + 1, close)
+      : [];
+  const bordered = inside.filter((line) => line.trimStart().startsWith("│")).length;
+  const box = !inside.length
+    ? null
+    : bordered === inside.length
       ? inside.map((line) => line.trimStart().slice(1))
-      : null;
+      : bordered === 0
+        ? inside
+        : null;
   return {
     options: result.options,
     box,
