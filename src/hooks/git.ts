@@ -41,6 +41,25 @@ export function runGit(
   timeoutMs = 15_000,
   own: Record<string, string> = {},
 ): GitRun {
+  return spawnGit(cwd, args, env, timeoutMs, own, true);
+}
+
+/**
+ * `runGit`, with stdout exactly as git wrote it. For `-z` output, where a name may start or
+ * end with a space: trimming would cut it off the first or the last name.
+ */
+export function runGitRaw(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
+  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+}
+
+function spawnGit(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs: number,
+  own: Record<string, string>,
+  trim: boolean,
+): GitRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
@@ -54,7 +73,8 @@ export function runGit(
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+    const out = result.stdout.toString();
+    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };

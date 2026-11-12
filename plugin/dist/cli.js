@@ -19411,6 +19411,12 @@ var init_path_compare = __esm(() => {
 import { readFileSync as readFileSync22, realpathSync as realpathSync4 } from "fs";
 import { basename as basename4, dirname as dirname8, join as join19, resolve as resolve5 } from "path";
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true);
+}
+function runGitRaw(cwd, args, env, timeoutMs = 15000) {
+  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
@@ -19423,7 +19429,8 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
     });
     const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    return { ok: result.exitCode === 0, out: result.stdout.toString().trim(), err, code };
+    const out = result.stdout.toString();
+    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
     return { ok: false, out: "", err, code: null };
@@ -26838,13 +26845,13 @@ var init_sessions = __esm(() => {
 // src/hooks/unsaved-changes.ts
 import { lstatSync as lstatSync3 } from "fs";
 import { join as join35 } from "path";
-function hasUnsavedChanges(folder, ref, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], env);
+function hasUnsavedChanges(folder, ref, env, options = {}) {
+  const status = runGitRaw(folder, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], env);
   if (!status.ok)
     return true;
   if (status.out === "")
     return false;
-  const wanted = readStatus(status.out, folder);
+  const wanted = readStatus(status.out, folder, options.ownDeletions === true);
   if (wanted === null)
     return true;
   const hashed = hashFiles(folder, wanted.toHash, env);
@@ -26855,7 +26862,7 @@ function hasUnsavedChanges(folder, ref, env) {
     return true;
   return !allInHistory(folder, ref, versions, env);
 }
-function readStatus(out, folder) {
+function readStatus(out, folder, ownDeletions) {
   const wanted = { versions: [], toHash: [], absent: [] };
   const entries = out.split("\x00");
   for (let index = 0;index < entries.length; index++) {
@@ -26885,9 +26892,10 @@ function readStatus(out, folder) {
     if (staged && !wantVersion(wanted, path, modeIndex, hashIndex))
       return null;
     if (inFolder) {
-      if (modeFolder === NO_FILE)
-        wanted.absent.push(path);
-      else if (FILE_MODES.has(modeFolder) && isPlainFile(join35(folder, path))) {
+      if (modeFolder === NO_FILE) {
+        if (!ownDeletions)
+          wanted.absent.push(path);
+      } else if (FILE_MODES.has(modeFolder) && isPlainFile(join35(folder, path))) {
         wanted.toHash.push(path);
       } else
         return null;
@@ -26932,9 +26940,42 @@ function fileMode2(path) {
   return (lstatSync3(path).mode & 73) !== 0 ? "100755" : "100644";
 }
 function hashFiles(folder, paths, env) {
+  const filtered = filteredPaths(folder, paths, env);
+  if (filtered === null)
+    return null;
+  const plain = paths.filter((path) => !filtered.has(path));
+  const raw = paths.filter((path) => filtered.has(path));
+  const versions = [];
+  for (const [list, flags] of [
+    [plain, []],
+    [raw, ["--no-filters"]]
+  ]) {
+    const hashed = hashChunks(folder, list, flags, env);
+    if (hashed === null)
+      return null;
+    versions.push(...hashed);
+  }
+  return versions;
+}
+function filteredPaths(folder, paths, env) {
+  const filtered = new Set;
+  for (const chunk of chunks(paths)) {
+    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "--", ...chunk], env);
+    if (!run.ok)
+      return null;
+    const parts = run.out.split("\x00");
+    for (let at = 0;at + 2 < parts.length; at += 3) {
+      const value = parts[at + 2];
+      if (value !== "unspecified" && value !== "unset")
+        filtered.add(parts[at] ?? "");
+    }
+  }
+  return filtered;
+}
+function hashChunks(folder, paths, flags, env) {
   const versions = [];
   for (const chunk of chunks(paths)) {
-    const run = runGit(folder, ["hash-object", "--", ...chunk], env);
+    const run = runGit(folder, ["hash-object", ...flags, "--", ...chunk], env);
     if (!run.ok)
       return null;
     const hashes = run.out.split(`
@@ -26953,7 +26994,7 @@ function hashFiles(folder, paths, env) {
 }
 function allAbsent(folder, ref, paths, env) {
   for (const chunk of chunks(paths)) {
-    const run = runGit(folder, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk], env);
+    const run = runGitRaw(folder, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk], env);
     if (!run.ok)
       return false;
     const onRef = new Set(run.out.split("\x00"));
@@ -26966,7 +27007,7 @@ function allInHistory(folder, ref, versions, env) {
   const paths = [...new Set(versions.map((item) => item.path))];
   const seen = new Set;
   for (const chunk of chunks(paths)) {
-    const run = runGit(folder, [
+    const run = runGitRaw(folder, [
       "--literal-pathspecs",
       "log",
       "--format=",
@@ -26977,6 +27018,8 @@ function allInHistory(folder, ref, versions, env) {
       "--root",
       "--diff-merges=first-parent",
       ref,
+      "--not",
+      "HEAD",
       "--",
       ...chunk
     ], env);
@@ -27757,15 +27800,8 @@ function innerWorktreeOf(worktree, all) {
   }
   return null;
 }
-function hasChangesBeyondDeletions(worktree, env) {
-  const status = runGit(worktree, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  if (!status.ok)
-    return true;
-  return status.out.split(`
-`).some((line) => line !== "" && !/^(?: D|D) /.test(line));
-}
 function contentsOf(worktree, mainCheckout, ref, env, parked = false) {
-  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasUnsavedChanges(worktree, ref, env);
+  const changed = hasUnsavedChanges(worktree, ref, env, { ownDeletions: parked });
   if (changed)
     return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
@@ -28130,7 +28166,8 @@ function removeWorktree(repo, listed, options) {
       });
     }
   }
-  const removed = runGit(repo, alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked], options.env, REMOVAL_TIMEOUT_MS);
+  const proved = !hasUnsavedChanges(parked, look.ref, options.env, { ownDeletions: alreadyParked });
+  const removed = runGit(repo, proved ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked], options.env, REMOVAL_TIMEOUT_MS);
   if (!removed.ok) {
     return keptAfterUnlock({
       said: [

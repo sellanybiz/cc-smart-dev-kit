@@ -7,9 +7,14 @@
  * base. git still reads them as changes, because the folder's HEAD is the old commit.
  *
  * So uncommitted work counts as saved only when each piece of it is already in the history of
- * the ref (normally `origin/<base>`), at the same path:
+ * the ref (normally `origin/<base>`) after the folder's own HEAD, at the same path. "After HEAD"
+ * is where the lead's commits are; a file put back to a version from before HEAD is a revert
+ * someone made on purpose, and it keeps the folder.
  *   - each file in the folder that git reads as changed or untracked holds the exact bytes and
- *     file mode of a version that path had in some commit of the ref's history;
+ *     file mode of a version that path had in some commit of that history. A path with a filter
+ *     driver (`filter=` in `.gitattributes`, such as a notebook output stripper or Git LFS) is
+ *     hashed as it is on disk, without the filter: a filter can drop bytes, and those bytes are
+ *     the folder's alone. Line-ending conversion still applies, as checkout undoes it;
  *   - each staged version (the index) is such a version too;
  *   - each file the folder deleted, or a staged rename moved away, is gone from the ref as well.
  *
@@ -21,7 +26,7 @@
  */
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
-import { runGit } from "./git";
+import { runGit, runGitRaw } from "./git";
 import type { Env } from "./run";
 
 /** git's mode for a file that is not there: deleted from the index or the folder. */
@@ -41,19 +46,33 @@ interface Wanted {
   absent: string[];
 }
 
+export interface UnsavedOptions {
+  /**
+   * Count each file the folder lacks as the removal's own work: a folder a removal moved aside
+   * and could not finish (`-removing-`, D62) lost tracked files to that removal. Staged
+   * deletions still need the ref to lack the file.
+   */
+  ownDeletions?: boolean;
+}
+
 /**
  * True when removing the folder would lose uncommitted work: something `git status` lists that
  * the history of `ref` does not already hold byte for byte. False for a clean folder.
  */
-export function hasUnsavedChanges(folder: string, ref: string, env: Env): boolean {
-  const status = runGit(
+export function hasUnsavedChanges(
+  folder: string,
+  ref: string,
+  env: Env,
+  options: UnsavedOptions = {},
+): boolean {
+  const status = runGitRaw(
     folder,
     ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"],
     env,
   );
   if (!status.ok) return true;
   if (status.out === "") return false;
-  const wanted = readStatus(status.out, folder);
+  const wanted = readStatus(status.out, folder, options.ownDeletions === true);
   if (wanted === null) return true;
   const hashed = hashFiles(folder, wanted.toHash, env);
   if (hashed === null) return true;
@@ -66,7 +85,7 @@ export function hasUnsavedChanges(folder: string, ref: string, env: Env): boolea
  * Reads `git status --porcelain=v2 -z`. Null when an entry is a conflict, a symlink or a
  * submodule, or cannot be read: each of those counts as unsaved.
  */
-function readStatus(out: string, folder: string): Wanted | null {
+function readStatus(out: string, folder: string, ownDeletions: boolean): Wanted | null {
   const wanted: Wanted = { versions: [], toHash: [], absent: [] };
   const entries = out.split("\0");
   for (let index = 0; index < entries.length; index++) {
@@ -92,8 +111,9 @@ function readStatus(out: string, folder: string): Wanted | null {
     const inFolder = xy[1] !== ".";
     if (staged && !wantVersion(wanted, path, modeIndex, hashIndex)) return null;
     if (inFolder) {
-      if (modeFolder === NO_FILE) wanted.absent.push(path);
-      else if (FILE_MODES.has(modeFolder) && isPlainFile(join(folder, path))) {
+      if (modeFolder === NO_FILE) {
+        if (!ownDeletions) wanted.absent.push(path);
+      } else if (FILE_MODES.has(modeFolder) && isPlainFile(join(folder, path))) {
         wanted.toHash.push(path);
       } else return null;
     }
@@ -142,17 +162,56 @@ function fileMode(path: string): string {
 }
 
 /**
- * Each file's version as git would store it: its mode, and its blob through the path's own
- * filters (`git hash-object` reads `.gitattributes` for the path). Null when git cannot say.
+ * Each file's version as git would store it: its mode, and its blob. A path with a filter driver
+ * is hashed on its bytes as they are (`--no-filters`); any other path goes through
+ * `.gitattributes` the way `git add` would, so line endings match. Null when git cannot say.
  */
 function hashFiles(
   folder: string,
   paths: string[],
   env: Env,
 ): Array<{ path: string; version: string }> | null {
+  const filtered = filteredPaths(folder, paths, env);
+  if (filtered === null) return null;
+  const plain = paths.filter((path) => !filtered.has(path));
+  const raw = paths.filter((path) => filtered.has(path));
+  const versions: Array<{ path: string; version: string }> = [];
+  for (const [list, flags] of [
+    [plain, []],
+    [raw, ["--no-filters"]],
+  ] as const) {
+    const hashed = hashChunks(folder, list, flags, env);
+    if (hashed === null) return null;
+    versions.push(...hashed);
+  }
+  return versions;
+}
+
+/** The paths `.gitattributes` gives a filter driver. Null when git cannot say. */
+function filteredPaths(folder: string, paths: string[], env: Env): Set<string> | null {
+  const filtered = new Set<string>();
+  for (const chunk of chunks(paths)) {
+    const run = runGitRaw(folder, ["check-attr", "-z", "filter", "--", ...chunk], env);
+    if (!run.ok) return null;
+    // <path> NUL filter NUL <value> NUL, for each path
+    const parts = run.out.split("\0");
+    for (let at = 0; at + 2 < parts.length; at += 3) {
+      const value = parts[at + 2];
+      if (value !== "unspecified" && value !== "unset") filtered.add(parts[at] ?? "");
+    }
+  }
+  return filtered;
+}
+
+function hashChunks(
+  folder: string,
+  paths: string[],
+  flags: readonly string[],
+  env: Env,
+): Array<{ path: string; version: string }> | null {
   const versions: Array<{ path: string; version: string }> = [];
   for (const chunk of chunks(paths)) {
-    const run = runGit(folder, ["hash-object", "--", ...chunk], env);
+    const run = runGit(folder, ["hash-object", ...flags, "--", ...chunk], env);
     if (!run.ok) return null;
     const hashes = run.out.split("\n");
     if (hashes.length !== chunk.length) return null;
@@ -170,7 +229,7 @@ function hashFiles(
 /** True when none of the paths exists on the ref. */
 function allAbsent(folder: string, ref: string, paths: string[], env: Env): boolean {
   for (const chunk of chunks(paths)) {
-    const run = runGit(
+    const run = runGitRaw(
       folder,
       ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk],
       env,
@@ -183,9 +242,9 @@ function allAbsent(folder: string, ref: string, paths: string[], env: Env): bool
 }
 
 /**
- * True when each path had its version in some commit of the ref's history. `git log --raw`
- * prints the version each commit gave a path; a merge's own resolution shows against its first
- * parent, and the first commit against nothing (`--root`).
+ * True when each path had its version in some commit of the ref's history that the folder's HEAD
+ * does not have. `git log --raw` prints the version each commit gave a path; a merge's own
+ * resolution shows against its first parent, and the first commit against nothing (`--root`).
  */
 function allInHistory(
   folder: string,
@@ -196,7 +255,7 @@ function allInHistory(
   const paths = [...new Set(versions.map((item) => item.path))];
   const seen = new Set<string>();
   for (const chunk of chunks(paths)) {
-    const run = runGit(
+    const run = runGitRaw(
       folder,
       [
         "--literal-pathspecs",
@@ -209,6 +268,8 @@ function allInHistory(
         "--root",
         "--diff-merges=first-parent",
         ref,
+        "--not",
+        "HEAD",
         "--",
         ...chunk,
       ],

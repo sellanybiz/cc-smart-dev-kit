@@ -1,8 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { scanWorktrees } from "../worktrees/scan";
+import { removeWorktree, scanWorktrees } from "../worktrees/scan";
 import { hasUnsavedChanges } from "./unsaved-changes";
 
 const BASE = "refs/remotes/origin/main";
@@ -12,7 +20,7 @@ const BASE = "refs/remotes/origin/main";
  * `gone.txt` was deleted there, and the worktree still sits on the first commit (v1). That is
  * the state of a builder that never committed while its lead committed its files elsewhere.
  */
-function world() {
+function world(branch?: string) {
   const root = tempDir("unsaved-changes");
   const main = join(root, "main");
   const worktree = join(root, "worktree");
@@ -21,6 +29,7 @@ function world() {
   writeFileSync(join(main, "a.txt"), "v1\n");
   writeFileSync(join(main, "gone.txt"), "old\n");
   writeFileSync(join(main, "kept.txt"), "kept\n");
+  writeFileSync(join(main, " lead.txt"), "leading space\n");
   writeFileSync(join(main, "run.sh"), "#!/bin/sh\n");
   chmodSync(join(main, "run.sh"), 0o755);
   git(main, "add", ".");
@@ -36,7 +45,8 @@ function world() {
   writeFileSync(join(main, "a.txt"), "v3\n");
   git(main, "commit", "-qam", "third");
   git(main, "update-ref", BASE, "HEAD");
-  git(main, "worktree", "add", "-q", "--detach", worktree, first);
+  if (branch === undefined) git(main, "worktree", "add", "-q", "--detach", worktree, first);
+  else git(main, "worktree", "add", "-q", "-b", branch, worktree, first);
   const unsaved = () => hasUnsavedChanges(worktree, BASE, cleanGitEnv());
   return { root, main, worktree, unsaved };
 }
@@ -56,6 +66,14 @@ describe("hasUnsavedChanges", () => {
     const { worktree, unsaved } = world();
     writeFileSync(join(worktree, "a.txt"), "v2\n");
     expect(unsaved()).toBe(false);
+  });
+
+  test("a version from before the folder's own HEAD is unsaved: putting it back was a choice", () => {
+    const { main, worktree, unsaved } = world();
+    // Move the folder's HEAD past v2, then put v2 back by hand.
+    git(worktree, "checkout", "-q", "--detach", git(main, "rev-parse", "HEAD").trim());
+    writeFileSync(join(worktree, "a.txt"), "v2\n");
+    expect(unsaved()).toBe(true);
   });
 
   test("an edit the base never held is unsaved", () => {
@@ -82,6 +100,34 @@ describe("hasUnsavedChanges", () => {
     const stillThere = world();
     rmSync(join(stillThere.worktree, "kept.txt"));
     expect(stillThere.unsaved()).toBe(true);
+  });
+
+  test("a deleted name that starts with a space is judged on its whole name", () => {
+    const { worktree, unsaved } = world();
+    rmSync(join(worktree, " lead.txt"));
+    expect(unsaved()).toBe(true);
+  });
+
+  test("with ownDeletions, a file the folder lacks is the removal's own, staged ones are not", () => {
+    const missing = world();
+    rmSync(join(missing.worktree, "kept.txt"));
+    const env = cleanGitEnv();
+    expect(hasUnsavedChanges(missing.worktree, BASE, env, { ownDeletions: true })).toBe(false);
+    expect(hasUnsavedChanges(missing.worktree, BASE, env)).toBe(true);
+
+    const staged = world();
+    git(staged.worktree, "rm", "-q", "kept.txt");
+    expect(hasUnsavedChanges(staged.worktree, BASE, env, { ownDeletions: true })).toBe(true);
+  });
+
+  test("a file with a filter driver is judged on its bytes on disk, not the filtered ones", () => {
+    const { main, worktree, unsaved } = world();
+    // A clean filter that drops lines, as a notebook output stripper does.
+    git(main, "config", "filter.strip.clean", "grep -v '^OUTPUT'");
+    git(main, "config", "core.attributesFile", join(main, "..", "attributes"));
+    writeFileSync(join(main, "..", "attributes"), "a.txt filter=strip\n");
+    writeFileSync(join(worktree, "a.txt"), "v3\nOUTPUT: three hours of compute\n");
+    expect(unsaved()).toBe(true);
   });
 
   test("a staged version the base never held is unsaved, even when the folder's copy is saved", () => {
@@ -186,6 +232,51 @@ describe("hasUnsavedChanges", () => {
     const { worktree } = world();
     writeFileSync(join(worktree, "a.txt"), "v3\n");
     expect(hasUnsavedChanges(worktree, "refs/remotes/origin/nothing", cleanGitEnv())).toBe(true);
+  });
+});
+
+describe("worktrees removes a folder whose edits the base holds", () => {
+  const options = (main: string) => ({
+    base: "main",
+    claudeConfigDir: join(main, "..", "claude"),
+    env: cleanGitEnv(),
+    idleLimit: 0,
+    facts: { containers: [], mounts: [], programs: [], sessions: [] },
+  });
+  const listedOf = (main: string, worktree: string) => {
+    const found = scanWorktrees(main, options(main)).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("the worktree is not listed");
+    return found.listed;
+  };
+
+  test("on a branch, saved edits: removed in one run, with nothing left beside it", () => {
+    const { root, main, worktree } = world("worktree-agent-a1");
+    writeFileSync(join(worktree, "a.txt"), "v3\n");
+    rmSync(join(worktree, "gone.txt"));
+    const removal = removeWorktree(main, listedOf(main, worktree), options(main));
+    expect(removal.status).toBe("removed");
+    expect(existsSync(worktree)).toBe(false);
+    expect(readdirSync(root).filter((name) => name.includes("-removing-"))).toEqual([]);
+  });
+
+  test("one unsaved edit: kept, and the folder is not moved", () => {
+    const { main, worktree } = world("worktree-agent-a2");
+    writeFileSync(join(worktree, "a.txt"), "v3\n");
+    writeFileSync(join(worktree, "draft.txt"), "only here\n");
+    const removal = removeWorktree(main, listedOf(main, worktree), options(main));
+    expect(removal.status).toBe("kept");
+    expect(existsSync(join(worktree, "draft.txt"))).toBe(true);
+  });
+
+  test("a folder an earlier removal moved aside, holding saved edits and its own deletions, goes", () => {
+    const { main, worktree } = world("worktree-agent-a3");
+    writeFileSync(join(worktree, "a.txt"), "v3\n");
+    const parked = `${worktree}-removing-1700000000000`;
+    git(main, "worktree", "move", worktree, parked);
+    rmSync(join(parked, "kept.txt"));
+    const removal = removeWorktree(main, listedOf(main, parked), options(main));
+    expect(removal.status).toBe("removed");
+    expect(existsSync(parked)).toBe(false);
   });
 });
 

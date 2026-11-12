@@ -126,27 +126,9 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
 }
 
 /**
- * True when the folder has anything uncommitted beyond tracked files that are gone: what a
- * removal that stopped halfway leaves behind is files it deleted itself, and `git status` reads
- * those as changes. A file someone changed, added or staged is not the removal's own work.
- * `git status` prints ` D path` or `D  path`, and `runGit` trims the first line's leading space,
- * so a deletion reads `D path` there.
- */
-function hasChangesBeyondDeletions(worktree: string, env: Env): boolean {
-  const status = runGit(
-    worktree,
-    ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
-    env,
-  );
-  if (!status.ok) return true;
-  return status.out.split("\n").some((line) => line !== "" && !/^(?: D|D) /.test(line));
-}
-
-/**
- * What removing the worktree would lose. `parked`: a folder a removal moved aside (D62), whose
- * deleted tracked files are the removal's own and are not changes. Otherwise an uncommitted
- * file whose exact bytes `ref`'s history already holds at that path is not lost either
- * (`hasUnsavedChanges`).
+ * What removing the worktree would lose. An uncommitted file whose exact bytes `ref`'s history
+ * already holds at that path is not lost (`hasUnsavedChanges`). `parked`: a folder a removal
+ * moved aside (D62), whose missing tracked files are the removal's own and are not changes.
  */
 function contentsOf(
   worktree: string,
@@ -155,9 +137,7 @@ function contentsOf(
   env: Env,
   parked = false,
 ): WorktreeContents {
-  const changed = parked
-    ? hasChangesBeyondDeletions(worktree, env)
-    : hasUnsavedChanges(worktree, ref, env);
+  const changed = hasUnsavedChanges(worktree, ref, env, { ownDeletions: parked });
   if (changed) return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
   if (ignored === null) {
@@ -891,13 +871,16 @@ export function removeWorktree(
       });
     }
   }
-  // A folder moved aside whose removal stopped halfway has lost tracked files to that removal,
-  // and git refuses such a worktree without `--force` ("contains modified or untracked files").
-  // Our own verdict already proved those deletions are all it holds (`hasChangesBeyondDeletions`),
-  // so the force is limited to exactly this folder, after that proof, and to no other.
+  // git refuses a worktree with changed or untracked files without `--force` ("contains
+  // modified or untracked files"). Two kinds are not work it can lose: files whose exact bytes
+  // the base's history holds, and, in a folder an earlier removal stopped halfway in, the
+  // tracked files that removal deleted. `--force` turns git's own last check off, so the same
+  // proof is taken again here, on the moved folder, right before the removal: `--force` only
+  // with it, and git's refusal otherwise.
+  const proved = !hasUnsavedChanges(parked, look.ref, options.env, { ownDeletions: alreadyParked });
   const removed = runGit(
     repo,
-    alreadyParked ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
+    proved ? ["worktree", "remove", "--force", parked] : ["worktree", "remove", parked],
     options.env,
     REMOVAL_TIMEOUT_MS,
   );
