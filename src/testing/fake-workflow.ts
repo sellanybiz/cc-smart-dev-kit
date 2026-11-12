@@ -34,7 +34,7 @@ export function defaultResolved(): ResolvedWorkflow {
     autoCommit: at(false),
     autoMerge: at(false),
     autoPush: at(false),
-    clearWorktreeAfterMerge: at(false),
+    clearWorktreeAfterMerge: at(true),
     deleteBranch: at(false),
     fixesAfterReview: { files: at(10), lines: at(200), percent: at(20) },
     issues: {
