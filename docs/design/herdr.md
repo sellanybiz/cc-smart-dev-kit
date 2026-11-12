@@ -42,7 +42,7 @@ A **linked child** starts with `--outlive-parent`, reports to its lead and can b
 when that lead disappears. Ownership follows labels, not Herdr's immutable parent field.
 An **independent session** uses `--no-parent`; no report instruction or ongoing monitoring
 is promised. It can start outside Herdr if no terminal identity is supplied. The person
-watches its pane. Neither kind has a kit-imposed session-count cap.
+sees it as its own space in Herdr. Neither kind has a kit-imposed session-count cap.
 
 Starts print the kind, address, name, worktree and live/blocked count. `list` shows owned
 children; `list --all` includes other kit sessions and independent sessions. `stop` kills
@@ -59,6 +59,24 @@ remain under the old lead's tab in Herdr's panel.
 
 A start requires explicit model, effort and mode. In git it runs Claude with `-w kit-<name>`;
 the normal path is `<repo>/.claude/worktrees/kit-<name>` and branch `worktree-kit-<name>`.
+Every child starts through the person's login/interactive shell so hooks and MCP tools
+get that shell's PATH. An argv-only `sh -c` wrapper passes the program and its arguments as
+positional parameters, never as script text. For sh, bash, zsh, dash and ksh it uses
+`$SHELL -lic`; other or unset shells use `sh -lc`. Each level uses `exec`, so hc still sees
+Claude's own foreground argv and exit.
+
+Independent sessions and all remote children add `--keep` plus fresh `herdr.space` and
+`herdr.tab` labels. Their machine-local ids are `sp` and `tb` followed by 32 random hex digits.
+They show as new spaces in Herdr; a local linked child stays under its lead's Agents panel.
+After a core crash, `--keep` leaves a shell in the pane; it does not restart Claude.
+
+After launch, start polls `hc get` for a Claude status or terminal exit for up to 20 seconds.
+A finished child prints its last non-empty screen lines, is removed from hc, and reports
+whether its worktree folder exists. Start exits 1 without a created line or task binding.
+It does not inspect Claude's private trust settings: Claude's own launch error gives the fix.
+A child with no status at the deadline prints its screen and an `hc attach` warning, then
+continues successfully, including task binding. A slow first status is not a failed launch.
+
 Terminal, branch or folder reuse is refused with a fresh-name suggestion. A project's own
 WorktreeCreate hook can change that layout; the command's predicted path is not a live proof
 of such a hook's result.
@@ -96,8 +114,12 @@ asks, and `production` always asks even when `allow` is also true. `forget` remo
 Machine-rule changes ask the person and use the managed atomic writer under the kit lock.
 An unreadable or invalid file fails loudly; the judge asks rather than treating it as free.
 
-Remote starts require `--cwd` on that machine. The command checks the remote kit is not older
-than its own version, resolves git there, and checks terminal/worktree/branch collisions.
+Remote starts require `--cwd` on that machine. The command checks `claude --version` first,
+then the remote kit's version, through the same login-shell wrapper as launch. Both programs
+must be found by that user's login shell, and the kit must not be older than this command.
+The parser takes the last semantic version in stdout, allowing shell rc files to print noise.
+A missing program names the machine and gives its installation fix. Git, test, mkdir and
+chmod stay plain argv calls. The command resolves git there and checks terminal/worktree/branch collisions.
 It makes the remote brief directory private, sends the file on stdin through
 `hc file write --on <machine> --json <path>`, requires an absolute returned path, and sets
 mode 600 before launch. It does not use `hc put`, which would need a terminal already started.
@@ -193,13 +215,16 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Claude restarts in the old terminal | It is still the lead by terminal identity. |
 | Bash action appears only in transcript or as part of a line | Relay refuses; use the pane. |
 | Status ends in “…” or could be transport-cut | Relay refuses rather than approve an incomplete action. |
+| Child exits during launch, including a trust error | Show screen and folder state, remove terminal, exit 1; no task binding. |
+| First Claude status takes more than 20 seconds | Show screen, warn with attach command, exit 0 and bind the task. |
+| Login shell is unset or not in the supported shell family | Use sh login fallback; user arguments stay positional. |
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
 | Same question text appears again | Turn check rejects the stale answer. |
 | Cursor or options change | Final screen comparison refuses. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
-| Independent session blocks unseen | Person must watch it; toast behavior is not yet proved live. |
+| Independent session blocks unseen | Its own Herdr space is visible; toast behavior is not yet proved live. |
 | No hc installed | Doctor reports optional orchestration, not failure. |
 
 Real doctor checks hc discovery/version, then says **core not checked**: hc does not document

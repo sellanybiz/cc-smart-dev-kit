@@ -18,7 +18,7 @@ Choose from the person's words, without an extra question when the intent is cle
 
 - **Linked child:** this lead coordinates it, waits for news and receives reports.
 - **Independent session:** started on the person's behalf, with no lead link or monitoring.
-  "No need to monitor it" calls for this kind. The person watches its pane.
+  "No need to monitor it" calls for this kind. It shows as its own space in Herdr.
 
 Say which kind you started. Do not promise reports from an independent session.
 
@@ -36,6 +36,7 @@ agents unless the person authorized them. A linked brief gets the reporting inst
 from the command. Each private `<stateDir>/herdr/briefs/<core>-<name>/brief.md` has its own
 folder; the launch grants `--add-dir` access to that folder. Local reports stay beside that brief. A remote child saves reports in a folder keyed by
 its own core on its machine, not beside the lead-core brief; the printed `find` hint locates them.
+Every child starts through the person’s login shell so it gets their own PATH.
 The first message is wrapped as lead evidence, never the person’s approval.
 
 - Add `--independent` only for the independent kind.
@@ -44,7 +45,7 @@ The first message is wrapped as lead evidence, never the person’s approval.
 - Use `--task '#n'` only for an existing open task in this repository on this machine.
   Else put the scope in the brief, not a task id from another project.
 - For an allowlisted remote machine, add `--on <machine>` and its own `--cwd <dir>`.
-  The remote kit must be at least as new as this one. Remote reports stay there as files;
+  The remote user’s login shell must find Claude Code and the kit, with the kit at least as new as this one. Remote reports stay there as files;
   keep the report-list and file-read commands printed by start and wait.
 - Fable, Opus at max effort, and a remote machine not allowed for free use require `--asked`.
   This records the command's approval prerequisite; it never suppresses the judge's question.

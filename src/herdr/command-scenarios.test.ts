@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
@@ -8,7 +8,7 @@ import { createOut } from "../cli/ui/out";
 import { createTaskOps } from "../tasks/ops";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
-import { type HerdrContext, runHerdr } from "./command";
+import { type HerdrContext, LOGIN_SHELL_SCRIPT, loginShellArgv, runHerdr } from "./command";
 import type { HcRunner } from "./hc";
 
 function world() {
@@ -25,6 +25,7 @@ function world() {
       turn: 3,
     },
   };
+  let time = 0;
   let list: string[] = [];
   let screen = "❯ 1. Yes\n  2. No";
   let failure: ((args: string[]) => string | null) | undefined;
@@ -71,6 +72,10 @@ function world() {
     cwd: dir,
     env: { ...cleanGitEnv(), HOME: dir },
     nowMs: 123,
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
     runner,
     identity: () => ({ core: "core", address: "t1", leadId: "core/t1" }),
     out: createOut(
@@ -118,7 +123,17 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
         w.ctx,
       ),
     ).toBe(collision ? 1 : 0);
-    expect(w.calls.some((c) => c.args.includes("sh"))).toBe(false);
+    for (const { args } of w.calls.filter((c) => c.args.includes("sh"))) {
+      expect(["exec", "run"]).toContain(args[0] ?? "");
+      expect(args.slice(args.indexOf("sh") - 1, args.indexOf("sh") + 4)).toEqual([
+        "--",
+        "sh",
+        "-c",
+        LOGIN_SHELL_SCRIPT,
+        "kit",
+      ]);
+      if (args[0] === "exec") expect(args.at(-1)).toBe("--version");
+    }
     expect(w.calls).toContainEqual({
       args: [
         "exec",
@@ -127,6 +142,7 @@ test("remote git collision checks are argv-only and any ambiguous answer refuses
         "--json",
         "--cwd",
         "/repo",
+        "--",
         "test",
         "-e",
         "/repo/.claude/worktrees/kit-one",
@@ -175,10 +191,13 @@ test("linked and independent launch exact argv and private brief", async () => {
       ),
     ).toBe(0);
     const file = briefPath(w.ctx.paths.stateDir, "core", "kit-one");
-    expect(w.calls.find((c) => c.args[0] === "run")?.args).toEqual([
+    const actual = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
+    const spaceLabels = actual.filter((a) => /^herdr\.(space|tab)=/.test(a));
+    expect(actual).toEqual([
       "run",
       "--json",
       "--bg",
+      ...(independent ? ["--keep"] : []),
       ...(independent ? ["--no-parent"] : ["--outlive-parent"]),
       "--no-notify",
       "--name",
@@ -189,6 +208,12 @@ test("linked and independent launch exact argv and private brief", async () => {
       `kit.repo=${w.ctx.cwd}`,
       "--label",
       ...(independent ? ["kit.independent=1"] : ["kit.lead=core/t1"]),
+      ...spaceLabels.flatMap((label) => ["--label", label]),
+      "--",
+      "sh",
+      "-c",
+      LOGIN_SHELL_SCRIPT,
+      "kit",
       "claude",
       "--add-dir",
       dirname(file),
@@ -230,6 +255,7 @@ test("remote writes brief on stdin before launch and uses returned absolute path
       "--on",
       "remote",
       "--json",
+      "--",
       "chmod",
       "700",
       ".claude/cc-smart-dev-kit/herdr/briefs",
@@ -247,6 +273,7 @@ test("remote writes brief on stdin before launch and uses returned absolute path
       "--on",
       "remote",
       "--json",
+      "--",
       "chmod",
       "700",
       ".claude/cc-smart-dev-kit/herdr/briefs/core-kit-one",
@@ -263,7 +290,12 @@ test("remote writes brief on stdin before launch and uses returned absolute path
     "--on",
     "remote",
     "--json",
-    COMMAND,
+    "--",
+    "sh",
+    "-c",
+    LOGIN_SHELL_SCRIPT,
+    "kit",
+    "claude",
     "--version",
   ]);
   expect(w.calls.some((c) => c.args.includes("--force"))).toBe(false);
@@ -873,4 +905,142 @@ test("foreground Claude name without argv keeps lead ownership", async () => {
   w.setList(["t2"]);
   expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
   expect(w.calls.some((c) => c.args[0] === "label")).toBe(false);
+});
+
+test("launch detects exit before status and leaves the task unbound", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const ops = createTaskOps({
+    stateDir: w.ctx.paths.stateDir,
+    env: w.ctx.env,
+    cwd: () => w.ctx.cwd,
+    caller: () => null,
+  });
+  try {
+    expect(ops.call("create", { subject: "test" }).ok).toBe(true);
+    w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+    w.setScreen(
+      "\nError creating worktree: Workspace trust not yet accepted.\nRun claude once here and accept the trust dialog.\n",
+    );
+    expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(1);
+    expect(w.lines.join("\n")).toContain("Workspace trust not yet accepted");
+    expect(w.lines.join("\n")).toContain("Worktree folder does not exist");
+    expect(w.lines.join("\n")).not.toContain("linked child:");
+    expect(w.calls).toContainEqual({ args: ["rm", "--json", "--", "t2"] });
+    const task = ops.call("get", { task: "#1" });
+    expect(task.ok).toBe(true);
+    if (task.ok) expect(task.text).not.toContain("herdr:core/t2");
+  } finally {
+    ops.close();
+  }
+});
+test("launch polls for first status and warns without failing at its deadline", async () => {
+  for (const reports of [true, false]) {
+    const w = world();
+    let reads = 0;
+    w.setResponse((a) =>
+      a[0] === "get"
+        ? {
+            address: "t2",
+            state: "live",
+            labels: {},
+            status: reports && ++reads === 3 ? { app: "claude-code", state: "working" } : null,
+          }
+        : undefined,
+    );
+    w.setScreen("Yes, I trust this folder\n");
+    expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(0);
+    expect(w.lines.join("\n")).toContain("linked child:");
+    if (reports) expect(reads).toBe(3);
+    else {
+      expect(w.ctx.now()).toBe(20_000);
+      expect(w.lines.join("\n")).toContain(
+        "has not reported yet; answer it in its pane: hc attach t2",
+      );
+      expect(w.lines).toContain("Yes, I trust this folder");
+    }
+    expect(w.calls.some((c) => c.args[0] === "rm")).toBe(false);
+  }
+});
+test("independent and every remote launch get fresh machine-local Herdr spaces", async () => {
+  for (const remote of [false, true])
+    for (const independent of [false, true]) {
+      const w = world();
+      expect(
+        await runHerdr(
+          [
+            ...launch,
+            ...(remote ? ["--on", "vps", "--asked", "--cwd", "/repo"] : []),
+            ...(independent ? ["--independent"] : []),
+            "--",
+            "work",
+          ],
+          w.ctx,
+        ),
+      ).toBe(0);
+      const args = w.calls.find((c) => c.args[0] === "run")?.args ?? [];
+      expect(args.includes("--keep")).toBe(remote || independent);
+      expect(args.filter((a) => /^herdr.space=sp[0-9a-f]{32}$/.test(a))).toHaveLength(
+        remote || independent ? 1 : 0,
+      );
+      expect(args.filter((a) => /^herdr.tab=tb[0-9a-f]{32}$/.test(a))).toHaveLength(
+        remote || independent ? 1 : 0,
+      );
+    }
+});
+test("missing remote programs refuse with an installation fix; rc noise permits a version", async () => {
+  for (const program of ["claude", COMMAND])
+    for (const code of [127, 0]) {
+      const w = world();
+      w.setResponse((a) =>
+        a[0] === "exec" && a.includes(program) && a.includes("--version")
+          ? { code, stdout: Buffer.from("rc noise only").toString("base64"), stderr: "" }
+          : undefined,
+      );
+      expect(
+        await runHerdr(
+          [...launch, "--on", "vps", "--asked", "--cwd", "/repo", "--", "work"],
+          w.ctx,
+        ),
+      ).toBe(1);
+      expect(w.lines.join("\n")).toContain(
+        `${program} is not installed on vps (not found by its login shell)`,
+      );
+      expect(w.lines.join("\n")).toContain(
+        program === "claude" ? "Install Claude Code" : "install.sh",
+      );
+      expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+    }
+  const w = world();
+  w.setResponse((a) =>
+    a[0] === "exec" && a.includes("--version")
+      ? {
+          code: 0,
+          stdout: Buffer.from(`old rc 0.0.1\n${VERSION}\nrc done`).toString("base64"),
+          stderr: "",
+        }
+      : undefined,
+  );
+  expect(
+    await runHerdr([...launch, "--on", "vps", "--asked", "--cwd", "/repo", "--", "work"], w.ctx),
+  ).toBe(0);
+});
+
+test("login shell preserves quoted and dollar arguments as positional argv", () => {
+  const arg = "a ' quote $(id) and spaces";
+  const argv = loginShellArgv("printf", "%s", arg);
+  expect(argv).toEqual(["sh", "-c", LOGIN_SHELL_SCRIPT, "kit", "printf", "%s", arg]);
+  const shell = join(tempDir(), "bash");
+  // Fake the login shell: exercise positional forwarding without reading host rc files.
+  writeFileSync(shell, '#!/bin/sh\n[ "$1" = "-lic" ] || exit 1\nshift\nexec /bin/sh -c "$@"\n', {
+    mode: 0o700,
+  });
+  const result = Bun.spawnSync(argv, {
+    env: { PATH: "/usr/bin:/bin", HOME: tempDir(), SHELL: shell },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout.toString()).toBe(arg);
 });

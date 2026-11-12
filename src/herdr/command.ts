@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { VERSION } from "../build-info";
+import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
@@ -39,12 +39,15 @@ import {
   childTerminalName,
   childWorktreeName,
   escapeReport,
+  HERDR_SPACE,
+  HERDR_TAB,
   herdrAgent,
   KIT_INDEPENDENT,
   KIT_LEAD,
   KIT_REPO,
   KIT_STARTED_BY,
   KIT_TASK,
+  newHerdrSpace,
   parseLeadId,
   validChildName,
 } from "./labels";
@@ -59,6 +62,13 @@ import {
 } from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
+export const LAUNCH_CHECK_MS = 20_000;
+export const LAUNCH_POLL_MS = 250;
+export const LAUNCH_SCREEN_LINES = 12;
+export const LOGIN_SHELL_SCRIPT = `case "\${SHELL##*/}" in sh|bash|zsh|dash|ksh) exec "$SHELL" -lic 'exec "$0" "$@"' "$@";; *) exec sh -lc 'exec "$0" "$@"' "$@";; esac`;
+export function loginShellArgv(program: string, ...args: string[]): string[] {
+  return ["sh", "-c", LOGIN_SHELL_SCRIPT, "kit", program, ...args];
+}
 export const SCREEN_LINES = 120;
 export interface WaitFact {
   terminal: string;
@@ -325,6 +335,8 @@ export interface HerdrContext {
   cwd: string;
   env: Env;
   nowMs: number;
+  now(): number;
+  sleep(ms: number): Promise<void>;
   out: Out;
   runner?: HcRunner;
   identity?: () => Identity | { why: string };
@@ -414,7 +426,7 @@ function remoteResult(
   cwd?: string,
 ): { code: number | null; stdout: string; stderr: string } {
   const answer: unknown = JSON.parse(
-    invoke(r, ["exec", "--on", machine, "--json", ...(cwd ? ["--cwd", cwd] : []), ...args]),
+    invoke(r, ["exec", "--on", machine, "--json", ...(cwd ? ["--cwd", cwd] : []), "--", ...args]),
   );
   if (
     !answer ||
@@ -544,8 +556,27 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
       return refuse(ctx, "This remote machine needs the person's approval (--asked).");
-    const version = execRemote(r, a.on, [COMMAND, "--version"]).trim().split(/\s+/).at(-1) ?? "";
-    if (!/^\d+\.\d+\.\d+$/.test(version) || isOlder(version, VERSION))
+    let version = "";
+    for (const program of ["claude", COMMAND]) {
+      const result = remoteResult(r, a.on, loginShellArgv(program, "--version"));
+      const found = [...result.stdout.matchAll(/\d+\.\d+\.\d+/g)].at(-1)?.[0];
+      if (result.code === 127 || !found)
+        return refuse(
+          ctx,
+          `${program} is not installed on ${a.on} (not found by its login shell)`,
+          program === COMMAND
+            ? `On ${a.on}, run: gh api repos/${MARKETPLACE_SOURCE}/contents/install.sh -H "Accept: application/vnd.github.raw" | bash -s -- ${MARKETPLACE_SOURCE}`
+            : `Install Claude Code on ${a.on}, then retry.`,
+        );
+      if (result.code !== 0)
+        return refuse(
+          ctx,
+          `${program} --version failed on ${a.on}.`,
+          result.stderr.trim() || "Check its login shell, then retry.",
+        );
+      if (program === COMMAND) version = found;
+    }
+    if (isOlder(version, VERSION))
       return refuse(
         ctx,
         `The remote kit is older than ${VERSION}.`,
@@ -591,6 +622,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
+    ...(a.independent || a.on ? ["--keep"] : []),
     ...(a.independent ? ["--no-parent"] : ["--outlive-parent"]),
     "--no-notify",
     "--name",
@@ -605,9 +637,13 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     if (me) labels[KIT_STARTED_BY] = me.leadId;
   } else if (me) labels[KIT_LEAD] = me.leadId;
   if (a.task) labels[KIT_TASK] = a.task;
+  if (a.independent || a.on) {
+    const { space, tab } = newHerdrSpace();
+    labels[HERDR_SPACE] = space;
+    labels[HERDR_TAB] = tab;
+  }
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
-  args.push(
-    "claude",
+  const programArgs = [
     "--add-dir",
     dirname(path),
     "--model",
@@ -618,10 +654,54 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     cliModeFlag(a.mode),
     "-n",
     name,
-  );
-  if (gitRoot) args.push("-w", worktreeName);
-  args.push(first);
+  ];
+  if (gitRoot) programArgs.push("-w", worktreeName);
+  programArgs.push(first);
+  args.push("--", ...loginShellArgv("claude", ...programArgs));
   const child = hcRun(r, args);
+  const deadline = ctx.now() + LAUNCH_CHECK_MS;
+  while (true) {
+    const state = hcGet(r, child.address);
+    if (state.state === "finished" || ctx.now() >= deadline) {
+      const screen = hcRead(r, child.address, SCREEN_LINES);
+      for (const line of screen.text
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .slice(-LAUNCH_SCREEN_LINES))
+        ctx.out.say(line);
+      if (state.state === "finished") {
+        hcRm(r, child.address);
+        const folderExists = a.on
+          ? remoteResult(r, a.on, ["test", "-d", worktree]).code
+          : existsSync(worktree)
+            ? 0
+            : 1;
+        if (folderExists !== 0 && folderExists !== 1)
+          return refuse(
+            ctx,
+            "The child exited; its worktree folder could not be checked.",
+            `Check ${worktree} before retrying.`,
+          );
+        ctx.out.say(
+          `Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`,
+        );
+        return refuse(
+          ctx,
+          `The child ${child.address} exited during launch.`,
+          "Resolve the screen error above, then retry with the same name if its worktree and branch are absent.",
+        );
+      }
+      // A status observed on the deadline is still evidence that Claude came up.
+      if (state.status?.app !== CLAUDE_CODE_APP)
+        ctx.out.line(
+          "warn",
+          `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`,
+        );
+      break;
+    }
+    if (state.status?.app === CLAUDE_CODE_APP) break;
+    await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
+  }
   if (a.task) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
