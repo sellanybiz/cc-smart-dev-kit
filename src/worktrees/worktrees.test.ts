@@ -1764,6 +1764,10 @@ describe("Claude builder lock ownership", () => {
       expect(found.state).toMatchObject({
         why: "locked by live or unprovable Claude session's builder agent-x; its lead removes it after the merge, or it goes when that session ends and it is proved finished",
       });
+    if (kept && gone)
+      expect(found.state).toMatchObject({
+        why: `the session that locked it has ended, but builder agent-x could not be proved finished; check its work, then \`git worktree unlock "${worktree}"\` and \`cc-smart-dev-kit worktrees --remove "${worktree}"\``,
+      });
     expect(removeWorktree(main, found.listed, options).status).toBe(kept ? "kept" : "removed");
     expect(existsSync(worktree)).toBe(kept);
   });
@@ -2077,7 +2081,7 @@ test.each([false, true])("reused builder pid requires finished proof %s", (finis
   expect(found.state).toMatchObject({ finished });
   if (!finished)
     expect(found.state).toMatchObject({
-      why: `the session that locked it has ended, but Claude Code never marked builder agent-x finished; check its work, then \`git worktree unlock "${worktree}"\` and \`cc-smart-dev-kit worktrees --remove "${worktree}"\``,
+      why: `the session that locked it has ended, but builder agent-x could not be proved finished; check its work, then \`git worktree unlock "${worktree}"\` and \`cc-smart-dev-kit worktrees --remove "${worktree}"\``,
     });
   expect(removeWorktree(main, found.listed, options).status).toBe(finished ? "removed" : "kept");
 });

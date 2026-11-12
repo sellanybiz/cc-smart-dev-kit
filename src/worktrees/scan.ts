@@ -596,7 +596,7 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
   if (lock.kind === "agent") {
     const gone = lockerGone(reason, look);
     if (gone)
-      return `the session that locked it has ended, but Claude Code never marked builder ${lock.name} finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
+      return `the session that locked it has ended, but builder ${lock.name} could not be proved finished; check its work, then \`git worktree unlock "${listed.path}"\` and \`${COMMAND} worktrees --remove "${listed.path}"\``;
     return `locked by live or unprovable Claude session's builder ${lock.name}; its lead removes it after the merge, or it goes when that session ends and it is proved finished`;
   }
   return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session" : "; its locker is not proved gone"}`;
