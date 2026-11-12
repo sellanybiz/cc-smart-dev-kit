@@ -1517,25 +1517,22 @@ export function mergeOutcome(params: {
   return { clear, intoBase };
 }
 
-/** True when a worktree lives under `<repo>/.claude/worktrees/`, where Claude Code made it. */
-export function insideClaudeWorktrees(path: string): boolean {
-  return /(^|[\\/])\.claude[\\/]worktrees[\\/]/.test(path);
-}
-
 /**
- * The note that clears the session's own worktree once its pull request merged. Claude Code
- * checks a worktree under `.claude/worktrees/` itself; one outside it may be refused, and then
- * the session checks it by hand before `discard_changes`. The fallback is the plugin's own
- * finished-worktree check (`worktrees --remove`, `src/worktrees/`), which removes the folder
- * and the branch only when the worktree is finished.
+ * The note that clears the session's own worktree once its pull request merged. ExitWorktree
+ * `remove` is refused once the branch has merged the base (Claude Code counts the base's
+ * commits as work), so the session leaves with `keep` (Claude Code releases its own lock) and
+ * removes the folder with the plugin's finished-worktree check (`worktrees --remove`,
+ * `src/worktrees/`), which proves the session owns it and removes the folder, and the branch
+ * once the base holds it, only when the worktree is finished. A session that did not enter the
+ * worktree with EnterWorktree stands in it and cannot remove it: it goes when the session ends.
  */
 export function clearWorktreeNote(path: string, branch: string): string {
   return [
     `That merged the pull request of this worktree's branch, ${branch}. Clear the worktree now, unless the user wants more work on this branch:`,
-    insideClaudeWorktrees(path)
-      ? 'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.'
-      : 'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
-    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: ${COMMAND} worktrees --remove "${path}" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
+    "1. Stop the dev servers and Monitors this session started in it (TaskStop).",
+    '2. ExitWorktree with action "keep": the session goes back to the main checkout.',
+    `3. Run ${COMMAND} worktrees --remove "${path}" with run_in_background: it removes the worktree only when it is finished, and says why when it keeps it.`,
+    `If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), the session stands in it and cannot remove it: tell the user it is finished, and that it goes when this session ends. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.`,
   ].join("\n");
 }
 

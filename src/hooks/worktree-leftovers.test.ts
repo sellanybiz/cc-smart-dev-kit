@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import {
@@ -11,6 +11,7 @@ import {
   writeSessionRecord,
 } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { makeWorktreeIdle, worktreeAdmin } from "../testing/worktree-idle";
 import { autoCleanFiles, recordRun, recordStart } from "../worktrees/auto-state";
 import { worktreeLeftoversHook } from "./specs";
 import { idleMinutesOrNull, leftoversNote } from "./worktree-leftovers";
@@ -36,35 +37,8 @@ test.each([8, 10])("caps each worktree list at eight (%i total)", (count) => {
   expect(text).toContain("`git worktree prune`");
 });
 
-function adminOf(worktree: string): string {
-  return resolve(
-    worktree,
-    readFileSync(join(worktree, ".git"), "utf8")
-      .trim()
-      .replace(/^gitdir:\s*/, ""),
-  );
-}
-
-/** Makes git's own activity in a worktree an hour and a half old. */
-function makeIdle(worktree: string): void {
-  const admin = adminOf(worktree);
-  const old = new Date(Date.now() - 90 * 60_000);
-  const log = join(admin, "logs", "HEAD");
-  writeFileSync(
-    log,
-    readFileSync(log, "utf8").replace(
-      / \d+ ([+-]\d{4})\t/g,
-      ` ${Math.floor(old.getTime() / 1000)} $1\t`,
-    ),
-  );
-  for (const file of ["index", "HEAD", join("logs", "HEAD")]) {
-    try {
-      utimesSync(join(admin, file), old, old);
-    } catch {
-      // Not every worktree has every file.
-    }
-  }
-}
+const adminOf = worktreeAdmin;
+const makeIdle = (worktree: string): void => makeWorktreeIdle(worktree);
 
 function project() {
   const { repo } = makeClone();

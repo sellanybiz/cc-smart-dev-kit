@@ -86,7 +86,7 @@ lives, so the agent can be resumed.
 
 A failed move or removal restores the same lock on the retained path and says when restoration
 fails. Other lock formats and platforms stay protected. A live lock whose work is on the base
-names `ExitWorktree` (remove), or closing the session, as its next step.
+names `ExitWorktree` (keep) with `worktrees --remove`, or closing the session, as its next step.
 
 ### Idle time, held work and untouched copies
 

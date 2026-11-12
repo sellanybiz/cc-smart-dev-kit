@@ -488,20 +488,14 @@ describe("the hook", () => {
   });
 
   test("the note says exactly this", () => {
-    expect(clearWorktreeNote("/code/app-wt-fix-a", "fix/a")).toBe(
-      [
-        "That merged the pull request of this worktree's branch, fix/a. Clear the worktree now, unless the user wants more work on this branch:",
-        'ExitWorktree with action "remove". A worktree outside .claude/worktrees/ may be refused because Claude Code cannot check it: if the refusal is only for the merged commits, check that `git status --porcelain` is empty and `git log @{u}..` shows nothing, then call it again with discard_changes true.',
-        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/app-wt-fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
-      ].join("\n"),
-    );
-    // Claude Code's own worktree, inside the repo: it checks the worktree itself, so no
-    // discard_changes is needed.
+    // Never ExitWorktree "remove": Claude Code refuses it once the branch merged the base.
     expect(clearWorktreeNote("/code/my-app/.claude/worktrees/fix-a", "worktree-fix-a")).toBe(
       [
         "That merged the pull request of this worktree's branch, worktree-fix-a. Clear the worktree now, unless the user wants more work on this branch:",
-        'ExitWorktree with action "remove": Claude Code checks a worktree under .claude/worktrees/ itself and says when work is left.',
-        'If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), run in the main checkout: cc-smart-dev-kit worktrees --remove "/code/my-app/.claude/worktrees/fix-a" — it removes the folder and the branch only when the worktree is finished. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.',
+        "1. Stop the dev servers and Monitors this session started in it (TaskStop).",
+        '2. ExitWorktree with action "keep": the session goes back to the main checkout.',
+        '3. Run cc-smart-dev-kit worktrees --remove "/code/my-app/.claude/worktrees/fix-a" with run_in_background: it removes the worktree only when it is finished, and says why when it keeps it.',
+        "If ExitWorktree cannot (this session did not enter the worktree with EnterWorktree), the session stands in it and cannot remove it: tell the user it is finished, and that it goes when this session ends. A subagent never calls ExitWorktree: it is already isolated and leaves its worktree to the session that launched it.",
       ].join("\n"),
     );
   });
@@ -512,14 +506,15 @@ describe("the hook", () => {
     return JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.additionalContext ?? "";
   }
 
-  test("HK-1: a worktree outside .claude/worktrees/: discard_changes only after the session's own check", async () => {
+  test("HK-1: the note leaves with keep, then removes with the plugin's check; never remove or discard_changes", async () => {
     const { worktree } = project();
     const note = await noteAfterMerge(join(worktree, "src"), fakeGh(merged));
     expect(note).toContain("Clear the worktree now");
-    const check = note.indexOf("`git status --porcelain` is empty");
-    expect(check).toBeGreaterThan(-1);
-    expect(note.indexOf("discard_changes true")).toBeGreaterThan(check);
-    expect(note).toContain('worktrees --remove "');
+    const keep = note.indexOf('ExitWorktree with action "keep"');
+    expect(keep).toBeGreaterThan(-1);
+    expect(note.indexOf('worktrees --remove "')).toBeGreaterThan(keep);
+    expect(note).not.toContain('action "remove"');
+    expect(note).not.toContain("discard_changes");
   });
 
   test("HK hunch 9: the hook's children share one budget, so their limits cannot add up", async () => {

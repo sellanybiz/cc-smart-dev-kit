@@ -986,7 +986,7 @@ describe("scanning and removing, against a real repo", () => {
     const listed = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
     expect(listed?.state).toMatchObject({
       finished: false,
-      why: "locked by live or unprovable Claude session old-session; its work is on the base — leave it with Claude Code's ExitWorktree (remove), or close that session",
+      why: "locked by live or unprovable Claude session old-session; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends",
     });
     expect(existsSync(worktree)).toBe(true);
 
