@@ -125,7 +125,15 @@ export type Verdict =
       why: string;
     }
   /** `note` says why its commits ahead are on the base anyway, or null when there are none. */
-  | { finished: true; note: string | null };
+  | {
+      finished: true;
+      note: string | null;
+      /**
+       * The branch of another live worktree that holds its work, when that and nothing on the
+       * base is why it is finished. The removal says it again for the branch it keeps.
+       */
+      heldBy?: string;
+    };
 
 /** How long git must have left a worktree alone before it counts as finished. */
 export const IDLE_MINUTES = 60;
@@ -209,7 +217,10 @@ export function verdict(
       why: `local files git does not keep: ${shown}${more}`,
     };
   }
-  return { finished: true, note: mergedNote(facts) };
+  const heldBy = facts.mergedBy === null && facts.aheadOfBase > 0 ? facts.heldByBranch : null;
+  return heldBy
+    ? { finished: true, note: mergedNote(facts), heldBy }
+    : { finished: true, note: mergedNote(facts) };
 }
 
 /**

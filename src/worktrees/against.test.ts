@@ -5,10 +5,16 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import * as gitTools from "../hooks/git";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { REMOVAL_TIMEOUT_MS } from "./clean";
 import { runWorktrees } from "./command";
 import * as scan from "./scan";
-import { deleteBranchOnRef, deleteMergedBranch, removeWorktree, scanWorktrees } from "./scan";
+import {
+  deleteBranchOnRef,
+  deleteMergedBranch,
+  REMOVAL_TIMEOUT_MS,
+  removeWorktree,
+  scanWorktrees,
+  tryDeleteBranch,
+} from "./scan";
 
 const env = cleanGitEnv();
 const quiet = { containers: [], programs: [], sessions: [] };
@@ -34,7 +40,11 @@ describe("work held by a branch in another present worktree", () => {
     const { main, worktree } = withHolder();
     const options = scanOptions();
     const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
-    expect(found?.state).toEqual({ finished: true, note: "its work is held by plan" });
+    expect(found?.state).toEqual({
+      finished: true,
+      note: "its work is held by plan",
+      heldBy: "plan",
+    });
     if (found === undefined) throw new Error("missing builder worktree");
     expect(removeWorktree(main, found.listed, options)).toEqual({
       status: "removed",
@@ -99,11 +109,11 @@ test("--clean finishes new strays in the same run and retains the before-list", 
     HOME: tempDir("clean-home"),
     CLAUDE_CONFIG_DIR: tempDir("clean-config"),
   });
-  const leftovers = join(main, ".claude", "worktrees");
-  mkdirSync(leftovers, { recursive: true });
-  const parked = join(leftovers, "builder-removing-1761300000000");
+  // A folder an earlier removal left beside the worktree, outside `.claude/worktrees`.
   const before = `${worktree}-removing-1761300000000`;
   mkdirSync(before);
+  // The folder THIS clean parks: `removeWorktree` names it, and the fake remove recreates it.
+  const parked: string[] = [];
   const originalScan = scan.scanWorktrees;
   const scanSpy = spyOn(scan, "scanWorktrees").mockImplementation((cwd, options) =>
     originalScan(cwd, { ...options, ...scanOptions() }),
@@ -119,7 +129,10 @@ test("--clean finishes new strays in the same run and retains the before-list", 
         const result = realRun(cwd, args, givenEnv, timeout, own);
         if (!result.ok) return result;
         // Git forgot the worktree but could not finish deleting its folder.
-        mkdirSync(parked);
+        const folder = args.at(-1);
+        if (folder === undefined) throw new Error("git worktree remove named no folder");
+        mkdirSync(folder);
+        parked.push(folder);
         return { ok: false, out: "", err: "simulated interrupted deletion", code: 1 };
       }
       return realRun(cwd, args, givenEnv, timeout, own);
@@ -139,9 +152,11 @@ test("--clean finishes new strays in the same run and retains the before-list", 
       ),
     ).toBe(0);
     expect(out.join("\n")).toContain("simulated interrupted deletion");
-    expect(out.join("\n")).toContain(`removed ${parked} (left by a removal`);
+    expect(parked).toHaveLength(1);
+    expect(parked[0]).toStartWith(`${worktree}-removing-`);
+    expect(out.join("\n")).toContain(`removed ${parked[0]} (left by a removal`);
     expect(out.join("\n")).toContain(`removed ${before} (left by a removal`);
-    expect(existsSync(parked)).toBe(false);
+    expect(existsSync(parked[0] ?? "")).toBe(false);
     expect(existsSync(before)).toBe(false);
   } finally {
     scanSpy.mockRestore();
@@ -208,8 +223,28 @@ describe("scanWorktrees against a ref of the caller's", () => {
         facts: quiet,
         idleLimit: 0,
       })[1]?.state,
-    ).toEqual({ finished: true, note: "its work is held by main" });
+    ).toEqual({ finished: true, note: "its work is held by main", heldBy: "main" });
     expect(existsSync(worktree)).toBe(true);
+  });
+
+  test("the holder named like the base says which ref lacks the work", () => {
+    const { main, worktree } = withWork();
+    git(main, "merge", "--ff-only", "fix/login");
+    const options = scanOptions();
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing builder worktree");
+    expect(removeWorktree(main, found.listed, options).said).toEqual([
+      `removed ${worktree}`,
+      "kept branch fix/login: its work is held by main, not yet on origin/main",
+    ]);
+  });
+
+  test("with no holder left the same worktree is kept, as its commit is not on main", () => {
+    const { main, worktree } = withWork();
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "checkout", "--detach");
+    const found = scanWorktrees(main, scanOptions()).find((one) => one.listed.path === worktree);
+    expect(found?.state).toEqual({ finished: false, held: false, why: "1 commit not on main" });
   });
 
   test("a ref that is not there is refused by name, never judged against nothing", () => {
@@ -253,4 +288,41 @@ describe("deleting a branch that a given ref holds", () => {
     git(main, "worktree", "remove", "--force", worktree);
     expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe("deleted branch fix/login");
   });
+});
+
+describe("the outcome of a branch deletion, as data", () => {
+  test("deleted, not on the ref, and git's own refusal each have their own kind", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    expect(tryDeleteBranch(main, "main", "main", "fix/login", env)).toEqual({ kind: "not-on-ref" });
+    expect(tryDeleteBranch(main, "no-such-ref", "nowhere", "fix/login", env).kind).toBe(
+      "git-error",
+    );
+    git(main, "merge", "--ff-only", "fix/login");
+    expect(tryDeleteBranch(main, "main", "main", "fix/login", env)).toEqual({ kind: "deleted" });
+  });
+
+  test("git's refusal keeps git's words and is never rewritten as a held branch", () => {
+    const { main, worktree } = withWork();
+    // Merged, so the branch may go — but a second worktree still stands on it.
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "push", "origin", "main");
+    const second = join(tempDir("second-checkout"), "again");
+    git(main, "worktree", "add", "--force", second, "fix/login");
+    const options = scanOptions();
+    const found = scanWorktrees(main, options).find((one) => one.listed.path === worktree);
+    if (found === undefined) throw new Error("missing builder worktree");
+    const said = removeWorktree(main, found.listed, options).said;
+    expect(said[0]).toBe(`removed ${worktree}`);
+    expect(said[1]).toStartWith("kept branch fix/login: ");
+    expect(said[1]).not.toContain("held by");
+  });
+});
+
+test("a worktree on the same branch is not its holder", () => {
+  const { main, worktree } = withWork();
+  const second = join(tempDir("second-checkout"), "again");
+  git(main, "worktree", "add", "--force", second, "fix/login");
+  const found = scanWorktrees(main, scanOptions()).find((one) => one.listed.path === worktree);
+  expect(found?.state).toEqual({ finished: false, held: false, why: "1 commit not on main" });
 });
