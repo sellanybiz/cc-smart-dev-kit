@@ -47,8 +47,12 @@ watches its pane. Neither kind has a kit-imposed session-count cap.
 Starts print the kind, address, name, worktree and live/blocked count. `list` shows owned
 children; `list --all` includes other kit sessions and independent sessions. `stop` kills
 and removes only an owned linked terminal, leaving its worktree. `adopt` takes only
-same-repository, same-core linked children whose previous lead is finished or absent.
-It skips independent sessions and another live lead's children.
+same-repository, same-core linked children whose previous lead no longer runs a live Claude.
+A live terminal with only a shell counts as gone; a blocked Claude still owns its children.
+Adopt lists each child's saved report files. It skips independent sessions.
+Identity belongs to the terminal: a new Claude in the old lead terminal receives reports
+without adoption. Adopt changes kit labels, not hc's immutable parent, so the child can
+remain under the old lead's tab in Herdr's panel.
 
 ## Starts, briefs and reports
 
@@ -111,8 +115,18 @@ child with kind question or permission. The exact status message and turn must s
 The screen reader takes the bottom contiguous numbered option block, requires entries
 1..n and one cursor, and checks the selected label. It refuses multi-question, multi-select,
 authentication, plan approval and remembered permissions; only a one-time yes/no permission
-can be relayed. A permission msg of 200 or more characters may be cut short and needs the
-pane. `--text` is parsed but refused: use the pane.
+can be relayed. A lone `☐` question header is allowed; tab rows and checkbox options are not.
+Question options named Type something or Chat about this require the pane, as does `--text`.
+The parser crosses a rule only when the next option continues at n+1, before joining label
+continuations. Remembered-permission labels are refused only for permission dialogs.
+
+Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking cuts with
+“…”; OSC transport can also cut silently at 2048 UTF-8 bytes. Messages ending in “…” or
+longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
+after an optional description prefix must equal whole lines in the current dialog with
+whitespace removed. Only lines after the last rule above the options count, not transcript
+history. Other tools need no screen match: Write can show a relative path. The person
+approves that path, not the file's content.
 
 Immediately before keys, the command reads status and screen again, requiring the same
 message, turn, options and cursor. It moves up/down from that cursor to k, then Enter.
@@ -121,7 +135,8 @@ hc has no atomic expected-turn keys operation. Live acceptance of this boundary 
 
 The skill asks the person with mirrored options and quotes the full permission action from
 `hc read`, not just its status msg. Then it runs the guarded answer line. The judge includes
-a safely quoted, length-limited `--expect` excerpt in its reason.
+a safely quoted `--expect` of up to the same 800-unit limit in its reason. A Bash line
+cannot combine two answers or an answer with another asking Herdr verb; each gets its own approval.
 The judge always asks again for that line; it cannot inspect a prompt kind without an hc
 call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
 While away, the existing frame denies and parks questions instead of guessing answers.
@@ -169,7 +184,11 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 
 | Trigger | Result |
 |---|---|
-| Lead dies or restarts | Child stays; new lead adopts it by labels. |
+| Lead dies or becomes a shell | Child stays; new lead adopts it by labels and sees saved report paths. |
+| Old lead is a blocked Claude | Adopt skips its children. |
+| Claude restarts in the old terminal | It is still the lead by terminal identity. |
+| Bash action appears only in transcript or as part of a line | Relay refuses; use the pane. |
+| Status ends in “…” or could be transport-cut | Relay refuses rather than approve an incomplete action. |
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
 | Same question text appears again | Turn check rejects the stale answer. |
 | Cursor or options change | Final screen comparison refuses. |
@@ -185,6 +204,12 @@ covers core-down warnings, skipped terminal reads and blocked independent counts
 these are not claims that real doctor already performs those reads.
 
 ## Live evidence and work still owed
+
+For 4.3.1, the remaining live checks are still owed in #273: a 300+ character Bash
+relay with the judge's full quote, option 2 of a single question, and adoption from a
+shell lead with saved reports listed. The release also owes the launch-failure, independent
+space and attention, and remote-start checks after the start fixes. Unit fixtures copy
+2.1.322 screens; they do not establish these live outcomes.
 
 The initial spike observed a question status `answer: Proof: which letter? (A · B)` and
 down/Enter selection; the later phase-B proof could not expose dialogs while user-away

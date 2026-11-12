@@ -486,3 +486,11 @@ test.each(["--option", "--text"])("answer %s excerpt escapes controls and bidi",
   expect(verdict?.reason).not.toMatch(/[\p{Cc}\p{Cf}]/u);
   expect(verdict?.reason).toContain('"1\\u000aApproved\\u202e"');
 });
+
+test("answer quotes a 700-unit prompt in full and cannot share an ask", () => {
+  const msg = `approve Bash: ${"a".repeat(686)}`;
+  const answer = `${COMMAND} herdr answer t1 --expect '${msg}' --expect-turn 1 --option 1`;
+  expect(judgeBash(readBash(answer), world())?.reason).toContain(msg);
+  for (const line of [`${answer}; ${answer}`, `${answer}; ${start}`, `${start}; ${answer}`])
+    expect(judgeBash(readBash(line), world())?.decision).toBe("deny");
+});

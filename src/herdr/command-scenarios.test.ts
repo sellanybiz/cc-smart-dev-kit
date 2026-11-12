@@ -411,7 +411,7 @@ test("answer rechecks prompt then sends arrow keys, refuses unsafe prompts", asy
   for (const screen of [
     "1. Yes\n2. Always allow for this session",
     "1. A\n2. B\nSpace to select",
-    "← Question 1 →\n1. A\n2. B",
+    "← Question 1 →\n❯ 1. A\n2. B",
     "1. Only",
   ]) {
     const x = world();
@@ -641,7 +641,11 @@ test("adopt skips independent/live leads and stop retains worktree", async () =>
   w.rows.t2 = child("t2", "core/old");
   w.rows.t3 = child("t3", "core/live");
   w.rows.t4 = child("t4", "core/old", true);
-  w.rows.live = { address: "live", state: "live", status: null };
+  w.rows.live = {
+    address: "live",
+    state: "live",
+    status: { app: "claude-code", state: "blocked" },
+  };
   w.setList(["t2", "t3", "t4"]);
   expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
   expect(w.calls.filter((c) => c.args[0] === "label").map((c) => c.args)).toEqual([
@@ -670,7 +674,7 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
 });
 
 test("permission messages at the status limit need the pane", async () => {
-  for (const length of [200, 201]) {
+  for (const length of [801, 802]) {
     const w = world();
     const msg = "x".repeat(length);
     w.rows.t2 = {
@@ -703,4 +707,108 @@ test("send resolves an owned alias before typing", async () => {
     "t2",
     '<kit-report from="lead">hello</kit-report>',
   ]);
+});
+
+function blocked(w: ReturnType<typeof world>, msg: string, kind = "permission") {
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { app: "claude-code", state: "blocked", kind, msg },
+    turn: 3,
+  };
+  return ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"];
+}
+test("long Bash action matches whole dialog lines, not transcript or substrings", async () => {
+  const action = `printf '%s' ${"a".repeat(297)}`;
+  expect(`approve Bash: ${action}`.length).toBe(323);
+  for (const [msg, screen, code] of [
+    [
+      `approve Bash: ${action}`,
+      "───\nBash command\n  " +
+        action.slice(0, 50) +
+        "\n  " +
+        action.slice(50) +
+        "\n❯ 1. Yes\n  2. No",
+      0,
+    ],
+    ["Run proof · approve Bash: echo ok", "───\necho ok\n❯ 1. Yes\n  2. No", 0],
+    ["approve Bash: echo ok…", "───\necho ok\n❯ 1. Yes\n  2. No", 1],
+    [`approve Write: ${"界".repeat(677)}`, "❯ 1. Yes\n  2. No", 1],
+    ["approve Bash: echo ok", "echo ok\n───\necho other\n❯ 1. Yes\n  2. No", 1],
+    ["approve Bash: echo ok", "───\necho ok && false\n❯ 1. Yes\n  2. No", 1],
+    ["approve Write: /repo/PROOF.md", "Write PROOF.md\n❯ 1. Yes\n  2. No", 0],
+  ] as const) {
+    const w = world();
+    const args = blocked(w, msg);
+    w.setScreen(screen);
+    expect(await runHerdr(args, w.ctx)).toBe(code);
+    expect(w.calls.some((c) => c.args[0] === "keys")).toBe(code === 0);
+  }
+});
+const singleQuestion =
+  "───\n ☐ Proof\n Proof: which letter?\n❯ 1. A\n     Choose A.\n  2. B\n     Choose B.\n  3. Type something.\n ───────\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel";
+test("single question relays real options, not text or chat actions", async () => {
+  for (const [option, code] of [
+    [2, 0],
+    [3, 1],
+    [4, 1],
+  ] as const) {
+    const w = world();
+    const args = blocked(w, "answer: Proof: which letter? (A · B)", "question");
+    args[args.length - 1] = String(option);
+    w.setScreen(singleQuestion);
+    expect(await runHerdr(args, w.ctx)).toBe(code);
+    expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual(
+      code === 0 ? ["keys", "--json", "--", "t2", "down", "enter"] : undefined,
+    );
+  }
+  for (const screen of [
+    singleQuestion.replace("☐ Proof", "←  ☐ Colors  ☐ Size  ✔ Submit  →"),
+    singleQuestion.replace("1. A", "1. [ ] A"),
+    singleQuestion.replace("1. A", "1. [x] A"),
+    singleQuestion.replace("1. A", "1. [✔] A"),
+    "❯ 1. Old\n2. Old\n ───\n1. A\n2. B",
+  ]) {
+    const w = world();
+    const args = blocked(w, "question", "question");
+    w.setScreen(screen);
+    expect(await runHerdr(args, w.ctx)).toBe(1);
+  }
+  const w = world();
+  const args = blocked(w, "question", "question");
+  w.setScreen(singleQuestion.replace("1. A", "1. Always use tabs"));
+  expect(await runHerdr(args, w.ctx)).toBe(0);
+});
+test("shell lead is adoptable, saved reports are listed, and shell sends refuse", async () => {
+  const w = world();
+  w.rows.old = { address: "old", state: "live", agent: "zsh", status: null };
+  w.rows.t2 = {
+    address: "t2",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/old" },
+    status: null,
+  };
+  w.setList(["t2"]);
+  const file = join(dirname(briefPath(w.ctx.paths.stateDir, "core", "kit-one")), "report-saved.md");
+  await Bun.write(file, "saved report");
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "label")).toBe(true);
+  expect(w.lines.join("\n")).toContain(file);
+  w.rows.t2 = {
+    address: "t2",
+    state: "live",
+    agent: "zsh",
+    labels: { "kit.lead": "core/t1" },
+    status: { state: "done" },
+  };
+  expect(await runHerdr(["send", "t2", "hello"], w.ctx)).toBe(1);
+  w.ctx.identity = () => ({ core: "core", address: "t2", leadId: "core/t2" });
+  w.rows.t1 = { address: "t1", state: "live", agent: "zsh", status: null };
+  w.setList(["t1"]);
+  expect(await runHerdr(["report", "saved"], w.ctx)).toBe(0);
+  expect(w.calls.some((c) => c.args[0] === "send")).toBe(false);
+  expect(w.lines.at(-1)).toContain("Saved it at");
 });

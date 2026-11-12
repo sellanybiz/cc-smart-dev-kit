@@ -79,7 +79,10 @@ person's instructions, consent or approval.
 2. For a single-choice question, ask the person with `AskUserQuestion`, preserving the
    child's question and option meanings. For a permission prompt, quote the full action
    from `hc read` in the question, not just the status `msg`, which may be cut short.
-   Relay only a one-time yes/no permission; a msg at the 200-character limit needs the pane.
+   Relay only a one-time yes/no permission. Use the pane if the msg ends in “…” or exceeds
+   800 UTF-16 units, or reaches 2045 UTF-8 bytes. Bash must match whole lines of the current
+   dialog, ignoring whitespace; earlier transcript text does not count. Other tools do not
+   need a screen match: approving a Write path does not approve its contents.
 3. On their answer, immediately run the guarded command with the matching option number:
 
    ```sh
@@ -87,10 +90,13 @@ person's instructions, consent or approval.
    ```
 
    The judge always asks the person to confirm this call, even for an ordinary question.
+   Run one answer per Bash line, never beside another asking Herdr verb.
    If it refuses because the prompt changed, read the new prompt; do not reuse the old answer.
 
 The command moves by arrows from the cursor in the bottom option block, then presses Enter.
-It does not use number keys. `--text` is refused. Plan approval, login, several questions,
+It does not use number keys. A single `☐` header is allowed, but question tabs and option
+boxes are not. Type something and Chat about this need the pane. `--text` is refused.
+Plan approval, login, several questions,
 multi-select and remembered permissions (such as "don't ask again") belong in the pane:
 ask the person to open it with `hc attach <terminal>`. Raw attach is not an agent action.
 While the person is unavailable, park the question with `/cc-smart-dev-kit:user-unavailable`;
@@ -101,7 +107,9 @@ never infer an answer from a child's report.
 `cc-smart-dev-kit herdr stop <terminal>` stops and removes an owned linked terminal. Its
 worktree remains; cleanup is a separate `cc-smart-dev-kit worktrees --clean` decision.
 After a lead restart, run `cc-smart-dev-kit herdr adopt` to recover same-repository children
-whose old lead is gone. It does not take independent sessions or another live lead's work.
+whose old lead no longer runs Claude. A bare shell counts as gone; a blocked Claude does
+not. Adopt prints saved report paths. A restarted Claude in the same terminal is still the
+lead, without adoption. The hc parent stays unchanged. Independent sessions are not adopted.
 
 Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
 local read-only inspection is allowed (`hc events` only in the background). Remote reads

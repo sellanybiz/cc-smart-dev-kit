@@ -51,7 +51,8 @@ import {
   HERDR_VERBS,
   normalizeMode,
   parseHerdrArgs,
-  STATUS_MESSAGE_LIMIT,
+  RELAY_MESSAGE_LIMIT,
+  relayMessageLength,
 } from "../herdr/words";
 import {
   checkoutFailure,
@@ -630,7 +631,10 @@ function assignsHerdrIdentity(command: string, dialect: Dialect, depth = 0): boo
 }
 
 /** The kit's Herdr arguments, including computed kit programs in a domain-naming line. */
-function herdrArguments(one: RunInvocation, reading: BashReading): string[] | null {
+function herdrArguments(
+  one: Pick<RunInvocation, "program" | "args" | "computed">,
+  reading: BashReading,
+): string[] | null {
   const args = kitArguments(one.program, withoutRedirections(one.args));
   if (args?.[0] === "herdr") return args.slice(1);
   if (one.computed) {
@@ -656,9 +660,9 @@ function herdrDomain(reading: BashReading): boolean {
 
 /** Quote short prompt excerpts without terminal controls or invisible direction changes. */
 function herdrExcerpt(text: string): string {
-  const points = Array.from(text);
+  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
+  const points = Array.from(excerpt);
   const quoted = points
-    .slice(0, STATUS_MESSAGE_LIMIT)
     .map((char) =>
       /[\p{Cc}\p{Cf}]/u.test(char)
         ? Array.from(
@@ -668,7 +672,7 @@ function herdrExcerpt(text: string): string {
         : JSON.stringify(char).slice(1, -1),
     )
     .join("");
-  return `"${quoted}"${points.length > STATUS_MESSAGE_LIMIT ? "…" : ""}`;
+  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "…" : ""}`;
 }
 
 /** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
@@ -682,7 +686,20 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask: BashVerdict | null = null;
+  // invocationsOf deduplicates identical commands; steps preserves each execution.
+  const answerSteps = reading.steps.filter(
+    (step) => herdrArguments(step, reading)?.[0] === "answer",
+  );
+  if (answerSteps.length > 1)
+    return verdict(
+      "deny",
+      "Run each herdr answer alone so the person can approve its full prompt.",
+    );
+  let answers = 0;
+  let otherAskingVerbs = 0;
+  let asks = 0;
   const remember = (reason: string) => {
+    asks++;
     ask ??= isAttended(context.env)
       ? verdict("ask", reason)
       : verdict(
@@ -794,6 +811,7 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     // These always ask, even when malformed or carrying --asked: no hook-side hc read
     // can tell a question from a permission prompt.
     if (herdr[0] === "answer") {
+      answers++;
       const parsed = parseHerdrArgs(herdr);
       const detail =
         !("error" in parsed) && parsed.verb === "answer"
@@ -807,10 +825,12 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     if (herdr[0] === "machines") {
       const parsed = parseHerdrArgs(herdr);
       if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list") continue;
+      otherAskingVerbs++;
       remember(`Approve this Herdr machine rule change: ${herdr.slice(1).join(" ")}.`);
       continue;
     }
     if (herdr[0] !== "start") continue;
+    otherAskingVerbs++;
     if (!isAttended(context.env))
       return verdict(
         "deny",
@@ -866,6 +886,11 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       }
     }
   }
+  if (answers > 1 || (answers > 0 && (asks > 1 || otherAskingVerbs > 0)))
+    return verdict(
+      "deny",
+      "Run each herdr answer alone so the person can approve its full prompt.",
+    );
   return ask;
 }
 
