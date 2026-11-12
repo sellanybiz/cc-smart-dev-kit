@@ -279,7 +279,8 @@ describe("the machine's facts", () => {
   });
 
   test("the programs using a worktree: started from it, or working in it", () => {
-    // `ps -ww -o pid=,ppid=,args=`: the pid, the process that started it, then the command line.
+    // `PS_PROGRAMS_ARGV` (`ps -ww -axo pid=,ppid=,args=`): the pid, the process that started
+    // it, then the command line.
     const lines = [
       `11 9 /usr/bin/bun /work/app-wt-x/server.ts`,
       "12 9 /usr/bin/other --flag /work/app-wt-x/notes.md",
