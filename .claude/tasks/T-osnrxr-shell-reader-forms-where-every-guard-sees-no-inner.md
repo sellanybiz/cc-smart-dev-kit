@@ -23,3 +23,4 @@ Decide per form:
 - or ask, as a computed program (interpreters, ssh, nested too deep);
 - or accept and document it.
 Add matrix rows across the git, job and herdr rules.
+Added by phase C's re-review on 2026-11-12. Two prefix readers still know only `NAME=`, now that the reader passes `NAME+=` prefixes on to them: `session-escape-guard.ts` (`ASSIGNS_CLAUDECODE`) and `after-merge.ts` (`GH_POINTING`). So `GH_REPO+=o/r gh pr merge` is read as gh, with no note about the repo. This is no regression, because those lines were not read at all before. Make both readers accept `+=` too.
