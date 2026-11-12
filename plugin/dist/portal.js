@@ -36153,7 +36153,12 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
         remoteRead(machine);
       const terminalArgs = raw.slice(1);
       const addresses = ["read", "get", "wait"].includes(verb ?? "") ? [
-        ...positionalsOf(terminalArgs, ["--lines", "--children", "--output", "--timeout"]).slice(0, 1),
+        ...positionalsOf(terminalArgs, [
+          "--lines",
+          "--children",
+          "--output",
+          "--timeout"
+        ]).slice(0, 1),
         ...verb === "wait" ? [optionValue(terminalArgs, "--children")] : []
       ] : verb === "events" ? [optionValue(terminalArgs, "--terminal"), optionValue(terminalArgs, "--children-of")] : [];
       for (const address of addresses) {
