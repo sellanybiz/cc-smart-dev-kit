@@ -65,9 +65,12 @@ positional parameters, never as script text. For sh, bash, zsh, dash and ksh it 
 `$SHELL -lic`; other or unset shells use `sh -lc`. Each level uses `exec`, so hc still sees
 Claude's own foreground argv and exit.
 
-Independent sessions and all remote children add `--keep` plus fresh `herdr.space` and
-`herdr.tab` labels. Their machine-local ids are `sp` and `tb` followed by 32 random hex digits.
-They show as new spaces in Herdr; a local linked child stays under its lead's Agents panel.
+Independent sessions, local or remote, add `--keep` plus fresh `herdr.space` and `herdr.tab`
+labels. Their machine-local ids are `sp` and `tb` followed by 32 random hex digits. They show
+as new spaces in Herdr, in their own machine's block. A linked child, local or remote, gets no
+labels: hc records its lead as its parent, even across machines, so it nests under the lead in
+the Agents panel and opens as a child pane. (4.3.1 gave remote linked children their own space;
+the live run showed they nest without it, and the owner wants them under the lead.)
 After a core crash, `--keep` leaves a shell in the pane; it does not restart Claude.
 
 After launch, start polls `hc get` for a Claude status or terminal exit for up to 20 seconds.
@@ -149,10 +152,14 @@ continuations. Remembered-permission labels are refused only for permission dial
 Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking cuts with
 “…”; OSC transport can also cut silently at 2048 UTF-8 bytes. Messages ending in “…” or
 longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
-after an optional description prefix must equal whole lines in the current dialog with
-whitespace removed. Only lines after the last rule above the options count, not transcript
-history. Without a rule line, Bash matching refuses. Question-tab markers in the two lines
-above that rule also refuse, as do multi-select instructions inside the dialog. These hints apply
+after an optional description prefix must equal the dialog's whole command box, with
+whitespace removed. Claude Code 2.1.322 draws a Bash dialog as a solid top rule, its header
+lines, then the command in `│ ` lines between two dashed rules (captured live). The box is
+exactly the lines between the last two dashed rules below the last solid rule above the
+options, and every one of them must start with `│`. Transcript history, the description line
+and a part of the box never count. Without that solid rule, the two dashed rules or the border,
+Bash matching refuses. Question-tab markers in the two lines above the rule nearest the options
+(of any kind) also refuse, as do multi-select instructions inside the dialog. These hints apply
 only to question dialogs, not Bash actions. Other tools need no screen match: Write can show a
 relative path. The person approves that path, not the file's content.
 
@@ -230,7 +237,7 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
-| Independent session blocks unseen | Its own Herdr space is visible; toast behavior is not yet proved live. |
+| Independent session blocks unseen | Its own Herdr space is visible and Herdr marks it as needing you (proved live, local and remote). |
 | No hc installed | Doctor reports optional orchestration, not failure. |
 
 Real doctor checks hc discovery/version, then says **core not checked**: hc does not document

@@ -3,7 +3,7 @@ id: "T-2avu6w"
 title: "Shell reader: mark brace, glob and tilde words as filled"
 kind: "follow-up"
 status: "open"
-when: "next-release"
+when: "any"
 created: "2026-11-12"
 from: "branch fix/herdr-4.3.1"
 ---

@@ -626,7 +626,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
-    ...(a.independent || a.on ? ["--keep"] : []),
+    ...(a.independent ? ["--keep"] : []),
     ...(a.independent ? ["--no-parent"] : ["--outlive-parent"]),
     "--no-notify",
     "--name",
@@ -641,7 +641,9 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     if (me) labels[KIT_STARTED_BY] = me.leadId;
   } else if (me) labels[KIT_LEAD] = me.leadId;
   if (a.task) labels[KIT_TASK] = a.task;
-  if (a.independent || a.on) {
+  // Only an independent session gets its own space: a linked child, local or remote, nests
+  // under its lead through hc's parent (proved live for a remote child in 4.3.1).
+  if (a.independent) {
     const { space, tab } = newHerdrSpace();
     labels[HERDR_SPACE] = space;
     labels[HERDR_TAB] = tab;
@@ -812,9 +814,23 @@ function dialog(screen: string) {
     return null;
   let start = result.start;
   while (start > 0 && !ruleLine(lines[start - 1] ?? "")) start--;
+  // A Bash dialog (Claude Code 2.1.322): a solid top rule, its header lines, then the command
+  // as `│ ` lines between two dashed rules. The box is exactly the lines between the last two
+  // dashed rules below that solid rule, and every one of them must carry the border.
+  let top = result.start - 1;
+  while (top >= 0 && !/^─+$/u.test(lines[top]?.trim() ?? "")) top--;
+  const dashed: number[] = [];
+  for (let i = top + 1; top >= 0 && i < result.start; i++)
+    if (/^╌+$/u.test(lines[i]?.trim() ?? "")) dashed.push(i);
+  const [open, close] = dashed.slice(-2);
+  const inside = open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
+  const box =
+    inside.length && inside.every((line) => line.trimStart().startsWith("│"))
+      ? inside.map((line) => line.trimStart().slice(1))
+      : null;
   return {
     options: result.options,
-    before: start > 0 ? lines.slice(start, result.start) : null,
+    box,
     above: lines.slice(Math.max(0, start - 3), Math.max(0, start - 1)),
     region: lines.slice(start),
   };
@@ -824,19 +840,10 @@ export function dialogOptions(
 ): { number: number; label: string; cursor: boolean }[] | null {
   return dialog(screen)?.options ?? null;
 }
-function wholeDialogAction(lines: string[], action: string): boolean {
+/** The whole command box equals the action, ignoring whitespace (the screen wraps lines). */
+function boxShowsAction(box: string[], action: string): boolean {
   const compact = (text: string) => text.replace(/\s/g, "");
-  const expected = compact(action);
-  if (!expected) return false;
-  for (let start = 0; start < lines.length; start++) {
-    let run = "";
-    for (let end = start; end < lines.length; end++) {
-      run += compact(lines[end] ?? "");
-      if (run === expected) return true;
-      if (run.length >= expected.length) break;
-    }
-  }
-  return false;
+  return compact(action) !== "" && compact(box.join("")) === compact(action);
 }
 function answer(
   a: Extract<HerdrArgs, { verb: "answer" }>,
@@ -882,7 +889,7 @@ function answer(
   if (
     s.kind === "permission" &&
     action !== undefined &&
-    (!parsed?.before || !wholeDialogAction(parsed.before, action))
+    (!parsed?.box || !boxShowsAction(parsed.box, action))
   )
     return refuse(
       ctx,
