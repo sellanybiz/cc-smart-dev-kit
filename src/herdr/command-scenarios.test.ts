@@ -558,6 +558,20 @@ test("cursor includes only printed facts, preserving unprinted child and missing
   expect(await runHerdr(["wait", "--seen", "t3:1:done"], w.ctx)).toBe(0);
   expect(w.lines.at(-1)).toBe(`${COMMAND} herdr wait --seen t3:1:done,t2:?:blocked`);
 });
+test("cursor prunes absent snapshot addresses and shell encodes punctuation", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  w.ctx.events = async () => ({
+    addresses: ["t2", "box!'()*/t3"],
+    news: [{ terminal: "box!'()*/t3", state: "done", turn: 2, status_ms: null }],
+    pending: [],
+    timeout: false,
+  });
+  expect(await runHerdr(["wait", "--seen", "gone:1:done,t2:1:blocked"], w.ctx)).toBe(0);
+  const line = w.lines.at(-1) ?? "";
+  expect(line).toBe(`${COMMAND} herdr wait --seen t2:1:blocked,box%21%27%28%29%2A%2Ft3:2:done`);
+  expect(line).not.toMatch(/[!'()*]/);
+});
 test("empty all barrier has no continuation", async () => {
   const w = world();
   w.setList(["t2"]);
