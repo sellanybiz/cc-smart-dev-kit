@@ -2422,8 +2422,14 @@ when removing it can lose nothing and disturb no one:
   the reason names the git that cannot answer;
 - git has not touched it for an hour (a worktree made a minute ago is not finished: its
   session has not moved into it yet);
-- nothing in it is changed or untracked, and it holds no ignored file that cannot come back
-  (an edited `.env.local`, a notes file, a key). Dependency folders, build output, caches,
+- nothing in it is changed or untracked that `origin/<base>` does not already hold, and it holds
+  no ignored file that cannot come back (an edited `.env.local`, a notes file, a key). A changed,
+  staged or untracked file counts as held when its exact bytes and file mode are a version that
+  same path had in some commit of the base's history, and a deleted file when the base lost it
+  too: a builder that never committed while its lead committed the same files leaves only such
+  copies. A symlink, a submodule or a conflict always keeps it. The session-start note counts any
+  uncommitted file, so it may not name such a worktree; `--clean` and the background clean do
+  remove it. Dependency folders, build output, caches,
   logs (an ignored `logs/` folder or `.log` file, at any depth) and a file the main checkout
   still holds byte for byte do not block, nor does an ignored folder that holds only those.
 

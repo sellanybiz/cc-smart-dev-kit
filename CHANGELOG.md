@@ -3,6 +3,21 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.5.1
+
+- **Old builder folders whose work is already on the base now go.** A builder that never
+  committed in its own folder, while its lead committed the same files on the plan branch, left
+  a folder that `worktrees` kept forever as "uncommitted changes" — though the session said all
+  its work was merged, and it was. An uncommitted file now counts as saved when its exact bytes
+  and file mode are a version that same path had in some commit of `origin/<base>`'s history,
+  and a deleted file when the base deleted it too. Anything that exists only in the folder still
+  keeps it, and so does a symlink, a submodule, a conflict or any git call that fails.
+  `worktrees --clean` and the background clean use the rule; the session-start note keeps its
+  quick check, so it may not name such a folder.
+
+**What to run:** nothing. The next background clean, or `cc-smart-dev-kit worktrees --clean` in
+the main checkout, removes the folders this frees.
+
 ## 4.5.0
 
 - **Finished worktrees now go right after their merge.** Before, builder and session

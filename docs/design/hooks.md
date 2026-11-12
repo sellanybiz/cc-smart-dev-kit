@@ -145,6 +145,12 @@ runs by itself (owner's decision D48, 2026-10-22).
   onto the base (`workOnRef`), and the fresh verdict `removeWorktree` takes right before it
   moves a folder decide, so a session, a program, a Docker container, uncommitted changes, a
   local file, a commit not on the base or a replay that cannot answer all keep the worktree.
+  An uncommitted file whose exact bytes and mode the base's history holds at the same path, and
+  a deletion the base made too, are not changes that can be lost (`hasUnsavedChanges`,
+  `src/hooks/unsaved-changes.ts`): an old builder that never committed in its own folder while
+  its lead committed the same files leaves only those. The session-start note keeps its quick
+  `git status` check, which counts any uncommitted file; it removes nothing, so being stricter
+  there is safe.
 - **A folder a removal moved aside** (`<path>-removing-<time>`) is finished
   (`src/worktrees/scan-parked.ts`, D62): while git lists it, it is an ordinary worktree that
   asks for neither the commits on the base nor the idle hour (its branch holds them;

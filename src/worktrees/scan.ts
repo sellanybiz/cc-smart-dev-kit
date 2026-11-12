@@ -11,7 +11,6 @@ import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
 import {
   GUARD_GIT_TIMEOUT_MS,
-  hasChanges,
   isInside,
   type ListedWorktree,
   listWorktrees,
@@ -22,6 +21,7 @@ import {
 import { localFiles } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
+import { hasUnsavedChanges } from "../hooks/unsaved-changes";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
 import { ancestorsBy } from "../jobs/ancestry";
 import { processIsGone } from "../jobs/windows";
@@ -144,15 +144,20 @@ function hasChangesBeyondDeletions(worktree: string, env: Env): boolean {
 
 /**
  * What removing the worktree would lose. `parked`: a folder a removal moved aside (D62), whose
- * deleted tracked files are the removal's own and are not changes.
+ * deleted tracked files are the removal's own and are not changes. Otherwise an uncommitted
+ * file whose exact bytes `ref`'s history already holds at that path is not lost either
+ * (`hasUnsavedChanges`).
  */
 function contentsOf(
   worktree: string,
   mainCheckout: string,
+  ref: string,
   env: Env,
   parked = false,
 ): WorktreeContents {
-  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasChanges(worktree, env);
+  const changed = parked
+    ? hasChangesBeyondDeletions(worktree, env)
+    : hasUnsavedChanges(worktree, ref, env);
   if (changed) return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
   if (ignored === null) {
@@ -630,7 +635,11 @@ function judgeOne(
         : programsInside(look.programs, listed.path, undefined, undefined, owner),
     sessionName: session?.name ?? null,
   };
-  return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
+  return verdict(
+    facts,
+    () => contentsOf(listed.path, repo, look.ref, look.env, parked),
+    look.idleLimit,
+  );
 }
 
 /** What this machine says about the Docker containers, the programs and the sessions at work. */

@@ -14,8 +14,10 @@
  *     (a squash or a rebase merge leaves the work there under a commit of its own);
  *   - git has not touched it for an hour — a worktree made a minute ago is not finished, its
  *     session simply has not moved into it yet;
- *   - nothing in it is uncommitted, untracked files included, and no ignored file that
- *     cannot come back (`localFiles` in `../hooks/local-files.ts`).
+ *   - nothing in it is uncommitted, untracked files included, that the base's history does not
+ *     already hold byte for byte at the same path (`hasUnsavedChanges` in
+ *     `../hooks/unsaved-changes.ts`), and no ignored file that cannot come back (`localFiles`
+ *     in `../hooks/local-files.ts`).
  *
  * Its ignored files go with it: dependency folders, build output, caches.
  *

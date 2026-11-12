@@ -96,7 +96,7 @@ function claudeMemDataDir(env, home) {
 
 // src/worktrees/auto-clean.ts
 import { existsSync as existsSync9, readdirSync as readdirSync9 } from "fs";
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 
 // src/hooks/git.ts
 import { readFileSync, realpathSync } from "fs";
@@ -200,10 +200,6 @@ function listWorktrees(cwd, env, timeoutMs = 15000) {
   if (!listed.ok)
     throw new Error(`git worktree list failed: ${listed.err}`);
   return parseWorktreeList(listed.out);
-}
-function hasChanges(folder, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  return !status.ok || status.out !== "";
 }
 function worktreeAdminDir(worktree) {
   let text;
@@ -6063,7 +6059,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.5.0",
+  version: "4.5.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6866,7 +6862,7 @@ var LOCK_PORTS = {
 // src/worktrees/scan.ts
 import { existsSync as existsSync7, mkdtempSync, readdirSync as readdirSync7, rmSync as rmSync2, statSync as statSync7 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename4, join as join12 } from "path";
+import { basename as basename4, join as join13 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -7018,9 +7014,180 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
   return parseIgnored(status.out).filter((entry) => !safe(entry) && !onlySafeInside(entry));
 }
 
+// src/hooks/unsaved-changes.ts
+import { lstatSync as lstatSync3 } from "fs";
+import { join as join10 } from "path";
+var NO_FILE = "000000";
+var FILE_MODES = new Set(["100644", "100755"]);
+var PATHS_PER_CALL = 200;
+function hasUnsavedChanges(folder, ref, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"], env);
+  if (!status.ok)
+    return true;
+  if (status.out === "")
+    return false;
+  const wanted = readStatus(status.out, folder);
+  if (wanted === null)
+    return true;
+  const hashed = hashFiles(folder, wanted.toHash, env);
+  if (hashed === null)
+    return true;
+  const versions = [...wanted.versions, ...hashed];
+  if (!allAbsent(folder, ref, wanted.absent, env))
+    return true;
+  return !allInHistory(folder, ref, versions, env);
+}
+function readStatus(out, folder) {
+  const wanted = { versions: [], toHash: [], absent: [] };
+  const entries = out.split("\x00");
+  for (let index = 0;index < entries.length; index++) {
+    const entry = entries[index] ?? "";
+    if (entry === "")
+      continue;
+    const kind = entry[0];
+    if (kind === "?") {
+      const path = entry.slice(2);
+      if (!isPlainFile(join10(folder, path)))
+        return null;
+      wanted.toHash.push(path);
+      continue;
+    }
+    if (kind !== "1" && kind !== "2")
+      return null;
+    const fields = entry.split(" ");
+    const fixed = kind === "1" ? 8 : 9;
+    if (fields.length <= fixed)
+      return null;
+    const [, xy = "", sub = "", , modeIndex = "", modeFolder = "", , hashIndex = ""] = fields;
+    const path = fields.slice(fixed).join(" ");
+    if (sub !== "N...")
+      return null;
+    const staged = xy[0] !== ".";
+    const inFolder = xy[1] !== ".";
+    if (staged && !wantVersion(wanted, path, modeIndex, hashIndex))
+      return null;
+    if (inFolder) {
+      if (modeFolder === NO_FILE)
+        wanted.absent.push(path);
+      else if (FILE_MODES.has(modeFolder) && isPlainFile(join10(folder, path))) {
+        wanted.toHash.push(path);
+      } else
+        return null;
+    }
+    if (kind === "2") {
+      index++;
+      const from = entries[index];
+      if (from === undefined || from === "")
+        return null;
+      if (!isPresent(join10(folder, from)))
+        wanted.absent.push(from);
+    }
+  }
+  return wanted;
+}
+function wantVersion(wanted, path, mode, hash) {
+  if (mode === NO_FILE) {
+    wanted.absent.push(path);
+    return true;
+  }
+  if (!FILE_MODES.has(mode))
+    return false;
+  wanted.versions.push({ path, version: `${mode} ${hash}` });
+  return true;
+}
+function isPlainFile(path) {
+  try {
+    return lstatSync3(path).isFile();
+  } catch {
+    return false;
+  }
+}
+function isPresent(path) {
+  try {
+    lstatSync3(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function fileMode(path) {
+  return (lstatSync3(path).mode & 73) !== 0 ? "100755" : "100644";
+}
+function hashFiles(folder, paths, env) {
+  const versions = [];
+  for (const chunk of chunks(paths)) {
+    const run = runGit(folder, ["hash-object", "--", ...chunk], env);
+    if (!run.ok)
+      return null;
+    const hashes = run.out.split(`
+`);
+    if (hashes.length !== chunk.length)
+      return null;
+    for (const [at, path] of chunk.entries()) {
+      try {
+        versions.push({ path, version: `${fileMode(join10(folder, path))} ${hashes[at]}` });
+      } catch {
+        return null;
+      }
+    }
+  }
+  return versions;
+}
+function allAbsent(folder, ref, paths, env) {
+  for (const chunk of chunks(paths)) {
+    const run = runGit(folder, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk], env);
+    if (!run.ok)
+      return false;
+    const onRef = new Set(run.out.split("\x00"));
+    if (chunk.some((path) => onRef.has(path)))
+      return false;
+  }
+  return true;
+}
+function allInHistory(folder, ref, versions, env) {
+  const paths = [...new Set(versions.map((item) => item.path))];
+  const seen = new Set;
+  for (const chunk of chunks(paths)) {
+    const run = runGit(folder, [
+      "--literal-pathspecs",
+      "log",
+      "--format=",
+      "--raw",
+      "-z",
+      "--no-abbrev",
+      "--no-renames",
+      "--root",
+      "--diff-merges=first-parent",
+      ref,
+      "--",
+      ...chunk
+    ], env);
+    if (!run.ok)
+      return false;
+    const tokens = run.out.split("\x00");
+    for (let at = 0;at < tokens.length - 1; at++) {
+      const meta = (tokens[at] ?? "").replace(/^\n+/, "");
+      if (!meta.startsWith(":"))
+        continue;
+      const [, newMode, , newBlob] = meta.slice(1).split(" ");
+      const path = tokens[at + 1] ?? "";
+      seen.add(`${path}\x00${newMode} ${newBlob}`);
+      at++;
+    }
+  }
+  return versions.every((item) => seen.has(`${item.path}\x00${item.version}`));
+}
+function chunks(paths) {
+  const out = [];
+  for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
+    out.push(paths.slice(at, at + PATHS_PER_CALL));
+  }
+  return out;
+}
+
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync4, existsSync as existsSync6, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
-import { basename as basename3, join as join10, resolve as resolve4 } from "path";
+import { basename as basename3, join as join11, resolve as resolve4 } from "path";
 var REFLOG_TAIL_BYTES = 8 * 1024;
 function lastReflogTime(file, now) {
   try {
@@ -7052,10 +7219,10 @@ function idleMinutesOrNull(worktree, now) {
   const admin = worktreeAdminDir(worktree);
   if (admin === null)
     return null;
-  let last = lastReflogTime(join10(admin, "logs", "HEAD"), now) ?? 0;
+  let last = lastReflogTime(join11(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync6(join10(admin, file)).mtimeMs);
+      last = Math.max(last, statSync6(join11(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -7083,7 +7250,7 @@ function parseGitVersion(out) {
 
 // src/worktrees/agent-lock.ts
 import { readdirSync as readdirSync5, readFileSync as readFileSync10, realpathSync as realpathSync4 } from "fs";
-import { join as join11 } from "path";
+import { join as join12 } from "path";
 function parseClaudeLock(reason) {
   const match = /^claude (agent|session) (.{1,255}) \(pid (\d{1,10})(?: start (.{1,255}))?\)$/.exec(reason);
   if (match === null)
@@ -7114,16 +7281,16 @@ function agentFinished(agentId, worktreePath, claudeConfigDir) {
     return false;
   try {
     const target = realpathSync4(worktreePath);
-    const projects = join11(claudeConfigDir, "projects");
+    const projects = join12(claudeConfigDir, "projects");
     let found = false;
     for (const project of readdirSync5(projects, { withFileTypes: true })) {
       if (!project.isDirectory())
         continue;
-      const folder = join11(projects, project.name);
+      const folder = join12(projects, project.name);
       for (const session of readdirSync5(folder, { withFileTypes: true })) {
         if (!session.isDirectory())
           continue;
-        const file = join11(folder, session.name, "subagents", `agent-${agentId}.meta.json`);
+        const file = join12(folder, session.name, "subagents", `agent-${agentId}.meta.json`);
         let text;
         try {
           text = readFileSync10(file, "utf8");
@@ -7560,7 +7727,7 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join12(worktree, ".claude", "worktrees");
+  const claudeOwn = join13(worktree, ".claude", "worktrees");
   let entries;
   try {
     entries = readdirSync7(claudeOwn);
@@ -7568,7 +7735,7 @@ function innerWorktreeOf(worktree, all) {
     return null;
   }
   for (const entry of entries) {
-    const folder = join12(claudeOwn, entry);
+    const folder = join13(claudeOwn, entry);
     try {
       if (statSync7(folder).isDirectory() && readdirSync7(folder).length > 0)
         return folder;
@@ -7583,8 +7750,8 @@ function hasChangesBeyondDeletions(worktree, env) {
   return status.out.split(`
 `).some((line) => line !== "" && !/^(?: D|D) /.test(line));
 }
-function contentsOf(worktree, mainCheckout, env, parked = false) {
-  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasChanges(worktree, env);
+function contentsOf(worktree, mainCheckout, ref, env, parked = false) {
+  const changed = parked ? hasChangesBeyondDeletions(worktree, env) : hasUnsavedChanges(worktree, ref, env);
   if (changed)
     return { localFiles: [], uncommitted: true };
   const ignored = localFiles(worktree, mainCheckout, env);
@@ -7632,8 +7799,8 @@ function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);
   if (!common.ok || common.out === "")
     return null;
-  const dir = mkdtempSync(join12(tmpdir(), `${COMMAND}-worktrees-`));
-  const objects = join12(common.out, "objects");
+  const dir = mkdtempSync(join13(tmpdir(), `${COMMAND}-worktrees-`));
+  const objects = join13(common.out, "objects");
   return {
     dir,
     own: {
@@ -7800,7 +7967,7 @@ function judgeOne(repo, listed, all, look, idle) {
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path, undefined, undefined, owner),
     sessionName: session?.name ?? null
   };
-  return verdict(facts, () => contentsOf(listed.path, repo, look.env, parked), look.idleLimit);
+  return verdict(facts, () => contentsOf(listed.path, repo, look.ref, look.env, parked), look.idleLimit);
 }
 function machineFactsOf(options) {
   return {
@@ -8011,8 +8178,8 @@ function pruneWorktrees(repo, env) {
 }
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync8, lstatSync as lstatSync3, readdirSync as readdirSync8, rmSync as rmSync3 } from "fs";
-import { dirname as dirname5, join as join13, relative } from "path";
+import { existsSync as existsSync8, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync3 } from "fs";
+import { dirname as dirname5, join as join14, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
     return null;
@@ -8026,7 +8193,7 @@ function strayParkedFolders(repo, env, earlier = []) {
   } catch {
     return [];
   }
-  const folders = new Set([join13(repo, ".claude", "worktrees")]);
+  const folders = new Set([join14(repo, ".claude", "worktrees")]);
   for (const listed of [...all.slice(1), ...earlier.slice(1)])
     folders.add(dirname5(listed.path));
   const found = [];
@@ -8038,12 +8205,12 @@ function strayParkedFolders(repo, env, earlier = []) {
       continue;
     }
     for (const name of names) {
-      const path = join13(folder, name);
+      const path = join14(folder, name);
       const parkedAt = parkedAtOf(path);
       if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
         continue;
       try {
-        if (!lstatSync3(path).isDirectory())
+        if (!lstatSync4(path).isDirectory())
           continue;
       } catch {
         continue;
@@ -8064,7 +8231,7 @@ function walkLeftover(root, limitMs) {
   };
   let rootDevice;
   try {
-    rootDevice = lstatSync3(root).dev;
+    rootDevice = lstatSync4(root).dev;
   } catch {
     walk.unreadable = true;
     return walk;
@@ -8085,10 +8252,10 @@ function walkLeftover(root, limitMs) {
         walk.tooMany = true;
         return walk;
       }
-      const path = join13(folder, name);
+      const path = join14(folder, name);
       let stat;
       try {
-        stat = lstatSync3(path);
+        stat = lstatSync4(path);
       } catch {
         walk.unreadable = true;
         continue;
@@ -8109,10 +8276,10 @@ function walkLeftover(root, limitMs) {
   return walk;
 }
 function gitEntryWhy(folder) {
-  const dotGit = join13(folder, ".git");
+  const dotGit = join14(folder, ".git");
   let stat;
   try {
-    stat = lstatSync3(dotGit);
+    stat = lstatSync4(dotGit);
   } catch (error) {
     return error.code === "ENOENT" ? null : "its .git entry cannot be read";
   }
@@ -8296,7 +8463,7 @@ function refLockUnder(dir, depth = 0) {
   try {
     for (const entry of readdirSync9(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        const found = refLockUnder(join14(dir, entry.name), depth + 1);
+        const found = refLockUnder(join15(dir, entry.name), depth + 1);
         if (found !== null)
           return found;
       } else if (entry.name.endsWith(".lock")) {
@@ -8308,10 +8475,10 @@ function refLockUnder(dir, depth = 0) {
 }
 function gitLockHeld(gitDir) {
   for (const name of GIT_LOCKS) {
-    if (existsSync9(join14(gitDir, name)))
+    if (existsSync9(join15(gitDir, name)))
       return name;
   }
-  return refLockUnder(join14(gitDir, "refs"));
+  return refLockUnder(join15(gitDir, "refs"));
 }
 function sessionsToKeep(deps, claudeConfigDir) {
   const running = deps.facts?.sessions ?? liveSessions(claudeConfigDir);
