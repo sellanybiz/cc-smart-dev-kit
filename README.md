@@ -2661,7 +2661,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 
 | Setting | What follows it |
 |---|---|
-| `autoCommit`, `clearWorktreeAfterMerge` | the instructions: the `commit` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. No hook acts on them: a commit and a folder are the session's own doing. |
+| `autoCommit`, `clearWorktreeAfterMerge` | the instructions: the `commit` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. The after-merge note also reads `clearWorktreeAfterMerge`: on, it gives the steps that clear the worktree; off, it says the worktree looks finished and leaves the choice to the person. No hook commits or removes anything itself: a commit and a folder are the session's own doing. |
 | `autoPush` | the **git guard hook**, which asks before every push while it is off. |
 | `openPr` | the **merge guard hook**, which asks before `gh pr create` / `gh pr ready` unless it allows them. |
 | `autoMerge` | the **merge guard hook**, which asks you before a merge its rules do not allow — every merge form it reads, in this repository only, and every merge with `--admin` — and answers `allow` for an exact `gh pr merge <n>` whose whole policy passed. |

@@ -3,6 +3,42 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.4.0
+
+- **Finished worktrees now go right after their merge.** Before, builder and session
+  worktrees piled up for days, because several checks kept every one of them. Fixed:
+  - **A `git gc` no longer makes every worktree look busy.** "Last used" is read from the
+    newest entry inside git's HEAD log, not from the log file's time, which `git gc`
+    rewrites.
+  - **Builder locks are read.** Claude Code locks a subagent's worktree as `claude agent …`;
+    the kit read only `claude session …` locks, so a builder's lock never counted as stale.
+    A builder's lock is now stale only when its session has ended **and** Claude Code marked
+    the builder finished.
+  - **The lead removes its builder after the merge.** `worktrees --remove <builder>` proves
+    the caller is the session that holds the builder's lock and that Claude Code marked the
+    builder finished, then removes the folder. The build skill now does this after each
+    phase's merge. `--clean` and the background clean never touch a live session's builders.
+  - **A builder merged into its lead's plan branch can go** before that branch reaches the
+    base. Its folder goes; its branch stays until the base holds it.
+  - **A session clears its own worktree after its pull request merges.**
+    `clearWorktreeAfterMerge` is now **on by default**. The after-merge note says: stop dev
+    servers and Monitors, leave with ExitWorktree `keep`, then `worktrees --remove` in the
+    background. The session's own MCP servers no longer hold the folder.
+  - **`--remove` works from any checkout** of the repo, except on the folder you stand in.
+    It waits up to ten minutes for another clean, then exits 1 (busy), never "nothing done".
+  - **Big folders are no longer half deleted.** A removal may take up to ten minutes (it
+    was cut at 15 seconds), and a half-deleted `*-removing-*` folder is finished in the
+    same run.
+  - **An untouched `.env.local` copy no longer keeps a worktree** when the main checkout's
+    copy changed later.
+  - **Every process is seen.** The program check listed only processes without a terminal,
+    so a dev server started in a terminal could be missed. It now lists them all.
+
+**What to run:** nothing. A project that wants the old after-merge behaviour sets
+`"clearWorktreeAfterMerge": false` in its `cc-smart-dev-kit.json` `workflow` block (or with
+`cc-smart-dev-kit workflow`). A tool's own cache folder that keeps worktrees goes in
+`worktrees.rebuildable`.
+
 ## 4.3.0
 
 - **Messages to another repo's session no longer ask.** The `message-guard` hook is retired,
