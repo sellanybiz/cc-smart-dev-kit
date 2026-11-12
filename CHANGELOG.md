@@ -3,6 +3,33 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.4.0
+
+- **The `extract-or-duplicate` skill is now `code-structure`, and its old project add-on is
+  no longer read.** A project's `.claude/cc-smart-dev-kit/extract-or-duplicate.md` is ignored
+  from this version on; rename it (see **What to run**). There is no fallback and no `doctor`
+  check for the old name.
+- **One rule for clean, organized code.** "Simple" means clean and organized, never simplistic.
+  The renamed skill is the one home for how code is shaped: split by responsibility, not by
+  line count; when a helper, a service or a module earns its place; naming for functions,
+  variables, types and booleans; one concept per file; and what counts as a cleanup versus a
+  structural change that needs a yes. Every rule of the old skill is kept, except the line
+  counts: about 100 lines per function and 500 per file are now a reason to look, never on
+  their own a reason to split. The general instructions carry the principle in one line, at
+  no extra size.
+- **Builders load the rule at start.** The `builder` agent preloads `code-structure`, so the rule
+  is in its context before the first edit (about 1.8k more tokens per builder launch).
+- **Design findings meet the evidence bar.** The review axes now say how a structure or naming
+  finding fills the four fields, and what refutes it (the project's convention, the sibling
+  files). The split review and the audit workflows use the same rule.
+
+**What to run:** the update arrives by itself; restart open sessions to use it. Then, in each
+project that has the old add-on, copy `.claude/cc-smart-dev-kit/extract-or-duplicate.md` to
+`code-structure.md` and keep the old file until every machine working in the project runs
+4.4.0 (older versions read only the old name, 4.4.0 only the new one); then delete the old
+file. In every project, change any `/cc-smart-dev-kit:extract-or-duplicate` mention in its
+`CLAUDE.md`, rules or add-ons to `/cc-smart-dev-kit:code-structure`.
+
 ## 4.3.2
 
 Two fixes from the 4.3.1 live proofs.

@@ -81,7 +81,9 @@ Workflow({
 
 The verifier inside the run is a second auditor, not you. Read every confirmed finding at its
 `file:line` and apply the evidence bar (the core instructions, § Review): the trigger, the path,
-the outcome and the missing guard. A finding that does not hold is dropped in one line, with why.
+the outcome and the missing guard. A design finding meets it as the review axes say
+(`../review/references/axes.md` § Design findings). A finding that does not hold is dropped in
+one line, with why.
 The hunches stay hunches: never promote one, and never fix one silently.
 
 ## 5. Then

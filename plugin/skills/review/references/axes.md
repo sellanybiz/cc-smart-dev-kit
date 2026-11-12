@@ -25,7 +25,7 @@ one line each.
 7. **Craft** — would a senior engineer be embarrassed to approve this? Dead code, debug
    output left in, names that lie (`data2`), one function doing five things, nesting that
    should be early returns, clever one-liners, user-facing errors that say "Something went
-   wrong".
+   wrong". Structure and names: `/cc-smart-dev-kit:code-structure`.
 8. **Security** — authentication and authorization checked inside the function, not only at
    the route; input validated at the boundary; no secrets in logs, client bundles or props
    sent to the browser.
@@ -35,6 +35,21 @@ one line each.
 10. **Fix the class, inside the plan** — for every finding, search the files the plan changes
     for the same pattern and fix every instance there (`/cc-smart-dev-kit:impact-analysis` § Fix the
     pattern).
+
+## Design findings
+
+Design findings use the same four evidence fields:
+
+| Field | What it needs |
+|---|---|
+| **Trigger** | A concrete next change: a named second caller or the edit this task makes. |
+| **Path** | The real `file:line`s you read. |
+| **Outcome** | The concrete cost: copies that will drift, a boolean saying the opposite, a function doing three jobs. |
+| **Why allowed** | The rule it breaks: a `code-structure` section, the project's add-on or rule. |
+
+Refute it against project conventions and sibling files: an established shape may already
+justify it. Taste with no rule is a hunch. Apply § Severity below: most design findings are
+Suggestions; a lying name or a boundary violation ranks higher for its concrete outcome.
 
 ## Edge-case axes
 

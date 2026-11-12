@@ -1,7 +1,7 @@
 schema_version: "1.1"
 name: extract-on-duplicate-logic
 description: >-
-  The same logic in two files: extract-or-duplicate decides where it lives.
+  The same logic in two files: code-structure decides where it lives.
 tags: [watch, trigger]
 plugins: ["../../under-test/plugin", "../../harness"]
 execution:
@@ -12,7 +12,7 @@ execution:
 context:
   scaffold_script: scaffold.sh
 graders:
-  - name: fires-extract-or-duplicate
+  - name: fires-code-structure
     type: tool_used
     tool: 'Skill'
-    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?extract-or-duplicate"'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?code-structure"'

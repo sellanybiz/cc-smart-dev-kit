@@ -1627,7 +1627,7 @@ names such a missing import.
 | `subagent-decision` | Which agent for which job, and how to brief it. |
 | `herdr` | Separate linked or independent sessions, child reports, remote starts and relaying a question. |
 | `impact-analysis` | Every consumer of a shared thing, before and after a change. |
-| `extract-or-duplicate` | Extract now or wait; where a shared piece lives. |
+| `code-structure` | Shape code, split responsibilities, name things, place files and decide when to extract. |
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |
 | `memory-routing` | Where a fact, a preference or a to-do belongs. |
 | `explain` | Teaching code or an idea in plain words. |
@@ -1654,7 +1654,8 @@ before the run starts.
 
 **7 agents** (`cc-smart-dev-kit:<name>`; the caller passes the model and effort on each launch, so
 none is pinned in their files). Each but `researcher` loads the `impact-analysis` skill at start,
-through its `skills:` field, and `rules-maintainer` also loads `self-evolve`. Each can use claude-mem's
+through its `skills:` field. `rules-maintainer` also loads `self-evolve`; `builder` also loads
+`verify-change` and `code-structure`. Each can use claude-mem's
 `smart_outline`, `smart_search` and `smart_unfold`, and Claude Code's `LSP` tool where a
 language server runs; without them, Grep and Read do the job (why each agent has the tools it
 has: `docs/design/instructions.md` § Instructions, skills and agents):
