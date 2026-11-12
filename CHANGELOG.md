@@ -3,6 +3,32 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.3.1
+
+Fixes from the first live run of Herdr session orchestration.
+
+- **Sessions start with your own PATH.** Every child, local or on another machine, now starts
+  through your login shell. Before, a child got the Herdr core's bare PATH: on another machine
+  `claude` and the kit were not found, and locally other plugins' hooks could not find `node`.
+- **Independent and remote sessions show in Herdr.** Each one gets its own space in Herdr's
+  window, so you can see it and answer it. Before, they were invisible.
+- **A child that dies at launch is reported.** `herdr start` waits until the child comes up.
+  If it exits (for example, Claude Code has not trusted the folder yet), start shows the
+  child's own error and fails, and the task stays unbound.
+- **Long Bash prompts and single questions can be relayed.** `herdr answer` relays a Bash
+  permission of any length Claude Code shows in full, and only when the command on screen
+  matches it. A single question with "Type something" and "Chat about this" rows now relays;
+  several questions and multi-select still go to the pane.
+- **Your approval covers the whole prompt.** The judge quotes the full prompt in its
+  question. It refuses a `herdr answer` with `$` expansions or command substitution in its
+  words, one inside a loop or wrapper, and one sharing its line with other commands.
+- **`adopt` works while the old terminal is still open.** A terminal with no Claude in it now
+  counts as gone, the same rule `report` uses, and `adopt` lists reports saved while the lead
+  was gone. Messages and reports are never typed into a plain shell.
+
+**What to run:** nothing. On another machine, the kit and `claude` must be found by that
+user's login shell; update the kit there to 4.3.1 too.
+
 ## 4.3.0
 
 - **Messages to another repo's session no longer ask.** The `message-guard` hook is retired,

@@ -191,3 +191,12 @@ test("10 process list shares bounded ancestry walk and 11 since parses", () => {
     seen: { t1: { turn: 123, state: "done" } },
   });
 });
+
+test("question separator keeps consecutive chat option separate from labels", () => {
+  expect(dialogOptions("❯ 1. A\n  2. Type something.\n    ─────\n  3. Chat about this")).toEqual([
+    { number: 1, label: "A", cursor: true },
+    { number: 2, label: "Type something.", cursor: false },
+    { number: 3, label: "Chat about this", cursor: false },
+  ]);
+  expect(dialogOptions("❯ 1. Old\n  2. Old\n    ───\n  1. A\n  2. B")).toBeNull();
+});

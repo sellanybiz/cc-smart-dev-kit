@@ -42,18 +42,44 @@ A **linked child** starts with `--outlive-parent`, reports to its lead and can b
 when that lead disappears. Ownership follows labels, not Herdr's immutable parent field.
 An **independent session** uses `--no-parent`; no report instruction or ongoing monitoring
 is promised. It can start outside Herdr if no terminal identity is supplied. The person
-watches its pane. Neither kind has a kit-imposed session-count cap.
+sees it as its own space in Herdr. Neither kind has a kit-imposed session-count cap.
 
 Starts print the kind, address, name, worktree and live/blocked count. `list` shows owned
 children; `list --all` includes other kit sessions and independent sessions. `stop` kills
 and removes only an owned linked terminal, leaving its worktree. `adopt` takes only
-same-repository, same-core linked children whose previous lead is finished or absent.
-It skips independent sessions and another live lead's children.
+same-repository, same-core linked children whose previous lead no longer runs a live Claude.
+A live terminal with only a shell counts as gone; a blocked Claude still owns its children.
+A foreground `claude` program also counts as live before its first status arrives.
+Adopt lists each child's saved report files. It skips independent sessions.
+Identity belongs to the terminal: a new Claude in the old lead terminal receives reports
+without adoption. Adopt changes kit labels, not hc's immutable parent, so the child can
+remain under the old lead's tab in Herdr's panel.
 
 ## Starts, briefs and reports
 
 A start requires explicit model, effort and mode. In git it runs Claude with `-w kit-<name>`;
 the normal path is `<repo>/.claude/worktrees/kit-<name>` and branch `worktree-kit-<name>`.
+Every child starts through the person's login/interactive shell so hooks and MCP tools
+get that shell's PATH. An argv-only `sh -c` wrapper passes the program and its arguments as
+positional parameters, never as script text. For sh, bash, zsh, dash and ksh it uses
+`$SHELL -lic`; other or unset shells use `sh -lc`. Each level uses `exec`, so hc still sees
+Claude's own foreground argv and exit.
+
+Independent sessions and all remote children add `--keep` plus fresh `herdr.space` and
+`herdr.tab` labels. Their machine-local ids are `sp` and `tb` followed by 32 random hex digits.
+They show as new spaces in Herdr; a local linked child stays under its lead's Agents panel.
+After a core crash, `--keep` leaves a shell in the pane; it does not restart Claude.
+
+After launch, start polls `hc get` for a Claude status or terminal exit for up to 20 seconds.
+A finite poll budget derived from that window and the interval also bounds a stationary clock.
+A finished child prints its last non-empty screen lines, is removed from hc, and reports
+whether its worktree folder exists. An hc finished/not-found result follows the same exit path;
+an unreadable ended screen prints a note, and an already-removed terminal needs no cleanup.
+Other hc errors still fail normally. Start exits 1 without a created line or task binding.
+It does not inspect Claude's private trust settings: Claude's own launch error gives the fix.
+A child with no status at the deadline prints its screen and an `hc attach` warning, then
+continues successfully, including task binding. A slow first status is not a failed launch.
+
 Terminal, branch or folder reuse is refused with a fresh-name suggestion. A project's own
 WorktreeCreate hook can change that layout; the command's predicted path is not a live proof
 of such a hook's result.
@@ -91,8 +117,12 @@ asks, and `production` always asks even when `allow` is also true. `forget` remo
 Machine-rule changes ask the person and use the managed atomic writer under the kit lock.
 An unreadable or invalid file fails loudly; the judge asks rather than treating it as free.
 
-Remote starts require `--cwd` on that machine. The command checks the remote kit is not older
-than its own version, resolves git there, and checks terminal/worktree/branch collisions.
+Remote starts require `--cwd` on that machine. The command checks `claude --version` first,
+then the remote kit's version, through the same login-shell wrapper as launch. Both programs
+must be found by that user's login shell, and the kit must not be older than this command.
+The parser takes the last semantic version in stdout, allowing shell rc files to print noise.
+A missing program names the machine and gives its installation fix. Git, test, mkdir and
+chmod stay plain argv calls. The command resolves git there and checks terminal/worktree/branch collisions.
 It makes the remote brief directory private, sends the file on stdin through
 `hc file write --on <machine> --json <path>`, requires an absolute returned path, and sets
 mode 600 before launch. It does not use `hc put`, which would need a terminal already started.
@@ -111,8 +141,20 @@ child with kind question or permission. The exact status message and turn must s
 The screen reader takes the bottom contiguous numbered option block, requires entries
 1..n and one cursor, and checks the selected label. It refuses multi-question, multi-select,
 authentication, plan approval and remembered permissions; only a one-time yes/no permission
-can be relayed. A permission msg of 200 or more characters may be cut short and needs the
-pane. `--text` is parsed but refused: use the pane.
+can be relayed. A lone `☐` question header is allowed; tab rows and checkbox options are not.
+Question options named Type something or Chat about this require the pane, as does `--text`.
+The parser crosses a rule only when the next option continues at n+1, before joining label
+continuations. Remembered-permission labels are refused only for permission dialogs.
+
+Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking cuts with
+“…”; OSC transport can also cut silently at 2048 UTF-8 bytes. Messages ending in “…” or
+longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
+after an optional description prefix must equal whole lines in the current dialog with
+whitespace removed. Only lines after the last rule above the options count, not transcript
+history. Without a rule line, Bash matching refuses. Question-tab markers in the two lines
+above that rule also refuse, as do multi-select instructions inside the dialog. These hints apply
+only to question dialogs, not Bash actions. Other tools need no screen match: Write can show a
+relative path. The person approves that path, not the file's content.
 
 Immediately before keys, the command reads status and screen again, requiring the same
 message, turn, options and cursor. It moves up/down from that cursor to k, then Enter.
@@ -121,9 +163,14 @@ hc has no atomic expected-turn keys operation. Live acceptance of this boundary 
 
 The skill asks the person with mirrored options and quotes the full permission action from
 `hc read`, not just its status msg. Then it runs the guarded answer line. The judge includes
-a safely quoted, length-limited `--expect` excerpt in its reason.
+a safely quoted `--expect` of up to the same 800-unit limit in its reason. A Bash line
+must contain only the answer step, with literal words: shell-filled words, loops, functions
+and other steps are refused. Each answer gets its own approval.
 The judge always asks again for that line; it cannot inspect a prompt kind without an hc
 call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
+A plan dialog's first option ("Yes, and use auto mode") switches the child to auto mode, which
+can be wider than a lead in default mode. That is the person's own choice in the pane, so no
+guard stops it (seen live in 4.3.0).
 While away, the existing frame denies and parks questions instead of guessing answers.
 
 ## Waiting without polling
@@ -169,14 +216,21 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 
 | Trigger | Result |
 |---|---|
-| Lead dies or restarts | Child stays; new lead adopts it by labels. |
+| Lead dies or becomes a shell | Child stays; new lead adopts it by labels and sees saved report paths. |
+| Old lead is a blocked Claude | Adopt skips its children. |
+| Claude restarts in the old terminal | It is still the lead by terminal identity. |
+| Bash action appears only in transcript or as part of a line | Relay refuses; use the pane. |
+| Status ends in “…” or could be transport-cut | Relay refuses rather than approve an incomplete action. |
+| Child exits during launch, including a trust error | Show screen and folder state, remove terminal, exit 1; no task binding. |
+| First Claude status takes more than 20 seconds | Show screen, warn with attach command, exit 0 and bind the task. |
+| Login shell is unset or not in the supported shell family | Use sh login fallback; user arguments stay positional. |
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
 | Same question text appears again | Turn check rejects the stale answer. |
 | Cursor or options change | Final screen comparison refuses. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
-| Independent session blocks unseen | Person must watch it; toast behavior is not yet proved live. |
+| Independent session blocks unseen | Its own Herdr space is visible; toast behavior is not yet proved live. |
 | No hc installed | Doctor reports optional orchestration, not failure. |
 
 Real doctor checks hc discovery/version, then says **core not checked**: hc does not document
@@ -185,6 +239,12 @@ covers core-down warnings, skipped terminal reads and blocked independent counts
 these are not claims that real doctor already performs those reads.
 
 ## Live evidence and work still owed
+
+For 4.3.1, the remaining live checks are still owed in #273: a 300+ character Bash
+relay with the judge's full quote, option 2 of a single question, and adoption from a
+shell lead with saved reports listed. The release also owes the launch-failure, independent
+space and attention, and remote-start checks after the start fixes. Unit fixtures copy
+2.1.322 screens; they do not establish these live outcomes.
 
 The initial spike observed a question status `answer: Proof: which letter? (A · B)` and
 down/Enter selection; the later phase-B proof could not expose dialogs while user-away

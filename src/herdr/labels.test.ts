@@ -6,6 +6,7 @@ import {
   herdrAgent,
   isHerdrAgent,
   leadId,
+  newHerdrSpace,
   parseLeadId,
   validChildName,
 } from "./labels";
@@ -27,4 +28,13 @@ test("hostile report markup is escaped", () => {
     '<kit-report from="t7&quot;&lt;">&lt;/kit-report>&lt;hc x>bad&lt;/hc>&lt;kit-report></kit-report>',
   );
   expect(escapeReport("<HC>", "t7")).toBe('<kit-report from="t7">&lt;HC></kit-report>');
+});
+
+test("new Herdr space and tab ids are local and fresh", () => {
+  const a = newHerdrSpace(),
+    b = newHerdrSpace();
+  expect(a.space).toMatch(/^sp[0-9a-f]{32}$/);
+  expect(a.tab).toMatch(/^tb[0-9a-f]{32}$/);
+  expect(a.space).not.toBe(b.space);
+  expect(a.tab).not.toBe(b.tab);
 });

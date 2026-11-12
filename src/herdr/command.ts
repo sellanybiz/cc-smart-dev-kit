@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { VERSION } from "../build-info";
+import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
@@ -12,7 +12,7 @@ import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { getTask, isOpen } from "../tasks/work/queries";
-import { reportPath, writeBrief, writePrivate } from "./brief";
+import { briefPath, reportPath, writeBrief, writePrivate } from "./brief";
 import {
   coreId,
   defaultHcRunner,
@@ -39,19 +39,40 @@ import {
   childTerminalName,
   childWorktreeName,
   escapeReport,
+  HERDR_SPACE,
+  HERDR_TAB,
   herdrAgent,
   KIT_INDEPENDENT,
   KIT_LEAD,
   KIT_REPO,
   KIT_STARTED_BY,
   KIT_TASK,
+  newHerdrSpace,
   parseLeadId,
   validChildName,
 } from "./labels";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
-import { cliModeFlag, type HerdrArgs, parseHerdrArgs, STATUS_MESSAGE_LIMIT } from "./words";
+import {
+  cliModeFlag,
+  type HerdrArgs,
+  parseHerdrArgs,
+  RELAY_MESSAGE_LIMIT,
+  RELAY_TRANSPORT_CUT_MIN_BYTES,
+  relayMessageLength,
+} from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
+export const LAUNCH_CHECK_MS = 20_000;
+export const LAUNCH_POLL_MS = 250;
+export const LAUNCH_POLL_LIMIT = Math.ceil(LAUNCH_CHECK_MS / LAUNCH_POLL_MS) + 1;
+function terminalEnded(error: unknown): boolean {
+  return error instanceof HcError && ["finished", "not_found"].includes(error.kind);
+}
+export const LAUNCH_SCREEN_LINES = 12;
+export const LOGIN_SHELL_SCRIPT = `case "\${SHELL##*/}" in sh|bash|zsh|dash|ksh) exec "$SHELL" -lic 'exec "$0" "$@"' "$@";; *) exec sh -lc 'exec "$0" "$@"' "$@";; esac`;
+export function loginShellArgv(program: string, ...args: string[]): string[] {
+  return ["sh", "-c", LOGIN_SHELL_SCRIPT, "kit", program, ...args];
+}
 export const SCREEN_LINES = 120;
 export interface WaitFact {
   terminal: string;
@@ -318,6 +339,8 @@ export interface HerdrContext {
   cwd: string;
   env: Env;
   nowMs: number;
+  now(): number;
+  sleep(ms: number): Promise<void>;
   out: Out;
   runner?: HcRunner;
   identity?: () => Identity | { why: string };
@@ -374,10 +397,18 @@ function show(ctx: HerdrContext, rows: Terminal[]): void {
     );
   }
 }
+function isLiveClaude(t: Terminal | undefined): t is Terminal {
+  return (
+    t?.state === "live" &&
+    (t.status?.app === CLAUDE_CODE_APP ||
+      t.foreground?.name === "claude" ||
+      basename(t.foreground?.argv?.[0] ?? "") === "claude")
+  );
+}
 function send(r: HcRunner, target: string, text: string): void {
   const t = hcGet(r, target);
   const state = t.status?.state;
-  if (t.state !== "live" || !state || !["idle", "working", "done"].includes(state))
+  if (!isLiveClaude(t) || !state || !["idle", "working", "done"].includes(state))
     throw new HcError(
       "blocked",
       `This terminal cannot receive a message; answer it in its pane: hc attach ${target}`,
@@ -399,7 +430,7 @@ function remoteResult(
   cwd?: string,
 ): { code: number | null; stdout: string; stderr: string } {
   const answer: unknown = JSON.parse(
-    invoke(r, ["exec", "--on", machine, "--json", ...(cwd ? ["--cwd", cwd] : []), ...args]),
+    invoke(r, ["exec", "--on", machine, "--json", ...(cwd ? ["--cwd", cwd] : []), "--", ...args]),
   );
   if (
     !answer ||
@@ -529,8 +560,27 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
       return refuse(ctx, "This remote machine needs the person's approval (--asked).");
-    const version = execRemote(r, a.on, [COMMAND, "--version"]).trim().split(/\s+/).at(-1) ?? "";
-    if (!/^\d+\.\d+\.\d+$/.test(version) || isOlder(version, VERSION))
+    let version = "";
+    for (const program of ["claude", COMMAND]) {
+      const result = remoteResult(r, a.on, loginShellArgv(program, "--version"));
+      const found = [...result.stdout.matchAll(/\d+\.\d+\.\d+/g)].at(-1)?.[0];
+      if (result.code === 127 || !found)
+        return refuse(
+          ctx,
+          `${program} is not installed on ${a.on} (not found by its login shell)`,
+          program === COMMAND
+            ? `On ${a.on}, run: gh api repos/${MARKETPLACE_SOURCE}/contents/install.sh -H "Accept: application/vnd.github.raw" | bash -s -- ${MARKETPLACE_SOURCE}`
+            : `Install Claude Code on ${a.on}, then retry.`,
+        );
+      if (result.code !== 0)
+        return refuse(
+          ctx,
+          `${program} --version failed on ${a.on}.`,
+          result.stderr.trim() || "Check its login shell, then retry.",
+        );
+      if (program === COMMAND) version = found;
+    }
+    if (isOlder(version, VERSION))
       return refuse(
         ctx,
         `The remote kit is older than ${VERSION}.`,
@@ -576,6 +626,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
     "--bg",
+    ...(a.independent || a.on ? ["--keep"] : []),
     ...(a.independent ? ["--no-parent"] : ["--outlive-parent"]),
     "--no-notify",
     "--name",
@@ -590,9 +641,13 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     if (me) labels[KIT_STARTED_BY] = me.leadId;
   } else if (me) labels[KIT_LEAD] = me.leadId;
   if (a.task) labels[KIT_TASK] = a.task;
+  if (a.independent || a.on) {
+    const { space, tab } = newHerdrSpace();
+    labels[HERDR_SPACE] = space;
+    labels[HERDR_TAB] = tab;
+  }
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
-  args.push(
-    "claude",
+  const programArgs = [
     "--add-dir",
     dirname(path),
     "--model",
@@ -603,10 +658,83 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     cliModeFlag(a.mode),
     "-n",
     name,
-  );
-  if (gitRoot) args.push("-w", worktreeName);
-  args.push(first);
+  ];
+  if (gitRoot) programArgs.push("-w", worktreeName);
+  programArgs.push(first);
+  args.push("--", ...loginShellArgv("claude", ...programArgs));
   const child = hcRun(r, args);
+  const deadline = ctx.now() + LAUNCH_CHECK_MS;
+  for (let poll = 0; poll < LAUNCH_POLL_LIMIT; poll++) {
+    let state: Terminal;
+    try {
+      state = hcGet(r, child.address);
+    } catch (error) {
+      if (!terminalEnded(error)) {
+        // The child started; a failed read must not hide it or skip its task binding.
+        ctx.out.line(
+          "warn",
+          `The child ${child.address} started, but its state could not be read (${error instanceof Error ? error.message : String(error)}); check it in its pane: hc attach ${child.address}`,
+        );
+        break;
+      }
+      state = { address: child.address, state: "finished", status: null, labels: {} };
+    }
+    if (state.status?.app === CLAUDE_CODE_APP && state.state !== "finished") break;
+    if (state.state === "finished" || ctx.now() >= deadline || poll === LAUNCH_POLL_LIMIT - 1) {
+      try {
+        const screen = hcRead(r, child.address, SCREEN_LINES);
+        ctx.out.say(`The child's screen (${child.address}):`);
+        for (const line of screen.text
+          .split(/\r?\n/)
+          .filter((line) => line.trim())
+          .slice(-LAUNCH_SCREEN_LINES))
+          ctx.out.say(line, 2);
+      } catch (error) {
+        if (!terminalEnded(error)) throw error;
+        ctx.out.say("The child's screen is no longer readable.");
+        state = { ...state, state: "finished" };
+      }
+      if (state.state === "finished") {
+        try {
+          hcRm(r, child.address);
+        } catch (error) {
+          if (!terminalEnded(error)) throw error;
+          // The terminal already ended or was removed; continue with the launch failure.
+        }
+        if (!gitRoot)
+          return refuse(
+            ctx,
+            `The child ${child.address} exited during launch.`,
+            "Resolve the screen error above, then retry.",
+          );
+        const folderExists = a.on
+          ? remoteResult(r, a.on, ["test", "-d", worktree]).code
+          : existsSync(worktree)
+            ? 0
+            : 1;
+        if (folderExists !== 0 && folderExists !== 1)
+          return refuse(
+            ctx,
+            "The child exited; its worktree folder could not be checked.",
+            `Check ${worktree} before retrying.`,
+          );
+        ctx.out.say(
+          `Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`,
+        );
+        return refuse(
+          ctx,
+          `The child ${child.address} exited during launch.`,
+          "Resolve the screen error above, then retry with the same name if its worktree and branch are absent.",
+        );
+      }
+      ctx.out.line(
+        "warn",
+        `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`,
+      );
+      break;
+    }
+    await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
+  }
   if (a.task) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
@@ -646,33 +774,69 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   count(ctx, terminals(r).filter(kit));
   return 0;
 }
-export function dialogOptions(
-  screen: string,
-): { number: number; label: string; cursor: boolean }[] | null {
+function ruleLine(line: string): boolean {
+  return /^[─-╿]+$/u.test(line.trim());
+}
+function dialog(screen: string) {
   const lines = screen.split(/\r?\n/);
-  const blocks: { number: number; label: string; cursor: boolean }[][] = [];
-  let block: { number: number; label: string; cursor: boolean }[] = [];
-  for (const line of lines) {
+  const blocks: { start: number; options: { number: number; label: string; cursor: boolean }[] }[] =
+    [];
+  let block: (typeof blocks)[number] = { start: 0, options: [] };
+  for (const [index, line] of lines.entries()) {
     const match = /^\s*(❯)?\s*(\d+)\.\s+(.+)$/.exec(line);
     if (match) {
-      block.push({ number: Number(match[2]), label: match[3] ?? "", cursor: !!match[1] });
+      if (!block.options.length) block.start = index;
+      block.options.push({ number: Number(match[2]), label: match[3] ?? "", cursor: !!match[1] });
       continue;
     }
-    if (block.length && /^\s{3,}\S/.test(line) && line.trim()) {
-      const last = block.at(-1);
+    if (ruleLine(line)) {
+      const next = /^\s*(?:❯)?\s*(\d+)\.\s+/.exec(lines[index + 1] ?? "");
+      if (block.options.length && Number(next?.[1]) === (block.options.at(-1)?.number ?? 0) + 1)
+        continue;
+    } else if (block.options.length && /^\s{3,}\S/.test(line)) {
+      const last = block.options.at(-1);
       if (last) last.label += ` ${line.trim()}`;
       continue;
     }
-    if (block.length) {
+    if (block.options.length) {
       blocks.push(block);
-      block = [];
+      block = { start: 0, options: [] };
     }
   }
-  if (block.length) blocks.push(block);
+  if (block.options.length) blocks.push(block);
   const result = blocks.at(-1);
-  if (result?.filter((o) => o.cursor).length !== 1 || result.some((o, i) => o.number !== i + 1))
+  if (
+    result?.options.filter((o) => o.cursor).length !== 1 ||
+    result.options.some((o, i) => o.number !== i + 1)
+  )
     return null;
-  return result;
+  let start = result.start;
+  while (start > 0 && !ruleLine(lines[start - 1] ?? "")) start--;
+  return {
+    options: result.options,
+    before: start > 0 ? lines.slice(start, result.start) : null,
+    above: lines.slice(Math.max(0, start - 3), Math.max(0, start - 1)),
+    region: lines.slice(start),
+  };
+}
+export function dialogOptions(
+  screen: string,
+): { number: number; label: string; cursor: boolean }[] | null {
+  return dialog(screen)?.options ?? null;
+}
+function wholeDialogAction(lines: string[], action: string): boolean {
+  const compact = (text: string) => text.replace(/\s/g, "");
+  const expected = compact(action);
+  if (!expected) return false;
+  for (let start = 0; start < lines.length; start++) {
+    let run = "";
+    for (let end = start; end < lines.length; end++) {
+      run += compact(lines[end] ?? "");
+      if (run === expected) return true;
+      if (run.length >= expected.length) break;
+    }
+  }
+  return false;
 }
 function answer(
   a: Extract<HerdrArgs, { verb: "answer" }>,
@@ -693,22 +857,38 @@ function answer(
     child.turn !== a.expectTurn
   )
     return changed();
-  if (s.kind === "permission" && (s.msg?.length ?? 0) >= STATUS_MESSAGE_LIMIT)
-    return refuse(
-      ctx,
-      `The permission message may be cut short; answer it in its pane: hc attach ${target}`,
-    );
-  if (/^approve plan/i.test(s.msg ?? ""))
+  if (
+    s.msg?.endsWith("…") ||
+    Buffer.byteLength(s.msg ?? "", "utf8") >= RELAY_TRANSPORT_CUT_MIN_BYTES ||
+    relayMessageLength(s.msg ?? "") > RELAY_MESSAGE_LIMIT
+  )
+    return refuse(ctx, `The prompt may be cut short; answer it in its pane: hc attach ${target}`);
+  if (/(?:^| · )approve plan/i.test(s.msg ?? ""))
     return refuse(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
   const screen = hcRead(r, target, SCREEN_LINES).text;
   if (a.text !== undefined) return refuse(ctx, `Text answers need its pane: hc attach ${a.target}`);
+  const parsed = dialog(screen);
+  const region = parsed?.region.join("\n") ?? "";
   if (
-    /multi.?select|select all|space to (?:select|toggle)|\[ \]|☐/i.test(screen) ||
-    /(?:←|❮|‹).*?(?:→|❯|›)/.test(screen) ||
-    /\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(screen)
+    s.kind === "question" &&
+    (/multi.?select|select all|space to (?:select|toggle)/i.test(region) ||
+      /✔\s*Submit|←[^\n]*→/.test(parsed?.above.join("\n") ?? "") ||
+      region.split("\n").some((line) => (line.match(/☐/g)?.length ?? 0) >= 2) ||
+      /✔\s*Submit|←[^\n]*→|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) ||
+      parsed?.options.some((o) => /^\[(?: |x|✔)\]/i.test(o.label)))
   )
     return refuse(ctx, `Several questions or a multi-select need its pane: hc attach ${a.target}`);
-  const options = dialogOptions(screen);
+  const action = /(?:^| · )approve Bash: (.*)$/s.exec(s.msg ?? "")?.[1];
+  if (
+    s.kind === "permission" &&
+    action !== undefined &&
+    (!parsed?.before || !wholeDialogAction(parsed.before, action))
+  )
+    return refuse(
+      ctx,
+      `The Bash action does not match the dialog; answer it in its pane: hc attach ${target}`,
+    );
+  const options = parsed?.options;
   const option = Number(a.option);
   if (
     !options ||
@@ -719,7 +899,12 @@ function answer(
     return refuse(ctx, "The option is not visible; read the pane again.");
   const selected = options[option - 1];
   if (!selected) return refuse(ctx, "The option is not visible; read the pane again.");
-  if (/don[’']t ask again|do not ask again|always|for this session/i.test(selected.label))
+  if (s.kind === "question" && /^(?:Type something|Chat about this)/i.test(selected.label))
+    return refuse(ctx, "Text and chat answers need the pane.");
+  if (
+    s.kind === "permission" &&
+    /don[’']t ask again|do not ask again|always|for this session/i.test(selected.label)
+  )
     return refuse(ctx, "A remembered permission must be answered in the pane.");
   if (
     s.kind === "permission" &&
@@ -768,9 +953,8 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
     }
   }
   if (
-    destination?.state === "live" &&
-    destination.status?.app === CLAUDE_CODE_APP &&
-    ["idle", "working", "done"].includes(destination.status.state)
+    isLiveClaude(destination) &&
+    ["idle", "working", "done"].includes(destination.status?.state ?? "")
   ) {
     try {
       send(r, destination.address, escapeReport(text, me.leadId));
@@ -887,7 +1071,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           if (!old || old.core !== me.core || old.address === me.address) continue;
           let live = false;
           try {
-            live = hcGet(r, old.address).state === "live";
+            live = isLiveClaude(hcGet(r, old.address));
           } catch (error) {
             if (!(error instanceof HcError) || !["not_found", "finished"].includes(error.kind))
               throw error;
@@ -900,6 +1084,22 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
             ctx.out.line(
               "warn",
               `Could not adopt ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            continue;
+          }
+          const folder = dirname(
+            briefPath(ctx.paths.stateDir, me.core, child.name ?? child.address),
+          );
+          try {
+            if (existsSync(folder))
+              for (const file of readdirSync(folder)
+                .filter((f) => /^report-.*\.md$/.test(f))
+                .sort())
+                ctx.out.say(`Saved report for ${child.address}: ${join(folder, file)}`);
+          } catch (error) {
+            ctx.out.line(
+              "warn",
+              `Could not list saved reports for ${child.address}: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
         }
