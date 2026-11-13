@@ -1629,7 +1629,7 @@ names such a missing import.
 | `commit` | When to commit, push, open the pull request and ask for the merge. |
 | `pull-request` | What every pull request body carries. |
 | `verify-change` | The affordable loop after edits; the checks the push will run; testing with the person. |
-| `research-first` | Research before you build; reuse before you write your own. |
+| `research-first` | Research before you build; reuse before you write your own; choose a new app's stack and architecture from current sources. |
 | `subagent-decision` | Which agent for which job, and how to brief it. |
 | `herdr` | Separate linked or independent sessions, child reports, remote starts and relaying a question. |
 | `impact-analysis` | Every consumer of a shared thing, before and after a change. |

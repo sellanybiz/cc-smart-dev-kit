@@ -3,7 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## 4.5.3
+## 4.6.1
 
 - **The status line shows the plan, its phases and the phase's tasks, each on its own row.**
   It used to show one `closed/total · title` row that counted only a plan's tasks. A lead that
@@ -12,6 +12,28 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   title when it is one). A plan with no phase shows `Tasks` for its own tasks.
 - **`task_list` and the portal count a plan by its phases too**, or by its tasks when it has no
   phase. A phase still counts its own tasks, so nothing counts twice.
+
+## 4.6.0
+
+- **Claude now researches an app's stack and architecture before it picks one.** Asked to build
+  a web app, a service or a new layer, Claude could pick its libraries from memory. The
+  `research-first` skill has a new section, § Choosing a stack or an architecture. Claude
+  reads what the project already fixes and lists the decisions the work makes. For each one it
+  compares two or three current candidates on fit, maintenance, security, adoption, bundle
+  cost, types, runtime fit, license and exit cost. It picks for the scale the project expects,
+  keeps each library easy to replace, pins versions, and writes down why it chose.
+- **A checklist of the decisions, from frontend to operations.** The skill's new
+  `references/stack-decisions.md` covers server and client state, HTTP clients, forms, API
+  style, auth, data stores, caching (Redis, Valkey), real-time (WebSockets, server-sent
+  events), queues, load balancing and scaling, infrastructure as code, CI/CD, testing,
+  observability and security. Every tool in it is an example, checked in November 2026. It
+  opens with the traps that memory misses: license changes, retired projects, maintenance
+  mode, a `latest` tag that is a release candidate, hijacked releases. Claude reads it only
+  while choosing a stack, so other sessions pay nothing for it.
+- The general instructions and `plan-task` point to the section. Two new eval cases check
+  that a request to pick a new app's libraries, or to design a backend, opens the skill.
+
+**What to run:** nothing.
 
 ## 4.5.2
 
