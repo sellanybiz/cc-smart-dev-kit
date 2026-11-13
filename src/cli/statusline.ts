@@ -83,8 +83,9 @@ import type { AlertsHere } from "../workflow/alerts";
 
 /**
  * The current work, a row per layer: `Plan · <title>`, then `Phases 5/25 · <current phase>` when
- * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A loose
- * task is its title alone. Each title is whole.
+ * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A task of
+ * a phased plan under no phase has no `Tasks` row: its title is the last row. A loose task is its
+ * title alone. Each title is whole.
  */
 export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
   const read = planProgress(paths, project, who);
@@ -98,7 +99,7 @@ export function taskSegment(paths: { stateDir: string }, project: string, who: W
   return [
     `Plan · ${plan?.subject ?? task.plan}`,
     phases === null ? null : count("Phases", phases, phase?.subject),
-    tasks === null ? null : count("Tasks", tasks, own),
+    tasks === null ? (own ?? null) : count("Tasks", tasks, own),
   ]
     .filter((row) => row !== null)
     .join("\n");

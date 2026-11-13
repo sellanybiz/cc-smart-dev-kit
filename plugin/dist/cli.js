@@ -53964,7 +53964,7 @@ function taskSegment(paths, project, who) {
   return [
     `Plan \xB7 ${plan?.subject ?? task.plan}`,
     phases === null ? null : count("Phases", phases, phase?.subject),
-    tasks === null ? null : count("Tasks", tasks, own)
+    tasks === null ? own ?? null : count("Tasks", tasks, own)
   ].filter((row) => row !== null).join(`
 `);
 }

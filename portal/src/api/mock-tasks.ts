@@ -55,9 +55,12 @@ function node(
     one.type === "blocking" ? [one, ...one.children.flatMap(blocking)] : [];
   const steps = children.flatMap(blocking).filter((one) => one.status !== "dropped");
   const notes = extra.notes ?? 0;
-  // A plan's or a phase's tasks (never a phase), as the server counts them from its whole list;
-  // `oldClosed` adds tasks closed long ago, which the server counts and its tree leaves out.
-  const tasks = all.filter((one) => one.kind === "task");
+  // As the server counts from its whole list (`layerProgress`): a plan its phases, or its tasks
+  // when it has no phase; a phase its tasks. `oldClosed` adds ones closed long ago, which the
+  // server counts and its tree leaves out.
+  const phases = all.filter((one) => one.kind === "phase");
+  const tasks =
+    kind === "plan" && phases.length > 0 ? phases : all.filter((one) => one.kind === "task");
   const old = extra.oldClosed ?? 0;
   return {
     session: extra.session ?? null,
@@ -279,7 +282,7 @@ interface PlanShape {
   age: number;
   /** The phase (by index) whose in-progress task a process still claims, and whether it runs. */
   claimed?: { phase: number; claim: WorkTaskNode["claim"] };
-  /** Its tasks closed long ago: the plan counts them, the tree does not hold them. */
+  /** Its phases closed long ago: the plan counts them, the tree does not hold them. */
   oldClosed?: number;
 }
 
@@ -409,8 +412,8 @@ function generatedPlans(now: number): WorkTaskNode[] {
         age: 9,
         // The session that worked on it ended: its claim is left behind.
         claimed: { phase: 1, claim: "dead" },
-        // Work closed weeks ago still counts in the plan's progress.
-        oldClosed: 25,
+        // Phases closed weeks ago still count in the plan's progress.
+        oldClosed: 3,
       },
       now,
     ),

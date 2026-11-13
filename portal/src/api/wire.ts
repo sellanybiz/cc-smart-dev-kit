@@ -647,7 +647,7 @@ export interface WorkTaskSteps {
   total: number;
 }
 
-/** A plan's or a phase's tasks closed of all, from the project's whole list (old ones too). */
+/** A plan's phases (its tasks when it has none) or a phase's tasks closed of all, old ones too. */
 export interface WorkTaskProgress {
   closed: number;
   total: number;
@@ -677,7 +677,7 @@ export interface WorkTaskNode {
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
-  /** A plan's or a phase's tasks closed of all; null for a task. */
+  /** A plan's phases (its tasks when it has none) or a phase's tasks closed of all; null for a task. */
   progress: null | WorkTaskProgress;
   /** `#12`. */
   ref: string;

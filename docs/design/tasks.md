@@ -271,7 +271,9 @@ without steps still sees 5/25, and nothing counts twice. The most recently start
 wins; notes and edits to an older plan do not steal the status line.
 The status line prints a row per layer, each title whole: `Plan · <title>` (the slug when the plan
 row is gone), `Phases 5/25 · <phase>` when the plan has phases, and `Tasks 1/3` with the current
-task's title when it is one. An empty plan shows `Tasks 0/0`. A loose task shows its title alone,
+task's title when it is one; a task of a phased plan under no phase shows its title alone on the
+last row instead. Such a task counts in no layer: the plan counts its phases. An empty plan shows
+`Tasks 0/0`. A loose task shows its title alone,
 without totals. With no current work, the task rows are absent. Plan counts in `task_list` and the
 portal use the same rule (`layerProgress`). A phase's subtree counts and blocking steps stay
 separate: progress says how much work closed, and `holdingUnder` says what holds completion.

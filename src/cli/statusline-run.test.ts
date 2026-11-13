@@ -160,6 +160,37 @@ describe("the current task's own row", () => {
     }
   });
 
+  it("names a task of a phased plan that sits under no phase", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      t.ok(ensurePlanTask(t.db, { project: t.project, plan: "work", subject: "Plan" }, t.who, 1));
+      t.ok(
+        writeWork(t.db, () =>
+          layPhase(
+            t.db,
+            { project: t.project, plan: "work", phase: "A", subject: "Build" },
+            t.who,
+            2,
+          ),
+        ),
+      );
+      t.ok(
+        createTask(
+          t.db,
+          { project: t.project, plan: "work", subject: "Fix the typo", status: "in_progress" },
+          t.who,
+          3,
+        ),
+      );
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · Plan\nPhases 0/1\nFix the typo",
+      );
+    } finally {
+      t.db.close();
+    }
+  });
+
   it("shows Tasks 0/0 for a plan with no phase and no task yet", async () => {
     const w = world();
     const t = tasks(w);

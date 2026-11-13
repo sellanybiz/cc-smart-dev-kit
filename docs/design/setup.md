@@ -133,8 +133,8 @@ After updating, run setup and restart Claude Code. Run `task import claude-mem` 
 move open lists; the import is not an automatic setup step. Doctor checks the server,
 allow and deny entries, claude-mem's switch, work-store schema and integrity, and in a
 project the task-file findings from `task check`. [Task design](tasks.md) owns the stores,
-commands and guards. The status line adds a separate `2/5 · Subject` row for current work: closed tasks out of
-all tasks in the current plan, or the title alone for a loose task.
+commands and guards. The status line adds rows for current work: the plan, its phases and the current phase's tasks
+([Task design](tasks.md) § The hooks and pages that read it has the rows).
 
 ### Who changes what, and when
 
