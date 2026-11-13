@@ -181,9 +181,9 @@ export function ClaimMark({ claim }: { claim: WorkTaskNode["claim"] }) {
 }
 
 /**
- * The progress a row shows: a plan's or a phase's tasks as the server counts them from the whole
- * list (closed long ago too), a task's own subtree; none when empty. A counted phase shows its
- * steps instead.
+ * The progress a row shows: a plan's phases (its tasks when it has none) or a phase's tasks, as the
+ * server counts them from the whole list (closed long ago too), a task's own subtree; none when
+ * empty. A counted phase shows its steps instead.
  */
 function progressOf(task: WorkTaskNode): null | { closed: number; total: number } {
   if (task.steps !== null) return null;

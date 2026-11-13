@@ -394,8 +394,9 @@ export interface WorkTaskSteps {
 }
 
 /**
- * A plan's or a phase's tasks closed (done or dropped), of all of them, from the project's whole
- * list (`layerProgress`): closed long ago too, which the tree itself leaves out.
+ * A plan's phases (its tasks when it has no phase) or a phase's tasks, closed (done or dropped)
+ * of all of them, from the project's whole list (`layerProgress`): closed long ago too, which
+ * the tree itself leaves out.
  */
 export interface WorkTaskProgress {
   closed: number;
@@ -429,7 +430,7 @@ export interface WorkTaskNode {
   layer: WorkTaskLayer;
   phase: null | string;
   plan: null | string;
-  /** A plan's or a phase's tasks closed of all; null for a task, and when the list cannot be read. */
+  /** A plan's phases (or tasks) or a phase's tasks closed of all; null for a task or no list. */
   progress: null | WorkTaskProgress;
   /** `#12`: the project's own number for it. */
   ref: string;

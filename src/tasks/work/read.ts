@@ -109,7 +109,11 @@ export function holdingSteps(paths: Paths, project: string, number: number) {
   });
 }
 
-/** Current claimed work and task-only progress, by plan membership rather than nesting. */
+/**
+ * Current claimed work and its counts, by plan membership rather than nesting: the plan's
+ * phases closed of all (null when it has none), and the tasks of the current phase, or of the
+ * plan itself when it has no phase (null when neither applies, and for loose work).
+ */
 export function planProgress(paths: Paths, project: string, who: Who) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
@@ -132,9 +136,21 @@ export function planProgress(paths: Paths, project: string, who: Who) {
       task.plan === null
         ? null
         : (all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null);
-    // By plan membership: the plan task itself need not exist for its tasks to count.
-    const progress = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
-    return { task, plan, ...progress };
+    const phase =
+      task.kind === "phase"
+        ? task
+        : (all.find((t) => t.kind === "phase" && t.id === task.parentId) ?? null);
+    if (task.plan === null) return { task, plan, phase, phases: null, tasks: null };
+    // By plan membership: the plan task itself need not exist for its phases or tasks to count.
+    const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
+    const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
+    return {
+      task,
+      plan,
+      phase,
+      phases: hasPhases ? ofPlan : null,
+      tasks: phase !== null ? layerProgress(all, phase) : hasPhases ? null : ofPlan,
+    };
   });
 }
 /**

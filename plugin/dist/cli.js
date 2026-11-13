@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.6.0",
+  version: "4.6.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -29320,8 +29320,14 @@ function taskById(db, id) {
 function isOpen(task) {
   return task.status === "pending" || task.status === "in_progress";
 }
+function planCounted(all, plan) {
+  if (plan === null)
+    return [];
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan);
+  return phases.length > 0 ? phases : all.filter((t) => t.kind === "task" && t.plan === plan);
+}
 function layerProgress(all, layer) {
-  const tasks = all.filter((t) => t.kind === "task" && (layer.kind === "plan" ? layer.plan !== null && t.plan === layer.plan : layer.kind === "phase" && t.parentId === layer.id));
+  const tasks = layer.kind === "plan" ? planCounted(all, layer.plan) : layer.kind === "phase" ? all.filter((t) => t.kind === "task" && t.parentId === layer.id) : [];
   return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
 }
 function planIsOpen(all, plan) {
@@ -29334,7 +29340,7 @@ function descendants(db, id) {
 }
 function countedUnder(tasks, id) {
   const root = tasks.find((t) => t.id === id);
-  return root?.kind === "plan" ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan) : descendantsIn(tasks, id);
+  return root?.kind === "plan" ? planCounted(tasks, root.plan) : descendantsIn(tasks, id);
 }
 function subtreeProgress(tasks, id) {
   const under = countedUnder(tasks, id);
@@ -46920,8 +46926,18 @@ function planProgress(paths, project, who) {
     if (!task)
       return null;
     const plan = task.plan === null ? null : all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null;
-    const progress = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
-    return { task, plan, ...progress };
+    const phase = task.kind === "phase" ? task : all.find((t) => t.kind === "phase" && t.id === task.parentId) ?? null;
+    if (task.plan === null)
+      return { task, plan, phase, phases: null, tasks: null };
+    const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
+    const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
+    return {
+      task,
+      plan,
+      phase,
+      phases: hasPhases ? ofPlan : null,
+      tasks: phase !== null ? layerProgress(all, phase) : hasPhases ? null : ofPlan
+    };
   });
 }
 
@@ -53940,8 +53956,17 @@ function taskSegment(paths, project, who) {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null)
     return null;
-  const { task, closed, total } = read.value;
-  return task.plan === null ? task.subject : `${closed}/${total} \xB7 ${task.subject}`;
+  const { task, plan, phase, phases, tasks } = read.value;
+  if (task.plan === null)
+    return task.subject;
+  const count = (word, of, title) => `${word} ${of.closed}/${of.total}${title === undefined ? "" : ` \xB7 ${title}`}`;
+  const own = task.kind === "task" ? task.subject : undefined;
+  return [
+    `Plan \xB7 ${plan?.subject ?? task.plan}`,
+    phases === null ? null : count("Phases", phases, phase?.subject),
+    tasks === null ? own ?? null : count("Tasks", tasks, own)
+  ].filter((row) => row !== null).join(`
+`);
 }
 function currentTask(paths, input, env) {
   if (!isJsonObject19(input) || typeof input.cwd !== "string")

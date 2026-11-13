@@ -65,7 +65,7 @@ const WHEN_ORDER: Readonly<Record<string, number>> = { now: 0, "next-release": 1
 export interface ListCounts {
   /** A phase's steps (`phaseSteps`). */
   steps: ReadonlyMap<string, PhaseSteps>;
-  /** A plan's or a phase's tasks closed of all (`layerProgress`). */
+  /** A plan's phases (its tasks when it has none) or a phase's tasks closed of all (`layerProgress`). */
   progress: ReadonlyMap<string, WorkTaskProgress>;
 }
 

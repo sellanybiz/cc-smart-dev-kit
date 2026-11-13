@@ -98,21 +98,30 @@ export function isOpen(task: WorkTask): boolean {
   return task.status === "pending" || task.status === "in_progress";
 }
 /**
- * What a plan or a phase counts as its progress: its tasks (kind `task`, never a phase), a
- * plan's by its plan column, a phase's by parent, from the whole list (closed long ago too).
- * Closed is done or dropped. A task counts none. The statusline and the portal both count so.
+ * What a plan counts, by the plan column: its phases, or its tasks when it has no phase. Each
+ * phase counts its own tasks (`layerProgress`), so nothing counts twice, and a plan a lead laid
+ * as phases alone shows 5/25, never 0/0.
+ */
+function planCounted(all: readonly WorkTask[], plan: string | null): WorkTask[] {
+  if (plan === null) return [];
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan);
+  return phases.length > 0 ? phases : all.filter((t) => t.kind === "task" && t.plan === plan);
+}
+/**
+ * What a plan or a phase counts as its progress, from the whole list (closed long ago too): a
+ * plan its `planCounted`, a phase its tasks by parent. Closed is done or dropped. A task counts
+ * none. The statusline, `task_list` and the portal all count so.
  */
 export function layerProgress(
   all: readonly WorkTask[],
   layer: Pick<WorkTask, "id" | "kind" | "plan">,
 ): { closed: number; total: number } {
-  const tasks = all.filter(
-    (t) =>
-      t.kind === "task" &&
-      (layer.kind === "plan"
-        ? layer.plan !== null && t.plan === layer.plan
-        : layer.kind === "phase" && t.parentId === layer.id),
-  );
+  const tasks =
+    layer.kind === "plan"
+      ? planCounted(all, layer.plan)
+      : layer.kind === "phase"
+        ? all.filter((t) => t.kind === "task" && t.parentId === layer.id)
+        : [];
   return { closed: tasks.filter((t) => !isOpen(t)).length, total: tasks.length };
 }
 /** A plan row decides; legacy plans without one stay open only while blocking tasks do. */
@@ -130,12 +139,10 @@ export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
 }
-/** Every descendant counts toward progress. */
+/** A plan counts its `planCounted`; anything else, every descendant. */
 export function countedUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
   const root = tasks.find((t) => t.id === id);
-  return root?.kind === "plan"
-    ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan)
-    : descendantsIn(tasks, id);
+  return root?.kind === "plan" ? planCounted(tasks, root.plan) : descendantsIn(tasks, id);
 }
 /** Closed (done or dropped), of all descendants. */
 export function subtreeProgress(

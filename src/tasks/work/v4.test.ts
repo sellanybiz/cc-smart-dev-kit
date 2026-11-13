@@ -5,7 +5,7 @@ import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, workDbFile, writeWork } from "./db";
 import { claimLive } from "./identity";
-import { allTasks, eventsOf, taskById } from "./queries";
+import { allTasks, eventsOf, subtreeProgress, taskById } from "./queries";
 import { planProgress } from "./read";
 import { addNote, createTask, ensurePlanTask, layPhase, takeTasks, updateTask } from "./store";
 import type { Result } from "./types";
@@ -41,7 +41,7 @@ test("reverse-numbered legacy nesting retains holds and non-blocking inheritance
     repaired.close();
   }
 });
-test("plan progress counts detached membership and ignores parked-plan edits", () => {
+test("plan progress follows the started phase and ignores parked-plan edits", () => {
   const stateDir = tempDir();
   const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
   try {
@@ -70,7 +70,50 @@ test("plan progress counts detached membership and ignores parked-plan edits", (
     if (progress.state !== "ready") throw new Error(progress.state);
     expect(progress.value?.task.id).toBe(phase.id);
     expect(progress.value?.plan?.plan).toBe("second");
-    expect([progress.value?.closed, progress.value?.total]).toEqual([1, 2]);
+    expect(progress.value?.phase?.id).toBe(phase.id);
+    // The plan's one phase, open; the phase holds no task (the two in the plan have no parent).
+    expect(progress.value?.phases).toEqual({ closed: 0, total: 1 });
+    expect(progress.value?.tasks).toEqual({ closed: 0, total: 0 });
+  } finally {
+    db.close();
+  }
+});
+test("a plan counts its phases, and the current phase its own steps", () => {
+  const stateDir = tempDir();
+  const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+  const phase = (id: string, at: number) =>
+    ok(
+      writeWork(db, () =>
+        layPhase(db, { project: "p", plan: "phases", phase: id, subject: id }, who, at),
+      ),
+    ).task;
+  try {
+    ok(ensurePlanTask(db, { project: "p", plan: "phases", subject: "Phases" }, who, 1));
+    const a = phase("A", 2);
+    const b = phase("B", 3);
+    const c = phase("C", 4);
+    phase("D", 5);
+    ok(updateTask(db, a.id, { status: "done" }, who, 6));
+    ok(updateTask(db, b.id, { status: "dropped" }, who, 7));
+    ok(updateTask(db, c.id, { status: "in_progress" }, who, 8));
+    const read = () => {
+      const progress = planProgress({ stateDir }, "p", who);
+      if (progress.state !== "ready") throw new Error(progress.state);
+      const { task, phases, tasks } = progress.value ?? {};
+      return [task?.id, phases, tasks];
+    };
+    // No steps anywhere: A done and B dropped, of the four phases; C holds no task.
+    expect(read()).toEqual([c.id, { closed: 2, total: 4 }, { closed: 0, total: 0 }]);
+    // C gets two steps, one done: the phases stay as they were.
+    const step = ok(
+      createTask(db, { project: "p", plan: "phases", subject: "C1", parentId: c.id }, who, 9),
+    );
+    ok(createTask(db, { project: "p", plan: "phases", subject: "C2", parentId: c.id }, who, 10));
+    ok(updateTask(db, step.id, { status: "done" }, who, 11));
+    expect(read()).toEqual([c.id, { closed: 2, total: 4 }, { closed: 1, total: 2 }]);
+    // `task_list` and the tree count the plan the same way.
+    const plan = allTasks(db, "p").find((t) => t.kind === "plan");
+    expect(subtreeProgress(allTasks(db, "p"), plan?.id ?? "")).toEqual({ closed: 2, total: 4 });
   } finally {
     db.close();
   }

@@ -689,8 +689,9 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     state, the claim (`● running` while a running process holds it, `claim ended` when that
     process is gone), the notes count, and its progress. A plan's or a phase's progress is the
     node's `progress`, which the server counts from the project's whole list (`layerProgress` in
-    `src/tasks/work/queries.ts`, the statusline's own rule): its tasks (never a phase), a plan's
-    by its plan column and a phase's by parent, closed long ago too, which the tree leaves out.
+    `src/tasks/work/queries.ts`, the statusline's own rule): a plan its phases by the plan column
+    (its tasks when it has no phase), a phase its tasks by parent, closed long ago too, which the
+    tree leaves out.
     A counted phase shows its steps instead. A screen reader hears the layer and the status
     before the subject. The open task's row is marked.
   - *A phase's ledger* (G3, `PhaseLedger` in `task-tree.tsx`) is the phase row's own line under

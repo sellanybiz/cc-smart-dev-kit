@@ -102,7 +102,7 @@ describe("the current task's own row", () => {
     };
   }
 
-  it("counts plan tasks, including detached and dropped work, not phases", async () => {
+  it("shows the plan, its phases and the current phase's tasks, done and dropped closed", async () => {
     const w = world();
     const t = tasks(w);
     try {
@@ -122,23 +122,76 @@ describe("the current task's own row", () => {
           ),
         ),
       ).task;
-      const done = t.ok(
-        createTask(t.db, { project: t.project, plan: "work", subject: "Done" }, t.who, 3),
+      const step = (subject: string, at: number) =>
+        t.ok(
+          createTask(
+            t.db,
+            { project: t.project, plan: "work", subject, parentId: phase.id },
+            t.who,
+            at,
+          ),
+        );
+      t.ok(updateTask(t.db, step("Done", 3).id, { status: "done" }, t.who, 4));
+      t.ok(updateTask(t.db, step("Dropped", 5).id, { status: "dropped" }, t.who, 6));
+      const open = step("Write the screen", 7);
+      // A second phase, done: the plan counts phases, never their steps.
+      const other = t.ok(
+        writeWork(t.db, () =>
+          layPhase(
+            t.db,
+            { project: t.project, plan: "work", phase: "B", subject: "Design" },
+            t.who,
+            8,
+          ),
+        ),
+      ).task;
+      t.ok(updateTask(t.db, other.id, { status: "done" }, t.who, 9));
+      t.ok(updateTask(t.db, phase.id, { status: "in_progress" }, t.who, 10));
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · Plan\nPhases 1/2 · Build the feature\nTasks 2/3",
       );
-      t.ok(updateTask(t.db, done.id, { status: "done" }, t.who, 4));
-      const dropped = t.ok(
-        createTask(t.db, { project: t.project, plan: "work", subject: "Dropped" }, t.who, 5),
+      // The current step, started later, names itself on the tasks row.
+      t.ok(updateTask(t.db, open.id, { status: "in_progress" }, t.who, 11));
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · Plan\nPhases 1/2 · Build the feature\nTasks 2/3 · Write the screen",
       );
-      t.ok(updateTask(t.db, dropped.id, { status: "dropped" }, t.who, 6));
-      t.ok(createTask(t.db, { project: t.project, plan: "work", subject: "Open" }, t.who, 7));
-      t.ok(updateTask(t.db, phase.id, { status: "in_progress" }, t.who, 8));
-      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n2/3 · Build the feature");
     } finally {
       t.db.close();
     }
   });
 
-  it("shows 0/0 for a plan with no tasks yet", async () => {
+  it("names a task of a phased plan that sits under no phase", async () => {
+    const w = world();
+    const t = tasks(w);
+    try {
+      t.ok(ensurePlanTask(t.db, { project: t.project, plan: "work", subject: "Plan" }, t.who, 1));
+      t.ok(
+        writeWork(t.db, () =>
+          layPhase(
+            t.db,
+            { project: t.project, plan: "work", phase: "A", subject: "Build" },
+            t.who,
+            2,
+          ),
+        ),
+      );
+      t.ok(
+        createTask(
+          t.db,
+          { project: t.project, plan: "work", subject: "Fix the typo", status: "in_progress" },
+          t.who,
+          3,
+        ),
+      );
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · Plan\nPhases 0/1\nFix the typo",
+      );
+    } finally {
+      t.db.close();
+    }
+  });
+
+  it("shows Tasks 0/0 for a plan with no phase and no task yet", async () => {
     const w = world();
     const t = tasks(w);
     try {
@@ -151,7 +204,9 @@ describe("the current task's own row", () => {
         ),
       );
       t.ok(updateTask(t.db, plan.id, { status: "in_progress" }, t.who, 2));
-      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n0/0 · Plan the feature");
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · Plan the feature\nTasks 0/0",
+      );
     } finally {
       t.db.close();
     }
@@ -178,7 +233,10 @@ describe("the current task's own row", () => {
       );
       // An older store can retain members after its plan row is removed.
       t.db.sqlite.query("DELETE FROM tasks WHERE id=?").run(plan.id);
-      expect(await t.run()).toBe("Opus 5.5 · ctx 312k · 31% of 1M\n1/2 · Finish the import");
+      // The plan row is gone, so the plan row shows its slug; a plan with no phase counts its tasks.
+      expect(await t.run()).toBe(
+        "Opus 5.5 · ctx 312k · 31% of 1M\nPlan · kept\nTasks 1/2 · Finish the import",
+      );
     } finally {
       t.db.close();
     }

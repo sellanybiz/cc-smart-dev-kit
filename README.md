@@ -530,8 +530,11 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
 `task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; project ids use `T-` plus six
-base32 characters. The status line adds a separate `2/5 · Subject` row for current work: closed tasks out of
-all tasks in the current plan, or the title alone for a loose task.
+base32 characters. The status line shows current work on rows of its own, one per layer: `Plan · <title>`, then
+`Phases 5/25 · <current phase>` (closed phases out of all the plan's phases), then `Tasks 1/3`
+(the current phase's tasks, with the current task's title when it is one). A plan with no phase
+shows `Tasks` for its own tasks instead; a loose task shows its title alone. `task_list` and the
+portal count a plan the same way: its phases, or its tasks when it has no phase.
 
 **Schema v4:** old nested tasks lift automatically on every write open. A SQLite snapshot
 (`work.db.v4.bak`) keeps the pre-move data, including the write-ahead log. Notes and history
@@ -1227,10 +1230,13 @@ still hits; that login's next 429 writes it again.
   targets, `gateway fallback judge on` turns a stand-in you switched off back on, or you wait
   until the reset). `gateway status` and `doctor` print the same words with a `Fix:` line, and the
   session is told once to stop and wait instead of retrying.
-  - **The task row**, below the model, context, usage and cache-miss row: `2/5 · Subject`
-    counts closed tasks in the current plan, not plans or phases. An empty plan shows `0/0`.
-    A loose task shows its title alone; with no current work there is no second row. The
-    command keeps the full title, with no 60-character cut; the terminal limits what fits.
+  - **The task rows**, below the model, context, usage and cache-miss row: `Plan · <title>`,
+    then `Phases 5/25 · <current phase>` when the plan has phases, then `Tasks 1/3` (the
+    current phase's tasks, with the current task's title when it is one). A plan with no phase
+    shows `Tasks` for its own tasks; an empty plan shows `Tasks 0/0`. A task in a phased plan
+    but under no phase shows its title on a last row. A loose task shows its title alone; with
+    no current work there are no task rows. The command keeps each title whole, with no
+    60-character cut; the terminal limits what fits.
   - **The context segment**, always there once Claude Code reports any use, for example
     `ctx 312k · 78% of 400k · xhigh`: the tokens in the context, the share of the window they
     fill, and the reasoning effort. Claude Code itself shows its gauge only near auto-compact and
