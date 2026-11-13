@@ -19,10 +19,10 @@ instructions, the project's text wins.**
 - **On hand-back**, review and integrate the phase, then start what it unblocked in that turn.
 - **Deliver what was asked, complete** — no partial fix now and the rest later — and recommend
   the strongest complete design. Name a next-month risk in one line; build for it only if asked.
-- **Research first.** Before you use or recommend an external library, an API or a pattern,
-  check the project's code and the current docs, not your memory; when a search finds nothing,
-  try another way or ask, never guess. Reuse what the project has, then a maintained library or
-  the standard solution, then your own code, saying why nothing fitted (`/cc-smart-dev-kit:research-first`).
+- **Research first.** Before you choose a stack, or use or recommend a library, an API or a
+  pattern, check the project's code and the current docs, not memory; when a search finds
+  nothing, try another way or ask, never guess. Reuse what the project has, then a maintained
+  library or the standard solution, then your own code, saying why nothing fitted (`/cc-smart-dev-kit:research-first`).
 
 ## Your role
 

@@ -40,7 +40,8 @@ A subagent reports to its caller instead of asking the person.
 
 A plan built on memory is worse than no plan. Gather the facts, then plan from them:
 
-- **Research** — `/cc-smart-dev-kit:research-first` for every library, API or pattern.
+- **Research** — `/cc-smart-dev-kit:research-first` for every library, API or pattern; for
+  a new app, service or layer, its § Choosing a stack or an architecture.
 - **Prior art** for new work — how others already solve it: what to copy, what to skip, what
   fits this codebase. Look at the live product when the user experience matters.
 - **The code** — the files that change and the patterns to match.
