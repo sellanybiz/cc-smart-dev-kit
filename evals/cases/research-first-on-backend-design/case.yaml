@@ -1,0 +1,23 @@
+schema_version: "1.1"
+name: research-first-on-backend-design
+description: >-
+  Designing a backend means choosing its caching, real-time transport and job queue. That
+  choice is research-first's job, and its stack checklist is the list of decisions to walk.
+tags: [watch, trigger, research]
+plugins: ["../../under-test/plugin", "../../harness"]
+execution:
+  max_turns: 10
+  allowed_tools: [Read, Glob, Grep, Skill]
+  prompt: |
+    Design the backend for a chat app in this folder: live messages, push notifications, and nightly email digests. Tell me what to run it on and why.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-research-first
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?research-first"'
+  - name: reads-the-stack-checklist
+    type: tool_used
+    tool: 'Read'
+    input_match: 'stack-decisions\.md'

@@ -1,6 +1,6 @@
 ---
 name: research-first
-description: Use before using or recommending an external library, API or pattern, an architecture decision, an LLM integration, platform behaviour, a migration or upgrade, or hand-writing a solved problem or a component from scratch. Finds what exists and checks current sources. Trigger phrases - "should I use", "best way to", "is this still valid", "upgrade", "migrate", "is X deprecated", "add validation", "build a component".
+description: Use before choosing or using a library, API, pattern, architecture or a new app's stack, an LLM integration, platform behaviour, a migration or upgrade, or hand-writing a solved problem or component. Trigger phrases - "should I use", "which library", "tech stack", "state management", "best way to", "still valid", "is X deprecated", "upgrade", "migrate", "add validation", "build a component".
 ---
 
 # Research Before You Build
@@ -75,7 +75,8 @@ queries to versions, not years ("Next.js 16 server actions auth", not "best prac
 
 - every external library call you have not checked this session, a familiar one too — for a
   library the project already uses, its installed types and docs are the check;
-- architecture: data model, caching, auth, queues, state;
+- architecture and the stack: data model, server and client state, caching, auth, queues
+  (§ Choosing a stack or an architecture);
 - a pattern the codebase has never used;
 - hand-writing a solved problem (validation, formatting, parsing, dates and time zones,
   money, crypto, sanitization, translation) or a rich UI component — a maintained library
@@ -127,6 +128,46 @@ Workflow({
 - The run goes in the background; do not poll it. When it returns, rely on `verified` only; read
   a decisive claim's source yourself before a recommendation rests on it, and name the
   `unchecked`, `unproven` and open items in your answer.
+
+## Choosing a stack or an architecture
+
+A new app, a new service, or a new layer in one (data fetching, state, auth, jobs) is an
+architecture decision. The best choice moves with each release, so never pick from memory or
+habit. Before the first file:
+
+1. **Read what is fixed:** the project's framework, runtime and deploy target (a server, the
+   edge, serverless), the add-on's preferred and banned libraries, and what the code already
+   uses. A layer the framework already covers needs no library.
+2. **List the decisions this work makes.** Walk `references/stack-decisions.md` (beside this
+   file): frontend, backend and API, data, caching, real-time, queues, infrastructure and
+   scaling, testing, observability, security. It also lists the traps that only a check of
+   current sources catches: license changes, retired projects, hijacked releases.
+3. **Find the candidates** for each open decision: what the framework's own docs recommend or
+   ship, then two or three maintained libraries, from current sources (§ 4).
+4. **Compare them** on:
+   - fit;
+   - maintenance: recent releases, more than one maintainer, answered issues;
+   - security: open advisories and supply-chain signals (for example OpenSSF Scorecard,
+     Socket, deps.dev);
+   - adoption trend, not raw downloads;
+   - bundle cost;
+   - correct TypeScript types;
+   - runtime fit: server rendering, server components, the edge, ESM;
+   - license;
+   - exit cost: how hard it would be to replace.
+5. **Pick for the scale the project expects**, not a guessed one. Build no capability for
+   load nobody has asked for, but keep each choice cheap to change: each library behind the
+   project's own module, typed boundaries, tests. Settings come from config, never typed in
+   (the core instructions, § Core principles), and the code stays readable
+   (`/cc-smart-dev-kit:code-structure`). Pin versions in the lockfile: even a popular package
+   can ship a hijacked release.
+6. **Write the decision down.** For each decision: the options, the criteria that settled
+   it, the pick, and what would make you revisit it. It goes in the plan's Research section
+   (`/cc-smart-dev-kit:plan-task`), or in the project's decision records when it keeps them.
+
+Many decisions, or a contested one, call for the researcher, or, after asking, a research
+sweep (above):
+architecture is `opus` work (the core instructions' model table).
 
 ## From research to a recommendation
 

@@ -271,6 +271,17 @@ in code, and only the senior engineer researched the web. Its § How to research
 of the method for agents; the senior engineer points to it, and the lead's own method stays in
 `research-first`.
 
+**Choosing a stack (4.6.0).** A session that built an app could pick its libraries from
+memory. `research-first` § Choosing a stack or an architecture is the method: read what the
+project fixes, list the decisions, find current candidates, compare them on fixed criteria,
+pick for the expected scale, write the choice down. The list of decisions lives in
+`skills/research-first/references/stack-decisions.md`, read only when a stack is being chosen,
+so it costs no session that is not choosing one. It names tools only as examples, checked when
+written, and leads with the traps memory misses (license changes, retired projects, hijacked
+releases). `core.md`'s research bullet and `plan-task` § 1 point to the section; the eval cases
+`research-first-on-new-app-stack` and `research-first-on-backend-design` check that such a
+request opens the skill.
+
 **The tools each agent has: every tool of the session, less a short deny list** (the owner,
 2026-10-27). An agent file names no `tools:`, so the agent inherits the session's whole set, its
 MCP servers too: a project's database server for a reviewer that checks the dev data, the browser
