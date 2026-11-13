@@ -3,6 +3,16 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.5.3
+
+- **The status line shows the plan, its phases and the phase's tasks, each on its own row.**
+  It used to show one `closed/total · title` row that counted only a plan's tasks. A lead that
+  laid its phases without steps got `0/0`, even with phases done. Now the rows are
+  `Plan · <title>`, `Phases 5/25 · <current phase>` and `Tasks 1/3` (with the current task's
+  title when it is one). A plan with no phase shows `Tasks` for its own tasks.
+- **`task_list` and the portal count a plan by its phases too**, or by its tasks when it has no
+  phase. A phase still counts its own tasks, so nothing counts twice.
+
 ## 4.5.2
 
 - **A request for a Claude session now gets one, not subagents.** Asked to "run multiple Claude

@@ -394,8 +394,9 @@ export interface WorkTaskSteps {
 }
 
 /**
- * A plan's or a phase's tasks closed (done or dropped), of all of them, from the project's whole
- * list (`layerProgress`): closed long ago too, which the tree itself leaves out.
+ * A plan's phases (its tasks when it has no phase) or a phase's tasks, closed (done or dropped)
+ * of all of them, from the project's whole list (`layerProgress`): closed long ago too, which
+ * the tree itself leaves out.
  */
 export interface WorkTaskProgress {
   closed: number;

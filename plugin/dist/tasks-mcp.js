@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.5.2",
+  version: "4.5.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -22718,6 +22718,12 @@ function taskById(db, id) {
 function isOpen(task) {
   return task.status === "pending" || task.status === "in_progress";
 }
+function planCounted(all, plan) {
+  if (plan === null)
+    return [];
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan);
+  return phases.length > 0 ? phases : all.filter((t) => t.kind === "task" && t.plan === plan);
+}
 function planIsOpen(all, plan) {
   const row = all.find((task) => task.kind === "plan" && task.plan === plan);
   return row ? isOpen(row) : all.some((task) => task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task));
@@ -22728,7 +22734,7 @@ function descendants(db, id) {
 }
 function countedUnder(tasks, id) {
   const root = tasks.find((t) => t.id === id);
-  return root?.kind === "plan" ? tasks.filter((t) => t.kind === "task" && t.plan === root.plan) : descendantsIn(tasks, id);
+  return root?.kind === "plan" ? planCounted(tasks, root.plan) : descendantsIn(tasks, id);
 }
 function subtreeProgress(tasks, id) {
   const under = countedUnder(tasks, id);

@@ -263,13 +263,17 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
 - `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
   has open blocking steps (`holdingUnder`).
 
-`planProgress(paths, project, who)` reads the current in-progress claimed item, its plan, and
-closed/total **tasks**, by the `plan` column. Plans and phases are not counted. The most recently
-started claimed item wins; notes and edits to an older plan do not steal the status line.
-The status line prints `2/5 · Subject` on its own row, keeping the full title. An empty
-plan shows `0/0 · Subject`. A claimed phase counts its own plan. A loose task shows its
-title alone, without totals. With no current work, the task row is absent. Plan counts in `task_list`
-and the portal use the same membership rule. A phase's subtree counts and blocking steps stay
+`planProgress(paths, project, who)` reads the current in-progress claimed item, its plan, its
+phase (the item itself, or a task's parent phase), and two counts of closed (done or dropped) out
+of all: the plan's **phases**, by the `plan` column, and the current phase's **tasks**, by parent.
+A plan with no phase counts its own tasks by the `plan` column instead, so a lead that lays phases
+without steps still sees 5/25, and nothing counts twice. The most recently started claimed item
+wins; notes and edits to an older plan do not steal the status line.
+The status line prints a row per layer, each title whole: `Plan · <title>` (the slug when the plan
+row is gone), `Phases 5/25 · <phase>` when the plan has phases, and `Tasks 1/3` with the current
+task's title when it is one. An empty plan shows `Tasks 0/0`. A loose task shows its title alone,
+without totals. With no current work, the task rows are absent. Plan counts in `task_list` and the
+portal use the same rule (`layerProgress`). A phase's subtree counts and blocking steps stay
 separate: progress says how much work closed, and `holdingUnder` says what holds completion.
 
 **Take-over.** `task_take {task: "slug-or-#n", from?: "session", force?: true}` and

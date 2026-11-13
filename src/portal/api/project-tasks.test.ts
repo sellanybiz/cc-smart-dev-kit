@@ -271,12 +271,12 @@ describe("a project's tasks answer (D75)", () => {
           layer: "plan",
           phase: null,
           plan: "launch",
-          // A plan counts its tasks by their plan column, and the one task here has none.
-          progress: { closed: 0, total: 0 },
+          // A plan counts its phases by their plan column: the one phase here is open.
+          progress: { closed: 0, total: 1 },
           ref: "#1",
           status: "pending",
           subject: "launch",
-          total: 0,
+          total: 1,
           type: "blocking",
           updatedAt: "2026-02-27T00:00:00.000Z",
         },
@@ -572,8 +572,8 @@ describe("a project's tasks answer (D75)", () => {
     const work = ((await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer | undefined)?.work;
     if (work?.state !== "ready") throw new Error(`no tree: ${JSON.stringify(work)}`);
     const plan = work.tasks.find((one) => one.kind === "plan");
-    // The plan: its four tasks by the plan column, three of them closed. Never its phases.
-    expect(plan?.progress).toEqual({ closed: 3, total: 4 });
+    // The plan: its two phases by the plan column, both open. Its tasks count under their phase.
+    expect(plan?.progress).toEqual({ closed: 0, total: 2 });
     const phase = (id: string) => plan?.children.find((one) => one.id === id);
     // The phase: its three tasks by parent, two closed; the tree itself holds only the open one.
     expect(phase(api.id)?.progress).toEqual({ closed: 2, total: 3 });

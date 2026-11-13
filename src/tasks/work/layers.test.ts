@@ -487,7 +487,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     expect(ops.call("list", { scope: "all" })).toMatchObject({
       ok: true,
       text: [
-        "#1 [pending · plan] The plan · 0/2",
+        "#1 [pending · plan] The plan · 0/1",
         "  #2 [pending · phase A] Build A · 0/2 · agent none · branch none",
         "    #3 [pending] Step",
         "    #4 [pending · non-blocking · blocked by #3] Polish",

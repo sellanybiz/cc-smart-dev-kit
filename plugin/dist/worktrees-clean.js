@@ -6066,7 +6066,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.5.2",
+  version: "4.5.3",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {

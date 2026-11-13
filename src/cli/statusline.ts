@@ -34,7 +34,7 @@
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time;
  *   - `cache miss: tools_changed`, for a minute after a prompt-cache miss (`cache-miss.ts`:
  *     `prompt_cache.last_miss_at` and `last_miss_cause`, `CACHE_MISS_SHOW_MS`, no state), before
- *     the current task on its own second row (`closed/total · title`, or a loose title alone).
+ *     the current work on rows of its own (`taskSegment`: the plan, its phases, the tasks).
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
@@ -81,13 +81,27 @@ import { planProgress } from "../tasks/work/read";
 import type { Who } from "../tasks/work/types";
 import type { AlertsHere } from "../workflow/alerts";
 
-/** The current work's full title, with task-only totals for its plan. */
+/**
+ * The current work, a row per layer: `Plan · <title>`, then `Phases 5/25 · <current phase>` when
+ * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A loose
+ * task is its title alone. Each title is whole.
+ */
 export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null) return null;
+  const { task, plan, phase, phases, tasks } = read.value;
   // Plan membership is the task's own `plan` column: the plan task's row may be gone.
-  const { task, closed, total } = read.value;
-  return task.plan === null ? task.subject : `${closed}/${total} · ${task.subject}`;
+  if (task.plan === null) return task.subject;
+  const count = (word: string, of: { closed: number; total: number }, title?: string) =>
+    `${word} ${of.closed}/${of.total}${title === undefined ? "" : ` · ${title}`}`;
+  const own = task.kind === "task" ? task.subject : undefined;
+  return [
+    `Plan · ${plan?.subject ?? task.plan}`,
+    phases === null ? null : count("Phases", phases, phase?.subject),
+    tasks === null ? null : count("Tasks", tasks, own),
+  ]
+    .filter((row) => row !== null)
+    .join("\n");
 }
 
 function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {

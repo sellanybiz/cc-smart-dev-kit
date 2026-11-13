@@ -349,7 +349,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] upgrade · 1/1\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      text: "#1 [pending · plan] upgrade · 0/1\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
     });
     expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -436,7 +436,7 @@ test("another session's plan is never stamped on a session's own task; the plan 
     // Reading the ledger may fall back to the project's newest plan.
     expect(opsY.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Auth · 0/1\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+      text: "#1 [pending · plan] Auth · 0/2\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
     });
   } finally {
     opsX.close();
