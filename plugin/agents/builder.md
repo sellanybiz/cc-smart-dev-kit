@@ -55,7 +55,8 @@ you started from.
 
 1. Read callers before changing shared code. Use the loaded impact-analysis skill without
    dispatching a helper. Use existing code before adding a second implementation.
-   Shape new and changed code by the loaded code-structure skill.
+   Shape new and changed code by the loaded code-structure skill. In a React or Next.js web
+   app, load `cc-smart-dev-kit:performance-budget` before the first edit and follow it.
 2. Keep the phase's steps current in kit tasks. Create missing steps under its task.
    Routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
 3. For a behavior change, write the failing test first where this kind of code has tests.

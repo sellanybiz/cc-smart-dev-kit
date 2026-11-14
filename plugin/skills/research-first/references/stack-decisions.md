@@ -44,6 +44,8 @@ Each of these happened to a widely used tool. Memory misses every one of them:
 - **Forms and validation:** a form library (react-hook-form) and one schema library (Zod,
   Valibot) shared by the client and the server.
 - **Styling and components:** the design system, its component library, accessibility.
+- **React Compiler:** on in a new React app, from its first setup
+  (`/cc-smart-dev-kit:performance-budget` § React Compiler).
 
 ## Backend and API
 

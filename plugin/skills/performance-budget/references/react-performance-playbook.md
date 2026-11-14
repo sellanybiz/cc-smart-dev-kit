@@ -2,7 +2,8 @@
 
 **A neutral fork** of "React Best Practices" v1.0.0 (Vercel Engineering, January 2026), with
 corrections and a section on the Next.js 16 caching model, React 19 and React Compiler.
-The bundled reference of the `performance-budget` skill: read it on purpose, not on every edit.
+The bundled reference of the `performance-budget` skill: read the head once per session, then
+only the rules a change touches.
 License: MIT; the copyright and permission notice is in `LICENSE-react-best-practices.txt`
 beside this file.
 

@@ -11,8 +11,8 @@ one line each.
    config-driven design where the domain is truly open and change is already coming, and
    guard the opposite just as hard (deliver what was asked; build for a future only when asked):
    an interface with one implementation is a finding too.
-2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. Deep
-   detail: `/cc-smart-dev-kit:performance-budget`.
+2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. In a
+   React or Next.js app, a broken playbook rule is a finding: `/cc-smart-dev-kit:performance-budget`.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
    If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
    instructions' one-plan rule).
