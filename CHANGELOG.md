@@ -3,6 +3,21 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.7.0
+
+- **Claude follows the React playbook for every change to a React or Next.js web app.** The
+  playbook (Vercel's React Best Practices, plus the kit's section on Next.js 16 caching, React
+  19 and React Compiler) was read only for slow pages and bundle audits. Now the
+  `performance-budget` skill loads for any React or Next.js work. Claude reads the playbook's
+  head once per session, then only the rules each change touches, each once, and a broken
+  rule is a defect in its own code and in a review. Builder subagents load the skill too.
+- **React Compiler is on in every React web app.** A new app turns it on in its first setup.
+  When an existing app has it off, Claude says so and offers to turn it on as its own change:
+  the compiler's lint rules first, then the official setup for the project's build tool (a
+  large app rolls out in parts, as React's incremental adoption page shows), then the full
+  tests, the build and a check of the main screens. A project can keep it off by writing its
+  reason in `.claude/cc-smart-dev-kit/performance-budget.md`.
+
 ## 4.6.1
 
 - **The status line shows the plan, its phases and the phase's tasks, each on its own row.**

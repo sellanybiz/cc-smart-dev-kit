@@ -1637,7 +1637,7 @@ names such a missing import.
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |
 | `memory-routing` | Where a fact, a preference or a to-do belongs. |
 | `explain` | Teaching code or an idea in plain words. |
-| `performance-budget` | React and Next.js performance, with a deep playbook read on purpose. |
+| `performance-budget` | Every React or Next.js web app change: the React playbook the code follows, React Compiler on, and the performance and UX budget. |
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
