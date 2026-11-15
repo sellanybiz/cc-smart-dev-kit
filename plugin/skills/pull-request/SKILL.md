@@ -41,7 +41,7 @@ heading reads as "not considered".
 5. **How it was verified** — the real commands and their results. **Say what was not
    verified** — no browser check, no production data, no load test — and the second
    opinion's result (or "small fix"). A planned build has one pull request for the whole
-   plan and lists each phase's spec-and-quality verdicts and the full check.
+   plan and lists each phase's spec-and-quality verdicts, then the final whole-branch review.
    "Verified" with nothing behind it is worse than an honest gap.
 6. **Still owed after the merge** — open obligations from that same task output, with timing
    and weight. A pull request built on another open one says "stacked on #n — merge after it".

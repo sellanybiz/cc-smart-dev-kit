@@ -1,6 +1,6 @@
 ---
 name: build
-description: Use to execute an approved plan - parallel builders, a review per phase, fixes, merges and the full check, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
+description: Use to execute an approved plan - parallel builders, task reviews, fixes, merges and the final review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
 ---
 
 # Build The Approved Plan
@@ -89,7 +89,7 @@ back to `pending` to pass it: resume or dispatch the work, or record the real bl
 ## 3. Handle each hand-back and review the phase
 
 One review per phase, so at most `plans.maxPhases` first reviews (fix rounds add scoped
-re-reads, § 4). No whole-branch review follows (§ 6).
+re-reads, § 4), then the final whole-branch review (§ 6).
 
 Read its `Report:` note and check its claims against the actual branch. Record `agent`,
 `branch`, `worktree` and `base` on the phase task with `task_update`. Check its full
@@ -163,19 +163,15 @@ task's checkout or an unmerged branch. Repeat until all phases close.
 
 ## 6. Finish the whole branch once
 
-The phase reviews are the plan's reviews: no whole-branch review follows them (the owner,
-2026-11-15). So the main session owns the seams between phases itself: while merging, read
-what one phase hands another (a shared type, a message the other phase's text names, a call
-across them) and fix a mismatch in the integration. Then run the full check once in the main
-session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare success while a material
-defect remains; record the blocker and remaining work.
+Start one final `cc-smart-dev-kit:senior-engineer` on `opus`, effort `xhigh`, with the
+`Mode: review` line, over the plan's complete base-to-head range, including integration work.
+Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings, then run the full
+check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
+success while a material defect remains; record the blocker and remaining work.
 
-The one pull request of the plan opens after the full check passes, as `openPr` and the
+The one pull request of the plan opens after this review passes, as `openPr` and the
 person's permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
-Include phase verdicts and real checks. The merge guard's `reviewBeforePush` gate reads a
-review recorded on the pull request's head, which phase reviews do not give; where
-`autoMerge` is on, say so in the pull request: the person records it with
-`cc-smart-dev-kit workflow review-done` after reading it. Close the plan with evidence and archive its
+Include phase verdicts, final review and real checks. Close the plan with evidence and archive its
 design as the plan skill describes. Remove only merged, finished worktrees and branches.
 A next plan is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on
 the closed one.

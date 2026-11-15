@@ -39,8 +39,8 @@ shows each phase's agent, branch, state and completed steps, such as `3/5`.
 A builder writes a `Report:` note with its result and checks. The main session records
 small decisions in `Ruling:` notes, asks a fresh reviewer to review each phase, merges it
 into the plan branch (phase branches stay local), closes its task and starts what it
-unblocked. No whole-branch review follows (the owner, 2026-11-15): after the last merge and
-the full check, the plan's one pull request opens.
+unblocked. One final whole-branch review runs on `opus`; then the plan's one pull request
+opens.
 After compaction, this ledger and git history prevent repeating finished work.
 
 ## The work store
