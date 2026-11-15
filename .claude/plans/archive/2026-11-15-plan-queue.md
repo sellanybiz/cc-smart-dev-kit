@@ -133,7 +133,7 @@ in `in_progress` read as open in 4.8.0.
   - a start in plan 2 refused while plan 1 is in flight;
   - park plan 1 (refused while a phase runs, allowed after), then plan 2 starts;
   - resume plan 1 refused while plan 2 is in flight;
-  - plan 1 stays in flight through its final-review fix pass, so an unnamed task goes to it;
+  - plan 1 stays in flight through its final-review fix pass (a task with no plan or parent is loose since the review fix, #352);
   - 4.8.0 data (plan task pending, phase in progress) counts as in flight;
   - `task_list` marks;
   - keep-going "ready" with an in-flight plan between waves.

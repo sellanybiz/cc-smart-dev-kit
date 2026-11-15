@@ -18,12 +18,14 @@
  * 3. **No `Waiting for:` line** in the turn's last answer: the input's own
  *    `last_assistant_message`, else the transcript's last answer (`lastAssistantText`). With
  *    neither, the hook cannot tell, and lets the turn end.
- * 4. **A phase in progress** of a plan this Claude process works on: a plan that holds a task
- *    this process has claimed (`openPhasesOf`, the store's claim from `callerOf`). The store is
- *    read first; the caller is looked up only when some phase is in progress, since off Linux
- *    that lists the running processes. Another session's plan is not this one's business.
+ * 4. **Work to drive** (`openPhasesOf`): a phase in progress that this Claude process works on
+ *    (a phase of a plan whose plan task it owns, or a phase it claims a step in), or ready
+ *    phases of its plan in flight with none in progress (pending, nothing open blocks them, a
+ *    live task each). The store is read first; the caller is looked up only when some phase is
+ *    in progress or a plan in flight has a startable phase, since off Linux that lists the
+ *    running processes. A parked plan and another session's plan are not this one's business.
  * 5. **This reason not already given** (`stopFeedbackGiven`): read only after a phase in
- *    progress is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
+ *    progress or a ready phase is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
  *    reason in the session's own Stop feedback, with no subagent started or resumed since
  *    (`Agent`, `Task`, `Workflow`, `SendMessage`), keeps the hook silent: turns that answer the
  *    person without starting a subagent are not blocked again. A changed reason, or new subagent work after the feedback, earns
@@ -111,7 +113,7 @@ function readyReason(ready: readonly PhaseRef[]): string {
   const start = one
     ? "Start it now (dispatch its builder)"
     : "Start them together now (dispatch one builder for each)";
-  return `${head} ${start}, or record why ${one ? "it waits" : "they wait"} with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
+  return `${head} ${start}, or record why ${one ? "it waits" : "they wait"} with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line. To hold the plan longer, park it (\`${TASK_TOOL.update}\` its plan task to \`pending\`).`;
 }
 
 /**
@@ -179,7 +181,7 @@ export function keepGoingAnswer(
   if (said === null || waitsOnSomething(said)) return SILENT;
   const cwd = stringField(input.cwd);
   if (cwd === null) return SILENT;
-  // The caller is looked up only once the store has a phase in progress (`openPhasesOf`).
+  // The caller is looked up only once the store has a phase in progress or a startable phase (`openPhasesOf`).
   const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () =>
     findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }),
   );

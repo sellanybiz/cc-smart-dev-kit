@@ -648,7 +648,8 @@ Every one is named, as `#n subject` and capped like the phases in progress. So a
 running phase closes, ready phases no longer sit idle: with no phase in progress, the guard
 still blocks once per stalled state, with a reason of its own: "N phases are ready to start,
 and no subagent runs: #a x, #b y. Start them together now (dispatch one builder for each), or
-record why they wait with `task_note` and end the turn with a `Waiting for: <what>` line."
+record why they wait with `task_note` and end the turn with a `Waiting for: <what>` line. To
+hold the plan longer, park it (`task_update` its plan task to `pending`)."
 (one phase: "Phase #a x is ready to start, and no subagent runs. Start it now (dispatch its
 builder), or record why it waits …"). The `Waiting for:` line, background work and the
 once-per-state memory apply as for a phase in progress. No plan in flight, a parked plan, and

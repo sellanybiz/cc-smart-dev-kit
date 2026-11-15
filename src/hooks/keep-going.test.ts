@@ -438,7 +438,8 @@ describe("keep-going: stalled state", () => {
 });
 
 /** The reason's closing words when no phase runs, written by hand. */
-const READY_TAIL = "end the turn with a `Waiting for: <what>` line.";
+const READY_TAIL =
+  "end the turn with a `Waiting for: <what>` line. To hold the plan longer, park it (`task_update` its plan task to `pending`).";
 
 /**
  * Plan `plan-a`, laid as #1 (its task), then `count` phases each holding a step: #2, #3, ... The
