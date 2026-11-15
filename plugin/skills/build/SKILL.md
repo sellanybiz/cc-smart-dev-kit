@@ -172,7 +172,10 @@ defect remains; record the blocker and remaining work.
 
 The one pull request of the plan opens after the full check passes, as `openPr` and the
 person's permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
-Include phase verdicts and real checks. Close the plan with evidence and archive its
+Include phase verdicts and real checks. The merge guard's `reviewBeforePush` gate reads a
+review recorded on the pull request's head, which phase reviews do not give; where
+`autoMerge` is on, say so in the pull request: the person records it with
+`cc-smart-dev-kit workflow review-done` after reading it. Close the plan with evidence and archive its
 design as the plan skill describes. Remove only merged, finished worktrees and branches.
 A next plan is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on
 the closed one.
