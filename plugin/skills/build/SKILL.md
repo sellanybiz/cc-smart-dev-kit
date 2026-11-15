@@ -38,10 +38,13 @@ per job: `/cc-smart-dev-kit:subagent-decision` § The lead's judgment.
 A plan is one pull request and holds at most `plans.maxPhases` phases; a phase is one area
 with its tasks (`/cc-smart-dev-kit:plan-task` § 5). **Add no phase while building:** new
 in-scope work becomes a task under the phase that owns its files, and a later ask waits as a
-task in the next plan (plan-task § 6). The store refuses a phase beyond the cap and a phase
-in a second plan while the active one has open phases; plan-task §§ 5 and 6 give the way
-forward for each. It also refuses to start a phase with no tasks: add one with `task_create`
-and `parent` set to the phase's `#n`. A call that names no plan goes to the active plan.
+task in the next queued plan (plan-task § 6). The store refuses a phase beyond the cap
+(plan-task § 5). It refuses to start a phase with no tasks: add one with `task_create` and
+`parent` set to the phase's `#n`. It also refuses to start work in a plan while another is in
+flight: finish that plan or park it (plan-task § 6, which holds the whole model, the default
+plan of a call that names none included). Queued plans may already hold their phases; build
+the plan you are building: the one in flight, or, when none is, the lowest-numbered queued
+plan (plan-task § 6). Leave the others queued until it is closed.
 
 The kit defaults to 10 running subagents per session through Claude Code's own
 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Setup writes the managed value and preserves a
@@ -51,9 +54,9 @@ never retry the refused launch in a loop. Count reviews, hunts and scouts in the
 
 ## 2. Start the ready wave in one message
 
-Every phase with no open blocker starts in this one message: with the default 10 subagents, a
-whole plan of independent phases can start at once. Mark each `in_progress` and record its
-starting commit as `base`.
+Every phase of the plan you are building (§ 1) with no open blocker starts in this one
+message: with the default 10 subagents, a whole plan of independent phases can start at once.
+Mark each `in_progress` and record its starting commit as `base`.
 Choose a fresh builder (or rules-maintainer for instruction files) and explicit `model`
 and `effort` by the job. Announce the slot, model and effort. Send all independent `Agent`
 calls in one message, each with `isolation: "worktree"`; they run in the background (Claude
@@ -173,8 +176,9 @@ The one pull request of the plan opens after this review passes, as `openPr` and
 person's permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 Include phase verdicts, final review and real checks. Close the plan with evidence and archive its
 design as the plan skill describes. Remove only merged, finished worktrees and branches.
-A next plan is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on
-the closed one.
+After that `task_done`, start the next queued plan yourself; until then it stays queued, with
+its phases already laid. A plan nobody laid is a fresh plan task from
+`/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
 
 ## Rulings, not stalls
 

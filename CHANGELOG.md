@@ -3,6 +3,27 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.9.0
+
+- **Lay out all your plans up front; one runs at a time.** In 4.8.0 a session could queue
+  plans but could lay phases in only one of them, so a later plan's phases waited in its plan
+  file. Now every plan can hold its phases and tasks, briefs included, from the start. The
+  ledger shows all of it, and nothing waits only in a file. A queued plan's task is `pending`.
+- **One plan is in flight.** The store marks a plan's task `in_progress` when its first phase
+  or task starts. Starting work in another plan is refused while one is in flight, and the
+  refusal names that plan and the two ways forward: finish it or park it. A plan stays in
+  flight until its `task_done`, so its final review and fix pass belong to it, and the next
+  plan starts after it closes. Plans run in plan-number order unless you say otherwise.
+- **Parking keeps the work.** To park a plan, set its plan task back to `pending` with a note
+  `parked: <why>`, after its running phases stop (the store refuses while one is in progress).
+  Nothing is dropped: phases, steps and briefs stay as they were. Starting one of its phases
+  resumes it. This replaces 4.8.0's way of parking by dropping every open step and phase.
+- **`task_list` marks each plan** in flight, queued or parked, in plan-number order. A call
+  that names no plan goes to the plan in flight. An ask made during a build goes to the next
+  queued plan: under its phase when one fits, else waiting under the plan.
+
+**What to run:** nothing.
+
 ## 4.8.0
 
 - **A plan holds at most 10 phases, and each phase holds its real tasks.** Plans had grown to
