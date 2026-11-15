@@ -28,6 +28,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **`/clear` keeps your plans.** After a `/clear` the session gets a new id, but the same
   process still owns the plans and tasks it made before. So the one-plan rule still holds, and
   `task_list` keeps showing that earlier work.
+- **Claude is no longer told your plan's usage.** The hook line that said when a window passed
+  50, 75 or 90 % is gone, and so is the skill section that told Claude to ration agents by it.
+  The status line still shows the usage to you, and warns from `alerts.usagePercent`.
 
 **What to run:** nothing.
 

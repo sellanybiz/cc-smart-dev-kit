@@ -101,7 +101,7 @@ more again for a few points, and the docs call `max` "prone to overthinking". So
 recommended on Claude Opus at `high`, and briefs are full for every tier, whatever model answers
 it: there is no lighter brief for a backend. `core.md` keeps the short form (§ Subagents);
 `subagent-decision` holds the whole policy: the worked examples, delegation and parallel work,
-task types, the usage-left rule, how to brief, and the order Claude Code reads `model` and
+task types, how to brief, and the order Claude Code reads `model` and
 `effort` in (the call first, then an agent's frontmatter, so frontmatter is only a default; the
 kit's own agents carry none).
 
