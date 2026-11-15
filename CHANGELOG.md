@@ -29,9 +29,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **No whole-branch review at the end of a plan.** It ran on `opus` at `xhigh` over the
   whole branch and cost more usage than it caught. The phase reviews are the plan's reviews;
   the main session checks the seams between phases while it merges, then runs the full check.
-  The trade-off: a bug that lives only between two phases gets no reviewer. Where `autoMerge`
-  is on, the merge guard still needs a review recorded on the pull request's head, so the
-  person runs `cc-smart-dev-kit workflow review-done` after reading it.
+  The trade-off: a bug that lives only between two phases gets no reviewer.
 - **Bigger phases never mean less work.** A phase's step closes `done` only with evidence
   (what was run or checked, and its result) and `dropped` only with a reason; the store
   refuses otherwise. The phase review answers every step with its own line (`done`, `missing`,
