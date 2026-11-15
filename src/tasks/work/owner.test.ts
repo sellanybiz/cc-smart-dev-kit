@@ -152,7 +152,7 @@ test("hasOwnTask follows the same rule: a /clear still has the process's open ta
 test("schema 4 moves to 5: the columns and the notes index appear, an old row keeps working with no creator", () => {
   const { db, paths } = setup();
   const made = value(createTask(db, { project: "p", subject: "Before" }, OLD, 1));
-  // The store as 4.9.0 left it: no creator columns, no notes index, schema 4.
+  // The store as 4.8.0 left it: no creator columns, no notes index, schema 4.
   db.sqlite.run("DROP INDEX task_note_task");
   for (const column of ["created_pid", "created_start"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);

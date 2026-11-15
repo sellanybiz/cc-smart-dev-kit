@@ -93,11 +93,36 @@ function named(phase: PhaseRef): string {
   return `#${phase.number} ${phase.subject}`;
 }
 
-/** The block's reason: the phases in progress, then the next ready phase or how to close. */
+/** The ready phases, in the words a start option names them, capped like every hook list. */
+function readyNames(ready: readonly PhaseRef[]): string {
+  return cappedHookList(ready, named, TASK_TOOL.list);
+}
+
+/**
+ * The reason when no phase runs but the plan in flight has phases that could start: name every
+ * one, and tell the session to dispatch their builders together.
+ */
+function readyReason(ready: readonly PhaseRef[]): string {
+  const one = ready.length === 1;
+  const names = readyNames(ready);
+  const head = one
+    ? `Phase ${names} is ready to start, and no subagent runs.`
+    : `${ready.length} phases are ready to start, and no subagent runs: ${names}.`;
+  const start = one
+    ? "Start it now (dispatch its builder)"
+    : "Start them together now (dispatch one builder for each)";
+  return `${head} ${start}, or record why ${one ? "it waits" : "they wait"} with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
+}
+
+/**
+ * The block's reason: the phases in progress, then the ready phases or how to close; with no
+ * phase in progress, the ready phases alone (`readyReason`).
+ */
 export function keepGoingReason(
   inProgress: readonly PhaseRef[],
   ready: readonly PhaseRef[],
 ): string {
+  if (inProgress.length === 0) return readyReason(ready);
   const one = inProgress.length === 1;
   const shown = inProgress.slice(0, HOOK_LIST_LIMIT);
   const refs = shown.map((phase) => `#${phase.number}`).join(", ");
@@ -106,7 +131,6 @@ export function keepGoingReason(
     ? `Phase ${names} is still in progress, and no subagent runs.`
     : `${inProgress.length} phases are still in progress, and no subagent runs: ${names}.`;
   const wait = `end the turn with a \`${WAIT_MARK} <what>\` line`;
-  const next = ready[0];
   const options: string[] = [];
   for (const phase of shown) {
     if (phase.agent !== null) {
@@ -127,7 +151,9 @@ export function keepGoingReason(
       `start ${fresh.length === 1 ? "a fresh builder" : "fresh builders"} on ${one ? "it" : fresh.map((phase) => `#${phase.number}`).join(", ")}`,
     );
   }
-  if (next !== undefined) options.push(`start ${named(next)} now (dispatch its builder)`);
+  if (ready.length === 1) options.push(`start ${readyNames(ready)} now (dispatch its builder)`);
+  else if (ready.length > 1)
+    options.push(`start ${readyNames(ready)} together now (dispatch their builders)`);
   options.push(
     `close ${inProgress.length > shown.length ? "every phase (including those not shown)" : refs} with \`${TASK_TOOL.done}\``,
   );
@@ -158,7 +184,9 @@ export function keepGoingAnswer(
     findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }),
   );
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
-  if (view.state === "none" || view.value.inProgress.length === 0) return SILENT;
+  if (view.state === "none") return SILENT;
+  // Nothing runs and nothing is ready to start: nothing to keep going on.
+  if (view.value.inProgress.length === 0 && view.value.ready.length === 0) return SILENT;
   const reason = keepGoingReason(view.value.inProgress, view.value.ready);
   // Once per stalled state: the same reason, given with no subagent work since, stays given.
   const transcript = stringField(input.transcript_path);

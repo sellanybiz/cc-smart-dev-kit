@@ -687,6 +687,11 @@ export function takeTasks(
         "changed",
         {
           createdBy: [task.createdBy, who.sessionId],
+          // The maker process moves too: the history shows who it was, and who it is now.
+          creator: [
+            task.creator === null ? null : `process ${task.creator.pid}`,
+            who.pid === null ? null : `process ${who.pid}`,
+          ],
           ...(task.claim === null
             ? {}
             : {

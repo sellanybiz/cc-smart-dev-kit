@@ -515,3 +515,271 @@ test("a caller with no session id owns no task the terminal made", () => {
     nameless.close();
   }
 });
+
+/** Two callers on one store and one folder: the session `s`, and another one. */
+function twoCallers() {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  const open = (sessionId: string) =>
+    createTaskOps({
+      env: hookEnv(),
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId, pid: null, procStart: null, cwd }),
+    });
+  return { mine: open("s"), theirs: open("other") };
+}
+
+/**
+ * Plan `p` (#1), a loose blocker (#2), two phases blocked by it (#3 "Phase x", #4 "Phase y"), a
+ * second blocker (#5) and a loose task held by both (#6), and a step in each phase (#7, #8).
+ */
+function freedWork(ops: ReturnType<typeof createTaskOps>) {
+  const calls: Record<string, unknown>[] = [
+    { subject: "Plan", plan: "p" },
+    { subject: "Blocker" },
+    { subject: "Phase x", plan: "p", phase: "X", blocked_by: ["#2"] },
+    { subject: "Phase y", plan: "p", phase: "Y", blocked_by: ["#2"] },
+    { subject: "Other blocker" },
+    { subject: "Held", blocked_by: ["#2", "#5"] },
+    { subject: "Step x", parent: "#3" },
+    { subject: "Step y", parent: "#4" },
+  ];
+  for (const input of calls) {
+    const answer = ops.call("create", input);
+    if (!answer.ok) throw new Error(answer.why);
+  }
+}
+
+test("closing a blocker names the phases it freed, in number order, and not a task with another open blocker", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    freedWork(mine);
+    expect(mine.call("done", { task: "#2" })).toEqual({
+      ok: true,
+      text: '#2 "Blocker" · done · now ready: #3 Phase x, #4 Phase y: start them together',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("task_update to done or dropped names the freed work the same way", () => {
+  for (const status of ["done", "dropped"] as const) {
+    const { mine, theirs } = twoCallers();
+    try {
+      freedWork(mine);
+      expect(mine.call("update", { task: "#2", status })).toEqual({
+        ok: true,
+        text: `#2 "Blocker" · ${status} · now ready: #3 Phase x, #4 Phase y: start them together`,
+      });
+    } finally {
+      mine.close();
+      theirs.close();
+    }
+  }
+});
+
+test("the last open blocker closing frees the held task, alone: start it, not them", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    freedWork(mine);
+    expect(mine.call("done", { task: "#2" }).ok).toBe(true);
+    expect(mine.call("done", { task: "#5" })).toEqual({
+      ok: true,
+      text: '#5 "Other blocker" · done · now ready: #6 Held: start it',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("another session's task that the close freed is not named", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    expect(mine.call("create", { subject: "Blocker" }).ok).toBe(true);
+    expect(theirs.call("create", { subject: "Theirs", blocked_by: ["#1"] }).ok).toBe(true);
+    expect(mine.call("done", { task: "#1" })).toEqual({ ok: true, text: '#1 "Blocker" · done' });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("a freed phase with no live task and a dropped task are not named", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    expect(mine.call("create", { subject: "Plan", plan: "p" }).ok).toBe(true);
+    expect(mine.call("create", { subject: "Blocker" }).ok).toBe(true);
+    expect(
+      mine.call("create", { subject: "Empty", plan: "p", phase: "E", blocked_by: ["#2"] }).ok,
+    ).toBe(true);
+    expect(mine.call("create", { subject: "Freed", blocked_by: ["#2"] }).ok).toBe(true);
+    expect(mine.call("create", { subject: "Dropped", blocked_by: ["#2"] }).ok).toBe(true);
+    expect(mine.call("update", { task: "#5", status: "dropped" }).ok).toBe(true);
+    expect(mine.call("done", { task: "#2" })).toEqual({
+      ok: true,
+      text: '#2 "Blocker" · done · now ready: #4 Freed: start it',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("a close that frees nothing keeps its old text", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    expect(mine.call("create", { subject: "Plain" }).ok).toBe(true);
+    expect(mine.call("done", { task: "#1" })).toEqual({ ok: true, text: '#1 "Plain" · done' });
+    expect(mine.call("create", { subject: "Next" }).ok).toBe(true);
+    expect(mine.call("update", { task: "#2", status: "dropped" })).toEqual({
+      ok: true,
+      text: '#2 "Next" · dropped',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("a step claimed in another session's plan does not make that plan this session's default", () => {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  // Two Claude processes, so a claim names a process.
+  const open = (sessionId: string, pid: number) =>
+    createTaskOps({
+      env: hookEnv(),
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId, pid, procStart: `${pid}0`, cwd }),
+    });
+  const theirs = open("x", 301);
+  const mine = open("y", 302);
+  try {
+    for (const input of [
+      { subject: "Auth", plan: "auth" },
+      { subject: "G1", plan: "auth", phase: "G1" },
+      { subject: "Step one", parent: "#2" },
+      { subject: "G2", plan: "auth", phase: "G2" },
+      { subject: "Step two", parent: "#4" },
+    ])
+      expect(theirs.call("create", input).ok).toBe(true);
+    expect(theirs.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
+    // This session, with no plan, starts their step: it claims it, and owns that one task.
+    expect(mine.call("update", { task: "#3", status: "in_progress" }).ok).toBe(true);
+    expect(mine.call("create", { subject: "Mine", phase: "Y1" })).toEqual({
+      ok: false,
+      why: "A phase belongs to a plan: give plan (its slug)",
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+/** Plan a (#1, in flight through its phase #2), plan b (#4, queued, its phase #5), a loose task (#7). */
+function twoPlans(ops: ReturnType<typeof createTaskOps>, flying: boolean, running: boolean) {
+  const calls: Record<string, unknown>[] = [
+    { subject: "Plan a", plan: "a" },
+    { subject: "A1", plan: "a", phase: "A1" },
+    { subject: "Step a", parent: "#2" },
+    { subject: "Plan b", plan: "b" },
+    { subject: "B1", plan: "b", phase: "B1" },
+    { subject: "Step b", parent: "#5" },
+    { subject: "Fix caching", ...(running ? { status: "in_progress" } : {}) },
+  ];
+  for (const input of calls) {
+    const answer = ops.call("create", input);
+    if (!answer.ok) throw new Error(answer.why);
+  }
+  if (flying) {
+    const started = ops.call("update", { task: "#2", status: "in_progress" });
+    if (!started.ok) throw new Error(started.why);
+  }
+}
+
+test("moving a running task into a queued plan while another plan is in flight is refused like a start", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    twoPlans(mine, true, true);
+    const moved = mine.call("update", { task: "#7", parent: "#5" });
+    expect(moved.ok).toBe(false);
+    expect(moved.ok ? "" : moved.why).toStartWith(
+      'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet.',
+    );
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("moving a pending task into a queued plan while another plan is in flight is allowed", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    twoPlans(mine, true, false);
+    expect(mine.call("update", { task: "#7", parent: "#5" }).ok).toBe(true);
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("moving a running task into a plan with none in flight puts that plan in flight", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    twoPlans(mine, false, true);
+    expect(mine.call("update", { task: "#7", parent: "#5" }).ok).toBe(true);
+    const listed = mine.call("list", { scope: "plan" });
+    if (!listed.ok) throw new Error(listed.why);
+    expect(listed.text).toContain("#4 [in flight · plan] Plan b");
+    expect(listed.text).toContain("#1 [queued · plan] Plan a");
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("a take records the maker moving: the history shows the session and the process", () => {
+  const cwd = tempDir();
+  const stateDir = tempDir();
+  const open = (sessionId: string, pid: number) =>
+    createTaskOps({
+      env: hookEnv(),
+      stateDir,
+      cwd: () => cwd,
+      caller: () => ({ sessionId, pid, procStart: `${pid}0`, cwd }),
+    });
+  const first = open("a", 100);
+  const second = open("b", 200);
+  try {
+    expect(first.call("create", { subject: "Work" }).ok).toBe(true);
+    expect(second.call("take", { task: "#1" }).ok).toBe(true);
+    const shown = second.call("get", { task: "#1" });
+    if (!shown.ok) throw new Error(shown.why);
+    expect(shown.text).toContain(
+      "changed: made by session a → b; made by process 100 → process 200",
+    );
+  } finally {
+    first.close();
+    second.close();
+  }
+});
+
+test("a close that frees more than the hooks' list limit caps the answer", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    expect(mine.call("create", { subject: "Blocker" }).ok).toBe(true);
+    for (let index = 1; index <= 9; index += 1)
+      expect(mine.call("create", { subject: `T${index}`, blocked_by: ["#1"] }).ok).toBe(true);
+    expect(mine.call("done", { task: "#1" })).toEqual({
+      ok: true,
+      text: '#1 "Blocker" · done · now ready: #2 T1, #3 T2, #4 T3, #5 T4, #6 T5, #7 T6, #8 T7, #9 T8, +1 more: task_list: start them together',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});

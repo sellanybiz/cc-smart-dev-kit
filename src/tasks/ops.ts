@@ -5,6 +5,7 @@ import { type TaskOperation, taskSchemas } from "./schemas";
 export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
+import { cappedHookList } from "../hooks/capped-list";
 import { runGit } from "../hooks/git";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
@@ -34,6 +35,7 @@ import {
   defaultPlanOf,
   deletedHistory,
   eventsOf,
+  freedBy,
   getTask,
   inFlightPlanOf,
   isOpen,
@@ -41,6 +43,7 @@ import {
   notesOf,
   openBlockers,
   ownerOf,
+  ownsPlan,
   PARK_NOTE_PREFIX,
   planQueueState,
   searchTasks,
@@ -105,6 +108,17 @@ function value<T>(result: Result<T>): T {
 }
 function label(task: WorkTask): string {
   return `#${task.number} "${task.subject}"`;
+}
+/**
+ * What a close adds to its answer: the caller's own work it just made startable (`freedBy`), in
+ * number order and capped like the hooks' lists, or nothing when it freed none. Read after the
+ * close, so `all` holds the closed task as closed.
+ */
+function freedText(all: readonly WorkTask[], closed: WorkTask, owns: (t: WorkTask) => boolean) {
+  const freed = freedBy(all, closed, owns);
+  if (freed.length === 0) return "";
+  const list = cappedHookList(freed, (t) => `#${t.number} ${t.subject}`, TASK_TOOL.list);
+  return ` · now ready: ${list}: start ${freed.length === 1 ? "it" : "them together"}`;
 }
 /** What a task's line adds to its status (D76): its type when non-blocking, its open blockers. */
 function marks(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): string[] {
@@ -178,8 +192,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // made by its process under an earlier session id, as before a `/clear`).
       const owns = ownerOf(who);
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
-      // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
-      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
+      // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`):
+      // a plan is the caller's by its plan task (`ownsPlan`), not by a step it merely claims.
+      const ownPlan =
+        [...all].reverse().find((t) => t.plan !== null && owns(t) && ownsPlan(all, owns, t.plan))
+          ?.plan ?? null;
       // The plan in flight: a plan queued behind it never takes a call that names no plan.
       const inFlight = inFlightPlanOf(all, owns);
       const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
@@ -441,13 +458,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           refuseOverCap(all, task.plan, cap);
         }
         const starting = input.status === "in_progress" && task.status !== "in_progress";
-        if (starting) {
-          refuseEmptyPhase(all, task);
-          if (task.plan !== null) refuseOther(task.plan);
-        }
+        const destination = input.parent ? work(input.parent) : null;
+        // The plan the task is in after this call (moving to the top keeps it). A running task
+        // moved into another plan puts work there, so it is a start in that plan: the one-plan
+        // rule judges it, and the plan goes in flight.
+        const landing = destination === null ? task.plan : destination.plan;
+        const entering =
+          starting || (landing !== task.plan && (input.status ?? task.status) === "in_progress");
+        if (starting) refuseEmptyPhase(all, task);
+        if (entering && landing !== null) refuseOther(landing);
         refuseParkWhileBusy(all, task, input.status);
-        if (input.parent !== undefined)
-          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
+        if (input.parent !== undefined) refuseStepEscape(all, task, destination);
         // This call carries no evidence or note, so a step cannot close here.
         if (input.status === "done" || input.status === "dropped")
           refuseBareClose(all, task, input.status, {});
@@ -474,16 +495,19 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               who,
               now,
             );
-            if (starting && task.kind !== "plan") enterFlight(task.plan);
+            if (entering && task.kind !== "plan") enterFlight(landing);
             return changed;
           }),
         );
-        const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
+        const afterAll = allTasks(store, ctx.project);
+        const byId = new Map(afterAll.map((t) => [t.id, t]));
+        const closed = updated.status === "done" || updated.status === "dropped";
         return {
           ok: true,
-          text: [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(
-            " · ",
-          ),
+          text:
+            [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(
+              " · ",
+            ) + (closed ? freedText(afterAll, updated, owns) : ""),
         };
       }
       if (operation === "done") {
@@ -517,7 +541,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             return applyUpdate(store, task.id, { status: input.outcome }, who, now);
           }),
         );
-        return { ok: true, text: `${label(changed)} · ${input.outcome}` };
+        return {
+          ok: true,
+          text: `${label(changed)} · ${input.outcome}${freedText(allTasks(store, ctx.project), changed, owns)}`,
+        };
       }
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
@@ -670,7 +697,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             all
               .filter(owns)
               .map((t) => t.plan)
-              .filter((p) => p !== null),
+              .filter((p) => p !== null && ownsPlan(all, owns, p)),
           );
           selected = selected.filter(
             (t) =>

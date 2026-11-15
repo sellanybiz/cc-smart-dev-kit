@@ -210,6 +210,10 @@ checkout's working copy through the normal workflow resolver:
   freely. An open blocking waiting task holds the plan's close like any child
   (`holdingUnder`, `doneValid`). The status line and `layerProgress` already read "a task of a
   phased plan under no phase" this way: it counts in no layer.
+- **Moving a running task is a start.** `task_update` with `parent` that puts a task which is
+  running, or starts in the same call, into another plan counts as a start in that plan: the
+  one-plan rule refuses it while another plan of yours is in flight, and otherwise puts the
+  destination plan in flight in the same write.
 - **Steps close with proof.** A task whose parent is a phase closes `done` only with `evidence`
   and `dropped` only with a `note` on `task_done` (`refuseBareClose`); `task_update` cannot close
   one. A phase, a plan, a loose task and a waiting task keep the plain close, and the kit's own
@@ -225,13 +229,30 @@ checkout's working copy through the normal workflow resolver:
   waves. `doctor`'s project checks print one `!` line for each open plan over the cap, with its
   fix. Readers that look at a plan task's status (`planCounted`, `layerProgress`, the portal's
   tree, `openPhasesOf`) read an `in_progress` plan the same way as a pending one: they count its
-  phases and tasks, and the keep-going guard names only the phases of plans that have one
-  running.
+  phases and tasks, and the keep-going guard names the ready phases of the plan in flight and of
+  plans that have a phase running.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
 1.11.0 migrated. A 1.10.x writer adds tasks with the default, blocking, which is the 1.10.x
 rule. No hook query names the column, and a row without it reads as blocking.
+
+### Freed work
+
+Blocked is computed, never stored: a task is blocked while a task it waits for is open
+(`isBlocked`), so the store lets a freed task start by itself. What it did not do is say so.
+Now every close answers with the work it freed. `task_done` and `task_update` to `done` or
+`dropped` (and so the command's `task done` and `task drop`, which call the same operations)
+end their answer with `· now ready: #12 Phase x, #13 Phase y: start them together` (one task:
+`: start it`) when the close made work startable, and say nothing more when it freed none.
+
+The freed work (`freedBy`, `src/tasks/work/queries.ts`) is each task or phase that had the
+closed task as a blocker and now could start (`isStartable`: pending, no other open blocker, and
+for a phase at least one task that is not dropped, the test the store's start applies), and that
+is the caller's own (`ownerOf`: another session's task is never named). It is read after the
+close, in number order, capped like the hooks' lists (`cappedHookList`, eight, then
+`+N more: task_list`). A task already started or closed is not named. The keep-going guard
+names the same work from the other side: `docs/design/hooks.md` § The keep-going guard.
 
 ### A task's history
 
@@ -267,11 +288,15 @@ when its process made it, under any session id. The store records the maker (`cr
 start time and the session id it made the task under, schema 5) and tests it with the same
 `claimHeldBy` as a claim, so a queued plan made before a `/clear` is still in the caller's
 queue, with nothing claimed yet. A task another process made is never the caller's by a claim
-on one of its sibling tasks. A row made before schema 5 has no maker process and is its session's
-own only. `task_take` rewrites the maker to the taker. Off
-Linux there is no start time, so a claim there also needs the caller's session id
-(`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims, and a
-`/clear` there drops the claims until the task is started again. The
+on one of its sibling tasks. A plan is the caller's by its plan task (`ownsPlan`): a step it
+claims in another session's plan makes neither that plan its default plan, nor its phases
+the stop guard's to start. A row made before schema 5 has no maker process and is its session's
+own only. `task_take` rewrites the maker to the taker, and records the old and new maker in the
+task's history (`made by`); a take made by an older kit version leaves the old maker in place
+until the old version folders are gone. Off
+Linux there is no start time, so a claim and the maker rule there also need the caller's
+session id (`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims,
+and a `/clear` there drops the claims and the queue's ownership until the task is started again. The
 server finds that process through ancestry and reads its current session record on each
 call. The record supplies the session id and cwd, including a move into a worktree. Thus
 `/clear` and a background fork keep the process's tasks. Another process's in-progress
@@ -364,9 +389,10 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
   (default 30) is not listed but counted in one line, unless this process claims it. Until
   registration exists, the hook says to run setup.
 - `keep-going` (Stop) holds the main session's turn end once per stalled state while a phase
-  of its plan is in progress and nothing runs. The same reason already given, with no subagent
-  started or resumed since, keeps it silent. It names the agent to resume with `SendMessage`,
-  or says to start a fresh builder, then the next ready phase, closing with `task_done`, or
+  of its plan is in progress and nothing runs, or while the plan in flight has ready phases
+  and none runs. The same reason already given, with no subagent started or resumed since,
+  keeps it silent. It names the agent to resume with `SendMessage`,
+  or says to start a fresh builder, then every ready phase to start together, closing with `task_done`, or
   recording a blocker with `task_note` and a `Waiting for:` line, and warns against moving a
   phase back to pending to end the turn (`docs/design/hooks.md` § The keep-going guard).
 - `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still

@@ -13,6 +13,7 @@ import { projectKey } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../tasks/work/db";
 import { callerOf } from "../tasks/work/identity";
+import { allTasks } from "../tasks/work/queries";
 import { createTask, layPhase, updateTask } from "../tasks/work/store";
 import type { Who, WorkTask } from "../tasks/work/types";
 import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from "../testing/hooks";
@@ -66,16 +67,20 @@ function world(): World {
   return { repo, env, db };
 }
 
-function phase(w: World, plan: string, id: string, subject: string, blockedBy: string[] = []) {
+/** A phase laid by `by` (the session under test unless told): its plan is `by`'s own. */
+function phase(
+  w: World,
+  plan: string,
+  id: string,
+  subject: string,
+  blockedBy: string[] = [],
+  by: Who = ME,
+) {
   const task = writeWork(
     w.db,
     () =>
-      layPhase(
-        w.db,
-        { project: projectKey(w.repo), plan, phase: id, subject, blockedBy },
-        { sessionId: null, pid: null, procStart: null },
-        1,
-      ).task,
+      layPhase(w.db, { project: projectKey(w.repo), plan, phase: id, subject, blockedBy }, by, 1)
+        .task,
   );
   if (!task.ok) throw new Error(task.why);
   return task.value;
@@ -188,9 +193,11 @@ describe("keep-going: the block", () => {
     });
   });
 
-  test("a claim on a task under a phase makes the plan this session's", async () => {
+  test("a claim on a task under a phase counts that phase, but never starts the other session's next phase", async () => {
     const w = world();
-    const g1 = phase(w, "plan-a", "G1", "G1 the guard");
+    const g1 = phase(w, "plan-a", "G1", "G1 the guard", [], OTHER);
+    const g2 = phase(w, "plan-a", "G2", "G2 their view", [], OTHER);
+    addStep(w, g2);
     start(w, g1, OTHER);
     const step = createTask(
       w.db,
@@ -430,6 +437,150 @@ describe("keep-going: stalled state", () => {
   });
 });
 
+/** The reason's closing words when no phase runs, written by hand. */
+const READY_TAIL = "end the turn with a `Waiting for: <what>` line.";
+
+/**
+ * Plan `plan-a`, laid as #1 (its task), then `count` phases each holding a step: #2, #3, ... The
+ * plan is made by `who` and its task started by it (in flight); for null it is this session's,
+ * and its task stays pending (parked).
+ */
+function readyWave(w: World, count: number, who: Who | null): WorkTask[] {
+  const phases = Array.from({ length: count }, (_, index) => {
+    const made = phase(w, "plan-a", `R${index + 1}`, `Ready ${index + 1}`, [], who ?? ME);
+    addStep(w, made);
+    return made;
+  });
+  const row = allTasks(w.db, projectKey(w.repo)).find((t) => t.kind === "plan");
+  if (row === undefined) throw new Error("no plan task");
+  if (who !== null) start(w, row, who);
+  return phases;
+}
+
+describe("keep-going: ready phases", () => {
+  test("the plan in flight, no phase running, two ready: one block naming both", async () => {
+    const w = world();
+    readyWave(w, 2, ME);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason: `2 phases are ready to start, and no subagent runs: #2 Ready 1, #4 Ready 2. Start them together now (dispatch one builder for each), or record why they wait with \`task_note\` and ${READY_TAIL}`,
+      }),
+    });
+  });
+
+  test("one ready phase: the same block, in the singular", async () => {
+    const w = world();
+    readyWave(w, 1, ME);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason: `Phase #2 Ready 1 is ready to start, and no subagent runs. Start it now (dispatch its builder), or record why it waits with \`task_note\` and ${READY_TAIL}`,
+      }),
+    });
+  });
+
+  test("the plan parked (its task pending): no block", async () => {
+    const w = world();
+    readyWave(w, 2, null);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("ready phases of a plan that is not in flight: no block", async () => {
+    const w = world();
+    // A queued plan this process holds a claim in (a step started), its plan task never started.
+    const first = phase(w, "plan-a", "Q1", "Queued one");
+    phase(w, "plan-a", "Q2", "Queued two");
+    addStep(w, first);
+    const step = createTask(
+      w.db,
+      { project: projectKey(w.repo), subject: "Step", parentId: first.id, plan: "plan-a" },
+      ME,
+      3,
+    );
+    if (!step.ok) throw new Error(step.why);
+    start(w, step.value, ME);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("another session's plan in flight: no block", async () => {
+    const w = world();
+    readyWave(w, 2, OTHER);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("a subagent running: no block", async () => {
+    const w = world();
+    readyWave(w, 2, ME);
+    w.db.close();
+    expect(
+      await runHook(keepGoingHook, stop(w.repo, { background_tasks: [{ id: "a1" }] }), w.env),
+    ).toEqual({});
+  });
+
+  test("a Waiting for: line: no block", async () => {
+    const w = world();
+    readyWave(w, 2, ME);
+    w.db.close();
+    expect(
+      await runHook(
+        keepGoingHook,
+        stop(w.repo, { last_assistant_message: "Waiting for: the person's yes on the plan." }),
+        w.env,
+      ),
+    ).toEqual({});
+  });
+
+  test("a blocked phase and an empty phase are not named", async () => {
+    const w = world();
+    const [first] = readyWave(w, 2, ME);
+    if (first === undefined) throw new Error("no phase");
+    phase(w, "plan-a", "B1", "Blocked", [first.id]);
+    phase(w, "plan-a", "E1", "Empty");
+    w.db.close();
+    const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    expect(answer.stdout).toContain(
+      "2 phases are ready to start, and no subagent runs: #2 Ready 1, #4 Ready 2.",
+    );
+    expect(answer.stdout).not.toContain("Blocked");
+    expect(answer.stdout).not.toContain("Empty");
+  });
+
+  test("a phase in progress and three ready: all three named, together", async () => {
+    const w = world();
+    const g1 = phase(w, "plan-a", "G1", "Running");
+    start(w, g1, ME);
+    for (const [index, name] of ["Alpha", "Beta", "Gamma"].entries()) {
+      addStep(w, phase(w, "plan-a", `R${index}`, name));
+    }
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason:
+          "Phase #2 Running is still in progress, and no subagent runs. Start a fresh builder on it, start #3 Alpha, #5 Beta, #7 Gamma together now (dispatch their builders), close #2 with `task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>` line. Never move a phase back to pending only to end the turn.",
+      }),
+    });
+  });
+
+  test("ten ready phases: the first eight named, the rest counted", () => {
+    const ready = Array.from({ length: 10 }, (_, index) => ({
+      number: index + 2,
+      subject: "Phase",
+      plan: "plan",
+      agent: null,
+    }));
+    expect(keepGoingReason([], ready)).toBe(
+      `10 phases are ready to start, and no subagent runs: #2 Phase, #3 Phase, #4 Phase, #5 Phase, #6 Phase, #7 Phase, #8 Phase, #9 Phase, +2 more: task_list. Start them together now (dispatch one builder for each), or record why they wait with \`task_note\` and ${READY_TAIL}`,
+    );
+  });
+});
+
 describe("keep-going: silent", () => {
   test("background work runs: Claude Code wakes the session when it lands", async () => {
     const w = world();
@@ -495,8 +646,8 @@ describe("keep-going: silent", () => {
 
   test("a phase in progress in another session's plan only", async () => {
     const w = world();
-    const g1 = phase(w, "plan-b", "G1", "G1 their guard");
-    phase(w, "plan-b", "G2", "G2 their view");
+    const g1 = phase(w, "plan-b", "G1", "G1 their guard", [], OTHER);
+    phase(w, "plan-b", "G2", "G2 their view", [], OTHER);
     start(w, g1, OTHER);
     w.db.close();
     expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});

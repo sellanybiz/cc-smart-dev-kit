@@ -234,6 +234,20 @@ export function ownerOf(who: Who): (task: WorkTask) => boolean {
     claimHeldBy(t.creator, who);
 }
 
+/**
+ * Whether a plan is the caller's: its plan task is owned (`owns`). A task of the plan that the
+ * caller owns (a step it claims in another session's plan) never makes the plan its own. A
+ * legacy plan with no plan task has no row to judge, so any own task in it counts.
+ */
+export function ownsPlan(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+  plan: string,
+): boolean {
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined ? all.some((t) => t.plan === plan && owns(t)) : owns(row);
+}
+
 /** A note that starts so says why a plan was parked (`task_update` with the plan pending). */
 export const PARK_NOTE_PREFIX = "parked:";
 
@@ -338,6 +352,36 @@ export function openBlockers(task: WorkTask, byId: ReadonlyMap<string, WorkTask>
 /** Open, and blocked by a task still open. */
 export function isBlocked(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): boolean {
   return isOpen(task) && openBlockers(task, byId).length > 0;
+}
+/**
+ * Whether a task could start now: it is pending and no open task blocks it, and a phase also
+ * holds at least one live (not dropped) task, since the store refuses to start an empty phase
+ * (`refuseEmptyPhase`). The one test the keep-going guard's ready phases and the close answer's
+ * freed work share.
+ */
+export function isStartable(
+  all: readonly WorkTask[],
+  byId: ReadonlyMap<string, WorkTask>,
+  task: WorkTask,
+): boolean {
+  return (
+    task.status === "pending" &&
+    !isBlocked(task, byId) &&
+    (task.kind !== "phase" || all.some((t) => t.parentId === task.id && t.status !== "dropped"))
+  );
+}
+/**
+ * The work a close just freed, in number order: the caller's own tasks and phases that had the
+ * closed task as a blocker and could start now (`isStartable`). `all` is read after the close,
+ * so the closed task no longer blocks.
+ */
+export function freedBy(
+  all: readonly WorkTask[],
+  closed: WorkTask,
+  owns: (task: WorkTask) => boolean,
+): WorkTask[] {
+  const byId = new Map(all.map((t) => [t.id, t]));
+  return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 /**
  * The open tasks under a task that hold it (D76), in progress first: each open blocking task

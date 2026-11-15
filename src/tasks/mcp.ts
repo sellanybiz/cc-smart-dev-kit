@@ -21,7 +21,7 @@ const descriptions: Record<TaskOperation, string> = {
   create:
     "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
   update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
-  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note.",
+  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
