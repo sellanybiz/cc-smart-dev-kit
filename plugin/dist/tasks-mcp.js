@@ -21648,7 +21648,7 @@ var taskSchemas = {
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent."),
+    plan: string2().trim().min(1).optional().describe("The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent."),
     ...projectFields
   }).strict(),
   take: object({
@@ -21777,6 +21777,15 @@ function claudeMemDataDir(env, home) {
   if (dir === "~")
     return home;
   return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
+}
+
+// src/hooks/capped-list.ts
+var HOOK_LIST_LIMIT = 8;
+function cappedHookList(items, render, command, separator = ", ") {
+  const shown = items.slice(0, HOOK_LIST_LIMIT).map(render);
+  if (items.length > HOOK_LIST_LIMIT)
+    shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
+  return shown.join(separator);
 }
 
 // src/path-compare.ts
@@ -22803,6 +22812,11 @@ function allTasks(db, project) {
     worktree: row.worktree ?? null,
     base: row.base ?? null,
     createdBy: row.created_by,
+    creator: row.created_pid == null ? null : {
+      pid: row.created_pid,
+      procStart: row.created_start ?? null,
+      sessionId: row.created_by
+    },
     claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -22865,9 +22879,12 @@ function defaultPlanOf(all, owns, inFlight, fallback) {
     return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
-function ownerOf(all, who) {
-  const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
-  return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
+function ownerOf(who) {
+  return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || claimHeldBy(t.creator, who);
+}
+function ownsPlan(all, owns, plan) {
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined ? all.some((t) => t.plan === plan && owns(t)) : owns(row);
 }
 var PARK_NOTE_PREFIX = "parked:";
 function planQueueState(all, plan, parkNote) {
@@ -22875,9 +22892,11 @@ function planQueueState(all, plan, parkNote) {
     return "in flight";
   const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
   const started = phases.some((t) => t.status === "done");
+  if (parkNote)
+    return "parked";
   if (started && phases.every((t) => !isOpen(t)))
     return "finishing";
-  return started || parkNote ? "parked" : "queued";
+  return started ? "parked" : "queued";
 }
 function descendants(db, id) {
   const task = taskById(db, id);
@@ -22914,6 +22933,16 @@ function layerOf(task, _byId) {
 }
 function openBlockers(task, byId) {
   return task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined && isOpen(t)).sort((a, b) => a.number - b.number);
+}
+function isBlocked(task, byId) {
+  return isOpen(task) && openBlockers(task, byId).length > 0;
+}
+function isStartable(all, byId, task) {
+  return task.status === "pending" && !isBlocked(task, byId) && (task.kind !== "phase" || all.some((t) => t.parentId === task.id && t.status !== "dropped"));
+}
+function freedBy(all, closed, owns) {
+  const byId = new Map(all.map((t) => [t.id, t]));
+  return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 function holdingUnder(tasks, id) {
   const children = new Map;
@@ -23000,13 +23029,20 @@ function waitsForTask(tasks, start, target) {
 }
 
 // src/tasks/plan-guards.ts
-function refuseOtherPlan(options) {
+function planInTheWay(options) {
   const { all, inFlight, plan, claimedElsewhere } = options;
   if (inFlight === null || inFlight.plan === plan)
-    return;
+    return null;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
   if (row === undefined || claimedElsewhere(row))
+    return null;
+  return inFlight;
+}
+function refuseOtherPlan(options) {
+  const inFlight = planInTheWay(options);
+  if (inFlight === null)
     return;
+  const { plan } = options;
   const n = inFlight.number;
   const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
   const park = inFlight.status === "in_progress" ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why` : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
@@ -23055,7 +23091,7 @@ function planNote(all, plan, cap) {
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
-var WORK_SCHEMA_VERSION = 4;
+var WORK_SCHEMA_VERSION = 5;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
@@ -23091,7 +23127,10 @@ var MIGRATIONS = [
    ALTER TABLE tasks ADD COLUMN branch TEXT;
    ALTER TABLE tasks ADD COLUMN worktree TEXT;
    ALTER TABLE tasks ADD COLUMN base TEXT;`,
-  repairTaskLayers
+  repairTaskLayers,
+  `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN created_start TEXT;
+   CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`
 ];
 
 class BackupFailure extends Error {
@@ -23270,6 +23309,8 @@ var FIELDS = [
   ["branch", "branch"],
   ["worktree", "worktree"],
   ["base", "base"],
+  ["createdBy", "made by session"],
+  ["creator", "made by"],
   ["claim", "claimed by"],
   ["waitsFor", "blocked by"],
   ["description", "description"],
@@ -23783,7 +23824,7 @@ function insertTask(db, input, who, now, reason = null) {
   const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
-  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
+  db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, who.pid, who.pid === null ? null : who.procStart, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
   addBlockers(db, taskById(db, id), input.blockedBy ?? []);
   const task = taskById(db, id);
   if (status === "in_progress")
@@ -23929,9 +23970,13 @@ function takeTasks(db, project, id, who, now, options) {
         throw new Error(`${label(task)} is live in session ${task.claim.sessionId ?? task.createdBy ?? "unknown"}; use force to take it`);
     }
     for (const task of rows) {
-      db.sqlite.query("UPDATE tasks SET created_by=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?").run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, who.pid === null ? null : who.sessionId, now, task.id);
+      db.sqlite.query("UPDATE tasks SET created_by=?,created_pid=?,created_start=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?").run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, who.pid, who.pid === null ? null : who.procStart, who.pid === null ? null : who.sessionId, now, task.id);
       recordEvent(db, task, "changed", {
         createdBy: [task.createdBy, who.sessionId],
+        creator: [
+          task.creator === null ? null : `process ${task.creator.pid}`,
+          who.pid === null ? null : `process ${who.pid}`
+        ],
         ...task.claim === null ? {} : {
           claim: [
             task.claim,
@@ -23967,6 +24012,13 @@ function value(result) {
 }
 function label2(task) {
   return `#${task.number} "${task.subject}"`;
+}
+function freedText(all, closed, owns, canStartIn) {
+  const freed = freedBy(all, closed, owns).filter((t) => t.plan === null || canStartIn(t.plan));
+  if (freed.length === 0)
+    return "";
+  const list = cappedHookList(freed, (t) => `#${t.number} ${t.subject}`, TASK_TOOL.list);
+  return ` \xB7 now ready: ${list}: start ${freed.length === 1 ? "it" : "them together"}`;
 }
 function marks(task, byId) {
   const blockers = isOpen(task) ? openBlockers(task, byId) : [];
@@ -24025,8 +24077,8 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const owns = ownerOf(all, who);
-      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
+      const owns = ownerOf(who);
+      const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t) && ownsPlan(all, owns, t.plan))?.plan ?? null;
       const inFlight = inFlightPlanOf(all, owns);
       const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
       const phaseCap = () => {
@@ -24037,6 +24089,12 @@ function createTaskOps(options = {}) {
       };
       const claimedElsewhere = (t) => claimState(t, claimLive, who) === "another session";
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
+      const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
+        all: after,
+        inFlight: inFlightPlanOf(after, owns),
+        plan,
+        claimedElsewhere
+      }) === null);
       const enterFlight = (plan) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row))
@@ -24150,7 +24208,7 @@ function createTaskOps(options = {}) {
         const parent = input.parent ? work(input.parent) : undefined;
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
-        const taskPlan = input.plan ?? parent?.plan ?? writePlan;
+        const taskPlan = parent?.plan ?? null;
         if (input.status === "in_progress" && taskPlan !== null)
           refuseOther(taskPlan);
         const task = value(writeWork(store, () => {
@@ -24200,14 +24258,16 @@ function createTaskOps(options = {}) {
           refuseOverCap(all, task.plan, cap);
         }
         const starting = input.status === "in_progress" && task.status !== "in_progress";
-        if (starting) {
+        const destination = input.parent ? work(input.parent) : null;
+        const landing = destination === null ? task.plan : destination.plan;
+        const entering = starting || landing !== task.plan && (input.status ?? task.status) === "in_progress";
+        if (starting)
           refuseEmptyPhase(all, task);
-          if (task.plan !== null)
-            refuseOther(task.plan);
-        }
+        if (entering && landing !== null)
+          refuseOther(landing);
         refuseParkWhileBusy(all, task, input.status);
         if (input.parent !== undefined)
-          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
+          refuseStepEscape(all, task, destination);
         if (input.status === "done" || input.status === "dropped")
           refuseBareClose(all, task, input.status, {});
         const updated = value(writeWork(store, () => {
@@ -24223,14 +24283,16 @@ function createTaskOps(options = {}) {
               remove: (input.blocked_by_remove ?? []).map((r) => work(r).id)
             }
           }, who, now);
-          if (starting && task.kind !== "plan")
-            enterFlight(task.plan);
+          if (entering && task.kind !== "plan")
+            enterFlight(landing);
           return changed;
         }));
-        const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
+        const afterAll = allTasks(store, ctx.project);
+        const byId = new Map(afterAll.map((t) => [t.id, t]));
+        const closed = updated.status === "done" || updated.status === "dropped";
         return {
           ok: true,
-          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ")
+          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "")
         };
       }
       if (operation === "done") {
@@ -24256,7 +24318,10 @@ function createTaskOps(options = {}) {
               insertNote(store, task.id, text, who, now);
           return applyUpdate(store, task.id, { status: input.outcome }, who, now);
         }));
-        return { ok: true, text: `${label2(changed)} \xB7 ${input.outcome}` };
+        return {
+          ok: true,
+          text: `${label2(changed)} \xB7 ${input.outcome}${freedAfter(allTasks(store, ctx.project), changed)}`
+        };
       }
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
@@ -24366,7 +24431,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
             selected = all.filter((t) => t.createdBy === null && (!openOnly || isOpen(t)));
         } else if (input.scope === "plan") {
           const shown = input.plan ?? ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
-          const ownPlans = new Set(all.filter(owns).map((t) => t.plan).filter((p) => p !== null));
+          const ownPlans = new Set(all.filter(owns).map((t) => t.plan).filter((p) => p !== null && ownsPlan(all, owns, p)));
           selected = selected.filter((t) => t.kind !== "task" && (input.plan === undefined && ownPlans.size > 1 ? t.plan !== null && ownPlans.has(t.plan) : shown !== null && t.plan === shown));
         } else if (ctx.projectTasks.ok)
           projects = projectTasks(!openOnly).filter((t) => (!openOnly || t.status === "open") && (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)));
@@ -24423,14 +24488,14 @@ The main session saves Ruling: notes and sets agent, branch, worktree and base o
 After compaction, task_list scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
-A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n).
+A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
-  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task, give its phase as parent, or the plan as parent to make it wait there for a phase. Phases may be laid in any of your plans; one plan is in flight at a time.",
+  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
   update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
-  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note.",
+  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
