@@ -10,6 +10,28 @@ import { TASK_TOOL } from "./words";
 import { isOpen, livePhaseCount, PARK_NOTE_PREFIX } from "./work/queries";
 import type { WorkStatus, WorkTask } from "./work/types";
 
+/** What `planInTheWay` judges: the caller's plan in flight, and the plan work would start in. */
+interface OtherPlanCheck {
+  all: readonly WorkTask[];
+  inFlight: WorkTask | null;
+  plan: string;
+  claimedElsewhere: (task: WorkTask) => boolean;
+}
+
+/**
+ * The plan in flight that stops work from starting in `plan`, or null when nothing does: no
+ * plan in flight, the work is in that plan, the plan is a legacy one with no task, or another
+ * process holds it live. The one rule `refuseOtherPlan` refuses by and the close answer's
+ * "now ready" list leaves work out by.
+ */
+export function planInTheWay(options: OtherPlanCheck): WorkTask | null {
+  const { all, inFlight, plan, claimedElsewhere } = options;
+  if (inFlight === null || inFlight.plan === plan) return null;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  if (row === undefined || claimedElsewhere(row)) return null;
+  return inFlight;
+}
+
 /**
  * Refuses starting work in a plan while the caller has another plan in flight
  * (`inFlightPlanOf`): a session runs one plan at a time. The words name the plan in flight and
@@ -21,16 +43,10 @@ import type { WorkStatus, WorkTask } from "./work/types";
  * is a legacy plan, also left alone. Laying a phase, or reopening a dropped one, is never
  * refused here: only the cap judges those.
  */
-export function refuseOtherPlan(options: {
-  all: readonly WorkTask[];
-  inFlight: WorkTask | null;
-  plan: string;
-  claimedElsewhere: (task: WorkTask) => boolean;
-}): void {
-  const { all, inFlight, plan, claimedElsewhere } = options;
-  if (inFlight === null || inFlight.plan === plan) return;
-  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  if (row === undefined || claimedElsewhere(row)) return;
+export function refuseOtherPlan(options: OtherPlanCheck): void {
+  const inFlight = planInTheWay(options);
+  if (inFlight === null) return;
+  const { plan } = options;
   const n = inFlight.number;
   const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
   // A plan started under 4.8.0 never set its task, so there is nothing to set back: it is in

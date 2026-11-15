@@ -768,6 +768,58 @@ test("a take records the maker moving: the history shows the session and the pro
   }
 });
 
+/**
+ * Plan a (#1) and plan b (#7), a loose blocker (#2) holding a phase of a (#3), a phase of b (#8)
+ * and a loose task (#10); a running phase of a (#5) puts a in flight when `flying`.
+ */
+function blockerAcrossPlans(ops: ReturnType<typeof createTaskOps>, flying: boolean) {
+  const calls: Record<string, unknown>[] = [
+    { subject: "Plan a", plan: "a" },
+    { subject: "Blocker" },
+    { subject: "A1", plan: "a", phase: "A1", blocked_by: ["#2"] },
+    { subject: "Step a1", parent: "#3" },
+    { subject: "A0", plan: "a", phase: "A0" },
+    { subject: "Step a0", parent: "#5" },
+    { subject: "Plan b", plan: "b" },
+    { subject: "B1", plan: "b", phase: "B1", blocked_by: ["#2"] },
+    { subject: "Step b1", parent: "#8" },
+    { subject: "Loose", blocked_by: ["#2"] },
+  ];
+  for (const input of calls) {
+    const answer = ops.call("create", input);
+    if (!answer.ok) throw new Error(answer.why);
+  }
+  if (flying) expect(ops.call("update", { task: "#5", status: "in_progress" }).ok).toBe(true);
+}
+
+test("a close names only work the store would let start: another plan's phase is left out while a plan is in flight", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    blockerAcrossPlans(mine, true);
+    expect(mine.call("done", { task: "#2" })).toEqual({
+      ok: true,
+      text: '#2 "Blocker" · done · now ready: #3 A1, #10 Loose: start them together',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
+test("with no plan in flight a freed phase of a queued plan is named: starting it puts that plan in flight", () => {
+  const { mine, theirs } = twoCallers();
+  try {
+    blockerAcrossPlans(mine, false);
+    expect(mine.call("done", { task: "#2" })).toEqual({
+      ok: true,
+      text: '#2 "Blocker" · done · now ready: #3 A1, #8 B1, #10 Loose: start them together',
+    });
+  } finally {
+    mine.close();
+    theirs.close();
+  }
+});
+
 test("a close that frees more than the hooks' list limit caps the answer", () => {
   const { mine, theirs } = twoCallers();
   try {

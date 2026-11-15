@@ -10,6 +10,7 @@ import { runGit } from "../hooks/git";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
+  planInTheWay,
   planNote,
   refuseBareClose,
   refuseEmptyPhase,
@@ -114,8 +115,15 @@ function label(task: WorkTask): string {
  * number order and capped like the hooks' lists, or nothing when it freed none. Read after the
  * close, so `all` holds the closed task as closed.
  */
-function freedText(all: readonly WorkTask[], closed: WorkTask, owns: (t: WorkTask) => boolean) {
-  const freed = freedBy(all, closed, owns);
+function freedText(
+  all: readonly WorkTask[],
+  closed: WorkTask,
+  owns: (t: WorkTask) => boolean,
+  canStartIn: (plan: string) => boolean,
+) {
+  // Work the store would refuse to start (another plan is in flight) is left out; a loose task
+  // is in no plan.
+  const freed = freedBy(all, closed, owns).filter((t) => t.plan === null || canStartIn(t.plan));
   if (freed.length === 0) return "";
   const list = cappedHookList(freed, (t) => `#${t.number} ${t.subject}`, TASK_TOOL.list);
   return ` · now ready: ${list}: start ${freed.length === 1 ? "it" : "them together"}`;
@@ -210,6 +218,20 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const claimedElsewhere = (t: WorkTask) => claimState(t, claimLive, who) === "another session";
       const refuseOther = (plan: string) =>
         refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
+      /** What a close freed, judged on the list read after it: the plan in flight may have closed. */
+      const freedAfter = (after: readonly WorkTask[], closed: WorkTask) =>
+        freedText(
+          after,
+          closed,
+          owns,
+          (plan) =>
+            planInTheWay({
+              all: after,
+              inFlight: inFlightPlanOf(after, owns),
+              plan,
+              claimedElsewhere,
+            }) === null,
+        );
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
        * to `in_progress` in the same write, claimed by this process. A plan that is not the
@@ -507,7 +529,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           text:
             [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(
               " · ",
-            ) + (closed ? freedText(afterAll, updated, owns) : ""),
+            ) + (closed ? freedAfter(afterAll, updated) : ""),
         };
       }
       if (operation === "done") {
@@ -543,7 +565,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         );
         return {
           ok: true,
-          text: `${label(changed)} · ${input.outcome}${freedText(allTasks(store, ctx.project), changed, owns)}`,
+          text: `${label(changed)} · ${input.outcome}${freedAfter(allTasks(store, ctx.project), changed)}`,
         };
       }
       if (operation === "note") {

@@ -251,7 +251,9 @@ closed task as a blocker and now could start (`isStartable`: pending, no other o
 for a phase at least one task that is not dropped, the test the store's start applies), and that
 is the caller's own (`ownerOf`: another session's task is never named). It is read after the
 close, in number order, capped like the hooks' lists (`cappedHookList`, eight, then
-`+N more: task_list`). A task already started or closed is not named. The keep-going guard
+`+N more: task_list`). A task already started or closed is not named, and neither is work in a
+plan the store would refuse to start while another plan is in flight (`planInTheWay`, the rule
+`refuseOtherPlan` refuses by); a loose task is always named. The keep-going guard
 names the same work from the other side: `docs/design/hooks.md` § The keep-going guard.
 
 ### A task's history
