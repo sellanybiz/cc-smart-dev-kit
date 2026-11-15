@@ -174,10 +174,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      // The caller's own task: one it made (a caller with no session id made none), or one its
-      // process claims.
+      // The caller's own task: one it made (a caller with no session id made none), one its
+      // process claims, or one made by a session this process was before (`/clear` gives the
+      // process a new session id): the sessions that made a task it claims.
+      const earlier = new Set(
+        all.flatMap((t) =>
+          claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : [],
+        ),
+      );
       const owns = (t: WorkTask) =>
-        (who.sessionId !== null && t.createdBy === who.sessionId) || claimHeldBy(t.claim, who);
+        (who.sessionId !== null && t.createdBy === who.sessionId) ||
+        claimHeldBy(t.claim, who) ||
+        (t.createdBy !== null && earlier.has(t.createdBy));
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
       // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
@@ -190,7 +198,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
         return { max: value, source };
       };
-      const refuseOther = (plan: string) => refuseOtherPlan({ all, inFlight, plan, owns });
+      // A plan another process holds live is that session's work, not a queued plan to refuse.
+      const claimedElsewhere = (t: WorkTask) => claimState(t, claimLive, who) === "another session";
+      const refuseOther = (plan: string) =>
+        refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
        * to `in_progress` in the same write, claimed by this process. A plan that is not the

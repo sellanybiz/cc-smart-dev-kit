@@ -219,7 +219,7 @@ test("a start in a second plan is refused while the first is in flight, with its
     queue(lead, ["a", "b", "c"]);
     said(lead.call("update", { task: "#2", status: "in_progress" }));
     const refusal =
-      'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet. Finish "a" (task_done on its #1 once its phases are closed), or park it (stop its running phases, then task_update with task "#1" and status "pending", and a note that starts "parked:" with why).';
+      'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet. Finish "a" (task_done on its #1 once its phases are closed), or park it in two calls: task_update with task "#1" and status "pending" (refused while any phase or task of "a" is running, so stop that first), then task_note on "#1" with a note that starts "parked:" and says why.';
     expect(refused(lead.call("update", { task: "#5", status: "in_progress" }))).toBe(refusal);
     // A task made in progress, and the plan task itself, are starts too.
     expect(
@@ -229,8 +229,13 @@ test("a start in a second plan is refused while the first is in flight, with its
     expect(taskNumbered(w, 4).status).toBe("pending");
     // Work inside the plan in flight goes on.
     said(lead.call("update", { task: "#3", status: "in_progress" }));
-    // Another session's plan never counts for the lead, and the lead's plan never for it.
+    // A plan another session laid but never started is judged too: the lead's start there is
+    // refused while plan a runs (a plan it made itself would be refused the same way).
     queue(other, ["x"]); // #10 to #12
+    expect(refused(lead.call("update", { task: "#11", status: "in_progress" }))).toContain(
+      'Plan "a" (#1) is in flight',
+    );
+    // Another session has its own one plan in flight, and the lead's never blocks it.
     said(other.call("update", { task: "#11", status: "in_progress" }));
     expect(taskNumbered(w, 10).status).toBe("in_progress");
   } finally {
@@ -335,7 +340,57 @@ test("4.8.0 data: a plan task still pending with a phase in progress counts as i
   }
 });
 
-test("task_list on the plan ledger marks each plan in flight, queued or parked, in number order", () => {
+/** The same Claude process after a `/clear`: another session id, the same pid and start time. */
+const AFTER_CLEAR = { ...LEAD, sessionId: "lead-after-clear" };
+
+test("after /clear (a new session id, the same process) a start in a queued plan is still refused, and the queue is still the caller's", () => {
+  const w = world();
+  const before = w.ops();
+  const after = w.ops(AFTER_CLEAR);
+  try {
+    queue(before, ["a", "b"]); // plan a #1, plan b #4: both made by the old session id
+    said(before.call("update", { task: "#2", status: "in_progress" }));
+    // Plan b is queued, so only the old session id owns it; the new one must not slip past.
+    expect(refused(after.call("update", { task: "#5", status: "in_progress" }))).toContain(
+      'Plan "a" (#1) is in flight',
+    );
+    expect(taskNumbered(w, 4).status).toBe("pending");
+    // A call that names no plan goes to the plan in flight, and the new id sees both plans.
+    said(after.call("create", { subject: "Unnamed" })); // #7
+    expect(taskNumbered(w, 7).plan).toBe("a");
+    const ledger = said(after.call("list", { scope: "plan" }));
+    expect(ledger).toContain("#1 [in flight · plan]");
+    expect(ledger).toContain("#4 [queued · plan]");
+  } finally {
+    before.close();
+    after.close();
+  }
+});
+
+test("a plan started under 4.8.0 is in flight while a phase runs, so the refusal says to stop that phase, not to park the plan", () => {
+  const w = world();
+  const lead = w.ops();
+  try {
+    queue(lead, ["a", "b"]);
+    const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
+    try {
+      const phase = allTasks(db, folderProject(w.repo)).find((t) => t.number === 2);
+      if (phase === undefined) throw new Error("no phase");
+      expect(
+        writeWork(db, () => applyUpdate(db, phase.id, { status: "in_progress" }, LEAD, 5)).ok,
+      ).toBe(true);
+    } finally {
+      db.close();
+    }
+    expect(refused(lead.call("update", { task: "#5", status: "in_progress" }))).toBe(
+      'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet. Finish "a" (task_done on its #1 once its phases are closed), or stop its running phase (finish it with task_done, or set it back to pending with task_update); "a" was started before plans carried their own status, so it is in flight only while a phase runs.',
+    );
+  } finally {
+    lead.close();
+  }
+});
+
+test("task_list on the plan ledger marks each plan in flight, queued, parked or finishing, in number order", () => {
   const w = world();
   const lead = w.ops();
   try {
@@ -365,8 +420,11 @@ test("task_list on the plan ledger marks each plan in flight, queued or parked, 
     expect(marks()).toEqual([
       "#1 [queued · plan] Plan a · 0/1 · Phases 1/10",
       "#4 [parked · plan] Plan b · 0/1 · Phases 1/10",
-      "#7 [parked · plan] Plan c · 1/1 · Phases 1/10 · waiting 1",
+      "#7 [finishing · plan] Plan c · 1/1 · Phases 1/10 · waiting 1",
     ]);
+    // A done phase with another phase still open: parked, not finishing.
+    said(lead.call("create", { subject: "More c", plan: "c", phase: "P2" }));
+    expect(marks()[2]).toBe("#7 [parked · plan] Plan c · 1/2 · Phases 2/10 · waiting 1");
   } finally {
     lead.close();
   }
@@ -679,13 +737,13 @@ test("task_list names the open tasks waiting under a plan, so full phase progres
     said(ops.call("done", { task: "#3", evidence: "ran it: ok" }));
     said(ops.call("done", { task: "#2" }));
     expect(said(ops.call("list", { scope: "plan", open_only: false })).split("\n")[0]).toBe(
-      "#1 [parked · plan] Plan · 1/1 · Phases 1/10",
+      "#1 [finishing · plan] Plan · 1/1 · Phases 1/10",
     );
     said(ops.call("create", { subject: "Later one", parent: "#1" }));
     said(ops.call("create", { subject: "Later two", parent: "#1" }));
     said(ops.call("done", { task: "#5" }));
     expect(said(ops.call("list", { scope: "plan", open_only: false })).split("\n")[0]).toBe(
-      "#1 [parked · plan] Plan · 1/1 · Phases 1/10 · waiting 1",
+      "#1 [finishing · plan] Plan · 1/1 · Phases 1/10 · waiting 1",
     );
   } finally {
     ops.close();

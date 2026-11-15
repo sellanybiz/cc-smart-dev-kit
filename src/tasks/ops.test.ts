@@ -247,7 +247,11 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
     });
     expect(ops.call("update", { task: "#1", blocked_by_add: ["#2"] }).ok).toBe(true);
     session = "after-clear";
-    expect(ops.call("list", {})).toMatchObject({ ok: true, text: "#2 [in progress] Child" });
+    // The process is the same, so the session it was before (which made #1 and #2) is its own.
+    expect(ops.call("list", {})).toMatchObject({
+      ok: true,
+      text: "#1 [pending · blocked by #2] Parent · 0/1\n  #2 [in progress] Child",
+    });
     const page = ops.call("get", { task: "#2" });
     expect(page.ok && page.text.endsWith("… more: offset 20000")).toBe(true);
     expect(ops.call("note", { task: "#2", text: "Proof saved" }).ok).toBe(true);

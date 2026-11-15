@@ -173,11 +173,16 @@ checkout's working copy through the normal workflow resolver:
   in progress counts first, else the lower number. Another session's plan never counts.
   A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
   it, and the next plan cannot start before it closes.
-- **The start refusal.** Starting a phase or task of another own plan (`task_update` or
-  `task_create` with `in_progress`, the plan task's own start too) is refused while a plan is in
-  flight (`refuseOtherPlan`); the refusal names that plan and the two ways forward: finish it
-  (`task_done` on its `#n`), or park it. A plan with no task, and another session's plan, are
-  left alone.
+- **The start refusal.** Starting a phase or task of a plan other than the one in flight
+  (`task_update` or `task_create` with `in_progress`, the plan task's own start too) is
+  refused while the caller has a plan in flight (`refuseOtherPlan`); the refusal names that
+  plan and the ways forward: finish it (`task_done` on its `#n`), or park it in two calls
+  (the plan task to `pending`, then a `parked:` note). For a plan started under 4.8.0, whose
+  task never ran, it says to stop the running phase instead, since there is no status to set
+  back. The refusal does not depend on owning the target: a queued plan the caller's process
+  made under an earlier session id (`/clear`), or another session laid but never started, is
+  judged too. Only a plan another process holds a live claim in (`claimState`: another
+  session's running work), and a plan with no task, are left alone.
 - **Park and resume.** **Parking** is the in-flight plan task going from `in_progress` to
   `pending` with `task_update`, then a `parked: <why>` note. It is refused while one of the
   plan's phases or tasks is `in_progress` (`refuseParkWhileBusy`): stop or finish it first.
@@ -205,9 +210,10 @@ checkout's working copy through the normal workflow resolver:
   closes (a merge, an import) go through the store directly and need neither.
 - **Where it shows.** `task_list` with `scope: "plan"` lists the plans in number order and
   puts each open plan's place in the queue in its brackets in place of the status: `in flight`
-  (`isInFlight`), `parked` (pending, with work started earlier: one of its phases is done, or
-  its task holds a note that starts `parked:`), or `queued` (laid out, never started)
-  (`planQueueState`). It also prints `Phases n/cap` on each plan, marks one over the cap as
+  (`isInFlight`), `finishing` (pending, every phase closed and one done: a plan started under
+  4.8.0 at its final review), `parked` (pending, with an open phase and work started earlier:
+  a phase done, or a note on its task that starts `parked:`), or `queued` (laid out, never
+  started) (`planQueueState`). It also prints `Phases n/cap` on each plan, marks one over the cap as
   frozen, and adds `waiting n` for the open tasks directly under it. The status line shows the
   claimed task being worked on, as before, and the plan in flight when no phase runs between
   waves. `doctor`'s project checks print one `!` line for each open plan over the cap, with its
@@ -248,7 +254,10 @@ The project key belongs to the main checkout, shared by its worktrees. A folder 
 git uses its own real path. A git failure is an error, never a guessed identity. A broken
 project config leaves local work usable.
 
-A claim belongs to the Claude process: pid plus start time, not just a session id. Off
+A claim belongs to the Claude process: pid plus start time, not just a session id. A task is
+the caller's own when it made it, when its process claims it, or when a session this process
+was before made it: the creator of any task the process claims (`owns` in `ops.ts`), so a
+queued plan made before a `/clear` is still in the caller's queue. Off
 Linux there is no start time, so a claim there also needs the caller's session id
 (`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims, and a
 `/clear` there drops the claims until the task is started again. The

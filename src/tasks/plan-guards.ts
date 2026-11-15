@@ -16,22 +16,34 @@ export const PARK_NOTE_PREFIX = "parked:";
 /**
  * Refuses starting work in a plan while the caller has another plan in flight
  * (`inFlightPlanOf`): a session runs one plan at a time. The words name the plan in flight and
- * the two ways forward, finish it or park it. Another session's plan is not judged here, and a
- * plan with no task is a legacy plan, left alone. Laying a phase, or reopening a dropped one,
- * is never refused here: only the cap judges those.
+ * the ways forward: finish it, or park it (two calls), or, for a plan started under 4.8.0 whose
+ * task never ran, stop its running phase. The target need not be the caller's own: a plan
+ * another session made but never started (queued) is judged too, so a `/clear` that gave the
+ * process a new session id cannot slip past. Only a plan claimed live by another process
+ * (`claimedElsewhere`) is that session's own work and is left alone, and a plan with no task
+ * is a legacy plan, also left alone. Laying a phase, or reopening a dropped one, is never
+ * refused here: only the cap judges those.
  */
 export function refuseOtherPlan(options: {
   all: readonly WorkTask[];
   inFlight: WorkTask | null;
   plan: string;
-  owns: (task: WorkTask) => boolean;
+  claimedElsewhere: (task: WorkTask) => boolean;
 }): void {
-  const { all, inFlight, plan, owns } = options;
+  const { all, inFlight, plan, claimedElsewhere } = options;
   if (inFlight === null || inFlight.plan === plan) return;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  if (row === undefined || !owns(row)) return;
+  if (row === undefined || claimedElsewhere(row)) return;
+  const n = inFlight.number;
+  const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
+  // A plan started under 4.8.0 never set its task, so there is nothing to set back: it is in
+  // flight only while a phase runs.
+  const park =
+    inFlight.status === "in_progress"
+      ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`
+      : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
   throw new Error(
-    `Plan "${inFlight.plan}" (#${inFlight.number}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${inFlight.number} once its phases are closed), or park it (stop its running phases, then ${TASK_TOOL.update} with task "#${inFlight.number}" and status "pending", and a note that starts "${PARK_NOTE_PREFIX}" with why).`,
+    `Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${park}.`,
   );
 }
 
@@ -56,12 +68,14 @@ export function refuseParkWhileBusy(
 }
 
 /** How a plan stands in the queue, as `task_list` on the plan ledger says it. */
-export type PlanQueueState = "in flight" | "parked" | "queued";
+export type PlanQueueState = "in flight" | "finishing" | "parked" | "queued";
 
 /**
- * An open plan's place in the queue: in flight (`isInFlight`), parked (pending, with work
- * started earlier: a phase done, or a note that starts `PARK_NOTE_PREFIX`), or queued (laid
- * out, never started). `parkNote` says whether the plan task holds such a note.
+ * An open plan's place in the queue, for a plan that is not in flight (`isInFlight` says so
+ * first): finishing (pending, every phase closed and one done: a plan started under 4.8.0 at its
+ * final review and fix pass), parked (pending, with an open phase and either a done phase or a
+ * note that starts `PARK_NOTE_PREFIX`), or queued (laid out, never started). `parkNote` says
+ * whether the plan task holds such a note.
  */
 export function planQueueState(
   all: readonly WorkTask[],
@@ -69,9 +83,9 @@ export function planQueueState(
   parkNote: boolean,
 ): PlanQueueState {
   if (isInFlight(all, plan)) return "in flight";
-  const started = all.some(
-    (t) => t.kind === "phase" && t.plan === plan.plan && t.status === "done",
-  );
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (started && phases.every((t) => !isOpen(t))) return "finishing";
   return started || parkNote ? "parked" : "queued";
 }
 
