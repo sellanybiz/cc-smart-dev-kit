@@ -107,7 +107,10 @@ this exact line, alone on its line; without it the review is not recorded:
 Mode: review
 ```
 
-Ask for two verdicts: **spec compliance** and **task quality**. Model and effort by the job:
+Ask for two verdicts: **spec compliance** and **task quality**. The brief lists every task
+under the phase with its done-check and its closing evidence or drop reason; spec compliance
+answers each one, and one step missing or done only in name fails the spec. A phase holds
+several steps, so its review runs at `high` at least. Model and effort by the job:
 `/cc-smart-dev-kit:subagent-decision` § The lead's judgment. The builder never dispatches this
 review. Keep the reviewed head unchanged until it returns.
 

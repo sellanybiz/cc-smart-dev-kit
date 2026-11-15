@@ -67,8 +67,9 @@ you started from.
    expected result.
 5. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
-6. Commit only when allowed. Finish or drop your blocking steps with evidence before
-   returning; the hand-back guard names any left open. Save the report. Leave the phase
+6. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
+   with evidence (what you ran or checked and its result), `dropped` with the reason, never a
+   step closed unbuilt; the hand-back guard names any left open. Save the report. Leave the phase
    itself open for your caller's review and integration. Nothing you started still runs.
 
 ## Report and return

@@ -43,7 +43,7 @@ Worked examples — judge new cases the same way:
 | Mechanical edits, a doc update, run the tests | builder, `sonnet`, `medium` |
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
-| Ordinary phase review | senior engineer, `sonnet`, `high`; small and low-risk → `medium` |
+| Ordinary phase review | senior engineer, `sonnet`, `high` (a phase holds several steps: never lower) |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
 | Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |

@@ -86,6 +86,8 @@ Report everything you found, the unproven too, marked as such: the author filter
 evidence bar, and a finding you held back is one nobody can weigh. For a phase, open with
 `Spec: PASS|FAIL|UNVERIFIED` and `Quality: PASS|FAIL|UNVERIFIED`, each with its evidence; a check
 nobody ran is unverified, and the task's requirements, not the builder's account, are the spec.
+Under `Spec`, give one line per task of the phase: `#n done|missing|partial|dropped-ok|dropped-wrong`
+with its `file:line` or check output; any line other than `done` or `dropped-ok` fails the spec.
 The caller records the verdicts. A final branch review also covers how the phases fit together.
 
 ```
