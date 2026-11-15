@@ -38,7 +38,8 @@ and the merge order.
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
   Its caller reviews and merges them through `/cc-smart-dev-kit:build`. This does not allow
-  a push, a pull request or a merge into a shared branch.
+  a push, a pull request or a merge into a shared branch. In a planned build a phase branch
+  stays local; the plan branch is pushed and has the one pull request (`/cc-smart-dev-kit:build` §§ 5 and 6).
 - **Push and open the pull request** when the change set is complete and the second opinion
   has read it, or it is a small fix that skips it. Not after each commit.
 - **Always the person's word, every time:** anything into the main branch or production, a

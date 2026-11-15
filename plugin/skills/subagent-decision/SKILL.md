@@ -110,8 +110,9 @@ on a refusal, and decide small calls with a `Ruling:` note. Treat the agent as a
 who just walked in:
 
 - **The goal and why it matters**, and whether you want research or code.
-- **One job with one clear outcome.** A big phase becomes two or three agents, never "figure
-  out the codebase".
+- **One job with one clear outcome.** A big job becomes two or three agents, never "figure
+  out the codebase". (A planned phase stays one area with one builder:
+  `/cc-smart-dev-kit:plan-task` § 5.)
 - **The decisions, not the question:** the approach, the exact paths and symbols to read and
   change, the pattern to copy (`file:line`), the names to use, the edge cases and test cases.
 - **The rules that bite here, quoted** — the ones its files touch, not "follow the repo rules".

@@ -124,17 +124,27 @@ and tools; output format (`Report:` task note and short status). Include interfa
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
-hand-back guard that reads it. Under each phase create its steps with their checks: tasks whose
-`parent` is the phase. A task holds no tasks. Set `blocked_by` for real dependencies and
-shared-file phases.
+hand-back guard that reads it. Under each phase create its real steps, usually 3 to 10, each with its done-check: tasks
+whose `parent` is the phase. A task holds no tasks, and a phase with no tasks will not start.
+Tasks that waited under the plan (§ 6) move under their phases with `task_update` and
+`parent`; a plan cannot close while one still waits. Set `blocked_by` for real dependencies
+and shared-file phases.
 Create project tasks for production, database, teammate and follow-up obligations.
 Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
 ## 5. Phases, owners and waves
 
-- **One fresh subagent owns each phase.** Name its agent type, model and effort using the
-  core instructions' table. Keep shared integration work in the main session.
-- **A phase is about 30 to 90 minutes of work.** A bigger one splits before it starts.
+- **A plan is one result that can ship: one pull request.** It holds at most
+  `plans.maxPhases` phases (default 10). A project sets it in `.claude/cc-smart-dev-kit.json`
+  under `workflow.plans.maxPhases`; a person uses `cc-smart-dev-kit workflow set
+  plans.maxPhases <n>`. Bigger work is a sequence of plans, each its own plan task and
+  pull request, never a longer plan. The store refuses a phase past the cap: add the work as
+  tasks under the phase that owns its files, start a next plan, or raise the setting.
+- **A phase is one area of the code with its own file set.** One fresh subagent builds it
+  and one review reads it. Its real steps are its tasks, usually 3 to 10, each with a
+  done-check. Size a phase by files and area, not by minutes; never make a step a phase.
+  Name its agent type, model and effort using the core instructions' table. Keep shared
+  integration work in the main session.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases. Batch small edits of the same shape into one dispatch, not one agent per line.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
@@ -156,11 +166,19 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 - Start and finish work in the task tree; record evidence and work notes there.
 - During execution use the build skill's rulings and stop reasons. Update the plan only
   when a ruling changes the design.
-- Track a new ask before acting; scope still follows the core instructions' "one plan" rule.
-- **One plan at a time, several per session.** Finish the current plan (§ 8) or park it
-  before you plan the next. Each plan gets its own plan task. Name the intended plan with
-  `plan` on `task_list` and on every work-task `task_create` for it; never on a project task,
-  which refuses it.
+- **No new phases while building.** New in-scope work becomes a task under the phase that
+  owns its files.
+- **One active plan per session.** A session may queue more plans, but builds one at a time:
+  finish (§ 8) or park the active plan before you lay phases in the next. Each plan gets its
+  own plan task. Name the intended plan with `plan` on `task_list` and on every work-task
+  `task_create` for it; never on a project task, which refuses it. A call that names no plan
+  goes to the active plan, and the store refuses phases in a second plan while the active one
+  has open phases.
+- **A new ask during a build:** track it before acting. In scope: a task under the phase
+  that owns its files. For later: one task per ask in the queued next plan (make that plan if
+  none), with `task_create` and `parent` set to the plan's `#n`; it waits there for a phase.
+  A lasting duty (production, database, teammate): a project task. Scope still follows the
+  core instructions' "one plan" rule.
 - After compaction, read the task tree for progress and the file for design.
 
 ## 7. Execute without check-ins between phases
