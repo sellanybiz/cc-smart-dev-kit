@@ -170,11 +170,11 @@ test("named plan list shows all own plans and a slug narrows it", () => {
     expect(ops.call("create", { subject: "Second", plan: "two" }).ok).toBe(true);
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] First · Phases 0/10\n#2 [pending · plan] Second · Phases 0/10",
+      text: "#1 [queued · plan] First · Phases 0/10\n#2 [queued · plan] Second · Phases 0/10",
     });
     expect(ops.call("list", { scope: "plan", plan: "one" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] First · Phases 0/10",
+      text: "#1 [queued · plan] First · Phases 0/10",
     });
     expect(ops.call("take", { task: "one" })).toMatchObject({
       ok: true,

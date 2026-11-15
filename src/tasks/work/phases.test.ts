@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
 import { openPhasesOf } from "./phases";
+import { allTasks } from "./queries";
 import { createTask, layPhase, updateTask } from "./store";
 import type { Result, Who, WorkTask } from "./types";
 
@@ -128,6 +129,41 @@ test("only the plans of the phases in progress offer a ready phase; a blocked on
     value: {
       inProgress: [{ number: a1.number, subject: "First", plan: "plan-a", agent: null }],
       ready: [],
+    },
+  });
+});
+
+test("a plan in flight is this process's own: its next phase is ready, a claimed queued plan's pending phases are not", () => {
+  const { paths, db } = setup();
+  const a1 = phase(db, "plan-a", "A1", "First");
+  const a2 = phase(db, "plan-a", "A2", "Second");
+  const b1 = phase(db, "plan-b", "B1", "Queued first");
+  const b2 = phase(db, "plan-b", "B2", "Queued second");
+  const stepOf = (parent: WorkTask, plan: string) =>
+    ok(createTask(db, { project: "p", subject: "Step", parentId: parent.id, plan }, me, 3));
+  stepOf(a1, "plan-a");
+  stepOf(a2, "plan-a");
+  stepOf(b1, "plan-b");
+  const b2Step = stepOf(b2, "plan-b");
+  const planA = allTasks(db, "p").find((t) => t.kind === "plan" && t.plan === "plan-a");
+  if (planA === undefined) throw new Error("no plan task");
+  // Between waves: plan-a is in flight (its task runs) and no phase does, so the guard is silent.
+  start(db, planA, me);
+  expect(openPhasesOf(paths, "p", () => me)).toEqual({
+    state: "ready",
+    value: { inProgress: [], ready: [] },
+  });
+  // A wave: plan-a's first phase runs. Plan-b is laid and queued, but this process holds a claim
+  // in it (a step started there), which makes the plan its own: without the busy filter its
+  // pending phases would be named ready, though no phase of plan-b runs.
+  start(db, a1, me);
+  start(db, b2Step, me);
+  db.close();
+  expect(openPhasesOf(paths, "p", () => me)).toEqual({
+    state: "ready",
+    value: {
+      inProgress: [{ number: a1.number, subject: "First", plan: "plan-a", agent: null }],
+      ready: [{ number: a2.number, subject: "Second", plan: "plan-a", agent: null }],
     },
   });
 });

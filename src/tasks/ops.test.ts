@@ -247,7 +247,11 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
     });
     expect(ops.call("update", { task: "#1", blocked_by_add: ["#2"] }).ok).toBe(true);
     session = "after-clear";
-    expect(ops.call("list", {})).toMatchObject({ ok: true, text: "#2 [in progress] Child" });
+    // The process is the same, so the session it was before (which made #1 and #2) is its own.
+    expect(ops.call("list", {})).toMatchObject({
+      ok: true,
+      text: "#1 [pending · blocked by #2] Parent · 0/1\n  #2 [in progress] Child",
+    });
     const page = ops.call("get", { task: "#2" });
     expect(page.ok && page.text.endsWith("… more: offset 20000")).toBe(true);
     expect(ops.call("note", { task: "#2", text: "Proof saved" }).ok).toBe(true);
@@ -360,7 +364,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] upgrade · 0/1 · Phases 1/10\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      text: "#1 [queued · plan] upgrade · 0/1 · Phases 1/10\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
     });
     expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -455,7 +459,7 @@ test("another session's plan is never stamped on a session's own task; the plan 
     // Reading the ledger may fall back to the project's newest plan.
     expect(opsY.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Auth · 0/2 · Phases 2/10\n  #2 [in progress · phase G1] Guard · 0/1 · agent none · branch none\n  #6 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+      text: "#1 [in flight · plan] Auth · 0/2 · Phases 2/10\n  #2 [in progress · phase G1] Guard · 0/1 · agent none · branch none\n  #6 [pending · phase G2] Docs · 0/0 · agent none · branch none",
     });
   } finally {
     opsX.close();
