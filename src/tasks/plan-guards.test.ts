@@ -62,7 +62,7 @@ test("the phase cap: the default 10 lets ten in and refuses the eleventh, with t
     for (let n = 1; n <= 10; n++)
       said(ops.call("create", { subject: `Area ${n}`, plan: "big", phase: `P${n}` }));
     expect(refused(ops.call("create", { subject: "One more", plan: "big", phase: "P11" }))).toBe(
-      'Plan "big" already holds 10 phases, the most plans.maxPhases allows (10, from the built-in default). Do not add a phase: add the work as a task under the phase that owns its files (task_create with that phase as parent), start a next plan for it, or raise the cap (cc-smart-dev-kit workflow set plans.maxPhases <n>, with --project to set it for this project).',
+      'Plan "big" already holds 10 phases, the most plans.maxPhases allows (10, from the built-in default). Do not add a phase: add the work as a task under the phase that owns its files (task_create with that phase as parent), or queue it as a task under the next plan (task_create with parent set to that plan\'s #n; make the plan first with task_create, plan and a subject). Only the person raises the cap: ask them to run `cc-smart-dev-kit workflow set plans.maxPhases <n>` in their own terminal (add --project to set it for this project).',
     );
     // A phase that is there is only answered, at the cap too.
     expect(said(ops.call("create", { subject: "Area 3", plan: "big", phase: "P3" }))).toContain(
@@ -224,12 +224,13 @@ test("a call that names no plan goes to the active plan, even after a newer plan
     expect(planOf(4)).toBe("a");
     said(ops.call("create", { subject: "Second area", phase: "A2" }));
     expect(planOf(5)).toBe("a");
-    // With no active plan (A's phases closed), the plan of the latest own task takes it, as before.
+    // A's phases are all done and A is still open (its final review and fix pass): A is the plan
+    // being finished, so a call that names no plan goes to A, not to the queued plan B.
     said(ops.call("done", { task: "#2" }));
     said(ops.call("done", { task: "#5" }));
     said(ops.call("create", { subject: "Waits in B", parent: "#3" }));
-    said(ops.call("create", { subject: "Next ask" }));
-    expect(planOf(7)).toBe("b");
+    said(ops.call("create", { subject: "Fix a review finding" }));
+    expect(planOf(7)).toBe("a");
   } finally {
     ops.close();
   }
@@ -516,6 +517,102 @@ test("after task_take of a plan with a running phase, that plan is the taker's a
     const refusal = refused(lead.call("create", { subject: "More", plan: "a", phase: "A2" }));
     expect(refusal).toContain('Plan "x" (#3) is your active plan');
     said(lead.call("create", { subject: "Second area", plan: "x", phase: "X2" }));
+  } finally {
+    lead.close();
+    other.close();
+  }
+});
+
+function planOfNumber(w: ReturnType<typeof world>, number: number) {
+  const db = openWorkDb(workDbFile(w.paths), { mode: "hook" });
+  try {
+    return allTasks(db, folderProject(w.repo)).find((t) => t.number === number)?.plan;
+  } finally {
+    db.close();
+  }
+}
+
+test("a plan whose phases are all dropped is not finishing: the call falls to the latest own task's plan", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan A", plan: "a" })); // #1
+    said(ops.call("create", { subject: "Area", plan: "a", phase: "A1" })); // #2
+    said(ops.call("done", { task: "#2", outcome: "dropped" }));
+    said(ops.call("create", { subject: "Plan B", plan: "b" })); // #3
+    said(ops.call("create", { subject: "Waits in B", parent: "#3" })); // #4
+    said(ops.call("create", { subject: "Next ask" })); // #5
+    expect(planOfNumber(w, 5)).toBe("b");
+  } finally {
+    ops.close();
+  }
+});
+
+test("parking: dropping a plan's open steps and phases frees the next plan; resuming is refused while that plan has open phases", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan A", plan: "a" })); // #1
+    said(ops.call("create", { subject: "Area", plan: "a", phase: "A1" })); // #2
+    said(ops.call("create", { subject: "Step", parent: "#2" })); // #3
+    said(ops.call("create", { subject: "Plan B", plan: "b" })); // #4
+    // A has an open phase, so B cannot lay one yet.
+    expect(refused(ops.call("create", { subject: "B area", plan: "b", phase: "B1" }))).toContain(
+      'Plan "a" (#1) is your active plan',
+    );
+    // Park A: drop each open step, then the open phase, each with a note. The plan stays open.
+    said(ops.call("done", { task: "#3", outcome: "dropped", note: "parked: other work first" }));
+    said(ops.call("done", { task: "#2", outcome: "dropped", note: "parked: other work first" }));
+    said(ops.call("create", { subject: "B area", plan: "b", phase: "B1" })); // #5
+    // Resuming A's phase while B has an open phase is refused like laying one.
+    const refusal = refused(ops.call("update", { task: "#2", status: "pending" }));
+    expect(refusal).toContain('Plan "b" (#4) is your active plan');
+    expect(refusal).toContain('Do not reopen a phase in plan "a"');
+    // B's phase done: A can come back, its step too, and its phase starts.
+    said(ops.call("done", { task: "#5" }));
+    said(ops.call("update", { task: "#2", status: "pending" }));
+    said(ops.call("update", { task: "#3", status: "pending" }));
+    said(ops.call("update", { task: "#2", status: "in_progress" }));
+  } finally {
+    ops.close();
+  }
+});
+
+test("reopening a dropped phase counts toward the cap like laying one", () => {
+  const w = world();
+  personalFile(w, { plans: { maxPhases: 2 } });
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" })); // #1
+    said(ops.call("create", { subject: "A", plan: "p", phase: "A" })); // #2
+    said(ops.call("create", { subject: "B", plan: "p", phase: "B" })); // #3
+    said(ops.call("done", { task: "#2", outcome: "dropped" }));
+    said(ops.call("create", { subject: "C", plan: "p", phase: "C" })); // #4 takes the freed slot
+    expect(refused(ops.call("update", { task: "#2", status: "pending" }))).toContain(
+      "already holds 2 phases, the most plans.maxPhases allows (2, from your own workflow settings)",
+    );
+    said(ops.call("done", { task: "#4", outcome: "dropped" }));
+    said(ops.call("update", { task: "#2", status: "pending" }));
+  } finally {
+    ops.close();
+  }
+});
+
+test("an open step moves to a phase of its own plan only, never to another plan's phase", () => {
+  const w = world();
+  const lead = w.ops();
+  const other = w.ops(OTHER);
+  try {
+    said(lead.call("create", { subject: "Plan A", plan: "a" })); // #1
+    said(lead.call("create", { subject: "Area", plan: "a", phase: "A1" })); // #2
+    said(lead.call("create", { subject: "Step", parent: "#2" })); // #3
+    said(other.call("create", { subject: "Plan X", plan: "x" })); // #4
+    said(other.call("create", { subject: "Area", plan: "x", phase: "X1" })); // #5
+    expect(refused(lead.call("update", { task: "#3", parent: "#5" }))).toContain(
+      "stays there until it is closed",
+    );
+    said(lead.call("create", { subject: "Second area", plan: "a", phase: "A2" })); // #6
+    said(lead.call("update", { task: "#3", parent: "#6" }));
   } finally {
     lead.close();
     other.close();

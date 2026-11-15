@@ -33,6 +33,7 @@ import {
   allTasks,
   claimHeldBy,
   claimState,
+  defaultPlanOf,
   deletedHistory,
   eventsOf,
   getTask,
@@ -40,7 +41,6 @@ import {
   layerOf,
   notesOf,
   openBlockers,
-  planIsOpen,
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
@@ -53,6 +53,7 @@ import {
   layPhase,
   type PhaseCap,
   planTask,
+  refuseOverCap,
   takeTasks,
   updateTask,
 } from "./work/store";
@@ -179,8 +180,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       // The plan being built now: a plan queued later never takes a call that names no plan.
       const active = activePlanOf(all, owns);
-      const writePlan =
-        active?.plan ?? (ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null);
+      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
       /** `plans.maxPhases` for this checkout: a broken workflow file fails the call, naming it. */
       const phaseCap = (): PhaseCap => {
         if (!ctx.projectConfig.ok) throw new Error(ctx.projectConfig.why);
@@ -279,7 +279,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               input.description !== undefined)
           )
             throw new Error(
-              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
+              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase",
             );
           const slug = input.plan ?? writePlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -412,6 +412,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · updated` };
         }
         const task = work(input.task);
+        // A dropped phase coming back is a phase laid again: the active plan and the cap judge it.
+        if (
+          task.kind === "phase" &&
+          task.status === "dropped" &&
+          (input.status === "pending" || input.status === "in_progress") &&
+          task.plan !== null
+        ) {
+          refuseOther(task.plan, "reopen a phase");
+          const cap = phaseCap();
+          refuseOverCap(all, task.plan, cap);
+        }
         if (input.status === "in_progress" && task.status !== "in_progress") {
           refuseEmptyPhase(all, task);
           if (task.plan !== null) refuseOther(task.plan, "start work");

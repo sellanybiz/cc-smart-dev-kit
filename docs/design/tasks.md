@@ -152,7 +152,10 @@ checkout's working copy through the normal workflow resolver:
   over default), resolved by `ops.ts` through `resolvePlans` for the caller's checkout; a broken
   workflow file fails the call and names the file and field. The refusal says the plan, its count,
   the cap and where it came from, and the ways forward: a task under the phase that owns its
-  files, a next plan, or raising the setting.
+  files, or a task under the next plan (`parent` set to that plan's `#n`). The cap is the person's
+  to raise: `workflow set` of it refuses inside Claude Code (`PLAN_KEYS`), and the refusal says to
+  ask them. A dropped phase that comes back (`task_update` to pending or in progress) is judged
+  like a new one: the one-active-plan refusal and the cap (`refuseOverCap` in `store.ts`).
 - **No empty phase starts.** Moving a phase to `in_progress` (`task_update`, `task start`) is
   refused while it has no task that is not dropped; the refusal names `task_create` with `parent` set to the phase.
 - **One active plan.** A caller's active plan is an own open plan (`owns`: created or claimed by
@@ -165,9 +168,15 @@ checkout's working copy through the normal workflow resolver:
   over), else the lower number; the refusal names it, and it is the plan the caller can lay
   phases in and start work in. Laying or starting work in the other waits until the active plan
   is finished or its open phases are dropped.
-- **The default plan.** A write that names no plan goes to the active plan; with none, to the plan
-  of the caller's latest own task while that plan is open, as before. A plan queued later never
-  takes the call.
+- **The default plan** (`defaultPlanOf` in `queries.ts`). A write that names no plan goes, in
+  order, to the active plan; else to the plan being finished (an own open plan whose phases are all
+  closed, at least one done: its final review and fix pass; the newest such plan); else to the plan
+  of the caller's latest own task while that plan is open. A plan queued later never takes the call.
+  The one-active-plan refusal counts only plans with an open phase, so **parking** works with no
+  plan state of its own: drop each open step and then each open phase with the note
+  `parked: <why>`; the plan task stays open and the next plan may start. To resume, `task_update` the
+  phases and steps back to pending (refused while another own plan has an open phase, or past the
+  cap).
 - **Waiting tasks.** `task_create` with `parent` set to a plan's `#n` makes a task directly
   under the plan (its `plan` column is set). `task_update` with `parent` set to a phase of the
   same plan moves it there; another plan's phase, and a move of an existing task up under a plan,

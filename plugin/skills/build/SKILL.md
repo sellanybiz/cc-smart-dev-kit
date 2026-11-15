@@ -1,6 +1,6 @@
 ---
 name: build
-description: Use to execute an approved plan - parallel builders, task reviews, fixes, merges and the final review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
+description: Use to execute an approved plan - parallel builders, phase reviews, fixes, merges, final review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
 ---
 
 # Build The Approved Plan
@@ -137,9 +137,9 @@ record a ruling; do not repeat the failed loop or silently waive a material defe
 
 Once spec and quality pass, merge the worktree branch into the plan branch. Phase branches
 stay local: never push one, never open a pull request for one. Resolve only
-the integration conflicts in your scope and check affected code. Close all blocking steps,
-then `task_done` the phase with its commits, checks and verdicts. After each merged phase,
-push the plan branch when `autoPush` is on. When it is off, ask the person once for the
+the integration conflicts in your scope and check affected code. Close all blocking steps
+(done with evidence, dropped with a note), then `task_done` the phase with its commits, checks
+and verdicts. After each merged phase, push the plan branch when `autoPush` is on. When it is off, ask the person once for the
 whole plan whether to push it after each merged phase, and keep the answer. In that same
 turn, start every phase this unblocked; do not wait for unrelated agents or reviews.
 

@@ -10,7 +10,7 @@ import { isOpen, livePhaseCount } from "./work/queries";
 import type { WorkTask } from "./work/types";
 
 /** What a call does in a plan other than the active one. */
-export type PlanWork = "lay a phase" | "start work";
+export type PlanWork = "lay a phase" | "start work" | "reopen a phase";
 
 /**
  * Refuses work in a plan other than the caller's active plan (`activePlanOf`): a session builds
@@ -81,8 +81,8 @@ export function refuseBareClose(
 /**
  * An open step stays in its phase until it is closed with its proof: moving it to the top, or
  * under a plan, would let it close without evidence (`refuseBareClose` judges only a step of a
- * phase). It may move to another phase, and once closed it is free to move. `to` is the new
- * parent as the call gives it (null: the top).
+ * phase). It may move to another phase of the same plan, and once closed it is free to move.
+ * `to` is the new parent as the call gives it (null: the top).
  */
 export function refuseStepEscape(
   all: readonly WorkTask[],
@@ -91,7 +91,7 @@ export function refuseStepEscape(
 ): void {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task)) return;
-  if (to !== null && to.kind === "phase") return;
+  if (to !== null && to.kind === "phase" && to.plan === from.plan) return;
   throw new Error(
     `#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`,
   );

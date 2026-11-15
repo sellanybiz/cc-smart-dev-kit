@@ -2661,7 +2661,7 @@ merge.
 | `alerts.events` | — | Retired: accepted on load and ignored; not shown or writable. |
 | `alerts.sound` | — | Retired: the same load-only handling as `alerts.events`. |
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
-| `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in its committed file (`workflow set plans.maxPhases 12 --project`); the project's wins. A project that sets it needs `"requires": ">=4.8"`. |
+| `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
 
 **Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
 itself only when the pull request's base **is** the project's integration base

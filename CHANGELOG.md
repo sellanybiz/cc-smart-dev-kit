@@ -14,12 +14,17 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   forward in the message. It refuses to start a phase that has no tasks. The cap is the new
   workflow setting `plans.maxPhases` (1 to 50, default 10): set it for one project with
   `cc-smart-dev-kit workflow set plans.maxPhases <n> --project`, or for yourself without
-  `--project`. A plan already over the cap keeps running, but it gets no new phases, and
-  `doctor` names it.
+  `--project`. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code
+  (`propose` stays open), so a session cannot lift its own limit. A plan already over the cap
+  keeps running, but it gets no new phases, and `doctor` names it.
 - **One active plan per session.** A session may queue more plans, but it builds one at a
   time. The store refuses phases in a second plan while the active plan has open phases. A
   call that names no plan now goes to the active plan, not to the newest one: before, a
-  queued plan made during a build caught new work by mistake.
+  queued plan made during a build caught new work by mistake. While a plan is finishing (all its
+  phases closed, one done, its task still open: the final review and fixes) it takes those calls
+  too. To park a plan, drop its open steps and phases with the note `parked: <why>`; the plan
+  stays open and the next plan may start. A dropped phase that comes back is checked like a new
+  one: the active plan and the cap.
 - **An ask made during a build waits as a task in the next plan.** `task_create` with `parent`
   set to a plan's `#n` makes a task directly under the plan. When that plan is designed, the
   task moves under its phase. The plan cannot close while one still waits.
@@ -37,11 +42,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   `<phase id>-<n>: <verb> <what> — <check>`.
 - **Downgrade note:** an older version refuses a `.claude/cc-smart-dev-kit.json` that sets
   `workflow.plans`. Unset it before going back (`workflow set` already raises `requires` to
-  `>=4.8`).
+  `>=4.8`). The same goes for a `plans` value in your own `~/.config/cc-smart-dev-kit/workflow.json`:
+  unset it there too (`cc-smart-dev-kit workflow unset plans.maxPhases`, in your own terminal).
 
 **What to run:** nothing. A session running a plan with more than 10 phases should re-plan it:
-finish the phases in progress, then group the rest into at most 10 phases, or into several
-plans.
+finish the phases in progress, then re-plan the remaining work as next plans, each within the
+cap (done phases count toward it).
 
 ## 4.7.0
 

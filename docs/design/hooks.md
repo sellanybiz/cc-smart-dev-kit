@@ -628,7 +628,7 @@ recording blockers still applies to every phase, including those not shown. It t
 says to resume its recorded builder with `SendMessage`, naming the agent (or start a fresh
 one), or to start a fresh builder when none is recorded; a blank agent counts as none. For several phases it pairs each agent with its phase and
 names the phases that need fresh builders. Next comes the next ready phase of the same plan —
-the lowest-numbered phase that is `pending` with no open blocker — to start now (dispatch its
+the lowest-numbered phase that is `pending` with no open blocker and at least one task that is not dropped (the store refuses to start an empty one) — to start now (dispatch its
 builder). Then it offers to close the phases with `task_done`, or record the blocker with
 `task_note` and end the turn with a `Waiting for: <what>` line. It ends: "Never move a phase
 back to pending only to end the turn."

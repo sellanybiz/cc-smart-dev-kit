@@ -904,6 +904,38 @@ describe("the review gate (CM-1)", () => {
   );
 
   test.each([
+    ["set", "plans.maxPhases", ["50"]],
+    ["unset", "plans.maxPhases", []],
+  ] as const)(
+    "workflow %s %s refuses inside Claude Code, in both files: a session does not lift its own phase cap",
+    async (sub, key, value) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([
+          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`,
+        ]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
+  test("workflow set plans.maxPhases still works in the person's own terminal", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "plans.maxPhases", "12"], run.context)).toBe(0);
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(true);
+  });
+
+  test.each([
     [
       "set",
       "issues.readyLabel",
