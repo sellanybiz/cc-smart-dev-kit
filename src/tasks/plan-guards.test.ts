@@ -573,8 +573,7 @@ test("the status line shows the phase while it runs, and the plan in flight betw
 test("the status line counts the plans that wait behind the one in flight", () => {
   const w = world();
   const ops = w.ops();
-  const planRow = () =>
-    (taskSegment(w.paths, folderProject(w.repo), LEAD) ?? "").split("\n")[0];
+  const planRow = () => (taskSegment(w.paths, folderProject(w.repo), LEAD) ?? "").split("\n")[0];
   try {
     queue(ops, ["a", "b", "c"]); // plans #1, #4, #7, each with a phase and a step
     said(ops.call("update", { task: "#2", status: "in_progress" }));
