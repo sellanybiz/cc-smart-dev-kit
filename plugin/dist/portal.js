@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "4.7.0",
+  version: "4.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -13538,6 +13538,7 @@ function ignoredFieldsOf(kind) {
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
 function numberSchema(rule) {
   const whole = number2().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
@@ -13546,7 +13547,8 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO
+  "fixesAfterReview.percent": AT_LEAST_ZERO,
+  "plans.maxPhases": PHASE_COUNT
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -13584,6 +13586,9 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  plans: strictObject({
+    maxPhases: numberField("plans.maxPhases")
+  }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
@@ -13639,6 +13644,9 @@ var workflowDefaults = {
   },
   alerts: {
     usagePercent: 85
+  },
+  plans: {
+    maxPhases: 10
   }
 };
 var SWITCH_NAMES = [
@@ -13666,7 +13674,8 @@ var POLICY_KEYS = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "plans.maxPhases"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -13824,6 +13833,7 @@ var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
 var WORKTREE_REBUILDABLE_SINCE = "1.9.0";
 var CHECKS_SINCE = "1.1.0";
 var WORKFLOW_ISSUES_SINCE = "1.4.0";
+var WORKFLOW_PLANS_SINCE = "4.8.0";
 var JOB_KIND_KEYS_SINCE = {
   noSlotForFiles: "1.5.0"
 };
@@ -15530,6 +15540,9 @@ function mergeWorkflows(personal, project) {
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined)
+    merged.plans = plans;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -15547,6 +15560,18 @@ function alertsFrom(personal, project) {
   return {
     usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
   };
+}
+function plansFrom(personal, project) {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases")
+    }
+  };
+}
+function resolvePlans(paths, projectConfig) {
+  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
 }
 function statusLineIsOurs(paths) {
   try {
@@ -15635,6 +15660,7 @@ var RESOLVED = {
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "plans.maxPhases": (r) => r.plans.maxPhases,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
@@ -15677,6 +15703,7 @@ function resolveWorkflow(paths, projectConfig) {
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
     },
     alerts: alertsFrom(personal, project),
+    plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
@@ -16792,6 +16819,8 @@ function requiresFloor(file) {
   if (Object.hasOwn(workflow, "fixesAfterReview")) {
     needs.push(WORKFLOW_FIXES_SINCE);
   }
+  if (Object.hasOwn(workflow, "plans"))
+    needs.push(WORKFLOW_PLANS_SINCE);
   if (Object.hasOwn(worktrees, "autoClean"))
     needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable"))
@@ -19545,7 +19574,8 @@ function contextOf(checkout, cwd, env) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" }
+      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectConfig: { ok: true, config: null }
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
@@ -19555,15 +19585,18 @@ function contextOf(checkout, cwd, env) {
     repo,
     checkoutRoot: checkout.root
   };
-  let settings;
+  let config;
   try {
-    settings = loadProjectConfig(checkout).config?.tasks;
+    config = loadProjectConfig(checkout).config;
   } catch (error) {
-    return { ...base, projectTasks: { ok: false, why: checkoutFailure(error) } };
+    const why = checkoutFailure(error);
+    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
   }
+  const settings = config?.tasks;
   const root = checkout.root;
   return {
     ...base,
+    projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
       dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
@@ -30513,6 +30546,14 @@ function planIsOpen(all, plan) {
   const row = all.find((task) => task.kind === "plan" && task.plan === plan);
   return row ? isOpen(row) : all.some((task) => task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task));
 }
+function livePhaseCount(all, plan) {
+  return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
+}
+function activePlanOf(all, owns) {
+  const phasesOf = (plan) => all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
+  const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0);
+  return candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ?? candidates[0] ?? null;
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -39150,7 +39191,36 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   lines.push(...await issuesChecks({ cwd: checkout.root, env, gh, paths }));
   lines.push(...await projectTaskChecks(checkout.root, env));
+  lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
+}
+function planCapChecks(cwd, env, paths, config) {
+  const context = taskContext(cwd, env);
+  if (!context.ok)
+    return [];
+  let cap;
+  try {
+    cap = resolvePlans(paths, config).maxPhases;
+  } catch (error) {
+    return [{ ok: true, info: true, text: `project plans: not checked, ${message(error)}` }];
+  }
+  const read = readWorkStore(paths, (db) => allTasks(db, context.project));
+  if (read.state !== "ready")
+    return [];
+  const tasks = read.value;
+  return tasks.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t)).flatMap((plan) => {
+    const count = livePhaseCount(tasks, plan.plan ?? "");
+    if (count <= cap.value)
+      return [];
+    return [
+      {
+        ok: true,
+        warn: true,
+        text: `project plans: plan "${plan.plan}" (#${plan.number}) holds ${count} phases, over the plans.maxPhases cap of ${cap.value} (${cap.source}): it is frozen and takes no new phase`,
+        fix: "finish it, or re-plan its remaining work as plans within the cap"
+      }
+    ];
+  });
 }
 async function projectTaskChecks(cwd, env) {
   const context = taskContext(cwd, env);
@@ -41464,12 +41534,12 @@ var taskSchemas = {
     ...bindings,
     description: description.optional(),
     kind: _enum(["work", ...fields.kind.options]).default("work"),
-    parent: ref.optional().describe("The task (#n) it goes under. Layers: plan \u203A phase \u203A task; a task holds nothing."),
+    parent: ref.optional().describe("The task (#n) it goes under: a phase, or its plan (the task then waits there for a phase). Layers: plan \u203A phase \u203A task; a task holds nothing."),
     status: _enum(["pending", "in_progress"]).optional(),
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's latest own plan only while open, never an older plan. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase as parent."),
+    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's active plan (an own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent."),
     ...projectFields
   }).strict(),
   take: object({
@@ -41510,6 +41580,49 @@ var taskSchemas = {
   search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
   delete: object({ task: ref }).strict()
 };
+
+// src/tasks/plan-guards.ts
+function refuseOtherPlan(options) {
+  const { all, active, plan, owns, doing } = options;
+  if (active === null || active.plan === plan)
+    return;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  const mine = row === undefined ? doing === "lay a phase" : owns(row);
+  if (!mine)
+    return;
+  const queue = row === undefined ? `make plan "${plan}" first (${TASK_TOOL.create} with plan and a subject), then add the task with ${TASK_TOOL.create} and parent set to its #n` : `${TASK_TOOL.create} with parent "#${row.number}"`;
+  throw new Error(`Plan "${active.plan}" (#${active.number}) is your active plan: it still has open phases. Do not ${doing} in plan "${plan}" yet. Queue the work as a task that waits there (${queue}), or finish or drop the open phases of "${active.plan}" first.`);
+}
+function refuseEmptyPhase(all, phase) {
+  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
+    return;
+  throw new Error(`#${phase.number} "${phase.subject}" has no tasks: add its steps first, each with its done-check (${TASK_TOOL.create} with parent "#${phase.number}"), then start it`);
+}
+function refuseBareClose(all, task, outcome, given) {
+  const parent = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || parent?.kind !== "phase" || task.status === outcome)
+    return;
+  const step = `#${task.number} "${task.subject}" is a step of phase #${parent.number}`;
+  if (outcome === "done" && !given.evidence?.trim())
+    throw new Error(`${step}: a step closes done with evidence: what you ran or checked and its result (${TASK_TOOL.done} with task "#${task.number}" and evidence)`);
+  if (outcome === "dropped" && !given.note?.trim())
+    throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
+}
+function refuseStepEscape(all, task, to) {
+  const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
+    return;
+  if (to !== null && to.kind === "phase")
+    return;
+  throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
+}
+function planNote(all, plan, cap) {
+  const slug = plan.plan ?? "";
+  const count = livePhaseCount(all, slug);
+  const phases = cap === null ? `Phases ${count}` : `Phases ${count}/${cap}${count > cap ? " \xB7 frozen: over the cap, no new phases" : ""}`;
+  const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
+  return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
+}
 
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
@@ -41586,8 +41699,10 @@ function placeValid(db, project, moving, parent, kind) {
     throw new Error("parent belongs to another project");
   if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
-  if (kind === "task" && target.kind !== "phase")
-    throw new Error("a task belongs under a phase or at the top; a task holds no tasks");
+  if (kind === "task" && target.kind === "plan" && moving !== null)
+    throw new Error(`a task waits under a plan only where it is made: create it with parent set to the plan (${TASK_TOOL.create}); an existing task moves under a phase`);
+  if (kind === "task" && target.kind !== "phase" && target.kind !== "plan")
+    throw new Error("a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks");
   if (kind === "phase" && target.kind !== "plan")
     throw new Error("a phase belongs under its plan");
   if (kind === "plan")
@@ -41684,6 +41799,8 @@ function applyUpdate2(db, id, change, who, now) {
     plan = taskById(db, parent).plan;
     if (plan !== null)
       openPlanValid(allTasks(db, task.project), plan);
+    if (task.parentId !== null && taskById(db, task.parentId).kind === "plan" && plan !== task.plan)
+      throw new Error(`${label(task)} waits in plan "${task.plan ?? ""}": move it under a phase of that plan`);
   }
   if (change.waitsFor)
     dependencies(db, task, change.waitsFor);
@@ -41733,6 +41850,14 @@ function deleteTask(db, id, who, now) {
 function planTask(db, input, who, now) {
   return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
 }
+var CAP_ORIGIN = {
+  project: "this project's workflow settings",
+  personal: "your own workflow settings",
+  default: "the built-in default"
+};
+function capRefusal(plan, count, cap) {
+  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
+}
 function layPhase(db, input, who, now) {
   const tasks = allTasks(db, input.project);
   if (tasks.some((task) => task.plan === input.plan))
@@ -41740,6 +41865,11 @@ function layPhase(db, input, who, now) {
   const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
   if (there)
     return { task: there, made: false };
+  if (input.cap !== undefined) {
+    const count = livePhaseCount(tasks, input.plan);
+    if (count >= input.cap.max)
+      throw new Error(capRefusal(input.plan, count, input.cap));
+  }
   const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
   const task = insertTask(db, {
     project: input.project,
@@ -41854,7 +41984,8 @@ function page(text, offset) {
 }
 function createTaskOps(options = {}) {
   const env = options.env ?? process.env;
-  const stateDir = options.stateDir ?? cliPaths(env).stateDir;
+  const paths = cliPaths(env);
+  const stateDir = options.stateDir ?? paths.stateDir;
   let db;
   const database = () => {
     if (db?.writeRefusal !== undefined) {
@@ -41878,7 +42009,15 @@ function createTaskOps(options = {}) {
       const all = allTasks(store, ctx.project);
       const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
-      const writePlan = ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null;
+      const active = activePlanOf(all, owns);
+      const writePlan = active?.plan ?? (ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null);
+      const phaseCap = () => {
+        if (!ctx.projectConfig.ok)
+          throw new Error(ctx.projectConfig.why);
+        const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
+        return { max: value, source };
+      };
+      const refuseOther = (plan, doing) => refuseOtherPlan({ all, active, plan, owns, doing });
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -41959,11 +42098,15 @@ function createTaskOps(options = {}) {
           const phaseId = input.phase;
           if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
+          const there = all.some((t) => t.kind === "phase" && t.plan === slug && t.phase === phaseId);
+          if (!there)
+            refuseOther(slug, "lay a phase");
           const laid = value(writeWork(store, () => layPhase(store, {
             project: ctx.project,
             plan: slug,
             phase: phaseId,
             subject: input.subject,
+            ...there ? {} : { cap: phaseCap() },
             ...input.description === undefined ? {} : { description: input.description },
             ...bindings2(input),
             ...input.type === undefined ? {} : { type: input.type },
@@ -41984,6 +42127,9 @@ function createTaskOps(options = {}) {
         const parent = input.parent ? work(input.parent) : undefined;
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
+        const taskPlan = input.plan ?? parent?.plan ?? writePlan;
+        if (input.status === "in_progress" && taskPlan !== null)
+          refuseOther(taskPlan, "start work");
         const task = value(writeWork(store, () => insertTask(store, {
           project: ctx.project,
           subject: input.subject,
@@ -41992,7 +42138,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: input.plan ?? parent?.plan ?? writePlan,
+          plan: taskPlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -42021,6 +42167,15 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 updated` };
         }
         const task = work(input.task);
+        if (input.status === "in_progress" && task.status !== "in_progress") {
+          refuseEmptyPhase(all, task);
+          if (task.plan !== null)
+            refuseOther(task.plan, "start work");
+        }
+        if (input.parent !== undefined)
+          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
+        if (input.status === "done" || input.status === "dropped")
+          refuseBareClose(all, task, input.status, {});
         const updated = value(updateTask(store, task.id, {
           ...input.subject === undefined ? {} : { subject: input.subject },
           ...input.description === undefined ? {} : { description: input.description },
@@ -42055,6 +42210,7 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 ${input.outcome}` };
         }
         const task = work(input.task);
+        refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
         const changed = value(writeWork(store, () => {
           for (const text of [input.note, input.evidence])
             if (text)
@@ -42153,6 +42309,7 @@ ${historyText(gone, { full: input.history })}`;
       }
       let selected;
       let projects = [];
+      let planLedger = false;
       if (operation === "search") {
         const input = taskSchemas.search.parse(raw);
         selected = searchTasks(store, ctx.project, input.text).filter((t) => input.include_closed || isOpen(t));
@@ -42161,6 +42318,7 @@ ${historyText(gone, { full: input.history })}`;
 ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       } else {
         const input = taskSchemas.list.parse(raw);
+        planLedger = input.scope === "plan";
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
@@ -42177,9 +42335,18 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
       const lines = [];
+      let cap = null;
+      let capWhy = null;
+      if (planLedger) {
+        try {
+          cap = phaseCap().max;
+        } catch (error) {
+          capWhy = `plans.maxPhases cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       const visit = (task, depth) => {
         const count = subtreeProgress(all, task.id);
-        const progress = count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "";
+        const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
         const state = claimState(task, claimLive, who);
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
@@ -42189,6 +42356,8 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
       lines.push(...projects.map(projectLine));
+      if (capWhy !== null)
+        lines.push(capWhy);
       return { ok: true, text: capped(lines), data: { work: selected, project: projects } };
     } catch (error) {
       return {
