@@ -117,15 +117,18 @@ workflow allows. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 
-After approval, use `task_create` for the plan (`plan`: its slug, subject: its title), then
+After approval, use `task_create` for the plan (`plan`: its slug, subject: its title); a plan
+queued earlier (§ 6) already has its plan task, so use that one and make no second. Then
 one phase task per phase (`phase`: its id, with the same `plan`). Put the complete builder
 brief in each phase's description, in four parts: objective; files and boundaries; patterns
-and tools; output format (`Report:` task note and short status). Include interfaces, edge cases and done-check.
+and tools; output format (`Report:` task note and short status). Include interfaces, edge
+cases and done-check.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
-hand-back guard that reads it. Under each phase create its real steps, usually 3 to 10, each with its done-check: tasks
-whose `parent` is the phase. A task holds no tasks, and a phase with no tasks will not start.
+hand-back guard that reads it. Under each phase create its real steps, usually 3 to 10, each
+with its done-check: tasks whose `parent` is the phase. A task holds no tasks, and a phase
+with no tasks will not start.
 Tasks that waited under the plan (§ 6) move under their phases with `task_update` and
 `parent`; a plan cannot close while one still waits. Set `blocked_by` for real dependencies
 and shared-file phases.
@@ -135,7 +138,8 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 ## 5. Phases, owners and waves
 
 - **A plan is one result that can ship: one pull request.** It holds at most
-  `plans.maxPhases` phases (default 10). A project sets it in `.claude/cc-smart-dev-kit.json`
+  `plans.maxPhases` phases (default 10); a contracts phase and the cleanup wave count too. A
+  project sets it in `.claude/cc-smart-dev-kit.json`
   under `workflow.plans.maxPhases`; a person uses `cc-smart-dev-kit workflow set
   plans.maxPhases <n>`. Bigger work is a sequence of plans, each its own plan task and
   pull request, never a longer plan. The store refuses a phase past the cap: add the work as
@@ -170,7 +174,7 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   owns its files.
 - **One active plan per session.** A session may queue more plans, but builds one at a time:
   finish (§ 8) or park the active plan before you lay phases in the next. Each plan gets its
-  own plan task. Name the intended plan with `plan` on `task_list` and on every work-task
+  own plan task; a queued plan's task is the same one § 4 later fills with phases. Name the intended plan with `plan` on `task_list` and on every work-task
   `task_create` for it; never on a project task, which refuses it. A call that names no plan
   goes to the active plan, and the store refuses phases in a second plan while the active one
   has open phases.

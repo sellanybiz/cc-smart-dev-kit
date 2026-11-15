@@ -79,7 +79,7 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 ## Review
 
 - **Review belongs to the main session**, not its builders. An approved plan follows
-  `/cc-smart-dev-kit:build`: a task review per phase, then a final whole-branch review. Other
+  `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
   deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary task

@@ -89,7 +89,7 @@ at a shared remote service.
 
 ## 6. Test it with the person — what only a person can check
 
-Once, when the plan's work is finished and its pull requests are open — not after every edit
+Once, when the plan's work is finished and its pull request is open — not after every edit
 batch. First run every check you can yourself: the tests, the app in a browser (yourself or
 the `cc-smart-dev-kit:ui-verifier`), the app itself through the bundled `/run` skill (it launches
 and drives it), the script with real input. Then list what you cannot judge alone:

@@ -19,7 +19,7 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `autoCommit = false` | Commit when the person asks. At the end of a finished, reviewed phase, say in one line that it is ready, and carry on. |
 | `autoCommit = true` | Commit each finished, reviewed phase with no question. Never commit half-built work. |
 | `autoPush = false` | Push when the person asks. |
-| `autoPush = true` | Push your own branch once the change set is complete. **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
+| `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
 | `openPr = "off"` | Open a pull request only when the person asks. |
 | `openPr = "draft"` | Open it as a draft; a person marks it ready. |
 | `openPr = "ready"` | Open it ready for review. |
@@ -41,7 +41,9 @@ and the merge order.
   a push, a pull request or a merge into a shared branch. In a planned build a phase branch
   stays local; the plan branch is pushed and has the one pull request (`/cc-smart-dev-kit:build` §§ 5 and 6).
 - **Push and open the pull request** when the change set is complete and the second opinion
-  has read it, or it is a small fix that skips it. Not after each commit.
+  has read it, or it is a small fix that skips it. Not after each commit. In a planned build
+  the plan branch is pushed after each merged phase, and the pull request waits for the
+  final review.
 - **Always the person's word, every time:** anything into the main branch or production, a
   force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
   renaming a branch that is not merged, and shipping a Warning without its fix. A yes covers
