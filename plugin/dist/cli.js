@@ -14796,7 +14796,7 @@ function showValue(_key, value) {
     return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }
-var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, workflowSchema, PERSONAL_FILE_SWITCH_NAMES, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, REVIEW_GATE_KEYS, OUTBOUND_KEYS, INBOUND_KEYS, SWITCH_KEYS, WORKFLOW_KEYS, PROJECT_SWITCH_NAMES;
+var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, workflowSchema, PERSONAL_FILE_SWITCH_NAMES, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, REVIEW_GATE_KEYS, OUTBOUND_KEYS, INBOUND_KEYS, PLAN_KEYS, SWITCH_KEYS, WORKFLOW_KEYS, PROJECT_SWITCH_NAMES;
 var init_schema = __esm(() => {
   init_zod();
   PERCENT = { kind: "whole", max: 100, min: 1 };
@@ -14926,6 +14926,7 @@ var init_schema = __esm(() => {
   ];
   OUTBOUND_KEYS = ["issues.enabled", "issues.allowPublic"];
   INBOUND_KEYS = ["issues.readyLabel"];
+  PLAN_KEYS = ["plans.maxPhases"];
   SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
   WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
   PROJECT_SWITCH_NAMES = ["sessionNames", "jobRoute"];
@@ -29372,6 +29373,19 @@ function activePlanOf(all, owns) {
   const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0);
   return candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ?? candidates[0] ?? null;
 }
+function defaultPlanOf(all, owns, active, fallback) {
+  if (active?.plan)
+    return active.plan;
+  const finishing = all.filter((t) => {
+    if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t))
+      return false;
+    const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
+    return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
+  }).at(-1);
+  if (finishing?.plan)
+    return finishing.plan;
+  return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -29529,7 +29543,7 @@ function refuseStepEscape(all, task, to) {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
     return;
-  if (to !== null && to.kind === "phase")
+  if (to !== null && to.kind === "phase" && to.plan === from.plan)
     return;
   throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
 }
@@ -30156,8 +30170,11 @@ function applySystemClose(db, id, status, reason, who, now) {
 function planTask(db, input, who, now) {
   return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
 }
-function capRefusal(plan, count, cap) {
-  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
+function refuseOverCap(tasks, plan, cap) {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max)
+    return;
+  throw new Error(`Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`);
 }
 function layPhase(db, input, who, now) {
   const tasks = allTasks(db, input.project);
@@ -30166,11 +30183,8 @@ function layPhase(db, input, who, now) {
   const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
   if (there)
     return { task: there, made: false };
-  if (input.cap !== undefined) {
-    const count = livePhaseCount(tasks, input.plan);
-    if (count >= input.cap.max)
-      throw new Error(capRefusal(input.plan, count, input.cap));
-  }
+  if (input.cap !== undefined)
+    refuseOverCap(tasks, input.plan, input.cap);
   const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
   const task = insertTask(db, {
     project: input.project,
@@ -30320,7 +30334,7 @@ function createTaskOps(options = {}) {
       const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const active = activePlanOf(all, owns);
-      const writePlan = active?.plan ?? (ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null);
+      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
       const phaseCap = () => {
         if (!ctx.projectConfig.ok)
           throw new Error(ctx.projectConfig.why);
@@ -30393,7 +30407,7 @@ function createTaskOps(options = {}) {
           if (input.status !== undefined)
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
-            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase");
+            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase");
           const slug = input.plan ?? writePlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -30477,6 +30491,11 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 updated` };
         }
         const task = work(input.task);
+        if (task.kind === "phase" && task.status === "dropped" && (input.status === "pending" || input.status === "in_progress") && task.plan !== null) {
+          refuseOther(task.plan, "reopen a phase");
+          const cap = phaseCap();
+          refuseOverCap(all, task.plan, cap);
+        }
         if (input.status === "in_progress" && task.status !== "in_progress") {
           refuseEmptyPhase(all, task);
           if (task.plan !== null)
@@ -32824,6 +32843,9 @@ function issueKeyReason(key) {
 function issueKeyRefusal(sub, key) {
   return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} ${issueKeyReason(key)}. Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it \u2014 the kit reads only the committed file. \`workflow propose\` opens a pull request you review instead.`;
 }
+function planKeyRefusal(sub, key) {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`;
+}
 async function reviewDone(context, argv) {
   if (insideClaudeCode(context.env)) {
     context.error(`${COMMAND} workflow review-done cannot run inside a Claude Code session: the review record is written by the review-record hook when a review agent (workflow setting reviewAgents) returns, so a record is never the session's own word. Run it in your own terminal to record one by hand.`);
@@ -32988,6 +33010,10 @@ ${WORKFLOW_USAGE}` : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS
     context.error(issueKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
+  if (PLAN_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
+    context.error(planKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+    return 1;
+  }
   let value;
   if (sub === "set") {
     const text = words[0];
@@ -33150,7 +33176,8 @@ Code, set, unset and propose of those refuse: run them in your own terminal (pro
 pull request's review, are the gate).
 ${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
 ${INBOUND_KEYS.join(" and ")} decides which issues are ready: set and unset refuse these inside
-Claude Code too; propose does not, since a person reviews its pull request.
+Claude Code too; propose does not, since a person reviews its pull request. So does
+${PLAN_KEYS.join(" and ")}, the most phases a plan may hold: a session never lifts its own limit.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -48554,7 +48581,8 @@ function openPhasesOf(paths, project, caller) {
   const inProgress = own.filter((t) => t.status === "in_progress");
   const busy = new Set(inProgress.map((t) => t.plan));
   const byId = new Map(all.map((t) => [t.id, t]));
-  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
+  const hasSteps = (phase) => all.some((t) => t.parentId === phase.id && t.status !== "dropped");
+  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId) && hasSteps(t));
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 

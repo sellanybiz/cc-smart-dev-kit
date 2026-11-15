@@ -17594,7 +17594,8 @@ function openPhasesOf(paths, project, caller) {
   const inProgress = own.filter((t) => t.status === "in_progress");
   const busy = new Set(inProgress.map((t) => t.plan));
   const byId = new Map(all.map((t) => [t.id, t]));
-  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
+  const hasSteps = (phase) => all.some((t) => t.parentId === phase.id && t.status !== "dropped");
+  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId) && hasSteps(t));
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 

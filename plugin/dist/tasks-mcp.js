@@ -22845,6 +22845,19 @@ function activePlanOf(all, owns) {
   const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0);
   return candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ?? candidates[0] ?? null;
 }
+function defaultPlanOf(all, owns, active, fallback) {
+  if (active?.plan)
+    return active.plan;
+  const finishing = all.filter((t) => {
+    if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t))
+      return false;
+    const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
+    return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
+  }).at(-1);
+  if (finishing?.plan)
+    return finishing.plan;
+  return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -22996,7 +23009,7 @@ function refuseStepEscape(all, task, to) {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
     return;
-  if (to !== null && to.kind === "phase")
+  if (to !== null && to.kind === "phase" && to.plan === from.plan)
     return;
   throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
 }
@@ -23833,8 +23846,11 @@ var CAP_ORIGIN = {
   personal: "your own workflow settings",
   default: "the built-in default"
 };
-function capRefusal(plan, count, cap) {
-  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
+function refuseOverCap(tasks, plan, cap) {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max)
+    return;
+  throw new Error(`Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`);
 }
 function layPhase(db, input, who, now) {
   const tasks = allTasks(db, input.project);
@@ -23843,11 +23859,8 @@ function layPhase(db, input, who, now) {
   const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
   if (there)
     return { task: there, made: false };
-  if (input.cap !== undefined) {
-    const count = livePhaseCount(tasks, input.plan);
-    if (count >= input.cap.max)
-      throw new Error(capRefusal(input.plan, count, input.cap));
-  }
+  if (input.cap !== undefined)
+    refuseOverCap(tasks, input.plan, input.cap);
   const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
   const task = insertTask(db, {
     project: input.project,
@@ -23988,7 +24001,7 @@ function createTaskOps(options = {}) {
       const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const active = activePlanOf(all, owns);
-      const writePlan = active?.plan ?? (ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null);
+      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
       const phaseCap = () => {
         if (!ctx.projectConfig.ok)
           throw new Error(ctx.projectConfig.why);
@@ -24061,7 +24074,7 @@ function createTaskOps(options = {}) {
           if (input.status !== undefined)
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
-            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase");
+            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase");
           const slug = input.plan ?? writePlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -24145,6 +24158,11 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 updated` };
         }
         const task = work(input.task);
+        if (task.kind === "phase" && task.status === "dropped" && (input.status === "pending" || input.status === "in_progress") && task.plan !== null) {
+          refuseOther(task.plan, "reopen a phase");
+          const cap = phaseCap();
+          refuseOverCap(all, task.plan, cap);
+        }
         if (input.status === "in_progress" && task.status !== "in_progress") {
           refuseEmptyPhase(all, task);
           if (task.plan !== null)
