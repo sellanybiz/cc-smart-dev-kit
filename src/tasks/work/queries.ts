@@ -143,52 +143,69 @@ export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
 
+/** Whether a phase of the plan is `in_progress`: work running now, whatever the plan task says. */
+function hasRunningPhase(all: readonly WorkTask[], plan: WorkTask): boolean {
+  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+}
+
 /**
- * The plan a caller is building now: one of its own open plans (`owns` holds the plan's task)
- * with at least one open phase. When two qualify (a take-over made the second), the one with a
- * phase in progress, else the first by number. Another session's plan never counts. Null when
- * the caller builds none.
+ * Whether a plan is in flight: it is open, and its task is `in_progress` (the store sets that
+ * when the plan's first phase or task starts) or, for a plan started under 4.8.0 that never set
+ * its task, one of its phases is `in_progress`.
  */
-export function activePlanOf(
-  all: readonly WorkTask[],
-  owns: (task: WorkTask) => boolean,
-): WorkTask | null {
-  const phasesOf = (plan: WorkTask) =>
-    all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
-  const candidates = all.filter(
-    (t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0,
-  );
+export function isInFlight(all: readonly WorkTask[], plan: WorkTask): boolean {
   return (
-    candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ??
-    candidates[0] ??
-    null
+    plan.kind === "plan" &&
+    isOpen(plan) &&
+    (plan.status === "in_progress" || hasRunningPhase(all, plan))
   );
 }
 
 /**
+ * The plan a caller has in flight: one of its own plans (`owns` holds the plan's task) that
+ * `isInFlight`. A session runs one plan at a time, so there is normally one. When two qualify (a
+ * take-over made the second), the one with a phase in progress, else the first by number.
+ * Another session's plan never counts. Null when the caller runs none.
+ */
+export function inFlightPlanOf(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+): WorkTask | null {
+  const candidates = all.filter(
+    (t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t),
+  );
+  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+}
+
+/**
  * The plan a call that names none belongs to, for a caller's own plans. In order:
- * 1. the active plan (`activePlanOf`: an open phase);
+ * 1. the plan in flight (`inFlightPlanOf`);
  * 2. the plan being finished: an own open plan whose phases are all closed, at least one done
- *    (its final review and fix pass), the newest such plan, so a plan queued later never takes
- *    that work;
- * 3. the newest own open plan, `fallback` (the plan of the caller's latest own task), as before.
- * Only the first counts for the one-active-plan refusal.
+ *    (its final review and fix pass), the newest such plan; a plan started under 4.8.0 is in
+ *    this state while its task is still pending;
+ * 3. the next plan in the queue: the lowest-numbered own open plan with an open phase;
+ * 4. the newest own open plan, `fallback` (the plan of the caller's latest own task), as before.
+ * Only the first counts for the one-plan-in-flight refusal.
  */
 export function defaultPlanOf(
   all: readonly WorkTask[],
   owns: (task: WorkTask) => boolean,
-  active: WorkTask | null,
+  inFlight: WorkTask | null,
   fallback: string | null,
 ): string | null {
-  if (active?.plan) return active.plan;
-  const finishing = all
+  if (inFlight?.plan) return inFlight.plan;
+  const ownOpen = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t));
+  const finishing = ownOpen
     .filter((t) => {
-      if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t)) return false;
       const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
       return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
     })
     .at(-1);
   if (finishing?.plan) return finishing.plan;
+  const next = ownOpen.find((t) =>
+    all.some((p) => p.kind === "phase" && p.plan === t.plan && isOpen(p)),
+  );
+  if (next?.plan) return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
 

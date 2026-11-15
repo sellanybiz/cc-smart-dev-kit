@@ -9,11 +9,13 @@ import { runGit } from "../hooks/git";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
-  type PlanWork,
+  PARK_NOTE_PREFIX,
   planNote,
+  planQueueState,
   refuseBareClose,
   refuseEmptyPhase,
   refuseOtherPlan,
+  refuseParkWhileBusy,
   refuseStepEscape,
 } from "./plan-guards";
 import {
@@ -29,7 +31,6 @@ import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
 import {
-  activePlanOf,
   allTasks,
   claimHeldBy,
   claimState,
@@ -37,6 +38,7 @@ import {
   deletedHistory,
   eventsOf,
   getTask,
+  inFlightPlanOf,
   isOpen,
   layerOf,
   notesOf,
@@ -55,7 +57,6 @@ import {
   planTask,
   refuseOverCap,
   takeTasks,
-  updateTask,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
 
@@ -115,17 +116,19 @@ function marks(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): string[] {
 }
 /**
  * The words in a task's brackets: its status, its layer when it is a plan or a phase (`withLayer`:
- * every layer, for `task_get`), then its `marks`.
+ * every layer, for `task_get`), then its `marks`. `queue` stands in for the status of an open
+ * plan on the plan ledger: in flight, queued or parked (`planQueueState`).
  */
 function stateWords(
   task: WorkTask,
   byId: ReadonlyMap<string, WorkTask>,
   withLayer = false,
+  queue?: string,
 ): string {
   const layer = layerOf(task, byId);
   return [
     ...(withLayer ? [layer] : []),
-    task.status.replaceAll("_", " "),
+    queue ?? task.status.replaceAll("_", " "),
     ...(!withLayer && layer === "plan" ? ["plan"] : []),
     ...(!withLayer && layer === "phase" ? [`phase ${task.phase ?? ""}`.trim()] : []),
     ...marks(task, byId),
@@ -178,17 +181,26 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
       // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
-      // The plan being built now: a plan queued later never takes a call that names no plan.
-      const active = activePlanOf(all, owns);
-      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
+      // The plan in flight: a plan queued behind it never takes a call that names no plan.
+      const inFlight = inFlightPlanOf(all, owns);
+      const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
       /** `plans.maxPhases` for this checkout: a broken workflow file fails the call, naming it. */
       const phaseCap = (): PhaseCap => {
         if (!ctx.projectConfig.ok) throw new Error(ctx.projectConfig.why);
         const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
         return { max: value, source };
       };
-      const refuseOther = (plan: string, doing: PlanWork) =>
-        refuseOtherPlan({ all, active, plan, owns, doing });
+      const refuseOther = (plan: string) => refuseOtherPlan({ all, inFlight, plan, owns });
+      /**
+       * Marks the caller's own plan in flight when work in it starts: its task goes from pending
+       * to `in_progress` in the same write, claimed by this process. A plan that is not the
+       * caller's, one with no task, and one already running are left as they are.
+       */
+      const enterFlight = (plan: string | null) => {
+        const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+        if (row === undefined || row.status !== "pending" || !owns(row)) return;
+        applyUpdate(store, row.id, { status: "in_progress" }, who, now);
+      };
       const projectDir = () => {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
@@ -305,11 +317,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           const phaseId = input.phase;
           if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
-          // A phase that is there is only answered, so neither the active plan nor the cap judges it.
+          // A phase that is there is only answered, so the cap does not judge it. A new one goes
+          // in any plan of the caller's: only the cap holds it back.
           const there = all.some(
             (t) => t.kind === "phase" && t.plan === slug && t.phase === phaseId,
           );
-          if (!there) refuseOther(slug, "lay a phase");
           const laid = value(
             writeWork(store, () =>
               layPhase(
@@ -349,12 +361,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
         const taskPlan = input.plan ?? parent?.plan ?? writePlan;
-        if (input.status === "in_progress" && taskPlan !== null)
-          refuseOther(taskPlan, "start work");
-        // The task and its blockers go in one transaction: a refused blocker leaves no task.
+        if (input.status === "in_progress" && taskPlan !== null) refuseOther(taskPlan);
+        // The task and its blockers go in one transaction: a refused blocker leaves no task. A
+        // task made in progress also puts its plan in flight, in the same write.
         const task = value(
-          writeWork(store, () =>
-            insertTask(
+          writeWork(store, () => {
+            const made = insertTask(
               store,
               {
                 project: ctx.project,
@@ -369,8 +381,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               },
               who,
               now,
-            ),
-          ),
+            );
+            if (input.status === "in_progress") enterFlight(taskPlan);
+            return made;
+          }),
         );
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
@@ -412,47 +426,53 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · updated` };
         }
         const task = work(input.task);
-        // A dropped phase coming back is a phase laid again: the active plan and the cap judge it.
+        // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
           task.status === "dropped" &&
           (input.status === "pending" || input.status === "in_progress") &&
           task.plan !== null
         ) {
-          refuseOther(task.plan, "reopen a phase");
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
         }
-        if (input.status === "in_progress" && task.status !== "in_progress") {
+        const starting = input.status === "in_progress" && task.status !== "in_progress";
+        if (starting) {
           refuseEmptyPhase(all, task);
-          if (task.plan !== null) refuseOther(task.plan, "start work");
+          if (task.plan !== null) refuseOther(task.plan);
         }
+        refuseParkWhileBusy(all, task, input.status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
         // This call carries no evidence or note, so a step cannot close here.
         if (input.status === "done" || input.status === "dropped")
           refuseBareClose(all, task, input.status, {});
+        // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
         const updated = value(
-          updateTask(
-            store,
-            task.id,
-            {
-              ...(input.subject === undefined ? {} : { subject: input.subject }),
-              ...(input.description === undefined ? {} : { description: input.description }),
-              ...bindings(input),
-              ...(input.status === undefined ? {} : { status: input.status }),
-              ...(input.parent === undefined
-                ? {}
-                : { parentId: input.parent === null ? null : work(input.parent).id }),
-              ...(input.type === undefined ? {} : { type: input.type }),
-              waitsFor: {
-                add: (input.blocked_by_add ?? []).map((r) => work(r).id),
-                remove: (input.blocked_by_remove ?? []).map((r) => work(r).id),
+          writeWork(store, () => {
+            const changed = applyUpdate(
+              store,
+              task.id,
+              {
+                ...(input.subject === undefined ? {} : { subject: input.subject }),
+                ...(input.description === undefined ? {} : { description: input.description }),
+                ...bindings(input),
+                ...(input.status === undefined ? {} : { status: input.status }),
+                ...(input.parent === undefined
+                  ? {}
+                  : { parentId: input.parent === null ? null : work(input.parent).id }),
+                ...(input.type === undefined ? {} : { type: input.type }),
+                waitsFor: {
+                  add: (input.blocked_by_add ?? []).map((r) => work(r).id),
+                  remove: (input.blocked_by_remove ?? []).map((r) => work(r).id),
+                },
               },
-            },
-            who,
-            now,
-          ),
+              who,
+              now,
+            );
+            if (starting && task.kind !== "plan") enterFlight(task.plan);
+            return changed;
+          }),
         );
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
@@ -688,8 +708,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ? ` · agent ${task.agent ?? "none"} · branch ${task.branch ?? "none"}`
             : "";
         const state = claimState(task, claimLive, who);
+        // On the plan ledger an open plan says where it stands in the queue; a plan with a
+        // `parked:` note counts as parked only once it is not running (`planQueueState`).
+        const queue =
+          planLedger && task.kind === "plan" && isOpen(task)
+            ? planQueueState(
+                all,
+                task,
+                notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
+              )
+            : undefined;
         lines.push(
-          `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`,
+          `${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`,
         );
         for (const child of selected.filter((t) => t.parentId === task.id)) visit(child, depth + 1);
       };

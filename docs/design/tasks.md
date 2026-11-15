@@ -21,8 +21,9 @@ A plan is one result that ships as one pull request and holds at most `plans.max
 phases (default 10). A phase is one area of the code with its own files; its steps are its
 tasks, usually 3 to 10, each with a done-check. The phase description is the brief: goal,
 files and boundaries, patterns and tools, and verification. Disjoint phases run in parallel
-worktrees; `blocked_by` orders shared files. A session builds one plan at a time. A later ask
-waits as a task under the queued next plan until that plan's phases are laid.
+worktrees; `blocked_by` orders shared files. A session may lay phases in any of its plans, up
+front, but runs one plan at a time: the plan in flight (§ Layers, Plan shape). A later ask waits
+as a task under the next queued plan, in its phase when one fits.
 
 Work tasks add four optional fields, set through `task_create` / `task_update` or the CLI:
 
@@ -65,7 +66,7 @@ The store enforces these rules, not the caller:
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
 - A plan holds at most `plans.maxPhases` phases: `layPhase` refuses the one past the cap, in
   the transaction that inserts it. The other plan-shape rules (a phase starts only once it
-  holds a task, one active plan, a step closes with proof) are enforced by the task tools
+  holds a task, one plan in flight, a step closes with proof) are enforced by the task tools
   (`ops.ts`), not the store: § Layers, Plan shape.
 - Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
@@ -121,8 +122,9 @@ still change.
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
 under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
-out, writes use the caller's active plan (below, Plan shape), else the plan of its latest own
-task that has one (made or claimed by it) only while that plan is open. Never another session's
+out, writes use the default plan (below, Plan shape: the plan in flight, else the plan being
+finished, else the next queued plan, else the plan of its latest own task that has one, made or
+claimed by it, only while that plan is open). Never another session's
 plan or an older open plan. A plan is
 open when its plan row is pending or in progress; without that row, it needs an open blocking
 task. A closed latest plan leaves new tasks loose; a phase still needs a named plan.
@@ -154,29 +156,41 @@ checkout's working copy through the normal workflow resolver:
   the cap and where it came from, and the ways forward: a task under the phase that owns its
   files, or a task under the next plan (`parent` set to that plan's `#n`). The cap is the person's
   to raise: `workflow set` of it refuses inside Claude Code (`PLAN_KEYS`), and the refusal says to
-  ask them. A dropped phase that comes back (`task_update` to pending or in progress) is judged
-  like a new one: the one-active-plan refusal and the cap (`refuseOverCap` in `store.ts`).
+  ask them. The cap is per plan, so phases laid ahead in several plans fill each plan's own cap
+  only. A dropped phase that comes back (`task_update` to pending or in progress) is judged
+  like a new one: by the cap alone (`refuseOverCap` in `store.ts`).
 - **No empty phase starts.** Moving a phase to `in_progress` (`task_update`, `task start`) is
   refused while it has no task that is not dropped; the refusal names `task_create` with `parent` set to the phase.
-- **One active plan.** A caller's active plan is an own open plan (`owns`: created or claimed by
-  the caller, judged on the plan's own task) with an open phase (`activePlanOf`; one with a phase
-  in progress first). While one exists, laying a phase in another plan, or starting a phase or
-  task of another own plan, is refused; the refusal names the active plan and says to queue the
-  work as a task under the other plan. Another session's plan never counts, and `task_take`
-  still works, so after a take the caller may hold two such plans. The active plan is then the
-  one with a phase in progress (a taken plan's phase that is running is the work the caller took
-  over), else the lower number; the refusal names it, and it is the plan the caller can lay
-  phases in and start work in. Laying or starting work in the other waits until the active plan
-  is finished or its open phases are dropped.
+- **Phases in any plan, one plan in flight.** A session lays phases (with their tasks) in any of
+  its own open plans, up front; only the cap judges that, and a dropped phase that comes back.
+  A plan is **queued** while its task is `pending`, and **in flight** while its task is
+  `in_progress`: the store sets that itself, in the same write, when the plan's first phase or
+  task starts (`task_update` or `task_create` with `in_progress`; the plan task is claimed by
+  the starting process, as any started task). A plan started under 4.8.0, which never set its
+  task, is in flight too while one of its phases is `in_progress` (`isInFlight` in
+  `queries.ts`). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on the plan's
+  own task `owns`) is normally one. After a `task_take` it may hold two: the one with a phase
+  in progress counts first, else the lower number. Another session's plan never counts.
+  A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
+  it, and the next plan cannot start before it closes.
+- **The start refusal.** Starting a phase or task of another own plan (`task_update` or
+  `task_create` with `in_progress`, the plan task's own start too) is refused while a plan is in
+  flight (`refuseOtherPlan`); the refusal names that plan and the two ways forward: finish it
+  (`task_done` on its `#n`), or park it. A plan with no task, and another session's plan, are
+  left alone.
+- **Park and resume.** **Parking** is the in-flight plan task going from `in_progress` to
+  `pending` with `task_update`, then a `parked: <why>` note. It is refused while one of the
+  plan's phases or tasks is `in_progress` (`refuseParkWhileBusy`): stop or finish it first.
+  Nothing is dropped: phases, steps and briefs stay as they are, and the claim on the plan task
+  goes. **Resuming** is starting one of its phases again, which is a start like any other (it
+  waits while another plan is in flight). The order of plans is the person's: the skills take
+  them in plan-number order, the store does not force it.
 - **The default plan** (`defaultPlanOf` in `queries.ts`). A write that names no plan goes, in
-  order, to the active plan; else to the plan being finished (an own open plan whose phases are all
-  closed, at least one done: its final review and fix pass; the newest such plan); else to the plan
-  of the caller's latest own task while that plan is open. A plan queued later never takes the call.
-  The one-active-plan refusal counts only plans with an open phase, so **parking** works with no
-  plan state of its own: drop each open step and then each open phase with the note
-  `parked: <why>`; the plan task stays open and the next plan may start. To resume, `task_update` the
-  phases and steps back to pending (refused while another own plan has an open phase, or past the
-  cap).
+  order, to the plan in flight; else to the plan being finished (an own open plan whose phases
+  are all closed, at least one done: its final review and fix pass; the newest such plan; this
+  is how a plan started under 4.8.0 is read); else to the next plan in the queue, the
+  lowest-numbered own open plan with an open phase; else to the plan of the caller's latest own
+  task while that plan is open. Only the first counts for the start refusal.
 - **Waiting tasks.** `task_create` with `parent` set to a plan's `#n` makes a task directly
   under the plan (its `plan` column is set). `task_update` with `parent` set to a phase of the
   same plan moves it there; another plan's phase, and a move of an existing task up under a plan,
@@ -189,9 +203,18 @@ checkout's working copy through the normal workflow resolver:
   and `dropped` only with a `note` on `task_done` (`refuseBareClose`); `task_update` cannot close
   one. A phase, a plan, a loose task and a waiting task keep the plain close, and the kit's own
   closes (a merge, an import) go through the store directly and need neither.
-- **Where it shows.** `task_list` with `scope: "plan"` prints `Phases n/cap` on each plan,
-  marks one over the cap as frozen, and adds `waiting n` for the open tasks directly under it; `doctor`'s project checks print one `!` line for each open
-  plan over the cap, with its fix.
+- **Where it shows.** `task_list` with `scope: "plan"` lists the plans in number order and
+  puts each open plan's place in the queue in its brackets in place of the status: `in flight`
+  (`isInFlight`), `parked` (pending, with work started earlier: one of its phases is done, or
+  its task holds a note that starts `parked:`), or `queued` (laid out, never started)
+  (`planQueueState`). It also prints `Phases n/cap` on each plan, marks one over the cap as
+  frozen, and adds `waiting n` for the open tasks directly under it. The status line shows the
+  claimed task being worked on, as before, and the plan in flight when no phase runs between
+  waves. `doctor`'s project checks print one `!` line for each open plan over the cap, with its
+  fix. Readers that look at a plan task's status (`planCounted`, `layerProgress`, the portal's
+  tree, `openPhasesOf`) read an `in_progress` plan the same way as a pending one: they count its
+  phases and tasks, and the keep-going guard names only the phases of plans that have one
+  running.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
