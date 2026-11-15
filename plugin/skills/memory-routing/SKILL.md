@@ -80,9 +80,9 @@ Builders save a `Report:` note; the main session saves decisions as `Ruling:` no
 The build skill owns when to write them; no separate progress file.
 
 An ask that arrives during a build: in scope, a task under the phase that owns its files;
-for later, a task under the queued next plan (`task_create` with `parent` set to the plan's
-`#n`), which waits there for a phase (`/cc-smart-dev-kit:plan-task` § 6); a lasting duty, a
-project task.
+for later, a task in the next queued plan, under its phase when one fits, else waiting under
+the plan (`task_create` with `parent` set to the phase's or plan's `#n`;
+`/cc-smart-dev-kit:plan-task` § 6); a lasting duty, a project task.
 
 ## Saving to memory
 

@@ -55,7 +55,7 @@ export const taskSchemas = {
         .min(1)
         .optional()
         .describe(
-          "The plan's slug; defaults to the caller's active plan (an own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent.",
+          "The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent.",
         ),
       ...projectFields,
     })

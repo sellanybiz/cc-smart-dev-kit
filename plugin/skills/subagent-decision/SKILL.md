@@ -65,18 +65,6 @@ Worked examples — judge new cases the same way:
 - **Task types.** `blocked_by` only for a real dependency or a shared file; `non-blocking` for
   noted work that holds nothing. Follow-ups go to project tasks, never in as blockers.
 
-## Usage left
-
-The kit adds a line when the plan's usage window first passes 50, 75 or 90%. Judge from it:
-
-- **Plenty:** the worked examples above.
-- **Low:** `opus` only for the final risky review. UI/UX design runs only on `opus` or
-  `fable`, so it waits for usage to come back, or for the person to say go.
-- **Near the limit:** finish the step, save state in the task ledger, start no new agents, and
-  say so.
-
-Low usage never skips a test or a review: it means cheaper models, or stopping.
-
 ## Which agent
 
 | Task | Agent |

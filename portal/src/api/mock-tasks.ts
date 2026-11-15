@@ -522,6 +522,7 @@ export function mockTaskDetail(
         closedAt: closed ? updatedAt : null,
         createdAt,
         createdBy: one.session,
+        creator: null,
         description: `## What\n\n${one.subject}.\n\n## Done when\n\n- the change is in\n- its test fails without it`,
         id: one.id,
         kind: one.kind,

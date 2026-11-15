@@ -292,7 +292,7 @@ export function insertTask(
   const claimed = status === "in_progress" && who.pid !== null;
   db.sqlite
     .query(
-      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .run(
       id,
@@ -310,6 +310,8 @@ export function insertTask(
       input.worktree ?? null,
       input.base ?? null,
       who.sessionId,
+      who.pid,
+      who.pid === null ? null : who.procStart,
       claimed ? who.pid : null,
       claimed ? who.procStart : null,
       claimed ? who.sessionId : null,
@@ -667,10 +669,12 @@ export function takeTasks(
     for (const task of rows) {
       db.sqlite
         .query(
-          "UPDATE tasks SET created_by=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?",
+          "UPDATE tasks SET created_by=?,created_pid=?,created_start=?,claim_pid=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_start=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,claim_session=CASE WHEN claim_pid IS NULL THEN NULL ELSE ? END,updated_at=? WHERE id=?",
         )
         .run(
           who.sessionId,
+          who.pid,
+          who.pid === null ? null : who.procStart,
           who.pid,
           who.pid === null ? null : who.procStart,
           who.pid === null ? null : who.sessionId,
@@ -683,6 +687,11 @@ export function takeTasks(
         "changed",
         {
           createdBy: [task.createdBy, who.sessionId],
+          // The maker process moves too: the history shows who it was, and who it is now.
+          creator: [
+            task.creator === null ? null : `process ${task.creator.pid}`,
+            who.pid === null ? null : `process ${who.pid}`,
+          ],
           ...(task.claim === null
             ? {}
             : {

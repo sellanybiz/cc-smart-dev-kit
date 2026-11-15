@@ -31,6 +31,9 @@ interface TaskRow {
   claim_pid: number | null;
   claim_start: string | null;
   claim_session: string | null;
+  /** Absent in a store a hook reads before a writer moved it to schema 5. */
+  created_pid?: number | null;
+  created_start?: string | null;
   created_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -67,6 +70,14 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       worktree: row.worktree ?? null,
       base: row.base ?? null,
       createdBy: row.created_by,
+      creator:
+        row.created_pid == null
+          ? null
+          : {
+              pid: row.created_pid,
+              procStart: row.created_start ?? null,
+              sessionId: row.created_by,
+            },
       claim:
         row.claim_pid === null
           ? null
@@ -143,53 +154,145 @@ export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
 
+/** Whether a phase of the plan is `in_progress`: work running now, whatever the plan task says. */
+function hasRunningPhase(all: readonly WorkTask[], plan: WorkTask): boolean {
+  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+}
+
 /**
- * The plan a caller is building now: one of its own open plans (`owns` holds the plan's task)
- * with at least one open phase. When two qualify (a take-over made the second), the one with a
- * phase in progress, else the first by number. Another session's plan never counts. Null when
- * the caller builds none.
+ * Whether a plan is in flight: it is open, and its task is `in_progress` (the store sets that
+ * when the plan's first phase or task starts) or, for a plan started under 4.8.0 that never set
+ * its task, one of its phases is `in_progress`.
  */
-export function activePlanOf(
-  all: readonly WorkTask[],
-  owns: (task: WorkTask) => boolean,
-): WorkTask | null {
-  const phasesOf = (plan: WorkTask) =>
-    all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
-  const candidates = all.filter(
-    (t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0,
-  );
+export function isInFlight(all: readonly WorkTask[], plan: WorkTask): boolean {
   return (
-    candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ??
-    candidates[0] ??
-    null
+    plan.kind === "plan" &&
+    isOpen(plan) &&
+    (plan.status === "in_progress" || hasRunningPhase(all, plan))
   );
 }
 
 /**
+ * The plan a caller has in flight: one of its own plans (`owns` holds the plan's task) that
+ * `isInFlight`. A session runs one plan at a time, so there is normally one. When two qualify (a
+ * take-over made the second), the one with a phase in progress, else the first by number.
+ * Another session's plan never counts. Null when the caller runs none.
+ */
+export function inFlightPlanOf(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+): WorkTask | null {
+  const candidates = all.filter(
+    (t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t),
+  );
+  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+}
+
+/**
  * The plan a call that names none belongs to, for a caller's own plans. In order:
- * 1. the active plan (`activePlanOf`: an open phase);
+ * 1. the plan in flight (`inFlightPlanOf`);
  * 2. the plan being finished: an own open plan whose phases are all closed, at least one done
- *    (its final review and fix pass), the newest such plan, so a plan queued later never takes
- *    that work;
- * 3. the newest own open plan, `fallback` (the plan of the caller's latest own task), as before.
- * Only the first counts for the one-active-plan refusal.
+ *    (its final review and fix pass), the newest such plan; a plan started under 4.8.0 is in
+ *    this state while its task is still pending;
+ * 3. the next plan in the queue: the lowest-numbered own open plan with an open phase;
+ * 4. the newest own open plan, `fallback` (the plan of the caller's latest own task), as before.
+ * Only the first counts for the one-plan-in-flight refusal.
  */
 export function defaultPlanOf(
   all: readonly WorkTask[],
   owns: (task: WorkTask) => boolean,
-  active: WorkTask | null,
+  inFlight: WorkTask | null,
   fallback: string | null,
 ): string | null {
-  if (active?.plan) return active.plan;
-  const finishing = all
+  if (inFlight?.plan) return inFlight.plan;
+  const ownOpen = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t));
+  const finishing = ownOpen
     .filter((t) => {
-      if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t)) return false;
       const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
       return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
     })
     .at(-1);
   if (finishing?.plan) return finishing.plan;
+  const next = ownOpen.find((t) =>
+    all.some((p) => p.kind === "phase" && p.plan === t.plan && isOpen(p)),
+  );
+  if (next?.plan) return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
+}
+
+/**
+ * Whose task this is, for one caller: one it made under its current session id, one its process
+ * claims, or one its process made (`creator`, under any session id: `/clear` gives the process a
+ * new id, and a plan it laid before keeps its own). The same test as a claim (`claimHeldBy`), so
+ * a task another process made is never the caller's by a claim on a sibling. The one rule the
+ * task tools, `task_list` and the status line judge ownership by.
+ */
+export function ownerOf(who: Who): (task: WorkTask) => boolean {
+  return (t) =>
+    (who.sessionId !== null && t.createdBy === who.sessionId) ||
+    claimHeldBy(t.claim, who) ||
+    claimHeldBy(t.creator, who);
+}
+
+/**
+ * Whether a plan is the caller's: its plan task is owned (`owns`). A task of the plan that the
+ * caller owns (a step it claims in another session's plan) never makes the plan its own. A
+ * legacy plan with no plan task has no row to judge, so any own task in it counts.
+ */
+export function ownsPlan(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+  plan: string,
+): boolean {
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined ? all.some((t) => t.plan === plan && owns(t)) : owns(row);
+}
+
+/** A note that starts so says why a plan was parked (`task_update` with the plan pending). */
+export const PARK_NOTE_PREFIX = "parked:";
+
+/** How a plan stands in the queue, as `task_list` and the status line say it. */
+export type PlanQueueState = "in flight" | "finishing" | "parked" | "queued";
+
+/**
+ * An open plan's place in the queue, for a plan that is not in flight (`isInFlight` says so
+ * first). Parked: it holds a note that starts `PARK_NOTE_PREFIX` (checked first, so a plan
+ * parked with every phase closed still reads parked), or it has an open phase and a done one.
+ * Finishing: pending, every phase closed and one done (a plan started under 4.8.0 at its final
+ * review and fix pass). Queued: laid out, never started. `parkNote` says whether the plan task
+ * holds such a note.
+ */
+export function planQueueState(
+  all: readonly WorkTask[],
+  plan: WorkTask,
+  parkNote: boolean,
+): PlanQueueState {
+  if (isInFlight(all, plan)) return "in flight";
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (parkNote) return "parked";
+  if (started && phases.every((t) => !isOpen(t))) return "finishing";
+  return started ? "parked" : "queued";
+}
+
+/**
+ * How many of a caller's other open plans wait behind `current`, by their queue state: what the
+ * status line adds to its plan row. `parkNote` says whether a plan task holds a `parked:` note.
+ */
+export function waitingPlans(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+  current: string,
+  parkNote: (plan: WorkTask) => boolean,
+): { queued: number; parked: number } {
+  const waiting = { queued: 0, parked: 0 };
+  for (const t of all) {
+    if (t.kind !== "plan" || t.plan === null || t.plan === current || !isOpen(t) || !owns(t))
+      continue;
+    const state = planQueueState(all, t, parkNote(t));
+    if (state === "queued" || state === "parked") waiting[state] += 1;
+  }
+  return waiting;
 }
 
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
@@ -249,6 +352,36 @@ export function openBlockers(task: WorkTask, byId: ReadonlyMap<string, WorkTask>
 /** Open, and blocked by a task still open. */
 export function isBlocked(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): boolean {
   return isOpen(task) && openBlockers(task, byId).length > 0;
+}
+/**
+ * Whether a task could start now: it is pending and no open task blocks it, and a phase also
+ * holds at least one live (not dropped) task, since the store refuses to start an empty phase
+ * (`refuseEmptyPhase`). The one test the keep-going guard's ready phases and the close answer's
+ * freed work share.
+ */
+export function isStartable(
+  all: readonly WorkTask[],
+  byId: ReadonlyMap<string, WorkTask>,
+  task: WorkTask,
+): boolean {
+  return (
+    task.status === "pending" &&
+    !isBlocked(task, byId) &&
+    (task.kind !== "phase" || all.some((t) => t.parentId === task.id && t.status !== "dropped"))
+  );
+}
+/**
+ * The work a close just freed, in number order: the caller's own tasks and phases that had the
+ * closed task as a blocker and could start now (`isStartable`). `all` is read after the close,
+ * so the closed task no longer blocks.
+ */
+export function freedBy(
+  all: readonly WorkTask[],
+  closed: WorkTask,
+  owns: (task: WorkTask) => boolean,
+): WorkTask[] {
+  const byId = new Map(all.map((t) => [t.id, t]));
+  return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 /**
  * The open tasks under a task that hold it (D76), in progress first: each open blocking task

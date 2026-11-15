@@ -8,8 +8,7 @@
  * (`docs/claude-code-contract.md` § Usage limits). Nothing else on the machine is told them —
  * not the router's state file, not a transcript, no hook input — so the status line writes them
  * down when it reads them. The portal reads the 5-hour window back for its plan-usage number
- * (`planWindow`, `src/portal/facts.ts`), and the tier note's hook reads both windows for the
- * session's usage line (`src/hooks/tier-view.ts`).
+ * (`planWindow`, `src/portal/facts.ts`). No hook reads it: Claude is not told the plan's usage.
  *
  * The file is `<stateDir>/usage-window.json`, mode 600, the kit's own state:
  * `{"fiveHour": {"percent": 87, "resetsAt": 1792600800}, "sevenDay": {…}, "readAt": "2026-10-23T…"}`.

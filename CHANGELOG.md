@@ -3,6 +3,57 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.9.0
+
+- **Lay out all your plans up front; one runs at a time.** In 4.8.0 a session could queue
+  plans but could lay phases in only one of them, so a later plan's phases waited in its plan
+  file. Now every plan can hold its phases and tasks, briefs included, from the start. The
+  ledger shows all of it, and nothing waits only in a file. A queued plan's task is `pending`.
+- **One plan is in flight.** The store marks a plan's task `in_progress` when its first phase
+  or task starts. Starting work in another plan is refused while one is in flight, and the
+  refusal names that plan and the two ways forward: finish it or park it. A plan stays in
+  flight until its `task_done`, so its final review and fix pass belong to it, and the next
+  plan starts after it closes. Plans run in plan-number order unless you say otherwise.
+- **Parking keeps the work.** To park a plan, set its plan task back to `pending` and add a
+  note that starts `parked: <why>`, after its running work stops (the store refuses while any
+  of it is in progress).
+  Nothing is dropped: phases, steps and briefs stay as they were. Starting one of its phases
+  resumes it. This replaces 4.8.0's way of parking by dropping every open step and phase.
+- **`task_list` marks each plan** in flight, finishing, queued or parked, in plan-number
+  order. A phase or a list that names no plan goes to the plan in flight first (the full order:
+  `plan-task` § 6). An ask made during a build goes to the next queued plan: under its phase
+  when one fits, else waiting under the plan.
+- **The status line counts the plans that wait.** Its plan row reads
+  `Plan · <title> · 2 queued, 1 parked` when your other open plans wait behind the one in flight.
+- **`/clear` keeps your plans.** After a `/clear` the session gets a new id, but the same
+  process still owns what it made, under any session id (the store now records the process
+  that made each task: schema 5). So the one-plan rule still holds, and `task_list` keeps
+  showing that earlier work, even before anything was started. This holds on Linux. Off Linux
+  there is no process start time yet, so the maker rule falls back to the same session id, and
+  a `/clear` there still loses the queue's ownership. Starting one task of another
+  session's plan no longer makes the whole plan yours: a plan is yours by its plan task, in
+  the default plan, in `task_list` and in the stop guard.
+- **A small fix needs no plan.** A task you make with no plan and no parent stays loose, even
+  while plans wait or one is in flight: it never joins a plan, and starting it never puts a plan
+  in flight. The default plan is for laying a phase.
+- **A plan parked under 4.8.0** (its phases were dropped) now reads `queued`, or `finishing`
+  when one of its phases was done. To resume it, set its dropped phases and steps back to
+  pending. A plan parked with a note and every phase closed
+  reads `parked`, and resumes by starting its plan task.
+- **Freed work is named.** Closing a task (`task_done`, or `task_update` to done or dropped)
+  now ends its answer with the tasks and phases it unblocked, yours only: `· now ready: #12
+  Phase x, #13 Phase y: start them together`. And the stop guard no longer goes quiet when
+  the last running phase closes: while ready phases of your plan in flight wait and nothing runs,
+  it keeps the turn going and names every one, so their builders start together. Moving a
+  running task into another plan counts as a start there: refused while a plan is in flight,
+  and it puts the destination plan in flight otherwise. A take now shows the maker moving in
+  the task's history.
+- **Claude is no longer told your plan's usage.** The hook line that said when a window passed
+  50, 75 or 90 % is gone, and so is the skill section that told Claude to ration agents by it.
+  The status line still shows the usage to you, and warns from `alerts.usagePercent`.
+
+**What to run:** nothing.
+
 ## 4.8.0
 
 - **A plan holds at most 10 phases, and each phase holds its real tasks.** Plans had grown to

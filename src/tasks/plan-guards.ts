@@ -1,41 +1,82 @@
 /**
  * The plan shape the task tools hold a session to (`docs/design/tasks.md` § The work store):
- * one active plan at a time, and a plan's phases counted against `plans.maxPhases`. These are
- * the words and the pure checks; `ops.ts` calls them with the caller's own plans, so the MCP
- * tools and the `task` command refuse the same way. A shape guard, not a security gate: it
- * reads the checkout's working copy through the normal workflow resolver.
+ * phases laid in any plan, one plan in flight at a time, and a plan's phases counted against
+ * `plans.maxPhases`. These are the words and the pure checks; `ops.ts` calls them with the
+ * caller's own plans, so the MCP tools and the `task` command refuse the same way. A shape
+ * guard, not a security gate: it reads the checkout's working copy through the normal workflow
+ * resolver.
  */
 import { TASK_TOOL } from "./words";
-import { isOpen, livePhaseCount } from "./work/queries";
-import type { WorkTask } from "./work/types";
+import { isOpen, livePhaseCount, PARK_NOTE_PREFIX } from "./work/queries";
+import type { WorkStatus, WorkTask } from "./work/types";
 
-/** What a call does in a plan other than the active one. */
-export type PlanWork = "lay a phase" | "start work" | "reopen a phase";
+/** What `planInTheWay` judges: the caller's plan in flight, and the plan work would start in. */
+interface OtherPlanCheck {
+  all: readonly WorkTask[];
+  inFlight: WorkTask | null;
+  plan: string;
+  claimedElsewhere: (task: WorkTask) => boolean;
+}
 
 /**
- * Refuses work in a plan other than the caller's active plan (`activePlanOf`): a session builds
- * one plan at a time, and a later ask waits as a task under its own plan. Another session's
- * plan is not judged here. A plan with no task yet is new, so laying a phase in it is refused
- * too; starting work in a plan with no task is a legacy plan, left alone.
+ * The plan in flight that stops work from starting in `plan`, or null when nothing does: no
+ * plan in flight, the work is in that plan, the plan is a legacy one with no task, or another
+ * process holds it live. The one rule `refuseOtherPlan` refuses by and the close answer's
+ * "now ready" list leaves work out by.
  */
-export function refuseOtherPlan(options: {
-  all: readonly WorkTask[];
-  active: WorkTask | null;
-  plan: string;
-  owns: (task: WorkTask) => boolean;
-  doing: PlanWork;
-}): void {
-  const { all, active, plan, owns, doing } = options;
-  if (active === null || active.plan === plan) return;
+export function planInTheWay(options: OtherPlanCheck): WorkTask | null {
+  const { all, inFlight, plan, claimedElsewhere } = options;
+  if (inFlight === null || inFlight.plan === plan) return null;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  const mine = row === undefined ? doing === "lay a phase" : owns(row);
-  if (!mine) return;
-  const queue =
-    row === undefined
-      ? `make plan "${plan}" first (${TASK_TOOL.create} with plan and a subject), then add the task with ${TASK_TOOL.create} and parent set to its #n`
-      : `${TASK_TOOL.create} with parent "#${row.number}"`;
+  if (row === undefined || claimedElsewhere(row)) return null;
+  return inFlight;
+}
+
+/**
+ * Refuses starting work in a plan while the caller has another plan in flight
+ * (`inFlightPlanOf`): a session runs one plan at a time. The words name the plan in flight and
+ * the ways forward: finish it, or park it (two calls), or, for a plan started under 4.8.0 whose
+ * task never ran, stop its running phase. The target need not be the caller's own: a plan
+ * another session made but never started (queued) is judged too, so a `/clear` that gave the
+ * process a new session id cannot slip past. Only a plan claimed live by another process
+ * (`claimedElsewhere`) is that session's own work and is left alone, and a plan with no task
+ * is a legacy plan, also left alone. Laying a phase, or reopening a dropped one, is never
+ * refused here: only the cap judges those.
+ */
+export function refuseOtherPlan(options: OtherPlanCheck): void {
+  const inFlight = planInTheWay(options);
+  if (inFlight === null) return;
+  const { plan } = options;
+  const n = inFlight.number;
+  const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
+  // A plan started under 4.8.0 never set its task, so there is nothing to set back: it is in
+  // flight only while a phase runs.
+  const park =
+    inFlight.status === "in_progress"
+      ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`
+      : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
   throw new Error(
-    `Plan "${active.plan}" (#${active.number}) is your active plan: it still has open phases. Do not ${doing} in plan "${plan}" yet. Queue the work as a task that waits there (${queue}), or finish or drop the open phases of "${active.plan}" first.`,
+    `Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${park}.`,
+  );
+}
+
+/**
+ * Refuses parking a plan (its task going from `in_progress` to `pending`) while one of its
+ * phases or tasks is `in_progress`: stop or finish that work first. Nothing is dropped by a
+ * park, so work left running would be a plan that is parked and running at once.
+ */
+export function refuseParkWhileBusy(
+  all: readonly WorkTask[],
+  task: WorkTask,
+  status: WorkStatus | undefined,
+): void {
+  if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending") return;
+  const running = all.filter(
+    (t) => t.kind !== "plan" && t.plan === task.plan && t.status === "in_progress",
+  );
+  if (running.length === 0) return;
+  throw new Error(
+    `Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`,
   );
 }
 

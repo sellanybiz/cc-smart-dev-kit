@@ -54,7 +54,7 @@ behind a slot:** how hard is it; what does a miss cost (caught later, or shipped
 wasted build); is it the last check before it is too late (a plan's second read, the final
 review)? Spend effort only where those matter. The `high` level gives most of the gain;
 `xhigh` and `max` cost two to three times more for a few points. The person picks the lead's
-model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usage left:
+model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
 `/cc-smart-dev-kit:subagent-decision`.
 
 | `model` | What it is | Give it |

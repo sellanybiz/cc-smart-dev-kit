@@ -142,7 +142,10 @@ test("deep descendants, ordering, exact hook views, filters, caps, and case-inse
   // A dropped phase drops all its open work.
   expect(taskById(db, a.id).status).toBe("dropped");
   expect(notesOf(db, a.id).map((n) => n.text)).toEqual(["Automatically dropped: removed"]);
-  expect(hasOwnTask(paths, "p", ["lead"])).toEqual({ state: "ready", value: false });
+  expect(hasOwnTask(paths, "p", { sessionId: "lead", pid: null, procStart: null })).toEqual({
+    state: "ready",
+    value: false,
+  });
   db.close();
 });
 test("the start view shows phases, puts process claims first, and counts stale work", () => {
@@ -269,7 +272,7 @@ test("hook failures return unreadable, query-only blocks writes, schema versions
   writeFileSync(workDbFile(paths), "garbage");
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("unreadable");
   const fresh = setup();
-  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
   expect(fresh.db.sqlite.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
   fresh.db.close();
   const hook = openWorkDb(workDbFile(fresh.paths), { mode: "hook" });

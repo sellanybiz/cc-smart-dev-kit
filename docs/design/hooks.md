@@ -226,7 +226,7 @@ that, so the plugin ships no worktree hook at all.
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit counts only for a file inside the session's current checkout, after resolving symlinks (new code files count too). Relative paths use the edit record's own `cwd`, not the Stop folder. Missing or unusable paths, and relative paths without a known edit folder, count as changes: only a known path can prove an exclusion. Markdown (`.md`, `.mdx`), the repo's `.claude/plans/`, and Claude Code's `plansDirectory` (default `<Claude config>/plans`, with user, project and project-local settings read in that order) do not count. An edit whose result was an error or a refusal changed nothing. A shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. |
 | `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder` or `rules-maintainer`, the two agents the build skill gives a phase) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
-| `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once per stalled state** when a phase of a plan this Claude process works on is `in_progress`, no background work runs and the last answer has no `Waiting for:` line. The same reason already given, with no subagent started or resumed since, keeps it silent. The reason names the builder to resume with `SendMessage` (or the phase needing a fresh builder), the next ready phase, and how to close or record a blocker, and warns against moving a phase back to pending to end the turn. An unreadable transcript keeps the decision; an unreadable task store blocks nothing. § The keep-going guard. |
+| `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once per stalled state** when a phase of a plan this Claude process works on is `in_progress`, or the plan in flight has ready phases and none runs, no background work runs and the last answer has no `Waiting for:` line. The same reason already given, with no subagent started or resumed since, keeps it silent. The reason names the builder to resume with `SendMessage` (or the phase needing a fresh builder), every ready phase to start together, and how to close or record a blocker, and warns against moving a phase back to pending to end the turn. An unreadable transcript keeps the decision; an unreadable task store blocks nothing. § The keep-going guard. |
 | `agent-usage` | SubagentStop | **machine-wide** | One line per subagent in `<stateDir>/agent-usage.jsonl`: the time, the session, the agent's id and type, and per model the replies, the four token sums and an estimated USD cost — from the agent's own transcript, never a word of its content. A second stop of one agent supersedes its first line when read; the record is kept small like the ask log. One stderr line when the transcript cannot be read or the record cannot be written. § Each subagent's usage on record. |
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names at most eight finished worktrees and eight missing folders, keeping each total; `+N more: git worktree list --porcelain` lists the rest. Finished worktrees have every commit on `origin/<base>`, nothing uncommitted, no session in them, an idle hour, and no ignored file that cannot come back; locked ones are kept by `worktrees --clean`. The hook says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart (startup, resume, compact, clear), UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`) at start and once per context at an unnamed prompt. A `.reminded` mark beside the temp name files suppresses repeat prompts; every SessionStart resets it, including compact and clear. Then sets that as its title at the next prompt (`sessionTitle`); a name the person gives with `/rename` stays until the session names itself again. |
@@ -596,14 +596,21 @@ It blocks the stop **once per stalled state** when all of these hold, cheapest f
    mark such as `**`, `>`, `-`, a heading's `#` or a list number `1.`). The answer is the input's own `last_assistant_message`, else
    the transcript's last answer (`lastAssistantText`). With neither, the hook cannot tell, and
    lets the turn end.
-4. A phase of a plan this Claude process works on is `in_progress`. The store is read first,
-   and the caller is looked up only when some phase of the project is in progress: off Linux
-   that lists the running processes. A plan is the process's own when it holds a task the
-   process has claimed (`openPhasesOf`, `src/tasks/work/phases.ts`; the one claim test is
-   `claimHeldBy`). The claim is the Claude process from `callerOf`: on Linux its pid and start
-   time, so a `/clear` keeps the plan; off Linux, with no start time, the session id too, so a
-   reused pid never inherits a dead process's plan. A phase in progress in another session's
-   plan does not count, and no write ever stamps another session's plan on a task.
+4. Work of a plan this Claude process works on waits: a phase is `in_progress`, or the plan
+   in flight has a phase that could start and none runs (see "Ready phases" below). The store
+   is read first, and the caller is looked up only when a phase of the project is in progress
+   or a plan in flight (`isInFlight`) has a phase that could start: off Linux that lists the
+   running processes. A plan is the process's own when its plan task is (`ownsPlan` and
+   `ownerOf`, `src/tasks/work/queries.ts`: made under its session id, claimed by its process,
+   or made by its process; `openPhasesOf` is in `src/tasks/work/phases.ts`); a plan task in
+   flight is claimed by its process. A phase in progress counts for it in a plan of its own, and
+   also where it claims the phase or one of its steps (work it took in another session's plan);
+   ready phases are only those of its own plans, so a step claimed in another session's plan
+   never makes that plan's next phase this guard's to start. The claim is the Claude process
+   from `callerOf` (`claimHeldBy`): on Linux its pid and start time, so a `/clear` keeps the
+   plan; off Linux, with no start time, the session id too, so a reused pid never inherits a
+   dead process's plan. No write ever stamps another session's plan on a task. A parked plan
+   (its plan task `pending`) is not in flight, so it never blocks.
 5. This reason was not already given (`stopFeedbackGiven`, `src/hooks/transcript.ts`). Only
    after the store finds a phase in progress does it read the transcript's tail (`tailLines`,
    default `TRANSCRIPT_TAIL_BYTES`). The reason counts as given when a `user` entry of the
@@ -627,11 +634,26 @@ with `+N more: task_list` for the rest. Recovery actions name only those eight; 
 recording blockers still applies to every phase, including those not shown. It then
 says to resume its recorded builder with `SendMessage`, naming the agent (or start a fresh
 one), or to start a fresh builder when none is recorded; a blank agent counts as none. For several phases it pairs each agent with its phase and
-names the phases that need fresh builders. Next comes the next ready phase of the same plan —
-the lowest-numbered phase that is `pending` with no open blocker and at least one task that is not dropped (the store refuses to start an empty one) — to start now (dispatch its
-builder). Then it offers to close the phases with `task_done`, or record the blocker with
-`task_note` and end the turn with a `Waiting for: <what>` line. It ends: "Never move a phase
-back to pending only to end the turn."
+names the phases that need fresh builders. Next come the ready phases (below), every one,
+to start together now (dispatch their builders). Then it offers to close the phases with
+`task_done`, or record the blocker with `task_note` and end the turn with a `Waiting for: <what>`
+line. It ends: "Never move a phase back to pending only to end the turn."
+
+**Ready phases.** A phase is ready when it is `pending`, no open task blocks it, and it holds at
+least one task that is not dropped (the store refuses to start an empty one): `isStartable`
+in `src/tasks/work/queries.ts`, the test the store's start and the close answer share
+(`docs/design/tasks.md` § Freed work). The ready phases are those of a plan with a phase in
+progress and those of the plan in flight (`inFlightPlanOf`, the helper the store judges by).
+Every one is named, as `#n subject` and capped like the phases in progress. So after the last
+running phase closes, ready phases no longer sit idle: with no phase in progress, the guard
+still blocks once per stalled state, with a reason of its own: "N phases are ready to start,
+and no subagent runs: #a x, #b y. Start them together now (dispatch one builder for each), or
+record why they wait with `task_note` and end the turn with a `Waiting for: <what>` line. To
+hold the plan longer, park it (`task_update` its plan task to `pending`)."
+(one phase: "Phase #a x is ready to start, and no subagent runs. Start it now (dispatch its
+builder), or record why it waits …"). The `Waiting for:` line, background work and the
+once-per-state memory apply as for a phase in progress. No plan in flight, a parked plan, and
+another session's plan block nothing.
 
 **Fail open everywhere else.** The task store is the person's own, so the hook needs no
 cc-smart-dev-kit.json and runs in a project with none; a project that runs its own copy lists
@@ -1078,49 +1100,6 @@ gateway is on" and picked `max` for Claude Sonnet, which the guard allowed and t
   why it should not. It rides the same marks, so it appears when the checks start failing, and
   the tiers' note alone comes back when they recover. It reaches the model at the next prompt,
   never mid-turn.
-- **The plan-usage line, at a prompt** (2.2.0, the owner, 2026-11-05). No hook input carries the
-  plan's usage: only the status line's input has `rate_limits.five_hour` and `seven_day`, and the
-  status line writes them to `<stateDir>/usage-window.json` (`src/cli/usage-window.ts`) when the
-  numbers change. At `UserPromptSubmit`, when a window first reaches 50, 75 or 90 %
-  (`USAGE_THRESHOLDS`), the context gets one line — `Plan usage (as of 13:40): 5-hour window 78%
-  used (resets 14:00). Follow /cc-smart-dev-kit:subagent-decision § Usage left.` — both windows
-  in one line when both cross (`usageLine`). "As of" is the file's `readAt`: when the status line
-  last saw the numbers change, so Claude knows the share may have grown since; a file whose time
-  cannot be read gives the line without it. Each crossing is told once a window: the session's
-  `<session id>.usage` mark keeps the highest share told and the window's reset, and a window
-  whose reset has passed starts from nothing. **Freshness comes from the reset time only**: the
-  file is written only when the numbers change, so its age says nothing; no file, a window past
-  its reset, or one with no reset time gives no line. Never the number at every prompt, and never
-  at a start. The line rides the same `additionalContext` as a changed tiers' note (the tiers
-  first) and keeps its own mark, outside the `.tiers` text, so neither hides the other; a usage
-  mark that cannot be kept drops the line rather than repeat it.
-  - **After a compaction or a clear.** A `SessionStart` whose `source` is `compact` or `clear`
-    removes the `.usage` mark: the context that heard the level is gone, so the next prompt
-    says the current level once again. A `resume` keeps its context, and the mark.
-  - **Only on the plan login** (`otherLogin`). The numbers are the claude.ai login's:
-    `rate_limits` is there only for a Pro, Max or Ultra subscriber
-    (code.claude.com/docs/en/statusline). A session whose own login wins over that one is not
-    spending them, so it gets no line. Claude Code's order
-    (code.claude.com/docs/en/authentication § Authentication precedence): a cloud provider
-    (`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX`, `_FOUNDRY`, read as on the way Claude Code reads a
-    switch), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`, an Anthropic profile
-    (`ANTHROPIC_PROFILE`, or both `ANTHROPIC_FEDERATION_RULE_ID` and `ANTHROPIC_ORGANIZATION_ID`),
-    then the subscription. The hook reads the variables from its own environment (it carries the
-    settings' `env` values) and the login keys of the folder's settings files
-    (`readGatewaySettings`, the one reader of them; the files `settingsPathsOf` lists, found
-    without git). `CLAUDE_CODE_OAUTH_TOKEN` is the subscription, and the kit's gateway keeps the
-    login (it never writes a key, `FORBIDDEN_ENV_KEYS`), so both get the line. It is read only
-    when a line is due, and a skipped line keeps no mark. **Not seen:** an `ANTHROPIC_API_KEY`
-    the person declined at Claude Code's prompt (it still counts as another login, so that
-    session misses the line), managed settings, a profile chosen in a file rather than in
-    the environment, and a signed-in Claude apps gateway, which outranks every login.
-  - **Two logins on one machine.** The file lives in `<stateDir>`, which is
-    `<CLAUDE_CONFIG_DIR>/cc-smart-dev-kit`: a second login kept in its own config folder (Claude
-    Code keeps each folder's credentials apart) has its own file and its own numbers. A new
-    `/login` to another account in the same folder reads the old account's file until its own
-    status line writes new numbers.
-  - **In `claude -p` too.** Unlike `fable-session`'s lines (for a person watching), this one is
-    for Claude: an unattended session spends the same plan, so it follows the same usage rule.
 - **Why a hook of its own.** `fable-session` speaks to the person and never to Claude, by its
   contract; `session-name` has another job.
 - **Machine-wide**, like `agent-guard`: no project file, a folder outside git and `claude -p`

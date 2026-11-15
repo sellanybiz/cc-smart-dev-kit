@@ -119,10 +119,13 @@ Changes wanted: revise and ask again; never build without approval.
 
 After approval, use `task_create` for the plan (`plan`: its slug, subject: its title); a plan
 queued earlier (§ 6) already has its plan task, so use that one and make no second. Then
-one phase task per phase (`phase`: its id, with the same `plan`). Put the complete builder
-brief in each phase's description, in four parts: objective; files and boundaries; patterns
-and tools; output format (`Report:` task note and short status). Include interfaces, edge
-cases and done-check.
+one phase task per phase (`phase`: its id, with the same `plan`). When the work is several
+plans, write one plan file per plan, and write and commit the other plans' files with the
+approved one: the approval covers them all. Create every plan task, and lay out every plan's
+phases and their tasks, briefs included, now: nothing waits in a file. The first plan starts;
+the others stay queued (§ 6). Put the complete builder brief in each phase's description, in
+four parts: objective; files and boundaries; patterns and tools; output format (`Report:`
+task note and short status). Include interfaces, edge cases and done-check.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
@@ -155,9 +158,9 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   under `workflow.plans.maxPhases`; a person uses `cc-smart-dev-kit workflow set
   plans.maxPhases <n>`. Bigger work is a sequence of plans, each its own plan task and
   pull request, never a longer plan. The store refuses a phase past the cap: add the work as
-  tasks under the phase that owns its files, or queue it as a task under the next plan
-  (`task_create` with `parent` set to that plan's `#n`). Only the person raises the cap: a
-  session's `workflow set` of it is refused, so ask them to run it in their own terminal.
+  tasks under the phase that owns its files, or queue it as a task in the next plan (§ 6).
+  Only the person raises the cap: a session's `workflow set` of it is refused, so ask them to
+  run it in their own terminal.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
   and one review reads it. Its real steps are its tasks, usually 3 to 10, each with a
   done-check. Size a phase by files and area, not by minutes; never make a step a phase.
@@ -189,19 +192,32 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   when a ruling changes the design.
 - **No new phases while building.** New in-scope work becomes a task under the phase that
   owns its files.
-- **One active plan per session.** A session may queue more plans, but builds one at a time:
-  finish (§ 8) or park the active plan before you lay phases in the next. To park, drop each
-  open step with `task_done` (outcome `dropped`, note `parked: <why>`), then drop the open
-  phases the same way; the plan task stays open, and the next plan may start. To resume, set
-  the phases and steps back to pending with `task_update`, once no other plan has an open
-  phase. Each plan gets its own plan task; a queued plan's task is the same one § 4 later fills with phases. Name the
-  intended plan with `plan` on `task_list` and on every work-task `task_create` for it; never on a project task, which refuses it. A call that names no plan
-  goes to the active plan, or while the plan is finishing (every phase closed, one done, the
-  plan task still open) to that plan, and the store refuses phases in a second plan while the active one
-  has open phases.
+- **One plan in flight per session; the others wait, fully laid out.** A queued plan's task is
+  `pending` and may hold phases and tasks with briefs (§ 4). The store sets the plan task
+  `in_progress` when work in it starts, and refuses to start work in another plan while one is
+  in flight. The refusal names that plan and the two ways forward: finish it (§ 8) or park it.
+  A plan stays in flight until its `task_done`, so its final review and fix pass belong to it.
+  Take plans in plan-number order, unless the person says otherwise: with none in flight,
+  start the lowest-numbered queued plan.
+  **To park** a plan, stop or finish its running work, `task_update` the plan task to
+  `pending`, then `task_note` it with a note that starts `parked: <why>`; the store refuses
+  while any of its work is `in_progress`.
+  Nothing is dropped: phases, steps and briefs stay as they are. **To resume**, start one of its
+  phases; a parked plan with no open phase resumes by starting the plan task itself
+  (`task_update` it to `in_progress`). Resuming is refused while another plan is in flight: park
+  or finish that one first.
+  Name the intended plan with `plan` on `task_list` and on `task_create` with `phase`; never on
+  a project task, which refuses it. A call that names no plan goes to the plan in flight; else
+  to the plan being finished (every phase closed, one done, the plan task still open); else to
+  the lowest-numbered open plan with an open phase; else to the newest open plan. That order is
+  for laying a phase and for `task_list`. A `task_create` with neither `plan` nor `parent` is a
+  loose task, whatever plans are open: a small fix needs no plan, runs even while a plan is in
+  flight, is never refused by the one-plan rule and never puts a plan in flight. Work joins a
+  plan only through `parent`: its phase, or the plan's `#n`.
 - **A new ask during a build:** track it before acting. In scope: a task under the phase
-  that owns its files. For later: one task per ask in the queued next plan (make that plan if
-  none), with `task_create` and `parent` set to the plan's `#n`; it waits there for a phase.
+  that owns its files. For later: one task per ask in the next queued plan (make that plan if
+  none), with `task_create`: under its phase when one fits (`parent` set to the phase's `#n`),
+  else waiting under the plan (`parent` set to the plan's `#n`) until a phase is laid.
   A lasting duty (production, database, teammate): a project task. Scope still follows the
   core instructions' "one plan" rule.
 - After compaction, read the task tree for progress and the file for design.
@@ -215,9 +231,9 @@ At plan end, give a short summary of what shipped, failed and remains.
 ## 8. Archive it — yourself, the moment it is finished
 
 A finished plan leaves the live folder in the same turn. Close the plan task with verification
-and the commits that shipped it. A parked plan stays open: its open steps and phases are
-dropped with the note `parked: <why>` (§ 6), and a note on the plan task says what would restart
-it. If superseded, drop it with a pointer to its replacement.
+and the commits that shipped it. A parked plan stays open and `pending` with its work intact
+(§ 6), and a note on the plan task says what would restart it. If superseded, drop it with a
+pointer to its replacement.
 
 Move the plan file to `<plans dir>/archive/`. Commit that move as the workflow allows.
 Keep the outcome on its task, not in a status history appended to the design.

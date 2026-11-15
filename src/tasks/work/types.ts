@@ -58,6 +58,12 @@ export interface WorkTask {
   worktree: string | null;
   base: string | null;
   createdBy: string | null;
+  /**
+   * The process that made the task, in the shape of a claim (`claimHeldBy` judges both): its pid
+   * and start time, and the session id it made the task under. Null for a task made before
+   * schema 5, or by a caller with no process.
+   */
+  creator: WorkClaim | null;
   claim: WorkClaim | null;
   createdAt: number;
   updatedAt: number;

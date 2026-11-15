@@ -19,6 +19,8 @@ const FIELDS: readonly [key: string, label: string][] = [
   ["branch", "branch"],
   ["worktree", "worktree"],
   ["base", "base"],
+  ["createdBy", "made by session"],
+  ["creator", "made by"],
   ["claim", "claimed by"],
   ["waitsFor", "blocked by"],
   ["description", "description"],

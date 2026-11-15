@@ -1196,6 +1196,8 @@ interface WorkTask {
   worktree: string | null;
   base: string | null;
   createdBy: string | null;
+  /** The process that made the task, in the shape of a claim; null before schema 5. */
+  creator: WorkClaim | null;
   claim: WorkClaim | null;
   createdAt: number;
   updatedAt: number;
