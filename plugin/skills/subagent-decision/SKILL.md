@@ -205,6 +205,6 @@ builder to implement, never a build of its own.
 ## Do not
 
 - Read ten files yourself when one `Explore` call would do it.
-- Split a small fix across several builders, or skip a planned phase's task review.
+- Split a small fix across several builders, or skip a planned phase's review.
 - Write one-sentence briefs — they produce shallow work.
 - Delegate a search, then repeat it yourself.

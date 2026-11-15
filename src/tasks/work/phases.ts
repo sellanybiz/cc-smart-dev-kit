@@ -6,8 +6,8 @@
  * the store's claim from `callerOf`), never only the session id, so a `/clear` keeps the plan
  * where the process start time names the process. A claim lives only while its task is
  * `in_progress`. Its phases are the tasks of kind `phase` with that plan; one in progress is
- * work this session must finish, and a pending one with no open blocker is the next one ready
- * to start.
+ * work this session must finish, and a pending one with no open blocker and at least one live
+ * task is the next one ready to start.
  */
 import { allTasks, claimHeldBy, isBlocked } from "./queries";
 import { type ReadState, readWorkStore } from "./read";
@@ -25,8 +25,8 @@ export interface OpenPhases {
   /** The phases in progress of the plans this process works on, in number order. */
   inProgress: PhaseRef[];
   /**
-   * The pending phases with no open blocker, of the plans that have a phase in progress, in
-   * number order: the first is the next to start.
+   * The pending phases with no open blocker and at least one live (not dropped) task, of the
+   * plans that have a phase in progress, in number order: the first is the next to start.
    */
   ready: PhaseRef[];
 }
@@ -73,8 +73,12 @@ export function openPhasesOf(
   const inProgress = own.filter((t) => t.status === "in_progress");
   const busy = new Set(inProgress.map((t) => t.plan));
   const byId = new Map(all.map((t) => [t.id, t]));
+  // A phase with no live task is one the store refuses to start (`refuseEmptyPhase`), so the
+  // guard never names it as the next to start.
+  const hasSteps = (phase: WorkTask) =>
+    all.some((t) => t.parentId === phase.id && t.status !== "dropped");
   const ready = own.filter(
-    (t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId),
+    (t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId) && hasSteps(t),
   );
   // `allTasks` reads in number order, so both lists keep it.
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };

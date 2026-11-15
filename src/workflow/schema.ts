@@ -371,6 +371,15 @@ export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.
  */
 export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel"];
 
+/**
+ * The settings that cap a session's own work (`plans.maxPhases`). `workflow set` and `unset`
+ * refuse them inside Claude Code, like `OUTBOUND_KEYS`: the task store holds a session to the
+ * cap, so a session that could raise it would lift its own limit. Only the person raises it.
+ * `propose` stays open: a person reviews its pull request. Unlike the keys above, the cap is
+ * read from the checkout's working copy, so the refusal does not claim a committed file.
+ */
+export const PLAN_KEYS: readonly WorkflowKey[] = ["plans.maxPhases"];
+
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
   (name) => `switches.${name}` as WorkflowKey,

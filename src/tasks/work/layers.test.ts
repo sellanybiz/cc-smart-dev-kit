@@ -474,7 +474,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     for (const extra of [{ blocked_by: ["#2"] }, { type: "non-blocking" }, { description: "x" }])
       expect(ops.call("create", { subject: "Other plan", plan: "other", ...extra })).toEqual({
         ok: false,
-        why: "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
+        why: "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase",
       });
     expect(ops.call("create", { subject: "Step", parent: "#2" })).toEqual({
       ok: true,

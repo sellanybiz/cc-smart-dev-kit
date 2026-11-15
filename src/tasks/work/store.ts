@@ -551,9 +551,18 @@ export interface LaidPhase extends PlanTask {
   type?: WorkType;
   blockedBy?: string[];
 }
-/** The refusal for a phase beyond the cap: the count, where the cap comes from, the ways forward. */
-function capRefusal(plan: string, count: number, cap: PhaseCap): string {
-  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
+/**
+ * Refuses a phase beyond the cap: a new phase, or a dropped one coming back, when the plan
+ * already holds `plans.maxPhases` live phases. The words give the count, where the cap comes
+ * from and the ways forward. Only the person raises the cap (`PLAN_KEYS`), so a session is
+ * pointed to a task, never to the setting.
+ */
+export function refuseOverCap(tasks: readonly WorkTask[], plan: string, cap: PhaseCap): void {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max) return;
+  throw new Error(
+    `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`,
+  );
 }
 /** The plan phase, made once under its plan task, inside the caller's transaction. */
 export function layPhase(
@@ -569,10 +578,7 @@ export function layPhase(
     (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
   );
   if (there) return { task: there, made: false };
-  if (input.cap !== undefined) {
-    const count = livePhaseCount(tasks, input.plan);
-    if (count >= input.cap.max) throw new Error(capRefusal(input.plan, count, input.cap));
-  }
+  if (input.cap !== undefined) refuseOverCap(tasks, input.plan, input.cap);
   const parent = planTask(
     db,
     { project: input.project, plan: input.plan, subject: input.plan },
