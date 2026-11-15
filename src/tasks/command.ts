@@ -48,7 +48,10 @@ mcp
 
 Work tasks stay on this machine. Project task files travel with your branch: commit them.
 Layers: plan › phase › task. A blocking task (the default) holds its parent; a non-blocking
-one holds nothing. A task blocked by an open task cannot start or be done.`;
+one holds nothing. A task blocked by an open task cannot start or be done.
+--parent may name a plan (#n): the task waits there for a phase, and set --parent <phase> moves it under a phase of that plan.
+A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks.
+A step of a phase closes with done --evidence <text>, or drop --note <reason>.`;
 const bindingFlags = ["--agent", "--branch", "--worktree", "--base"];
 const definitions: Record<
   string,

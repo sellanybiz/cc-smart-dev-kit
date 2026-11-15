@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { expect, spyOn, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, rmdirSync, writeFileSync } from "node:fs";
+import { hookEnv } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
 import { taskContext } from "../context";
 import { createTaskOps } from "../ops";
@@ -205,7 +206,11 @@ test("the same ops retries after a failed snapshot is fixed", () => {
   db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(a.id, b.id);
   db.close();
   mkdirSync(`${file}.v4.bak.tmp`);
-  const ops = createTaskOps({ stateDir: paths.stateDir, caller: () => ({ ...who, cwd }) });
+  const ops = createTaskOps({
+    stateDir: paths.stateDir,
+    caller: () => ({ ...who, cwd }),
+    env: hookEnv(),
+  });
   try {
     expect(ops.call("create", { subject: "First" }).ok).toBe(false);
     rmdirSync(`${file}.v4.bak.tmp`);

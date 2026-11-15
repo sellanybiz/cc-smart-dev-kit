@@ -46,6 +46,7 @@ test("a plan this process holds a claim in: its phase in progress, and its next 
   const g1 = phase(db, "plan-a", "G1", "Guard");
   const g2 = phase(db, "plan-a", "G2", "Portal view");
   phase(db, "plan-a", "G3", "Docs", [g2.id]);
+  ok(createTask(db, { project: "p", subject: "Step", parentId: g2.id, plan: "plan-a" }, me, 3));
   start(db, g1, me);
   db.close();
   expect(openPhasesOf(paths, "p", () => me)).toEqual({
@@ -53,6 +54,27 @@ test("a plan this process holds a claim in: its phase in progress, and its next 
     value: {
       inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a", agent: null }],
       ready: [{ number: g2.number, subject: "Portal view", plan: "plan-a", agent: null }],
+    },
+  });
+});
+
+test("a pending phase with no live task is not ready: the store would refuse to start it", () => {
+  const { paths, db } = setup();
+  const g1 = phase(db, "plan-a", "G1", "Guard");
+  phase(db, "plan-a", "G2", "Empty");
+  const g3 = phase(db, "plan-a", "G3", "Only a dropped step");
+  const dropped = ok(
+    createTask(db, { project: "p", subject: "Gone", parentId: g3.id, plan: "plan-a" }, me, 3),
+  );
+  ok(updateTask(db, dropped.id, { status: "dropped" }, me, 4));
+  start(db, g1, me);
+  db.close();
+  const read = openPhasesOf(paths, "p", () => me);
+  expect(read).toEqual({
+    state: "ready",
+    value: {
+      inProgress: [{ number: g1.number, subject: "Guard", plan: "plan-a", agent: null }],
+      ready: [],
     },
   });
 });

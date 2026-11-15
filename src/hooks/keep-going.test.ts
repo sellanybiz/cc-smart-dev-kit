@@ -86,11 +86,23 @@ function start(w: World, task: WorkTask, who: Who): void {
   if (!done.ok) throw new Error(done.why);
 }
 
+/** One step under a phase: a phase with no task is not ready, as the store refuses to start it. */
+function addStep(w: World, parent: WorkTask): void {
+  const step = createTask(
+    w.db,
+    { project: projectKey(w.repo), subject: "Step", parentId: parent.id, plan: parent.plan },
+    { sessionId: null, pid: null, procStart: null },
+    1,
+  );
+  if (!step.ok) throw new Error(step.why);
+}
+
 /** Plan `plan-a`: #1 the plan, #2 G1 in progress by this process, #3 G2 ready, #4 G3 blocked by #3. */
 function busyPlan(w: World): { g1: WorkTask; g2: WorkTask } {
   const g1 = phase(w, "plan-a", "G1", "G1 the guard");
   const g2 = phase(w, "plan-a", "G2", "G2 the portal view");
   phase(w, "plan-a", "G3", "G3 the docs", [g2.id]);
+  addStep(w, g2);
   start(w, g1, ME);
   return { g1, g2 };
 }
@@ -146,6 +158,15 @@ describe("keep-going: the block", () => {
     const w = world();
     const g1 = phase(w, "plan-a", "G1", "G1 the guard");
     phase(w, "plan-a", "G2", "G2 the portal view", [g1.id]);
+    start(w, g1, ME);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({ stdout: BLOCK_NO_NEXT });
+  });
+
+  test("a pending phase with no task is not named as ready: the store refuses to start it", async () => {
+    const w = world();
+    const g1 = phase(w, "plan-a", "G1", "G1 the guard");
+    phase(w, "plan-a", "G2", "G2 the empty phase");
     start(w, g1, ME);
     w.db.close();
     expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({ stdout: BLOCK_NO_NEXT });
@@ -498,6 +519,7 @@ describe("keep-going: silent", () => {
       expect(theirs.call("create", { subject: "G1 the guard", plan: "auth", phase: "G1" }).ok).toBe(
         true,
       );
+      expect(theirs.call("create", { subject: "Step", parent: "#2" }).ok).toBe(true);
       expect(theirs.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
       expect(mine.call("create", { subject: "Fix a typo", status: "in_progress" }).ok).toBe(true);
     } finally {

@@ -5992,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.7.0",
+  version: "4.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6154,6 +6154,7 @@ function readUserJson(file) {
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
 function numberSchema(rule) {
   const whole = number2().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
@@ -6162,7 +6163,8 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO
+  "fixesAfterReview.percent": AT_LEAST_ZERO,
+  "plans.maxPhases": PHASE_COUNT
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -6200,6 +6202,9 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  plans: strictObject({
+    maxPhases: numberField("plans.maxPhases")
+  }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
@@ -6251,6 +6256,9 @@ var workflowDefaults = {
   },
   alerts: {
     usagePercent: 85
+  },
+  plans: {
+    maxPhases: 10
   }
 };
 var SWITCH_NAMES = [
@@ -6278,7 +6286,8 @@ var POLICY_KEYS = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "plans.maxPhases"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -9449,7 +9458,8 @@ function contextOf(checkout, cwd, env) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" }
+      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectConfig: { ok: true, config: null }
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
@@ -9459,15 +9469,18 @@ function contextOf(checkout, cwd, env) {
     repo,
     checkoutRoot: checkout.root
   };
-  let settings;
+  let config;
   try {
-    settings = loadProjectConfig(checkout).config?.tasks;
+    config = loadProjectConfig(checkout).config;
   } catch (error) {
-    return { ...base, projectTasks: { ok: false, why: checkoutFailure(error) } };
+    const why = checkoutFailure(error);
+    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
   }
+  const settings = config?.tasks;
   const root = checkout.root;
   return {
     ...base,
+    projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
       dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
@@ -16363,6 +16376,9 @@ function mergeWorkflows(personal, project) {
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined)
+    merged.plans = plans;
   return merged;
 }
 function sourceOf(personal, project, key) {
@@ -16379,6 +16395,15 @@ function alertsFrom(personal, project) {
   });
   return {
     usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
+  };
+}
+function plansFrom(personal, project) {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases")
+    }
   };
 }
 function statusLineIsOurs(paths) {
@@ -16482,6 +16507,7 @@ function resolveWorkflow(paths, projectConfig) {
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
     },
     alerts: alertsFrom(personal, project),
+    plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
@@ -22964,7 +22990,8 @@ function openPhasesOf(paths, project, caller) {
   const inProgress = own.filter((t) => t.status === "in_progress");
   const busy = new Set(inProgress.map((t) => t.plan));
   const byId = new Map(all.map((t) => [t.id, t]));
-  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId));
+  const hasSteps = (phase) => all.some((t) => t.parentId === phase.id && t.status !== "dropped");
+  const ready = own.filter((t) => t.status === "pending" && busy.has(t.plan) && !isBlocked(t, byId) && hasSteps(t));
   return { state: "ready", value: { inProgress: inProgress.map(refOf), ready: ready.map(refOf) } };
 }
 

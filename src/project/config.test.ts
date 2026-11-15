@@ -78,6 +78,8 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.lines": "1.0.0",
   "workflow.fixesAfterReview.files": "1.0.0",
   "workflow.fixesAfterReview.percent": "1.0.0",
+  "workflow.plans": "4.8.0",
+  "workflow.plans.maxPhases": "4.8.0",
   // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
   "workflow.crew": "0.5.2",
   checks: "1.1.0",

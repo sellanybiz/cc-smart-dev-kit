@@ -1,9 +1,13 @@
+import { COMMAND } from "../../build-info/names";
+import type { WorkflowSource } from "../../workflow/resolve";
+import { TASK_TOOL } from "../words";
 import { type WorkDb, writeWork } from "./db";
 import {
   allTasks,
   claimHeldBy,
   descendants,
   holdingUnder,
+  livePhaseCount,
   openBlockers,
   openChildren,
   planIsOpen,
@@ -190,8 +194,14 @@ function placeValid(
   if (target.project !== project) throw new Error("parent belongs to another project");
   if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
-  if (kind === "task" && target.kind !== "phase")
-    throw new Error("a task belongs under a phase or at the top; a task holds no tasks");
+  if (kind === "task" && target.kind === "plan" && moving !== null)
+    throw new Error(
+      `a task waits under a plan only where it is made: create it with parent set to the plan (${TASK_TOOL.create}); an existing task moves under a phase`,
+    );
+  if (kind === "task" && target.kind !== "phase" && target.kind !== "plan")
+    throw new Error(
+      "a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks",
+    );
   if (kind === "phase" && target.kind !== "plan") throw new Error("a phase belongs under its plan");
   if (kind === "plan") throw new Error("a plan belongs at the top");
 }
@@ -359,6 +369,11 @@ export function applyUpdate(
   if (parent !== task.parentId && parent !== null) {
     plan = taskById(db, parent).plan;
     if (plan !== null) openPlanValid(allTasks(db, task.project), plan);
+    // A task waiting under its plan goes to one of that plan's phases, never another plan's.
+    if (task.parentId !== null && taskById(db, task.parentId).kind === "plan" && plan !== task.plan)
+      throw new Error(
+        `${label(task)} waits in plan "${task.plan ?? ""}": move it under a phase of that plan`,
+      );
   }
   // The blockers change first, so one call can lift a block and start the task.
   if (change.waitsFor) dependencies(db, task, change.waitsFor);
@@ -508,7 +523,24 @@ export function planTask(db: WorkDb, input: PlanTask, who: Who, now: number): Wo
     insertTask(db, { ...input, kind: "plan" }, who, now)
   );
 }
+/** `plans.maxPhases` as the caller resolved it, and where the resolver found it. */
+export interface PhaseCap {
+  max: number;
+  source: WorkflowSource;
+}
+/** Where a cap came from, in the words a refusal says it: one entry per source the resolver has. */
+const CAP_ORIGIN: Record<WorkflowSource, string> = {
+  project: "this project's workflow settings",
+  personal: "your own workflow settings",
+  default: "the built-in default",
+};
 export interface LaidPhase extends PlanTask {
+  /**
+   * The most phases the plan may hold: a new phase beyond it is refused. `ops.ts` always passes
+   * it, resolved from the workflow settings; a caller that lays phases with no setting to read
+   * (the store's own tests) leaves it out and no cap applies.
+   */
+  cap?: PhaseCap;
   agent?: string | undefined;
   branch?: string | undefined;
   worktree?: string | undefined;
@@ -518,6 +550,19 @@ export interface LaidPhase extends PlanTask {
   description?: string;
   type?: WorkType;
   blockedBy?: string[];
+}
+/**
+ * Refuses a phase beyond the cap: a new phase, or a dropped one coming back, when the plan
+ * already holds `plans.maxPhases` live phases. The words give the count, where the cap comes
+ * from and the ways forward. Only the person raises the cap (`PLAN_KEYS`), so a session is
+ * pointed to a task, never to the setting.
+ */
+export function refuseOverCap(tasks: readonly WorkTask[], plan: string, cap: PhaseCap): void {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max) return;
+  throw new Error(
+    `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`,
+  );
 }
 /** The plan phase, made once under its plan task, inside the caller's transaction. */
 export function layPhase(
@@ -533,6 +578,7 @@ export function layPhase(
     (t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase,
   );
   if (there) return { task: there, made: false };
+  if (input.cap !== undefined) refuseOverCap(tasks, input.plan, input.cap);
   const parent = planTask(
     db,
     { project: input.project, plan: input.plan, subject: input.plan },

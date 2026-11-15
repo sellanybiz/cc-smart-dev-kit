@@ -43,7 +43,7 @@ Worked examples — judge new cases the same way:
 | Mechanical edits, a doc update, run the tests | builder, `sonnet`, `medium` |
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
-| Ordinary phase review | senior engineer, `sonnet`, `high`; small and low-risk → `medium` |
+| Ordinary phase review | senior engineer, `sonnet`, `high` (a phase holds several steps: never lower) |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
 | Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
@@ -110,8 +110,9 @@ on a refusal, and decide small calls with a `Ruling:` note. Treat the agent as a
 who just walked in:
 
 - **The goal and why it matters**, and whether you want research or code.
-- **One job with one clear outcome.** A big phase becomes two or three agents, never "figure
-  out the codebase".
+- **One job with one clear outcome.** A big job becomes two or three agents, never "figure
+  out the codebase". (A planned phase stays one area with one builder:
+  `/cc-smart-dev-kit:plan-task` § 5.)
 - **The decisions, not the question:** the approach, the exact paths and symbols to read and
   change, the pattern to copy (`file:line`), the names to use, the edge cases and test cases.
 - **The rules that bite here, quoted** — the ones its files touch, not "follow the repo rules".
@@ -204,6 +205,6 @@ builder to implement, never a build of its own.
 ## Do not
 
 - Read ten files yourself when one `Explore` call would do it.
-- Split a small fix across several builders, or skip a planned phase's task review.
+- Split a small fix across several builders, or skip a planned phase's review.
 - Write one-sentence briefs — they produce shallow work.
 - Delegate a search, then repeat it yourself.

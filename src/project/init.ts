@@ -46,6 +46,7 @@ import {
   TASKS_SINCE,
   WORKFLOW_FIXES_SINCE,
   WORKFLOW_ISSUES_SINCE,
+  WORKFLOW_PLANS_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
@@ -241,6 +242,7 @@ export function requiresFloor(file: Record<string, unknown>): {
   if (Object.hasOwn(workflow, "fixesAfterReview")) {
     needs.push(WORKFLOW_FIXES_SINCE);
   }
+  if (Object.hasOwn(workflow, "plans")) needs.push(WORKFLOW_PLANS_SINCE);
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);
   const jobs = isObject(file.jobs) ? file.jobs : {};

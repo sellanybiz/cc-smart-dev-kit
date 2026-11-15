@@ -6,7 +6,16 @@ export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
+import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
+import {
+  type PlanWork,
+  planNote,
+  refuseBareClose,
+  refuseEmptyPhase,
+  refuseOtherPlan,
+  refuseStepEscape,
+} from "./plan-guards";
 import {
   addProjectNote,
   closeProjectTask,
@@ -20,9 +29,11 @@ import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
 import {
+  activePlanOf,
   allTasks,
   claimHeldBy,
   claimState,
+  defaultPlanOf,
   deletedHistory,
   eventsOf,
   getTask,
@@ -30,7 +41,6 @@ import {
   layerOf,
   notesOf,
   openBlockers,
-  planIsOpen,
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
@@ -41,7 +51,9 @@ import {
   insertNote,
   insertTask,
   layPhase,
+  type PhaseCap,
   planTask,
+  refuseOverCap,
   takeTasks,
   updateTask,
 } from "./work/store";
@@ -138,7 +150,8 @@ function page(text: string, offset: number): string {
 /** Both front doors call these operations. Identity and checkout are resolved afresh on every call. */
 export function createTaskOps(options: TaskOpsOptions = {}) {
   const env = options.env ?? process.env;
-  const stateDir = options.stateDir ?? cliPaths(env).stateDir;
+  const paths = cliPaths(env);
+  const stateDir = options.stateDir ?? paths.stateDir;
   let db: WorkDb | undefined;
   const database = () => {
     if (db?.writeRefusal !== undefined) {
@@ -165,7 +178,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
       // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
-      const writePlan = ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null;
+      // The plan being built now: a plan queued later never takes a call that names no plan.
+      const active = activePlanOf(all, owns);
+      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
+      /** `plans.maxPhases` for this checkout: a broken workflow file fails the call, naming it. */
+      const phaseCap = (): PhaseCap => {
+        if (!ctx.projectConfig.ok) throw new Error(ctx.projectConfig.why);
+        const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
+        return { max: value, source };
+      };
+      const refuseOther = (plan: string, doing: PlanWork) =>
+        refuseOtherPlan({ all, active, plan, owns, doing });
       const projectDir = () => {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
@@ -256,7 +279,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               input.description !== undefined)
           )
             throw new Error(
-              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
+              "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase",
             );
           const slug = input.plan ?? writePlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -282,6 +305,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           const phaseId = input.phase;
           if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
+          // A phase that is there is only answered, so neither the active plan nor the cap judges it.
+          const there = all.some(
+            (t) => t.kind === "phase" && t.plan === slug && t.phase === phaseId,
+          );
+          if (!there) refuseOther(slug, "lay a phase");
           const laid = value(
             writeWork(store, () =>
               layPhase(
@@ -291,6 +319,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   plan: slug,
                   phase: phaseId,
                   subject: input.subject,
+                  ...(there ? {} : { cap: phaseCap() }),
                   ...(input.description === undefined ? {} : { description: input.description }),
                   ...bindings(input),
                   ...(input.type === undefined ? {} : { type: input.type }),
@@ -319,6 +348,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const parent = input.parent ? work(input.parent) : undefined;
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
+        const taskPlan = input.plan ?? parent?.plan ?? writePlan;
+        if (input.status === "in_progress" && taskPlan !== null)
+          refuseOther(taskPlan, "start work");
         // The task and its blockers go in one transaction: a refused blocker leaves no task.
         const task = value(
           writeWork(store, () =>
@@ -332,7 +364,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.status === undefined ? {} : { status: input.status }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 parentId: parent?.id ?? null,
-                plan: input.plan ?? parent?.plan ?? writePlan,
+                plan: taskPlan,
                 blockedBy,
               },
               who,
@@ -380,6 +412,26 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · updated` };
         }
         const task = work(input.task);
+        // A dropped phase coming back is a phase laid again: the active plan and the cap judge it.
+        if (
+          task.kind === "phase" &&
+          task.status === "dropped" &&
+          (input.status === "pending" || input.status === "in_progress") &&
+          task.plan !== null
+        ) {
+          refuseOther(task.plan, "reopen a phase");
+          const cap = phaseCap();
+          refuseOverCap(all, task.plan, cap);
+        }
+        if (input.status === "in_progress" && task.status !== "in_progress") {
+          refuseEmptyPhase(all, task);
+          if (task.plan !== null) refuseOther(task.plan, "start work");
+        }
+        if (input.parent !== undefined)
+          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
+        // This call carries no evidence or note, so a step cannot close here.
+        if (input.status === "done" || input.status === "dropped")
+          refuseBareClose(all, task, input.status, {});
         const updated = value(
           updateTask(
             store,
@@ -431,6 +483,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           return { ok: true, text: `${task.id} "${task.title}" · ${input.outcome}` };
         }
         const task = work(input.task);
+        refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
         // One transaction: a close the store refuses (an open blocking task) keeps no note either, so
         // a retry after finishing the task saves each note once.
         const changed = value(
@@ -557,6 +610,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       let selected: WorkTask[];
       let projects: ProjectTask[] = [];
+      let planLedger = false;
       if (operation === "search") {
         const input = taskSchemas.search.parse(raw);
         selected = searchTasks(store, ctx.project, input.text).filter(
@@ -570,6 +624,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
       } else {
         const input = taskSchemas.list.parse(raw);
+        planLedger = input.scope === "plan";
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
@@ -610,10 +665,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
       const lines: string[] = [];
+      // A plan's phases against the cap, on the plan ledger only. A cap that cannot be read
+      // (a broken workflow file) leaves the count alone and says why on a line of its own.
+      let cap: number | null = null;
+      let capWhy: string | null = null;
+      if (planLedger) {
+        try {
+          cap = phaseCap().max;
+        } catch (error) {
+          capWhy = `plans.maxPhases cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       const visit = (task: WorkTask, depth: number) => {
         const count = subtreeProgress(all, task.id);
         const progress =
-          count.total || task.kind === "phase" ? ` · ${count.closed}/${count.total}` : "";
+          (count.total || task.kind === "phase" ? ` · ${count.closed}/${count.total}` : "") +
+          (task.kind === "plan" && (cap !== null || capWhy !== null)
+            ? ` · ${planNote(all, task, cap)}`
+            : "");
         const binding =
           task.kind === "phase"
             ? ` · agent ${task.agent ?? "none"} · branch ${task.branch ?? "none"}`
@@ -627,6 +696,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
       lines.push(...projects.map(projectLine));
+      if (capWhy !== null) lines.push(capWhy);
       return { ok: true, text: capped(lines), data: { work: selected, project: projects } };
     } catch (error) {
       return {

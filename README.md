@@ -508,12 +508,12 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 
 | Command | What it does |
 |---|---|
-| `task add <subject> [--description <text> \| --file <path\|->] [--kind work\|production\|database\|teammate\|follow-up] [--parent <ref>] [--start] [--type blocking\|non-blocking] [--blocked-by <ref>]... [--phase <id>] [--plan <slug>] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--when now\|next-release\|any] [--weight blocks-release\|after-deploy\|owner] [--flag <flag>]... [--ref <path>]...` | Create work (the default) or a project obligation. Description and file input are alternatives; `-` reads stdin. `--plan` alone makes the plan's own task (subject: its title); `--phase` lays out a phase of the plan (the plan of your latest task when `--plan` is left out). `--agent`, `--branch`, `--worktree` and `--base` record on a phase who builds it and where: the main session sets them when it starts the phase's builder. |
-| `task set <ref> [--type blocking\|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too). A move that would put a task under another task is refused, and so is a blocker that sits above the task. |
+| `task add <subject> [--description <text> \| --file <path\|->] [--kind work\|production\|database\|teammate\|follow-up] [--parent <ref>] [--start] [--type blocking\|non-blocking] [--blocked-by <ref>]... [--phase <id>] [--plan <slug>] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--when now\|next-release\|any] [--weight blocks-release\|after-deploy\|owner] [--flag <flag>]... [--ref <path>]...` | Create work (the default) or a project obligation. Description and file input are alternatives; `-` reads stdin. `--plan` alone makes the plan's own task (subject: its title); `--phase` lays out a phase of the plan (the plan of your latest task when `--plan` is left out). `--parent` may name a plan (`#n`): the task waits there for a phase. `--agent`, `--branch`, `--worktree` and `--base` record on a phase who builds it and where: the main session sets them when it starts the phase's builder. A plan holds at most `plans.maxPhases` phases, and a phase starts only once it holds tasks. |
+| `task set <ref> [--type blocking\|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too). A move that would put a task under another task is refused, and so is a blocker that sits above the task. `--parent` moves a task that waits under a plan to a phase of that plan. |
 | `task take <plan-slug\|#n> [--from <session>] [--force]` | Take a plan and its members, or one task, into this session. Live claims need `--force`; a refusal changes nothing. Dead claims need no force. A session id without a process gets ownership but no claim. |
-| `task start <ref>` | Claim work and mark it in progress. Refused while a task it is blocked by is open. |
-| `task done <ref> [--evidence <text>] [--note <text>] [--for-everyone]` | Finish work after its blocking tasks; archive a project task. A teammate task is done here unless `--for-everyone` closes it for everyone. |
-| `task drop <ref> [--note <text>]` | Drop work no longer needed, with its reason. |
+| `task start <ref>` | Claim work and mark it in progress. Refused while a task it is blocked by is open, for a phase with no task, and for a task of a plan while you build another plan. |
+| `task done <ref> [--evidence <text>] [--note <text>] [--for-everyone]` | Finish work after its blocking tasks; archive a project task. A teammate task is done here unless `--for-everyone` closes it for everyone. A step of a phase finishes only with `--evidence`. |
+| `task drop <ref> [--note <text>]` | Drop work no longer needed, with its reason. A step of a phase drops only with `--note`. |
 | `task note <ref> [<text> \| --file <path\|->]` | Add a work-log note. |
 | `task list [--scope mine\|plan\|project\|all] [--plan <slug>] [--json]` | List tasks in the selected scope. |
 | `task list --branch [--base <branch>]` | Project task changes for the pull request body. |
@@ -2602,6 +2602,7 @@ your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude
 autoCommit = false (default)
 openPr = draft (project)
 alerts.usagePercent = 85 (default)
+plans.maxPhases = 10 (default)
 switches.sessionNames = true (project)
 gate: what the merge guard judges with, from origin/dev:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)
 gate autoMerge = true (project, committed on origin/dev)
@@ -2660,6 +2661,7 @@ merge.
 | `alerts.events` | — | Retired: accepted on load and ignored; not shown or writable. |
 | `alerts.sound` | — | Retired: the same load-only handling as `alerts.events`. |
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
+| `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
 
 **Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
 itself only when the pull request's base **is** the project's integration base
@@ -2692,6 +2694,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 | `issues.enabled`, `issues.allowPublic` | the commands `issue file` and `issue mark-fixed`, which refuse without them, and `issue fixed`, which prints nothing without `issues.enabled`. **The merge guard hook does not read them:** it asks you before a session's raw `gh issue create`, `gh label create`, `gh api … /issues` write and the like, whatever the switches say. `issues.*Label`: `issue file` (the found label, and the ready label it refuses), `issue mark-fixed` and `issue fixed` (the fixed label). |
 | `alerts.events`, `alerts.sound` | No runtime consumer; retired load-only keys (§ Notifications). |
 | `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
+| `plans.maxPhases` | the kit's task store: the most phases one plan may hold ([docs/design/tasks.md](docs/design/tasks.md)). |
 | `fixesAfterReview.*` | how much a branch may change after its review and still count as reviewed: the merge guard judges a merge with them, and `workflow merge-check` prints the same verdicts (§ The review record, below). |
 
 **The review record.** The record says one thing: the commit the change set was on had its one
@@ -2888,6 +2891,7 @@ every question it holds.
 | `jobs.route` | `true` or `false`: whether the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). When left out, your own default decides (`switches.jobRoute` in your `workflow.json`), and without one it is off. The project's value wins over yours. That hook's other part — the launch judge — reads neither this field nor any other: it runs machine-wide. |
 | `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
 | `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
+| `workflow.plans` | How the kit's plans are shaped (4.8.0): `maxPhases`, the most phases one plan may hold, 1-50 (10 by default) (§ [The workflow](#the-workflow)). |
 | `workflow.issues` | GitHub Issues (1.4.0): `enabled` and `allowPublic` (both off by default) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (three different words) (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. `watch` and `watchMinutes` are accepted and ignored since 2.0. |
 
 `requires` is a version range (npm syntax). When the installed plugin is older than the range,
@@ -2899,7 +2903,8 @@ written without `worktrees.prefix` asks for at least `>=0.5.2`, the version that
 optional, so a teammate on an older plugin is told to update instead of failing the file's
 parse. `worktrees.autoClean` and `workflow.fixesAfterReview` came with 1.0.0 (optional fields:
 a minor change), so a project that sets one asks for `>=1.0`; `checks` asks for `>=1.1`,
-`workflow.issues` for `>=1.4`, `worktrees.rebuildable` for `>=1.9` and `tasks` for `>=1.10`. A
+`workflow.issues` for `>=1.4`, `worktrees.rebuildable` for `>=1.9`, `tasks` for `>=1.10` and
+`workflow.plans` for `>=4.8`. A
 `jobs.kinds` field does the same: `noSlotForFiles` asks for `>=1.5` (and the ignored `light`
 for `>=1.8`). An `ownHooks` name does the same when its hook came after `ownHooks`:
 `subagent-background` asks for `>=1.0`, `verify-gate` and `agent-usage` for `>=1.1`,

@@ -79,6 +79,11 @@ state and completed steps. Use `open_only: false` when recovering completed work
 Builders save a `Report:` note; the main session saves decisions as `Ruling:` notes.
 The build skill owns when to write them; no separate progress file.
 
+An ask that arrives during a build: in scope, a task under the phase that owns its files;
+for later, a task under the queued next plan (`task_create` with `parent` set to the plan's
+`#n`), which waits there for a phase (`/cc-smart-dev-kit:plan-task` § 6); a lasting duty, a
+project task.
+
 ## Saving to memory
 
 **Only the main session saves** — the one the person talks to. A subagent

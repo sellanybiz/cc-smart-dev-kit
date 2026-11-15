@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.7.0",
+  version: "4.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21550,7 +21550,7 @@ var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync7, rmSync as rmSync3 } from "fs";
+import { readFileSync as readFileSync8, rmSync as rmSync3 } from "fs";
 import { relative as relative2 } from "path";
 
 // src/tasks/schemas.ts
@@ -21643,12 +21643,12 @@ var taskSchemas = {
     ...bindings,
     description: description.optional(),
     kind: _enum(["work", ...fields.kind.options]).default("work"),
-    parent: ref.optional().describe("The task (#n) it goes under. Layers: plan \u203A phase \u203A task; a task holds nothing."),
+    parent: ref.optional().describe("The task (#n) it goes under: a phase, or its plan (the task then waits there for a phase). Layers: plan \u203A phase \u203A task; a task holds nothing."),
     status: _enum(["pending", "in_progress"]).optional(),
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's latest own plan only while open, never an older plan. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase as parent."),
+    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's active plan (an own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent."),
     ...projectFields
   }).strict(),
   take: object({
@@ -21826,8 +21826,8 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
   }
 }
 
-// src/tasks/context.ts
-import { realpathSync as realpathSync3 } from "fs";
+// src/workflow/resolve.ts
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
 
 // src/project/resolve.ts
 import { existsSync as existsSync2, realpathSync, statSync } from "fs";
@@ -21878,6 +21878,7 @@ function parseUserJson(text) {
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
 function numberSchema(rule) {
   const whole = number2().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
@@ -21886,7 +21887,8 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO
+  "fixesAfterReview.percent": AT_LEAST_ZERO,
+  "plans.maxPhases": PHASE_COUNT
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -21924,6 +21926,9 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  plans: strictObject({
+    maxPhases: numberField("plans.maxPhases")
+  }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
@@ -21975,6 +21980,9 @@ var workflowDefaults = {
   },
   alerts: {
     usagePercent: 85
+  },
+  plans: {
+    maxPhases: 10
   }
 };
 var SWITCH_NAMES = [
@@ -22002,10 +22010,20 @@ var POLICY_KEYS = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "plans.maxPhases"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+function workflowValue(workflow, key) {
+  const [head, tail] = key.split(".");
+  if (head === undefined || tail === undefined)
+    return workflow[head ?? ""];
+  const group = workflow[head];
+  if (typeof group !== "object" || group === null)
+    return;
+  return group[tail];
+}
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -22347,29 +22365,6 @@ function loadProjectConfig(checkout, pluginVersion) {
   return { ...checkout, config, configFile };
 }
 
-// src/workflow/reviews.ts
-import { createHash } from "crypto";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
 // src/setup/write.ts
 import {
   closeSync,
@@ -22388,6 +22383,25 @@ import {
   writeFileSync
 } from "fs";
 import { basename, dirname, join as join4, resolve } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
 function writeTemp(file, content, mode) {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true });
@@ -22420,14 +22434,110 @@ function atomicWrite(file, content, mode, beforeRename) {
   }
 }
 
+// src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/update/state.ts
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+// src/zod-issues.ts
+function describeIssues(issues) {
+  return issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+  }).join("; ");
+}
+
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
+}
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function loadWorkflow(file) {
+  if (!existsSync4(file))
+    return {};
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync3(file, "utf8"));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+  }
+  const parsed = personalWorkflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
+  }
+  return parsed.data;
+}
+function mergedGroup(personal, project) {
+  if (personal === undefined)
+    return project;
+  if (project === undefined)
+    return personal;
+  return { ...personal, ...project };
+}
+function mergeWorkflows(personal, project) {
+  const merged = { ...personal, ...project };
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined)
+    merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined)
+    merged.fixesAfterReview = fixes;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined)
+    merged.plans = plans;
+  return merged;
+}
+function sourceOf(personal, project, key) {
+  if (workflowValue(project, key) !== undefined)
+    return "project";
+  return workflowValue(personal, key) !== undefined ? "personal" : "default";
+}
+function plansFrom(personal, project) {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases")
+    }
+  };
+}
+function resolvePlans(paths, projectConfig) {
+  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
+}
+
+// src/tasks/context.ts
+import { realpathSync as realpathSync3 } from "fs";
+
 // src/workflow/reviews.ts
+import { createHash } from "crypto";
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
 function repoKey(repo) {
   return createHash("sha256").update(repo).digest("hex").slice(0, 16);
 }
 
 // src/tasks/project/files.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, rmSync } from "fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, rmSync } from "fs";
 import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve2, sep as sep2 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
 function projectTasksDir(checkoutRoot, settings) {
@@ -22445,13 +22555,13 @@ function scanProjectTasks(dir, options) {
   const tasks = [];
   const broken = [];
   for (const folder of options.archive ? [dir, join5(dir, "archive")] : [dir]) {
-    if (!existsSync4(folder))
+    if (!existsSync5(folder))
       continue;
     for (const entry of readdirSync2(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isFile() || !isTaskFile(entry.name))
         continue;
       const file = join5(folder, entry.name);
-      const result = parseProjectTask(readFileSync3(file, "utf8"), file);
+      const result = parseProjectTask(readFileSync4(file, "utf8"), file);
       if (result.ok)
         tasks.push(result.task);
       else
@@ -22510,7 +22620,7 @@ function planProjectTask(dir, input, sources, used) {
 function existingTaskIds(dir) {
   const ids = new Set(scanProjectTasks(dir, { archive: true }).tasks.map((task) => task.id));
   for (const folder of [dir, join5(dir, "archive")])
-    if (existsSync4(folder))
+    if (existsSync5(folder))
       for (const name of readdirSync2(folder)) {
         const id = /^(T-[a-z2-7]{6})(?:-|\.md$)/.exec(name)?.[1];
         if (id)
@@ -22579,7 +22689,7 @@ function closeProjectTask(dir, id, options, now) {
   const archive = join5(dir, "archive");
   mkdirSync2(archive, { recursive: true });
   const destination = join5(archive, basename2(task.file));
-  if (destination !== task.file && existsSync4(destination))
+  if (destination !== task.file && existsSync5(destination))
     throw new Error(`Archive task already exists: ${destination}`);
   const saved = save({ ...closed, file: destination });
   if (destination !== task.file)
@@ -22615,7 +22725,8 @@ function contextOf(checkout, cwd, env) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" }
+      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectConfig: { ok: true, config: null }
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
@@ -22625,15 +22736,18 @@ function contextOf(checkout, cwd, env) {
     repo,
     checkoutRoot: checkout.root
   };
-  let settings;
+  let config;
   try {
-    settings = loadProjectConfig(checkout).config?.tasks;
+    config = loadProjectConfig(checkout).config;
   } catch (error) {
-    return { ...base, projectTasks: { ok: false, why: checkoutFailure(error) } };
+    const why = checkoutFailure(error);
+    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
   }
+  const settings = config?.tasks;
   const root = checkout.root;
   return {
     ...base,
+    projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
       dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
@@ -22664,11 +22778,6 @@ var TASK_TOOL = {
 };
 var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
-
-// src/tasks/work/db.ts
-import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync5, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
 
 // src/tasks/work/queries.ts
 function allTasks(db, project) {
@@ -22727,6 +22836,27 @@ function planCounted(all, plan) {
 function planIsOpen(all, plan) {
   const row = all.find((task) => task.kind === "plan" && task.plan === plan);
   return row ? isOpen(row) : all.some((task) => task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task));
+}
+function livePhaseCount(all, plan) {
+  return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
+}
+function activePlanOf(all, owns) {
+  const phasesOf = (plan) => all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
+  const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0);
+  return candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ?? candidates[0] ?? null;
+}
+function defaultPlanOf(all, owns, active, fallback) {
+  if (active?.plan)
+    return active.plan;
+  const finishing = all.filter((t) => {
+    if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t))
+      return false;
+    const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
+    return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
+  }).at(-1);
+  if (finishing?.plan)
+    return finishing.plan;
+  return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
 function descendants(db, id) {
   const task = taskById(db, id);
@@ -22848,7 +22978,53 @@ function waitsForTask(tasks, start, target) {
   return false;
 }
 
+// src/tasks/plan-guards.ts
+function refuseOtherPlan(options) {
+  const { all, active, plan, owns, doing } = options;
+  if (active === null || active.plan === plan)
+    return;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  const mine = row === undefined ? doing === "lay a phase" : owns(row);
+  if (!mine)
+    return;
+  const queue = row === undefined ? `make plan "${plan}" first (${TASK_TOOL.create} with plan and a subject), then add the task with ${TASK_TOOL.create} and parent set to its #n` : `${TASK_TOOL.create} with parent "#${row.number}"`;
+  throw new Error(`Plan "${active.plan}" (#${active.number}) is your active plan: it still has open phases. Do not ${doing} in plan "${plan}" yet. Queue the work as a task that waits there (${queue}), or finish or drop the open phases of "${active.plan}" first.`);
+}
+function refuseEmptyPhase(all, phase) {
+  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
+    return;
+  throw new Error(`#${phase.number} "${phase.subject}" has no tasks: add its steps first, each with its done-check (${TASK_TOOL.create} with parent "#${phase.number}"), then start it`);
+}
+function refuseBareClose(all, task, outcome, given) {
+  const parent = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || parent?.kind !== "phase" || task.status === outcome)
+    return;
+  const step = `#${task.number} "${task.subject}" is a step of phase #${parent.number}`;
+  if (outcome === "done" && !given.evidence?.trim())
+    throw new Error(`${step}: a step closes done with evidence: what you ran or checked and its result (${TASK_TOOL.done} with task "#${task.number}" and evidence)`);
+  if (outcome === "dropped" && !given.note?.trim())
+    throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
+}
+function refuseStepEscape(all, task, to) {
+  const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
+    return;
+  if (to !== null && to.kind === "phase" && to.plan === from.plan)
+    return;
+  throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
+}
+function planNote(all, plan, cap) {
+  const slug = plan.plan ?? "";
+  const count = livePhaseCount(all, slug);
+  const phases = cap === null ? `Phases ${count}` : `Phases ${count}/${cap}${count > cap ? " \xB7 frozen: over the cap, no new phases" : ""}`;
+  const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
+  return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
+}
+
 // src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { dirname as dirname3, join as join6 } from "path";
 var WORK_SCHEMA_VERSION = 4;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
@@ -22906,7 +23082,7 @@ function repairTaskLayers(sqlite, file) {
   let backed = false;
   const move = (row, parent, above) => {
     if (!backed) {
-      if (!existsSync5(`${file}.v4.bak`)) {
+      if (!existsSync6(`${file}.v4.bak`)) {
         try {
           writeFileSync2(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
@@ -22973,7 +23149,7 @@ function repairTaskLayers(sqlite, file) {
 }
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync5(file);
+  const fresh = !existsSync6(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
@@ -23144,12 +23320,12 @@ function indent(text) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
+import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
 import { uptime } from "os";
 import { join as join7 } from "path";
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync4 } from "fs";
+import { readFileSync as readFileSync5 } from "fs";
 var MAX_DEPTH = 128;
 function parentPidFromStat(stat) {
   const end = stat.lastIndexOf(")");
@@ -23181,7 +23357,7 @@ function ancestorPids(pid, readStat) {
 }
 function readProcStat(pid) {
   try {
-    return readFileSync4(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
@@ -23230,7 +23406,7 @@ function isRunning(pid) {
 }
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join7(claudeConfigDir, "sessions");
-  if (!existsSync6(dir))
+  if (!existsSync7(dir))
     return [];
   const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
@@ -23242,7 +23418,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
     try {
       if (statSync3(join7(dir, file)).mtimeMs < bootedAt)
         continue;
-      text = readFileSync5(join7(dir, file), "utf8");
+      text = readFileSync6(join7(dir, file), "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         continue;
@@ -23263,7 +23439,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync6, readlinkSync as readlinkSync2 } from "fs";
+import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
@@ -23514,8 +23690,10 @@ function placeValid(db, project, moving, parent, kind) {
     throw new Error("parent belongs to another project");
   if (moving && descendants(db, moving.id).some((t) => t.id === parent))
     throw new Error("parent would make a cycle");
-  if (kind === "task" && target.kind !== "phase")
-    throw new Error("a task belongs under a phase or at the top; a task holds no tasks");
+  if (kind === "task" && target.kind === "plan" && moving !== null)
+    throw new Error(`a task waits under a plan only where it is made: create it with parent set to the plan (${TASK_TOOL.create}); an existing task moves under a phase`);
+  if (kind === "task" && target.kind !== "phase" && target.kind !== "plan")
+    throw new Error("a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks");
   if (kind === "phase" && target.kind !== "plan")
     throw new Error("a phase belongs under its plan");
   if (kind === "plan")
@@ -23612,6 +23790,8 @@ function applyUpdate(db, id, change, who, now) {
     plan = taskById(db, parent).plan;
     if (plan !== null)
       openPlanValid(allTasks(db, task.project), plan);
+    if (task.parentId !== null && taskById(db, task.parentId).kind === "plan" && plan !== task.plan)
+      throw new Error(`${label(task)} waits in plan "${task.plan ?? ""}": move it under a phase of that plan`);
   }
   if (change.waitsFor)
     dependencies(db, task, change.waitsFor);
@@ -23661,6 +23841,17 @@ function deleteTask(db, id, who, now) {
 function planTask(db, input, who, now) {
   return allTasks(db, input.project).find((t) => t.kind === "plan" && t.plan === input.plan) ?? insertTask(db, { ...input, kind: "plan" }, who, now);
 }
+var CAP_ORIGIN = {
+  project: "this project's workflow settings",
+  personal: "your own workflow settings",
+  default: "the built-in default"
+};
+function refuseOverCap(tasks, plan, cap) {
+  const count = livePhaseCount(tasks, plan);
+  if (count < cap.max)
+    return;
+  throw new Error(`Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), or queue it as a task under the next plan (${TASK_TOOL.create} with parent set to that plan's #n; make the plan first with ${TASK_TOOL.create}, plan and a subject). Only the person raises the cap: ask them to run \`${COMMAND} workflow set plans.maxPhases <n>\` in their own terminal (add --project to set it for this project).`);
+}
 function layPhase(db, input, who, now) {
   const tasks = allTasks(db, input.project);
   if (tasks.some((task) => task.plan === input.plan))
@@ -23668,6 +23859,8 @@ function layPhase(db, input, who, now) {
   const there = tasks.find((t) => t.kind === "phase" && t.plan === input.plan && t.phase === input.phase);
   if (there)
     return { task: there, made: false };
+  if (input.cap !== undefined)
+    refuseOverCap(tasks, input.plan, input.cap);
   const parent = planTask(db, { project: input.project, plan: input.plan, subject: input.plan }, who, now);
   const task = insertTask(db, {
     project: input.project,
@@ -23782,7 +23975,8 @@ function page(text, offset) {
 }
 function createTaskOps(options = {}) {
   const env = options.env ?? process.env;
-  const stateDir = options.stateDir ?? cliPaths(env).stateDir;
+  const paths = cliPaths(env);
+  const stateDir = options.stateDir ?? paths.stateDir;
   let db;
   const database = () => {
     if (db?.writeRefusal !== undefined) {
@@ -23806,7 +24000,15 @@ function createTaskOps(options = {}) {
       const all = allTasks(store, ctx.project);
       const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
-      const writePlan = ownPlan !== null && planIsOpen(all, ownPlan) ? ownPlan : null;
+      const active = activePlanOf(all, owns);
+      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
+      const phaseCap = () => {
+        if (!ctx.projectConfig.ok)
+          throw new Error(ctx.projectConfig.why);
+        const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
+        return { max: value, source };
+      };
+      const refuseOther = (plan, doing) => refuseOtherPlan({ all, active, plan, owns, doing });
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -23872,7 +24074,7 @@ function createTaskOps(options = {}) {
           if (input.status !== undefined)
             throw new Error("A plan or a phase starts pending: leave out status");
           if (input.phase === undefined && (Object.keys(bindings2(input)).length || blockedBy.length || input.type !== undefined || input.description !== undefined))
-            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase");
+            throw new Error("A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase");
           const slug = input.plan ?? writePlan;
           if (slug === null)
             throw new Error("A phase belongs to a plan: give plan (its slug)");
@@ -23887,11 +24089,15 @@ function createTaskOps(options = {}) {
           const phaseId = input.phase;
           if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
+          const there = all.some((t) => t.kind === "phase" && t.plan === slug && t.phase === phaseId);
+          if (!there)
+            refuseOther(slug, "lay a phase");
           const laid = value(writeWork(store, () => layPhase(store, {
             project: ctx.project,
             plan: slug,
             phase: phaseId,
             subject: input.subject,
+            ...there ? {} : { cap: phaseCap() },
             ...input.description === undefined ? {} : { description: input.description },
             ...bindings2(input),
             ...input.type === undefined ? {} : { type: input.type },
@@ -23912,6 +24118,9 @@ function createTaskOps(options = {}) {
         const parent = input.parent ? work(input.parent) : undefined;
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
+        const taskPlan = input.plan ?? parent?.plan ?? writePlan;
+        if (input.status === "in_progress" && taskPlan !== null)
+          refuseOther(taskPlan, "start work");
         const task = value(writeWork(store, () => insertTask(store, {
           project: ctx.project,
           subject: input.subject,
@@ -23920,7 +24129,7 @@ function createTaskOps(options = {}) {
           ...input.status === undefined ? {} : { status: input.status },
           ...input.type === undefined ? {} : { type: input.type },
           parentId: parent?.id ?? null,
-          plan: input.plan ?? parent?.plan ?? writePlan,
+          plan: taskPlan,
           blockedBy
         }, who, now)));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -23949,6 +24158,20 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 updated` };
         }
         const task = work(input.task);
+        if (task.kind === "phase" && task.status === "dropped" && (input.status === "pending" || input.status === "in_progress") && task.plan !== null) {
+          refuseOther(task.plan, "reopen a phase");
+          const cap = phaseCap();
+          refuseOverCap(all, task.plan, cap);
+        }
+        if (input.status === "in_progress" && task.status !== "in_progress") {
+          refuseEmptyPhase(all, task);
+          if (task.plan !== null)
+            refuseOther(task.plan, "start work");
+        }
+        if (input.parent !== undefined)
+          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
+        if (input.status === "done" || input.status === "dropped")
+          refuseBareClose(all, task, input.status, {});
         const updated = value(updateTask(store, task.id, {
           ...input.subject === undefined ? {} : { subject: input.subject },
           ...input.description === undefined ? {} : { description: input.description },
@@ -23983,6 +24206,7 @@ function createTaskOps(options = {}) {
           return { ok: true, text: `${task.id} "${task.title}" \xB7 ${input.outcome}` };
         }
         const task = work(input.task);
+        refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
         const changed = value(writeWork(store, () => {
           for (const text of [input.note, input.evidence])
             if (text)
@@ -24003,7 +24227,7 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = input.task.startsWith("T-") ? (() => {
           const file = project(input.task).file;
-          const body = readFileSync7(file, "utf8");
+          const body = readFileSync8(file, "utf8");
           if (!ctx.checkoutRoot)
             return body;
           const head = runGit(ctx.checkoutRoot, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
@@ -24081,6 +24305,7 @@ ${historyText(gone, { full: input.history })}`;
       }
       let selected;
       let projects = [];
+      let planLedger = false;
       if (operation === "search") {
         const input = taskSchemas.search.parse(raw);
         selected = searchTasks(store, ctx.project, input.text).filter((t) => input.include_closed || isOpen(t));
@@ -24089,6 +24314,7 @@ ${historyText(gone, { full: input.history })}`;
 ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       } else {
         const input = taskSchemas.list.parse(raw);
+        planLedger = input.scope === "plan";
         const openOnly = input.scope !== "all" && input.scope !== "plan" && input.open_only;
         selected = all.filter((t) => !openOnly || isOpen(t));
         if (input.scope === "mine") {
@@ -24105,9 +24331,18 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
       const lines = [];
+      let cap = null;
+      let capWhy = null;
+      if (planLedger) {
+        try {
+          cap = phaseCap().max;
+        } catch (error) {
+          capWhy = `plans.maxPhases cannot be read: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       const visit = (task, depth) => {
         const count = subtreeProgress(all, task.id);
-        const progress = count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "";
+        const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
         const state = claimState(task, claimLive, who);
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
@@ -24117,6 +24352,8 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
       lines.push(...projects.map(projectLine));
+      if (capWhy !== null)
+        lines.push(capWhy);
       return { ok: true, text: capped(lines), data: { work: selected, project: projects } };
     } catch (error) {
       return {
@@ -24142,12 +24379,14 @@ The main session saves Ruling: notes and sets agent, branch, worktree and base o
 After compaction, task_list scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
+A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Build one plan at a time: a later ask waits as a task under its plan (parent = the plan's #n) until phases are laid.
+A step of a phase closes done with evidence, or dropped with a note that gives the reason.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
-  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase). A plan without parent creates the plan itself; to add a task to a named plan, give its phase as parent.",
-  update: "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
-  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first.",
+  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task, give its phase as parent, or the plan as parent to make it wait there for a phase. One active plan per session.",
+  update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process; a phase starts only with tasks. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
+  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",

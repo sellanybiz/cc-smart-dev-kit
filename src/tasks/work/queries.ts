@@ -134,6 +134,64 @@ export function planIsOpen(all: readonly WorkTask[], plan: string): boolean {
           task.plan === plan && task.kind === "task" && task.type === "blocking" && isOpen(task),
       );
 }
+/**
+ * How many phases a plan holds toward `plans.maxPhases`: every phase of it that is not dropped
+ * (a done one counts, a dropped one frees its slot). The one count the cap in `layPhase`,
+ * `task_list` and `doctor` all use.
+ */
+export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
+  return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
+}
+
+/**
+ * The plan a caller is building now: one of its own open plans (`owns` holds the plan's task)
+ * with at least one open phase. When two qualify (a take-over made the second), the one with a
+ * phase in progress, else the first by number. Another session's plan never counts. Null when
+ * the caller builds none.
+ */
+export function activePlanOf(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+): WorkTask | null {
+  const phasesOf = (plan: WorkTask) =>
+    all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
+  const candidates = all.filter(
+    (t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0,
+  );
+  return (
+    candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ??
+    candidates[0] ??
+    null
+  );
+}
+
+/**
+ * The plan a call that names none belongs to, for a caller's own plans. In order:
+ * 1. the active plan (`activePlanOf`: an open phase);
+ * 2. the plan being finished: an own open plan whose phases are all closed, at least one done
+ *    (its final review and fix pass), the newest such plan, so a plan queued later never takes
+ *    that work;
+ * 3. the newest own open plan, `fallback` (the plan of the caller's latest own task), as before.
+ * Only the first counts for the one-active-plan refusal.
+ */
+export function defaultPlanOf(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+  active: WorkTask | null,
+  fallback: string | null,
+): string | null {
+  if (active?.plan) return active.plan;
+  const finishing = all
+    .filter((t) => {
+      if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t)) return false;
+      const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
+      return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
+    })
+    .at(-1);
+  if (finishing?.plan) return finishing.plan;
+  return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
+}
+
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);

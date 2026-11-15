@@ -19,7 +19,7 @@ default:
 `cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
 it is; both read a key's value through one map, `resolvedValueOf`, so a new setting is one
 entry there (the type checker refuses a key without one). A group (`alerts`,
-`fixesAfterReview`) merges field by field like the rest. The one schema is reused by
+`fixesAfterReview`, `plans`) merges field by field like the rest. The one schema is reused by
 `src/project/config.ts` for the project's `workflow` object, so a field can never mean two
 things in the two files. A broken personal file throws `WorkflowConfigError`, which names the
 file and the field: the person must hear it. A field with a wrong kind can never be written
@@ -110,6 +110,7 @@ place (`auto-merge.ts`).
 | `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
 | `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
+| `plans.maxPhases` | the kit's task store (`docs/design/tasks.md`): the most phases one plan may hold, a whole number 1-50, default 10. Like every number setting it has one rule (`NUMBER_RULES` in `schema.ts`) that the file check and `workflow set` share, and a file that holds another value is refused with the field named. The project's file wins over the person's, and the cap is read from the checkout's working copy, not the committed file. The task tools hold a session to it, so `workflow set` and `unset` of it refuse inside Claude Code (`PLAN_KEYS` in `schema.ts`): only the person raises it, and the cap refusal says to ask them. `propose` stays open, since a person reviews its pull request. A project that sets it needs `requires` `>=4.8` (`WORKFLOW_PLANS_SINCE`). |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through

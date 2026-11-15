@@ -64,6 +64,7 @@ import type { WorkflowKey } from "./schema";
 import {
   INBOUND_KEYS,
   OUTBOUND_KEYS,
+  PLAN_KEYS,
   parseWorkflowValue,
   REVIEW_GATE_KEYS,
   showValue,
@@ -109,7 +110,8 @@ Code, set, unset and propose of those refuse: run them in your own terminal (pro
 pull request's review, are the gate).
 ${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
 ${INBOUND_KEYS.join(" and ")} decides which issues are ready: set and unset refuse these inside
-Claude Code too; propose does not, since a person reviews its pull request.
+Claude Code too; propose does not, since a person reviews its pull request. So does
+${PLAN_KEYS.join(" and ")}, the most phases a plan may hold: a session never lifts its own limit.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -327,6 +329,15 @@ function issueKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
 }
 
 /**
+ * The refusal of a plan key (`PLAN_KEYS`) in `set` and `unset` inside a Claude Code session: the
+ * task store holds the session to the cap, so the person raises it. The cap is read from the
+ * checkout's working copy, so the words do not name a committed file. `propose` stays open.
+ */
+function planKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
+  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`;
+}
+
+/**
  * `workflow review-done [--sha <commit>]`: one commit into the review record of this
  * repository. The command records; it never reviews anything itself.
  */
@@ -516,6 +527,10 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     insideClaudeCode(context.env)
   ) {
     context.error(issueKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+    return 1;
+  }
+  if (PLAN_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
+    context.error(planKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
   }
   let value: unknown;

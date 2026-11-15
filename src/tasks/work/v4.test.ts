@@ -160,17 +160,21 @@ test("forced, dead and session-only take-over preserve identity checks", () => {
 });
 test("named plan list shows all own plans and a slug narrows it", () => {
   const cwd = tempDir();
-  const ops = createTaskOps({ stateDir: tempDir(), caller: () => ({ ...who, cwd }) });
+  const ops = createTaskOps({
+    stateDir: tempDir(),
+    env: { ...process.env, HOME: tempDir() },
+    caller: () => ({ ...who, cwd }),
+  });
   try {
     expect(ops.call("create", { subject: "First", plan: "one" }).ok).toBe(true);
     expect(ops.call("create", { subject: "Second", plan: "two" }).ok).toBe(true);
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] First\n#2 [pending · plan] Second",
+      text: "#1 [pending · plan] First · Phases 0/10\n#2 [pending · plan] Second · Phases 0/10",
     });
     expect(ops.call("list", { scope: "plan", plan: "one" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] First",
+      text: "#1 [pending · plan] First · Phases 0/10",
     });
     expect(ops.call("take", { task: "one" })).toMatchObject({
       ok: true,

@@ -6066,7 +6066,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.7.0",
+  version: "4.8.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6128,6 +6128,7 @@ function parseUserJson(text) {
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
+var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
 function numberSchema(rule) {
   const whole = number2().int().min(rule.min);
   return rule.max === undefined ? whole : whole.max(rule.max);
@@ -6136,7 +6137,8 @@ var NUMBER_RULES = {
   "alerts.usagePercent": PERCENT,
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO
+  "fixesAfterReview.percent": AT_LEAST_ZERO,
+  "plans.maxPhases": PHASE_COUNT
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -6174,6 +6176,9 @@ var workflowSchema = strictObject({
     percent: numberField("fixesAfterReview.percent")
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
+  plans: strictObject({
+    maxPhases: numberField("plans.maxPhases")
+  }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
     allowPublic: boolean2().optional(),
@@ -6225,6 +6230,9 @@ var workflowDefaults = {
   },
   alerts: {
     usagePercent: 85
+  },
+  plans: {
+    maxPhases: 10
   }
 };
 var SWITCH_NAMES = [
@@ -6252,7 +6260,8 @@ var POLICY_KEYS = [
   "issues.foundLabel",
   "issues.fixedLabel",
   "issues.readyLabel",
-  "alerts.usagePercent"
+  "alerts.usagePercent",
+  "plans.maxPhases"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];

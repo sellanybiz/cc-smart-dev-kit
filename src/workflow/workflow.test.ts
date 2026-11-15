@@ -71,6 +71,15 @@ describe("the workflow schema", () => {
     expect(workflowSchema.safeParse({ alerts: { usagePercent: 80 } }).success).toBe(true);
   });
 
+  test("plans.maxPhases is a whole number 1-50", () => {
+    const parse = (maxPhases: unknown) =>
+      workflowSchema.safeParse({ plans: { maxPhases } }).success;
+    for (const ok of [1, 10, 50]) expect(parse(ok)).toBe(true);
+    for (const bad of [0, 51, -3, 1.5, "10", null]) expect(parse(bad)).toBe(false);
+    expect(workflowSchema.safeParse({ plans: { phases: 10 } }).success).toBe(false);
+    expect(workflowSchema.parse({ plans: {} })).toEqual({ plans: {} });
+  });
+
   test("retired notification keys are ignored", () => {
     expect(workflowSchema.parse({ alerts: { events: ["finished"], sound: true } })).toEqual({
       alerts: {},
@@ -121,6 +130,18 @@ describe("one value, as a person types it", () => {
     });
   });
 
+  test("the most phases of a plan is a whole number 1-50", () => {
+    expect(parseWorkflowValue("plans.maxPhases", "12")).toEqual({ ok: true, value: 12 });
+    expect(parseWorkflowValue("plans.maxPhases", "1")).toEqual({ ok: true, value: 1 });
+    expect(parseWorkflowValue("plans.maxPhases", "50")).toEqual({ ok: true, value: 50 });
+    for (const bad of ["0", "51", "1.5", "-2", "lots", ""]) {
+      expect(parseWorkflowValue("plans.maxPhases", bad)).toEqual({
+        ok: false,
+        why: "plans.maxPhases is a whole number 1-50",
+      });
+    }
+  });
+
   test("D17: the limits after a review are whole numbers, 0 or more", () => {
     expect(parseWorkflowValue("fixesAfterReview.lines", "0")).toEqual({ ok: true, value: 0 });
     expect(parseWorkflowValue("fixesAfterReview.percent", "150")).toEqual({ ok: true, value: 150 });
@@ -155,6 +176,7 @@ describe("setting one field of an object", () => {
     expect(workflowValue({ autoMerge: true }, "autoMerge")).toBe(true);
     expect(workflowValue({ alerts: { usagePercent: 70 } }, "alerts.usagePercent")).toBe(70);
     expect(workflowValue({}, "alerts.usagePercent")).toBeUndefined();
+    expect(workflowValue({ plans: { maxPhases: 12 } }, "plans.maxPhases")).toBe(12);
   });
 });
 
@@ -241,6 +263,40 @@ describe("resolveWorkflow: the order", () => {
     expect(parse({ foundLabel: "" })).toBe(false);
     expect(parse({ foundLabel: "x".repeat(51) })).toBe(false);
     expect(parse({ everything: true })).toBe(false);
+  });
+
+  test("plans.maxPhases is 10 by default, the person's own wins over that, the project's over both", () => {
+    const env = hookEnv();
+    expect(resolveWorkflow(pathsFor(env), null).plans.maxPhases).toEqual({
+      value: 10,
+      source: "default",
+    });
+    writePersonal(env, { plans: { maxPhases: 15 } });
+    expect(resolveWorkflow(pathsFor(env), null).plans.maxPhases).toEqual({
+      value: 15,
+      source: "personal",
+    });
+    const config = ccSmartDevKitConfigSchema.parse({ workflow: { plans: { maxPhases: 4 } } });
+    expect(resolveWorkflow(pathsFor(env), config).plans.maxPhases).toEqual({
+      value: 4,
+      source: "project",
+    });
+    // A project that sets `plans` without the field leaves the person's value standing.
+    const empty = ccSmartDevKitConfigSchema.parse({ workflow: { plans: {} } });
+    expect(resolveWorkflow(pathsFor(env), empty).plans.maxPhases).toEqual({
+      value: 15,
+      source: "personal",
+    });
+  });
+
+  test("a plans.maxPhases outside 1-50 in a file is refused, naming the field", () => {
+    const env = hookEnv();
+    const file = writePersonal(env, { plans: { maxPhases: 51 } });
+    expect(() => resolveWorkflow(pathsFor(env), null)).toThrow(`Invalid ${file}: plans.maxPhases:`);
+    const project = ccSmartDevKitConfigSchema.safeParse({ workflow: { plans: { maxPhases: 0 } } });
+    expect(project.success ? "" : JSON.stringify(project.error.issues[0]?.path)).toBe(
+      JSON.stringify(["workflow", "plans", "maxPhases"]),
+    );
   });
 
   test("the person's file sets a value, and says so", () => {

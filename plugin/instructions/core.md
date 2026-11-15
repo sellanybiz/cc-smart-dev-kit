@@ -12,7 +12,7 @@ instructions, the project's text wins.**
   debugging, the person's questions and shared integration work stay with you. A "session" is
   `/cc-smart-dev-kit:herdr`, never a subagent.
 - **An approved plan runs through `/cc-smart-dev-kit:build`:** you orchestrate, a fresh subagent
-  builds each phase, and the kit's tasks are the ledger.
+  builds each phase (one area of code), and the kit's tasks are the ledger.
 - **Parallel by default.** Unblocked agents start together, disjoint phases in separate
   worktrees; phases that share files are ordered. Wait only for what the next step needs.
 - **Speed comes from parallel work, never from a skipped check or test.**
@@ -78,11 +78,11 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 ## Review
 
 - **Review belongs to the main session**, not its builders. An approved plan follows
-  `/cc-smart-dev-kit:build`: a task review per phase, then a final whole-branch review. Other
+  `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
-  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary task
-  reviews get `sonnet` at `high` (`medium` when small and low-risk). Your own pass:
+  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary phase
+  reviews get `sonnet` at `high`, never lower. Your own pass:
   `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,
   the real code path (`file:line`), the real outcome and the missing guard, checked in the code.

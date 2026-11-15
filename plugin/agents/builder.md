@@ -57,8 +57,9 @@ you started from.
    dispatching a helper. Use existing code before adding a second implementation.
    Shape new and changed code by the loaded code-structure skill. In a React or Next.js web
    app, load `cc-smart-dev-kit:performance-budget` before the first edit and follow it.
-2. Keep the phase's steps current in kit tasks. Create missing steps under its task.
-   Routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
+2. Work the phase's tasks in order and close each with its check as you go. Create a
+   missing step as a task under the phase, never a new phase. Routing and the CLI fallback:
+   `cc-smart-dev-kit:memory-routing`.
 3. For a behavior change, write the failing test first where this kind of code has tests.
    Implement the whole brief, not a first slice. Do not invent a test framework for prose.
 4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of
@@ -66,8 +67,9 @@ you started from.
    expected result.
 5. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
-6. Commit only when allowed. Finish or drop your blocking steps with evidence before
-   returning; the hand-back guard names any left open. Save the report. Leave the phase
+6. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
+   with evidence (what you ran or checked and its result), `dropped` with the reason, never a
+   step closed unbuilt; the hand-back guard names any left open. Save the report. Leave the phase
    itself open for your caller's review and integration. Nothing you started still runs.
 
 ## Report and return

@@ -91,6 +91,10 @@ export interface ResolvedWorkflow {
   alerts: {
     usagePercent: ResolvedValue<number>;
   };
+  /** How the kit's plans are shaped: the most phases one plan may hold. */
+  plans: {
+    maxPhases: ResolvedValue<number>;
+  };
   switches: {
     statusLine: ResolvedValue<boolean>;
     sessionNames: ResolvedValue<boolean>;
@@ -160,6 +164,8 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined) merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined) merged.plans = plans;
   return merged;
 }
 
@@ -189,6 +195,30 @@ export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkf
       alerts.usagePercent ?? workflowDefaults.alerts.usagePercent,
     ),
   };
+}
+
+/** The plan settings of two workflow objects: the project's over the person's, over the default. */
+function plansFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["plans"] {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases"),
+    },
+  };
+}
+
+/**
+ * The **plan settings** on their own, resolved: what the task store reads when a phase is laid
+ * (`src/tasks/ops.ts`). The same resolution as `resolveWorkflow`, without the switches (which
+ * read the status line and the update hold). Throws `WorkflowConfigError` for a broken personal
+ * file, naming it and the field.
+ */
+export function resolvePlans(
+  paths: CliPaths,
+  projectConfig: CcSmartDevKitConfig | null,
+): ResolvedWorkflow["plans"] {
+  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
 }
 
 /**
@@ -394,6 +424,7 @@ const RESOLVED: {
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "plans.maxPhases": (r) => r.plans.maxPhases,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
@@ -465,6 +496,7 @@ export function resolveWorkflow(
     },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
+    plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

@@ -82,6 +82,7 @@ describe("workflow show", () => {
       "issues.fixedLabel = fixed-unreleased (default)",
       "issues.readyLabel = kit:ready (default)",
       "alerts.usagePercent = 85 (default)",
+      "plans.maxPhases = 10 (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -115,6 +116,27 @@ describe("workflow show", () => {
     expect(run.lines).not.toContain(
       "no project settings here: this folder is not in a git project",
     );
+  });
+
+  test("plans.maxPhases shows with its source: personal, then the project's over it", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    mkdirSync(dirname(personalWorkflowFile(cliPaths(env))), { recursive: true });
+    writeFileSync(
+      personalWorkflowFile(cliPaths(env)),
+      `${JSON.stringify({ plans: { maxPhases: 15 } }, null, 2)}\n`,
+    );
+    const own = context(repo, env);
+    expect(await runWorkflow(["show"], own.context)).toBe(0);
+    expect(own.lines).toContain("plans.maxPhases = 15 (personal)");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { maxPhases: 6 } },
+    });
+    const both = context(repo, env);
+    expect(await runWorkflow(["show"], both.context)).toBe(0);
+    expect(both.lines).toContain("plans.maxPhases = 6 (project)");
   });
 
   test("D16: settings that cannot work together are shown, each once, with its fix", async () => {
@@ -189,6 +211,52 @@ describe("workflow set and unset", () => {
     expect(run.lines).toEqual([
       "~ ~/.config/cc-smart-dev-kit/workflow.json: alerts.usagePercent = 70",
     ]);
+  });
+
+  test("plans.maxPhases: set writes the number, unset brings the default back", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "plans.maxPhases", "12"], run.context)).toBe(0);
+    expect(run.lines).toEqual(["+ ~/.config/cc-smart-dev-kit/workflow.json: plans.maxPhases = 12"]);
+    expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
+      `${JSON.stringify({ plans: { maxPhases: 12 } }, null, 2)}\n`,
+    );
+    const shown = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], shown.context);
+    expect(shown.lines).toContain("plans.maxPhases = 12 (personal)");
+    const off = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["unset", "plans.maxPhases"], off.context)).toBe(0);
+    const back = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], back.context);
+    expect(back.lines).toContain("plans.maxPhases = 10 (default)");
+  });
+
+  test("plans.maxPhases: a value outside 1-50, a fraction or a word is refused, nothing written", async () => {
+    const env = hookEnv();
+    for (const bad of ["0", "51", "1.5", "lots"]) {
+      const run = context(tempDir("not-git"), env);
+      expect(await runWorkflow(["set", "plans.maxPhases", bad], run.context)).toBe(2);
+      expect(run.lines).toEqual([]);
+      expect(run.errors).toHaveLength(1);
+      expect(run.errors[0]).toStartWith("plans.maxPhases is a whole number 1-50\n");
+    }
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+  });
+
+  test("plans.maxPhases: --project writes the project's file and raises requires to 4.8", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "plans.maxPhases", "7", "--project"], run.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      ...SETTINGS,
+      requires: ">=4.8",
+      workflow: { plans: { maxPhases: 7 } },
+    });
+    const bad = context(repo, env);
+    expect(await runWorkflow(["set", "plans.maxPhases", "51", "--project"], bad.context)).toBe(2);
+    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual({ plans: { maxPhases: 7 } });
   });
 
   test("the same value again writes nothing", async () => {
@@ -836,6 +904,38 @@ describe("the review gate (CM-1)", () => {
   );
 
   test.each([
+    ["set", "plans.maxPhases", ["50"]],
+    ["unset", "plans.maxPhases", []],
+  ] as const)(
+    "workflow %s %s refuses inside Claude Code, in both files: a session does not lift its own phase cap",
+    async (sub, key, value) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([
+          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`,
+        ]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
+  test("workflow set plans.maxPhases still works in the person's own terminal", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const run = context(repo, env);
+    expect(await runWorkflow(["set", "plans.maxPhases", "12"], run.context)).toBe(0);
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(true);
+  });
+
+  test.each([
     [
       "set",
       "issues.readyLabel",
@@ -906,7 +1006,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);

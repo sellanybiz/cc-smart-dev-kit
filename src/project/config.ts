@@ -111,6 +111,12 @@ export const CHECKS_SINCE = "1.1.0";
 export const WORKFLOW_ISSUES_SINCE = "1.4.0";
 
 /**
+ * The release that brought `workflow.plans` (the most phases one plan may hold). A project file
+ * that sets it needs that plugin version or newer, for the same reason as `WORKFLOW_FIXES_SINCE`.
+ */
+export const WORKFLOW_PLANS_SINCE = "4.8.0";
+
+/**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as

@@ -13,14 +13,15 @@ The main session saves Ruling: notes and sets agent, branch, worktree and base o
 After compaction, task_list scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan › phase › task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
+A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Build one plan at a time: a later ask waits as a task under its plan (parent = the plan's #n) until phases are laid.
+A step of a phase closes done with evidence, or dropped with a note that gives the reason.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create:
-    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase). A plan without parent creates the plan itself; to add a task to a named plan, give its phase as parent.",
-  update:
-    "Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process.",
-  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first.",
+    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task, give its phase as parent, or the plan as parent to make it wait there for a phase. One active plan per session.",
+  update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process; a phase starts only with tasks. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
+  done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note.",
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project.",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",

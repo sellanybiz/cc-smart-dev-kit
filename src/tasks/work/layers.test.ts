@@ -5,6 +5,7 @@
  */
 import { expect, test } from "bun:test";
 import { legacyCreateTask } from "../../testing/claude-mem-db";
+import { hookEnv } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
@@ -65,7 +66,8 @@ test("tasks cannot hold new tasks, and plans and phases stay put", () => {
   ).task;
   const task = add(db, "Task");
   const sub = add(db, "Sub", { parentId: task.id });
-  const refusal = "a task belongs under a phase or at the top; a task holds no tasks";
+  const refusal =
+    "a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks";
   expect(createTask(db, { project: "p", subject: "Too deep", parentId: sub.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
@@ -76,9 +78,10 @@ test("tasks cannot hold new tasks, and plans and phases stay put", () => {
     why: refusal,
   });
   ok(updateTask(db, task.id, { parentId: phase.id }, who, 3));
+  // A task waits under a plan only where it is made; an existing one never moves up to it.
   expect(updateTask(db, task.id, { parentId: plan.id }, who, 3)).toEqual({
     ok: false,
-    why: refusal,
+    why: "a task waits under a plan only where it is made: create it with parent set to the plan (task_create); an existing task moves under a phase",
   });
   expect(updateTask(db, phase.id, { parentId: task.id }, who, 4)).toEqual({
     ok: false,
@@ -110,7 +113,7 @@ test("a task an older kit nested past three layers still changes and closes wher
   // A move is held to the layers: under a task is refused.
   expect(updateTask(db, add(db, "Loose").id, { parentId: deep.id }, who, 6)).toEqual({
     ok: false,
-    why: "a task belongs under a phase or at the top; a task holds no tasks",
+    why: "a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks",
   });
   db.close();
 });
@@ -409,6 +412,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
   const cwd = tempDir();
   const stateDir = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: "lead", pid: 1, procStart: "2", cwd }),
@@ -470,7 +474,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
     for (const extra of [{ blocked_by: ["#2"] }, { type: "non-blocking" }, { description: "x" }])
       expect(ops.call("create", { subject: "Other plan", plan: "other", ...extra })).toEqual({
         ok: false,
-        why: "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase as parent; give phase to lay out a phase",
+        why: "A plan without parent creates the plan itself and takes a subject only: to add a task to this plan, name its phase, or the plan's #n, as parent; give phase to lay out a phase",
       });
     expect(ops.call("create", { subject: "Step", parent: "#2" })).toEqual({
       ok: true,

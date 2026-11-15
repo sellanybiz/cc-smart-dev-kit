@@ -125,6 +125,57 @@ test("task command creates, lists, completes and checks as a process", async () 
   expect(await run("done", "#9")).toEqual({ code: 1, text: "", error: "Task not found: #9\n" });
 });
 
+test("task command holds the plan shape: a phase starts with tasks, a step closes with proof, a plan holds a waiting task", async () => {
+  const home = tempDir();
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  git(cwd, "commit", "--allow-empty", "-m", "initial");
+  const guard = subprocessGuard();
+  const env = {
+    ...cleanGitEnv(),
+    ...guard.env,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    PATH: `${dirname(process.execPath)}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
+  };
+  async function run(...args: string[]) {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
+      cwd,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      code: await process.exited,
+      text: await new Response(process.stdout).text(),
+      error: await new Response(process.stderr).text(),
+    };
+  }
+  expect((await run("add", "The plan", "--plan", "p")).code).toBe(0);
+  expect((await run("add", "An area", "--plan", "p", "--phase", "A")).code).toBe(0);
+  // A phase with no task does not start; the refusal names the call that adds one.
+  expect(await run("start", "#2")).toEqual({
+    code: 1,
+    text: "",
+    error:
+      '#2 "An area" has no tasks: add its steps first, each with its done-check (task_create with parent "#2"), then start it\n',
+  });
+  expect((await run("add", "A step", "--parent", "#2")).code).toBe(0);
+  expect((await run("start", "#2")).code).toBe(0);
+  // A step closes with its proof: evidence to finish, a note to drop.
+  expect((await run("done", "#3")).error).toContain("a step closes done with evidence");
+  expect((await run("drop", "#3")).error).toContain("a step is dropped with a note");
+  expect((await run("done", "#3", "--evidence", "ran the check: ok")).code).toBe(0);
+  // A plan holds a task that waits there for a phase.
+  expect(await run("add", "A later ask", "--parent", "#1")).toEqual({
+    code: 0,
+    text: '#4 "A later ask" under #1\n',
+    error: "",
+  });
+  expect((await run("done", "#2")).code).toBe(0);
+  expect((await run("done", "#1")).error).toBe("open tasks: #4 A later ask\n");
+});
+
 test("task import notes ends with what it did, and a dry run says nothing was changed", async () => {
   const home = tempDir();
   const cwd = tempDir();
