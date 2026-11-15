@@ -26,6 +26,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **One plan is one pull request.** Phase branches stay local and merge into the plan branch.
   The plan branch is pushed after each merged phase (when `autoPush` is on, or after one yes
   for the whole plan), and the one pull request opens after the final review.
+- **One naming shape** (plan-task § 4): a phase id names its area in one word (`auth`), a
+  phase subject is `<Area>: <what it delivers>`, and a task subject is
+  `<phase id>-<n>: <verb> <what> — <check>`.
 - **Downgrade note:** an older version refuses a `.claude/cc-smart-dev-kit.json` that sets
   `workflow.plans`. Unset it before going back (`workflow set` already raises `requires` to
   `>=4.8`).
