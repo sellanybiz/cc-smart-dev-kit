@@ -43,7 +43,7 @@ export const taskSchemas = {
       parent: ref
         .optional()
         .describe(
-          "The task (#n) it goes under. Layers: plan › phase › task; a task holds nothing.",
+          "The task (#n) it goes under: a phase, or its plan (the task then waits there for a phase). Layers: plan › phase › task; a task holds nothing.",
         ),
       status: z.enum(["pending", "in_progress"]).optional(),
       type: type.optional(),
@@ -55,7 +55,7 @@ export const taskSchemas = {
         .min(1)
         .optional()
         .describe(
-          "The plan's slug; defaults to the caller's latest own plan only while open, never an older plan. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase as parent.",
+          "The plan's slug; defaults to the caller's active plan (an own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent.",
         ),
       ...projectFields,
     })

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
-import { cleanGitEnv, git, tempDir } from "../../testing/temp";
+import { hookEnv } from "../../testing/hooks";
+import { git, tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { scanProjectTasks } from "../project/files";
 import { openWorkDb, workDbFile } from "./db";
@@ -168,6 +169,7 @@ test("a change that changes nothing adds no entry", () => {
 test("task_get prints a work task's history with the caller's session name", () => {
   const cwd = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir: tempDir(),
     cwd: () => cwd,
     caller: () => ({
@@ -217,9 +219,14 @@ test("task_get prints a work task's history with the caller's session name", () 
 
 test("a project task's history is its file's git log, across its move into the archive", () => {
   const cwd = tempDir();
-  const env = cleanGitEnv();
+  const env = hookEnv();
   git(cwd, "init", "-b", "main");
-  const ops = createTaskOps({ stateDir: tempDir(), cwd: () => cwd, caller: () => null, env });
+  const ops = createTaskOps({
+    stateDir: tempDir(),
+    cwd: () => cwd,
+    caller: () => null,
+    env,
+  });
   try {
     expect(ops.call("create", { subject: "Migrate the table", kind: "database" }).ok).toBe(true);
     const task = scanProjectTasks(join(cwd, ".claude/tasks"), { archive: false }).tasks[0];

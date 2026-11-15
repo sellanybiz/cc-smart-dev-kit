@@ -1,7 +1,8 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { hookEnv } from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps } from "./ops";
 import { scanProjectTasks } from "./project/files";
@@ -24,6 +25,7 @@ for (const status of ["done", "dropped"] as const) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -59,6 +61,7 @@ for (const blocking of [true, false]) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -95,6 +98,7 @@ for (const fromPlan of [false, true]) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -126,6 +130,9 @@ for (const fromPlan of [false, true]) {
       expect(ops.call("update", { task: "#1", status: "pending" }).ok).toBe(true);
       expect(ops.call("update", { task: ref, parent: "#2" }).ok).toBe(true);
       expect(row()).toMatchObject({ plan: "closed" });
+      // An open step stays in its phase; closed with its proof, it moves to the top and keeps its plan.
+      expect(ops.call("update", { task: ref, parent: null }).ok).toBe(false);
+      expect(ops.call("done", { task: ref, evidence: "checked it: ok" }).ok).toBe(true);
       expect(ops.call("update", { task: ref, parent: null }).ok).toBe(true);
       expect(row()).toMatchObject({ plan: "closed", parent_id: null });
     } finally {
@@ -137,6 +144,7 @@ for (const fromPlan of [false, true]) {
 test("named phases and explicit parents refuse a closed plan", () => {
   const cwd = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir: tempDir(),
     cwd: () => cwd,
     caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -164,6 +172,7 @@ test("a close the store refuses keeps no note, so a retry saves each note once",
   const cwd = tempDir();
   const stateDir = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: "s", pid: process.pid, procStart: null, cwd }),
@@ -211,6 +220,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
   let session = "first";
   // A process start time, as on Linux: it names the process, so `/clear` keeps its claims.
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: session, pid: process.pid, procStart: "4242", cwd }),
@@ -267,7 +277,7 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
     stateDir: tempDir(),
     cwd: () => cwd,
     caller: () => null,
-    env: cleanGitEnv(),
+    env: hookEnv(),
   });
   const dir = join(cwd, ".claude/tasks");
   try {
@@ -319,7 +329,8 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
 test("subagent phase bindings survive updates and appear in the plan ledger", () => {
   const cwd = tempDir();
   const state = tempDir();
-  const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null });
+  const env = hookEnv();
+  const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null, env });
   try {
     expect(
       ops.call("create", {
@@ -333,7 +344,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
       }).ok,
     ).toBe(true);
     expect(ops.call("create", { subject: "Test", parent: "#2" }).ok).toBe(true);
-    expect(ops.call("done", { task: "#3" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#3", evidence: "ran it: passes" }).ok).toBe(true);
     expect(
       ops.call("update", {
         task: "#2",
@@ -349,7 +360,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] upgrade · 0/1\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      text: "#1 [pending · plan] upgrade · 0/1 · Phases 1/10\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
     });
     expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -358,11 +369,12 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
       stateDir: state,
       cwd: () => cwd,
       caller: () => ({ sessionId: "after-clear", pid: null, procStart: null, cwd }),
+      env,
     });
     try {
       expect(resumed.call("list", { scope: "plan" })).toMatchObject({
         ok: true,
-        text: "#1 [done · plan] upgrade · 1/1\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
+        text: "#1 [done · plan] upgrade · 1/1 · Phases 1/10\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
       });
     } finally {
       resumed.close();
@@ -374,7 +386,12 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
 
 test("work tasks share create, list and close operations", () => {
   const cwd = tempDir();
-  const ops = createTaskOps({ stateDir: tempDir(), caller: () => null, cwd: () => cwd });
+  const ops = createTaskOps({
+    stateDir: tempDir(),
+    caller: () => null,
+    cwd: () => cwd,
+    env: hookEnv(),
+  });
   try {
     expect(ops.call("create", { subject: "Check the change" })).toEqual({
       ok: true,
@@ -396,8 +413,9 @@ test("another session's plan is never stamped on a session's own task; the plan 
   const stateDir = tempDir();
   const x = { sessionId: "session-x", pid: 4101, procStart: "41010", cwd };
   const y = { sessionId: "session-y", pid: 5202, procStart: "52020", cwd };
-  const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x });
-  const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y });
+  const env = hookEnv();
+  const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x, env });
+  const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y, env });
   const planOf = (number: number) => {
     const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
     try {
@@ -411,12 +429,13 @@ test("another session's plan is never stamped on a session's own task; the plan 
   try {
     expect(opsX.call("create", { subject: "Auth", plan: "auth" }).ok).toBe(true);
     expect(opsX.call("create", { subject: "Guard", plan: "auth", phase: "G1" }).ok).toBe(true);
+    expect(opsX.call("create", { subject: "Step", parent: "#2" }).ok).toBe(true);
     expect(opsX.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
     expect(opsY.call("create", { subject: "Fix a typo", status: "in_progress" })).toEqual({
       ok: true,
-      text: '#3 "Fix a typo"',
+      text: '#4 "Fix a typo"',
     });
-    expect(planOf(3)).toBeNull();
+    expect(planOf(4)).toBeNull();
     expect(openPhasesOf({ stateDir }, folderProject(cwd), () => y)).toEqual({
       state: "ready",
       value: { inProgress: [], ready: [] },
@@ -428,15 +447,15 @@ test("another session's plan is never stamped on a session's own task; the plan 
     });
     // X's own work still takes its plan, and so does its phase with the plan left out.
     expect(opsX.call("create", { subject: "Own step", status: "in_progress" }).ok).toBe(true);
-    expect(planOf(4)).toBe("auth");
+    expect(planOf(5)).toBe("auth");
     expect(opsX.call("create", { subject: "Docs", phase: "G2" })).toEqual({
       ok: true,
-      text: '#5 "Docs" · phase G2 of plan auth',
+      text: '#6 "Docs" · phase G2 of plan auth',
     });
     // Reading the ledger may fall back to the project's newest plan.
     expect(opsY.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Auth · 0/2\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+      text: "#1 [pending · plan] Auth · 0/2 · Phases 2/10\n  #2 [in progress · phase G1] Guard · 0/1 · agent none · branch none\n  #6 [pending · phase G2] Docs · 0/0 · agent none · branch none",
     });
   } finally {
     opsX.close();
@@ -447,8 +466,14 @@ test("another session's plan is never stamped on a session's own task; the plan 
 test("a caller with no session id owns no task the terminal made", () => {
   const cwd = tempDir();
   const stateDir = tempDir();
-  const terminal = createTaskOps({ stateDir, cwd: () => cwd, caller: () => null });
+  const terminal = createTaskOps({
+    stateDir,
+    cwd: () => cwd,
+    caller: () => null,
+    env: hookEnv(),
+  });
   const nameless = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: null, pid: 7301, procStart: "73010", cwd }),

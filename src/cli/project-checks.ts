@@ -68,7 +68,10 @@ import { readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
 import { checkProjectTasks } from "../tasks/project/check";
 import { shippedIdsOn } from "../tasks/project/release";
+import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
+import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
+import { resolvePlans } from "../workflow/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import { workflowDefaults } from "../workflow/schema";
 import type { Check } from "./check";
@@ -629,7 +632,47 @@ export async function projectChecks(
   // GitHub Issues (D67): a line only while the switch is on, from the person's file or the base's.
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
+  lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
+}
+
+/**
+ * One `!` line for each open plan of this project that holds more phases than
+ * `plans.maxPhases` allows: such a plan runs on but takes no new phase (the store refuses one).
+ * A work store that is missing or cannot be read says nothing here: the work-store checks name it.
+ */
+export function planCapChecks(
+  cwd: string,
+  env: Env,
+  paths: CliPaths,
+  config: CcSmartDevKitConfig | null,
+): Check[] {
+  const context = taskContext(cwd, env);
+  // `projectTaskChecks` already says a folder whose project cannot be found.
+  if (!context.ok) return [];
+  let cap: ReturnType<typeof resolvePlans>["maxPhases"];
+  try {
+    cap = resolvePlans(paths, config).maxPhases;
+  } catch (error) {
+    return [{ ok: true, info: true, text: `project plans: not checked, ${message(error)}` }];
+  }
+  const read = readWorkStore(paths, (db) => allTasks(db, context.project));
+  if (read.state !== "ready") return [];
+  const tasks = read.value;
+  return tasks
+    .filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t))
+    .flatMap((plan) => {
+      const count = livePhaseCount(tasks, plan.plan ?? "");
+      if (count <= cap.value) return [];
+      return [
+        {
+          ok: true,
+          warn: true,
+          text: `project plans: plan "${plan.plan}" (#${plan.number}) holds ${count} phases, over the plans.maxPhases cap of ${cap.value} (${cap.source}): it is frozen and takes no new phase`,
+          fix: "finish it, or re-plan its remaining work as plans within the cap",
+        } satisfies Check,
+      ];
+    });
 }
 
 /**

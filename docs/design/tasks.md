@@ -63,15 +63,20 @@ The store enforces these rules, not the caller:
   transaction.
 - A task blocked by an open task can neither start nor be done.
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
+- A plan holds at most `plans.maxPhases` phases: `layPhase` refuses the one past the cap, in
+  the transaction that inserts it. The other plan-shape rules (a phase starts only once it
+  holds a task, one active plan, a step closes with proof) are enforced by the task tools
+  (`ops.ts`), not the store: § Layers, Plan shape.
 - Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
 
 ### Layers, types and blocked-by (D76)
 
 The hierarchy is **Session › Plan › Phase › Task**. Plans sit at the top. A phase sits under
-its plan. A task sits under a phase or at the top; a task never holds another task. A top-level
-task may still belong to a plan: the `plan` column decides membership, not the parent chain.
-A task without a plan is loose. `placeValid` enforces new placements. `layerOf` returns the kind,
+its plan. A task sits under a phase, directly under its plan while it waits for a phase, or at
+the top; a task never holds another task. A top-level task may still belong to a plan: the
+`plan` column decides membership, not the parent chain. A task without a plan is loose.
+`placeValid` enforces new placements. `layerOf` returns the kind,
 including for a stray nested task written by an older kit.
 
 Schema v4 lifts old tasks to tasks under the nearest phase, or to the top for loose work.
@@ -116,8 +121,9 @@ still change.
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
 under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
-out, writes use the plan of the caller's latest own task that has one (made or claimed by it)
-only while that plan is open. Never another session's plan or an older open plan. A plan is
+out, writes use the caller's active plan (below, Plan shape), else the plan of its latest own
+task that has one (made or claimed by it) only while that plan is open. Never another session's
+plan or an older open plan. A plan is
 open when its plan row is pending or in progress; without that row, it needs an open blocking
 task. A closed latest plan leaves new tasks loose; a phase still needs a named plan.
 The store checks under the write lock too, for a named plan or parent as well as the default,
@@ -129,9 +135,54 @@ task with no plan or parent. Reads keep the latest own plan even after it closes
 `task_list` also takes `plan` (CLI: `--plan`) to select a slug. When the session owns several
 plans, `scope: "plan"` without a slug lists them all with their counts.
 `plan` alone, with no `parent`, makes the plan task and takes a subject only. To add a task
-to a named plan, give its phase as `parent`; `plan` may also be given to check that membership.
+to a named plan, give its phase as `parent`, or the plan itself to make it wait there for a
+phase; `plan` may also be given to check that membership.
 Neither takes a `parent` or a `status`: a plan sits at the top and a phase under its plan, and
 each starts pending. The four ledger fields (above) go on with it, or later with `task_update`.
+
+**Plan shape** (`plan-guards.ts`, called by `ops.ts`, so the MCP tools and the `task` command
+refuse alike). These guard a plan's shape; they are not a security gate, and they read the
+checkout's working copy through the normal workflow resolver:
+
+- **The phase cap.** `layPhase` counts the plan's phases that are not dropped (`livePhaseCount`
+  in `queries.ts`: done ones count, dropped ones free their slot) and refuses a new phase id
+  once the count reaches the cap, in the same write transaction that inserts it, so two
+  sessions cannot both take the last slot. Laying an id that is there is only answered, at the
+  cap too. The cap is the workflow setting `plans.maxPhases` (default 10; project over person
+  over default), resolved by `ops.ts` through `resolvePlans` for the caller's checkout; a broken
+  workflow file fails the call and names the file and field. The refusal says the plan, its count,
+  the cap and where it came from, and the ways forward: a task under the phase that owns its
+  files, a next plan, or raising the setting.
+- **No empty phase starts.** Moving a phase to `in_progress` (`task_update`, `task start`) is
+  refused while it has no task that is not dropped; the refusal names `task_create` with `parent` set to the phase.
+- **One active plan.** A caller's active plan is an own open plan (`owns`: created or claimed by
+  the caller, judged on the plan's own task) with an open phase (`activePlanOf`; one with a phase
+  in progress first). While one exists, laying a phase in another plan, or starting a phase or
+  task of another own plan, is refused; the refusal names the active plan and says to queue the
+  work as a task under the other plan. Another session's plan never counts, and `task_take`
+  still works, so after a take the caller may hold two such plans. The active plan is then the
+  one with a phase in progress (a taken plan's phase that is running is the work the caller took
+  over), else the lower number; the refusal names it, and it is the plan the caller can lay
+  phases in and start work in. Laying or starting work in the other waits until the active plan
+  is finished or its open phases are dropped.
+- **The default plan.** A write that names no plan goes to the active plan; with none, to the plan
+  of the caller's latest own task while that plan is open, as before. A plan queued later never
+  takes the call.
+- **Waiting tasks.** `task_create` with `parent` set to a plan's `#n` makes a task directly
+  under the plan (its `plan` column is set). `task_update` with `parent` set to a phase of the
+  same plan moves it there; another plan's phase, and a move of an existing task up under a plan,
+  are refused. An open step of a phase cannot leave its phase by `parent` to the top or under a
+  plan (it would skip the proof below); it may move to another phase, and once closed it moves
+  freely. An open blocking waiting task holds the plan's close like any child
+  (`holdingUnder`, `doneValid`). The status line and `layerProgress` already read "a task of a
+  phased plan under no phase" this way: it counts in no layer.
+- **Steps close with proof.** A task whose parent is a phase closes `done` only with `evidence`
+  and `dropped` only with a `note` on `task_done` (`refuseBareClose`); `task_update` cannot close
+  one. A phase, a plan, a loose task and a waiting task keep the plain close, and the kit's own
+  closes (a merge, an import) go through the store directly and need neither.
+- **Where it shows.** `task_list` with `scope: "plan"` prints `Phases n/cap` on each plan,
+  marks one over the cap as frozen, and adds `waiting n` for the open tasks directly under it; `doctor`'s project checks print one `!` line for each open
+  plan over the cap, with its fix.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
 with `ALTER TABLE`; `min_compatible` stays 1, so a reader from 1.10.x still opens a store that
@@ -278,7 +329,7 @@ wins; notes and edits to an older plan do not steal the status line.
 The status line prints a row per layer, each title whole: `Plan · <title>` (the slug when the plan
 row is gone), `Phases 5/25 · <phase>` when the plan has phases, and `Tasks 1/3` with the current
 task's title when it is one; a task of a phased plan under no phase shows its title alone on the
-last row instead. Such a task counts in no layer: the plan counts its phases. An empty plan shows
+last row instead (a task waiting directly under its plan is one). Such a task counts in no layer: the plan counts its phases. An empty plan shows
 `Tasks 0/0`. A loose task shows its title alone,
 without totals. With no current work, the task rows are absent. Plan counts in `task_list` and the
 portal use the same rule (`layerProgress`). A phase's subtree counts and blocking steps stay

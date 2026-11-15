@@ -498,6 +498,7 @@ describe("keep-going: silent", () => {
       expect(theirs.call("create", { subject: "G1 the guard", plan: "auth", phase: "G1" }).ok).toBe(
         true,
       );
+      expect(theirs.call("create", { subject: "Step", parent: "#2" }).ok).toBe(true);
       expect(theirs.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
       expect(mine.call("create", { subject: "Fix a typo", status: "in_progress" }).ok).toBe(true);
     } finally {
