@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "4.8.0",
+  version: "4.9.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -30549,22 +30549,29 @@ function planIsOpen(all, plan) {
 function livePhaseCount(all, plan) {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
-function activePlanOf(all, owns) {
-  const phasesOf = (plan) => all.filter((p) => p.kind === "phase" && p.plan === plan.plan && isOpen(p));
-  const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t) && phasesOf(t).length > 0);
-  return candidates.find((t) => phasesOf(t).some((p) => p.status === "in_progress")) ?? candidates[0] ?? null;
+function hasRunningPhase(all, plan) {
+  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
 }
-function defaultPlanOf(all, owns, active, fallback) {
-  if (active?.plan)
-    return active.plan;
-  const finishing = all.filter((t) => {
-    if (t.kind !== "plan" || t.plan === null || !isOpen(t) || !owns(t))
-      return false;
+function isInFlight(all, plan) {
+  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningPhase(all, plan));
+}
+function inFlightPlanOf(all, owns) {
+  const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t));
+  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+}
+function defaultPlanOf(all, owns, inFlight, fallback) {
+  if (inFlight?.plan)
+    return inFlight.plan;
+  const ownOpen = all.filter((t) => t.kind === "plan" && t.plan !== null && isOpen(t) && owns(t));
+  const finishing = ownOpen.filter((t) => {
     const phases = all.filter((p) => p.kind === "phase" && p.plan === t.plan);
     return phases.some((p) => p.status === "done") && phases.every((p) => !isOpen(p));
   }).at(-1);
   if (finishing?.plan)
     return finishing.plan;
+  const next = ownOpen.find((t) => all.some((p) => p.kind === "phase" && p.plan === t.plan && isOpen(p)));
+  if (next?.plan)
+    return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
 function descendants(db, id) {
@@ -41553,7 +41560,7 @@ var taskSchemas = {
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
-    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's active plan (an own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent."),
+    plan: string2().trim().min(1).optional().describe("The plan's slug; defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one. With no open default, a task is loose and a phase needs plan. With no phase or parent, it makes the plan task. To add a task, name its phase, or its plan, as parent."),
     ...projectFields
   }).strict(),
   take: object({
@@ -41596,16 +41603,35 @@ var taskSchemas = {
 };
 
 // src/tasks/plan-guards.ts
+var PARK_NOTE_PREFIX = "parked:";
 function refuseOtherPlan(options) {
-  const { all, active, plan, owns, doing } = options;
-  if (active === null || active.plan === plan)
+  const { all, inFlight, plan, claimedElsewhere } = options;
+  if (inFlight === null || inFlight.plan === plan)
     return;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  const mine = row === undefined ? doing === "lay a phase" : owns(row);
-  if (!mine)
+  if (row === undefined || claimedElsewhere(row))
     return;
-  const queue = row === undefined ? `make plan "${plan}" first (${TASK_TOOL.create} with plan and a subject), then add the task with ${TASK_TOOL.create} and parent set to its #n` : `${TASK_TOOL.create} with parent "#${row.number}"`;
-  throw new Error(`Plan "${active.plan}" (#${active.number}) is your active plan: it still has open phases. Do not ${doing} in plan "${plan}" yet. Queue the work as a task that waits there (${queue}), or finish or drop the open phases of "${active.plan}" first.`);
+  const n = inFlight.number;
+  const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
+  const park = inFlight.status === "in_progress" ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why` : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
+  throw new Error(`Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${park}.`);
+}
+function refuseParkWhileBusy(all, task, status) {
+  if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending")
+    return;
+  const running = all.filter((t) => t.kind !== "plan" && t.plan === task.plan && t.status === "in_progress");
+  if (running.length === 0)
+    return;
+  throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
+}
+function planQueueState(all, plan, parkNote) {
+  if (isInFlight(all, plan))
+    return "in flight";
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (started && phases.every((t) => !isOpen(t)))
+    return "finishing";
+  return started || parkNote ? "parked" : "queued";
 }
 function refuseEmptyPhase(all, phase) {
   if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
@@ -41799,9 +41825,6 @@ function dependencies(db, task, change) {
     db.sqlite.query("DELETE FROM task_deps WHERE task_id=? AND waits_for=?").run(task.id, ref);
   addBlockers(db, task, change.add ?? []);
 }
-function updateTask(db, id, change, who, now) {
-  return writeWork(db, () => applyUpdate2(db, id, change, who, now));
-}
 function applyUpdate2(db, id, change, who, now) {
   const task = taskById(db, id);
   const before = shape(db, task);
@@ -41971,11 +41994,11 @@ function marks(task, byId) {
     ...blockers.length ? [`blocked by ${blockers.map((t) => `#${t.number}`).join(", ")}`] : []
   ];
 }
-function stateWords(task, byId, withLayer = false) {
+function stateWords(task, byId, withLayer = false, queue) {
   const layer = layerOf(task, byId);
   return [
     ...withLayer ? [layer] : [],
-    task.status.replaceAll("_", " "),
+    queue ?? task.status.replaceAll("_", " "),
     ...!withLayer && layer === "plan" ? ["plan"] : [],
     ...!withLayer && layer === "phase" ? [`phase ${task.phase ?? ""}`.trim()] : [],
     ...marks(task, byId)
@@ -42021,17 +42044,25 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who);
+      const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
+      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
-      const active = activePlanOf(all, owns);
-      const writePlan = defaultPlanOf(all, owns, active, ownPlan);
+      const inFlight = inFlightPlanOf(all, owns);
+      const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
       const phaseCap = () => {
         if (!ctx.projectConfig.ok)
           throw new Error(ctx.projectConfig.why);
         const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
         return { max: value, source };
       };
-      const refuseOther = (plan, doing) => refuseOtherPlan({ all, active, plan, owns, doing });
+      const claimedElsewhere = (t) => claimState(t, claimLive, who) === "another session";
+      const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
+      const enterFlight = (plan) => {
+        const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+        if (row === undefined || row.status !== "pending" || !owns(row))
+          return;
+        applyUpdate2(store, row.id, { status: "in_progress" }, who, now);
+      };
       const projectDir = () => {
         if (!ctx.projectTasks.ok)
           throw new Error(ctx.projectTasks.why);
@@ -42113,8 +42144,6 @@ function createTaskOps(options = {}) {
           if (!isPhaseId(phaseId))
             throw new Error(`The phase "${phaseId}" is not one: a phase is ${PHASE_RULE}`);
           const there = all.some((t) => t.kind === "phase" && t.plan === slug && t.phase === phaseId);
-          if (!there)
-            refuseOther(slug, "lay a phase");
           const laid = value(writeWork(store, () => layPhase(store, {
             project: ctx.project,
             plan: slug,
@@ -42143,18 +42172,23 @@ function createTaskOps(options = {}) {
           throw new Error("parent belongs to another plan");
         const taskPlan = input.plan ?? parent?.plan ?? writePlan;
         if (input.status === "in_progress" && taskPlan !== null)
-          refuseOther(taskPlan, "start work");
-        const task = value(writeWork(store, () => insertTask(store, {
-          project: ctx.project,
-          subject: input.subject,
-          ...input.description === undefined ? {} : { description: input.description },
-          ...bindings2(input),
-          ...input.status === undefined ? {} : { status: input.status },
-          ...input.type === undefined ? {} : { type: input.type },
-          parentId: parent?.id ?? null,
-          plan: taskPlan,
-          blockedBy
-        }, who, now)));
+          refuseOther(taskPlan);
+        const task = value(writeWork(store, () => {
+          const made = insertTask(store, {
+            project: ctx.project,
+            subject: input.subject,
+            ...input.description === undefined ? {} : { description: input.description },
+            ...bindings2(input),
+            ...input.status === undefined ? {} : { status: input.status },
+            ...input.type === undefined ? {} : { type: input.type },
+            parentId: parent?.id ?? null,
+            plan: taskPlan,
+            blockedBy
+          }, who, now);
+          if (input.status === "in_progress")
+            enterFlight(taskPlan);
+          return made;
+        }));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
           ok: true,
@@ -42182,31 +42216,37 @@ function createTaskOps(options = {}) {
         }
         const task = work(input.task);
         if (task.kind === "phase" && task.status === "dropped" && (input.status === "pending" || input.status === "in_progress") && task.plan !== null) {
-          refuseOther(task.plan, "reopen a phase");
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
         }
-        if (input.status === "in_progress" && task.status !== "in_progress") {
+        const starting = input.status === "in_progress" && task.status !== "in_progress";
+        if (starting) {
           refuseEmptyPhase(all, task);
           if (task.plan !== null)
-            refuseOther(task.plan, "start work");
+            refuseOther(task.plan);
         }
+        refuseParkWhileBusy(all, task, input.status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
         if (input.status === "done" || input.status === "dropped")
           refuseBareClose(all, task, input.status, {});
-        const updated = value(updateTask(store, task.id, {
-          ...input.subject === undefined ? {} : { subject: input.subject },
-          ...input.description === undefined ? {} : { description: input.description },
-          ...bindings2(input),
-          ...input.status === undefined ? {} : { status: input.status },
-          ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
-          ...input.type === undefined ? {} : { type: input.type },
-          waitsFor: {
-            add: (input.blocked_by_add ?? []).map((r) => work(r).id),
-            remove: (input.blocked_by_remove ?? []).map((r) => work(r).id)
-          }
-        }, who, now));
+        const updated = value(writeWork(store, () => {
+          const changed = applyUpdate2(store, task.id, {
+            ...input.subject === undefined ? {} : { subject: input.subject },
+            ...input.description === undefined ? {} : { description: input.description },
+            ...bindings2(input),
+            ...input.status === undefined ? {} : { status: input.status },
+            ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
+            ...input.type === undefined ? {} : { type: input.type },
+            waitsFor: {
+              add: (input.blocked_by_add ?? []).map((r) => work(r).id),
+              remove: (input.blocked_by_remove ?? []).map((r) => work(r).id)
+            }
+          }, who, now);
+          if (starting && task.kind !== "plan")
+            enterFlight(task.plan);
+          return changed;
+        }));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
         return {
           ok: true,
@@ -42368,7 +42408,8 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
         const state = claimState(task, claimLive, who);
-        lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
+        const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX))) : undefined;
+        lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
         for (const child of selected.filter((t) => t.parentId === task.id))
           visit(child, depth + 1);
       };

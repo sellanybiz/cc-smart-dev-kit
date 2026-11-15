@@ -19,9 +19,13 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   of it is in progress).
   Nothing is dropped: phases, steps and briefs stay as they were. Starting one of its phases
   resumes it. This replaces 4.8.0's way of parking by dropping every open step and phase.
-- **`task_list` marks each plan** in flight, queued or parked, in plan-number order. A call
-  that names no plan goes to the plan in flight first (the full order: `plan-task` § 6). An ask made during a build goes to the next
-  queued plan: under its phase when one fits, else waiting under the plan.
+- **`task_list` marks each plan** in flight, finishing, queued or parked, in plan-number
+  order. A call that names no plan goes to the plan in flight first (the full order:
+  `plan-task` § 6). An ask made during a build goes to the next queued plan: under its phase
+  when one fits, else waiting under the plan.
+- **`/clear` keeps your plans.** After a `/clear` the session gets a new id, but the same
+  process still owns the plans and tasks it made before. So the one-plan rule still holds, and
+  `task_list` keeps showing that earlier work.
 
 **What to run:** nothing.
 
