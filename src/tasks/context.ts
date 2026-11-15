@@ -16,6 +16,7 @@
 import { realpathSync } from "node:fs";
 import { runGit } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import type { CcSmartDevKitConfig } from "../project/config";
 import {
   type Checkout,
   checkoutFailure,
@@ -48,6 +49,11 @@ export type ProjectTasks =
     }
   | { ok: false; why: string };
 
+/** The project's `.claude/cc-smart-dev-kit.json` as the checkout reads it, or why it cannot be read. */
+export type ProjectConfigRead =
+  | { ok: true; config: CcSmartDevKitConfig | null }
+  | { ok: false; why: string };
+
 export type TaskContext =
   | {
       ok: true;
@@ -58,6 +64,8 @@ export type TaskContext =
       /** The checkout the folder is in (a linked worktree's own root), or null outside git. */
       checkoutRoot: string | null;
       projectTasks: ProjectTasks;
+      /** The project's file, for the settings the store reads (`plans.maxPhases`). */
+      projectConfig: ProjectConfigRead;
     }
   | { ok: false; why: string };
 
@@ -122,6 +130,7 @@ function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContex
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectConfig: { ok: true, config: null },
     };
   }
   const repo = checkout.mainCheckout ?? checkout.root;
@@ -131,15 +140,18 @@ function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContex
     repo,
     checkoutRoot: checkout.root,
   };
-  let settings: NonNullable<ReturnType<typeof loadProjectConfig>["config"]>["tasks"];
+  let config: CcSmartDevKitConfig | null;
   try {
-    settings = loadProjectConfig(checkout).config?.tasks;
+    config = loadProjectConfig(checkout).config;
   } catch (error) {
-    return { ...base, projectTasks: { ok: false, why: checkoutFailure(error) } };
+    const why = checkoutFailure(error);
+    return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
   }
+  const settings = config?.tasks;
   const root = checkout.root;
   return {
     ...base,
+    projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
       dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),

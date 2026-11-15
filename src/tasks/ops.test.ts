@@ -8,6 +8,12 @@ import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
 import { openPhasesOf } from "./work/phases";
 
+/** An environment whose home is a temp folder: no test reads the real workflow settings. */
+function homeEnv(): Record<string, string | undefined> {
+  const home = tempDir();
+  return { ...cleanGitEnv(), HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
+}
+
 function legacyParent(stateDir: string, number: number, parent: number) {
   const raw = new Database(workDbFile({ stateDir }));
   try {
@@ -319,7 +325,8 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
 test("subagent phase bindings survive updates and appear in the plan ledger", () => {
   const cwd = tempDir();
   const state = tempDir();
-  const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null });
+  const env = homeEnv();
+  const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null, env });
   try {
     expect(
       ops.call("create", {
@@ -333,7 +340,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
       }).ok,
     ).toBe(true);
     expect(ops.call("create", { subject: "Test", parent: "#2" }).ok).toBe(true);
-    expect(ops.call("done", { task: "#3" }).ok).toBe(true);
+    expect(ops.call("done", { task: "#3", evidence: "ran it: passes" }).ok).toBe(true);
     expect(
       ops.call("update", {
         task: "#2",
@@ -349,7 +356,7 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] upgrade · 0/1\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
+      text: "#1 [pending · plan] upgrade · 0/1 · Phases 1/10\n  #2 [pending · phase T] Build · 1/1 · agent builder-next · branch task-next",
     });
     expect(ops.call("update", { task: "#2", worktree: "relative" }).ok).toBe(false);
     expect(ops.call("done", { task: "#2" }).ok).toBe(true);
@@ -358,11 +365,12 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
       stateDir: state,
       cwd: () => cwd,
       caller: () => ({ sessionId: "after-clear", pid: null, procStart: null, cwd }),
+      env,
     });
     try {
       expect(resumed.call("list", { scope: "plan" })).toMatchObject({
         ok: true,
-        text: "#1 [done · plan] upgrade · 1/1\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
+        text: "#1 [done · plan] upgrade · 1/1 · Phases 1/10\n  #2 [done · phase T] Build · 1/1 · agent builder-next · branch task-next",
       });
     } finally {
       resumed.close();
@@ -396,8 +404,9 @@ test("another session's plan is never stamped on a session's own task; the plan 
   const stateDir = tempDir();
   const x = { sessionId: "session-x", pid: 4101, procStart: "41010", cwd };
   const y = { sessionId: "session-y", pid: 5202, procStart: "52020", cwd };
-  const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x });
-  const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y });
+  const env = homeEnv();
+  const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x, env });
+  const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y, env });
   const planOf = (number: number) => {
     const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
     try {
@@ -411,12 +420,13 @@ test("another session's plan is never stamped on a session's own task; the plan 
   try {
     expect(opsX.call("create", { subject: "Auth", plan: "auth" }).ok).toBe(true);
     expect(opsX.call("create", { subject: "Guard", plan: "auth", phase: "G1" }).ok).toBe(true);
+    expect(opsX.call("create", { subject: "Step", parent: "#2" }).ok).toBe(true);
     expect(opsX.call("update", { task: "#2", status: "in_progress" }).ok).toBe(true);
     expect(opsY.call("create", { subject: "Fix a typo", status: "in_progress" })).toEqual({
       ok: true,
-      text: '#3 "Fix a typo"',
+      text: '#4 "Fix a typo"',
     });
-    expect(planOf(3)).toBeNull();
+    expect(planOf(4)).toBeNull();
     expect(openPhasesOf({ stateDir }, folderProject(cwd), () => y)).toEqual({
       state: "ready",
       value: { inProgress: [], ready: [] },
@@ -428,15 +438,15 @@ test("another session's plan is never stamped on a session's own task; the plan 
     });
     // X's own work still takes its plan, and so does its phase with the plan left out.
     expect(opsX.call("create", { subject: "Own step", status: "in_progress" }).ok).toBe(true);
-    expect(planOf(4)).toBe("auth");
+    expect(planOf(5)).toBe("auth");
     expect(opsX.call("create", { subject: "Docs", phase: "G2" })).toEqual({
       ok: true,
-      text: '#5 "Docs" · phase G2 of plan auth',
+      text: '#6 "Docs" · phase G2 of plan auth',
     });
     // Reading the ledger may fall back to the project's newest plan.
     expect(opsY.call("list", { scope: "plan" })).toMatchObject({
       ok: true,
-      text: "#1 [pending · plan] Auth · 0/2\n  #2 [in progress · phase G1] Guard · 0/0 · agent none · branch none\n  #5 [pending · phase G2] Docs · 0/0 · agent none · branch none",
+      text: "#1 [pending · plan] Auth · 0/2 · Phases 2/10\n  #2 [in progress · phase G1] Guard · 0/1 · agent none · branch none\n  #6 [pending · phase G2] Docs · 0/0 · agent none · branch none",
     });
   } finally {
     opsX.close();

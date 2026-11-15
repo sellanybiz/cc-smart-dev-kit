@@ -65,7 +65,8 @@ test("tasks cannot hold new tasks, and plans and phases stay put", () => {
   ).task;
   const task = add(db, "Task");
   const sub = add(db, "Sub", { parentId: task.id });
-  const refusal = "a task belongs under a phase or at the top; a task holds no tasks";
+  const refusal =
+    "a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks";
   expect(createTask(db, { project: "p", subject: "Too deep", parentId: sub.id }, who, 2)).toEqual({
     ok: false,
     why: refusal,
@@ -76,9 +77,10 @@ test("tasks cannot hold new tasks, and plans and phases stay put", () => {
     why: refusal,
   });
   ok(updateTask(db, task.id, { parentId: phase.id }, who, 3));
+  // A task waits under a plan only where it is made; an existing one never moves up to it.
   expect(updateTask(db, task.id, { parentId: plan.id }, who, 3)).toEqual({
     ok: false,
-    why: refusal,
+    why: "a task waits under a plan only where it is made: create it with parent set to the plan (task_create); an existing task moves under a phase",
   });
   expect(updateTask(db, phase.id, { parentId: task.id }, who, 4)).toEqual({
     ok: false,
@@ -110,7 +112,7 @@ test("a task an older kit nested past three layers still changes and closes wher
   // A move is held to the layers: under a task is refused.
   expect(updateTask(db, add(db, "Loose").id, { parentId: deep.id }, who, 6)).toEqual({
     ok: false,
-    why: "a task belongs under a phase or at the top; a task holds no tasks",
+    why: "a task belongs under a phase, under its plan while it waits for a phase, or at the top; a task holds no tasks",
   });
   db.close();
 });

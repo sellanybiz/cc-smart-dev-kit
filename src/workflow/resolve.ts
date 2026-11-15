@@ -197,6 +197,30 @@ export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkf
   };
 }
 
+/** The plan settings of two workflow objects: the project's over the person's, over the default. */
+function plansFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["plans"] {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases"),
+    },
+  };
+}
+
+/**
+ * The **plan settings** on their own, resolved: what the task store reads when a phase is laid
+ * (`src/tasks/ops.ts`). The same resolution as `resolveWorkflow`, without the switches (which
+ * read the status line and the update hold). Throws `WorkflowConfigError` for a broken personal
+ * file, naming it and the field.
+ */
+export function resolvePlans(
+  paths: CliPaths,
+  projectConfig: CcSmartDevKitConfig | null,
+): ResolvedWorkflow["plans"] {
+  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
+}
+
 /**
  * The **alerts** on their own, resolved: what a hook and the status line read
  * (`src/workflow/alerts.ts`). It is the same resolution as `resolveWorkflow` — the project
@@ -436,7 +460,6 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
-  const plans = merged.plans ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -473,9 +496,7 @@ export function resolveWorkflow(
     },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
-    plans: {
-      maxPhases: of("plans.maxPhases", plans.maxPhases ?? workflowDefaults.plans.maxPhases),
-    },
+    plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),
