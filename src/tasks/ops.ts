@@ -9,9 +9,7 @@ import { runGit } from "../hooks/git";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
-  PARK_NOTE_PREFIX,
   planNote,
-  planQueueState,
   refuseBareClose,
   refuseEmptyPhase,
   refuseOtherPlan,
@@ -32,7 +30,6 @@ import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
 import {
   allTasks,
-  claimHeldBy,
   claimState,
   defaultPlanOf,
   deletedHistory,
@@ -43,6 +40,9 @@ import {
   layerOf,
   notesOf,
   openBlockers,
+  ownerOf,
+  PARK_NOTE_PREFIX,
+  planQueueState,
   searchTasks,
   subtreeProgress,
 } from "./work/queries";
@@ -174,18 +174,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      // The caller's own task: one it made (a caller with no session id made none), one its
-      // process claims, or one made by a session this process was before (`/clear` gives the
-      // process a new session id): the sessions that made a task it claims.
-      const earlier = new Set(
-        all.flatMap((t) =>
-          claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : [],
-        ),
-      );
-      const owns = (t: WorkTask) =>
-        (who.sessionId !== null && t.createdBy === who.sessionId) ||
-        claimHeldBy(t.claim, who) ||
-        (t.createdBy !== null && earlier.has(t.createdBy));
+      // The caller's own task (`ownerOf`: made by it, claimed by its process, or made by a
+      // session this process was before a `/clear`).
+      const owns = ownerOf(all, who);
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
       // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;

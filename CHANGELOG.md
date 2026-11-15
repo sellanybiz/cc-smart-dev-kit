@@ -23,6 +23,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   order. A call that names no plan goes to the plan in flight first (the full order:
   `plan-task` § 6). An ask made during a build goes to the next queued plan: under its phase
   when one fits, else waiting under the plan.
+- **The status line counts the plans that wait.** Its plan row reads
+  `Plan · <title> · 2 queued, 1 parked` when your other open plans wait behind the one in flight.
 - **`/clear` keeps your plans.** After a `/clear` the session gets a new id, but the same
   process still owns the plans and tasks it made before. So the one-plan rule still holds, and
   `task_list` keeps showing that earlier work.

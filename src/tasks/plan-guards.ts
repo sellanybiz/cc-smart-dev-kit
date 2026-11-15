@@ -7,11 +7,8 @@
  * resolver.
  */
 import { TASK_TOOL } from "./words";
-import { isInFlight, isOpen, livePhaseCount } from "./work/queries";
+import { isOpen, livePhaseCount, PARK_NOTE_PREFIX } from "./work/queries";
 import type { WorkStatus, WorkTask } from "./work/types";
-
-/** A note that starts so says why a plan was parked (`task_update` with the plan pending). */
-export const PARK_NOTE_PREFIX = "parked:";
 
 /**
  * Refuses starting work in a plan while the caller has another plan in flight
@@ -65,28 +62,6 @@ export function refuseParkWhileBusy(
   throw new Error(
     `Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`,
   );
-}
-
-/** How a plan stands in the queue, as `task_list` on the plan ledger says it. */
-export type PlanQueueState = "in flight" | "finishing" | "parked" | "queued";
-
-/**
- * An open plan's place in the queue, for a plan that is not in flight (`isInFlight` says so
- * first): finishing (pending, every phase closed and one done: a plan started under 4.8.0 at its
- * final review and fix pass), parked (pending, with an open phase and either a done phase or a
- * note that starts `PARK_NOTE_PREFIX`), or queued (laid out, never started). `parkNote` says
- * whether the plan task holds such a note.
- */
-export function planQueueState(
-  all: readonly WorkTask[],
-  plan: WorkTask,
-  parkNote: boolean,
-): PlanQueueState {
-  if (isInFlight(all, plan)) return "in flight";
-  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
-  const started = phases.some((t) => t.status === "done");
-  if (started && phases.every((t) => !isOpen(t))) return "finishing";
-  return started || parkNote ? "parked" : "queued";
 }
 
 /**

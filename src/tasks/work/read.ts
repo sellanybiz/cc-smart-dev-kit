@@ -13,6 +13,9 @@ import {
   isOpen,
   layerProgress,
   notesOf,
+  ownerOf,
+  PARK_NOTE_PREFIX,
+  waitingPlans,
 } from "./queries";
 import type { Who } from "./types";
 export type ReadState<T> =
@@ -140,16 +143,21 @@ export function planProgress(paths: Paths, project: string, who: Who) {
       task.kind === "phase"
         ? task
         : (all.find((t) => t.kind === "phase" && t.id === task.parentId) ?? null);
-    if (task.plan === null) return { task, plan, phase, phases: null, tasks: null };
+    if (task.plan === null) return { task, plan, phase, phases: null, tasks: null, waiting: null };
     // By plan membership: the plan task itself need not exist for its phases or tasks to count.
     const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
     const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
+    // The caller's other open plans behind this one, by the rule the task tools own them by.
+    const waiting = waitingPlans(all, ownerOf(all, who), task.plan, (p) =>
+      notesOf(db, p).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
+    );
     return {
       task,
       plan,
       phase,
       phases: hasPhases ? ofPlan : null,
       tasks: phase !== null ? layerProgress(all, phase) : hasPhases ? null : ofPlan,
+      waiting,
     };
   });
 }

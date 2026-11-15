@@ -530,7 +530,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
 `task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued or parked, in plan-number order. Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; project ids use `T-` plus six
-base32 characters. The status line shows current work on rows of its own, one per layer: `Plan · <title>`, then
+base32 characters. The status line shows current work on rows of its own, one per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when your other plans wait), then
 `Phases 5/25 · <current phase>` (closed phases out of all the plan's phases), then `Tasks 1/3`
 (the current phase's tasks, with the current task's title when it is one). A plan with no phase
 shows `Tasks` for its own tasks instead; a loose task shows its title alone. `task_list` and the
@@ -1230,7 +1230,8 @@ still hits; that login's next 429 writes it again.
   targets, `gateway fallback judge on` turns a stand-in you switched off back on, or you wait
   until the reset). `gateway status` and `doctor` print the same words with a `Fix:` line, and the
   session is told once to stop and wait instead of retrying.
-  - **The task rows**, below the model, context, usage and cache-miss row: `Plan · <title>`,
+  - **The task rows**, below the model, context, usage and cache-miss row: `Plan · <title>`
+    (with `· 2 queued, 1 parked` when your other open plans wait behind it),
     then `Phases 5/25 · <current phase>` when the plan has phases, then `Tasks 1/3` (the
     current phase's tasks, with the current task's title when it is one). A plan with no phase
     shows `Tasks` for its own tasks; an empty plan shows `Tasks 0/0`. A task in a phased plan

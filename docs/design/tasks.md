@@ -368,7 +368,8 @@ A plan with no phase counts its own tasks by the `plan` column instead, so a lea
 without steps still sees 5/25, and nothing counts twice. The most recently started claimed item
 wins; notes and edits to an older plan do not steal the status line.
 The status line prints a row per layer, each title whole: `Plan · <title>` (the slug when the plan
-row is gone), `Phases 5/25 · <phase>` when the plan has phases, and `Tasks 1/3` with the current
+row is gone; then `· 2 queued, 1 parked` when the session's other open plans wait, counted by
+`waitingPlans` with the task tools' own `ownerOf`), `Phases 5/25 · <phase>` when the plan has phases, and `Tasks 1/3` with the current
 task's title when it is one; a task of a phased plan under no phase shows its title alone on the
 last row instead (a task waiting directly under its plan is one). Such a task counts in no layer: the plan counts its phases. An empty plan shows
 `Tasks 0/0`. A loose task shows its title alone,

@@ -209,6 +209,67 @@ export function defaultPlanOf(
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
 
+/**
+ * Whose task this is, for one caller: one it made (a caller with no session id made none), one
+ * its process claims, or one made by a session this process was before (`/clear` gives the
+ * process a new session id): the sessions that made a task it claims. The one rule the task
+ * tools and the status line judge ownership by.
+ */
+export function ownerOf(all: readonly WorkTask[], who: Who): (task: WorkTask) => boolean {
+  const earlier = new Set(
+    all.flatMap((t) => (claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : [])),
+  );
+  return (t) =>
+    (who.sessionId !== null && t.createdBy === who.sessionId) ||
+    claimHeldBy(t.claim, who) ||
+    (t.createdBy !== null && earlier.has(t.createdBy));
+}
+
+/** A note that starts so says why a plan was parked (`task_update` with the plan pending). */
+export const PARK_NOTE_PREFIX = "parked:";
+
+/** How a plan stands in the queue, as `task_list` and the status line say it. */
+export type PlanQueueState = "in flight" | "finishing" | "parked" | "queued";
+
+/**
+ * An open plan's place in the queue, for a plan that is not in flight (`isInFlight` says so
+ * first): finishing (pending, every phase closed and one done: a plan started under 4.8.0 at its
+ * final review and fix pass), parked (pending, with an open phase and either a done phase or a
+ * note that starts `PARK_NOTE_PREFIX`), or queued (laid out, never started). `parkNote` says
+ * whether the plan task holds such a note.
+ */
+export function planQueueState(
+  all: readonly WorkTask[],
+  plan: WorkTask,
+  parkNote: boolean,
+): PlanQueueState {
+  if (isInFlight(all, plan)) return "in flight";
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (started && phases.every((t) => !isOpen(t))) return "finishing";
+  return started || parkNote ? "parked" : "queued";
+}
+
+/**
+ * How many of a caller's other open plans wait behind `current`, by their queue state: what the
+ * status line adds to its plan row. `parkNote` says whether a plan task holds a `parked:` note.
+ */
+export function waitingPlans(
+  all: readonly WorkTask[],
+  owns: (task: WorkTask) => boolean,
+  current: string,
+  parkNote: (plan: WorkTask) => boolean,
+): { queued: number; parked: number } {
+  const waiting = { queued: 0, parked: 0 };
+  for (const t of all) {
+    if (t.kind !== "plan" || t.plan === null || t.plan === current || !isOpen(t) || !owns(t))
+      continue;
+    const state = planQueueState(all, t, parkNote(t));
+    if (state === "queued" || state === "parked") waiting[state] += 1;
+  }
+  return waiting;
+}
+
 /** All descendants, not just direct children: completion must not strand an open grandchild. */
 export function descendants(db: WorkDb, id: string): WorkTask[] {
   const task = taskById(db, id);

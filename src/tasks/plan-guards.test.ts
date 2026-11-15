@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { planCapChecks } from "../cli/project-checks";
+import { taskSegment } from "../cli/statusline";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
@@ -564,6 +565,34 @@ test("the status line shows the phase while it runs, and the plan in flight betw
     expect(progress().task.number).toBe(1);
     expect(progress().plan?.number).toBe(1);
     expect(progress().phases).toEqual({ closed: 1, total: 1 });
+  } finally {
+    ops.close();
+  }
+});
+
+test("the status line counts the plans that wait behind the one in flight", () => {
+  const w = world();
+  const ops = w.ops();
+  const planRow = () =>
+    (taskSegment(w.paths, folderProject(w.repo), LEAD) ?? "").split("\n")[0];
+  try {
+    queue(ops, ["a", "b", "c"]); // plans #1, #4, #7, each with a phase and a step
+    said(ops.call("update", { task: "#2", status: "in_progress" }));
+    expect(planRow()).toBe("Plan · Plan a · 2 queued");
+    // Park plan a, then start plan b: a is parked, c still queued.
+    said(ops.call("update", { task: "#2", status: "pending" }));
+    said(ops.call("update", { task: "#1", status: "pending" }));
+    said(ops.call("note", { task: "#1", text: "parked: plan b first" }));
+    said(ops.call("update", { task: "#5", status: "in_progress" }));
+    expect(planRow()).toBe("Plan · Plan b · 1 queued, 1 parked");
+    // Another session's plan never counts.
+    const other = w.ops(OTHER);
+    try {
+      said(other.call("create", { subject: "Plan z", plan: "z" }));
+    } finally {
+      other.close();
+    }
+    expect(planRow()).toBe("Plan · Plan b · 1 queued, 1 parked");
   } finally {
     ops.close();
   }
