@@ -1,18 +1,13 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { hookEnv } from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps } from "./ops";
 import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
 import { openPhasesOf } from "./work/phases";
-
-/** An environment whose home is a temp folder: no test reads the real workflow settings. */
-function homeEnv(): Record<string, string | undefined> {
-  const home = tempDir();
-  return { ...cleanGitEnv(), HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") };
-}
 
 function legacyParent(stateDir: string, number: number, parent: number) {
   const raw = new Database(workDbFile({ stateDir }));
@@ -30,6 +25,7 @@ for (const status of ["done", "dropped"] as const) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -65,6 +61,7 @@ for (const blocking of [true, false]) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -101,6 +98,7 @@ for (const fromPlan of [false, true]) {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
+      env: hookEnv(),
       stateDir,
       cwd: () => cwd,
       caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -132,6 +130,9 @@ for (const fromPlan of [false, true]) {
       expect(ops.call("update", { task: "#1", status: "pending" }).ok).toBe(true);
       expect(ops.call("update", { task: ref, parent: "#2" }).ok).toBe(true);
       expect(row()).toMatchObject({ plan: "closed" });
+      // An open step stays in its phase; closed with its proof, it moves to the top and keeps its plan.
+      expect(ops.call("update", { task: ref, parent: null }).ok).toBe(false);
+      expect(ops.call("done", { task: ref, evidence: "checked it: ok" }).ok).toBe(true);
       expect(ops.call("update", { task: ref, parent: null }).ok).toBe(true);
       expect(row()).toMatchObject({ plan: "closed", parent_id: null });
     } finally {
@@ -143,6 +144,7 @@ for (const fromPlan of [false, true]) {
 test("named phases and explicit parents refuse a closed plan", () => {
   const cwd = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir: tempDir(),
     cwd: () => cwd,
     caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd }),
@@ -170,6 +172,7 @@ test("a close the store refuses keeps no note, so a retry saves each note once",
   const cwd = tempDir();
   const stateDir = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: "s", pid: process.pid, procStart: null, cwd }),
@@ -217,6 +220,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
   let session = "first";
   // A process start time, as on Linux: it names the process, so `/clear` keeps its claims.
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: session, pid: process.pid, procStart: "4242", cwd }),
@@ -273,7 +277,7 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
     stateDir: tempDir(),
     cwd: () => cwd,
     caller: () => null,
-    env: cleanGitEnv(),
+    env: hookEnv(),
   });
   const dir = join(cwd, ".claude/tasks");
   try {
@@ -325,7 +329,7 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
 test("subagent phase bindings survive updates and appear in the plan ledger", () => {
   const cwd = tempDir();
   const state = tempDir();
-  const env = homeEnv();
+  const env = hookEnv();
   const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null, env });
   try {
     expect(
@@ -382,7 +386,12 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
 
 test("work tasks share create, list and close operations", () => {
   const cwd = tempDir();
-  const ops = createTaskOps({ stateDir: tempDir(), caller: () => null, cwd: () => cwd });
+  const ops = createTaskOps({
+    stateDir: tempDir(),
+    caller: () => null,
+    cwd: () => cwd,
+    env: hookEnv(),
+  });
   try {
     expect(ops.call("create", { subject: "Check the change" })).toEqual({
       ok: true,
@@ -404,7 +413,7 @@ test("another session's plan is never stamped on a session's own task; the plan 
   const stateDir = tempDir();
   const x = { sessionId: "session-x", pid: 4101, procStart: "41010", cwd };
   const y = { sessionId: "session-y", pid: 5202, procStart: "52020", cwd };
-  const env = homeEnv();
+  const env = hookEnv();
   const opsX = createTaskOps({ stateDir, cwd: () => cwd, caller: () => x, env });
   const opsY = createTaskOps({ stateDir, cwd: () => cwd, caller: () => y, env });
   const planOf = (number: number) => {
@@ -457,8 +466,14 @@ test("another session's plan is never stamped on a session's own task; the plan 
 test("a caller with no session id owns no task the terminal made", () => {
   const cwd = tempDir();
   const stateDir = tempDir();
-  const terminal = createTaskOps({ stateDir, cwd: () => cwd, caller: () => null });
+  const terminal = createTaskOps({
+    stateDir,
+    cwd: () => cwd,
+    caller: () => null,
+    env: hookEnv(),
+  });
   const nameless = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: null, pid: 7301, procStart: "73010", cwd }),

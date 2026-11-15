@@ -1,13 +1,19 @@
 import { expect, test } from "bun:test";
 import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { createTaskServer } from "./mcp";
 
 const resultSchema = z.object({ result: z.unknown() });
 test("SDK transport initializes, lists nine annotated tools and runs work", async () => {
   const cwd = tempDir();
-  const kit = createTaskServer({ stateDir: tempDir(), cwd: () => cwd, caller: () => null });
+  const kit = createTaskServer({
+    stateDir: tempDir(),
+    cwd: () => cwd,
+    caller: () => null,
+    env: hookEnv(),
+  });
   const [client, transport] = InMemoryTransport.createLinkedPair();
   let id = 0;
   const pending = new Map<number, (message: JSONRPCMessage) => void>();

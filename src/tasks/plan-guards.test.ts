@@ -280,13 +280,14 @@ test("a task waits under a plan, moves under a phase of that plan, and holds the
     // An existing task never moves up under a plan.
     said(ops.call("create", { subject: "Area", plan: "p", phase: "A" }));
     said(ops.call("create", { subject: "Step", parent: "#3" }));
+    said(ops.call("done", { task: "#4", evidence: "ran it: ok" }));
     expect(refused(ops.call("update", { task: "#4", parent: "#1" }))).toContain(
       "a task waits under a plan only where it is made",
     );
     // Later it moves under a phase of its own plan, and the plan list counts it there.
     said(ops.call("update", { task: "#2", parent: "#3" }));
     expect(said(ops.call("list", { scope: "plan" }))).toContain(
-      "#3 [pending · phase A] Area · 0/2",
+      "#3 [pending · phase A] Area · 1/2",
     );
   } finally {
     ops.close();
@@ -425,5 +426,98 @@ test("a step of a phase closes done only with evidence, dropped only with a note
     }
   } finally {
     ops.close();
+  }
+});
+
+test("a phase whose only step was dropped has no task, so it does not start", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" }));
+    said(ops.call("create", { subject: "Area", plan: "p", phase: "A" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    said(ops.call("done", { task: "#3", outcome: "dropped", note: "not needed" }));
+    expect(refused(ops.call("update", { task: "#2", status: "in_progress" }))).toContain(
+      "has no tasks",
+    );
+    said(ops.call("create", { subject: "Real step", parent: "#2" }));
+    said(ops.call("update", { task: "#2", status: "in_progress" }));
+  } finally {
+    ops.close();
+  }
+});
+
+test("an open step cannot leave its phase to the top or a plan; it may change phase, and a closed one is free", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" }));
+    said(ops.call("create", { subject: "Area A", plan: "p", phase: "A" }));
+    said(ops.call("create", { subject: "Area B", plan: "p", phase: "B" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    const stays =
+      '#4 "Step" is an open step of phase #2 and stays there until it is closed: close it with evidence (task_done with task "#4" and evidence), or drop it with a note that gives the reason (task_done with outcome "dropped" and note); it may move to another phase of the plan';
+    expect(refused(ops.call("update", { task: "#4", parent: null }))).toBe(stays);
+    expect(refused(ops.call("update", { task: "#4", parent: "#1" }))).toBe(stays);
+    said(ops.call("update", { task: "#4", parent: "#3" }));
+    // Closed with its proof, it is free to move.
+    said(ops.call("done", { task: "#4", evidence: "ran it: ok" }));
+    said(ops.call("update", { task: "#4", parent: null }));
+  } finally {
+    ops.close();
+  }
+});
+
+test("task_list names the open tasks waiting under a plan, so full phase progress cannot hide them", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" }));
+    said(ops.call("create", { subject: "Area", plan: "p", phase: "A" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    said(ops.call("done", { task: "#3", evidence: "ran it: ok" }));
+    said(ops.call("done", { task: "#2" }));
+    expect(said(ops.call("list", { scope: "plan", open_only: false })).split("\n")[0]).toBe(
+      "#1 [pending · plan] Plan · 1/1 · Phases 1/10",
+    );
+    said(ops.call("create", { subject: "Later one", parent: "#1" }));
+    said(ops.call("create", { subject: "Later two", parent: "#1" }));
+    said(ops.call("done", { task: "#5" }));
+    expect(said(ops.call("list", { scope: "plan", open_only: false })).split("\n")[0]).toBe(
+      "#1 [pending · plan] Plan · 1/1 · Phases 1/10 · waiting 1",
+    );
+  } finally {
+    ops.close();
+  }
+});
+
+test("after task_take of a plan with a running phase, that plan is the taker's active plan, and the refusal names it", () => {
+  const w = world();
+  const lead = w.ops();
+  const other = w.ops(OTHER);
+  try {
+    said(lead.call("create", { subject: "Plan A", plan: "a" }));
+    said(lead.call("create", { subject: "Area", plan: "a", phase: "A1" }));
+    said(other.call("create", { subject: "Plan X", plan: "x" }));
+    said(other.call("create", { subject: "Area", plan: "x", phase: "X1" }));
+    said(other.call("create", { subject: "Step", parent: "#4" }));
+    said(other.call("update", { task: "#4", status: "in_progress" }));
+    said(lead.call("take", { task: "x", force: true }));
+    const db = openWorkDb(workDbFile(w.paths), { mode: "hook" });
+    try {
+      const all = allTasks(db, folderProject(w.repo));
+      const ownedByLead = (t: { createdBy: string | null }) => t.createdBy === LEAD.sessionId;
+      // Both plans are the lead's now; the one with a phase in progress is the active one.
+      expect(activePlanOf(all, ownedByLead)?.plan).toBe("x");
+    } finally {
+      db.close();
+    }
+    // The refusal names plan x, which the lead now owns, and work there is allowed.
+    const refusal = refused(lead.call("create", { subject: "More", plan: "a", phase: "A2" }));
+    expect(refusal).toContain('Plan "x" (#3) is your active plan');
+    said(lead.call("create", { subject: "Second area", plan: "x", phase: "X2" }));
+  } finally {
+    lead.close();
+    other.close();
   }
 });

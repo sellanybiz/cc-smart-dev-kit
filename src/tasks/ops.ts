@@ -10,10 +10,11 @@ import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
   type PlanWork,
-  phasesNote,
+  planNote,
   refuseBareClose,
   refuseEmptyPhase,
   refuseOtherPlan,
+  refuseStepEscape,
 } from "./plan-guards";
 import {
   addProjectNote,
@@ -415,6 +416,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           refuseEmptyPhase(all, task);
           if (task.plan !== null) refuseOther(task.plan, "start work");
         }
+        if (input.parent !== undefined)
+          refuseStepEscape(all, task, input.parent === null ? null : work(input.parent));
         // This call carries no evidence or note, so a step cannot close here.
         if (input.status === "done" || input.status === "dropped")
           refuseBareClose(all, task, input.status, {});
@@ -666,8 +669,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const count = subtreeProgress(all, task.id);
         const progress =
           (count.total || task.kind === "phase" ? ` · ${count.closed}/${count.total}` : "") +
-          (task.kind === "plan" && task.plan !== null && (cap !== null || capWhy !== null)
-            ? ` · ${phasesNote(all, task.plan, cap)}`
+          (task.kind === "plan" && (cap !== null || capWhy !== null)
+            ? ` · ${planNote(all, task, cap)}`
             : "");
         const binding =
           task.kind === "phase"

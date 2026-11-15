@@ -63,9 +63,10 @@ The store enforces these rules, not the caller:
   transaction.
 - A task blocked by an open task can neither start nor be done.
 - A parent cycle, a blocked-by cycle, and a fourth layer are refused.
-- A plan holds at most `plans.maxPhases` phases (below, § Layers). A phase starts only once it
-  holds a task. A session builds one plan at a time. A step of a phase closes done with
-  evidence, or dropped with a note that gives the reason.
+- A plan holds at most `plans.maxPhases` phases: `layPhase` refuses the one past the cap, in
+  the transaction that inserts it. The other plan-shape rules (a phase starts only once it
+  holds a task, one active plan, a step closes with proof) are enforced by the task tools
+  (`ops.ts`), not the store: § Layers, Plan shape.
 - Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
   number is never given again: its history still answers to it.
 
@@ -153,29 +154,34 @@ checkout's working copy through the normal workflow resolver:
   the cap and where it came from, and the ways forward: a task under the phase that owns its
   files, a next plan, or raising the setting.
 - **No empty phase starts.** Moving a phase to `in_progress` (`task_update`, `task start`) is
-  refused while it has no task; the refusal names `task_create` with `parent` set to the phase.
+  refused while it has no task that is not dropped; the refusal names `task_create` with `parent` set to the phase.
 - **One active plan.** A caller's active plan is an own open plan (`owns`: created or claimed by
   the caller, judged on the plan's own task) with an open phase (`activePlanOf`; one with a phase
   in progress first). While one exists, laying a phase in another plan, or starting a phase or
   task of another own plan, is refused; the refusal names the active plan and says to queue the
   work as a task under the other plan. Another session's plan never counts, and `task_take`
-  still works, so after a take the caller may hold two such plans: the refusal then applies to
-  laying or starting work in the one that is not active.
+  still works, so after a take the caller may hold two such plans. The active plan is then the
+  one with a phase in progress (a taken plan's phase that is running is the work the caller took
+  over), else the lower number; the refusal names it, and it is the plan the caller can lay
+  phases in and start work in. Laying or starting work in the other waits until the active plan
+  is finished or its open phases are dropped.
 - **The default plan.** A write that names no plan goes to the active plan; with none, to the plan
   of the caller's latest own task while that plan is open, as before. A plan queued later never
   takes the call.
 - **Waiting tasks.** `task_create` with `parent` set to a plan's `#n` makes a task directly
   under the plan (its `plan` column is set). `task_update` with `parent` set to a phase of the
   same plan moves it there; another plan's phase, and a move of an existing task up under a plan,
-  are refused. An open blocking waiting task holds the plan's close like any child
+  are refused. An open step of a phase cannot leave its phase by `parent` to the top or under a
+  plan (it would skip the proof below); it may move to another phase, and once closed it moves
+  freely. An open blocking waiting task holds the plan's close like any child
   (`holdingUnder`, `doneValid`). The status line and `layerProgress` already read "a task of a
   phased plan under no phase" this way: it counts in no layer.
 - **Steps close with proof.** A task whose parent is a phase closes `done` only with `evidence`
   and `dropped` only with a `note` on `task_done` (`refuseBareClose`); `task_update` cannot close
   one. A phase, a plan, a loose task and a waiting task keep the plain close, and the kit's own
   closes (a merge, an import) go through the store directly and need neither.
-- **Where it shows.** `task_list` with `scope: "plan"` prints `Phases n/cap` on each plan and
-  marks one over the cap as frozen; `doctor`'s project checks print one `!` line for each open
+- **Where it shows.** `task_list` with `scope: "plan"` prints `Phases n/cap` on each plan,
+  marks one over the cap as frozen, and adds `waiting n` for the open tasks directly under it; `doctor`'s project checks print one `!` line for each open
   plan over the cap, with its fix.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column

@@ -6,7 +6,7 @@
  * reads the checkout's working copy through the normal workflow resolver.
  */
 import { TASK_TOOL } from "./words";
-import { livePhaseCount } from "./work/queries";
+import { isOpen, livePhaseCount } from "./work/queries";
 import type { WorkTask } from "./work/types";
 
 /** What a call does in a plan other than the active one. */
@@ -44,7 +44,9 @@ export function refuseOtherPlan(options: {
  * steps that builder closes. The refusal names the call that adds one.
  */
 export function refuseEmptyPhase(all: readonly WorkTask[], phase: WorkTask): void {
-  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id)) return;
+  // A dropped step is no step: a phase whose only task was dropped has none.
+  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
+    return;
   throw new Error(
     `#${phase.number} "${phase.subject}" has no tasks: add its steps first, each with its done-check (${TASK_TOOL.create} with parent "#${phase.number}"), then start it`,
   );
@@ -76,9 +78,37 @@ export function refuseBareClose(
     );
 }
 
-/** A plan's phase count against the cap, as `task_list` shows it; over the cap it is frozen. */
-export function phasesNote(all: readonly WorkTask[], plan: string, cap: number | null): string {
-  const count = livePhaseCount(all, plan);
-  if (cap === null) return `Phases ${count}`;
-  return `Phases ${count}/${cap}${count > cap ? " · frozen: over the cap, no new phases" : ""}`;
+/**
+ * An open step stays in its phase until it is closed with its proof: moving it to the top, or
+ * under a plan, would let it close without evidence (`refuseBareClose` judges only a step of a
+ * phase). It may move to another phase, and once closed it is free to move. `to` is the new
+ * parent as the call gives it (null: the top).
+ */
+export function refuseStepEscape(
+  all: readonly WorkTask[],
+  task: WorkTask,
+  to: WorkTask | null,
+): void {
+  const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task)) return;
+  if (to !== null && to.kind === "phase") return;
+  throw new Error(
+    `#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`,
+  );
+}
+
+/**
+ * What a plan's row adds to its line on the plan ledger: its phase count against the cap (over
+ * the cap it is frozen) and the open tasks waiting directly under it, which full phase
+ * progress would otherwise hide.
+ */
+export function planNote(all: readonly WorkTask[], plan: WorkTask, cap: number | null): string {
+  const slug = plan.plan ?? "";
+  const count = livePhaseCount(all, slug);
+  const phases =
+    cap === null
+      ? `Phases ${count}`
+      : `Phases ${count}/${cap}${count > cap ? " · frozen: over the cap, no new phases" : ""}`;
+  const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
+  return waiting.length ? `${phases} · waiting ${waiting.length}` : phases;
 }

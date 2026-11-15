@@ -1,4 +1,5 @@
 import { COMMAND } from "../../build-info/names";
+import type { WorkflowSource } from "../../workflow/resolve";
 import { TASK_TOOL } from "../words";
 import { type WorkDb, writeWork } from "./db";
 import {
@@ -522,11 +523,17 @@ export function planTask(db: WorkDb, input: PlanTask, who: Who, now: number): Wo
     insertTask(db, { ...input, kind: "plan" }, who, now)
   );
 }
-/** `plans.maxPhases` as the caller resolved it, and where it came from (`project`, `personal`, `default`). */
+/** `plans.maxPhases` as the caller resolved it, and where the resolver found it. */
 export interface PhaseCap {
   max: number;
-  source: string;
+  source: WorkflowSource;
 }
+/** Where a cap came from, in the words a refusal says it: one entry per source the resolver has. */
+const CAP_ORIGIN: Record<WorkflowSource, string> = {
+  project: "this project's workflow settings",
+  personal: "your own workflow settings",
+  default: "the built-in default",
+};
 export interface LaidPhase extends PlanTask {
   /**
    * The most phases the plan may hold: a new phase beyond it is refused. `ops.ts` always passes
@@ -546,13 +553,7 @@ export interface LaidPhase extends PlanTask {
 }
 /** The refusal for a phase beyond the cap: the count, where the cap comes from, the ways forward. */
 function capRefusal(plan: string, count: number, cap: PhaseCap): string {
-  const from =
-    cap.source === "project"
-      ? "this project's workflow settings"
-      : cap.source === "personal"
-        ? "your own workflow settings"
-        : "the built-in default";
-  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${from}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
+  return `Plan "${plan}" already holds ${count} phases, the most plans.maxPhases allows (${cap.max}, from ${CAP_ORIGIN[cap.source]}). Do not add a phase: add the work as a task under the phase that owns its files (${TASK_TOOL.create} with that phase as parent), start a next plan for it, or raise the cap (${COMMAND} workflow set plans.maxPhases <n>, with --project to set it for this project).`;
 }
 /** The plan phase, made once under its plan task, inside the caller's transaction. */
 export function layPhase(

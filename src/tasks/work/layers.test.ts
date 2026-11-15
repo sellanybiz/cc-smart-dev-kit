@@ -5,6 +5,7 @@
  */
 import { expect, test } from "bun:test";
 import { legacyCreateTask } from "../../testing/claude-mem-db";
+import { hookEnv } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
 import { createTaskOps } from "../ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./db";
@@ -411,6 +412,7 @@ test("the tools lay out a plan and its phases, and say type and blockers", () =>
   const cwd = tempDir();
   const stateDir = tempDir();
   const ops = createTaskOps({
+    env: hookEnv(),
     stateDir,
     cwd: () => cwd,
     caller: () => ({ sessionId: "lead", pid: 1, procStart: "2", cwd }),
