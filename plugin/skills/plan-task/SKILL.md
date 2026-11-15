@@ -199,8 +199,9 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   A plan stays in flight until its `task_done`, so its final review and fix pass belong to it.
   Take plans in plan-number order, unless the person says otherwise: with none in flight,
   start the lowest-numbered queued plan.
-  **To park** a plan, stop or finish its running phases, then `task_update` the plan task to
-  `pending` with a note `parked: <why>`; the store refuses while a phase is `in_progress`.
+  **To park** a plan, stop or finish its running work, `task_update` the plan task to
+  `pending`, then `task_note` it with a note that starts `parked: <why>`; the store refuses
+  while any of its work is `in_progress`.
   Nothing is dropped: phases, steps and briefs stay as they are. **To resume**, start one of its
   phases. Resuming is refused while another plan is in flight: park or finish that one first.
   Name the intended plan with `plan` on `task_list` and on every work-task `task_create` for

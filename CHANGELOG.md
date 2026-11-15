@@ -14,8 +14,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   refusal names that plan and the two ways forward: finish it or park it. A plan stays in
   flight until its `task_done`, so its final review and fix pass belong to it, and the next
   plan starts after it closes. Plans run in plan-number order unless you say otherwise.
-- **Parking keeps the work.** To park a plan, set its plan task back to `pending` with a note
-  `parked: <why>`, after its running phases stop (the store refuses while one is in progress).
+- **Parking keeps the work.** To park a plan, set its plan task back to `pending` and add a
+  note that starts `parked: <why>`, after its running work stops (the store refuses while any
+  of it is in progress).
   Nothing is dropped: phases, steps and briefs stay as they were. Starting one of its phases
   resumes it. This replaces 4.8.0's way of parking by dropping every open step and phase.
 - **`task_list` marks each plan** in flight, queued or parked, in plan-number order. A call
