@@ -26,6 +26,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **One plan is one pull request.** Phase branches stay local and merge into the plan branch.
   The plan branch is pushed after each merged phase (when `autoPush` is on, or after one yes
   for the whole plan), and the one pull request opens after the final review.
+- **Bigger phases never mean less work.** A phase's step closes `done` only with evidence
+  (what was run or checked, and its result) and `dropped` only with a reason; the store
+  refuses otherwise. The phase review answers every step with its own line (`done`, `missing`,
+  `partial`, `dropped-ok`, `dropped-wrong`), and one missing step fails the phase. Phase
+  reviews run at `high`, never lower. Merging phases carries every old brief and done-check
+  over as tasks.
 - **One naming shape** (plan-task § 4): a phase id names its area in one word (`auth`), a
   phase subject is `<Area>: <what it delivers>`, and a task subject is
   `<phase id>-<n>: <verb> <what> — <check>`.
