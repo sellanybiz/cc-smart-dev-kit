@@ -92,7 +92,7 @@ never changes the choice, and a backend's effort is the person's pin at the rout
 
 **The model and effort policy: the lead's judgment (owner, 2026-11-05).** For each launch the
 lead weighs three things: how hard the job is, what a miss costs, and whether it is the last
-check before it is too late (a plan's second read, the final review). It spends effort where
+check before it is too late (a plan's second read, a change's only review). It spends effort where
 those are high and saves it elsewhere. Why: in Claude Code, Opus, Sonnet and Haiku 5.5 default
 to `medium`, and Opus 5.5 at `medium` already matches Opus 5 at `high`
 (code.claude.com/docs/en/model-config); on the owner's Opus 5.5 benchmarks `high` gives most of
@@ -328,8 +328,9 @@ to use when they are missing.
 ## Building a plan in 2.0
 
 `build` runs the subagent-driven workflow. The main session orchestrates one builder per
-phase, parallel worktrees for disjoint files, a fresh senior engineer for each phase's review and
-a final review on `opus` at `xhigh`. Each review brief carries the line `Mode: review` alone on
+phase, parallel worktrees for disjoint files, and a fresh senior engineer for each phase's
+review; no whole-branch review follows (the owner, 2026-11-15: its usage cost outweighed what it
+caught; the main session checks the seams between phases while it merges). Each review brief carries the line `Mode: review` alone on
 its line; the review-record hook records a review only with it, so a consult of the same agent
 records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real

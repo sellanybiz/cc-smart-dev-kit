@@ -43,7 +43,7 @@ and the merge order.
 - **Push and open the pull request** when the change set is complete and the second opinion
   has read it, or it is a small fix that skips it. Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
-  final review.
+  full check after the last phase.
 - **Always the person's word, every time:** anything into the main branch or production, a
   force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
   renaming a branch that is not merged, and shipping a Warning without its fix. A yes covers

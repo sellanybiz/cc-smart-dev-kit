@@ -52,8 +52,8 @@ instructions, the project's text wins.**
 Brief every agent fully, whatever model answers it — it has none of your conversation — and pass
 `model` and `effort` on every launch. **Choose both by judging the job, never by the backend
 behind a slot:** how hard is it; what does a miss cost (caught later, or shipped, lost data, a
-wasted build); is it the last check before it is too late (a plan's second read, the final
-review)? Spend effort only where those matter. The `high` level gives most of the gain;
+wasted build); is it the last check before it is too late (a plan's second read, a change's
+only review)? Spend effort only where those matter. The `high` level gives most of the gain;
 `xhigh` and `max` cost two to three times more for a few points. The person picks the lead's
 model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usage left:
 `/cc-smart-dev-kit:subagent-decision`.
@@ -79,10 +79,10 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 ## Review
 
 - **Review belongs to the main session**, not its builders. An approved plan follows
-  `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
+  `/cc-smart-dev-kit:build`: a review per phase and no whole-branch review. Other
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
-  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary phase
+  deploy plumbing, the router and releases get `opus` at `xhigh`; ordinary phase
   reviews get `sonnet` at `high`, never lower. Your own pass:
   `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,

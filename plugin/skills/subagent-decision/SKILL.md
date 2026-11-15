@@ -25,8 +25,8 @@ weigh three things:
 - **How hard is it?** Can a careful person do it straight through, or does it need deep reasoning?
 - **What does a miss cost?** Cheap and caught later, or it ships, loses data, opens a hole, or
   wastes a whole build?
-- **Is this the last check before it is too late?** A plan's second opinion and the final review
-  guard everything after them, so they earn more effort than a step a later review still covers.
+- **Is this the last check before it is too late?** A plan's second opinion and a change's
+  only review guard everything after them, so they earn more effort than a step a later review still covers.
 
 Spend effort where those are high and save it everywhere else. `high` gives most of the gain;
 `xhigh` and `max` cost two to three times more again for a few points, and `max` can overthink
@@ -70,7 +70,7 @@ Worked examples — judge new cases the same way:
 The kit adds a line when the plan's usage window first passes 50, 75 or 90%. Judge from it:
 
 - **Plenty:** the worked examples above.
-- **Low:** `opus` only for the final risky review. UI/UX design runs only on `opus` or
+- **Low:** `opus` only for the riskiest review. UI/UX design runs only on `opus` or
   `fable`, so it waits for usage to come back, or for the person to say go.
 - **Near the limit:** finish the step, save state in the task ledger, start no new agents, and
   say so.

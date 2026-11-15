@@ -79,8 +79,8 @@ Unsure between two rows, take the higher one. `fable` only when the person asks 
 senior engineer can change files, so the launch carries `Fable reason: build - <what the person
 asked>`, and `agent-guard` asks the person.
 
-- **When:** once the non-plan change is complete, before its first push. Task-scoped reviews
-  and the final branch read for a plan follow the build skill instead.
+- **When:** once the non-plan change is complete, before its first push. A plan's phase
+  reviews follow the build skill instead; a plan gets no whole-branch read.
 - **One change set, one read:** phases built in parallel that ship together get one read,
   not one each. A phase stacked on another open pull request is its own change set: its own
   branch, its own read. Fixes to code the senior engineer already read are a re-push, not a

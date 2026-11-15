@@ -253,7 +253,8 @@ spec and quality. Fix rounds resume the same builder, up to three times; after t
 fresh builder on a stronger model takes over. Builders never start agents or review themselves.
 
 The main session merges each reviewed phase, closes its task and starts what it unblocked.
-One final whole-branch review runs on `opus`, followed by one fix pass and one full check.
+No whole-branch review follows the phase reviews; the main session checks the seams between
+phases while it merges, then runs one full check.
 Commit, push and pull request steps follow the project's workflow policy.
 
 The task system is the ledger. `Ruling:` notes keep decisions; `Report:` notes keep results.
