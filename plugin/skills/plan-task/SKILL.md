@@ -132,6 +132,18 @@ with no tasks will not start.
 Tasks that waited under the plan (§ 6) move under their phases with `task_update` and
 `parent`; a plan cannot close while one still waits. Set `blocked_by` for real dependencies
 and shared-file phases.
+
+Names, so every list and status line reads the same way:
+
+| What | Shape | Example |
+|---|---|---|
+| Plan slug | the result it ships, kebab-case | `own-postgres` |
+| Phase id | its area, one short word; no numbers or sub-letters | `auth` |
+| Phase subject | `<Area>: <what it delivers>` | `Auth: sessions, sign-in and roles` |
+| Task subject | `<phase id>-<n>: <verb> <what> — <check>` | `auth-1: Add the sessions table — migrate up and down passes` |
+| Waiting task | the ask in plain words; it gets its prefix under a phase | `Show the unread count in the tab title` |
+
+Order comes from `blocked_by` and the waves, never from the name.
 Create project tasks for production, database, teammate and follow-up obligations.
 Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
 
