@@ -174,8 +174,8 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   owns its files.
 - **One active plan per session.** A session may queue more plans, but builds one at a time:
   finish (§ 8) or park the active plan before you lay phases in the next. Each plan gets its
-  own plan task; a queued plan's task is the same one § 4 later fills with phases. Name the intended plan with `plan` on `task_list` and on every work-task
-  `task_create` for it; never on a project task, which refuses it. A call that names no plan
+  own plan task; a queued plan's task is the same one § 4 later fills with phases. Name the
+  intended plan with `plan` on `task_list` and on every work-task `task_create` for it; never on a project task, which refuses it. A call that names no plan
   goes to the active plan, and the store refuses phases in a second plan while the active one
   has open phases.
 - **A new ask during a build:** track it before acting. In scope: a task under the phase

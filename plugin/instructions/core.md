@@ -82,7 +82,7 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
   `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
-  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary task
+  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary phase
   reviews get `sonnet` at `high` (`medium` when small and low-risk). Your own pass:
   `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,
