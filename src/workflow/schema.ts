@@ -24,7 +24,7 @@
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
  * without the person, and the status-line usage warning starts at 85 percent.
  *
- * **A group** (`alerts`, `fixesAfterReview`) is merged field by field like the rest,
+ * **A group** (`alerts`, `fixesAfterReview`, `plans`) is merged field by field like the rest,
  * and its fields are named with a dot (`alerts.usagePercent`).
  */
 import { z } from "zod";
@@ -38,6 +38,8 @@ type NumberRule = { kind: "whole"; max?: number; min: number };
 
 const PERCENT: NumberRule = { kind: "whole", max: 100, min: 1 };
 const AT_LEAST_ZERO: NumberRule = { kind: "whole", min: 0 };
+/** How many phases one plan may hold: at least one, at most fifty. */
+const PHASE_COUNT: NumberRule = { kind: "whole", max: 50, min: 1 };
 
 /** The schema for a number of `rule`. */
 function numberSchema(rule: NumberRule): z.ZodNumber {
@@ -51,6 +53,7 @@ const NUMBER_RULES = {
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
+  "plans.maxPhases": PHASE_COUNT,
 } as const satisfies Partial<Record<WorkflowKey, NumberRule>>;
 
 type NumberKey = keyof typeof NUMBER_RULES;
@@ -160,6 +163,13 @@ export const workflowSchema = z.strictObject({
     .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
+  /** How the kit's plans are shaped (`docs/design/tasks.md`). */
+  plans: z
+    .strictObject({
+      /** The most phases one plan may hold. Default: 10. */
+      maxPhases: numberField("plans.maxPhases"),
+    })
+    .optional(),
   /**
    * GitHub Issues, opt-in (decision D67): the kit files follow-ups and findings as issues in the
    * project's own repository (`cc-smart-dev-kit issue file`, `src/issues/`). Off by default, like
@@ -265,6 +275,9 @@ export const workflowDefaults = {
   alerts: {
     usagePercent: 85,
   },
+  plans: {
+    maxPhases: 10,
+  },
 } as const;
 
 /**
@@ -300,6 +313,7 @@ export type WorkflowKey =
   | "issues.fixedLabel"
   | "issues.readyLabel"
   | "alerts.usagePercent"
+  | "plans.maxPhases"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -322,6 +336,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "plans.maxPhases",
 ];
 
 /**

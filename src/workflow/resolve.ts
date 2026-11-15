@@ -91,6 +91,10 @@ export interface ResolvedWorkflow {
   alerts: {
     usagePercent: ResolvedValue<number>;
   };
+  /** How the kit's plans are shaped: the most phases one plan may hold. */
+  plans: {
+    maxPhases: ResolvedValue<number>;
+  };
   switches: {
     statusLine: ResolvedValue<boolean>;
     sessionNames: ResolvedValue<boolean>;
@@ -160,6 +164,8 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined) merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined) merged.plans = plans;
   return merged;
 }
 
@@ -394,6 +400,7 @@ const RESOLVED: {
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "plans.maxPhases": (r) => r.plans.maxPhases,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,
@@ -429,6 +436,7 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
+  const plans = merged.plans ?? {};
   return {
     autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
     autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
@@ -465,6 +473,9 @@ export function resolveWorkflow(
     },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
+    plans: {
+      maxPhases: of("plans.maxPhases", plans.maxPhases ?? workflowDefaults.plans.maxPhases),
+    },
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),
       sessionNames: projectFlag(projectConfig?.sessionNames),

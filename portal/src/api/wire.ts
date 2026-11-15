@@ -451,6 +451,7 @@ export type WorkflowKey =
   | "issues.fixedLabel"
   | "issues.readyLabel"
   | "alerts.usagePercent"
+  | "plans.maxPhases"
   | "switches.statusLine"
   | "switches.sessionNames"
   | "switches.jobRoute"
