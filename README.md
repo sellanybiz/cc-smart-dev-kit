@@ -528,7 +528,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task mcp` | Run the stdio server; setup registers it. |
 
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
-`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued or parked, in plan-number order. To park the plan in flight, stop its running phases and set its plan task back to `pending` with a note `parked: <why>`; nothing is dropped, and starting one of its phases resumes it. The CLI is the fallback when they
+`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued or parked, in plan-number order. Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; project ids use `T-` plus six
 base32 characters. The status line shows current work on rows of its own, one per layer: `Plan · <title>`, then
 `Phases 5/25 · <current phase>` (closed phases out of all the plan's phases), then `Tasks 1/3`
