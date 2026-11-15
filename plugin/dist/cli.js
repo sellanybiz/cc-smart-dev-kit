@@ -29393,6 +29393,30 @@ function defaultPlanOf(all, owns, inFlight, fallback) {
     return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
+function ownerOf(all, who) {
+  const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
+  return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
+}
+function planQueueState(all, plan, parkNote) {
+  if (isInFlight(all, plan))
+    return "in flight";
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (started && phases.every((t) => !isOpen(t)))
+    return "finishing";
+  return started || parkNote ? "parked" : "queued";
+}
+function waitingPlans(all, owns, current, parkNote) {
+  const waiting = { queued: 0, parked: 0 };
+  for (const t of all) {
+    if (t.kind !== "plan" || t.plan === null || t.plan === current || !isOpen(t) || !owns(t))
+      continue;
+    const state = planQueueState(all, t, parkNote(t));
+    if (state === "queued" || state === "parked")
+      waiting[state] += 1;
+  }
+  return waiting;
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -29518,6 +29542,7 @@ function waitsForTask(tasks, start, target) {
   }
   return false;
 }
+var PARK_NOTE_PREFIX = "parked:";
 
 // src/tasks/plan-guards.ts
 function refuseOtherPlan(options) {
@@ -29539,15 +29564,6 @@ function refuseParkWhileBusy(all, task, status) {
   if (running.length === 0)
     return;
   throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
-}
-function planQueueState(all, plan, parkNote) {
-  if (isInFlight(all, plan))
-    return "in flight";
-  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
-  const started = phases.some((t) => t.status === "done");
-  if (started && phases.every((t) => !isOpen(t)))
-    return "finishing";
-  return started || parkNote ? "parked" : "queued";
 }
 function refuseEmptyPhase(all, phase) {
   if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
@@ -29579,7 +29595,6 @@ function planNote(all, plan, cap) {
   const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
-var PARK_NOTE_PREFIX = "parked:";
 var init_plan_guards = __esm(() => {
   init_words2();
 });
@@ -30354,8 +30369,7 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
-      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
+      const owns = ownerOf(all, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const inFlight = inFlightPlanOf(all, owns);
       const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
@@ -43269,7 +43283,7 @@ import { dirname as dirname25 } from "path";
 var THIS = { whose: "this session", waitsIn: null };
 var NOBODY = { whose: "no session", waitsIn: null };
 var UNSEEN = { whose: "another session", waitsIn: null };
-function ownerOf(item, facts) {
+function ownerOf2(item, facts) {
   const asker = facts.session;
   const isAsker = (id) => asker !== null && id === asker;
   if (isAsker(item.session))
@@ -43321,7 +43335,7 @@ function ownedItems(items, asker, sources = {}) {
   if (items.length === 0)
     return [];
   const facts = ownerFacts(asker, sources);
-  return items.map((item) => ({ ...item, ...ownerOf(item, facts) }));
+  return items.map((item) => ({ ...item, ...ownerOf2(item, facts) }));
 }
 function waitingLines(owned) {
   const mine = owned.filter((one) => one.whose === "this session").length;
@@ -47145,15 +47159,17 @@ function planProgress(paths, project, who) {
     const plan = task.plan === null ? null : all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null;
     const phase = task.kind === "phase" ? task : all.find((t) => t.kind === "phase" && t.id === task.parentId) ?? null;
     if (task.plan === null)
-      return { task, plan, phase, phases: null, tasks: null };
+      return { task, plan, phase, phases: null, tasks: null, waiting: null };
     const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
     const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
+    const waiting = waitingPlans(all, ownerOf(all, who), task.plan, (p) => notesOf(db, p).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)));
     return {
       task,
       plan,
       phase,
       phases: hasPhases ? ofPlan : null,
-      tasks: phase !== null ? layerProgress(all, phase) : hasPhases ? null : ofPlan
+      tasks: phase !== null ? layerProgress(all, phase) : hasPhases ? null : ofPlan,
+      waiting
     };
   });
 }
@@ -54200,17 +54216,26 @@ function pinnedEffortOf(config, model, state, profile, nowMs) {
 }
 
 // src/cli/statusline.ts
+function waitingWords(waiting) {
+  if (waiting === null)
+    return "";
+  const parts = [
+    ...waiting.queued > 0 ? [`${waiting.queued} queued`] : [],
+    ...waiting.parked > 0 ? [`${waiting.parked} parked`] : []
+  ];
+  return parts.length ? ` \xB7 ${parts.join(", ")}` : "";
+}
 function taskSegment(paths, project, who) {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null)
     return null;
-  const { task, plan, phase, phases, tasks } = read.value;
+  const { task, plan, phase, phases, tasks, waiting } = read.value;
   if (task.plan === null)
     return task.subject;
   const count = (word, of, title) => `${word} ${of.closed}/${of.total}${title === undefined ? "" : ` \xB7 ${title}`}`;
   const own = task.kind === "task" ? task.subject : undefined;
   return [
-    `Plan \xB7 ${plan?.subject ?? task.plan}`,
+    `Plan \xB7 ${plan?.subject ?? task.plan}${waitingWords(waiting)}`,
     phases === null ? null : count("Phases", phases, phase?.subject),
     tasks === null ? own ?? null : count("Tasks", tasks, own)
   ].filter((row) => row !== null).join(`

@@ -22865,6 +22865,20 @@ function defaultPlanOf(all, owns, inFlight, fallback) {
     return next.plan;
   return fallback !== null && planIsOpen(all, fallback) ? fallback : null;
 }
+function ownerOf(all, who) {
+  const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
+  return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
+}
+var PARK_NOTE_PREFIX = "parked:";
+function planQueueState(all, plan, parkNote) {
+  if (isInFlight(all, plan))
+    return "in flight";
+  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
+  const started = phases.some((t) => t.status === "done");
+  if (started && phases.every((t) => !isOpen(t)))
+    return "finishing";
+  return started || parkNote ? "parked" : "queued";
+}
 function descendants(db, id) {
   const task = taskById(db, id);
   return descendantsIn(allTasks(db, task.project), id);
@@ -22986,7 +23000,6 @@ function waitsForTask(tasks, start, target) {
 }
 
 // src/tasks/plan-guards.ts
-var PARK_NOTE_PREFIX = "parked:";
 function refuseOtherPlan(options) {
   const { all, inFlight, plan, claimedElsewhere } = options;
   if (inFlight === null || inFlight.plan === plan)
@@ -23006,15 +23019,6 @@ function refuseParkWhileBusy(all, task, status) {
   if (running.length === 0)
     return;
   throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
-}
-function planQueueState(all, plan, parkNote) {
-  if (isInFlight(all, plan))
-    return "in flight";
-  const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
-  const started = phases.some((t) => t.status === "done");
-  if (started && phases.every((t) => !isOpen(t)))
-    return "finishing";
-  return started || parkNote ? "parked" : "queued";
 }
 function refuseEmptyPhase(all, phase) {
   if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
@@ -24021,8 +24025,7 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      const earlier = new Set(all.flatMap((t) => claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : []));
-      const owns = (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || t.createdBy !== null && earlier.has(t.createdBy);
+      const owns = ownerOf(all, who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
       const inFlight = inFlightPlanOf(all, owns);
       const writePlan = defaultPlanOf(all, owns, inFlight, ownPlan);
