@@ -20,14 +20,22 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   Nothing is dropped: phases, steps and briefs stay as they were. Starting one of its phases
   resumes it. This replaces 4.8.0's way of parking by dropping every open step and phase.
 - **`task_list` marks each plan** in flight, finishing, queued or parked, in plan-number
-  order. A call that names no plan goes to the plan in flight first (the full order:
+  order. A phase or a list that names no plan goes to the plan in flight first (the full order:
   `plan-task` § 6). An ask made during a build goes to the next queued plan: under its phase
   when one fits, else waiting under the plan.
 - **The status line counts the plans that wait.** Its plan row reads
   `Plan · <title> · 2 queued, 1 parked` when your other open plans wait behind the one in flight.
 - **`/clear` keeps your plans.** After a `/clear` the session gets a new id, but the same
-  process still owns the plans and tasks it made before. So the one-plan rule still holds, and
-  `task_list` keeps showing that earlier work.
+  process still owns what it made, under any session id (the store now records the process
+  that made each task: schema 5). So the one-plan rule still holds, and `task_list` keeps
+  showing that earlier work, even before anything was started. Starting one task of another
+  session's plan no longer makes the whole plan yours.
+- **A small fix needs no plan.** A task you make with no plan and no parent stays loose, even
+  while plans wait or one is in flight: it never joins a plan, and starting it never puts a plan
+  in flight. The default plan is for laying a phase.
+- **A plan parked under 4.8.0** (its phases were dropped) now reads `queued`. To resume it, set
+  its dropped phases and steps back to pending. A plan parked with a note and every phase closed
+  reads `parked`, and resumes by starting its plan task.
 - **Claude is no longer told your plan's usage.** The hook line that said when a window passed
   50, 75 or 90 % is gone, and so is the skill section that told Claude to ration agents by it.
   The status line still shows the usage to you, and warns from `alerts.usagePercent`.

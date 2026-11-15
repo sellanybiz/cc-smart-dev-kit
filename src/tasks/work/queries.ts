@@ -31,6 +31,9 @@ interface TaskRow {
   claim_pid: number | null;
   claim_start: string | null;
   claim_session: string | null;
+  /** Absent in a store a hook reads before a writer moved it to schema 5. */
+  created_pid?: number | null;
+  created_start?: string | null;
   created_at: number;
   updated_at: number;
   closed_at: number | null;
@@ -67,6 +70,14 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       worktree: row.worktree ?? null,
       base: row.base ?? null,
       createdBy: row.created_by,
+      creator:
+        row.created_pid == null
+          ? null
+          : {
+              pid: row.created_pid,
+              procStart: row.created_start ?? null,
+              sessionId: row.created_by,
+            },
       claim:
         row.claim_pid === null
           ? null
@@ -210,19 +221,17 @@ export function defaultPlanOf(
 }
 
 /**
- * Whose task this is, for one caller: one it made (a caller with no session id made none), one
- * its process claims, or one made by a session this process was before (`/clear` gives the
- * process a new session id): the sessions that made a task it claims. The one rule the task
- * tools and the status line judge ownership by.
+ * Whose task this is, for one caller: one it made under its current session id, one its process
+ * claims, or one its process made (`creator`, under any session id: `/clear` gives the process a
+ * new id, and a plan it laid before keeps its own). The same test as a claim (`claimHeldBy`), so
+ * a task another process made is never the caller's by a claim on a sibling. The one rule the
+ * task tools, `task_list` and the status line judge ownership by.
  */
-export function ownerOf(all: readonly WorkTask[], who: Who): (task: WorkTask) => boolean {
-  const earlier = new Set(
-    all.flatMap((t) => (claimHeldBy(t.claim, who) && t.createdBy !== null ? [t.createdBy] : [])),
-  );
+export function ownerOf(who: Who): (task: WorkTask) => boolean {
   return (t) =>
     (who.sessionId !== null && t.createdBy === who.sessionId) ||
     claimHeldBy(t.claim, who) ||
-    (t.createdBy !== null && earlier.has(t.createdBy));
+    claimHeldBy(t.creator, who);
 }
 
 /** A note that starts so says why a plan was parked (`task_update` with the plan pending). */
@@ -233,10 +242,11 @@ export type PlanQueueState = "in flight" | "finishing" | "parked" | "queued";
 
 /**
  * An open plan's place in the queue, for a plan that is not in flight (`isInFlight` says so
- * first): finishing (pending, every phase closed and one done: a plan started under 4.8.0 at its
- * final review and fix pass), parked (pending, with an open phase and either a done phase or a
- * note that starts `PARK_NOTE_PREFIX`), or queued (laid out, never started). `parkNote` says
- * whether the plan task holds such a note.
+ * first). Parked: it holds a note that starts `PARK_NOTE_PREFIX` (checked first, so a plan
+ * parked with every phase closed still reads parked), or it has an open phase and a done one.
+ * Finishing: pending, every phase closed and one done (a plan started under 4.8.0 at its final
+ * review and fix pass). Queued: laid out, never started. `parkNote` says whether the plan task
+ * holds such a note.
  */
 export function planQueueState(
   all: readonly WorkTask[],
@@ -246,8 +256,9 @@ export function planQueueState(
   if (isInFlight(all, plan)) return "in flight";
   const phases = all.filter((t) => t.kind === "phase" && t.plan === plan.plan);
   const started = phases.some((t) => t.status === "done");
+  if (parkNote) return "parked";
   if (started && phases.every((t) => !isOpen(t))) return "finishing";
-  return started || parkNote ? "parked" : "queued";
+  return started ? "parked" : "queued";
 }
 
 /**

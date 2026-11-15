@@ -168,7 +168,8 @@ task's checkout or an unmerged branch. Repeat until all phases close.
 
 Start one final `cc-smart-dev-kit:senior-engineer` on `opus`, effort `xhigh`, with the
 `Mode: review` line, over the plan's complete base-to-head range, including integration work.
-Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings, then run the full
+Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings
+(track each as a task with `parent` set to the plan's `#n`; with no parent it is loose), then run the full
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
 success while a material defect remains; record the blocker and remaining work.
 

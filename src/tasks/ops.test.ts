@@ -57,7 +57,7 @@ for (const status of ["done", "dropped"] as const) {
 }
 
 for (const blocking of [true, false]) {
-  test(`a missing plan row with blocking=${blocking} sets the write default`, () => {
+  test(`a missing plan row with blocking=${blocking}: a plain task stays loose, and a phase's default plan holds only while a blocking task does`, () => {
     const cwd = tempDir();
     const stateDir = tempDir();
     const ops = createTaskOps({
@@ -69,8 +69,11 @@ for (const blocking of [true, false]) {
     try {
       expect(ops.call("create", { subject: "Plan", plan: "legacy" }).ok).toBe(true);
       expect(
-        ops.call("create", { subject: "Existing", type: blocking ? "blocking" : "non-blocking" })
-          .ok,
+        ops.call("create", {
+          subject: "Existing",
+          parent: "#1",
+          type: blocking ? "blocking" : "non-blocking",
+        }).ok,
       ).toBe(true);
       const raw = new Database(workDbFile({ stateDir }));
       try {
@@ -82,11 +85,16 @@ for (const blocking of [true, false]) {
       const db = openWorkDb(workDbFile({ stateDir }), { mode: "hook" });
       try {
         expect(db.sqlite.query("SELECT plan FROM tasks WHERE number=3").get()).toEqual({
-          plan: blocking ? "legacy" : null,
+          plan: null,
         });
       } finally {
         db.close();
       }
+      expect(ops.call("create", { subject: "Area", phase: "A" })).toEqual(
+        blocking
+          ? { ok: true, text: '#5 "Area" · phase A of plan legacy' }
+          : { ok: false, why: "A phase belongs to a plan: give plan (its slug)" },
+      );
     } finally {
       ops.close();
     }
@@ -449,9 +457,10 @@ test("another session's plan is never stamped on a session's own task; the plan 
       ok: false,
       why: "A phase belongs to a plan: give plan (its slug)",
     });
-    // X's own work still takes its plan, and so does its phase with the plan left out.
+    // X's plain task is loose too (a plain task never joins a plan); its phase with the plan
+    // left out takes X's own plan.
     expect(opsX.call("create", { subject: "Own step", status: "in_progress" }).ok).toBe(true);
-    expect(planOf(5)).toBe("auth");
+    expect(planOf(5)).toBeNull();
     expect(opsX.call("create", { subject: "Docs", phase: "G2" })).toEqual({
       ok: true,
       text: '#6 "Docs" · phase G2 of plan auth',

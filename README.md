@@ -500,7 +500,7 @@ are Markdown files reviewed with their branch. [Task design](docs/design/tasks.m
 Every command below starts with `cc-smart-dev-kit`.
 
 **Work lives in Session › Plan › Phase › Task**. A task holds no tasks of its own.
-A top-level task may belong to a plan; a task with no plan is loose. Each task is **blocking** (the default: its parent cannot be done while it
+A top-level task may belong to a plan; a task with no plan is loose. A task made with neither `plan` nor `parent` is always loose, whatever plans are open: a small fix needs no plan. Each task is **blocking** (the default: its parent cannot be done while it
 is open, and a builder is told so before it hands back) or **non-blocking** (noted work that
 holds nothing; it stays open when its parent is done). A task can be **blocked by** other
 tasks: it cannot start or be done while one of them is open. Lists mark both:
@@ -528,7 +528,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task mcp` | Run the stdio server; setup registers it. |
 
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
-`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued or parked, in plan-number order. Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
+`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued, finishing or parked, in plan-number order (finishing: a plan started under 4.8.0, pending with every phase closed and one done, at its final review). Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; project ids use `T-` plus six
 base32 characters. The status line shows current work on rows of its own, one per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when your other plans wait), then
 `Phases 5/25 · <current phase>` (closed phases out of all the plan's phases), then `Tasks 1/3`

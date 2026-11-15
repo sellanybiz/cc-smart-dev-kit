@@ -203,11 +203,17 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   `pending`, then `task_note` it with a note that starts `parked: <why>`; the store refuses
   while any of its work is `in_progress`.
   Nothing is dropped: phases, steps and briefs stay as they are. **To resume**, start one of its
-  phases. Resuming is refused while another plan is in flight: park or finish that one first.
-  Name the intended plan with `plan` on `task_list` and on every work-task `task_create` for
-  it; never on a project task, which refuses it. A call that names no plan goes to the plan in
-  flight; else to the plan being finished (every phase closed, one done, the plan task still
-  open); else to the lowest-numbered open plan with an open phase; else to the newest open plan.
+  phases; a parked plan with no open phase resumes by starting the plan task itself
+  (`task_update` it to `in_progress`). Resuming is refused while another plan is in flight: park
+  or finish that one first.
+  Name the intended plan with `plan` on `task_list` and on `task_create` with `phase`; never on
+  a project task, which refuses it. A call that names no plan goes to the plan in flight; else
+  to the plan being finished (every phase closed, one done, the plan task still open); else to
+  the lowest-numbered open plan with an open phase; else to the newest open plan. That order is
+  for laying a phase and for `task_list`. A `task_create` with neither `plan` nor `parent` is a
+  loose task, whatever plans are open: a small fix needs no plan, runs even while a plan is in
+  flight, is never refused by the one-plan rule and never puts a plan in flight. Work joins a
+  plan only through `parent`: its phase, or the plan's `#n`.
 - **A new ask during a build:** track it before acting. In scope: a task under the phase
   that owns its files. For later: one task per ask in the next queued plan (make that plan if
   none), with `task_create`: under its phase when one fits (`parent` set to the phase's `#n`),

@@ -262,15 +262,16 @@ test("a schema 1 store reads as all blocking, takes the column on its first writ
   add(db, "Before");
   // The store as 1.10.x left it: no type column, schema 1.
   db.sqlite.run("ALTER TABLE tasks DROP COLUMN blocking");
-  for (const field of ["agent", "branch", "worktree", "base"])
+  for (const field of ["agent", "branch", "worktree", "base", "created_pid", "created_start"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${field}`);
+  db.sqlite.run("DROP INDEX task_note_task");
   db.sqlite.run("PRAGMA user_version = 1");
   db.close();
   expect(
     readWorkStore(paths, (hook) => allTasks(hook, "p").map((t) => [t.subject, t.type])),
   ).toEqual({ state: "ready", value: [["Before", "blocking"]] });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
-  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
   // Code from an older version folder inserts without the column: the task is blocking.
   moved.sqlite
     .query(

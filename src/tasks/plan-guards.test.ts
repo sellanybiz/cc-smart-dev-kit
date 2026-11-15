@@ -283,7 +283,7 @@ test("park: a plan goes back to pending only once its work stopped, then the nex
   }
 });
 
-test("a plan stays in flight until task_done: an unnamed task goes to it, not to a queued plan", () => {
+test("a plan stays in flight until task_done: its fix pass waits under it, an unnamed task is loose, an unnamed phase goes to it", () => {
   const w = world();
   const lead = w.ops();
   try {
@@ -293,16 +293,18 @@ test("a plan stays in flight until task_done: an unnamed task goes to it, not to
     said(lead.call("create", { subject: "More b step", parent: "#10" })); // #11
     said(lead.call("update", { task: "#5", status: "in_progress" }));
     said(lead.call("create", { subject: "Unnamed one" })); // #12
-    expect(taskNumbered(w, 12).plan).toBe("b");
+    expect(taskNumbered(w, 12).plan).toBeNull();
     // Both of b's phases close: b is still in flight (its task is not done), so the final
-    // review's fix pass still lands in b and not in the queued plan a.
+    // review's fix pass, a task under the plan, still lands in b and not in the queued plan a.
     said(lead.call("done", { task: "#6", evidence: "ran it: ok" }));
     said(lead.call("done", { task: "#5" }));
     said(lead.call("done", { task: "#11", evidence: "ran it: ok" }));
     said(lead.call("done", { task: "#10" }));
     expect(taskNumbered(w, 4).status).toBe("in_progress");
-    said(lead.call("create", { subject: "Fix a review finding" })); // #13
+    said(lead.call("create", { subject: "Fix a review finding", parent: "#4" })); // #13
     expect(taskNumbered(w, 13).plan).toBe("b");
+    said(lead.call("create", { subject: "Late area", phase: "P3" })); // #14
+    expect(taskNumbered(w, 14).plan).toBe("b");
     // And plan c cannot start before b is closed.
     expect(refused(lead.call("update", { task: "#8", status: "in_progress" }))).toContain(
       'Plan "b" (#4) is in flight',
@@ -356,8 +358,8 @@ test("after /clear (a new session id, the same process) a start in a queued plan
       'Plan "a" (#1) is in flight',
     );
     expect(taskNumbered(w, 4).status).toBe("pending");
-    // A call that names no plan goes to the plan in flight, and the new id sees both plans.
-    said(after.call("create", { subject: "Unnamed" })); // #7
+    // A phase laid with no plan goes to the plan in flight, and the new id sees both plans.
+    said(after.call("create", { subject: "Unnamed", phase: "P9" })); // #7
     expect(taskNumbered(w, 7).plan).toBe("a");
     const ledger = said(after.call("list", { scope: "plan" }));
     expect(ledger).toContain("#1 [in flight · plan]");
@@ -446,9 +448,9 @@ test("a call that names no plan goes to the plan in flight or in the queue, even
     said(ops.call("create", { subject: "Plan A", plan: "a" }));
     said(ops.call("create", { subject: "Area", plan: "a", phase: "A1" }));
     said(ops.call("create", { subject: "Plan B", plan: "b" }));
-    // Plan B is the newest, and plan A is the one being built.
+    // Plan B is the newest, and plan A is the one being built. A plain task is loose.
     said(ops.call("create", { subject: "Where do I go" }));
-    expect(planOf(4)).toBe("a");
+    expect(planOf(4)).toBeNull();
     said(ops.call("create", { subject: "Second area", phase: "A2" }));
     expect(planOf(5)).toBe("a");
     // A's phases are all done and A is still open (its final review and fix pass): A is the plan
@@ -456,7 +458,7 @@ test("a call that names no plan goes to the plan in flight or in the queue, even
     said(ops.call("done", { task: "#2" }));
     said(ops.call("done", { task: "#5" }));
     said(ops.call("create", { subject: "Waits in B", parent: "#3" }));
-    said(ops.call("create", { subject: "Fix a review finding" }));
+    said(ops.call("create", { subject: "Late area", phase: "A3" }));
     expect(planOf(7)).toBe("a");
   } finally {
     ops.close();
@@ -830,7 +832,7 @@ test("a plan whose phases are all dropped is not finishing: the call falls to th
     said(ops.call("done", { task: "#2", outcome: "dropped" }));
     said(ops.call("create", { subject: "Plan B", plan: "b" })); // #3
     said(ops.call("create", { subject: "Waits in B", parent: "#3" })); // #4
-    said(ops.call("create", { subject: "Next ask" })); // #5
+    said(ops.call("create", { subject: "Next ask", phase: "B1" })); // #5
     expect(planOfNumber(w, 5)).toBe("b");
   } finally {
     ops.close();
@@ -900,5 +902,188 @@ test("an open step moves to a phase of its own plan only, never to another plan'
   } finally {
     lead.close();
     other.close();
+  }
+});
+
+const IN_FLIGHT_A =
+  'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet. Finish "a" (task_done on its #1 once its phases are closed), or park it in two calls: task_update with task "#1" and status "pending" (refused while any phase or task of "a" is running, so stop that first), then task_note on "#1" with a note that starts "parked:" and says why.';
+
+test("plans laid, then a /clear before any start: the new session id still owns them, and the one-plan rule holds through the wave and its final review", () => {
+  const w = world();
+  const before = w.ops();
+  const after = w.ops(AFTER_CLEAR);
+  try {
+    queue(before, ["a", "b"]); // plan a #1, phase #2, step #3; plan b #4, phase #5, step #6
+    // Nothing is claimed yet, so only the process that made the plans proves they are the caller's.
+    expect(said(after.call("list", {}))).toBe(
+      [
+        "#1 [pending · plan] Plan a · 0/1",
+        "  #2 [pending · phase P1] Area a · 0/1 · agent none · branch none",
+        "    #3 [pending] Step a",
+        "#4 [pending · plan] Plan b · 0/1",
+        "  #5 [pending · phase P1] Area b · 0/1 · agent none · branch none",
+        "    #6 [pending] Step b",
+      ].join("\n"),
+    );
+    // The first start puts plan a in flight, though its plan task was made under the old id.
+    expect(said(after.call("update", { task: "#2", status: "in_progress" }))).toBe(
+      '#2 "Area a" · in progress',
+    );
+    expect(taskNumbered(w, 1).status).toBe("in_progress");
+    expect(taskNumbered(w, 1).claim?.pid).toBe(LEAD.pid);
+    // The wave finishes; the plan still owes its final review, so plan b stays refused.
+    said(after.call("done", { task: "#3", evidence: "ran it: ok" }));
+    said(after.call("done", { task: "#2" }));
+    expect(refused(after.call("update", { task: "#5", status: "in_progress" }))).toBe(IN_FLIGHT_A);
+    expect(taskNumbered(w, 4).status).toBe("pending");
+    expect(said(after.call("list", { scope: "plan" }))).toBe(
+      [
+        "#1 [in flight · plan] Plan a · 1/1 · Phases 1/10",
+        "  #2 [done · phase P1] Area a · 1/1 · agent none · branch none",
+        "#4 [queued · plan] Plan b · 0/1 · Phases 1/10",
+        "  #5 [pending · phase P1] Area b · 0/1 · agent none · branch none",
+      ].join("\n"),
+    );
+  } finally {
+    before.close();
+    after.close();
+  }
+});
+
+test("starting one step of another session's plan does not make that plan the caller's", () => {
+  const w = world();
+  const lead = w.ops();
+  const other = w.ops(OTHER);
+  try {
+    said(other.call("create", { subject: "Plan a", plan: "a" })); // #1
+    said(other.call("create", { subject: "Area a", plan: "a", phase: "P1" })); // #2
+    said(other.call("create", { subject: "Step a1", parent: "#2" })); // #3
+    said(other.call("create", { subject: "Step a2", parent: "#2" })); // #4
+    said(other.call("update", { task: "#2", status: "in_progress" }));
+    queue(lead, ["b"]); // plan b #5, phase #6, step #7
+    // The lead helps with one of the other session's steps.
+    expect(said(lead.call("update", { task: "#4", status: "in_progress" }))).toBe(
+      '#4 "Step a2" · in progress',
+    );
+    // Its own list shows its own plan and the step it holds, never the other session's plan.
+    expect(said(lead.call("list", {}))).toBe(
+      [
+        "#4 [in progress] Step a2",
+        "#5 [pending · plan] Plan b · 0/1",
+        "  #6 [pending · phase P1] Area b · 0/1 · agent none · branch none",
+        "    #7 [pending] Step b",
+      ].join("\n"),
+    );
+    // The other session's plan is not the lead's plan in flight, so the lead's own plan starts.
+    expect(said(lead.call("update", { task: "#6", status: "in_progress" }))).toBe(
+      '#6 "Area b" · in progress',
+    );
+    expect(taskNumbered(w, 5).status).toBe("in_progress");
+    expect(taskNumbered(w, 1).status).toBe("in_progress");
+  } finally {
+    lead.close();
+    other.close();
+  }
+});
+
+test("a parked plan with every phase closed reads parked, not finishing, and resumes by starting its plan task", () => {
+  const w = world();
+  const lead = w.ops();
+  try {
+    queue(lead, ["a"]);
+    said(lead.call("update", { task: "#2", status: "in_progress" }));
+    said(lead.call("done", { task: "#3", evidence: "ran it: ok" }));
+    said(lead.call("done", { task: "#2" }));
+    expect(said(lead.call("list", { scope: "plan" }))).toContain(
+      "#1 [in flight · plan] Plan a · 1/1 · Phases 1/10",
+    );
+    said(lead.call("update", { task: "#1", status: "pending" }));
+    expect(said(lead.call("list", { scope: "plan" }))).toContain(
+      "#1 [finishing · plan] Plan a · 1/1 · Phases 1/10",
+    );
+    said(lead.call("note", { task: "#1", text: "parked: waiting for the release" }));
+    expect(said(lead.call("list", { scope: "plan" }))).toContain(
+      "#1 [parked · plan] Plan a · 1/1 · Phases 1/10",
+    );
+    // It resumes by starting the plan task itself: there is no open phase to start.
+    expect(said(lead.call("update", { task: "#1", status: "in_progress" }))).toContain(
+      "in progress",
+    );
+  } finally {
+    lead.close();
+  }
+});
+
+test("a small fix needs no plan: a task with no plan and no parent is loose, and starting it leaves a queued plan queued", () => {
+  const w = world();
+  const lead = w.ops();
+  try {
+    queue(lead, ["a"]); // plan a #1, phase #2, step #3
+    expect(said(lead.call("create", { subject: "fix caching" }))).toBe('#4 "fix caching"');
+    expect(taskNumbered(w, 4).plan).toBeNull();
+    expect(said(lead.call("update", { task: "#4", status: "in_progress" }))).toBe(
+      '#4 "fix caching" · in progress',
+    );
+    expect(taskNumbered(w, 1).status).toBe("pending");
+    expect(said(lead.call("list", { scope: "plan" }))).toBe(
+      [
+        "#1 [queued · plan] Plan a · 0/1 · Phases 1/10",
+        "  #2 [pending · phase P1] Area a · 0/1 · agent none · branch none",
+      ].join("\n"),
+    );
+    // A loose task made in progress is the same.
+    expect(said(lead.call("create", { subject: "fix this route", status: "in_progress" }))).toBe(
+      '#5 "fix this route"',
+    );
+    expect(taskNumbered(w, 1).status).toBe("pending");
+  } finally {
+    lead.close();
+  }
+});
+
+test("a loose task starts while a plan is in flight: never refused, never counted, and the plan stays in flight", () => {
+  const w = world();
+  const lead = w.ops();
+  try {
+    queue(lead, ["a", "b"]); // plan a #1, plan b #4
+    said(lead.call("update", { task: "#5", status: "in_progress" })); // plan b in flight
+    expect(said(lead.call("create", { subject: "fix this API route" }))).toBe(
+      '#7 "fix this API route"',
+    );
+    expect(said(lead.call("update", { task: "#7", status: "in_progress" }))).toBe(
+      '#7 "fix this API route" · in progress',
+    );
+    expect(taskNumbered(w, 7).plan).toBeNull();
+    expect(taskNumbered(w, 4).status).toBe("in_progress");
+    expect(taskNumbered(w, 1).status).toBe("pending");
+    // The loose task is in neither plan's count, and b is still the plan in flight.
+    expect(said(lead.call("list", { scope: "plan" }))).toBe(
+      [
+        "#1 [queued · plan] Plan a · 0/1 · Phases 1/10",
+        "  #2 [pending · phase P1] Area a · 0/1 · agent none · branch none",
+        "#4 [in flight · plan] Plan b · 0/1 · Phases 1/10",
+        "  #5 [in progress · phase P1] Area b · 0/1 · agent none · branch none",
+      ].join("\n"),
+    );
+    expect(refused(lead.call("update", { task: "#2", status: "in_progress" }))).toContain(
+      'Plan "b" (#4) is in flight',
+    );
+  } finally {
+    lead.close();
+  }
+});
+
+test("a phase laid with no plan still goes to the default plan: the plan in flight", () => {
+  const w = world();
+  const lead = w.ops();
+  try {
+    queue(lead, ["a", "b"]);
+    said(lead.call("update", { task: "#5", status: "in_progress" })); // plan b in flight
+    expect(said(lead.call("create", { subject: "More area", phase: "P2" }))).toBe(
+      '#7 "More area" · phase P2 of plan b',
+    );
+    expect(taskNumbered(w, 7).plan).toBe("b");
+  } finally {
+    lead.close();
   }
 });

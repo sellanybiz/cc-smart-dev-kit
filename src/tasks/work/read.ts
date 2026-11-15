@@ -41,15 +41,6 @@ export function readWorkStore<T>(paths: Paths, body: (db: WorkDb) => T): ReadSta
     db?.close();
   }
 }
-function own(db: WorkDb, project: string, sessionIds: string[], plan?: string) {
-  return allTasks(db, project).filter(
-    (t) =>
-      t.kind === "task" &&
-      t.createdBy !== null &&
-      sessionIds.includes(t.createdBy) &&
-      (!plan || t.plan === plan),
-  );
-}
 export function startView(
   paths: Paths,
   project: string,
@@ -91,8 +82,12 @@ export function startView(
     };
   });
 }
-export function hasOwnTask(paths: Paths, project: string, sessionIds: string[]) {
-  return readWorkStore(paths, (db) => own(db, project, sessionIds).some(isOpen));
+/** Whether the caller has an open task of its own (`ownerOf`: by session id, claim or maker process). */
+export function hasOwnTask(paths: Paths, project: string, who: Who) {
+  return readWorkStore(paths, (db) => {
+    const owns = ownerOf(who);
+    return allTasks(db, project).some((t) => t.kind === "task" && owns(t) && isOpen(t));
+  });
 }
 
 /**
@@ -126,6 +121,9 @@ export function planProgress(paths: Paths, project: string, who: Who) {
         .at(-1)?.at ??
       all.find((t) => t.id === id)?.createdAt ??
       0;
+    // The current work is what this process has claimed, not everything it owns (`ownerOf`): a
+    // task it made that another process runs is not its work now. A caller with no process
+    // (`who.pid` null) holds no claim, so its own running tasks stand in.
     const task = all
       .filter(
         (t) =>
@@ -148,7 +146,7 @@ export function planProgress(paths: Paths, project: string, who: Who) {
     const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
     const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
     // The caller's other open plans behind this one, by the rule the task tools own them by.
-    const waiting = waitingPlans(all, ownerOf(all, who), task.plan, (p) =>
+    const waiting = waitingPlans(all, ownerOf(who), task.plan, (p) =>
       notesOf(db, p).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)),
     );
     return {

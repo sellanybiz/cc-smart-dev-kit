@@ -81,13 +81,6 @@ import { planProgress } from "../tasks/work/read";
 import type { Who } from "../tasks/work/types";
 import type { AlertsHere } from "../workflow/alerts";
 
-/**
- * The current work, a row per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when the
- * session's other open plans wait behind it), then `Phases 5/25 · <current phase>` when
- * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A task of
- * a phased plan under no phase has no `Tasks` row: its title is the last row. A loose task is its
- * title alone. Each title is whole.
- */
 /** ` · 2 queued, 1 parked` for the plans that wait behind the current one; nothing when none. */
 function waitingWords(waiting: { queued: number; parked: number } | null): string {
   if (waiting === null) return "";
@@ -98,6 +91,13 @@ function waitingWords(waiting: { queued: number; parked: number } | null): strin
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
+/**
+ * The current work, a row per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when the
+ * session's other open plans wait behind it), then `Phases 5/25 · <current phase>` when
+ * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A task of
+ * a phased plan under no phase has no `Tasks` row: its title is the last row. A loose task is its
+ * title alone. Each title is whole.
+ */
 export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null) return null;

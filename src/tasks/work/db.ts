@@ -9,7 +9,7 @@ import type { Result } from "./types";
  * code from an older version folder still reads and writes the store, and a column it does not
  * know takes its default.
  */
-export const WORK_SCHEMA_VERSION = 4;
+export const WORK_SCHEMA_VERSION = 5;
 export const LEGACY_LIFT_REASON = "lift legacy nested task";
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
@@ -47,7 +47,9 @@ CREATE INDEX task_event_number ON task_events(project,number);
 `;
 /**
  * The steps after schema 1, in order: step n moves a store at n to n + 1. Never edit a step that
- * shipped; add one. Schema 2 (D76): a task's type, blocking unless set.
+ * shipped; add one. Schema 2 (D76): a task's type, blocking unless set. Schema 5: the process
+ * that made a task (`created_pid`, `created_start`; null on a row made before), so a task stays
+ * its maker's across a `/clear`, and an index for a task's notes.
  */
 const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
@@ -56,6 +58,9 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
    ALTER TABLE tasks ADD COLUMN worktree TEXT;
    ALTER TABLE tasks ADD COLUMN base TEXT;`,
   repairTaskLayers,
+  `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN created_start TEXT;
+   CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`,
 ];
 class BackupFailure extends Error {}
 /** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */

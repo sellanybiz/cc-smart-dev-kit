@@ -174,9 +174,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
-      // The caller's own task (`ownerOf`: made by it, claimed by its process, or made by a
-      // session this process was before a `/clear`).
-      const owns = ownerOf(all, who);
+      // The caller's own task (`ownerOf`: made under its session id, claimed by its process, or
+      // made by its process under an earlier session id, as before a `/clear`).
+      const owns = ownerOf(who);
       // Reads keep the latest own plan, even closed. Writes never revive an older open plan.
       // Never another session's plan, or its phases would count as the caller's (`openPhasesOf`).
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t))?.plan ?? null;
@@ -362,7 +362,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const parent = input.parent ? work(input.parent) : undefined;
         if (input.plan !== undefined && parent?.plan !== input.plan)
           throw new Error("parent belongs to another plan");
-        const taskPlan = input.plan ?? parent?.plan ?? writePlan;
+        // A task with neither plan nor parent is loose, whatever plans are open: a small fix
+        // needs no plan. It joins a plan only through its parent (a phase, or the plan's #n).
+        const taskPlan = parent?.plan ?? null;
         if (input.status === "in_progress" && taskPlan !== null) refuseOther(taskPlan);
         // The task and its blockers go in one transaction: a refused blocker leaves no task. A
         // task made in progress also puts its plan in flight, in the same write.

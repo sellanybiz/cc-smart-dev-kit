@@ -42,6 +42,10 @@ test("four legacy task levels lift to the phase, closed children add no blocker,
     [c, d],
   ] as const)
     db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(parent.id, child.id);
+  // The store as schema 3 left it: no creator columns, no notes index (schema 5 adds them).
+  db.sqlite.run("DROP INDEX task_note_task");
+  for (const column of ["created_pid", "created_start"])
+    db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version=3");
   db.close();
   const repaired = openWorkDb(file, { mode: "write" });

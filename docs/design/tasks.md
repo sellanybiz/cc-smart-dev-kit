@@ -55,7 +55,9 @@ Dependencies name tasks it waits for; notes hold reports, rulings and other work
 logging) lets readers run beside a writer. Writes use short `BEGIN IMMEDIATE` transactions
 and a busy timeout. `PRAGMA user_version` holds the schema version; `min_compatible` records
 the oldest compatible reader. Migrations only add to the schema, because an older plugin
-folder can still have a running server.
+folder can still have a running server. Schema 5 adds the process that made a task
+(`created_pid`, `created_start`; null on a row made before) and an index on `task_notes(task_id)`:
+a task stays its maker's across a `/clear` (below, Who a call belongs to).
 
 The store enforces these rules, not the caller:
 
@@ -122,12 +124,15 @@ still change.
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
 under the plan task, once per plan and phase (`layPhase`). A second call answers with the phase
 that is there, says so, and names the fields it did not use. `plan` is the plan's slug; left
-out, writes use the default plan (below, Plan shape: the plan in flight, else the plan being
-finished, else the next queued plan, else the plan of its latest own task that has one, made or
-claimed by it, only while that plan is open). Never another session's
+out, a phase goes to the default plan (below, Plan shape: the plan in flight, else the plan
+being finished, else the next queued plan, else the plan of its latest own task that has one,
+made or claimed by it, only while that plan is open). Never another session's
 plan or an older open plan. A plan is
 open when its plan row is pending or in progress; without that row, it needs an open blocking
-task. A closed latest plan leaves new tasks loose; a phase still needs a named plan.
+task. A phase still needs a named plan when no plan is open.
+**A work task with neither `plan` nor `parent` is always loose**, whatever plans are open: a
+small fix needs no plan (`plan-task`), starting it is never refused by the one-plan rule, and it
+never puts a plan in flight. A task joins a plan only through its `parent`, a phase or the plan.
 The store checks under the write lock too, for a named plan or parent as well as the default,
 and when `task_update` moves a task into a phase. That move takes the destination phase's plan;
 moving to the top keeps the task's plan. An unchanged placement stays editable after closure.
@@ -190,12 +195,13 @@ checkout's working copy through the normal workflow resolver:
   goes. **Resuming** is starting one of its phases again, which is a start like any other (it
   waits while another plan is in flight). The order of plans is the person's: the skills take
   them in plan-number order, the store does not force it.
-- **The default plan** (`defaultPlanOf` in `queries.ts`). A write that names no plan goes, in
-  order, to the plan in flight; else to the plan being finished (an own open plan whose phases
-  are all closed, at least one done: its final review and fix pass; the newest such plan; this
-  is how a plan started under 4.8.0 is read); else to the next plan in the queue, the
-  lowest-numbered own open plan with an open phase; else to the plan of the caller's latest own
-  task while that plan is open. Only the first counts for the start refusal.
+- **The default plan** (`defaultPlanOf` in `queries.ts`). A phase laid with no plan, and a
+  `task_list` that names none, go, in order, to the plan in flight; else to the plan being
+  finished (an own open plan whose phases are all closed, at least one done: its final review
+  and fix pass; the newest such plan; this is how a plan started under 4.8.0 is read); else to
+  the next plan in the queue, the lowest-numbered own open plan with an open phase; else to the
+  plan of the caller's latest own task while that plan is open. Only the first counts for the
+  start refusal. A plain task never takes it: with neither `plan` nor `parent` it is loose.
 - **Waiting tasks.** `task_create` with `parent` set to a plan's `#n` makes a task directly
   under the plan (its `plan` column is set). `task_update` with `parent` set to a phase of the
   same plan moves it there; another plan's phase, and a move of an existing task up under a plan,
@@ -255,9 +261,14 @@ git uses its own real path. A git failure is an error, never a guessed identity.
 project config leaves local work usable.
 
 A claim belongs to the Claude process: pid plus start time, not just a session id. A task is
-the caller's own when it made it, when its process claims it, or when a session this process
-was before made it: the creator of any task the process claims (`owns` in `ops.ts`), so a
-queued plan made before a `/clear` is still in the caller's queue. Off
+the caller's own (`ownerOf` in `src/tasks/work/queries.ts`, the one rule the task tools and the
+status line use) when it made it under its current session id, when its process claims it, or
+when its process made it, under any session id. The store records the maker (`creator`: pid,
+start time and the session id it made the task under, schema 5) and tests it with the same
+`claimHeldBy` as a claim, so a queued plan made before a `/clear` is still in the caller's
+queue, with nothing claimed yet. A task another process made is never the caller's by a claim
+on one of its sibling tasks. A row made before schema 5 has no maker process and is its session's
+own only. `task_take` rewrites the maker to the taker. Off
 Linux there is no start time, so a claim there also needs the caller's session id
 (`claimHeldBy`): a later process that gets a dead one's pid holds none of its claims, and a
 `/clear` there drops the claims until the task is started again. The

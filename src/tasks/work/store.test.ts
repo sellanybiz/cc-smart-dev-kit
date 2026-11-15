@@ -132,7 +132,10 @@ test("plan upserts and process claims survive a clear", () => {
   expect(claimState(own, () => true, { ...who, pid: 99 })).toBe("another session");
   expect(claimState(own, () => false, who)).toBe("free");
   db.close();
-  expect(hasOwnTask(paths, "p", ["session"])).toEqual({ state: "ready", value: true });
+  expect(hasOwnTask(paths, "p", { sessionId: "session", pid: null, procStart: null })).toEqual({
+    state: "ready",
+    value: true,
+  });
 });
 test("one claim match: the start time names the process; without one the session must match too", () => {
   const linux = { pid: 12, procStart: "34", sessionId: "session" };
@@ -165,7 +168,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='5' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='6' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");

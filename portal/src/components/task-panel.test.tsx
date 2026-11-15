@@ -39,6 +39,7 @@ const DETAIL: TaskDetailAnswer = {
     closedAt: null,
     createdAt: AT,
     createdBy: "s-old",
+    creator: null,
     description: "## What\n\nThe **docs** page.",
     id: "w6",
     kind: "task",

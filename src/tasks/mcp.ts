@@ -13,13 +13,13 @@ The main session saves Ruling: notes and sets agent, branch, worktree and base o
 After compaction, task_list scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan › phase › task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
-A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n).
+A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create:
-    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task, give its phase as parent, or the plan as parent to make it wait there for a phase. Phases may be laid in any of your plans; one plan is in flight at a time.",
+    "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
   update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
   done: "Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note.",
   note: "Save a note on a task as work proceeds.",
