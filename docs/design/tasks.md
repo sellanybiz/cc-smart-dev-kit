@@ -17,8 +17,12 @@ The task's kind selects its store, not a second set of tools.
 ## The subagent ledger in 2.0
 
 The main session creates the plan task, one phase task per builder and each phase's steps.
-The phase description is the brief: goal, files and boundaries, patterns and tools, and
-verification. Disjoint phases run in parallel worktrees; `blocked_by` orders shared files.
+A plan is one result that ships as one pull request and holds at most `plans.maxPhases`
+phases (default 10). A phase is one area of the code with its own files; its steps are its
+tasks, usually 3 to 10, each with a done-check. The phase description is the brief: goal,
+files and boundaries, patterns and tools, and verification. Disjoint phases run in parallel
+worktrees; `blocked_by` orders shared files. A session builds one plan at a time. A later ask
+waits as a task under the queued next plan until that plan's phases are laid.
 
 Work tasks add four optional fields, set through `task_create` / `task_update` or the CLI:
 
@@ -33,8 +37,10 @@ Work tasks add four optional fields, set through `task_create` / `task_update` o
 shows each phase's agent, branch, state and completed steps, such as `3/5`.
 
 A builder writes a `Report:` note with its result and checks. The main session records
-small decisions in `Ruling:` notes, asks a fresh reviewer to review each phase, merges it,
-closes its task and starts what it unblocked. One final whole-branch review runs on `opus`.
+small decisions in `Ruling:` notes, asks a fresh reviewer to review each phase, merges it
+into the plan branch (phase branches stay local), closes its task and starts what it
+unblocked. One final whole-branch review runs on `opus`; then the plan's one pull request
+opens.
 After compaction, this ledger and git history prevent repeating finished work.
 
 ## The work store

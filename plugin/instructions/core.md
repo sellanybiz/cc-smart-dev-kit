@@ -12,7 +12,7 @@ instructions, the project's text wins.**
   debugging, the person's questions and shared integration work stay with you. A "session" is
   `/cc-smart-dev-kit:herdr`, never a subagent.
 - **An approved plan runs through `/cc-smart-dev-kit:build`:** you orchestrate, a fresh subagent
-  builds each phase, and the kit's tasks are the ledger.
+  builds each phase (one area of code, with its tasks), and the kit's tasks are the ledger.
 - **Parallel by default.** Unblocked agents start together, disjoint phases in separate
   worktrees; phases that share files are ordered. Wait only for what the next step needs.
 - **Speed comes from parallel work, never from a skipped check or test.**
@@ -33,7 +33,8 @@ instructions, the project's text wins.**
 - **One plan at a time, start to finish.** No side work: a bug, gap or duplicate outside your plan
   becomes a follow-up project task (the main session links an issue where issues are on), no fix.
   Inside the plan is the code it changes and anything that would make its result wrong. A new
-  ask outside the plan: say so in one line, then do it here or file it, as the person prefers.
+  ask outside the plan: say so in one line, then do it here or file it, as the person prefers
+  (a later ask waits as a task in the next plan, `/cc-smart-dev-kit:plan-task` § 6).
 - **Check only what you changed while you build;** the full check runs once, at the end, never
   in a subagent. **Test with the person** what only they can judge (their login, their device,
   the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
@@ -78,7 +79,7 @@ model; the kit recommends Claude Opus at `high`. Worked examples, briefs and usa
 ## Review
 
 - **Review belongs to the main session**, not its builders. An approved plan follows
-  `/cc-smart-dev-kit:build`: a task review per phase, then a final whole-branch review. Other
+  `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
   changes beyond a small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
   deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary task

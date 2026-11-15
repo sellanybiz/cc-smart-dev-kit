@@ -57,8 +57,9 @@ you started from.
    dispatching a helper. Use existing code before adding a second implementation.
    Shape new and changed code by the loaded code-structure skill. In a React or Next.js web
    app, load `cc-smart-dev-kit:performance-budget` before the first edit and follow it.
-2. Keep the phase's steps current in kit tasks. Create missing steps under its task.
-   Routing and the CLI fallback: `cc-smart-dev-kit:memory-routing`.
+2. Work the phase's tasks in order and close each with its check as you go. Create a
+   missing step as a task under the phase, never a new phase. Routing and the CLI fallback:
+   `cc-smart-dev-kit:memory-routing`.
 3. For a behavior change, write the failing test first where this kind of code has tests.
    Implement the whole brief, not a first slice. Do not invent a test framework for prose.
 4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of

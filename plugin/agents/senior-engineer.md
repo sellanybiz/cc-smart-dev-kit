@@ -58,7 +58,7 @@ fix. A brief that asks for no fix gets none.
 
 The limits that keep a review useful, each learned from a review that went wrong:
 
-1. **One bounded brief** — one phase, one branch or one plan. A task review reads the task's
+1. **One bounded brief** — one phase, one branch or one plan. A phase review reads the phase's
    `task_get` description and `Report:` notes. A fix check covers only the findings and paths it
    names, because a restarted broad review buries the answer the caller waits for.
 2. **No ritual reads** — the diff, the files it touches, and the rules and docs those files point
