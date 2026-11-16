@@ -185,6 +185,16 @@ describe("vendored skills (offline)", () => {
     );
   });
 
+  test("shipped generation guidance keeps keys local and runner wording consistent", () => {
+    const folder = join(root, "plugin/skills/shadcncraft-generate-code/references");
+    const setup = readFileSync(join(folder, "project-setup.md"), "utf8");
+    expect(setup).toContain("never ask them to paste it into the conversation");
+    expect(setup).not.toContain("stop and ask the user for it");
+    expect(readFileSync(join(folder, "component-mapping.md"), "utf8")).toContain(
+      `The commands above show \`bunx shadcn@${MCP_VERSIONS.shadcn}\``,
+    );
+  });
+
   test("every shadcn package pin matches the MCP pin and latest is absent", () => {
     let pins = 0;
     for (const skill of VENDORED_SKILLS) {
