@@ -11,7 +11,13 @@ import {
 } from "./check-context-budget";
 import { checkDocs, SKIPPED_FOLDERS } from "./check-docs";
 import { readSourceFiles } from "./check-duplicates";
-import { patchSkill, sha256, VENDORED_SKILLS, verifyIntegrity } from "./vendor-skills";
+import {
+  patchSkill,
+  serializeHashes,
+  sha256,
+  VENDORED_SKILLS,
+  verifyIntegrity,
+} from "./vendor-skills";
 
 const root = join(import.meta.dir, "..");
 
@@ -82,6 +88,23 @@ describe("user-only budget (offline)", () => {
 });
 
 describe("vendored skills (offline)", () => {
+  test("serialized hashes exactly match the formatted block on disk", () => {
+    const source = readFileSync(join(root, "scripts/vendor-skills.ts"), "utf8");
+    const block = /\/\/ BEGIN GENERATED HASHES\n([\s\S]*?)\/\/ END GENERATED HASHES/.exec(
+      source,
+    )?.[1];
+    if (block === undefined) throw new Error("missing generated hash block");
+    const hashes = Object.fromEntries(
+      VENDORED_SKILLS.map((skill) => [skill.folder.split("/").at(-1) ?? "", skill.sha256]),
+    );
+    expect(serializeHashes(hashes)).toBe(block);
+    expect(checkDocs([{ path: "scripts/vendor-skills.ts", text: source }])).toEqual([]);
+    expect(
+      checkDocs([
+        { path: "scripts/vendor-skills.ts", text: `${source}\n// ${"rules/"}missing.md` },
+      ]),
+    ).toHaveLength(1);
+  });
   test("biome and docs exclusions match the vendor table", () => {
     const biome = JSON.parse(readFileSync(join(root, "biome.json"), "utf8"));
     expect(
@@ -119,6 +142,49 @@ describe("vendored skills (offline)", () => {
     }
   });
 
+  test("unversioned shadcn runners are absent from every vendored file", () => {
+    for (const skill of VENDORED_SKILLS)
+      for (const file of filesIn(join(root, skill.folder))) {
+        expect(readFileSync(join(root, skill.folder, file), "utf8")).not.toMatch(
+          /\b(?:npx|bunx(?:\s+--bun)?|pnpm\s+dlx)\s+shadcn(?=[\s`])/,
+        );
+      }
+  });
+
+  test("unversioned runner patch preserves other packages and versioned commands", () => {
+    const skill = VENDORED_SKILLS[0];
+    if (!skill) throw new Error("missing shadcn skill");
+    expect(
+      patchSkill(
+        skill,
+        "fixture.md",
+        "npx shadcn init\nbunx shadcn add\npnpm dlx shadcn add\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info",
+      ).text,
+    ).toBe(
+      `bunx shadcn@${MCP_VERSIONS.shadcn} init\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info`,
+    );
+  });
+
+  test("exact secret and runner-wording patches reject upstream drift", () => {
+    const skill = VENDORED_SKILLS.find((entry) =>
+      entry.folder.endsWith("/shadcncraft-generate-code"),
+    );
+    if (!skill) throw new Error("missing generation skill");
+    const secret = "**If the key is missing, stop and ask the user for it.**";
+    const fixed = patchSkill(skill, "references/project-setup.md", secret);
+    expect(fixed.text).toContain("never ask them to paste it into the conversation");
+    expect(fixed.text).toContain("ignored env file");
+    expect(() => patchSkill(skill, "references/project-setup.md", "upstream changed")).toThrow(
+      "secret",
+    );
+    expect(
+      patchSkill(skill, "references/component-mapping.md", "The commands above show `npx`").text,
+    ).toBe(`The commands above show \`bunx shadcn@${MCP_VERSIONS.shadcn}\``);
+    expect(() => patchSkill(skill, "references/component-mapping.md", "upstream changed")).toThrow(
+      "wording",
+    );
+  });
+
   test("every shadcn package pin matches the MCP pin and latest is absent", () => {
     let pins = 0;
     for (const skill of VENDORED_SKILLS) {
@@ -152,6 +218,8 @@ describe("vendored skills (offline)", () => {
       expect(provenance).toContain(skill.source.ref);
       expect(provenance).toContain("2026-11-16");
       expect(provenance).toContain("Patches:");
+      expect(provenance).toContain("## Upstream behaviour kept");
+      for (const behaviour of skill.upstreamBehaviour) expect(provenance).toContain(behaviour);
     }
   });
 
@@ -166,7 +234,15 @@ describe("vendored skills (offline)", () => {
     expect(result.text).toBe(
       `---\nname: example\nallowed-tools: Bash(bunx shadcn@${MCP_VERSIONS.shadcn} *)\ndisable-model-invocation: true\n---\n!\`bunx shadcn@${MCP_VERSIONS.shadcn} info --json\`\nshadcn@${MCP_VERSIONS.shadcn}`,
     );
-    expect(result.counts).toEqual({ runner: 2, pin: 1, dmi: 1, mcp: 0 });
+    expect(result.counts).toEqual({
+      runner: 2,
+      pin: 1,
+      dmi: 1,
+      mcp: 0,
+      unversioned: 0,
+      secret: 0,
+      wording: 0,
+    });
     const mcp = readFileSync(join(root, skill.folder, "mcp.md"), "utf8");
     expect(mcp).toContain("already registers the shadcn MCP server for every project");
     expect(mcp).not.toContain("shadcn mcp init");

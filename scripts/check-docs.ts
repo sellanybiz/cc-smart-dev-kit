@@ -179,7 +179,14 @@ export function checkDocs(files: readonly SourceFile[]): BrokenRef[] {
     if (SKIPPED_FILES.has(file.path)) continue;
     if (SKIPPED_FOLDERS.some((d) => file.path.startsWith(d))) continue;
     if (!TEXT.test(file.path)) continue;
-    const text = file.text;
+    // Hash keys are upstream file names, not authored pointers into this repo's rules.
+    const text =
+      file.path === "scripts/vendor-skills.ts"
+        ? file.text.replace(
+            /\/\/ BEGIN GENERATED HASHES\n[\s\S]*?\/\/ END GENERATED HASHES/g,
+            (block) => block.replace(/[^\n]/g, " "),
+          )
+        : file.text;
 
     // A link to another heading in the same file: its anchor must be a heading's.
     if (file.path.endsWith(".md")) {
