@@ -25,7 +25,7 @@ Generated code only looks right if the project is actually set up for shadcncraf
 
 ### 2. License key (required for pro blocks)
 
-Pro blocks need `SHADCNCRAFT_LICENSE_KEY` in the project's `.env` / `.env.local`. Without it the registry returns 403 and nothing installs. **If the key is missing, stop and ask the user for it.** Do not silently generate a lookalike, which is what produces a bad result.
+Pro blocks need `SHADCNCRAFT_LICENSE_KEY` in the project's `.env` / `.env.local`. Without it the registry returns 403 and nothing installs. **If the key is missing, stop and tell the person to set SHADCNCRAFT_LICENSE_KEY themselves in their own environment or the project's ignored env file; never ask them to paste it into the conversation.** Do not silently generate a lookalike, which is what produces a bad result.
 
 ### 3. Fonts (the usual reason output is serif)
 

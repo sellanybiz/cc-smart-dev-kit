@@ -20,7 +20,7 @@ SHADCNCRAFT_LICENSE_KEY=<your-key> bunx shadcn@4.23.0 add @shadcncraft/<name>
 
 Free-tier items (no pro bundle) install without it. Use the item's `bundle` field to decide whether to surface this.
 
-**Use the project's package manager.** The commands above show `npx`, but match what the project actually uses: pnpm -> `pnpm dlx shadcn@4.23.0 add ...`, yarn -> `yarn dlx ...`, bun -> `bunx --bun shadcn@4.23.0 add ...`, npm -> `npx ...`. Detect it from the lockfile (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `package-lock.json`) and from how the project's docs invoke scripts. The same applies to any `npm install <pkg>` you emit for an icon library (e.g. `pnpm add @phosphor-icons/react`).
+**Use the project's package manager.** The commands above show `bunx shadcn@4.23.0`, but match what the project actually uses: pnpm -> `pnpm dlx shadcn@4.23.0 add ...`, yarn -> `yarn dlx ...`, bun -> `bunx --bun shadcn@4.23.0 add ...`, npm -> `npx ...`. Detect it from the lockfile (`pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `package-lock.json`) and from how the project's docs invoke scripts. The same applies to any `npm install <pkg>` you emit for an icon library (e.g. `pnpm add @phosphor-icons/react`).
 
 ### Resolve by NAME and data-slot, not by node ID
 

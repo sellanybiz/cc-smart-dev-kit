@@ -7,8 +7,12 @@ Upstream path: package/skills/shadcncraft-import-variables/
 Date: 2026-11-16
 
 Left out: agents/, evals/
-Patches: bun-runner-and-pin, user-only.
+Patches: bun-runner-and-pin, pin-unversioned-runner, user-only.
 The shadcn CLI pin comes from MCP_VERSIONS.shadcn in src/mcp/versions.ts (4.23.0).
-Patch counts: {"runner":0,"pin":0,"dmi":1,"mcp":0}.
+Patch counts: {"runner":0,"pin":0,"dmi":1,"mcp":0,"unversioned":1,"secret":0,"wording":0}.
+
+## Upstream behaviour kept
+
+- Package runners and non-shadcn tooling follow the project's own conventions.
 
 Re-vendor with bun scripts/vendor-skills.ts. Do not edit these files by hand.

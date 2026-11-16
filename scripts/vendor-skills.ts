@@ -51,7 +51,7 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
     "scripts/showcase-coverage.mjs":
       "fb593e0806414d23b51354a46881f0b2873afc226bda0926a22f83cbd60af2fa",
     "SKILL.md": "fb93457cd7bb9c9840ab567d1efb239d3cebcd2611164f74febd821f725b1c1b",
-    "VENDORED.md": "509e9e9dfec9b180edd441bfb541a053f7c1d2994e40e91b20bae0b329ec1451",
+    "VENDORED.md": "1af9c6065061e6966d9a93724eb201b8d2fb45a8ad0d8370f9f40d1a4a99a960",
   },
   "migrate-radix-to-base": {
     "class-mapping.md": "c288738167c663c6188caf958cdac6d72061b0ce44d6bce14d9dc6d40b4e79f9",
@@ -64,13 +64,13 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
     "overlays.md": "8d9fe2b05eb22a1664637b22e6112190de88a4368420d9cb36002adc108e8a03",
     "SKILL.md": "91dc250fee4269d1a2246801640056cd46881c2b0edd70f22a61ccb1e3499ec4",
     "universal-patterns.md": "c520a81a21c9abd1135b52ad1ecc3d4a127904bbf33199f8d26ae389679346ce",
-    "VENDORED.md": "cba51e578ca7a00c645d3e05bfd8e858e85d1d852b4ef42432066750e9f66b43",
+    "VENDORED.md": "f19474970254408d0c250fc2787bfda500a8476f26d6755b0752b04679e146cd",
     "wrapper-shapes.md": "0bf31ea3e864a12bfa911f058ae135dc3f6f098cb0cc2aa5648b4a3d0bdd51cc",
   },
   "shadcncraft-generate-code": {
     LICENSE: "11cb754a314561b2b313686c66753f417dac707c600aaa5ad47cbf0973a38b7e",
     "references/component-mapping.md":
-      "31019e980ba0d73c1a4e78e3163de973f1364500f18a671b6d3be32b1242ed61",
+      "3cece01429808bf9d1088869dcab1d24a51d608df93ced98d560917b2c1e19f2",
     "references/figma-node-hints.json":
       "b78bdfbaf17585c77c4effa1254df913d17b1365a937de6ba816c6a3727ed7a4",
     "references/full-page-frames.md":
@@ -84,26 +84,26 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
     "references/output-conventions.md":
       "341151202ff7eb9208e2572fbfddd3bad51e1f9ae7541ecef321377b0c90b30c",
     "references/project-setup.md":
-      "432cf6180975a5b7c480b328d2489aa8c247f14c287c60d72f8bcb1977dabfe2",
+      "91082cc76121d9bbe09766f5a75dcefab1a7cfd9130cc775e098fafb59971a10",
     "references/registry-index.json":
       "5aed8c5471aa2e5c3f777b30b5d32d0fb1ad28794195392607e3098d8302415b",
     "references/token-discipline.md":
       "e7f3dd08434f3abb4c4aad02a916327a903c83a792c5e5afdca717b8341e88c1",
     "SKILL.md": "31ce0fcf1708466eaa2959da1f072ec441bc6ee60e0628f7f9bf7c66e1e2438c",
-    "VENDORED.md": "14137ddf4f2331c2dc90c68c5650ade9e94daa5082c32e23ed56aaee996a1656",
+    "VENDORED.md": "0794e7dbc5b1939ff5ba7da78b96c4291848e489b13b62caf1f4ee0d8a60ffdc",
   },
   "shadcncraft-import-variables": {
     LICENSE: "11cb754a314561b2b313686c66753f417dac707c600aaa5ad47cbf0973a38b7e",
     "references/figma-collections.md":
       "7bc8342d50760c950cd17f673593d6c85024d2bfb460b6e973cb859ebed6d9d4",
     "references/managed-region.md":
-      "1f0d7d44d8821067d82b4b0fb91253e422640abafefb6dcb550fa5148b7b932a",
+      "02977941f539abbaeaeade97bf16caf91c9e8ce02d0737611ac270b143de7fed",
     "references/token-mapping.md":
       "2514941e40daa13af249f0013b0f4145f7d5b7cd46aad08af935a438b7b9e7df",
     "references/token-sources.md":
       "abe7a3e2c29d429dd13ace405bcdf73d2e083b67e0707512417aca5784813427",
     "SKILL.md": "1ef47a07dc2123659f90d26de7e32bdce3fa5728a39d122e868727627e4f225f",
-    "VENDORED.md": "3a1c6efc8878edfee8be0ad76b5c5507574c965766adb54259e01e22e253fc5b",
+    "VENDORED.md": "46010531dbb2841e00c09321ac4b8fc8aae5640d89080088b2bf103c46f4070c",
   },
   "shadcncraft-import-app": {
     LICENSE: "11cb754a314561b2b313686c66753f417dac707c600aaa5ad47cbf0973a38b7e",
@@ -112,21 +112,21 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
     "references/plan-schema.md": "d0d1ae40abed8db011a4449137fc160b279cf118d9c6cc6670927fa14660a433",
     "references/scan-rules.md": "a30af109bd13afa8ff4de2048dc31d570e19549172f988a5ffa1b492c2f55b51",
     "SKILL.md": "41f9cbc7a1ea36ff7f70837bb26303dc8fcf708576665a8935cc9fca3b413cfe",
-    "VENDORED.md": "9cc79c564d7ea928a9ca399f7fa9eecc0225e6a8741dbb9913bd43fa7f4f5318",
+    "VENDORED.md": "122c40f7aea30b6e49f8ee8cf57dda1874e490eddbf16c348e7ba7d136f195b0",
   },
   "shadcncraft-import-block": {
     LICENSE: "11cb754a314561b2b313686c66753f417dac707c600aaa5ad47cbf0973a38b7e",
     "references/block-recipes.md":
       "2a069956a2df4d6e4b351eba96bfdde8df7a396b87d46d69e354731d112de00d",
     "SKILL.md": "6aeab1910acec739b8be5346297e7641ddd459dd4d2603e3cf2079c7fd19d779",
-    "VENDORED.md": "98e2f7fa64e58147fc7460c41949fa3309c4e59471890ea876d359c8c997d500",
+    "VENDORED.md": "ac782468710d45a1d63a6c1a94c5ed2c9f78f100d594ad7ca1b28b8135a06a80",
   },
   "shadcncraft-import-component": {
     LICENSE: "11cb754a314561b2b313686c66753f417dac707c600aaa5ad47cbf0973a38b7e",
     "references/component-recipes.md":
       "e7109970fa5866418b4fa480e8c8e8395e57bcf645335ae0fa0a5d8317b9e00d",
     "SKILL.md": "7ac3dbf4cc937152652704a7ce4f48df456fca490d360b456adba8fcc460f6e5",
-    "VENDORED.md": "219efd9bd7d03ca958c7c807c72c7dbc1df528791cfced902bab246e728e91e2",
+    "VENDORED.md": "b598da8fbe1e8b40b3c4685dabac343eaa1535fc7146c0fd89b8d5a371bd8bd7",
   },
 };
 // END GENERATED HASHES

@@ -26,7 +26,7 @@ Wrap the tokens this skill writes in sentinel comments:
 
 **Subsequent run (sentinels present):** find the region, regenerate the `:root` and `.dark` blocks inside it from the resolved source, leave the rest of the file byte-for-byte identical.
 
-**First run (no sentinels yet):** the project already has `:root` / `.dark` blocks from `npx shadcn init`. Do not blindly prepend a second copy.
+**First run (no sentinels yet):** the project already has `:root` / `.dark` blocks from `bunx shadcn@4.23.0 init`. Do not blindly prepend a second copy.
 1. Locate the existing `:root` and `.dark` blocks.
 2. Wrap them in the sentinels in place (convert them into the managed region) and update their values, OR if they are entangled with other rules, extract the token declarations into a fresh managed region and remove the originals.
 3. Confirm there is exactly one `:root` token block and one `.dark` token block afterward; duplicate `:root` blocks cause last-wins surprises.
