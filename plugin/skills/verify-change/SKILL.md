@@ -77,16 +77,19 @@ A check that fails: fix it at the source; never silence it.
 
 **A push hook on a busy machine.** The push hook repeats this full check. When the machine is
 under heavy load (`cc-smart-dev-kit job status` shows jobs waiting for a slot, or the load
-average stays above the number of CPU cores), you may push with `--no-verify` only when all
-of these hold:
+average stays above the number of CPU cores for a few minutes; native Windows has no load
+average, so there only the queue counts), you may push with `--no-verify` only when all of
+these hold:
 
 - this full check passed in this session on the exact commit you push (`git rev-parse HEAD`
   is the commit it ran on, and nothing changed since);
 - the project's CI runs the same checks on that branch (read its workflow; a check the hook
-  runs and CI does not means no skip).
+  runs and CI does not means no skip);
+- the push hook only runs checks (read it). The flag skips the whole pre-push hook, so a hook
+  that also uploads or writes, such as `git lfs pre-push`, means no skip.
 
 Say in your reply that you skipped the hook, and why. Then watch CI to the end, and treat a CI
-failure like a failed hook. Without both conditions, keep the hook and wait for the load to fall.
+failure like a failed hook. Without all three conditions, keep the hook and wait for the load to fall.
 
 ## 5. Driving the app? Restart the server first
 

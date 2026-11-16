@@ -33,7 +33,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   and points to the recipe. It only reads.
 - **A busy machine may skip the push hook, but only safely.** Under heavy load, Claude may push
   with `--no-verify` only when the full check already passed on that exact commit and CI runs
-  the same checks. It says so, then watches CI (`verify-change` § 4).
+  the same checks, and the hook only runs checks (a Git LFS hook that uploads files is never
+  skipped). It says so, then watches CI (`verify-change` § 4).
 - **The context budget counts only what Claude sees.** A skill marked
   `disable-model-invocation` is left out of the check, because its description never reaches
   the model (proved live on Claude Code 2.1.325). The check measures a copy of the plugin
