@@ -405,12 +405,13 @@ const INSTRUCTIONS_CREATED = [
 ];
 
 /**
- * The MCP servers setup registers, as it prints them in their section: the two that need no
+ * The MCP servers setup registers, as it prints them in their section: the servers that need no
  * key. Tavily is left out without a key (`TAVILY_SKIPPED`).
  */
 const MCP_REGISTERED = [
   "  + MCP server playwright registered for your user",
   "  + MCP server sequential-thinking registered for your user",
+  "  + MCP server shadcn registered for your user",
   "  + MCP server cc-smart-dev-kit-tasks registered for your user",
 ];
 /**
@@ -458,6 +459,7 @@ function mcpDryRunLines(home: string): string[] {
   return [
     `  $ claude mcp add-json --scope user playwright {"command":"${launcher}","args":["browser","mcp"]}`,
     `  $ claude mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
+    `  $ claude mcp add-json --scope user shadcn {"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}`,
     `  $ claude mcp add-json --scope user cc-smart-dev-kit-tasks {"command":"${launcher}","args":["task","mcp"],"alwaysLoad":true}`,
   ];
 }
@@ -518,6 +520,7 @@ const tavilyDoctorSkipped = (home: string): string =>
 const MCP_DOCTOR_OK = [
   '✓ MCP server "playwright": Connected',
   '✓ MCP server "sequential-thinking": Connected',
+  '✓ MCP server "shadcn": Connected',
   '✓ MCP server "cc-smart-dev-kit-tasks": Connected',
 ];
 
@@ -578,11 +581,11 @@ describe("cc-smart-dev-kit setup", () => {
           "✓ Instructions          3 changes",
           ...INSTRUCTIONS_CREATED,
           ...CLAUDE_MEM_OFF,
-          "! MCP servers           3 changes, 1 warning",
+          "! MCP servers           4 changes, 1 warning",
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 22 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -705,11 +708,11 @@ describe("cc-smart-dev-kit setup", () => {
           ...INSTRUCTIONS_CREATED,
           "· Companion plugins     2 to change",
           ...CLAUDE_MEM_OFF.slice(1),
-          "! MCP servers           3 to change, 1 warning",
+          "! MCP servers           4 to change, 1 warning",
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 21 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 22 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -972,11 +975,11 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           "✓ Instructions          1 change",
           OPT_OUT_STORED,
           ...CLAUDE_MEM_OFF,
-          "! MCP servers           3 changes, 1 warning",
+          "! MCP servers           4 changes, 1 warning",
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 19 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1152,7 +1155,7 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Companion plugins  3 passed, 1 note",
         // claude-mem 15.x has My Work: its auto-refresh runs agents outside the kit's route.
         '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
-        "✓ MCP servers        3 passed, 1 note",
+        "✓ MCP servers        4 passed, 1 note",
         // Tavily is optional: without a key its server is skipped, never a failure.
         `  ${tavilyDoctorSkipped(home)}`,
         "✓ Browser            6 passed, 1 note",
@@ -1168,8 +1171,8 @@ describe("cc-smart-dev-kit doctor", () => {
         "· Herdr sessions     1 note",
         "  · Herdr: hc is not installed; session orchestration is optional.",
         "",
-        "✓ Everything works: 22 checks passed.",
-        "To see the 22 lines that passed too: cc-smart-dev-kit doctor --verbose",
+        "✓ Everything works: 23 checks passed.",
+        "To see the 23 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
     );
@@ -1206,7 +1209,7 @@ describe("cc-smart-dev-kit doctor", () => {
       expect(verbose).toContain(`\n  ${line}\n`);
     }
     expect(verbose).not.toContain("--verbose");
-    expect(verbose).toEndWith("\n✓ Everything works: 22 checks passed.\n");
+    expect(verbose).toEndWith("\n✓ Everything works: 23 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
     // Then which project the folder is in (this fake git says: none) — once for the project
     // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor
@@ -2010,11 +2013,11 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...INSTRUCTIONS_CREATED,
           "✓ Companion plugins     2 changes",
           ...COMPANION_MARKETPLACES_ADDED,
-          "! MCP servers           3 changes, 1 warning",
+          "! MCP servers           4 changes, 1 warning",
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 22 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2119,9 +2122,10 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           "  ✗ The claude command is not on PATH, so setup skipped these steps. Run them once it is:",
           "    $ claude plugin marketplace add thedotmack/claude-mem",
           "    $ claude plugin marketplace add anthropics/claude-plugins-official",
-          "! MCP servers           4 warnings",
+          "! MCP servers           5 warnings",
           "  ! The claude command is not on PATH, so playwright was not registered. Run it once it is.",
           "  ! The claude command is not on PATH, so sequential-thinking was not registered. Run it once it is.",
+          "  ! The claude command is not on PATH, so shadcn was not registered. Run it once it is.",
           TAVILY_SKIPPED,
           "  ! The claude command is not on PATH, so cc-smart-dev-kit-tasks was not registered. Run it once it is.",
         ],
@@ -3826,6 +3830,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       "cc-smart-dev-kit-tasks",
       "playwright",
       "sequential-thinking",
+      "shadcn",
     ]);
     expect(userConfig.mcpServers.playwright).toEqual({
       args: ["browser", "mcp"],
@@ -3920,6 +3925,7 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
       "cc-smart-dev-kit-tasks",
       "playwright",
       "sequential-thinking",
+      "shadcn",
     ]);
     expect(existsSync(where.folder)).toBe(false);
     expect(existsSync(where.recordDir)).toBe(false);
@@ -3966,6 +3972,9 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(claudeCalls()).toContain(
       `mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"${bunx}"}`,
     );
+    expect(claudeCalls()).toContain(
+      `mcp add-json --scope user shadcn {"args":["-y","shadcn@4.23.0","mcp"],"command":"${bunx}"}`,
+    );
   });
 
   test("no bunx on the machine: sequential-thinking keeps the bare name", () => {
@@ -3975,6 +3984,9 @@ describe("cc-smart-dev-kit setup: the MCP servers", () => {
     expect(result.exitCode).toBe(0);
     expect(claudeCalls()).toContain(
       `mcp add-json --scope user sequential-thinking {"args":["-y","@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}"],"command":"bunx"}`,
+    );
+    expect(claudeCalls()).toContain(
+      'mcp add-json --scope user shadcn {"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}',
     );
   });
 

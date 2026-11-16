@@ -753,6 +753,7 @@ export function mockData(empty: boolean): MockData {
       mcp: [
         { name: "playwright", state: "ours", runsWhat: null },
         { name: "sequential-thinking", state: "ours", runsWhat: null },
+        { name: "shadcn", state: "ours", runsWhat: null },
         { name: "tavily-websearch", state: "missing", runsWhat: null },
       ],
       browser: {
