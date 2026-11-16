@@ -179,8 +179,14 @@ export const VENDORED_SKILLS: VendoredSkill[] = [
           ? [
               "Upstream recommends particular models; the person's model choice and approval rules still apply.",
               "Import work keeps its own import-plan.json and build notes in the project.",
+              "Upstream names shadcncraft-new-component, which 0.2.0 does not publish; those steps are unavailable.",
             ]
-          : ["Package runners and non-shadcn tooling follow the project's own conventions."],
+          : name === "shadcncraft-generate-code"
+            ? [
+                "Package runners and non-shadcn tooling follow the project's own conventions.",
+                "Upstream names shadcncraft-compose-page, which 0.2.0 does not publish; those steps are unavailable.",
+              ]
+            : ["Package runners and non-shadcn tooling follow the project's own conventions."],
 }));
 
 export function isVendored(path: string): boolean {
