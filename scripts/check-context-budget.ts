@@ -5,7 +5,10 @@
  *
  * - **Always-on**: the names and descriptions of the plugin's skills and agents, as
  *   `claude plugin details` counts them for the copy in `plugin/`. Every session carries
- *   them, used or not (code.claude.com/docs/en/plugins/measure).
+ *   them, used or not (code.claude.com/docs/en/plugins/measure), except user-only skills.
+ *   Claude Code 2.1.325 (2026-11-16) counts disable-model-invocation skills here, but a
+ *   live request capture proved their descriptions never reach the model. Subtract their
+ *   per-component always-on rows; count `< 20` as 20 to stay conservative.
  * - **core.md**: `plugin/instructions/core.md`, which `setup` imports into every session's
  *   CLAUDE.md. `plugin details` does not count it, so this check estimates it.
  *
@@ -17,7 +20,7 @@
  *   bun scripts/check-context-budget.ts
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PLUGIN } from "../src/build-info/names";
 
@@ -75,6 +78,59 @@ export function parseDetails(output: string): Details {
   return { alwaysOn: Number(alwaysOn[1].replaceAll(",", "")), source: source[1] };
 }
 
+/** Only frontmatter controls visibility; body text never opts a skill out of the budget. */
+export function userOnlySkills(repo: string): string[] {
+  const folder = join(repo, "plugin/skills");
+  return readdirSync(folder, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => {
+      const file = join(folder, entry.name, "SKILL.md");
+      if (!existsSync(file)) return [];
+      const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(file, "utf8"))?.[1] ?? "";
+      return /^disable-model-invocation:\s*true\s*$/m.test(frontmatter) ? [entry.name] : [];
+    })
+    .sort();
+}
+
+/** Rounded CLI rows, not the on-invoke column. Unknown formats fail rather than undercount. */
+export function parseComponentCosts(output: string): Map<string, number> {
+  const table = /^Per-component[^\n]*\n([\s\S]*?)(?:\n[ \t]*\n|(?![\s\S]))/m.exec(output)?.[1];
+  if (!table) throw new Error("cannot read the Per-component table of `claude plugin details`");
+  const costs = new Map<string, number>();
+  for (const row of table.split("\n")) {
+    if (row.trim() === "" || /^\s*component\s+always-on\s+on-invoke\s*$/.test(row)) continue;
+    const match = /^\s*(\S+)\s+(?:~?([\d,.]+)(k)?|<\s*(\d+))\s+(?:~?[\d,.]+k?|<\s*\d+)\s*$/.exec(
+      row,
+    );
+    if (!match?.[1]) throw new Error(`cannot read component row: ${row.trim()}`);
+    const value =
+      match[4] !== undefined
+        ? Number(match[4])
+        : Math.ceil(Number((match[2] ?? "").replaceAll(",", "")) * (match[3] ? 1000 : 1));
+    if (!Number.isFinite(value) || costs.has(match[1]))
+      throw new Error(`invalid component row: ${row.trim()}`);
+    costs.set(match[1], value);
+  }
+  if (costs.size === 0) throw new Error("empty Per-component table");
+  return costs;
+}
+
+export function subtractUserOnlySkills(
+  alwaysOn: number,
+  costs: ReadonlyMap<string, number>,
+  names: readonly string[],
+): number {
+  let removed = 0;
+  for (const name of names) {
+    const cost = costs.get(name);
+    if (cost === undefined)
+      throw new Error(`user-only skill missing from Per-component table: ${name}`);
+    removed += cost;
+  }
+  if (removed > alwaysOn) throw new Error("user-only cost exceeds Always-on total");
+  return alwaysOn - removed;
+}
+
 export interface BudgetResult {
   lines: string[];
   ok: boolean;
@@ -89,8 +145,11 @@ function line(name: string, value: number, budget: Budget): { ok: boolean; text:
   return { ok, text };
 }
 
-export function checkBudget(alwaysOn: number, coreTokens: number): BudgetResult {
+export function checkBudget(alwaysOn: number, coreTokens: number, userOnlyCount = 0): BudgetResult {
   const parts = [line("Always-on", alwaysOn, ALWAYS_ON), line(CORE_MD, coreTokens, CORE)];
+  if (userOnlyCount > 0 && parts[0]) {
+    parts[0].text += ` (${userOnlyCount} user-only skills left out: Claude never sees them).`;
+  }
   return {
     lines: [
       ...parts.map((part) => part.text),
@@ -101,7 +160,7 @@ export function checkBudget(alwaysOn: number, coreTokens: number): BudgetResult 
 }
 
 /** `claude plugin details` for the copy in `plugin/`, never an installed one. */
-function readDetails(repo: string): Details {
+function readDetails(repo: string): Details & { userOnlyCount: number } {
   const run = spawnSync(
     "claude",
     ["--plugin-dir", join(repo, "plugin"), "plugin", "details", PLUGIN],
@@ -118,7 +177,12 @@ function readDetails(repo: string): Details {
       `\`claude plugin details\` read ${details.source}, not the copy in plugin/ (@inline)`,
     );
   }
-  return details;
+  const names = userOnlySkills(repo);
+  return {
+    ...details,
+    alwaysOn: subtractUserOnlySkills(details.alwaysOn, parseComponentCosts(run.stdout), names),
+    userOnlyCount: names.length,
+  };
 }
 
 if (import.meta.main) {
@@ -126,7 +190,7 @@ if (import.meta.main) {
   try {
     const details = readDetails(repo);
     const core = estimateTokens(readFileSync(join(repo, CORE_MD), "utf8"));
-    const result = checkBudget(details.alwaysOn, core);
+    const result = checkBudget(details.alwaysOn, core, details.userOnlyCount);
     for (const text of result.lines) (result.ok ? console.log : console.error)(text);
     if (!result.ok) process.exitCode = 1;
   } catch (error) {

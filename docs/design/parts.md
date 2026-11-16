@@ -19,6 +19,23 @@ and the Bash tool there. Windows gets a second launcher beside the `sh` one
 systemd units, and its own memory, lease and stop paths in the job queue: the five
 `windows-*.md` pages, and `docs/windows-setup.md` § The short version.
 
+### Vendored skills
+
+The plugin carries third-party shadcn and shadcncraft skills under `plugin/skills/`.
+`scripts/vendor-skills.ts` lists their folders, pinned sources, exclusions, patches and
+per-file SHA-256 hashes. Each folder includes the upstream MIT notice and `VENDORED.md`.
+The skills are user-only (`disable-model-invocation: true`): the person can invoke them,
+but their descriptions never reach the model. The context-budget check subtracts their
+rounded rows from `claude plugin details`, which counts them despite that flag.
+
+Re-vendor from the repo root with `bun scripts/vendor-skills.ts`. It fetches the pinned
+sources, checks the npm archive's integrity, prepares all patches, replaces only the
+listed folders and refreshes the script's hash block. The CLI pin comes from
+`MCP_VERSIONS.shadcn` in `src/mcp/versions.ts`; move that pin only with a re-vendor.
+Run `bun test scripts/vendor-skills.test.ts` afterwards. The tests are offline and check
+hashes, pins, visibility, notices and the table-driven lint and documentation exclusions.
+Do not format or edit vendored text by hand: change its patch in the script instead.
+
 ### Why a stable launcher
 
 Claude Code installs each version into its own folder,
